@@ -425,6 +425,10 @@ fn state(regs: &libc::user_regs_struct) -> LongModeState {
         gs_base: 0,
         fs_selector: 0,
         gs_selector: 0,
+        cs_selector: None,
+        cs_cache: None,
+        ss_selector: None,
+        ss_cache: None,
         ds_selector: 0,
         es_selector: 0,
         ds_unusable: false,
@@ -1467,6 +1471,7 @@ fn execute(loaded: &LoadedFixture) -> RunResult {
             | v2::Profile::LongOrpsRegV1
             | v2::Profile::LongAndnpsRegV1
             | v2::Profile::LongRsqrtssRegV1
+            | v2::Profile::LongRcpssRegV1
             | v2::Profile::LongMovssRegV1
             | v2::Profile::LongMovsdRegV1
             | v2::Profile::LongMovsdMemLoadV1
@@ -4297,6 +4302,7 @@ mod tests {
                 [..],
             &include_bytes!("../../../tests/fixtures/x86/stage2/s2_37a_rsqrtss_register.case.json")
                 [..],
+            &include_bytes!("../../../tests/fixtures/x86/stage2/s2_37b_rcpss_register.case.json")[..],
             &include_bytes!(
                 "../../../tests/fixtures/x86/stage2/s2_34_8b_movss_store_register.case.json"
             )[..],

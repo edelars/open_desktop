@@ -638,3 +638,15 @@ for that partial run and the final explicitly resumed run. Resume is a runner
 test action: it supplies the prior `RunResult.rflags_defined` to
 `od_isa::execute::run_with_rflags_defined`. Ordinary fixtures and
 `od_isa::execute::run()` continue to start as fresh executions.
+
+## Local RCPSS diagnostic profile — S2-37b
+
+`s2-long-rcpss-reg-v1` reuses schema v2 and the existing full long-mode state
+shape, including required raw x87 and SSE snapshots. Its executable region must
+contain exactly one `F3 [optional adjacent REX.R/B] 0F 53 /r` instruction with
+ModR/M.mod=3 and no trailing bytes; ModR/M.reg is the destination and r/m is
+the source. The fixture's stop RIP is the instruction end. The profile adds no
+JSON fields and does not change older fixture bytes or digests. JIT/native
+execution is unsupported. Expected output is the deterministic local helper
+value, not an exact CPU oracle around the unresolved RCPSS tiny-result
+threshold; see [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).

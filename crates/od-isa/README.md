@@ -19,6 +19,14 @@ S2-09 физически подтвердил три положительные 
 S0 corpus на одном Intel CPU; это не полное ISA покрытие. Evidence — в
 [CPU_ORACLE](../../docs/testing/CPU_ORACLE.md#native-v2-s2-09-границы-физического-подтверждения).
 
+S2-37a/b add two separate local-only scalar approximation instructions:
+register `RSQRTSS` and `RCPSS`. They reuse deterministic integer-only
+`Binary32` references and update only the destination low dword; the rest of
+XMM and CPU state is preserved. MXCSR flags/exceptions and CPUID/control gates
+are outside these profiles. The exact helper bits are not physical CPU claims;
+RCPSS's tiny-output hardware threshold remains unresolved in ISSUE-025. JIT
+and native admission stay closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-37b-register-only-rcpss).
+
 S2-10 добавляет C6/C7 immediate r/m, A0–A3 moffs, MOVSX/MOVSXD/MOVZX,
 LEA и register-only XCHG/NOP90 с сохранением flags. Пять дополнительных
 transfer программ и три прежних MOV cases прошли physical interpreter/native

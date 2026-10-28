@@ -2156,3 +2156,20 @@ RIP-relative and MOVUPS profiles reject SIB even when data is mapped. Callback
 checks assert one 16-byte access and unchanged CPU state after injected errors;
 runner fixtures check raw payloads, canaries and interpreter/JIT behavior.
 Physical execution is `not_run`; see the [Stage 2 report](../reports/STAGE_2_REPORT.md).
+
+## Local scalar RCPSS register profile — S2-37b
+
+The schema-v2 `s2-long-rcpss-reg-v1` profile admits exactly one Long64 legacy
+`F3 [optional adjacent REX.R/B] 0F 53 /r` register instruction with
+ModR/M.mod=3 and XMM0–15. The executor reads the source low dword before write,
+calls `Binary32::reciprocal_sse_raw()`, and changes only the destination low
+dword. The profile requires the existing raw x87/SSE snapshots; no guest data
+memory access, MXCSR mutation, FP flags/exceptions, CPUID or #UD/#NM delivery
+is modeled. SSE and CR0/CR4 are preconditions. The literal XMM8←XMM9 fixture
+uses `2.0`→local `0.5`; exact helper bits are not a universal hardware claim.
+JIT/native remain unsupported. ISSUE-025 keeps the tiny-output threshold
+ambiguous; final hardware validation is reserved for the combined Mac mini
+substage and checks the `3/8192` error envelope for non-flushed normal outputs.
+See [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37b-register-only-rcpss),
+[plan](../plans/STAGE_2.md#s2-37b--local-long64-register-only-legacy-rcpss),
+and [fixture](../../tests/fixtures/x86/stage2/s2_37b_rcpss_register.case.json).

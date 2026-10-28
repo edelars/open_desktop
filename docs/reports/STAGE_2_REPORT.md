@@ -45,7 +45,7 @@ SDM Rev. 093 Vol. 2B RCPPS pp. 4-538–4-539 and RCPSS pp. 4-540–4-541 specify
 the approximation bound and special/denormal behavior, but the published
 threshold inequalities overlap contradictorily. This ambiguity and its
 hardware-validation next step are recorded in
-[ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpss-rcpps-threshold-inequalities-overlap).
+[ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
 Final Mac mini hardware acceptance is to validate the `3/8192` relative-error
 envelope for non-flushed normal outputs, without requiring exact equality to
 the helper's result bits. The ambiguous tiny-result boundary remains a
@@ -129,6 +129,48 @@ remains closed by its explicit profile deny set and physical execution is
 `not_run`. Independent `gpt-6.1-sol` medium code and documentation review found
 no remaining defects after the review suggestion to use distinct source values
 for all sixteen XMM registers and compare the complete state was addressed.
+
+## S2-37b — local-only Long64 legacy register RCPSS
+
+Added the schema-v2 `s2-long-rcpss-reg-v1` profile for the exact register form
+`F3 [one adjacent REX.R/B] 0F 53 /r`, ModR/M.mod=3, XMM0–15. Decoder tests
+cover every source/destination pair, all supported bare/REX forms, strict
+prefix/memory/truncation negatives, and the neighboring RSQRTSS opcode. The
+interpreter uses only `Binary32::reciprocal_sse_raw()`: it reads the source low
+dword before writing the destination low dword, preserving its upper 96 bits
+and all other XMM/GPR/x87 state, RFLAGS and MXCSR. The full 256-pair execution
+matrix includes alias pairs and special classes, and verifies no guest data
+access. Separate cases verify all four MXCSR RC encodings are ignored and raw
+MXCSR is preserved, and missing SSE state refuses without commit. The literal
+schema-v2 fixture encodes `RCPSS XMM8,XMM9` with source `2.0` and local result
+`0.5`; runner coverage confirms interpreter execution and JIT denial, while
+strict-profile mutations reject the neighboring RSQRTSS opcode, memory form,
+and trailing byte. Native admission remains closed.
+
+The profile assumes SSE and CR0/CR4 permission. It does not implement generic
+CPUID, #UD/#NM delivery, MXCSR or SIMD exception behavior, or guest FP flags.
+The result uses the existing deterministic exact-reciprocal/nearest-ties-even/
+subnormal-flush local policy; fixture bits are not asserted as universal
+hardware output. ISSUE-025 remains open for the overlapping RCPSS/RCPPS
+threshold inequalities. The final Mac mini substage must check the `3/8192`
+relative-error envelope for non-flushed normal outputs and handle the tiny
+result boundary separately. No Mac mini test was run in this slice.
+
+**Checks:** `cargo test -p od-isa --offline rcpss_register` passed (3 tests);
+`cargo test -p od-testkit --offline` passed (369 tests);
+`cargo test -p od-runner --offline --test fixture_v2 local_rcpss_register`
+passed (1 test); `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, and
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`
+passed. The Linux target check compile-checked the native-denial test, which is
+not runnable on this macOS host. `git diff --check` and `graphify update .`
+passed; Graphify rebuilt 8,014 nodes, 16,186 edges, and 286 communities.
+Independent Sol medium review first found the RSQRTSS negative-case test
+accidentally rejecting its own valid encoding and five malformed ISSUE-025
+fragments. Both were corrected; focused RSQRTSS/RCPSS runner tests and
+`git diff --check` passed again. Code and documentation follow-up reviews were
+clean with no remaining findings. S2-37b is complete within this local-only
+profile; parent S2-37 and Stage 2 remain open.
 
 ## S2-36a — raw binary32/binary64 classification and finite normalization
 

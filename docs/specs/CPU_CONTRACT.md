@@ -10716,3 +10716,33 @@ conversion and Vol. 2A `CVTSD2SS` §3-234–235 for rounding control
 support this local conversion contract, not instruction admission or hardware
 validation. See the [Stage 2 plan](../plans/STAGE_2.md#s2-36v--raw-binary64-to-binary32-narrowing)
 and [report](../reports/STAGE_2_REPORT.md#s2-36v--raw-binary64-to-binary32-narrowing).
+
+## Local S2-37b: register-only RCPSS
+
+The schema-v2 diagnostic profile `s2-long-rcpss-reg-v1` admits exactly one
+Long64 legacy register instruction, `F3 [optional adjacent REX.R/B] 0F 53 /r`
+with ModR/M.mod=3 and XMM0–15. It rejects other prefixes, REX.W/X,
+nonadjacent/repeated REX, memory forms, VEX/EVEX, truncation, and neighboring
+opcodes. Execution reads the source low dword before writing, applies the
+deterministic `Binary32::reciprocal_sse_raw()` helper, and replaces only the
+destination low dword. It preserves the destination upper 96 bits, all other
+XMM/GPR/x87 state, RFLAGS, MXCSR, and RIP except normal successful retirement.
+No data-memory access occurs.
+
+The helper's normal finite policy is exact `1.0/x` rounded to binary32 using
+nearest-ties-even, then flush of a subnormal result to signed zero. Signed
+zeros/subnormal inputs map to same-sign infinity; infinities map to same-sign
+zero; QNaN is preserved and SNaN is quieted according to the existing local
+policy. Those result bits are deterministic local reference values, not a
+claim of exact CPU output. ISSUE-025 records the published RCPSS/RCPPS
+normal/subnormal boundary inequalities that overlap. Final physical checking
+must validate relative error `<= 3/8192` for non-flushed normal outputs without
+requiring exact bits; the ambiguous tiny-result boundary remains a separate
+open question.
+
+SSE and CR0/CR4 permission are profile preconditions. Generic CPUID,
+architectural #UD/#NM delivery, MXCSR arithmetic/exception behavior, SIMD FP
+exceptions, and JIT/native execution are not implemented. See the
+[Stage 2 plan](../plans/STAGE_2.md#s2-37b--local-long64-register-only-legacy-rcpss),
+[implementation report](../reports/STAGE_2_REPORT.md#s2-37b--local-only-long64-legacy-register-rcpss),
+and [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).

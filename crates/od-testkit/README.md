@@ -132,3 +132,12 @@ S2-35.10 adds the literal local-only PADDSB diagnostic fixture profile `s2-long-
 S2-35.12 adds literal local-only PADDSW profile `s2-long-paddsw-reg-v1`. It admits only `66 [one optional REX.R/B] 0F ED /r`, ModR/M.mod=3, with XMM0–15 destination/source registers. Eight signed little-endian word lanes saturate sums computed in i32 to [-32768, 32767]; JIT/native remain denied.
 
 S2-35.14 adds literal local-only PADDD profile `s2-long-paddd-reg-v1`. It admits only `66 [one optional REX.R/B] 0F FE /r`, ModR/M.mod=3, with XMM0–15 destination/source registers. Four independent little-endian dword lanes add modulo 2^32; JIT/native remain denied.
+
+S2-37a/b add distinct schema-v2 profiles `s2-long-rsqrtss-reg-v1` and
+`s2-long-rcpss-reg-v1` for one legacy scalar SSE register instruction each.
+Both require complete x87/SSE snapshots and preserve all state except the
+destination low dword and retired RIP. The RCPSS fixture is a literal
+XMM8←XMM9 case; its exact expected bits express the local deterministic helper,
+not an exact hardware result. JIT/native stay denied, and physical checks belong
+to the combined final Mac mini substage. ISSUE-025 remains open for RCPSS's
+ambiguous tiny-result threshold.

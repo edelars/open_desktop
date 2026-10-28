@@ -485,6 +485,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36ac | Deterministic pure raw binary32 SSE reciprocal-square-root reference; no diagnostics or state changes | S2-36aa, S2-36ab; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [x] | S2-37a | Local-only Long64 legacy register RSQRTSS profile `s2-long-rsqrtss-reg-v1`, using S2-36ac raw helper; JIT/native closed | S2-34.1, S2-36ac; independent review |
+| [x] | S2-37b | Local-only Long64 legacy register RCPSS profile `s2-long-rcpss-reg-v1`, using S2-36ab raw helper; JIT/native closed | S2-34.1, S2-36ab; ISSUE-025; independent review |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
@@ -5780,7 +5781,7 @@ specify no SIMD FP exceptions, independence from MXCSR RC, signed-zero
 interpretation for denormal sources, signed-zero flush for tiny results,
 SNaN quieting/QNaN return, and relative error no greater than
 `1.5 * 2^-12`. The published input-threshold inequalities overlap
-contradictorily; see [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpss-rcpps-threshold-inequalities-overlap).
+contradictorily; see [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
 Exact hardware behavior around the tiny-result boundary remains unresolved.
 Full S2-36 and physical/Mac mini acceptance remain open.
 
@@ -5876,6 +5877,22 @@ preconditions; generic CPUID, #UD/#NM, MXCSR state, SIMD exceptions, and guest
 FP flag effects are excluded. JIT and native admission stay closed. Approximate
 result bits are local helper output and are not claimed to match a CPU; final
 Mac mini validation belongs to the combined final hardware substage.
+
+#### S2-37b — local Long64 register-only legacy RCPSS
+
+Add one schema-v2 diagnostic profile, `s2-long-rcpss-reg-v1`, for the exact
+legacy `F3 [one adjacent REX.R/B] 0F 53 /r` register form. Accept only XMM0–15
+with ModR/M.mod=3; reject other prefixes, REX.W/X, duplicate/nonadjacent REX,
+memory forms, VEX/EVEX, truncation, and neighboring opcodes. Use
+`Binary32::reciprocal_sse_raw()` for only the source low 32 bits, update only
+the destination low 32 bits, and preserve its upper 96 bits and all other
+state. No data-memory callback occurs. SSE and CR0/CR4 permission are profile
+preconditions; generic CPUID, #UD/#NM, MXCSR state, SIMD exceptions, and guest
+FP flag effects are excluded. JIT and native admission stay closed. Helper
+result bits express the local exact-reciprocal/nearest-ties-even/flush policy,
+not universal hardware bits. Final Mac mini validation checks the `3/8192`
+error envelope for non-flushed normal outputs; the ISSUE-025 tiny-result
+boundary remains unresolved and is tested separately.
 
 ### S2-38. MXCSR и FP fault ordering
 

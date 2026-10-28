@@ -1165,6 +1165,8 @@ fn step_tracked_with_profiles(
             | Operation::MovupdReverseRegister { .. }
             | Operation::MovupdLoadMemory { .. }
             | Operation::MovupdStoreMemory { .. }
+            | Operation::RsqrtssRegister { .. }
+            | Operation::RcpssRegister { .. }
     ) && state.sse.is_none()
     {
         return Ok(StepOutcome::Unsupported {
@@ -1699,6 +1701,7 @@ fn step_tracked_with_profiles(
         | Operation::AndnpsRegister { .. }
         | Operation::MovssRegister { .. }
         | Operation::RsqrtssRegister { .. }
+        | Operation::RcpssRegister { .. }
         | Operation::MovsdRegister { .. }
         | Operation::MovsdStoreRegister { .. }
         | Operation::MovsdLoadMemory { .. }
@@ -4540,6 +4543,29 @@ fn step_tracked_with_profiles(
                 .sse
                 .as_mut()
                 .expect("RSQRTSS local profile state was prevalidated")
+                .xmm[usize::from(destination)][..4]
+                .copy_from_slice(&result_bits.to_le_bytes());
+        }
+        Operation::RcpssRegister {
+            destination,
+            source,
+        } => {
+            let source_bits = u32::from_le_bytes(
+                state
+                    .sse
+                    .as_ref()
+                    .expect("RCPSS local profile state was prevalidated")
+                    .xmm[usize::from(source)][..4]
+                    .try_into()
+                    .expect("binary32 lane has four bytes"),
+            );
+            let result_bits = Binary32::from_bits(source_bits)
+                .reciprocal_sse_raw()
+                .to_bits();
+            state
+                .sse
+                .as_mut()
+                .expect("RCPSS local profile state was prevalidated")
                 .xmm[usize::from(destination)][..4]
                 .copy_from_slice(&result_bits.to_le_bytes());
         }
@@ -75918,6 +75944,127 @@ mod tests {
                 assert_eq!(memory.fetches, (0x1000..0x1005).collect::<Vec<_>>());
             }
         }
+    }
+
+    #[test]
+    fn rcpss_register_updates_only_destination_low_dword_without_data_accesses() {
+        use crate::binary_float::Binary32;
+
+        let source_bits: [u32; 16] = [
+            0x0000_0000, // +0
+            0x8000_0000, // -0
+            0x0000_0001, // positive subnormal
+            0x807f_ffff, // negative maximum subnormal
+            0x3f80_0000, // 1
+            0x4000_0000, // 2
+            0x4080_0000, // 4
+            0xbf80_0000, // -1
+            0xc000_0000, // -2
+            0x7f80_0000, // +infinity
+            0xff80_0000, // -infinity
+            0x7f80_0001, // SNaN
+            0x7fc1_2345, // QNaN
+            0xffc5_4321, // negative QNaN
+            0x0080_0000, // minimum normal
+            0x7f7f_ffff, // maximum finite
+        ];
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let code = [0xf3, rex, 0x0f, 0x53, modrm];
+                let mut memory = Memory::at(&code, 0x1000);
+                let mut state = LongModeState::default();
+                state.rip = 0x1000;
+                state.rflags = crate::DF | 2;
+                state.gpr[Register::Rcx as usize] = 0x1234_5678_9abc_def0;
+                state.x87 = Some(X87State::fixture_seed());
+                let mut xmm = [[0x5a; 16]; 16];
+                for (register, bytes) in xmm.iter_mut().enumerate() {
+                    bytes[..4].copy_from_slice(&source_bits[register].to_le_bytes());
+                }
+                state.sse = Some(SseState {
+                    xmm,
+                    mxcsr: 0x0000_ffff,
+                });
+                let before = state.clone();
+                let expected_bits = Binary32::from_bits(source_bits[usize::from(source)])
+                    .reciprocal_sse_raw()
+                    .to_bits();
+                let mut expected_state = before.clone();
+                expected_state.rip = 0x1005;
+                expected_state.sse.as_mut().unwrap().xmm[usize::from(destination)][..4]
+                    .copy_from_slice(&expected_bits.to_le_bytes());
+
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                    StepOutcome::Advanced
+                );
+                assert_eq!(state, expected_state);
+                assert_eq!(state.rflags, before.rflags);
+                assert_eq!(state.x87, before.x87);
+                assert_eq!(
+                    state.sse.as_ref().unwrap().mxcsr,
+                    before.sse.as_ref().unwrap().mxcsr
+                );
+                for register in 0..16usize {
+                    let actual = &state.sse.as_ref().unwrap().xmm[register];
+                    let original = &before.sse.as_ref().unwrap().xmm[register];
+                    if register == usize::from(destination) {
+                        assert_eq!(&actual[..4], &expected_bits.to_le_bytes());
+                        assert_eq!(&actual[4..], &original[4..]);
+                    } else {
+                        assert_eq!(actual, original);
+                    }
+                }
+                assert!(memory.accesses.is_empty());
+                assert_eq!(memory.fetches, (0x1000..0x1005).collect::<Vec<_>>());
+            }
+        }
+    }
+
+    #[test]
+    fn rcpss_register_ignores_and_preserves_mxcsr_and_preflights_missing_sse() {
+        use crate::binary_float::Binary32;
+
+        let code = [0xf3, 0x45, 0x0f, 0x53, 0xc1]; // RCPSS XMM8, XMM9
+        let expected_bits = Binary32::from_bits(0x4000_0000)
+            .reciprocal_sse_raw()
+            .to_bits();
+        assert_eq!(expected_bits, 0x3f00_0000);
+        for rc in 0..4u32 {
+            let mxcsr = (0x0000_1f80 & !0x6000) | (rc << 13) | 0x0000_80bf; // status, DAZ, FTZ, and exception masks
+            let mut memory = Memory::at(&code, 0x2000);
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.x87 = Some(X87State::fixture_seed());
+            let mut xmm = [[0x5a; 16]; 16];
+            xmm[9][..4].copy_from_slice(&0x4000_0000u32.to_le_bytes());
+            state.sse = Some(SseState { xmm, mxcsr });
+            let before = state.clone();
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                StepOutcome::Advanced
+            );
+            let mut expected = before.clone();
+            expected.rip = 0x2005;
+            expected.sse.as_mut().unwrap().xmm[8][..4]
+                .copy_from_slice(&expected_bits.to_le_bytes());
+            assert_eq!(state, expected, "MXCSR RC={rc}");
+            assert_eq!(memory.accesses, []);
+        }
+
+        let mut memory = Memory::at(&code, 0x2000);
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        state.x87 = Some(X87State::fixture_seed());
+        let before = state.clone();
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+            StepOutcome::Unsupported { opcode: 0x53 }
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
     }
 
     #[test]
