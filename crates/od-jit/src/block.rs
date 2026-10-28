@@ -1532,6 +1532,31 @@ fn is_rbp_index_qword_sib_data_operand(
         && displacement_valid
 }
 
+fn is_rsi_rdi_base_rbp_index_qword_sib_data_operand(
+    instruction: Instruction,
+    operand: od_isa::long_decode::MemoryOperand,
+) -> bool {
+    let displacement_valid = match instruction.length {
+        4 => operand.displacement == 0,
+        5 => i8::try_from(operand.displacement).is_ok(),
+        8 => i32::try_from(operand.displacement).is_ok(),
+        _ => false,
+    };
+    matches!(instruction.length, 4 | 5 | 8)
+        && instruction.address_size == OperandSize::Qword
+        && operand.address_size == OperandSize::Qword
+        && operand.size == OperandSize::Qword
+        && matches!(
+            operand.base,
+            od_isa::long_decode::AddressBase::Register(
+                od_isa::Register::Rsi | od_isa::Register::Rdi
+            )
+        )
+        && operand.index == Some(od_isa::Register::Rbp)
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && displacement_valid
+}
+
 fn is_rsp_base_rbp_index_qword_sib_data_operand(
     instruction: Instruction,
     operand: od_isa::long_decode::MemoryOperand,
@@ -1835,6 +1860,9 @@ fn is_rsp_memory_data_operand(
     if is_rbp_index_qword_sib_data_operand(instruction, operand) {
         return true;
     }
+    if is_rsi_rdi_base_rbp_index_qword_sib_data_operand(instruction, operand) {
+        return true;
+    }
     if is_rsp_base_rbp_index_qword_sib_data_operand(instruction, operand) {
         return true;
     }
@@ -1958,6 +1986,9 @@ fn is_rbp_memory_data_operand(
         return true;
     }
     if is_rbp_index_qword_sib_data_operand(instruction, operand) {
+        return true;
+    }
+    if is_rsi_rdi_base_rbp_index_qword_sib_data_operand(instruction, operand) {
         return true;
     }
     if is_rsp_base_rbp_index_qword_sib_data_operand(instruction, operand) {
@@ -2295,6 +2326,8 @@ fn is_checked_qword_memory_address(
                 )
                 && operand.index == Some(od_isa::Register::Rbp)
                 && indexed_displacement_valid;
+            let rsi_rdi_base_rbp_indexed_profile =
+                is_rsi_rdi_base_rbp_index_qword_sib_data_operand(instruction, operand);
             let rsp_base_rbp_indexed_profile = matches!(instruction.length, 4 | 5 | 8)
                 && matches!(
                     operand.base,
@@ -2311,6 +2344,7 @@ fn is_checked_qword_memory_address(
                 && indexed_displacement_valid;
             let indexed_form = (operand.index.is_some_and(|index| (index as u8) < 4)
                 || rbp_indexed_profile
+                || rsi_rdi_base_rbp_indexed_profile
                 || rsp_base_rbp_indexed_profile
                 || rbp_base_rbp_indexed_profile)
                 && indexed_displacement_valid
@@ -2357,6 +2391,7 @@ fn is_checked_qword_memory_address(
                 && (register_base && (direct_form || indexed_form)
                     || rsi_rdi_direct
                     || rsi_rdi_indexed_profile
+                    || rsi_rdi_base_rbp_indexed_profile
                     || rip_relative
                     || absolute_sib_disp32
                     || indexed_no_base_sib_disp32
@@ -2400,6 +2435,7 @@ pub(crate) fn exact_direct_qword_memory_bytes(
                         *sib == 0x24
                             || sib & 7 < 4 && (sib >> 3) & 7 < 4
                             || matches!(sib & 7, 6 | 7) && (sib >> 3) & 7 < 4
+                            || matches!(sib & 7, 6 | 7) && (sib >> 3) & 7 == 5
                     })
         }
         7 => bytes.get(2).is_some_and(|modrm| modrm >> 6 == 2),
@@ -2456,14 +2492,14 @@ pub(crate) fn exact_direct_qword_memory_bytes(
             && bytes[2] & 7 == 4
             && (bytes[2] >> 3) & 7 <= 5
             && matches!(bytes[3] & 7, 6 | 7)
-            && (bytes[3] >> 3) & 7 < 4)
+            && ((bytes[3] >> 3) & 7 < 4 || (bytes[3] >> 3) & 7 == 5))
         || (matches!(bytes.len(), 5 | 8)
             && bytes[0..2] == [0x48, opcode]
             && matches!(bytes[2] >> 6, 1 | 2)
             && bytes[2] & 7 == 4
             && (bytes[2] >> 3) & 7 <= 5
             && matches!(bytes[3] & 7, 6 | 7)
-            && (bytes[3] >> 3) & 7 < 4
+            && ((bytes[3] >> 3) & 7 < 4 || (bytes[3] >> 3) & 7 == 5)
             && (bytes.len() == 5 && bytes[2] >> 6 == 1 || bytes.len() == 8 && bytes[2] >> 6 == 2))
         || (bytes.len() == 5
             && bytes[0..2] == [0x48, opcode]
@@ -2622,8 +2658,10 @@ pub(crate) fn exact_qword_sib_displacement_memory_bytes(
         && bytes[2] >> 6 == expected_mode
         && bytes[2] & 7 == 4
         && (bytes[2] >> 3) & 7 <= 5
-        && (bytes[3] & 7 <= 4 || expected_mode != 0 && bytes[3] & 7 == 5)
-        && (bytes[3] >> 3) & 7 < 4
+        && (bytes[3] & 7 <= 4
+            || expected_mode != 0 && bytes[3] & 7 == 5
+            || matches!(bytes[3] & 7, 6 | 7) && (bytes[3] >> 3) & 7 == 5)
+        && ((bytes[3] >> 3) & 7 < 4 || matches!(bytes[3] & 7, 6 | 7) && (bytes[3] >> 3) & 7 == 5)
 }
 
 pub(crate) fn exact_qword_absolute_sib_disp32_memory_bytes(
