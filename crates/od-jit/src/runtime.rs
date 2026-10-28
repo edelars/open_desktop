@@ -188,6 +188,26 @@ fn is_rbp_base_rbp_index_sib_profile(operand: MemoryOperand, length: u64) -> boo
         }
 }
 
+fn is_rbp_base_rsi_rdi_index_sib_profile(operand: MemoryOperand, length: u64) -> bool {
+    matches!(length, 5 | 8)
+        && operand.address_size == od_isa::OperandSize::Qword
+        && operand.size == od_isa::OperandSize::Qword
+        && matches!(
+            operand.base,
+            od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
+        )
+        && matches!(
+            operand.index,
+            Some(od_isa::Register::Rsi | od_isa::Register::Rdi)
+        )
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && match length {
+            5 => i8::try_from(operand.displacement).is_ok(),
+            8 => i32::try_from(operand.displacement).is_ok(),
+            _ => false,
+        }
+}
+
 fn is_rsp_base_rsi_rdi_index_sib_profile(operand: MemoryOperand, length: u64) -> bool {
     matches!(length, 4 | 5 | 8)
         && operand.address_size == od_isa::OperandSize::Qword
@@ -424,6 +444,8 @@ impl MemorySiteV2 {
             is_rsp_base_rsi_rdi_index_sib_profile(self.operand, length);
         let rbp_base_rbp_index_sib_data_profile =
             is_rbp_base_rbp_index_sib_profile(self.operand, length);
+        let rbp_base_rsi_rdi_index_sib_data_profile =
+            is_rbp_base_rsi_rdi_index_sib_profile(self.operand, length);
         let rsi_rdi_base_rbp_index_sib_data_profile =
             is_rsi_rdi_base_rbp_index_sib_profile(self.operand, length);
         let low_base_rsi_rdi_index_sib_data_profile =
@@ -582,6 +604,7 @@ impl MemorySiteV2 {
                     || rsp_base_rbp_index_sib_data_profile
                     || rsp_base_rsi_rdi_index_sib_data_profile
                     || rbp_base_rbp_index_sib_data_profile
+                    || rbp_base_rsi_rdi_index_sib_data_profile
                     || rsi_rdi_base_rbp_index_sib_data_profile
                     || low_base_rsi_rdi_index_sib_data_profile
                     || (self.operand.index.is_none()
@@ -753,6 +776,7 @@ impl MemorySiteV2 {
                         && (length == 5 && i8::try_from(self.operand.displacement).is_ok()
                             || length == 8 && i32::try_from(self.operand.displacement).is_ok())
                     || register == od_isa::Register::Rbp && rbp_base_rbp_index_sib_data_profile
+                    || register == od_isa::Register::Rbp && rbp_base_rsi_rdi_index_sib_data_profile
                     || matches!(register, od_isa::Register::Rsi | od_isa::Register::Rdi)
                         && rsi_rdi_base_rbp_index_sib_data_profile
                     || self.operand.address_size == od_isa::OperandSize::Dword
@@ -826,6 +850,7 @@ impl MemorySiteV2 {
                     && !rsp_base_rbp_index_sib_data_profile
                     && !rsp_base_rsi_rdi_index_sib_data_profile
                     && !rbp_base_rbp_index_sib_data_profile
+                    && !rbp_base_rsi_rdi_index_sib_data_profile
                     && !rsi_rdi_base_rbp_index_sib_data_profile
                     && !low_base_rsi_rdi_index_sib_data_profile
                     && !address32_low_base_rsi_rdi_index_sib_data_profile
@@ -1436,6 +1461,11 @@ impl MemorySiteV2 {
                         && source[3] & 7 == 4
                         && (source[3] >> 3) & 7 == 5)
                     || (data_register >= 4
+                        && modrm & 7 == 4
+                        && matches!((mode, source.len()), (1, 5) | (2, 8))
+                        && source[3] & 7 == 5
+                        && matches!((source[3] >> 3) & 7, 6 | 7))
+                    || (data_register >= 4
                         && mode == 0
                         && modrm & 7 == 4
                         && source.len() == 4
@@ -1550,6 +1580,17 @@ impl MemorySiteV2 {
                     && decoded_base == od_isa::Register::Rbp
                     && self.next_rip.checked_sub(self.guest_rip) == Some(source.len() as u64)
                     && is_rbp_base_rbp_index_sib_profile(self.operand, source.len() as u64)
+                    && self.operand.scale == scale;
+            }
+            if matches!((mode, source.len()), (1, 5) | (2, 8))
+                && base == 5
+                && matches!(index, 6 | 7)
+            {
+                return data_register <= 5
+                    && decoded_base == od_isa::Register::Rbp
+                    && self.next_rip.checked_sub(self.guest_rip) == Some(source.len() as u64)
+                    && is_rbp_base_rsi_rdi_index_sib_profile(self.operand, source.len() as u64)
+                    && self.operand.index == od_isa::Register::from_encoding(index)
                     && self.operand.scale == scale;
             }
             (base < 4
