@@ -9271,6 +9271,20 @@ PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf),
 [Intel SDM page](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
 See the [S2-35.39 plan](../plans/STAGE_2.md#s2-3539--local-only-bounded-register-immediate-psraw).
 
+## Local register-only immediate `PSRAD` profile — S2-35.43
+
+The diagnostic profile `s2-long-psrad-imm-reg-v1` admits exactly
+`66 [no REX or optional 41] 0F 72 /4 ib`, ModR/M.mod=3. `/4` is required;
+ModR/M.r/m selects XMM0–15 and optional REX.B extends the destination. `/2`
+PSRLD and `/6` PSLLD are separate sibling selectors and are rejected by the
+PSRAD fixture profile. Four independent little-endian signed i32 lanes shift
+arithmetically right by unsigned, unmasked imm8. Counts 0–31 sign-fill;
+counts >=32 produce `ffffffff` for negative lanes and zero otherwise. Flags
+and MXCSR are unchanged. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are
+assumptions only. Memory/MMX, bare REX, REX.R/X/W, extra prefixes, VEX/EVEX,
+feature gating, exception delivery, JIT/native execution and physical behavior
+are excluded. See the [S2-35.43 plan](../plans/STAGE_2.md#s2-3543--local-only-bounded-register-immediate-psrad).
+
 ## Local register-only `PADDUSB` profile — S2-35.4
 
 The exact profile `s2-long-paddusb-reg-v1` admits legacy

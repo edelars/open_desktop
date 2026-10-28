@@ -5219,3 +5219,13 @@ PSRLD and `r/m` selects XMM9; `/6` selects sibling PSLLD and is rejected by
 this fixture profile. Four little-endian u32 lanes shift logically right by
 the unmasked unsigned imm8; counts >=32 clear every lane. The local profile
 assumes SSE2 architectural preconditions and denies JIT and native execution.
+
+### S2-35.43 local register PSRAD immediate diagnostic profile
+
+`s2_35_43_psrad_imm_register.case.json` is a handwritten literal XMM9 fixture
+for `s2-long-psrad-imm-reg-v1`, encoded as `66 41 0F 72 E1 01`. `/4` selects
+PSRAD and `r/m` selects XMM9; `/2` PSRLD and `/6` PSLLD are rejected by this
+fixture profile. Four signed little-endian i32 lanes shift arithmetically
+right by the unmasked unsigned imm8; counts >=32 sign-fill negative lanes and
+zero nonnegative lanes. The local profile assumes SSE2 preconditions and
+denies JIT and native execution.

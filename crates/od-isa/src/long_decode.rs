@@ -667,6 +667,11 @@ pub enum Operation {
         destination: u8,
         count: u8,
     },
+    /// Local-only register PSRAD with an unmasked unsigned imm8 count.
+    PsradImmediateRegister {
+        destination: u8,
+        count: u8,
+    },
     /// Local-only mandatory-66 PSUBUSB with unsigned byte-wise saturation.
     PsubusbRegister {
         destination: u8,
@@ -2051,6 +2056,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && prefix_bytes[0] == 0x66
             && (prefix_count == 1
                 || (prefix_count == 2 && prefixes.rex.is_some() && prefix_bytes[1] == 0x41));
+        // PSRAD immediate uses ModR/M.reg as the /4 selector and r/m as destination.
+        let psrad_immediate_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x72
+            && prefixes.operand_override
+            && prefix_count >= 1
+            && prefix_bytes[0] == 0x66
+            && (prefix_count == 1
+                || (prefix_count == 2 && prefixes.rex.is_some() && prefix_bytes[1] == 0x41));
         // PSUBUSW's mandatory 66 selects the XMM/SSE2 form; bare 0F D9 is MMX.
         let psubusw_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0xd9
@@ -2464,18 +2477,23 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
             }
             (OpcodeMap::Escape0f, 0x72) => {
-                if !pslld_immediate_register && !psrld_immediate_register {
+                if !pslld_immediate_register
+                    && !psrld_immediate_register
+                    && !psrad_immediate_register
+                {
                     return Err(self.unsupported(opcode));
                 }
                 let modrm = self.byte()?;
                 let selector = (modrm >> 3) & 7;
-                if modrm >> 6 != 3 || (selector != 2 && selector != 6) {
+                if modrm >> 6 != 3 || (selector != 2 && selector != 4 && selector != 6) {
                     return Err(self.unsupported(opcode));
                 }
                 let count = self.byte()?;
                 let destination = (modrm & 7) | ((rex & 1) << 3);
                 if selector == 2 {
                     Operation::PsrldImmediateRegister { destination, count }
+                } else if selector == 4 {
+                    Operation::PsradImmediateRegister { destination, count }
                 } else {
                     Operation::PslldImmediateRegister { destination, count }
                 }
@@ -5510,10 +5528,28 @@ mod tests {
                 count: 1
             },
         );
+        assert_eq!(
+            Memory::new(&[0x66, 0x0f, 0x72, 0xd1, 1])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::PsrldImmediateRegister {
+                destination: 1,
+                count: 1
+            },
+        );
+        assert_eq!(
+            Memory::new(&[0x66, 0x0f, 0x72, 0xe1, 1])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::PsradImmediateRegister {
+                destination: 1,
+                count: 1
+            },
+        );
         for bytes in [
             &[0x0f, 0x72, 0xf1, 1][..],
-            &[0x66, 0x0f, 0x72, 0xd1, 1][..], // /2 PSRLW selector
-            &[0x66, 0x0f, 0x72, 0xe1, 1][..], // /4 PSRAD selector
             &[0x66, 0x0f, 0x72, 0x71, 1][..], // memory destination
             &[0x66, 0x40, 0x0f, 0x72, 0xf1, 1][..],
             &[0x66, 0x42, 0x0f, 0x72, 0xf1, 1][..],
@@ -5584,9 +5620,28 @@ mod tests {
                 count: 1
             },
         );
+        assert_eq!(
+            Memory::new(&[0x66, 0x0f, 0x72, 0xd1, 1])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::PsrldImmediateRegister {
+                destination: 1,
+                count: 1
+            },
+        );
+        assert_eq!(
+            Memory::new(&[0x66, 0x0f, 0x72, 0xe1, 1])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::PsradImmediateRegister {
+                destination: 1,
+                count: 1
+            },
+        );
         for bytes in [
             &[0x0f, 0x72, 0xd1, 1][..],
-            &[0x66, 0x0f, 0x72, 0xe1, 1][..], // /4 PSRAD sibling
             &[0x66, 0x0f, 0x72, 0x71, 1][..], // memory destination
             &[0x66, 0x40, 0x0f, 0x72, 0xd1, 1][..],
             &[0x66, 0x42, 0x0f, 0x72, 0xd1, 1][..],
@@ -5613,6 +5668,78 @@ mod tests {
         ));
         assert_eq!(memory.fetched, [0xffc, 0xffd, 0xffe, 0xfff, 0x1000]);
         let mut complete = Memory::new(&[0x66, 0x0f, 0x72, 0xd0, 0x01]);
+        complete.base = 0xffc;
+        assert_eq!(complete.decode().unwrap().length, 5);
+        assert_eq!(complete.fetched, [0xffc, 0xffd, 0xffe, 0xfff, 0x1000]);
+    }
+
+    #[test]
+    fn psrad_immediate_register_decodes_rmb_destination_and_strict_encoding() {
+        for destination in 0..16u8 {
+            let mut code = vec![0x66];
+            if destination >= 8 {
+                code.push(0x41);
+            }
+            code.extend([0x0f, 0x72, 0xe0 | (destination & 7), 0xff]);
+            let mut memory = Memory::new(&code);
+            let decoded = memory.decode().unwrap();
+            assert_eq!(
+                decoded.operation,
+                Operation::PsradImmediateRegister {
+                    destination,
+                    count: 0xff
+                }
+            );
+            assert_eq!(decoded.length, code.len() as u8);
+        }
+        assert_eq!(
+            Memory::new(&[0x66, 0x0f, 0x72, 0xd1, 1])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::PsrldImmediateRegister {
+                destination: 1,
+                count: 1
+            },
+        );
+        assert_eq!(
+            Memory::new(&[0x66, 0x0f, 0x72, 0xf1, 1])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::PslldImmediateRegister {
+                destination: 1,
+                count: 1
+            },
+        );
+        for bytes in [
+            &[0x0f, 0x72, 0xe1, 1][..],
+            &[0x66, 0x0f, 0x72, 0x61, 1][..], // memory destination
+            &[0x66, 0x40, 0x0f, 0x72, 0xe1, 1][..],
+            &[0x66, 0x42, 0x0f, 0x72, 0xe1, 1][..],
+            &[0x66, 0x48, 0x0f, 0x72, 0xe1, 1][..],
+            &[0x66, 0x45, 0x0f, 0x72, 0xe1, 1][..],
+            &[0x66, 0xf3, 0x0f, 0x72, 0xe1, 1][..],
+            &[0x66, 0x0f, 0x72, 0xe1][..],
+            &[0xc5, 0xf9, 0x72, 0xe1, 1][..],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn psrad_truncated_immediate_fetch_crosses_page_only_at_final_byte() {
+        let mut memory = Memory::new(&[0x66, 0x0f, 0x72, 0xe0]);
+        memory.base = 0xffc;
+        assert!(matches!(
+            memory.decode(),
+            Err(DecodeError::Memory(MemoryError::Unmapped {
+                address: 0x1000,
+                access: AccessKind::Fetch,
+            }))
+        ));
+        assert_eq!(memory.fetched, [0xffc, 0xffd, 0xffe, 0xfff, 0x1000]);
+        let mut complete = Memory::new(&[0x66, 0x0f, 0x72, 0xe0, 0x01]);
         complete.base = 0xffc;
         assert_eq!(complete.decode().unwrap().length, 5);
         assert_eq!(complete.fetched, [0xffc, 0xffd, 0xffe, 0xfff, 0x1000]);

@@ -13040,3 +13040,41 @@ fixture test (1/1), and confirmed the workspace all-target check. Native
 runtime and physical SSE/SSE2 execution were not run. S2-34, S2-35, global
 `S2-35 → S2-34`, physical SSE/SSE2 validation, and combined Mac mini/SSH
 acceptance remain open.
+
+## S2-35.43 — local PSRAD immediate register profile
+
+Implemented `s2-long-psrad-imm-reg-v1` for the exact local form
+`66 [no REX or optional 41] 0F 72 /4 ib`, ModR/M.mod=3, with the destination
+XMM0–15 selected by r/m. Four independent little-endian signed i32 lanes use
+arithmetic right shift by unsigned unmasked imm8. Counts 0–31 sign-fill;
+counts >=32 produce all ones for negative lanes and zero otherwise. Flags and
+MXCSR are preserved. `/2` PSRLD and `/6` PSLLD remain separate shared-decoder
+operations and are rejected by the PSRAD fixture profile.
+
+Coverage includes every count on all 16 destinations against an independent
+i64 floor-division/sign-fill oracle, reproducible raw i32 and boundary values,
+walking bits in every lane and destination, and the `80000000>>1=c0000000`,
+`ffffffff>>1=ffffffff`, `fffffffd>>1=fffffffe`, `7fffffff>>1=3fffffff`, and
+`00008000>>1=00004000` sentinels. Decoder/schema negatives cover siblings,
+memory form, missing/extra prefixes and REX 40/R/X/W; full-state preservation,
+no data callbacks, missing SSE state, STOP/zero-budget atomicity, and immediate
+fetch/page crossing with complete fetch are checked. The handwritten XMM9
+fixture executes in the interpreter with JIT denied. Native admission remains
+denied; the Linux guard is compile-only on this Darwin host. Local focused
+checks, workspace checks and independent Sol medium review are recorded in the
+plan. This is local interpreter/profile evidence only; native runtime and
+physical SSE/SSE2 execution are not claimed. Other shifts, memory/MMX, REX.R/X/W,
+extra prefixes, VEX/EVEX, feature gates, exception delivery and physical
+execution remain excluded. S2-34, S2-35, global `S2-35 → S2-34`, and combined
+Mac mini/SSH acceptance remain open. See the [plan](../plans/STAGE_2.md#s2-3543--local-only-bounded-register-immediate-psrad),
+[CPU contract](../specs/CPU_CONTRACT.md#local-register-only-immediate-psrad-profile--s2-3543),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3543-local-register-psrad-immediate-diagnostic-profile).
+
+Verification: `cargo test -p od-isa psrad --offline` passed (5 focused tests),
+and `cargo test -p od-runner --test fixture_v2 psrad --offline` passed (1
+fixture test). `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, Linux-target
+`od-x86-runner` test compilation, `git diff --check`, and `graphify update .`
+passed. The Linux-only native-denial guard is compile-checked, not executed on
+this Darwin host. Independent `gpt-6.1-sol` medium review found no remaining
+findings and independently reran the PSRAD interpreter and fixture tests.

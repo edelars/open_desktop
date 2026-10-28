@@ -8876,6 +8876,42 @@ This is local interpreter/profile evidence only; parent S2-34, S2-35, global
 remain open.
 
 
+#### S2-35.43 — local-only bounded register immediate `PSRAD`
+
+The profile `s2-long-psrad-imm-reg-v1` admits exactly
+`66 [no REX or optional 41] 0F 72 /4 ib`, ModR/M.mod=3. ModR/M.r/m selects
+destination XMM0–15; `/4` is required and `/2` PSRLD and `/6` PSLLD are
+distinct siblings. Four independent little-endian signed i32 lanes shift
+arithmetically right by unsigned, unmasked imm8. Count 0 preserves the lanes;
+counts 0–31 sign-fill, and counts >=32 yield `ffffffff` for negative input
+lanes and zero for nonnegative lanes. Flags and MXCSR are unchanged. SSE2 and
+CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 remain assumptions only.
+
+Focused checks cover every unsigned count on all 16 XMM destinations against
+an independent i64 floor-division/sign-fill oracle, including reproducible raw
+i32 and boundary inputs; walking bits in every lane/destination; the
+`80000000>>1=c0000000`, `ffffffff>>1=ffffffff`, `fffffffd>>1=fffffffe`,
+`7fffffff>>1=3fffffff`, and `00008000>>1=00004000` sentinels; strict sibling,
+prefix and memory-form negatives; full-state preservation and no data
+callbacks; missing SSE state and STOP/zero-budget atomicity; and immediate
+fetch truncation/page crossing with successful cross-boundary fetch. The
+handwritten XMM9 fixture exercises the interpreter with JIT denied. Native
+admission is denied before mapping/process setup; its Linux guard is compile
+only on Darwin. Other shifts, memory/MMX, REX.R/X/W, extra prefixes, VEX/EVEX,
+feature gates, guest exception delivery and physical execution are excluded.
+
+S2-35.43 implementation check (2026-10-27): `cargo test -p od-isa psrad
+--offline` passed (5 focused tests), and `cargo test -p od-runner --test
+fixture_v2 psrad --offline` passed (1 fixture test). `cargo fmt --all --
+--check`, `cargo check --workspace --all-targets --offline`, Linux-target
+`od-x86-runner` test compilation, `git diff --check`, and `graphify update .`
+passed. The Linux-only native-denial guard is compile-checked, not executed on
+this Darwin host. Independent `gpt-6.1-sol` medium review found no remaining
+findings and independently reran the PSRAD interpreter and fixture tests.
+Physical SSE/SSE2 execution is not claimed. S2-34, S2-35, global
+`S2-35 → S2-34`, and combined Mac mini/SSH acceptance remain open.
+
+
 #### S2-35.33 — local-only bounded register `PACKUSWB`
 
 The bounded profile `s2-long-packuswb-reg-v1` admits legacy

@@ -1297,6 +1297,7 @@ fn step_tracked_with_stop(
         | Operation::PsrldImmediateRegister { .. }
         | Operation::PsrlwImmediateRegister { .. }
         | Operation::PsrawImmediateRegister { .. }
+        | Operation::PsradImmediateRegister { .. }
         | Operation::PsubwRegister { .. }
         | Operation::PadduswRegister { .. }
         | Operation::PsubuswRegister { .. }
@@ -3270,6 +3271,29 @@ fn step_tracked_with_stop(
                 .sse
                 .as_mut()
                 .expect("PSRLD state was prevalidated")
+                .xmm[usize::from(destination)] = shifted;
+        }
+        Operation::PsradImmediateRegister { destination, count } => {
+            let original = state
+                .sse
+                .as_ref()
+                .expect("PSRAD state was prevalidated")
+                .xmm[usize::from(destination)];
+            let mut shifted = [0; 16];
+            for lane in 0..4 {
+                let start = lane * 4;
+                let value = i32::from_le_bytes(original[start..start + 4].try_into().unwrap());
+                let result = if count >= 32 {
+                    if value < 0 { -1i32 } else { 0i32 }
+                } else {
+                    value >> count
+                };
+                shifted[start..start + 4].copy_from_slice(&result.to_le_bytes());
+            }
+            state
+                .sse
+                .as_mut()
+                .expect("PSRAD state was prevalidated")
                 .xmm[usize::from(destination)] = shifted;
         }
         Operation::PsrlwImmediateRegister { destination, count } => {
@@ -69667,6 +69691,182 @@ mod tests {
         assert_eq!(&result[8..12], &0x0000_8000u32.to_le_bytes());
         assert_eq!(&result[12..16], &0u32.to_le_bytes());
         assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn psrad_all_unsigned_counts_cover_every_xmm_against_floor_division_oracle() {
+        let boundaries = [
+            i32::MIN,
+            i32::MIN + 1,
+            -65_537,
+            -32_769,
+            -3,
+            -2,
+            -1,
+            0,
+            1,
+            2,
+            3,
+            32_767,
+            32_768,
+            65_535,
+            i32::MAX - 1,
+            i32::MAX,
+        ];
+        let mut seed = 0x6d2b_79f5u32;
+        for destination in 0..16u8 {
+            for count in 0..=u8::MAX {
+                let mut values = [0i32; 4];
+                for (lane, value) in values.iter_mut().enumerate() {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    *value = if (usize::from(count) + usize::from(destination) + lane) % 2 == 0 {
+                        boundaries[(usize::from(count) * 7
+                            + usize::from(destination) * 3
+                            + lane * 5)
+                            % boundaries.len()]
+                    } else {
+                        seed as i32
+                    };
+                }
+                let mut code = vec![0x66];
+                if destination >= 8 {
+                    code.push(0x41);
+                }
+                code.extend([0x0f, 0x72, 0xe0 | (destination & 7), count]);
+                let mut memory = Memory::at(&code, 0x1000);
+                let mut state = LongModeState::default();
+                state.rip = 0x1000;
+                state.rflags = 0x8d7 | crate::DF;
+                state.x87 = Some(X87State::fixture_seed());
+                let mut xmm = [0; 16];
+                for (lane, value) in values.into_iter().enumerate() {
+                    xmm[lane * 4..lane * 4 + 4].copy_from_slice(&value.to_le_bytes());
+                }
+                let mut xmm_state = [[0x5a; 16]; 16];
+                xmm_state[usize::from(destination)] = xmm;
+                state.sse = Some(SseState {
+                    xmm: xmm_state,
+                    mxcsr: 0x1f80,
+                });
+                let before = state.clone();
+                let expected: [u8; 16] = std::array::from_fn(|index| {
+                    let lane = index / 4;
+                    let value = i32::from_le_bytes(xmm[lane * 4..lane * 4 + 4].try_into().unwrap());
+                    let result = if count >= 32 {
+                        if value < 0 { -1 } else { 0 }
+                    } else {
+                        let divisor = 1i64 << count;
+                        (i64::from(value).div_euclid(divisor)) as i32
+                    };
+                    result.to_le_bytes()[index % 4]
+                });
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                    StepOutcome::Advanced
+                );
+                let mut unchanged = before;
+                unchanged.rip += code.len() as u64;
+                unchanged.sse.as_mut().unwrap().xmm[usize::from(destination)] = expected;
+                assert_eq!(state, unchanged, "dest={destination} count={count}");
+                assert!(memory.accesses.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn psrad_walking_bits_and_signed_sentinels_match_floor_division_oracle() {
+        let oracle = |value: i32, count: u8| {
+            if count >= 32 {
+                if value < 0 { -1 } else { 0 }
+            } else {
+                (i64::from(value).div_euclid(1i64 << count)) as i32
+            }
+        };
+        assert_eq!(oracle(i32::MIN, 1), 0xc000_0000u32 as i32);
+        assert_eq!(oracle(-1, 1), -1);
+        assert_eq!(oracle(-3, 1), -2);
+        assert_eq!(oracle(i32::MAX, 1), 0x3fff_ffff);
+        assert_eq!(oracle(0x0000_8000, 1), 0x0000_4000);
+        for destination in 0..16u8 {
+            for count in 0..32u8 {
+                for bit in 0..32u32 {
+                    for walking_lane in 0..4 {
+                        let mut code = vec![0x66];
+                        if destination >= 8 {
+                            code.push(0x41);
+                        }
+                        code.extend([0x0f, 0x72, 0xe0 | (destination & 7), count]);
+                        let mut memory = Memory::at(&code, 0x1000);
+                        let mut state = LongModeState::default();
+                        state.rip = 0x1000;
+                        state.x87 = Some(X87State::fixture_seed());
+                        state.sse = Some(SseState {
+                            xmm: [[0xa5; 16]; 16],
+                            mxcsr: 0x1f80,
+                        });
+                        let mut values = [0x8000_0000u32, 0x7fff_ffff, 0xffff_ffff, 0x0000_8000];
+                        values[walking_lane] = 1 << bit;
+                        for (lane, value) in values.into_iter().enumerate() {
+                            state.sse.as_mut().unwrap().xmm[usize::from(destination)]
+                                [lane * 4..lane * 4 + 4]
+                                .copy_from_slice(&(value as i32).to_le_bytes());
+                        }
+                        assert_eq!(
+                            step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                            StepOutcome::Advanced
+                        );
+                        for (lane, value) in values.into_iter().enumerate() {
+                            assert_eq!(
+                                &state.sse.as_ref().unwrap().xmm[usize::from(destination)]
+                                    [lane * 4..lane * 4 + 4],
+                                &oracle(value as i32, count).to_le_bytes(),
+                                "dest={destination} count={count} bit={bit} walk_lane={walking_lane} lane={lane}"
+                            );
+                        }
+                        assert!(memory.accesses.is_empty());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn psrad_missing_sse_state_and_stop_or_zero_budget_are_atomic() {
+        let code = [0x66, 0x0f, 0x72, 0xe0, 1];
+        let mut memory = Memory::at(&code, 0x1000);
+        let mut missing = LongModeState::default();
+        missing.rip = 0x1000;
+        let before = missing.clone();
+        assert_eq!(
+            step(&mut missing, &mut memory, AccessContext::default()).unwrap(),
+            StepOutcome::Unsupported { opcode: 0x72 }
+        );
+        assert_eq!(missing, before);
+        for (budget, stop_rip) in [(1, Some(0x1000)), (0, None)] {
+            let mut memory = Memory::at(&code, 0x1000);
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.sse = Some(SseState {
+                xmm: [[0xa5; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(state, before);
+            assert_eq!(result.instructions_executed, 0);
+            assert!(memory.accesses.is_empty());
+        }
     }
 
     #[test]
