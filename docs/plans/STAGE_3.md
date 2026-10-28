@@ -210,6 +210,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20bl | Address64 indexed SIB qword MOV с RSI/RDI base и displacement | Только `48 8B/89 /r sib disp8|disp32`, ModRM `mod=01/10,r/m=100`, SIB base RSI/RDI, index RAX..RBX, scale 1/2/4/8, data RAX..RBP; длины 5/8 |
 | [partial] | S3-20bm | Address32 indexed SIB qword MOV с RSI/RDI base | Только `67 48 8B/89 /r sib [disp8|disp32]`, ModRM `mod=00/01/10,r/m=100`, SIB base RSI/RDI, index RAX..RBX, scale 1/2/4/8, data RAX..RBP; Dword EA/Qword data; длины 5/6/9 |
 | [partial] | S3-20bn | Address64 indexed SIB qword MOV с RSI/RDI base и RBP index | Только `48 8B/89 /r sib [disp8|disp32]`, ModRM `mod=00/01/10,r/m=100`, SIB base RSI/RDI, index RBP, scale 1/2/4/8, data RAX..RBP; Qword EA/data; длины 4/5/8 |
+| [partial] | S3-20bp | Address64 no-displacement SIB qword MOV with RSI/RDI index | Только `48 8B/89 /r sib`, ModRM `mod=00/rm=100`, base RAX..RBX, index RSI/RDI, scale 1/2/4/8, data RAX..RBP; длина 4 |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -1803,6 +1804,12 @@ JIT descriptor и host direct V2/shared IR/interpreter должны провер
 Поддержать singleton `67 48 8B/89 /r sib [disp8|disp32]`: ModRM `mod=00/01/10,r/m=100`, SIB base RSI/RDI, index ровно RBP, scale 1/2/4/8, data RAX..RBP, длины 5/6/9. Effective address берётся только из decoder-owned `MemoryOperand::access_address_48`: `(low32(old base) + low32(old RBP) * scale + signed displacement) mod 2^32`, затем zero-extension; перенос qword остаётся 64-битным. RSI/RDI base сохраняются; индекс RBP читается из pre-state и меняется только если он является load destination после успешного доступа.
 
 Проверки должны покрывать load/store × обе базы × все data registers/scales × mod00 и signed disp8/disp32 edges, direct V2/shared IR/interpreter parity, точные адрес/count/retirement и pre-state `data=RBP`. Добавить high-half truncation, contiguous qword callback на `0xffff_fffc`, architectural/backend no-commit, STOP после успешного store, pre-entry STOP/zero-budget, continuation по actual RIP между 5/6/9-byte forms без replay, ninth disp32 byte sensitivity, partial windows и invalid neighbors. Отчёт: [S3-20bo report](../reports/STAGE_3_S3-20bo_2026-10-28.md). Production owner/MMU, Stage 2/ISA, Mini и performance остаются вне среза.
+
+#### S3-20bp. Address64 no-displacement SIB с RSI/RDI index
+
+Поддержать только singleton `48 8B/89 /r sib`: ModRM `mod=00/rm=100`, SIB base RAX..RBX, index ровно RSI или RDI, scale 1/2/4/8, data RAX..RBP, длина 4. EA вычисляется только decoder-owned `MemoryOperand::access_address_48`: старые полные значения base + index×scale с wrapping u64. `data=base` использует pre-state base для EA и store payload; load в base меняет его только после успешного read. RSI/RDI остаются address-only indices и не изменяются; общая whitelist индексов и data-регистров не расширяется.
+
+Проверить load/store × четыре low bases × RSI/RDI × все scales × шесть data regs через direct V2/shared IR/interpreter parity, включая полный CPU/RAM, независимый EA oracle, callback address/count и retirement. Добавить точную #GP проверку canonical start/noncanonical end, отдельный AddressOverflow без callback, architectural/backend fault без commit, successful store+STOP, entry STOP/zero budget, actual-RIP continuation singleton→NOP→pair без повторных эффектов и partial/invalid neighbors. Отчёт: [S3-20bp report](../reports/STAGE_3_S3-20bp_2026-10-28.md). Production owner/MMU, Stage 2/ISA, Mini и performance остаются вне среза.
 
 ### S3-21. Подтвердить memory slice на физическом x86
 

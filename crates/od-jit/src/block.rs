@@ -725,6 +725,12 @@ fn build_block_with_profile(
                         decoded.length,
                         0x89,
                     )
+                    || exact_qword_low_base_rsi_rdi_index_sib_memory_bytes(
+                        code,
+                        guest_rip,
+                        decoded.length,
+                        0x89,
+                    )
                     || exact_qword_address32_rbp_index_sib_memory_bytes(
                         code,
                         guest_rip,
@@ -815,6 +821,12 @@ fn build_block_with_profile(
                         0x8b,
                     )
                     || exact_qword_rbp_base_rbp_index_sib_memory_bytes(
+                        code,
+                        guest_rip,
+                        decoded.length,
+                        0x8b,
+                    )
+                    || exact_qword_low_base_rsi_rdi_index_sib_memory_bytes(
                         code,
                         guest_rip,
                         decoded.length,
@@ -1569,6 +1581,23 @@ fn is_rsi_rdi_base_rbp_index_qword_sib_data_operand(
         && displacement_valid
 }
 
+fn is_low_base_rsi_rdi_index_qword_sib_data_operand(
+    instruction: Instruction,
+    operand: od_isa::long_decode::MemoryOperand,
+) -> bool {
+    instruction.length == 4
+        && instruction.address_size == OperandSize::Qword
+        && operand.address_size == OperandSize::Qword
+        && operand.size == OperandSize::Qword
+        && matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
+        && matches!(
+            operand.index,
+            Some(od_isa::Register::Rsi | od_isa::Register::Rdi)
+        )
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && operand.displacement == 0
+}
+
 fn is_rsp_base_rbp_index_qword_sib_data_operand(
     instruction: Instruction,
     operand: od_isa::long_decode::MemoryOperand,
@@ -1899,6 +1928,9 @@ fn is_rsp_memory_data_operand(
     if is_rsi_rdi_base_rbp_index_qword_sib_data_operand(instruction, operand) {
         return true;
     }
+    if is_low_base_rsi_rdi_index_qword_sib_data_operand(instruction, operand) {
+        return true;
+    }
     if is_rsp_base_rbp_index_qword_sib_data_operand(instruction, operand) {
         return true;
     }
@@ -2028,6 +2060,9 @@ fn is_rbp_memory_data_operand(
         return true;
     }
     if is_rsi_rdi_base_rbp_index_qword_sib_data_operand(instruction, operand) {
+        return true;
+    }
+    if is_low_base_rsi_rdi_index_qword_sib_data_operand(instruction, operand) {
         return true;
     }
     if is_rsp_base_rbp_index_qword_sib_data_operand(instruction, operand) {
@@ -2373,6 +2408,8 @@ fn is_checked_qword_memory_address(
                 && indexed_displacement_valid;
             let rsi_rdi_base_rbp_indexed_profile =
                 is_rsi_rdi_base_rbp_index_qword_sib_data_operand(instruction, operand);
+            let low_base_rsi_rdi_indexed_profile =
+                is_low_base_rsi_rdi_index_qword_sib_data_operand(instruction, operand);
             let rsp_base_rbp_indexed_profile = matches!(instruction.length, 4 | 5 | 8)
                 && matches!(
                     operand.base,
@@ -2390,6 +2427,7 @@ fn is_checked_qword_memory_address(
             let indexed_form = (operand.index.is_some_and(|index| (index as u8) < 4)
                 || rbp_indexed_profile
                 || rsi_rdi_base_rbp_indexed_profile
+                || low_base_rsi_rdi_indexed_profile
                 || rsp_base_rbp_indexed_profile
                 || rbp_base_rbp_indexed_profile)
                 && indexed_displacement_valid
@@ -2437,6 +2475,7 @@ fn is_checked_qword_memory_address(
                     || rsi_rdi_direct
                     || rsi_rdi_indexed_profile
                     || rsi_rdi_base_rbp_indexed_profile
+                    || low_base_rsi_rdi_indexed_profile
                     || rip_relative
                     || absolute_sib_disp32
                     || indexed_no_base_sib_disp32
@@ -3048,6 +3087,36 @@ pub(crate) fn exact_qword_address32_rsi_rdi_base_rbp_index_sib_memory_bytes(
         && (bytes[3] >> 3) & 7 <= 5
         && matches!(bytes[4] & 7, 6 | 7)
         && (bytes[4] >> 3) & 7 == 5
+}
+
+pub(crate) fn exact_qword_low_base_rsi_rdi_index_sib_memory_bytes(
+    code: CodeView<'_>,
+    guest_rip: u64,
+    length: u8,
+    opcode: u8,
+) -> bool {
+    if length != 4 {
+        return false;
+    }
+    let Some(offset) = guest_rip
+        .checked_sub(code.base_rip)
+        .and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    let Some(bytes) = code
+        .bytes
+        .get(offset..offset.saturating_add(usize::from(length)))
+    else {
+        return false;
+    };
+    bytes[0] == 0x48
+        && bytes[1] == opcode
+        && bytes[2] >> 6 == 0
+        && bytes[2] & 7 == 4
+        && (bytes[2] >> 3) & 7 <= 5
+        && bytes[3] & 7 < 4
+        && matches!((bytes[3] >> 3) & 7, 6 | 7)
 }
 
 pub(crate) fn exact_qword_address32_rsp_base_rbp_index_sib_memory_bytes(
