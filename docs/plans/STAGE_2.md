@@ -475,6 +475,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36s | Same-format raw binary32/binary64 division results for finite values, zeros, infinities and NaNs; local invalid-operation and divide-by-zero outcomes | S2-36n, S2-36q, S2-36r; independent review |
 | [x] | S2-36t | Same-format raw binary32/binary64 comparison relation with quiet/signaling NaN modes and local invalid outcome | S2-36l, S2-36a; independent review |
 | [x] | S2-36u | Exact raw binary32-to-binary64 widening with local SNaN invalid outcome | S2-36a, S2-36q; independent review |
+| [x] | S2-36v | Raw binary64-to-binary32 narrowing with explicit rounding mode and local diagnostics | S2-36a, S2-36m; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -5589,6 +5590,28 @@ check, diff check и Graphify update. Graphify успешно завершилс
 warnings для `include/open_desktop/host_abi.h` и files without symbols.
 Независимые Sol medium code/docs reviews завершились без замечаний; hardware
 acceptance отложена до общего финального substage.
+
+#### S2-36v — raw binary64-to-binary32 narrowing
+
+Implement `Binary32::narrow_from_binary64(source, mode)` as a value-only
+conversion returning `BinaryArithmeticResult<Binary32>`. Preserve signed zero
+and signed infinity. Convert every finite nonzero source from its exact
+normalized binary64 significand through the binary32 target-precision/range
+round-and-pack path exactly once; report inexact, overflow, and
+tininess-after-precision-rounding diagnostics from that final conversion for
+all four `RationalRoundingMode` values. Do not route through host `f32`/`f64`,
+binary32 intermediate arithmetic, MXCSR, DAZ/FTZ, instruction dispatch, or
+architectural exception delivery.
+
+For NaNs, truncate the low 29 binary64 fraction bits and retain sign. A source
+SNaN must set the binary32 quiet bit and return local `invalid_operation=true`;
+a QNaN returns false. NaN conversion has no rounding diagnostics. Provenance:
+Intel SDM Rev. 093 Vol. 1 Table D-12 for NaN conversion and Vol. 2A
+`CVTSD2SS` §3-234–235 for rounding control. Literal tests must include signed
+zeros/infinities, payload truncation boundaries, exact finite encodings,
+positive and negative tie cases, subnormal/tininess boundaries, and signed
+overflow under all rounding modes. Keep full S2-36 and hardware/Mac mini
+acceptance open; hardware execution is deferred to the combined final substage.
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 

@@ -929,6 +929,46 @@ sign, exponent, payload extension и quieting SNaN; CVTSS2SD Vol. 2A §3-240
 для raw conversion contract, не instruction admission или hardware evidence.
 См. [план S2-36u](../plans/STAGE_2.md#s2-36u--raw-binary32-to-binary64-widening).
 
+## S2-36v — raw binary64-to-binary32 narrowing
+
+`Binary32::narrow_from_binary64(source, mode)` returns
+`BinaryArithmeticResult<Binary32>` and accepts an explicit
+`RationalRoundingMode`. Signed zero and signed infinity retain their signs.
+Finite nonzero values are normalized exactly and rounded once directly through
+the existing binary32 precision/range round-and-pack helper. Its final
+conversion diagnostics report inexactness, overflow, and tininess after
+precision rounding. No host floating point, intermediate binary32 operation,
+CPU/MXCSR update, DAZ/FTZ, instruction dispatch, or architectural exception
+delivery is modeled.
+
+NaNs retain sign and the most significant 23 source fraction bits. QNaN has no
+invalid outcome; SNaN sets the destination quiet bit and reports local
+`invalid_operation=true`. All NaN rounding diagnostics are false. Literal
+tests include signed zeros/infinities, payload truncation boundaries (including
+SNaNs whose retained payload becomes zero), exact finite values, ties for both
+signs under all four modes, half-minimum-subnormal/tininess behavior, and
+positive/negative overflow results under every mode. The matrix also covers
+binary64 minimum and maximum subnormal inputs and the binary32 largest-subnormal
+/ minimum-normal midpoint for both signs, including tininess-after-precision
+diagnostics.
+
+Авторские проверки прошли: `cargo test -p od-isa --offline binary_float::tests`
+(70/70), `cargo test -p od-isa --offline x87::tests` (47/47),
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`git diff --check` и `graphify update .`. Graphify обновил граф с 7922 nodes и
+15919 edges; вывел уже известное syntax warning для
+`include/open_desktop/host_abi.h`, предупреждения о файлах без symbols и
+уведомление о необходимости обновить названия communities. Независимые Sol
+medium code/docs reviews завершились без замечаний. Hardware/Mac mini проверка
+отложена до общего финального substage; S2-36 остаётся открытой.
+
+Provenance: Intel SDM Rev. 093 Vol. 1 Table D-12 задаёт truncation low 29
+binary64 fraction bits и quieting SNaN; Vol. 2A `CVTSD2SS` §3-234–235 задаёт
+rounding control для double-to-single conversion. См. [Vol. 1](https://cdrdv2.intel.com/v1/dl/getContent/929351)
+и [Vol. 2A](https://cdrdv2.intel.com/v1/dl/getContent/671199). Они обосновывают
+raw conversion contract, не admission инструкции или hardware evidence. См.
+[план S2-36v](../plans/STAGE_2.md#s2-36v--raw-binary64-to-binary32-narrowing).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.

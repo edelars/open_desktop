@@ -326,6 +326,63 @@ impl Binary32 {
         }
     }
 
+    /// Narrows a raw binary64 encoding to binary32 using the supplied mode.
+    ///
+    /// Finite values are rounded once from their exact normalized binary64
+    /// significand directly to binary32 precision and range. Signed zero and
+    /// infinity preserve their sign. NaN payload bits are truncated to the
+    /// most significant 23 source fraction bits; signaling NaNs are quieted
+    /// and report a local invalid-operation outcome. This is a value-only
+    /// conversion: it does not use host floating point, update CPU/MXCSR state,
+    /// or model instruction exception delivery, DAZ, or FTZ.
+    pub fn narrow_from_binary64(
+        source: Binary64,
+        mode: RationalRoundingMode,
+    ) -> BinaryArithmeticResult<Self> {
+        let sign = (source.sign() as u32) << 31;
+        let class = source.class();
+        match class {
+            BinaryClass::Zero => BinaryArithmeticResult::exact(Self::from_bits(sign), false),
+            BinaryClass::Infinity => {
+                BinaryArithmeticResult::exact(Self::from_bits(sign | 0x7f80_0000), false)
+            }
+            BinaryClass::QuietNaN | BinaryClass::SignalingNaN => {
+                let signaling = class == BinaryClass::SignalingNaN;
+                let mut fraction = (source.fraction() >> 29) as u32;
+                if signaling {
+                    fraction |= Self::QUIET_BIT;
+                }
+                BinaryArithmeticResult::exact(
+                    Self::from_bits(sign | 0x7f80_0000 | fraction),
+                    signaling,
+                )
+            }
+            BinaryClass::Subnormal | BinaryClass::Normal => {
+                let finite = source
+                    .normalize_finite()
+                    .expect("finite binary64 source has an exact normalized form");
+                let rounded = Self::round_pack_quotient(
+                    finite.sign(),
+                    finite.exponent(),
+                    finite.significand(),
+                    0,
+                    1,
+                    mode,
+                )
+                .expect("normalized binary64 source is valid for binary32 rounding");
+                BinaryArithmeticResult::new(
+                    BinaryRoundingResult::new(
+                        *rounded.value(),
+                        rounded.inexact(),
+                        rounded.overflow(),
+                        rounded.tiny_after_precision_rounding(),
+                    ),
+                    false,
+                )
+            }
+        }
+    }
+
     /// Compares same-format raw binary32 operands without changing their bits.
     ///
     /// Either NaN produces `Unordered`. Quiet mode reports invalid only for a
@@ -8110,6 +8167,210 @@ mod tests {
             assert!(!result.overflow());
             assert!(!result.tiny_after_precision_rounding());
             assert_eq!(source.to_bits(), source_before);
+        }
+    }
+
+    #[test]
+    fn binary64_to_binary32_narrowing_preserves_special_values_and_nan_payload_rules() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        for (source_bits, expected_bits) in [
+            (0x0000_0000_0000_0000, 0x0000_0000),
+            (0x8000_0000_0000_0000, 0x8000_0000),
+            (0x7ff0_0000_0000_0000, 0x7f80_0000),
+            (0xfff0_0000_0000_0000, 0xff80_0000),
+            (0x7ff8_0000_0000_0001, 0x7fc0_0000),
+            (0xfff8_0000_2000_0001, 0xffc0_0001),
+            (0x7ff0_0000_0000_0001, 0x7fc0_0000),
+            (0xfff0_0000_1fff_ffff, 0xffc0_0000),
+            (0x7ff0_0000_2000_0000, 0x7fc0_0001),
+        ] {
+            for mode in [Nearest, Zero, Up, Down] {
+                let source = Binary64::from_bits(source_bits);
+                let result = Binary32::narrow_from_binary64(source, mode);
+                assert_eq!(
+                    result.value().to_bits(),
+                    expected_bits,
+                    "{source_bits:#018x}"
+                );
+                let signaling = source.class() == BinaryClass::SignalingNaN;
+                assert_eq!(result.invalid_operation(), signaling, "{source_bits:#018x}");
+                assert!(!result.inexact(), "{source_bits:#018x}");
+                assert!(!result.overflow(), "{source_bits:#018x}");
+                assert!(
+                    !result.tiny_after_precision_rounding(),
+                    "{source_bits:#018x}"
+                );
+                assert_eq!(source.to_bits(), source_bits);
+            }
+        }
+    }
+
+    #[test]
+    fn binary64_to_binary32_narrowing_rounds_exact_finite_inputs_once() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        for (source_bits, expected_bits) in [
+            (0x3ff0_0000_0000_0000, 0x3f80_0000),
+            (0xbff0_0000_0000_0000, 0xbf80_0000),
+            (0x3ff8_0000_0000_0000, 0x3fc0_0000),
+            (0x380f_ffff_c000_0000, 0x007f_ffff),
+            (0x3810_0000_0000_0000, 0x0080_0000),
+            (0x36a0_0000_0000_0000, 0x0000_0001),
+            (0x47ef_ffff_e000_0000, 0x7f7f_ffff),
+        ] {
+            let source = Binary64::from_bits(source_bits);
+            let result = Binary32::narrow_from_binary64(source, Nearest);
+            assert_eq!(
+                result.value().to_bits(),
+                expected_bits,
+                "{source_bits:#018x}"
+            );
+            assert!(!result.inexact(), "{source_bits:#018x}");
+            assert!(!result.overflow(), "{source_bits:#018x}");
+            assert_eq!(
+                result.tiny_after_precision_rounding(),
+                expected_bits != 0x0080_0000 && expected_bits & 0x7f80_0000 == 0,
+                "{source_bits:#018x}"
+            );
+            assert!(!result.invalid_operation());
+        }
+
+        let positive_tie = Binary64::from_bits(0x3ff0_0000_1000_0000);
+        let negative_tie = Binary64::from_bits(0xbff0_0000_1000_0000);
+        for (source, mode, expected) in [
+            (positive_tie, Nearest, 0x3f80_0000),
+            (positive_tie, Zero, 0x3f80_0000),
+            (positive_tie, Up, 0x3f80_0001),
+            (positive_tie, Down, 0x3f80_0000),
+            (negative_tie, Nearest, 0xbf80_0000),
+            (negative_tie, Zero, 0xbf80_0000),
+            (negative_tie, Up, 0xbf80_0000),
+            (negative_tie, Down, 0xbf80_0001),
+            (
+                Binary64::from_bits(0x3ff0_0000_1000_0001),
+                Nearest,
+                0x3f80_0001,
+            ),
+        ] {
+            let result = Binary32::narrow_from_binary64(source, mode);
+            assert_eq!(result.value().to_bits(), expected);
+            assert!(result.inexact());
+            assert!(!result.overflow());
+            assert!(!result.tiny_after_precision_rounding());
+            assert!(!result.invalid_operation());
+        }
+
+        let positive_normal_boundary_tie = Binary64::from_bits(0x380f_ffff_e000_0000);
+        let negative_normal_boundary_tie = Binary64::from_bits(0xb80f_ffff_e000_0000);
+        for (source, mode, expected) in [
+            (positive_normal_boundary_tie, Nearest, 0x0080_0000),
+            (positive_normal_boundary_tie, Zero, 0x007f_ffff),
+            (positive_normal_boundary_tie, Up, 0x0080_0000),
+            (positive_normal_boundary_tie, Down, 0x007f_ffff),
+            (negative_normal_boundary_tie, Nearest, 0x8080_0000),
+            (negative_normal_boundary_tie, Zero, 0x807f_ffff),
+            (negative_normal_boundary_tie, Up, 0x807f_ffff),
+            (negative_normal_boundary_tie, Down, 0x8080_0000),
+        ] {
+            let result = Binary32::narrow_from_binary64(source, mode);
+            assert_eq!(result.value().to_bits(), expected);
+            assert!(result.inexact());
+            assert!(!result.overflow());
+            assert!(result.tiny_after_precision_rounding());
+            assert!(!result.invalid_operation());
+        }
+    }
+
+    #[test]
+    fn binary64_to_binary32_narrowing_reports_tiny_and_overflow_diagnostics() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let half_min_subnormal = Binary64::from_bits(0x3690_0000_0000_0000);
+        for (mode, expected) in [
+            (Nearest, 0x0000_0000),
+            (Zero, 0x0000_0000),
+            (Up, 0x0000_0001),
+            (Down, 0x0000_0000),
+        ] {
+            let result = Binary32::narrow_from_binary64(half_min_subnormal, mode);
+            assert_eq!(result.value().to_bits(), expected);
+            assert!(result.inexact());
+            assert!(!result.overflow());
+            assert!(result.tiny_after_precision_rounding());
+            assert!(!result.invalid_operation());
+        }
+
+        for (source_bits, expected_toward_positive, expected_toward_negative) in [
+            (0x0000_0000_0000_0001, 0x0000_0001, 0x0000_0000),
+            (0x000f_ffff_ffff_ffff, 0x0000_0001, 0x0000_0000),
+            (0x8000_0000_0000_0001, 0x8000_0000, 0x8000_0001),
+            (0x800f_ffff_ffff_ffff, 0x8000_0000, 0x8000_0001),
+        ] {
+            let source = Binary64::from_bits(source_bits);
+            for (mode, expected) in [
+                (Nearest, u32::from(source.sign()) << 31),
+                (Zero, u32::from(source.sign()) << 31),
+                (Up, expected_toward_positive),
+                (Down, expected_toward_negative),
+            ] {
+                let result = Binary32::narrow_from_binary64(source, mode);
+                assert_eq!(result.value().to_bits(), expected);
+                assert!(result.inexact());
+                assert!(!result.overflow());
+                assert!(result.tiny_after_precision_rounding());
+            }
+        }
+
+        let negative_half_min_subnormal = Binary64::from_bits(0xb690_0000_0000_0000);
+        for (mode, expected) in [
+            (Nearest, 0x8000_0000),
+            (Zero, 0x8000_0000),
+            (Up, 0x8000_0000),
+            (Down, 0x8000_0001),
+        ] {
+            let result = Binary32::narrow_from_binary64(negative_half_min_subnormal, mode);
+            assert_eq!(result.value().to_bits(), expected);
+            assert!(result.inexact());
+            assert!(result.tiny_after_precision_rounding());
+        }
+
+        let positive_overflow = Binary64::from_bits(0x47f0_0000_0000_0000);
+        for (mode, expected) in [
+            (Nearest, 0x7f80_0000),
+            (Zero, 0x7f7f_ffff),
+            (Up, 0x7f80_0000),
+            (Down, 0x7f7f_ffff),
+        ] {
+            let result = Binary32::narrow_from_binary64(positive_overflow, mode);
+            assert_eq!(result.value().to_bits(), expected);
+            assert!(result.inexact());
+            assert!(result.overflow());
+            assert!(!result.tiny_after_precision_rounding());
+            assert!(!result.invalid_operation());
+        }
+
+        let negative_overflow = Binary64::from_bits(0xc7f0_0000_0000_0000);
+        for (mode, expected) in [
+            (Nearest, 0xff80_0000),
+            (Zero, 0xff7f_ffff),
+            (Up, 0xff7f_ffff),
+            (Down, 0xff80_0000),
+        ] {
+            let result = Binary32::narrow_from_binary64(negative_overflow, mode);
+            assert_eq!(result.value().to_bits(), expected);
+            assert!(result.inexact());
+            assert!(result.overflow());
+            assert!(!result.tiny_after_precision_rounding());
         }
     }
 }

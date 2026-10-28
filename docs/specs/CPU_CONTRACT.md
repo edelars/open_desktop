@@ -10688,3 +10688,31 @@ predicates, lane/EFLAGS effects, DAZ/MXCSR, x87, and instruction semantics
 remain deferred. See the
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36l--finite-binary-comparison)
 and [plan](../plans/STAGE_2.md#s2-36l--finite-binary-comparison-helper).
+
+## Local S2-36v: raw binary64-to-binary32 narrowing
+
+`Binary32::narrow_from_binary64(source, mode) -> BinaryArithmeticResult<Binary32>`
+converts one raw binary64 value using an explicit `RationalRoundingMode`.
+Signed zero and signed infinity are preserved. A finite nonzero value is
+normalized exactly and sent directly through the existing binary32 target
+precision/range round-and-pack path once; the result reports that final
+conversion's `inexact`, `overflow`, and `tiny_after_precision_rounding`
+diagnostics. No host floating point, intermediate binary32 arithmetic, CPU or
+MXCSR state, DAZ/FTZ, instruction dispatch, or architectural exception
+delivery is involved.
+
+NaN sign is preserved and the source fraction is truncated by dropping its
+lowest 29 bits. A signaling NaN is quieted by setting the binary32 quiet bit
+and reports local `invalid_operation=true`; a quiet NaN reports false. NaNs
+have no rounding diagnostics. The source encoding is not mutated.
+
+Literal tests cover signed zeros/infinities, QNaN/SNaN truncation boundaries,
+exact finite encodings, both signs of ties under all rounding modes,
+subnormal/tiny-after-precision-rounding boundaries, and positive and negative
+overflow modes. Provenance is Intel SDM Rev. 093 Vol. 1 Table D-12 for NaN
+conversion and Vol. 2A `CVTSD2SS` §3-234–235 for rounding control
+([Vol. 1](https://cdrdv2.intel.com/v1/dl/getContent/929351),
+[Vol. 2A](https://cdrdv2.intel.com/v1/dl/getContent/671199)). These sources
+support this local conversion contract, not instruction admission or hardware
+validation. See the [Stage 2 plan](../plans/STAGE_2.md#s2-36v--raw-binary64-to-binary32-narrowing)
+and [report](../reports/STAGE_2_REPORT.md#s2-36v--raw-binary64-to-binary32-narrowing).
