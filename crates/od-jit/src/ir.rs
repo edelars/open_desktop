@@ -912,6 +912,7 @@ fn is_checked_memory_address(
                 && operand.scale == 1
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp))
                 && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
+            || is_rbp_base_no_index_qword_sib_data_operand(*operand, instruction_length)
             || matches!(instruction_length, 4 | 5 | 8)
                 && operand.index.is_none()
                 && operand.scale == 1
@@ -977,6 +978,7 @@ fn is_scoped_memory_data_operand(
                 || is_rsp_base_rbp_index_qword_sib_data_operand(operand, instruction_length)
                 || is_rsp_base_rsi_rdi_index_qword_sib_data_operand(operand, instruction_length)
                 || is_rbp_base_rbp_index_qword_sib_data_operand(operand, instruction_length)
+                || is_rbp_base_no_index_qword_sib_data_operand(operand, instruction_length)
                 || is_rbp_base_rsi_rdi_index_qword_sib_data_operand(operand, instruction_length)
                 || is_low_base_rsi_rdi_index_qword_sib_data_operand(operand, instruction_length)
                 || is_low_base_no_index_qword_sib_data_operand(operand, instruction_length)
@@ -1700,6 +1702,23 @@ fn is_rbp_base_rbp_index_qword_sib_data_operand(
         && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp))
         && operand.index == Some(od_isa::Register::Rbp)
         && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && match instruction_length {
+            5 => i8::try_from(operand.displacement).is_ok(),
+            8 => i32::try_from(operand.displacement).is_ok(),
+            _ => false,
+        }
+        && operand.address_size == od_isa::OperandSize::Qword
+        && operand.size == od_isa::OperandSize::Qword
+}
+
+fn is_rbp_base_no_index_qword_sib_data_operand(
+    operand: MemoryOperand,
+    instruction_length: u64,
+) -> bool {
+    matches!(instruction_length, 5 | 8)
+        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp))
+        && operand.index.is_none()
+        && operand.scale == 1
         && match instruction_length {
             5 => i8::try_from(operand.displacement).is_ok(),
             8 => i32::try_from(operand.displacement).is_ok(),

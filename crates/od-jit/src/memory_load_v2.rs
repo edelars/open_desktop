@@ -738,6 +738,12 @@ pub fn compile_ir_memory_store_block_v2(
             bytes.len() as u8,
             0x89,
         )
+        || crate::block::exact_qword_rbp_base_no_index_sib_disp_memory_bytes(
+            code,
+            entry_rip,
+            bytes.len() as u8,
+            0x89,
+        )
         || crate::block::exact_qword_rsi_rdi_base_index_sib_memory_bytes(
             code,
             entry_rip,
@@ -1024,6 +1030,12 @@ fn checked_load_metadata_v2(
                 0x8b,
             )
             || crate::block::exact_qword_low_base_no_index_sib_memory_bytes(
+                code,
+                entry_rip,
+                decoded.length,
+                0x8b,
+            )
+            || crate::block::exact_qword_rbp_base_no_index_sib_disp_memory_bytes(
                 code,
                 entry_rip,
                 decoded.length,
@@ -2116,7 +2128,7 @@ mod tests {
             vec![0x48, 0x8b, 0x04, 0x60],       // no-index SIB with non-unit scale
             vec![0x48, 0x8b, 0x04, 0x26],       // RSI base with no index
             vec![0x48, 0x8b, 0x04, 0x27],       // RDI base with no index
-            vec![0x48, 0x8b, 0x44, 0x25, 0],    // RBP base with no index
+            vec![0x48, 0x8b, 0x74, 0x25, 0],    // RSI data is outside this profile
             vec![0x67, 0x48, 0x8b, 0x34, 0x34], // RSI data is outside this profile
             vec![0x48, 0x8b, 0x04],             // truncated SIB
         ] {
@@ -2251,11 +2263,11 @@ mod tests {
         }
 
         for source in [
-            vec![0x48, 0x8b, 0x44, 0x25, 0],          // RBP base with no index
+            vec![0x48, 0x8b, 0x74, 0x25, 0], // RSI data is outside this profile
             vec![0x48, 0x8b, 0x04, 0x65, 0, 0, 0, 0], // invalid no-index scale
-            vec![0x67, 0x48, 0x8b, 0x74, 0x34, 0],    // RSI data is outside this profile
-            vec![0x48, 0x8b, 0x44, 0x30],             // partial disp8
-            vec![0x48, 0x8b, 0x84, 0x30, 0, 0, 0],    // partial disp32
+            vec![0x67, 0x48, 0x8b, 0x74, 0x34, 0], // RSI data is outside this profile
+            vec![0x48, 0x8b, 0x44, 0x30],    // partial disp8
+            vec![0x48, 0x8b, 0x84, 0x30, 0, 0, 0], // partial disp32
         ] {
             let code = CodeView::new(0x5b00, &source).unwrap();
             assert!(
@@ -2398,7 +2410,7 @@ mod tests {
             vec![0x67, 0x48, 0x8b, 0x74, 0x36, 0], // unsupported RSI data register
             vec![0x67, 0x48, 0x8b, 0x74, 0x34, 0], // RSI data
             vec![0x67, 0x48, 0x8b, 0x04, 0x65, 0, 0, 0, 0], // no index with non-unit scale
-            vec![0x48, 0x8b, 0x44, 0x25, 0],       // address64 RBP base with no index
+            vec![0x48, 0x8b, 0x74, 0x25, 0],       // RSI data is outside this profile
         ] {
             let code = CodeView::new(0x5c00, &source).unwrap();
             assert!(
@@ -3200,8 +3212,8 @@ mod tests {
         for source in [
             vec![0x48, 0x8b, 0x44, 0x26, 0],          // RSI base with no index
             vec![0x48, 0x8b, 0x84, 0x26, 0, 0, 0, 0], // RSI base with no index
-            vec![0x48, 0x8b, 0x44, 0x25, 0],          // RBP base with no index
-            vec![0x48, 0x8b, 0x84, 0x25, 0, 0, 0, 0], // RBP base with no index
+            vec![0x48, 0x8b, 0x74, 0x25, 0],          // RSI data is outside this profile
+            vec![0x48, 0x8b, 0xb4, 0x25, 0, 0, 0, 0], // RSI data is outside this profile
             vec![0x48, 0x8b, 0x44, 0x0e],             // truncated disp8
             vec![0x48, 0x8b, 0x84, 0x0e, 0, 0, 0],    // truncated disp32
         ] {
@@ -3446,7 +3458,7 @@ mod tests {
                     assert!(result.is_err(), "partial len={partial}");
                 }
                 let mut wrong_sib = valid.clone();
-                wrong_sib[3] = 0x25; // RBP base with no index.
+                wrong_sib[3] = 0x65; // RBP base, no index, non-unit scale.
                 let mut wrong_modrm = valid.clone();
                 wrong_modrm[2] = if length == 5 { 0x74 } else { 0xb4 };
                 let mut wrong_prefix = vec![0x64];
@@ -3699,9 +3711,9 @@ mod tests {
                 let mut reordered_prefix = vec![0x48, 0x67, opcode];
                 reordered_prefix.extend_from_slice(&valid[2..]);
                 let indexed_sib = if length == 4 {
-                    vec![0x48, opcode, 0x64, 0x25, 0]
+                    vec![0x48, opcode, 0x74, 0x25, 0]
                 } else {
-                    vec![0x48, opcode, 0xa4, 0x25, 0, 0, 0, 0]
+                    vec![0x48, opcode, 0xb4, 0x25, 0, 0, 0, 0]
                 };
                 let mut segment_prefix = vec![0x64, 0x48];
                 segment_prefix.extend_from_slice(&valid[1..]);
@@ -3866,7 +3878,7 @@ mod tests {
 
             for bytes in [
                 vec![0x48, opcode, 0x64, 0x24],          // truncated displacement
-                vec![0x48, opcode, 0x64, 0x25, 0],       // RBP base with no index
+                vec![0x48, opcode, 0x74, 0x25, 0],       // RSI data is outside this profile
                 vec![0x48, opcode, 0x64, 0x64, 0],       // scale without index
                 vec![0x67, 0x48, opcode, 0x74, 0x34, 0], // unsupported RSI data register
                 vec![0x48, 0x67, opcode, 0x64, 0x24, 0], // reordered prefix
@@ -3947,7 +3959,7 @@ mod tests {
             }
 
             for source in [
-                [0x48, opcode, 0xa4, 0x25, 0, 0, 0, 0], // RBP base with no index
+                [0x48, opcode, 0xb4, 0x25, 0, 0, 0, 0], // RSI data is outside this profile
                 [0x48, opcode, 0xa4, 0x64, 0, 0, 0, 0], // scale without index
                 [0x67, 0x48, opcode, 0xa4, 0x24, 0, 0, 0],
             ] {
@@ -4033,7 +4045,7 @@ mod tests {
 
             for bytes in [
                 vec![0x48, opcode, 0x44, 0x24],    // truncated before disp8
-                vec![0x48, opcode, 0x44, 0x25, 0], // RBP base with no index
+                vec![0x48, opcode, 0x74, 0x25, 0], // RSI data is outside this profile
                 vec![0x48, opcode, 0x44, 0x64, 0], // scale != 1, no index
                 vec![0x67, 0x48, opcode, 0x74, 0x34, 0],
                 vec![0x48, 0x67, opcode, 0x44, 0x24, 0],
@@ -4135,7 +4147,7 @@ mod tests {
 
             for bytes in [
                 vec![0x48, opcode, 0x84, 0x24, 0, 0, 0], // truncated disp32
-                vec![0x48, opcode, 0x84, 0x25, 0, 0, 0, 0], // RBP base with no index
+                vec![0x48, opcode, 0xb4, 0x25, 0, 0, 0, 0], // RSI data is outside this profile
                 vec![0x48, opcode, 0x84, 0x24, 0, 0, 0, 0, 0x90], // trailing byte
                 vec![0x67, 0x48, opcode, 0xb4, 0x34, 0, 0, 0, 0], // unsupported RSI data register
                 vec![0x48, 0x67, opcode, 0x84, 0x24, 0, 0, 0, 0], // reordered prefix
@@ -4228,15 +4240,15 @@ mod tests {
             for bytes in [
                 vec![0x48, opcode, 0x44],                         // truncated before SIB
                 vec![0x48, opcode, 0x44, 0x60, 0],                // no-index with non-unit scale
-                vec![0x48, opcode, 0x44, 0x25, 0],                // RBP base with no index
+                vec![0x48, opcode, 0x74, 0x25, 0], // RSI data is outside this profile
                 vec![0x48, opcode, 0x04, 0x65, 0, 0, 0, 0], // no-base with invalid no-index scale
-                vec![0x48, opcode, 0x44, 0x18],             // missing disp8
-                vec![0x48, opcode, 0x44, 0x18, 0, 0x90],    // tail byte
-                vec![0x48, opcode, 0x84, 0x18, 0, 0, 0],    // partial disp32
+                vec![0x48, opcode, 0x44, 0x18],    // missing disp8
+                vec![0x48, opcode, 0x44, 0x18, 0, 0x90], // tail byte
+                vec![0x48, opcode, 0x84, 0x18, 0, 0, 0], // partial disp32
                 vec![0x48, opcode, 0x84, 0x18, 0, 0, 0, 0, 0x90], // tail byte
-                vec![0x4a, opcode, 0x44, 0x18, 0],          // extended index
-                vec![0x49, opcode, 0x44, 0x18, 0],          // extended base
-                vec![0x48, opcode, 0x04, 0x18, 0, 0x90],    // wrong instruction length
+                vec![0x4a, opcode, 0x44, 0x18, 0], // extended index
+                vec![0x49, opcode, 0x44, 0x18, 0], // extended base
+                vec![0x48, opcode, 0x04, 0x18, 0, 0x90], // wrong instruction length
             ] {
                 let code = CodeView::new(0x5690, &bytes).unwrap();
                 let result = match operation {
@@ -4926,7 +4938,7 @@ mod tests {
             for bytes in [
                 vec![0x48, opcode, 0x6d],          // missing displacement
                 vec![0x48, opcode, 0x75, 0],       // unsupported data register
-                vec![0x48, opcode, 0x6c, 0x25, 0], // RBP base with no index
+                vec![0x48, opcode, 0x7c, 0x25, 0], // RSI data is outside this profile
                 vec![0x67, 0x48, opcode, 0x75, 0], // unsupported data register
                 vec![0x48, opcode, 0x6d, 0, 0x90], // trailing byte
             ] {
@@ -5254,9 +5266,9 @@ mod tests {
                 vec![0x67, 0x48, opcode, 0x44, 0x18], // missing disp8 after SIB
                 vec![0x67, 0x48, opcode, 0x04, 0x18, 0], // wrong ModRM mode
                 vec![0x67, 0x48, opcode, 0x44, 0x60, 0], // no-index with non-unit scale
-                vec![0x67, 0x48, opcode, 0x44, 0x25, 0], // RBP base with no index
+                vec![0x67, 0x48, opcode, 0x74, 0x25, 0], // RSI data is outside this profile
                 vec![0x67, 0x48, opcode, 0x74, 0x34, 0], // unsupported RSI data register
-                vec![0x67, 0x48, opcode, 0x44, 0x25, 0], // no index
+                vec![0x67, 0x48, opcode, 0x44, 0x65, 0], // no-base/no-index, non-unit scale
                 vec![0x67, 0x4c, opcode, 0x44, 0x18, 0], // extended data
                 vec![0x48, 0x67, opcode, 0x44, 0x18, 0], // wrong prefix order
                 vec![0x67, 0x48, opcode, 0x44, 0x18, 0, 0x90], // trailing byte
@@ -5355,9 +5367,9 @@ mod tests {
                 vec![0x67, 0x48, opcode, 0x84, 0x18], // truncated disp32
                 vec![0x67, 0x48, opcode, 0x44, 0x18, 0, 0, 0, 0], // disp8 shape
                 vec![0x67, 0x48, opcode, 0x84, 0x60, 0, 0, 0, 0], // no-index with non-unit scale
-                vec![0x67, 0x48, opcode, 0x84, 0x25, 0, 0, 0, 0], // RBP base with no index
+                vec![0x67, 0x48, opcode, 0xb4, 0x25, 0, 0, 0, 0], // RSI data is outside this profile
                 vec![0x67, 0x48, opcode, 0xb4, 0x34, 0, 0, 0, 0], // unsupported RSI data register
-                vec![0x67, 0x48, opcode, 0x84, 0x25, 0, 0, 0, 0], // no index
+                vec![0x67, 0x48, opcode, 0x84, 0x65, 0, 0, 0, 0], // no-base/no-index, non-unit scale
                 vec![0x67, 0x4c, opcode, 0x84, 0x18, 0, 0, 0, 0], // extended data
                 vec![0x48, 0x67, opcode, 0x84, 0x18, 0, 0, 0, 0], // wrong prefix order
                 vec![0x67, 0x48, opcode, 0x84, 0x18, 0, 0, 0, 0, 0x90], // trailing byte
@@ -5630,7 +5642,7 @@ mod tests {
                 vec![0x67, 0x48, opcode, 0x24, 0x63], // no-index with non-unit scale
                 vec![0x67, 0x48, opcode, 0x34, 0x34], // unsupported RSI data register
                 vec![0x67, 0x48, opcode, 0x34, 0x34], // unsupported RSI data register
-                vec![0x67, 0x48, opcode, 0x24, 0x25], // RBP base special form
+                vec![0x67, 0x48, opcode, 0x24, 0x25], // absolute/no-base SIB special form
                 vec![0x67, 0x48, opcode, 0x74, 0x35, 0], // data RSI is outside RAX..RBP
                 vec![0x67, 0x48, opcode, 0xb4, 0x35, 0, 0, 0, 0], // data RSI is outside RAX..RBP
                 vec![0x67, 0x48, opcode, 0x64, 0x08], // missing disp8
@@ -6254,7 +6266,7 @@ mod tests {
         for opcode in [0x8b, 0x89] {
             for bytes in [
                 vec![0x67, 0x48, opcode, 0x34, 0x36, 0, 0, 0, 0], // unsupported RSI data register
-                vec![0x67, 0x48, opcode, 0x44, 0x25, 0],          // no-index
+                vec![0x67, 0x48, opcode, 0x74, 0x25, 0],          // unsupported RSI data register
                 vec![0x67, 0x48, opcode, 0x74, 0x36, 0],          // unsupported RSI data register
                 vec![0x67, 0x48, opcode, 0x44, 0x0d],             // missing disp8
                 vec![0x67, 0x48, opcode, 0x84, 0x0d, 0, 0, 0],    // missing disp32
@@ -6316,7 +6328,7 @@ mod tests {
         for opcode in [0x8b, 0x89] {
             for source in [
                 vec![0x48, opcode, 0x04, 0x65, 0, 0, 0, 0], // invalid no-index scale
-                vec![0x48, opcode, 0x44, 0x25, 0],          // displaced no-index
+                vec![0x48, opcode, 0x74, 0x25, 0],          // unsupported RSI data register
                 vec![0x67, 0x48, opcode, 0x34, 0x36, 0, 0, 0, 0], // unsupported RSI data register
                 vec![0x48, opcode, 0x04, 0x25, 0, 0, 0],    // truncated disp32
                 vec![0x48, opcode, 0x04, 0x24, 0, 0, 0, 0], // RSP no-index + tail
@@ -6496,7 +6508,7 @@ mod tests {
                 vec![0x67, 0x48, opcode, 0x04, 0x25],          // no-base SIB
                 vec![0x67, 0x48, opcode, 0x34, 0x34],          // unsupported RSI data register
                 vec![0x67, 0x48, opcode, 0x04, 0x64],          // scale 2, no index
-                vec![0x67, 0x48, opcode, 0x44, 0x25, 0],       // RBP base with no index
+                vec![0x67, 0x48, opcode, 0x74, 0x25, 0],       // RSI data is outside this profile
                 vec![0x67, 0x48, opcode, 0x84, 0x24, 0, 0, 0], // short disp32
                 vec![0x48, 0x67, opcode, 0x04, 0x24],          // reordered prefix
                 vec![0x67, 0x48, opcode, 0x34, 0x24],          // data register 6
@@ -7521,7 +7533,7 @@ mod tests {
 
         for opcode in [0x8b, 0x89] {
             for source in [
-                vec![0x48, opcode, 0x44, 0x25, 0], // RBP base with no index
+                vec![0x48, opcode, 0x74, 0x25, 0], // RSI data is outside this profile
                 vec![0x48, opcode, 0x04, 0x65, 0, 0, 0, 0], // invalid no-index scale
                 vec![0x67, 0x48, opcode, 0x74, 0x34, 0], // unsupported RSI data register
                 vec![0x48, 0x67, opcode, 0x44, 0x28, 0], // reordered prefix
@@ -7635,7 +7647,7 @@ mod tests {
         for opcode in [0x8b, 0x89] {
             for bytes in [
                 vec![0x48, opcode, 0x04, 0x2d],       // no-base, RBP index
-                vec![0x48, opcode, 0x44, 0x25, 0],    // RBP base with no index
+                vec![0x48, opcode, 0x74, 0x25, 0],    // RSI data is outside this profile
                 vec![0x67, 0x48, opcode, 0x34, 0x34], // unsupported RSI data register
                 vec![0x66, 0x48, opcode, 0x04, 0x2c], // extra prefix
             ] {
@@ -7742,7 +7754,7 @@ mod tests {
         for opcode in [0x8b, 0x89] {
             for bytes in [
                 vec![0x48, opcode, 0x04, 0x2d],       // no-base/RBP index
-                vec![0x48, opcode, 0x44, 0x25, 0],    // RBP base/no index
+                vec![0x48, opcode, 0x74, 0x25, 0],    // unsupported RSI data register
                 vec![0x67, 0x48, opcode, 0x34, 0x34], // unsupported RSI data register
                 vec![0x66, 0x48, opcode, 0x04, 0x2c], // extra prefix
             ] {
@@ -8119,7 +8131,7 @@ mod tests {
                 assert!(result.is_err(), "partial/no-base form admitted: {partial}");
             }
             for bytes in [
-                vec![0x48, opcode, 0x44, 0x25, 0],       // RBP base with no index
+                vec![0x48, opcode, 0x74, 0x25, 0], // RSI data is outside this profile
                 vec![0x67, 0x48, opcode, 0x74, 0x36, 0], // address32 unsupported RSI data register
                 vec![0x66, 0x48, opcode, 0x44, 0x2d, 0], // extra prefix
             ] {
@@ -8606,5 +8618,168 @@ mod tests {
                 .access_address_48(&state, second.site().next_rip()),
             Ok(0x0200_1000)
         );
+    }
+
+    #[test]
+    fn rbp_base_no_index_sib_disp_has_exact_qword_profile() {
+        let cases = [
+            (1_u8, [i8::MIN as i32, -1, 0, i8::MAX as i32].as_slice()),
+            (2, [i32::MIN, -1, 0, 1, i32::MAX].as_slice()),
+        ];
+        const ENTRY: u64 = 0x5e00;
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data in 0_u8..=5 {
+                for &(mode, displacements) in &cases {
+                    for &displacement in displacements {
+                        let mut source = vec![0x48, opcode, (mode << 6) | (data << 3) | 4, 0x25];
+                        if mode == 1 {
+                            source.push(displacement as u8);
+                        } else {
+                            source.extend_from_slice(&displacement.to_le_bytes());
+                        }
+                        let code = CodeView::new(ENTRY, &source).unwrap();
+                        let (direct_site, ir_site) = if opcode == 0x8b {
+                            (
+                                compile_memory_load_block_v2(code, ENTRY)
+                                    .unwrap_or_else(|error| panic!("direct load rejected opcode={opcode:#x} data={data} mode={mode} disp={displacement}: {error:?}"))
+                                    .site()
+                                    .clone(),
+                                compile_ir_memory_load_block_v2(code, ENTRY)
+                                    .unwrap_or_else(|error| panic!("IR load rejected opcode={opcode:#x} data={data} mode={mode} disp={displacement}: {error:?}"))
+                                    .site()
+                                    .clone(),
+                            )
+                        } else {
+                            (
+                                compile_memory_store_block_v2(code, ENTRY)
+                                    .unwrap()
+                                    .site()
+                                    .clone(),
+                                compile_ir_memory_store_block_v2(code, ENTRY)
+                                    .unwrap()
+                                    .site()
+                                    .clone(),
+                            )
+                        };
+                        assert_eq!(direct_site, ir_site, "{source:02x?}");
+                        for site in [&direct_site, &ir_site] {
+                            assert!(site.has_supported_profile(), "{source:02x?}");
+                            assert!(site.matches_source_bytes(&source, operation));
+                            assert_eq!(site.next_rip(), ENTRY + source.len() as u64);
+                            assert_eq!(site.operand.address_size, od_isa::OperandSize::Qword);
+                            assert_eq!(site.operand.size, od_isa::OperandSize::Qword);
+                            assert_eq!(site.operand.base, AddressBase::Register(Register::Rbp));
+                            assert_eq!(site.operand.index, None);
+                            assert_eq!(site.operand.scale, 1);
+                            assert_eq!(site.operand.displacement, i64::from(displacement));
+                            let state = od_isa::LongModeState {
+                                gpr: [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0x0000_0001_8000_0000,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                ],
+                                ..Default::default()
+                            };
+                            assert_eq!(
+                                site.operand.access_address_48(&state, site.next_rip()),
+                                Ok(state.gpr[5].wrapping_add_signed(i64::from(displacement))),
+                                "{source:02x?}"
+                            );
+                        }
+
+                        // The same decoded operation through direct ModR/M
+                        // addressing remains a separate accepted encoding.
+                        let direct_base_source = [
+                            0x48,
+                            opcode,
+                            (mode << 6) | (data << 3) | 5,
+                            source[4],
+                            source.get(5).copied().unwrap_or(0),
+                            source.get(6).copied().unwrap_or(0),
+                            source.get(7).copied().unwrap_or(0),
+                        ];
+                        let direct_base_len = if mode == 1 { 4 } else { 7 };
+                        let direct_base_code =
+                            CodeView::new(ENTRY, &direct_base_source[..direct_base_len]).unwrap();
+                        let direct_base_site = if opcode == 0x8b {
+                            compile_ir_memory_load_block_v2(direct_base_code, ENTRY)
+                                .unwrap()
+                                .site()
+                                .clone()
+                        } else {
+                            compile_ir_memory_store_block_v2(direct_base_code, ENTRY)
+                                .unwrap()
+                                .site()
+                                .clone()
+                        };
+                        assert_eq!(direct_base_site.operand, ir_site.operand);
+                        assert_eq!(direct_base_site.next_rip(), ENTRY + direct_base_len as u64);
+                    }
+                }
+            }
+        }
+
+        // The identical SIB byte under mod00 remains the separate absolute
+        // disp32 form; non-unit no-index scale is not admitted here.
+        for opcode in [0x8b, 0x89] {
+            let absolute = [0x48, opcode, 0x04, 0x25, 0, 0, 0, 0];
+            let absolute_code = CodeView::new(ENTRY, &absolute).unwrap();
+            if opcode == 0x8b {
+                compile_ir_memory_load_block_v2(absolute_code, ENTRY).unwrap();
+            } else {
+                compile_ir_memory_store_block_v2(absolute_code, ENTRY).unwrap();
+            }
+            for source in [
+                vec![0x48, opcode, 0x44, 0x65, 0],
+                vec![0x48, opcode, 0x84, 0x65, 0, 0, 0, 0],
+                vec![0x67, 0x48, opcode, 0x44, 0x25, 0], // addr32 RBP/no-index is not admitted
+                vec![0x67, 0x48, opcode, 0x84, 0x25, 0, 0, 0, 0], // addr32 RBP/no-index is not admitted
+                vec![0x67, 0x48, opcode, 0x74, 0x25, 0],          // unsupported RSI data register
+            ] {
+                let code = CodeView::new(ENTRY, &source).unwrap();
+                let (direct, shared_ir) = if opcode == 0x8b {
+                    (
+                        compile_memory_load_block_v2(code, ENTRY).map(|_| ()),
+                        compile_ir_memory_load_block_v2(code, ENTRY).map(|_| ()),
+                    )
+                } else {
+                    (
+                        compile_memory_store_block_v2(code, ENTRY).map(|_| ()),
+                        compile_ir_memory_store_block_v2(code, ENTRY).map(|_| ()),
+                    )
+                };
+                assert!(direct.is_err(), "direct admitted neighbor: {source:02x?}");
+                assert!(shared_ir.is_err(), "IR admitted neighbor: {source:02x?}");
+            }
+            for (mode, length) in [(1_u8, 5_usize), (2, 8)] {
+                let mut complete = vec![0x48, opcode, (mode << 6) | 4, 0x25];
+                complete.resize(length, 0);
+                for visible in 1..length {
+                    let partial = CodeView::new(ENTRY, &complete[..visible]).unwrap();
+                    let result = if opcode == 0x8b {
+                        compile_ir_memory_load_block_v2(partial, ENTRY).map(|_| ())
+                    } else {
+                        compile_ir_memory_store_block_v2(partial, ENTRY).map(|_| ())
+                    };
+                    assert!(result.is_err(), "partial source admitted: {complete:02x?}");
+                }
+            }
+        }
     }
 }
