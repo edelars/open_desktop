@@ -377,6 +377,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-34 | SSE state, moves и logic | S2-20 |
 | [x] | S2-34.1 | Lossless local-only Long64 x87+SSE snapshot transfer: 16 raw XMM registers and raw MXCSR; no instruction semantics or hardware claim | S2-28a |
 | [x] | S2-34.11 | Local-only register MOVAPS `0F 28 /r`; raw 128-bit XMM copy, JIT/native closed | S2-34.1 |
+| [x] | S2-34.12 | Separate local-only reverse-direction register MOVAPS `0F 29 /r`; raw 128-bit XMM copy, JIT/native closed | S2-34.11 |
 | [x] | S2-34.5 | Separate local-only legacy `MOVUPS [RAX],XMM` store profile; one exact 16-byte write with no CPU commit on backend failure | S2-34.4 |
 | [x] | S2-34.6a | Shared local-only MOVUPS base+displacement profile for legacy `0F 10`/`0F 11`, no SIB/RIP-relative | S2-34.5 |
 | [x] | S2-34.6b | Extend `s2-long-movups-mem-base-v1` with bounded legacy RIP-relative `0F 10`/`0F 11` disp32 forms | S2-34.6a |
@@ -9240,3 +9241,22 @@ in the interpreter and remains denied by JIT/native admission. This local slice
 does not imply MOVUPS/MOVAPD coverage or close parent S2-34/S2-35 acceptance.
 See the [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-movaps-profile--s2-3411)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3411-local-register-movaps-diagnostic-profile).
+
+#### S2-34.12 — local-only reverse-direction register `MOVAPS`
+
+The distinct profile `s2-long-movaps-reg-reverse-v1` admits long-mode
+`[one optional REX.R/B] 0F 29 /r` with ModR/M.mod=3. ModR/M.reg plus REX.R
+selects the XMM source; ModR/M.r/m plus REX.B selects the XMM destination.
+Thus `0F 29 C1` copies XMM0 to XMM1 and `45 0F 29 C1` copies XMM8 to XMM9.
+Execution copies all 128 raw bits, supports aliasing, preserves the source
+and all other CPU state, and performs no data-memory callback. Missing local
+SSE state refuses atomically. CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are assumed.
+
+Memory, forward-direction `0F 28`, MOVUPS `0F 11`, mandatory-66 MOVAPD,
+F2/F3, segment/address/LOCK and duplicate prefixes, REX.W/X, VEX/EVEX,
+incomplete fetches, real #UD/#NM gates, alignment/fault semantics, JIT/native
+implementation and physical execution are excluded. Decoder/executor matrices,
+full-state and atomicity checks, the handwritten XMM8/XMM9 fixture and JIT/native
+denial are local evidence only. This does not imply aligned-memory behavior or
+parent S2-34/S2-35 acceptance. See the [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-reverse-direction-movaps-profile--s2-3412)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3412-local-reverse-direction-register-movaps-diagnostic-profile).

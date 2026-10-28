@@ -4244,6 +4244,9 @@ mod tests {
             &include_bytes!(
                 "../../../tests/fixtures/x86/stage2/s2_34_11_movaps_register.case.json"
             )[..],
+            &include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_34_12_movaps_reverse_register.case.json"
+            )[..],
             &include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_2_movups_register.case.json")
                 [..],
             &include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_7a_xorps_register.case.json")

@@ -471,6 +471,11 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only legacy `0F 29 /r` reverse-direction MOVAPS XMM register form.
+    MovapsReverseRegister {
+        destination: u8,
+        source: u8,
+    },
     /// Local-only legacy `0F 57 /r` register form, bitwise XOR of raw XMM bits.
     XorpsRegister {
         destination: u8,
@@ -1581,7 +1586,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && (direct_arithmetic(opcode.byte).is_some() || direct_logic(opcode.byte).is_some()))
             || matches!((opcode.map, opcode.byte),
             (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9c | 0x9d | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa7 | 0xa8 | 0xa9 | 0xaa | 0xab | 0xac | 0xad | 0xae | 0xaf | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe8 | 0xe9 | 0xeb | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf6 | 0xf7 | 0xfc | 0xfd)
-            | (OpcodeMap::Escape0f, 0x00 | 0x10 | 0x11 | 0x28 | 0x40..=0x4f | 0x54..=0x57 | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc1 | 0xc8..=0xcf | 0xd4 | 0xd8 | 0xd9 | 0xdb | 0xdc | 0xdd | 0xdf | 0xe8 | 0xe9 | 0xeb | 0xec | 0xed | 0xef | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
+            | (OpcodeMap::Escape0f, 0x00 | 0x10 | 0x11 | 0x28 | 0x29 | 0x40..=0x4f | 0x54..=0x57 | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc1 | 0xc8..=0xcf | 0xd4 | 0xd8 | 0xd9 | 0xdb | 0xdc | 0xdd | 0xdf | 0xe8 | 0xe9 | 0xeb | 0xec | 0xed | 0xef | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
         if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x0b {
             return Err(DecodeError::Invalid {
                 opcode,
@@ -1749,6 +1754,13 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     && prefixes.rex.unwrap() & 0x0a == 0));
         let movaps_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x28
+            && (prefix_count == 0
+                || (prefix_count == 1
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[0] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        let movaps_reverse_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x29
             && (prefix_count == 0
                 || (prefix_count == 1
                     && prefixes.rex.is_some()
@@ -3169,6 +3181,19 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::MovapsRegister {
                     destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                     source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x29) => {
+                if !movaps_reverse_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::MovapsReverseRegister {
+                    destination: (modrm & 7) | ((rex & 1) << 3),
+                    source: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                 }
             }
             (OpcodeMap::Primary, 0xdb) => {
@@ -7442,6 +7467,15 @@ mod tests {
             }
         }
 
+        let mut reverse = Memory::new(&[0x0f, 0x29, 0xc1]);
+        assert_eq!(
+            reverse.decode().unwrap().operation,
+            Operation::MovapsReverseRegister {
+                destination: 1,
+                source: 0
+            }
+        );
+
         for bytes in [
             &[0x0f][..],
             &[0x0f, 0x10][..],
@@ -7485,7 +7519,6 @@ mod tests {
 
         for bytes in [
             &[0x0f, 0x28, 0x00][..],       // memory
-            &[0x0f, 0x29, 0xc1][..],       // reverse-direction MOVAPS
             &[0x66, 0x0f, 0x28, 0xc1][..], // MOVAPD
             &[0xf2, 0x0f, 0x28, 0xc1][..],
             &[0xf3, 0x0f, 0x28, 0xc1][..],
@@ -7502,6 +7535,74 @@ mod tests {
             let mut memory = Memory::new(bytes);
             assert!(memory.decode().is_err(), "{bytes:02x?}");
         }
+    }
+
+    #[test]
+    fn movaps_reverse_register_decodes_all_xmm_pairs_and_rejects_neighbors() {
+        let mut bare = Memory::new(&[0x0f, 0x29, 0xc1]);
+        assert_eq!(
+            bare.decode().unwrap().operation,
+            Operation::MovapsReverseRegister {
+                destination: 1,
+                source: 0
+            }
+        );
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((source >> 3) << 2) | (destination >> 3);
+                let modrm = 0xc0 | ((source & 7) << 3) | (destination & 7);
+                let bytes = [rex, 0x0f, 0x29, modrm];
+                let mut memory = Memory::new(&bytes);
+                let instruction = memory.decode().unwrap();
+                assert_eq!(instruction.length, 4);
+                assert_eq!(
+                    instruction.operation,
+                    Operation::MovapsReverseRegister {
+                        destination,
+                        source
+                    }
+                );
+            }
+        }
+
+        let mut asymmetric = Memory::new(&[0x45, 0x0f, 0x29, 0xc1]);
+        assert_eq!(
+            asymmetric.decode().unwrap().operation,
+            Operation::MovapsReverseRegister {
+                destination: 9,
+                source: 8
+            }
+        );
+
+        for bytes in [
+            &[0x0f, 0x29, 0x00][..],       // memory
+            &[0x66, 0x0f, 0x29, 0xc1][..], // MOVAPD
+            &[0x66, 0x66, 0x0f, 0x29, 0xc1][..],
+            &[0xf2, 0x0f, 0x29, 0xc1][..],
+            &[0xf3, 0x0f, 0x29, 0xc1][..],
+            &[0x64, 0x0f, 0x29, 0xc1][..],
+            &[0x64, 0x64, 0x0f, 0x29, 0xc1][..],
+            &[0x67, 0x0f, 0x29, 0xc1][..],
+            &[0xf0, 0x0f, 0x29, 0xc1][..],
+            &[0x48, 0x0f, 0x29, 0xc1][..],
+            &[0x42, 0x0f, 0x29, 0xc1][..],
+            &[0x40, 0x41, 0x0f, 0x29, 0xc1][..],
+            &[0xc5, 0xf8, 0x29, 0xc1][..],
+            &[0x62, 0xf1, 0x7c, 0x08, 0x29, 0xc1][..],
+            &[0x0f, 0x29][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+
+        let mut forward = Memory::new(&[0x0f, 0x28, 0xc1]);
+        assert_eq!(
+            forward.decode().unwrap().operation,
+            Operation::MovapsRegister {
+                destination: 0,
+                source: 1
+            }
+        );
     }
 
     #[test]

@@ -13296,3 +13296,43 @@ Implemented `s2-long-movaps-reg-v1` for long-mode `[one optional REX.R/B] 0F 28 
 The exact profile rejects memory, `0F 29`, MOVUPS `0F 10`, mandatory-66 MOVAPD, F2/F3, segment/address/LOCK and duplicate prefixes, REX.W/X, VEX/EVEX and truncation. The handwritten XMM8/XMM9 fixture encodes `45 0F 28 C1` and has literal source/result bytes `90..9f`; interpreter execution passes, while JIT and native admission deny the profile. No alignment/fault handling, real SSE exception gates, physical execution, or parent S2-34 acceptance is claimed. MOVUPS and MOVAPD coverage are unaffected.
 
 Focused checks passed (2026-10-28): `cargo test -p od-isa movaps --offline` (2 tests, including bare and REX encodings, 16×16 register pairs, raw FP edge patterns, full-state comparison and atomic refusal cases); `cargo test -p od-testkit movaps --offline` (2 tests, fixture state and schema negatives); and `cargo test -p od-runner --test fixture_v2 movaps --offline` (1 test, interpreter result and JIT denial). `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, and `cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline` passed. The Linux-only native-denial test was compile-checked, not executed on this Darwin host. `graphify update .` passed and `git diff --check` passed. `python3 tools/check_layout.py` remains blocked by pre-existing checkout issues: unmapped root `.git` and stale Stage 1/Stage 2 oracle manifest links under ignored `work/`. Sol-medium re-review completed with no findings and independently reran the interpreter tests (2 passed). The combined Mac mini/SSH acceptance substage is deliberately deferred.
+
+## S2-34.12 — reverse-direction register MOVAPS profile
+
+Implemented the distinct `s2-long-movaps-reg-reverse-v1` diagnostic profile for
+long-mode `[one optional REX.R/B] 0F 29 /r`, ModR/M.mod=3. ModR/M.reg plus
+REX.R is the source and ModR/M.r/m plus REX.B is the destination. Bare
+`0F 29 C1` copies XMM0 to XMM1; `45 0F 29 C1` copies XMM8 to XMM9. The
+interpreter copies all 128 raw bits, supports aliasing, preserves the source
+and all other CPU state, and makes no data-memory callback. Missing local SSE
+state refuses atomically; CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 remain assumed
+preconditions.
+
+The exact profile rejects memory, forward `0F 28`, MOVUPS `0F 11`, mandatory-66
+MOVAPD, F2/F3, segment/address/LOCK and duplicate legacy prefixes, duplicate
+REX, REX.W/X, VEX/EVEX and truncation. The handwritten high-XMM fixture uses
+literal XMM8 source bytes `808182838485868788898a8b8c8d8e8f`, verifies the
+XMM9 result and source preservation, and remains denied by JIT/native profile
+admission. This register-only slice does not imply aligned-memory behavior,
+parent S2-34/S2-35 acceptance, or physical execution.
+
+Focused checks passed (2026-10-28): `cargo test -p od-isa movaps --offline`
+(4 passed: both directions, 16×16 execution and decode matrices, and atomic
+boundaries); `cargo test -p od-testkit movaps --offline` (4 passed: both
+fixture executions and strict profile/schema negatives); and
+`cargo test -p od-runner --test fixture_v2 movaps --offline` (2 passed:
+interpreter results and JIT denial for both profiles). `cargo fmt --all
+-- --check`, `cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target
+x86_64-unknown-linux-gnu --offline`, `graphify update .`, and `git diff --check`
+passed. The Linux target was compile-checked; native denial was not executed on
+this Darwin host. `python3 tools/check_layout.py` still reports pre-existing
+ISSUE-023 checkout/link failures: unmapped root `.git` and two missing archived
+oracle manifests. No Mac mini, SSH, physical x86, or native runtime checks were
+run; those remain in the combined final acceptance substage. Independent
+Sol-medium review completed with no findings and independently reran all three
+focused package checks.
+
+See the [plan](../plans/STAGE_2.md#s2-3412--local-only-reverse-direction-register-movaps),
+[CPU contract](../specs/CPU_CONTRACT.md#local-register-only-reverse-direction-movaps-profile--s2-3412),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3412-local-reverse-direction-register-movaps-diagnostic-profile).

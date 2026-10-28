@@ -9107,6 +9107,7 @@ parent S2-34. Exact allowlists remain in the individual profile sections above.
 | Status/group | Exact forms or open scope | Requirements/evidence and next step |
 |---|---|---|
 | Implemented-local: `MOVUPS` | Exact legacy `0F 10 /r` and `0F 11 /r`: register `mod=3`; m128 `[RAX]` `mod=00,r/m=000`; 64-bit base+disp `mod=00/01/10` excluding RIP/SIB selectors; RIP-relative `mod=00,r/m=101`; SIB forms. Bare or one profile-allowed REX, exact limits in 6a–6c. | Register forms have no data fault/alignment access. Memory forms use one 16-byte local callback, with no CPU commit on backend failure. Alignment, guest fault delivery/priority, feature gates, native/JIT and physical behavior are not established. Local fixtures/matrices exist; parent native-oracle register and memory evidence remains due. Physical SSE is `not_run` because current physical harness admits integer profiles only. No new local slice is needed. |
+| Implemented-local: `MOVAPS` | Separate register-only `0F 28 /r` and reverse-direction `0F 29 /r` profiles, both ModR/M.mod=3 with one optional REX.R/B; each profile has its own exact opcode/direction allowlist. | Both directions copy 128 raw XMM bits without data-memory access and preserve unrelated state. SSE preconditions are assumed; local matrices/fixtures exist. Memory alignment/fault behavior, SSE exception gates, JIT/native, physical execution and parent acceptance remain open. The register-only evidence implies no aligned-memory behavior. |
 | Implemented-local: packed logic | `0F 57` `XORPS`, `0F 54` `ANDPS`, `0F 56` `ORPS`, `0F 55` `ANDNPS`, `/r, mod=3`; bare or one REX with R/B extension, no other legacy prefixes. | Raw XMM logic, no memory/alignment/fault path; SSE and CR0/CR4 conditions are assumed. Local semantic/fixture evidence exists; native-oracle confirmation and profile consistency remain open. Physical SSE is `not_run`. |
 | Implemented-local: `MOVSS` | `F3 0F 10 /r` and `F3 0F 11 /r`: register `mod=3` both directions and m32 `[RAX]` `mod=00,r/m=000` load/store; mandatory F3 and at most one optional profile-allowed immediate REX (8a–8d). | Register low-dword transfer preserves destination upper 96 bits; memory load clears them. One 4-byte local callback; local rollback only. Alignment, guest exception ordering/delivery and control gates are unverified. Native oracle remains due; physical SSE is `not_run`. |
 | Implemented-local: `MOVSD` | `F2 0F 10 /r` and `F2 0F 11 /r`: register `mod=3` both directions and m64 `[RAX]` `mod=00,r/m=000` load/store; mandatory F2 and at most one optional profile-allowed immediate REX (9a–9d). Scalar-double SIMD, not string opcode `A5`. | Register low-qword transfer preserves destination upper 64 bits; memory load clears them. One 8-byte local callback; local rollback only. Alignment, guest exception ordering/delivery and control gates are unverified. Native oracle remains due; physical SSE is `not_run`. |
@@ -9632,3 +9633,23 @@ admission and physical execution remain unsupported. See the
 The exact diagnostic profile `s2-long-movaps-reg-v1` admits long-mode `[one optional REX.R/B] 0F 28 /r` only when ModR/M.mod=3. ModR/M.reg is the XMM destination and r/m is the source; REX.R and REX.B independently select XMM8–XMM15. The interpreter copies all 128 raw source bits, including arbitrary floating-point bit patterns, and changes no flags, MXCSR, x87, GPRs, or other XMM registers. Alias/self-copy is supported; execution performs no data-memory access.
 
 Memory, reverse-direction `0F 29`, MOVUPS `0F 10`, mandatory-66 MOVAPD, F2/F3, segment/address/LOCK prefixes, duplicate REX, REX.W/X, VEX/EVEX, and incomplete instruction fetches are outside the profile. SSE preconditions (CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1) are assumptions; missing local SSE state refuses without commit. Alignment and memory fault semantics, real #UD/#NM gates, JIT/native execution, and physical execution are not modeled. This does not imply acceptance of parent S2-34 or coverage of MOVUPS/MOVAPD. See the [S2-34.11 plan](../plans/STAGE_2.md#s2-3411--local-only-register-movaps).
+
+## Local register-only reverse-direction MOVAPS profile — S2-34.12
+
+The distinct exact diagnostic profile `s2-long-movaps-reg-reverse-v1` admits
+long-mode `[one optional REX.R/B] 0F 29 /r` only when ModR/M.mod=3. ModR/M.reg
+plus REX.R selects the XMM source; ModR/M.r/m plus REX.B selects the
+destination. Therefore `0F 29 C1` copies XMM0 to XMM1, and `45 0F 29 C1`
+copies XMM8 to XMM9. Execution copies all 128 raw source bits, supports alias
+self-copy, preserves the source and all unrelated XMM, MXCSR, x87, GPR and
+flags state, and performs no data-memory access. Missing local SSE state refuses
+without commit. CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are assumed preconditions.
+
+Memory, forward-direction `0F 28`, MOVUPS `0F 11`, mandatory-66 MOVAPD, F2/F3,
+segment/address/LOCK prefixes, duplicate REX, REX.W/X, VEX/EVEX and incomplete
+instruction fetches are outside this profile. Alignment and memory fault
+semantics, real #UD/#NM gates, JIT/native execution and physical execution are
+not modeled; the register-only profile makes no aligned-memory claim. This
+slice does not imply acceptance of parent S2-34/S2-35. See the
+[S2-34.12 plan](../plans/STAGE_2.md#s2-3412--local-only-reverse-direction-register-movaps)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3412-local-reverse-direction-register-movaps-diagnostic-profile).

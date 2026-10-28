@@ -4999,6 +4999,31 @@ fn local_movaps_register_fixture_copies_raw_xmm_and_jit_denies_profile() {
 }
 
 #[test]
+fn local_movaps_reverse_register_fixture_copies_raw_xmm_and_jit_denies_profile() {
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_12_movaps_reverse_register.case.json"
+    );
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMovapsReverseRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    let source = expected.sse.as_ref().unwrap().xmm[8].clone();
+    expected.sse.as_mut().unwrap().xmm[9] = source;
+    assert_eq!(snapshot(&result).state, expected);
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
 fn local_movups_memory_load_fixture_reads_unaligned_bytes_into_xmm8() {
     let bytes = include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_34_4_movups_memory_load_rax.case.json"
