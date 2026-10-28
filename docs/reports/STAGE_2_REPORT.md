@@ -13582,3 +13582,36 @@ This is local-only evidence: JIT/native remain denied, physical status is
 `not_run`, and parent S2-34 and ISSUE-012 remain open.
 
 Focused verification (2026-10-28): `cargo test -p od-isa movupd --offline` (21), `cargo test -p od-testkit movupd_sib --offline` (1), `cargo test -p od-testkit movupd_memory_base_uses_one_data_callback --offline` (1, including SIB exact-address/width and injected-error paths), and `cargo test -p od-runner --test fixture_v2 local_movupd_sib --offline` (1) passed. `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, Linux `cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`, `git diff --check`, and `graphify update .` passed. The Linux native-denial test is compile-checked only; physical execution remains `not_run`.
+
+## S2-35.52 — local PAVGB register profile
+
+Added local-only schema-v2 profile `s2-long-pavgb-reg-v1` for the exact
+long-mode XMM register encoding `66 [one optional REX.R/B] 0F E0 /r`,
+ModR/M.mod=3. Mandatory `66` keeps the MMX form outside the profile; REX.R/B
+independently select all 16 XMM registers. The interpreter computes each
+unsigned byte lane as `(old_DEST + old_SRC + 1) >> 1` in a `u16` intermediate,
+snapshots the source for aliasing, preserves all unrelated CPU state, and makes
+no data-memory callback. SSE2 and CR0/CR4 requirements remain assumed
+preconditions; feature gates, guest exception delivery, JIT/native support,
+and physical execution are not claimed. Semantics are from Intel SDM revision
+093, Vol. 2B, PAVGB/PAVGW ([official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf)).
+
+Handwritten fixture `s2_35_52_pavgb_register.case.json` executes
+`PAVGB XMM8,XMM9` and records XMM8 result
+`88898a8b8c8d8e8f9091929394959697`. Decoder and execution tests cover all
+16×16 register pairs, lane-varying inputs, rounding boundaries, aliasing,
+full-state preservation, and no memory callbacks. Negative tests reject MMX,
+PAVGW, memory, extra prefixes, REX.W/X, VEX/EVEX and truncation; missing SSE
+state and incomplete fetch remain atomic. Testkit enforces the exact schema
+profile; CLI interpreter accepts the fixture and JIT denies it. Native runner
+denial is Linux-only and was compile-checked on this macOS host, not executed.
+
+Verification passed: `cargo test -p od-isa --offline` (1,150 tests),
+`cargo test -p od-testkit --offline` (354),
+`cargo test -p od-runner --test fixture_v2 --offline` (316),
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`,
+`cargo fmt --all -- --check`, `git diff --check`, and `graphify update .`.
+No Mac mini/SSH or other physical run was performed; it remains reserved for
+the combined final acceptance substage. Parent S2-34, S2-35, and the global
+`S2-35 → S2-34` dependency remain open.

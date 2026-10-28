@@ -9629,6 +9629,26 @@ this profile does not model those gates or `#UD/#NM` delivery. JIT/native
 admission and physical execution remain unsupported. See the
 [S2-35.51 plan](../plans/STAGE_2.md#s2-3551--local-only-bounded-register-por).
 
+## Local register-only `PAVGB` profile — S2-35.52
+
+The schema-v2 profile `s2-long-pavgb-reg-v1` admits long-mode
+`66 [one optional REX.R/B] 0F E0 /r` only with ModR/M.mod=3. Mandatory `66`
+selects the XMM/SSE2 form; unprefixed `0F E0 /r` is MMX and rejected. ModR/M.reg
+is the destination and ModR/M.r/m is the source; REX.R and REX.B independently
+select XMM0–XMM15. For each of the 16 unsigned byte lanes, execution computes
+`(old_DEST + old_SRC + 1) >> 1` using an intermediate wider than 8 bits. The
+source is snapshotted before the destination changes, so aliasing computes a
+rounded self-average correctly. No data-memory callback occurs; RFLAGS, MXCSR,
+x87, GPRs, and every non-destination XMM register are preserved.
+
+Only this exact register form is admitted. MMX, memory, REX.W/X, other or
+duplicate prefixes, VEX/EVEX, and PAVGW are excluded. SSE2 availability,
+CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are diagnostic preconditions; this profile
+does not implement those gates or `#UD/#NM` delivery. JIT/native admission and
+physical execution remain unsupported. Semantics source: Intel SDM revision
+093, Vol. 2B, PAVGB/PAVGW ([official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf)).
+See the [S2-35.52 plan](../plans/STAGE_2.md#s2-3552--local-only-bounded-register-pavgb).
+
 
 ## Local register-only MOVAPS profile — S2-34.11
 

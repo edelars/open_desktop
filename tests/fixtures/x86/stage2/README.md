@@ -5284,6 +5284,15 @@ XMM9. The interpreter computes the raw 128-bit `old_DEST | old_SRC`; its
 literal XMM8 result is `909192939495969798999a9b9c9d9e9f`. This local profile
 assumes SSE2 preconditions and denies JIT and native execution.
 
+### S2-35.52 local register PAVGB diagnostic profile
+
+`s2_35_52_pavgb_register.case.json` is a handwritten high-XMM fixture for
+`s2-long-pavgb-reg-v1`, encoded as `66 45 0F E0 C1` (`PAVGB XMM8, XMM9`).
+REX.R/REX.B independently select XMM8/XMM9. The unsigned rounded byte average
+`(old_DEST + old_SRC + 1) >> 1` produces literal XMM8 bytes
+`88898a8b8c8d8e8f9091929394959697`. SSE2 preconditions are assumed; JIT and
+native execution are denied. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-register-only-pavgb-profile--s2-3552), [plan](../../../../docs/plans/STAGE_2.md#s2-3552--local-only-bounded-register-pavgb), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-3552--local-pavgb-register-profile).
+
 ### S2-35.50 local register PANDN diagnostic profile
 
 `s2_35_50_pandn_register.case.json` is a handwritten high-XMM fixture for

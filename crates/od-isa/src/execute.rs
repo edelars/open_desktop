@@ -1336,6 +1336,7 @@ fn step_tracked_with_stop(
         | Operation::PandRegister { .. }
         | Operation::PandnRegister { .. }
         | Operation::PorRegister { .. }
+        | Operation::PavgbRegister { .. }
         | Operation::AndpsRegister { .. }
         | Operation::AndpdRegister { .. }
         | Operation::OrpdRegister { .. }
@@ -2905,6 +2906,23 @@ fn step_tracked_with_stop(
                 .expect("POR local profile state was prevalidated");
             for (dst, src) in sse.xmm[usize::from(destination)].iter_mut().zip(source) {
                 *dst |= src;
+            }
+        }
+        Operation::PavgbRegister {
+            destination,
+            source,
+        } => {
+            let source = state
+                .sse
+                .as_ref()
+                .expect("PAVGB local profile state was prevalidated")
+                .xmm[usize::from(source)];
+            let sse = state
+                .sse
+                .as_mut()
+                .expect("PAVGB local profile state was prevalidated");
+            for (dst, src) in sse.xmm[usize::from(destination)].iter_mut().zip(source) {
+                *dst = ((u16::from(*dst) + u16::from(src) + 1) >> 1) as u8;
             }
         }
         Operation::PaddbRegister {
@@ -69978,6 +69996,125 @@ mod tests {
                     context: AccessContext::default(),
                 },
                 || stop_callback,
+            );
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn pavgb_register_averages_unsigned_bytes_with_rounding_for_all_xmm_pairs() {
+        let lane_pattern_lhs = std::array::from_fn(|index| (index as u8).wrapping_mul(17));
+        let lane_pattern_rhs = std::array::from_fn(|index| 255u8.wrapping_sub((index as u8) * 11));
+        let patterns = [
+            ([0; 16], [0; 16]),
+            ([1; 16], [0; 16]),
+            ([1; 16], [1; 16]),
+            ([254; 16], [255; 16]),
+            ([0; 16], [255; 16]),
+            ([127; 16], [128; 16]),
+            ([128; 16], [128; 16]),
+            (lane_pattern_lhs, lane_pattern_rhs),
+        ];
+
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                for (lhs, rhs) in patterns {
+                    let mut code = vec![0x66];
+                    if destination >= 8 || source >= 8 {
+                        code.push(rex);
+                    }
+                    code.extend([0x0f, 0xe0, modrm]);
+                    let mut memory = Memory::at(&code, 0x1000);
+                    let mut state = LongModeState::default();
+                    state.x87 = Some(X87State::fixture_seed());
+                    state.sse = Some(SseState {
+                        xmm: std::array::from_fn(|register| {
+                            std::array::from_fn(|lane| {
+                                (register as u8)
+                                    .wrapping_mul(29)
+                                    .wrapping_add((lane as u8).wrapping_mul(7))
+                            })
+                        }),
+                        mxcsr: 0xe1a5_5a7e,
+                    });
+                    state.sse.as_mut().unwrap().xmm[destination as usize] = lhs;
+                    if source != destination {
+                        state.sse.as_mut().unwrap().xmm[source as usize] = rhs;
+                    }
+                    state.rip = 0x1000;
+                    state.rflags = 0x8d7 | crate::DF;
+                    let before = state.clone();
+                    let old_source = if source == destination { lhs } else { rhs };
+                    let expected = std::array::from_fn(|lane| {
+                        ((u16::from(lhs[lane]) + u16::from(old_source[lane]) + 1) >> 1) as u8
+                    });
+
+                    assert_eq!(
+                        step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                        StepOutcome::Advanced
+                    );
+                    let mut unchanged = before;
+                    unchanged.rip += code.len() as u64;
+                    unchanged.sse.as_mut().unwrap().xmm[destination as usize] = expected;
+                    assert_eq!(state, unchanged, "dest={destination}, src={source}");
+                    assert!(memory.accesses.is_empty(), "PAVGB performed a data access");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pavgb_missing_state_truncated_fetch_and_unstarted_run_are_atomic() {
+        let code = [0x66, 0x0f, 0xe0, 0xc1];
+        let mut memory = Memory::at(&code, 0x1000);
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        let before = state.clone();
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+            StepOutcome::Unsupported { opcode: 0xe0 }
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+
+        let mut memory = Memory::at(&[0x66, 0x0f, 0xe0], 0x1000);
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        state.sse = Some(SseState {
+            xmm: [[0xa5; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        assert!(step(&mut state, &mut memory, AccessContext::default()).is_err());
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+
+        for (budget, stop_rip, expected_exit) in [
+            (0, None, RunExit::InstructionBudgetExhausted),
+            (1, Some(0x1000), RunExit::StopAddress),
+        ] {
+            let mut memory = Memory::at(&code, 0x1000);
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                || false,
             );
             assert_eq!(result.exit, expected_exit);
             assert_eq!(result.instructions_executed, 0);

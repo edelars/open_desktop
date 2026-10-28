@@ -9241,6 +9241,25 @@ rejection. A handwritten schema-v2 high-XMM fixture executes in the
 interpreter and remains denied by JIT/native admission. Parent/global
 acceptance remains open.
 
+#### S2-35.52 — local-only bounded register `PAVGB`
+
+Add the exact local diagnostic profile `s2-long-pavgb-reg-v1` for long-mode
+`66 [one optional REX.R/B] 0F E0 /r` with ModR/M.mod=3. ModR/M.reg and r/m
+select destination/source XMM0–15 through independent REX.R/B. Each unsigned
+byte lane computes `(old_DEST + old_SRC + 1) >> 1` in a wider intermediate;
+aliasing is supported. Preserve all unrelated state and make no data-memory
+access. MMX, memory, REX.W/X, other/duplicate prefixes, PAVGW, VEX/EVEX,
+feature gates, guest exception delivery, JIT/native, and physical execution are
+outside this slice. SSE2 and CR0/CR4 requirements are assumed preconditions.
+
+Verification covers all 16×16 XMM pairs, lane-varying and rounding-boundary
+values, aliasing, full-state preservation, no callbacks, strict encoding/profile
+negatives, missing-state/truncated-fetch atomicity, and zero-budget/stop-before-
+fetch. A handwritten XMM8/XMM9 fixture is interpreted locally; JIT and native
+admission remain denied. Parent S2-34, S2-35, the global `S2-35 → S2-34`
+dependency, and physical acceptance remain open. Semantics source: Intel SDM
+revision 093, Vol. 2B, PAVGB/PAVGW; see the [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-pavgb-profile--s2-3552).
+
 #### S2-34.11 — local-only register `MOVAPS`
 
 The profile `s2-long-movaps-reg-v1` admits long-mode `[one optional REX.R/B]

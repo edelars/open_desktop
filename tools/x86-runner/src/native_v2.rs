@@ -5323,6 +5323,29 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn s2_35_52_pavgb_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_52_pavgb_register.case.json"
+        ))
+        .unwrap();
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { .. }
+        ));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert_eq!(
+            admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+            "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn s2_35_2_paddb_fixture_is_denied_before_native_execution() {
         let loaded = Fixture::from_json(include_bytes!(
             "../../../tests/fixtures/x86/stage2/s2_35_2_paddb_register.case.json"
