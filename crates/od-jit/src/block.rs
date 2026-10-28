@@ -1778,10 +1778,32 @@ fn is_address32_rbp_direct_stack_base_operand(
         && displacement_valid
 }
 
+fn is_rsi_rdi_direct_qword_memory_address(
+    instruction: Instruction,
+    operand: od_isa::long_decode::MemoryOperand,
+) -> bool {
+    instruction.address_size == OperandSize::Qword
+        && instruction.length == 3
+        && operand.address_size == OperandSize::Qword
+        && operand.size == OperandSize::Qword
+        && operand.index.is_none()
+        && operand.scale == 1
+        && operand.displacement == 0
+        && matches!(
+            operand.base,
+            od_isa::long_decode::AddressBase::Register(
+                od_isa::Register::Rsi | od_isa::Register::Rdi
+            )
+        )
+}
+
 fn is_rsp_memory_data_operand(
     instruction: Instruction,
     operand: od_isa::long_decode::MemoryOperand,
 ) -> bool {
+    if is_rsi_rdi_direct_qword_memory_address(instruction, operand) {
+        return true;
+    }
     if is_rbp_index_qword_sib_data_operand(instruction, operand) {
         return true;
     }
@@ -1904,6 +1926,9 @@ fn is_rbp_memory_data_operand(
     instruction: Instruction,
     operand: od_isa::long_decode::MemoryOperand,
 ) -> bool {
+    if is_rsi_rdi_direct_qword_memory_address(instruction, operand) {
+        return true;
+    }
     if is_rbp_index_qword_sib_data_operand(instruction, operand) {
         return true;
     }
@@ -2147,6 +2172,16 @@ fn is_checked_qword_memory_address(
                     || indexed_no_base_rbp_addr32_sib_disp32)
         }
         OperandSize::Qword => {
+            let rsi_rdi_direct = instruction.length == 3
+                && operand.index.is_none()
+                && operand.scale == 1
+                && operand.displacement == 0
+                && matches!(
+                    operand.base,
+                    od_isa::long_decode::AddressBase::Register(
+                        od_isa::Register::Rsi | od_isa::Register::Rdi
+                    )
+                );
             let register_base = matches!(
                 operand.base,
                 od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4
@@ -2257,6 +2292,7 @@ fn is_checked_qword_memory_address(
                     && i32::try_from(operand.displacement).is_ok();
             !instruction.prefixes.address_override
                 && (register_base && (direct_form || indexed_form)
+                    || rsi_rdi_direct
                     || rip_relative
                     || absolute_sib_disp32
                     || indexed_no_base_sib_disp32
@@ -2311,6 +2347,11 @@ pub(crate) fn exact_direct_qword_memory_bytes(
         && bytes[2] >> 6 == 0
         && bytes[2] & 7 < 4
         && matches!((bytes[2] >> 3) & 7, 4 | 5))
+        || (bytes.len() == 3
+            && bytes[0..2] == [0x48, opcode]
+            && bytes[2] >> 6 == 0
+            && matches!(bytes[2] & 7, 6 | 7)
+            && (bytes[2] >> 3) & 7 <= 5)
         || (bytes.len() == 4
             && bytes[0..2] == [0x48, opcode]
             && bytes[2] >> 6 == 1

@@ -222,6 +222,18 @@ impl MemorySiteV2 {
                     | od_isa::Register::Rbx
             )
         );
+        let rsi_rdi_direct_data_profile = self.operand.address_size == od_isa::OperandSize::Qword
+            && self.operand.size == od_isa::OperandSize::Qword
+            && length == 3
+            && matches!(
+                self.operand.base,
+                od_isa::long_decode::AddressBase::Register(
+                    od_isa::Register::Rsi | od_isa::Register::Rdi
+                )
+            )
+            && self.operand.index.is_none()
+            && self.operand.scale == 1
+            && self.operand.displacement == 0;
         let indexed_sib_base_profile = base_is_low_gpr
             || matches!(
                 self.operand.base,
@@ -410,6 +422,7 @@ impl MemorySiteV2 {
             || absolute_sib_disp32_data_profile
             || indexed_no_base_sib_disp32_data_profile
             || indexed_no_base_rbp_sib_disp32_data_profile
+            || rsi_rdi_direct_data_profile
             || (self.operand.address_size == od_isa::OperandSize::Qword
                 && self.operand.size == od_isa::OperandSize::Qword
                 && (indexed_sib_data_profile
@@ -551,7 +564,8 @@ impl MemorySiteV2 {
                         | od_isa::Register::Rcx
                         | od_isa::Register::Rdx
                         | od_isa::Register::Rbx
-                ) || register == od_isa::Register::Rbp && matches!(length, 4 | 7)
+                ) || rsi_rdi_direct_data_profile
+                    || register == od_isa::Register::Rbp && matches!(length, 4 | 7)
                     || register == od_isa::Register::Rsp
                         && matches!(length, 4 | 5 | 8)
                         && self.operand.index.is_none()
@@ -1011,6 +1025,26 @@ impl MemorySiteV2 {
         let modrm = source[2];
         let mode = modrm >> 6;
         let data_register = (modrm >> 3) & 7;
+        let base = modrm & 7;
+        if source.len() == 3 && mode == 0 && matches!(base, 6 | 7) {
+            let site_register = match expected_operation {
+                MemorySiteOperationV2::Load => self.destination,
+                MemorySiteOperationV2::Store => self.source,
+            };
+            return data_register <= 5
+                && site_register == Some(data_register)
+                && self.next_rip.checked_sub(self.guest_rip) == Some(3)
+                && self.operand.address_size == od_isa::OperandSize::Qword
+                && self.operand.size == od_isa::OperandSize::Qword
+                && matches!(
+                    self.operand.base,
+                    od_isa::long_decode::AddressBase::Register(register)
+                        if od_isa::Register::from_encoding(base) == Some(register)
+                )
+                && self.operand.index.is_none()
+                && self.operand.scale == 1
+                && self.operand.displacement == 0;
+        }
         if mode == 0 && modrm & 7 == 4 && source.len() == 8 && source[3] == 0x25 {
             let site_register = match expected_operation {
                 MemorySiteOperationV2::Load => self.destination,

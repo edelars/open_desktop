@@ -815,6 +815,14 @@ fn is_checked_memory_address(
                 && operand.index.is_some_and(|index| (index as u8) < 4)
                 && matches!(operand.scale, 1 | 2 | 4 | 8)
                 && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
+            || instruction_length == 3
+                && operand.index.is_none()
+                && operand.scale == 1
+                && operand.displacement == 0
+                && matches!(
+                    operand.base,
+                    AddressBase::Register(od_isa::Register::Rsi | od_isa::Register::Rdi)
+                )
             || indexed_no_base_rbp_sib_disp32)
 }
 
@@ -845,12 +853,20 @@ fn is_scoped_memory_data_operand(
                     && operand.scale == 1
                     && match data_register {
                         4 => {
-                            (instruction_length == 8
-                                && matches!(operand.base, AddressBase::None)
-                                && operand.index.is_none()
-                                && operand.scale == 1
-                                && (i32::MIN as i64..=i32::MAX as i64)
-                                    .contains(&operand.displacement))
+                            (instruction_length == 3
+                                && operand.displacement == 0
+                                && matches!(
+                                    operand.base,
+                                    AddressBase::Register(
+                                        od_isa::Register::Rsi | od_isa::Register::Rdi
+                                    )
+                                ))
+                                || (instruction_length == 8
+                                    && matches!(operand.base, AddressBase::None)
+                                    && operand.index.is_none()
+                                    && operand.scale == 1
+                                    && (i32::MIN as i64..=i32::MAX as i64)
+                                        .contains(&operand.displacement))
                                 || (instruction_length == 3
                                     && operand.displacement == 0
                                     && matches!(
@@ -905,12 +921,20 @@ fn is_scoped_memory_data_operand(
                                     && matches!(operand.base, AddressBase::NextRip))
                         }
                         5 => {
-                            (instruction_length == 8
-                                && matches!(operand.base, AddressBase::None)
-                                && operand.index.is_none()
-                                && operand.scale == 1
-                                && (i32::MIN as i64..=i32::MAX as i64)
-                                    .contains(&operand.displacement))
+                            (instruction_length == 3
+                                && operand.displacement == 0
+                                && matches!(
+                                    operand.base,
+                                    AddressBase::Register(
+                                        od_isa::Register::Rsi | od_isa::Register::Rdi
+                                    )
+                                ))
+                                || (instruction_length == 8
+                                    && matches!(operand.base, AddressBase::None)
+                                    && operand.index.is_none()
+                                    && operand.scale == 1
+                                    && (i32::MIN as i64..=i32::MAX as i64)
+                                        .contains(&operand.displacement))
                                 || (instruction_length == 3
                                     && operand.displacement == 0
                                     && matches!(

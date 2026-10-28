@@ -1713,6 +1713,70 @@ mod tests {
     }
 
     #[test]
+    fn rsi_rdi_are_only_admitted_as_exact_qword_direct_bases() {
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data in 0..6_u8 {
+                for base in [6_u8, 7] {
+                    let source = [0x48, opcode, (data << 3) | base];
+                    let code = CodeView::new(0x5a00, &source).unwrap();
+                    let (site, copied) = match operation {
+                        MemorySiteOperationV2::Load => {
+                            let ir = compile_ir_memory_load_block_v2(code, 0x5a00).unwrap();
+                            let direct = compile_memory_load_block_v2(code, 0x5a00).unwrap();
+                            assert_eq!(ir.site(), direct.site());
+                            (ir.site().clone(), ir.source_bytes().to_vec())
+                        }
+                        MemorySiteOperationV2::Store => {
+                            let ir = compile_ir_memory_store_block_v2(code, 0x5a00).unwrap();
+                            let direct = compile_memory_store_block_v2(code, 0x5a00).unwrap();
+                            assert_eq!(ir.site(), direct.site());
+                            (ir.site().clone(), ir.source_bytes().to_vec())
+                        }
+                    };
+                    assert_eq!(copied, source);
+                    assert_eq!(site.next_rip(), 0x5a03);
+                    assert_eq!(
+                        site.operand().base,
+                        AddressBase::Register(Register::from_encoding(base).unwrap())
+                    );
+                    assert_eq!(site.operand().index, None);
+                    assert_eq!(site.operand().scale, 1);
+                    assert_eq!(site.operand().displacement, 0);
+                    assert_eq!(site.operation(), operation);
+                    assert_eq!(
+                        site.destination(),
+                        (operation == MemorySiteOperationV2::Load).then_some(data)
+                    );
+                    assert_eq!(
+                        site.source(),
+                        (operation == MemorySiteOperationV2::Store).then_some(data)
+                    );
+                    assert!(site.has_supported_profile());
+                    assert!(site.matches_source_bytes(&source, operation));
+                }
+            }
+        }
+
+        for invalid in [
+            vec![0x48, 0x8b, 0x46, 0x00],       // RSI + disp8
+            vec![0x48, 0x89, 0x87, 0, 0, 0, 0], // RDI + disp32
+            vec![0x48, 0x8b, 0x04, 0x2e],       // SIB with RSI base
+            vec![0x67, 0x48, 0x8b, 0x06],       // address32 override
+            vec![0x48, 0x8b, 0x36],             // RSI as data
+            vec![0x48, 0x8b, 0x3e],             // RDI as data
+            vec![0x48],                         // partial opcode
+            vec![0x48, 0x8b],                   // partial ModRM
+        ] {
+            let code = CodeView::new(0x5a00, &invalid).unwrap();
+            assert!(compile_ir_memory_load_block_v2(code, 0x5a00).is_err());
+            assert!(compile_ir_memory_store_block_v2(code, 0x5a00).is_err());
+        }
+    }
+
+    #[test]
     fn ir_checked_sib_singletons_match_decoded_metadata_for_all_registers_and_scales() {
         for (opcode, operation) in [
             (0x8b, MemorySiteOperationV2::Load),
