@@ -474,6 +474,54 @@ validation is claimed. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-36j-finite-binary-addition-composition)
 and [Stage 2 plan](../plans/STAGE_2.md#s2-36j--finite-binary-addition-composition).
 
+## S2-36k — finite binary subtraction composition
+
+**Статус:** bounded finite-subtraction composition and author checks are
+complete; independent Sol medium code review completed clean, with no
+findings. Public
+`Binary32::subtract_finite_aligned(lhs, rhs, mode)` and
+`Binary64::subtract_finite_aligned(...)` return `Option<(Self, bool)>`. The
+wrapper toggles the sign in a copy of the right `BinaryFinite` and delegates
+to S2-36j addition. Thus it uses the same gap limit (at most 64), exact
+alignment bridge, destination-selected precision, and single normal rounding
+or direct subnormal rounding. Overflow returns `None`. No guest exception,
+status flag, or x87 behavior is added.
+
+Exact cancellation and both-zero inputs return `None` in every mode, deferring
+the guest signed-zero rule. With one zero operand, `x-0` returns `x`, while
+`0-x` returns the sign-negated `x`, rounded to the destination format. A
+nonzero exact difference that rounds to zero preserves its difference sign;
+the boolean is mathematical `inexact` only.
+
+Tests cover binary32/binary64 `1.5-1` and `1-1.5`, successor-of-one deep
+cancellation, minimum-normal minus maximum-subnormal yielding minimum
+subnormal, exact-zero and both-zero rejection in all four modes, zero
+identity/negation, tiny signed results in all four modes, mixed-format
+operands, gap 64 acceptance and gap 65 rejection in both orders, overflow
+rejection, and input immutability. A normal double-round regression computes
+`0x3ff0_0000_0000_0001 - 0xbc9f_ffff_ffff_ffff` and expects binary64
+`0x3ff0_0000_0000_0001` with `inexact=true`. A subnormal double-round
+regression computes binary64 `0x3810_0000_0000_0000 -
+0x3690_0000_0000_0001` into binary32 and expects largest subnormal
+`0x007f_ffff` with `inexact=true` via the direct subnormal path.
+Across all four modes, equal positive and equal negative nonzero inputs return
+`None` for both binary32 and binary64 sources and destinations; the binary64
+signed-zero pair matrix also returns `None`.
+
+Author-reported checks passed:
+
+- `cargo test -p od-isa --offline binary_float::tests`: 33/33.
+- `cargo fmt --all -- --check && git diff --check`.
+- `cargo check --workspace --all-targets --offline`.
+- `graphify update .` completed at 7786 nodes/15390 edges with the known
+  `include/open_desktop/host_abi.h` syntax warning and label-refresh notice.
+
+Independent Sol medium code review completed clean, with no findings. Wider
+gaps, full guest subtraction/exception policy, broader S2-36 arithmetic, and
+hardware validation remain open. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-36k-finite-binary-subtraction-composition)
+and [Stage 2 plan](../plans/STAGE_2.md#s2-36k--finite-binary-subtraction-composition).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.

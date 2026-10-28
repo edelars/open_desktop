@@ -10613,3 +10613,49 @@ overflow/exception policy, broader S2-36 arithmetic, S2-37/S2-38 instruction
 work, and hardware validation remain open. See the
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36j--finite-binary-addition-composition)
 and [plan](../plans/STAGE_2.md#s2-36j--finite-binary-addition-composition).
+
+## Local S2-36k: finite binary subtraction composition
+
+`Binary32::subtract_finite_aligned(lhs, rhs, mode)` and
+`Binary64::subtract_finite_aligned(...)` return `Option<(Self, bool)>`. The
+wrapper negates the sign of a copied right `BinaryFinite` and delegates to
+the corresponding S2-36j bounded addition helper. It does not mutate either
+input. It consequently inherits the exponent-gap limit of 64, exact
+alignment/normalization bridge, destination precision and rounding mode,
+normal one-round path, direct subnormal path, and `None` result for overflow.
+Only finite normalized inputs are admitted; this API defines no guest
+exception delivery, floating-point status flags, or x87 changes.
+
+Exact cancellation and both-zero inputs yield `None` in every rounding mode,
+so guest signed-zero selection remains undefined here. A single zero operand
+acts according to subtraction: `x-0` returns `x`, while `0-x` returns its
+sign-negated value, rounded to the selected destination. If a nonzero exact
+difference rounds to zero, the resulting signed-zero encoding retains the
+exact difference's sign. The boolean is mathematical `inexact` only.
+
+Literal tests include `1.5-1` and `1-1.5` in binary32 and binary64,
+successor-of-one deep cancellation, exact minimum-subnormal results from
+minimum-normal minus maximum-subnormal, both-zero and exact-cancellation
+rejection in all four modes, zero identity and negation, and tiny
+positive/negative differences under all four modes.
+They also cover mixed formats, gap 64 accepted and 65
+rejected in both operand orders, overflow rejection, and input immutability.
+The normal double-round regression computes
+`0x3ff0_0000_0000_0001 - 0xbc9f_ffff_ffff_ffff` as binary64 and expects
+`0x3ff0_0000_0000_0001` with `inexact=true`. The direct subnormal regression
+computes binary64 `0x3810_0000_0000_0000 - 0x3690_0000_0000_0001` into
+binary32 and expects largest subnormal `0x007f_ffff` with `inexact=true`.
+Across all four modes, equal positive and equal negative nonzero inputs return
+`None` for both binary32 and binary64 sources and destinations; the binary64
+signed-zero pair matrix also returns `None`.
+
+Author-reported `cargo test -p od-isa --offline binary_float::tests` passed
+33/33; `cargo fmt --all -- --check && git diff --check` and
+`cargo check --workspace --all-targets --offline` passed. Graphify update
+completed at 7786 nodes/15390 edges with the known
+`include/open_desktop/host_abi.h` syntax warning and label-refresh notice.
+Independent Sol code review completed clean, with no findings. Wider gaps,
+complete guest subtraction/exception semantics, broader S2-36 arithmetic, and
+hardware validation remain open. See the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36k--finite-binary-subtraction-composition)
+and [plan](../plans/STAGE_2.md#s2-36k--finite-binary-subtraction-composition).

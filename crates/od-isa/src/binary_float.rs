@@ -271,6 +271,20 @@ impl Binary32 {
             )
         }
     }
+
+    /// Subtracts two finite values by negating the copied right operand.
+    ///
+    /// Exact cancellation and two-zero inputs return `None`, matching the
+    /// bounded addition helper's deferred zero-sign policy.
+    pub fn subtract_finite_aligned(
+        lhs: BinaryFinite,
+        rhs: BinaryFinite,
+        mode: RationalRoundingMode,
+    ) -> Option<(Self, bool)> {
+        let negated_rhs =
+            BinaryFinite::new(!rhs.sign, rhs.significand, rhs.exponent, rhs.source_class);
+        Self::add_finite_aligned(lhs, negated_rhs, mode)
+    }
 }
 
 /// An immutable binary64 encoding.
@@ -523,6 +537,20 @@ impl Binary64 {
                 mode,
             )
         }
+    }
+
+    /// Subtracts two finite values by negating the copied right operand.
+    ///
+    /// Exact cancellation and two-zero inputs return `None`, matching the
+    /// bounded addition helper's deferred zero-sign policy.
+    pub fn subtract_finite_aligned(
+        lhs: BinaryFinite,
+        rhs: BinaryFinite,
+        mode: RationalRoundingMode,
+    ) -> Option<(Self, bool)> {
+        let negated_rhs =
+            BinaryFinite::new(!rhs.sign, rhs.significand, rhs.exponent, rhs.source_class);
+        Self::add_finite_aligned(lhs, negated_rhs, mode)
     }
 }
 
@@ -2523,6 +2551,264 @@ mod tests {
                 Nearest,
             ),
             Some((Binary64::from_bits(0x3ff0_0000_0000_0001), true)),
+        );
+        assert_eq!(lhs_raw.to_bits(), lhs_before);
+        assert_eq!(rhs_raw.to_bits(), rhs_before);
+    }
+
+    #[test]
+    fn finite_subtraction_composes_exact_normal_results() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        let one32 = Binary32::from_bits(0x3f80_0000).normalize_finite().unwrap();
+        let one64 = Binary64::from_bits(0x3ff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let one_and_half32 = Binary32::from_bits(0x3fc0_0000).normalize_finite().unwrap();
+        let one_and_half64 = Binary64::from_bits(0x3ff8_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary32::subtract_finite_aligned(one_and_half32, one32, Nearest),
+            Some((Binary32::from_bits(0x3f00_0000), false)),
+        );
+        assert_eq!(
+            Binary64::subtract_finite_aligned(one_and_half64, one64, Nearest),
+            Some((Binary64::from_bits(0x3fe0_0000_0000_0000), false)),
+        );
+        assert_eq!(
+            Binary32::subtract_finite_aligned(one32, one_and_half32, Nearest),
+            Some((Binary32::from_bits(0xbf00_0000), false)),
+        );
+        assert_eq!(
+            Binary64::subtract_finite_aligned(one64, one_and_half64, Nearest),
+            Some((Binary64::from_bits(0xbfe0_0000_0000_0000), false)),
+        );
+
+        let successor_one64 = Binary64::from_bits(0x3ff0_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary64::subtract_finite_aligned(successor_one64, one64, Nearest),
+            Some((Binary64::from_bits(0x3cb0_0000_0000_0000), false)),
+        );
+        let negative_successor_one64 = Binary64::from_bits(0xbff0_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        let negative_one64 = Binary64::from_bits(0xbff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary64::subtract_finite_aligned(negative_one64, negative_successor_one64, Nearest),
+            Some((Binary64::from_bits(0x3cb0_0000_0000_0000), false)),
+        );
+
+        assert_eq!(
+            Binary32::subtract_finite_aligned(one32, negative_one64, Nearest),
+            Some((Binary32::from_bits(0x4000_0000), false)),
+        );
+        assert_eq!(
+            Binary32::subtract_finite_aligned(
+                Binary32::from_bits(0xbf80_0000).normalize_finite().unwrap(),
+                one64,
+                Nearest,
+            ),
+            Some((Binary32::from_bits(0xc000_0000), false)),
+        );
+    }
+
+    #[test]
+    fn finite_subtraction_composes_at_subnormal_boundaries_and_avoids_double_rounding() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        let min_normal32 = Binary32::from_bits(0x0080_0000).normalize_finite().unwrap();
+        let max_subnormal32 = Binary32::from_bits(0x007f_ffff).normalize_finite().unwrap();
+        assert_eq!(
+            Binary32::subtract_finite_aligned(min_normal32, max_subnormal32, Nearest),
+            Some((Binary32::from_bits(1), false)),
+        );
+        let min_normal64 = Binary64::from_bits(0x0010_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let max_subnormal64 = Binary64::from_bits(0x000f_ffff_ffff_ffff)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary64::subtract_finite_aligned(min_normal64, max_subnormal64, Nearest),
+            Some((Binary64::from_bits(1), false)),
+        );
+
+        let lhs_normal_round = Binary64::from_bits(0x3ff0_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        let rhs_negative_tail = Binary64::from_bits(0xbc9f_ffff_ffff_ffff)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary64::subtract_finite_aligned(lhs_normal_round, rhs_negative_tail, Nearest),
+            Some((Binary64::from_bits(0x3ff0_0000_0000_0001), true)),
+        );
+
+        let lhs_subnormal_round = Binary64::from_bits(0x3810_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let rhs_positive_tail = Binary64::from_bits(0x3690_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary32::subtract_finite_aligned(lhs_subnormal_round, rhs_positive_tail, Nearest),
+            Some((Binary32::from_bits(0x007f_ffff), true)),
+        );
+    }
+
+    #[test]
+    fn finite_subtraction_handles_zero_signs_rounding_modes_gaps_and_inputs() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let modes = [Nearest, Zero, Up, Down];
+        let positive_zero = Binary32::from_bits(0).normalize_finite().unwrap();
+        let negative_zero = Binary64::from_bits(0x8000_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let one32 = Binary32::from_bits(0x3f80_0000).normalize_finite().unwrap();
+        let negative_one64 = Binary64::from_bits(0xbff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let one64 = Binary64::from_bits(0x3ff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_one32 = Binary32::from_bits(0xbf80_0000).normalize_finite().unwrap();
+
+        for mode in modes {
+            for (lhs, rhs) in [(one32, one32), (negative_one32, negative_one32)] {
+                assert_eq!(Binary32::subtract_finite_aligned(lhs, rhs, mode), None);
+                assert_eq!(Binary64::subtract_finite_aligned(lhs, rhs, mode), None);
+            }
+            for (lhs, rhs) in [(one64, one64), (negative_one64, negative_one64)] {
+                assert_eq!(Binary32::subtract_finite_aligned(lhs, rhs, mode), None);
+                assert_eq!(Binary64::subtract_finite_aligned(lhs, rhs, mode), None);
+            }
+            for (lhs, rhs) in [
+                (positive_zero, positive_zero),
+                (positive_zero, negative_zero),
+                (negative_zero, positive_zero),
+                (negative_zero, negative_zero),
+            ] {
+                assert_eq!(Binary32::subtract_finite_aligned(lhs, rhs, mode), None);
+                assert_eq!(Binary64::subtract_finite_aligned(lhs, rhs, mode), None);
+            }
+            assert_eq!(
+                Binary32::subtract_finite_aligned(one32, positive_zero, mode),
+                Some((Binary32::from_bits(0x3f80_0000), false)),
+            );
+            assert_eq!(
+                Binary32::subtract_finite_aligned(one32, negative_zero, mode),
+                Some((Binary32::from_bits(0x3f80_0000), false)),
+            );
+            assert_eq!(
+                Binary32::subtract_finite_aligned(negative_one32, negative_zero, mode),
+                Some((Binary32::from_bits(0xbf80_0000), false)),
+            );
+            assert_eq!(
+                Binary32::subtract_finite_aligned(positive_zero, one64, mode),
+                Some((Binary32::from_bits(0xbf80_0000), false)),
+            );
+            assert_eq!(
+                Binary32::subtract_finite_aligned(negative_zero, one64, mode),
+                Some((Binary32::from_bits(0xbf80_0000), false)),
+            );
+            assert_eq!(
+                Binary32::subtract_finite_aligned(positive_zero, negative_one64, mode),
+                Some((Binary32::from_bits(0x3f80_0000), false)),
+            );
+            assert_eq!(
+                Binary32::subtract_finite_aligned(negative_zero, negative_one64, mode),
+                Some((Binary32::from_bits(0x3f80_0000), false)),
+            );
+        }
+
+        let two_to_minus_64 = Binary64::from_bits(0x3bf0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let two_to_minus_65 = Binary64::from_bits(0x3be0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary64::subtract_finite_aligned(one64, two_to_minus_64, Nearest),
+            Some((Binary64::from_bits(0x3ff0_0000_0000_0000), true)),
+        );
+        assert_eq!(
+            Binary64::subtract_finite_aligned(two_to_minus_64, one64, Nearest),
+            Some((Binary64::from_bits(0xbff0_0000_0000_0000), true)),
+        );
+        assert_eq!(
+            Binary64::subtract_finite_aligned(one64, two_to_minus_65, Nearest),
+            None
+        );
+        assert_eq!(
+            Binary64::subtract_finite_aligned(two_to_minus_65, one64, Nearest),
+            None
+        );
+
+        let max_finite64 = Binary64::from_bits(0x7fef_ffff_ffff_ffff)
+            .normalize_finite()
+            .unwrap();
+        let negative_max_finite64 = Binary64::from_bits(0xffef_ffff_ffff_ffff)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary64::subtract_finite_aligned(max_finite64, negative_max_finite64, Nearest),
+            None,
+        );
+
+        let positive_tiny = Binary64::from_bits(0x36a0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_half_tiny = Binary64::from_bits(0xb690_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let positive_half_tiny = Binary64::from_bits(0x3690_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        let negative_tiny = Binary64::from_bits(0xb6a0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            Binary32::subtract_finite_aligned(positive_tiny, positive_half_tiny, Nearest),
+            Some((Binary32::from_bits(0), true)),
+        );
+        assert_eq!(
+            Binary32::subtract_finite_aligned(positive_half_tiny, positive_tiny, Nearest),
+            Some((Binary32::from_bits(0x8000_0000), true)),
+        );
+        assert_eq!(
+            Binary32::subtract_finite_aligned(positive_tiny, positive_half_tiny, Zero),
+            Some((Binary32::from_bits(0), true)),
+        );
+        assert_eq!(
+            Binary32::subtract_finite_aligned(positive_half_tiny, positive_tiny, Zero),
+            Some((Binary32::from_bits(0x8000_0000), true)),
+        );
+        assert_eq!(
+            Binary32::subtract_finite_aligned(positive_tiny, positive_half_tiny, Up),
+            Some((Binary32::from_bits(1), true)),
+        );
+        assert_eq!(
+            Binary32::subtract_finite_aligned(negative_tiny, negative_half_tiny, Down),
+            Some((Binary32::from_bits(0x8000_0001), true)),
+        );
+
+        let lhs_raw = Binary64::from_bits(0x3ff0_0000_0000_0001);
+        let rhs_raw = Binary64::from_bits(0x3c9f_ffff_ffff_ffff);
+        let lhs_before = lhs_raw.to_bits();
+        let rhs_before = rhs_raw.to_bits();
+        let _ = Binary64::subtract_finite_aligned(
+            lhs_raw.normalize_finite().unwrap(),
+            rhs_raw.normalize_finite().unwrap(),
+            Nearest,
         );
         assert_eq!(lhs_raw.to_bits(), lhs_before);
         assert_eq!(rhs_raw.to_bits(), rhs_before);

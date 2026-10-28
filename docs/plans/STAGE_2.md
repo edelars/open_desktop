@@ -464,6 +464,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36h | Compose finite binary32/binary64 division through one rounding | S2-36c–36f; independent review |
 | [x] | S2-36i | Compose finite binary32/binary64 multiplication through one rounding | S2-36b, S2-36d–36f; independent review |
 | [x] | S2-36j | Compose bounded aligned finite binary32/binary64 addition through one rounding | S2-36d–36h; independent review |
+| [x] | S2-36k | Compose bounded aligned finite binary32/binary64 subtraction through one rounding | S2-36j; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -5109,6 +5110,46 @@ notice. Independent Sol code review completed clean, with no findings. Keep wide
 standalone subtraction, overflow/exception policy, broader S2-36 arithmetic,
 S2-37/S2-38 instruction work, and hardware validation open.
 See the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36j--finite-binary-addition-composition).
+
+#### S2-36k — finite binary subtraction composition
+
+Add `Binary32::subtract_finite_aligned(lhs, rhs, mode)` and the `Binary64`
+counterpart, returning `Option<(Self, bool)>`. This is a thin wrapper: negate
+the sign of a copied right `BinaryFinite` and delegate to S2-36j addition.
+Therefore it inherits the same exponent-gap limit of 64, exact bridge,
+destination-selected precision, one-round normal or direct subnormal path,
+and `None` overflow behavior. Inputs are finite normalized values; no guest
+exception, status flags, or x87 behavior are added.
+
+Subtraction exact-zero behavior follows the underlying sum: exact cancellation
+and both-zero inputs return `None` in every rounding mode. With one zero,
+`x-0` returns `x` and `0-x` returns the unary sign-negated `x`, rounded to the
+destination format. A nonzero exact difference that rounds to zero retains
+the exact difference's sign. No architectural operation-wide signed-zero,
+overflow, or exception policy is defined.
+
+Literal coverage includes binary32/binary64 `1.5-1` and `1-1.5`,
+successor-of-one deep cancellation, min-normal minus max-subnormal yielding
+the minimum subnormal, both-zero/cancellation rejection in all four modes,
+zero identity/negation, tiny signed results in all four modes, mixed formats,
+gap 64 acceptance and gap 65 rejection in both orders, overflow rejection, and
+input immutability. The normal double-round regression subtracts the negative
+binary64 tail `0xbc9f_ffff_ffff_ffff` from `0x3ff0_0000_0000_0001` and returns
+`0x3ff0_0000_0000_0001` with `inexact=true`. The subnormal regression
+subtracts binary64 `0x3690_0000_0000_0001` from `0x3810_0000_0000_0000` into
+binary32 and returns largest subnormal `0x007f_ffff` with `inexact=true`,
+using direct subnormal rounding. The mode matrix rejects equal positive and
+equal negative nonzero cancellation for both binary32 and binary64 sources and
+destinations; it also covers all binary64 signed-zero pairs.
+
+The author reports focused `binary_float::tests` passing 33/33, formatting and
+diff checks passing, `cargo check --workspace --all-targets --offline`
+passing, and Graphify update completing at 7786 nodes/15390 edges with the
+known `include/open_desktop/host_abi.h` syntax warning and label-refresh
+notice. Independent Sol review completed clean with no findings. Wider gaps,
+full guest subtraction/exception policy, broader S2-36 arithmetic, and hardware
+validation remain open.
+See the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36k--finite-binary-subtraction-composition).
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 
