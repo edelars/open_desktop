@@ -228,9 +228,27 @@ impl BinaryFinite {
     }
 }
 
+/// Multiplies two normalized finite significands without rounding or packing.
+///
+/// For nonzero inputs, returns `(sign, exponent, magnitude)` such that the exact
+/// mathematical product is `(-1)^sign * magnitude * 2^(exponent-127)`. The
+/// magnitude is the full 128-bit product, with no shifting or discarded bits.
+/// If either input is zero, returns the signless mathematical-zero sentinel
+/// `(false, 0, 0)`; this does not choose a guest floating-point zero sign.
+pub fn multiply_finite_significands(lhs: BinaryFinite, rhs: BinaryFinite) -> (bool, i32, u128) {
+    if lhs.significand == 0 || rhs.significand == 0 {
+        return (false, 0, 0);
+    }
+
+    let sign = lhs.sign ^ rhs.sign;
+    let exponent = lhs.exponent + rhs.exponent + 1;
+    let magnitude = u128::from(lhs.significand) * u128::from(rhs.significand);
+    (sign, exponent, magnitude)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Binary32, Binary64, BinaryClass, BinaryFinite};
+    use super::{Binary32, Binary64, BinaryClass, BinaryFinite, multiply_finite_significands};
 
     fn normalized(
         value: BinaryFinite,
@@ -572,5 +590,110 @@ mod tests {
         let before = value.to_bits();
         let _ = value.normalize_finite();
         assert_eq!(value.to_bits(), before);
+    }
+
+    #[test]
+    fn finite_multiplication_preserves_full_significand_product() {
+        let one = Binary32::from_bits(0x3f80_0000).normalize_finite().unwrap();
+        let one_and_half = Binary32::from_bits(0x3fc0_0000).normalize_finite().unwrap();
+        assert_eq!(
+            multiply_finite_significands(one, one),
+            (false, 1, 0x4000_0000_0000_0000_0000_0000_0000_0000),
+        );
+        assert_eq!(
+            multiply_finite_significands(one_and_half, one_and_half),
+            (false, 1, 0x9000_0000_0000_0000_0000_0000_0000_0000),
+        );
+
+        let b32_next_one = Binary32::from_bits(0x3f80_0001).normalize_finite().unwrap();
+        assert_eq!(
+            multiply_finite_significands(b32_next_one, b32_next_one),
+            (false, 1, 0x4000_0100_0001_0000_0000_0000_0000_0000),
+        );
+        let b64_next_one = Binary64::from_bits(0x3ff0_0000_0000_0001)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            multiply_finite_significands(b64_next_one, b64_next_one),
+            (false, 1, 0x4000_0000_0000_0800_0000_0000_0040_0000),
+        );
+
+        let min_b32 = Binary32::from_bits(1).normalize_finite().unwrap();
+        assert_eq!(
+            multiply_finite_significands(min_b32, min_b32),
+            (false, -297, 0x4000_0000_0000_0000_0000_0000_0000_0000),
+        );
+        let min_b64 = Binary64::from_bits(1).normalize_finite().unwrap();
+        assert_eq!(
+            multiply_finite_significands(min_b64, min_b64),
+            (false, -2147, 0x4000_0000_0000_0000_0000_0000_0000_0000),
+        );
+
+        let max_b32 = Binary32::from_bits(0x7f7f_ffff).normalize_finite().unwrap();
+        assert_eq!(
+            multiply_finite_significands(max_b32, max_b32),
+            (false, 255, 0xffff_fe00_0001_0000_0000_0000_0000_0000),
+        );
+        let max_b64 = Binary64::from_bits(0x7fef_ffff_ffff_ffff)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            multiply_finite_significands(max_b64, max_b64),
+            (false, 2047, 0xffff_ffff_ffff_f000_0000_0000_0040_0000),
+        );
+    }
+
+    #[test]
+    fn finite_multiplication_handles_signs_zeros_and_mixed_formats() {
+        let positive = Binary32::from_bits(0x3fc0_0000).normalize_finite().unwrap();
+        let negative = Binary32::from_bits(0xbfc0_0000).normalize_finite().unwrap();
+        let product = 0x9000_0000_0000_0000_0000_0000_0000_0000;
+        assert_eq!(
+            multiply_finite_significands(positive, positive),
+            (false, 1, product)
+        );
+        assert_eq!(
+            multiply_finite_significands(positive, negative),
+            (true, 1, product)
+        );
+        assert_eq!(
+            multiply_finite_significands(negative, positive),
+            (true, 1, product)
+        );
+        assert_eq!(
+            multiply_finite_significands(negative, negative),
+            (false, 1, product)
+        );
+
+        let positive_zero = Binary32::from_bits(0).normalize_finite().unwrap();
+        let negative_zero = Binary64::from_bits(1 << 63).normalize_finite().unwrap();
+        let one_b64 = Binary64::from_bits(0x3ff0_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            multiply_finite_significands(positive_zero, one_b64),
+            (false, 0, 0)
+        );
+        assert_eq!(
+            multiply_finite_significands(one_b64, negative_zero),
+            (false, 0, 0)
+        );
+        assert_eq!(
+            multiply_finite_significands(positive_zero, negative_zero),
+            (false, 0, 0)
+        );
+
+        let two_b64 = Binary64::from_bits(0x4000_0000_0000_0000)
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(
+            multiply_finite_significands(positive, two_b64),
+            (false, 2, 0x6000_0000_0000_0000_0000_0000_0000_0000),
+        );
+        let min_subnormal_b32 = Binary32::from_bits(1).normalize_finite().unwrap();
+        assert_eq!(
+            multiply_finite_significands(min_subnormal_b32, positive),
+            (false, -148, 0x6000_0000_0000_0000_0000_0000_0000_0000),
+        );
     }
 }

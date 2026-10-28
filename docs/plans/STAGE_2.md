@@ -455,6 +455,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-35.43 | Local-only bounded register PSRAD immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [ ] | S2-36 | Собственная binary32/binary64 семантика | S2-29, S2-34 |
 | [x] | S2-36a | Lossless binary32/binary64 classification and exact finite normalization; no arithmetic | S2-36; independent review |
+| [x] | S2-36b | Exact unrounded product of finite normalized significands; mathematical helper only | S2-36a; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -4745,6 +4746,38 @@ Independent Sol medium code review completed clean; no findings remain. See the
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36a--raw-binary32binary64-classification-and-finite-normalization).
 Normative encodings: Intel SDM Vol. 1 Rev. 093, §§4.2.2/Table 4-3 and 4.8.3.1–4
 ([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/929351)).
+
+#### S2-36b — exact finite significand multiplication
+
+Add `multiply_finite_significands(lhs: BinaryFinite, rhs: BinaryFinite) ->
+(bool, i32, u128)` as a pure project mathematical helper. For two nonzero
+normalized finite inputs, return `(sign, exponent, magnitude)` where `sign` is
+the XOR of input signs, `magnitude` is the full unsigned 128-bit product of the
+two 64-bit significands, and `exponent = lhs.exponent + rhs.exponent + 1`.
+The exact value is `(-1)^sign × magnitude × 2^(exponent−127)`. Preserve both
+the leading and low product bits: do not shift, truncate, jam, round, or pack.
+With the input bounds from S2-36a, the exponent range is −2147…2047 and the
+unsigned product fits `u128`.
+
+If either input is zero, return `(false, 0, 0)` as a signless mathematical-zero
+sentinel, independent of operand sign or order. It does not select an
+architectural `+0` result. NaN and infinity are outside this helper's domain;
+there is no destination-format result class, status flag, CPU mutation, or x87
+state transition. Keep existing x87 helpers and behavior unchanged.
+
+Literal tests cover 1×1, 1.5×1.5, both binary32 and binary64 successor-of-one
+squares (to catch loss of low product bits), minimum-subnormal and maximum-
+finite squares, all four nonzero sign combinations, signed zeros in either
+operand position, zero×zero, mixed-format inputs, and normal/subnormal
+combinations. The complete checked tuple literals and author test/check
+results are in the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36b--exact-finite-significand-multiplication).
+
+This is a project mathematical tuple and scaling contract, not a guest FP
+instruction or a layout specified by Intel. The numerical representation is
+grounded in Intel SDM Vol. 1 Rev. 093, §§4.8.2, 4.2.2/Table 4-3, and 4.8.4;
+§4.8.3.1 describes zero sign, which this signless sentinel intentionally
+leaves for a later operation-specific decision ([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/929351)). S2-36
+rounding/exceptions and S2-37/S2-38 remain open.
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 

@@ -10315,3 +10315,31 @@ Independent Sol medium code review completed clean; no findings remain.
 Implementation and test status are recorded in the
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36a--raw-binary32binary64-classification-and-finite-normalization)
 and [plan](../plans/STAGE_2.md#s2-36a--raw-binary32binary64-classification-and-finite-normalization).
+
+## Local S2-36b: exact finite significand multiplication
+
+`multiply_finite_significands(lhs: BinaryFinite, rhs: BinaryFinite) ->
+(bool, i32, u128)` is a pure mathematical helper over the exact finite views
+from S2-36a. For nonzero operands, the tuple is `(sign, exponent, magnitude)`:
+`sign = lhs.sign XOR rhs.sign`, `magnitude` is the full unsigned 128-bit
+product of the two 64-bit significands, and
+`exponent = lhs.exponent + rhs.exponent + 1`. It represents the exact product
+`(-1)^sign × magnitude × 2^(exponent−127)`. The full product is returned
+without shifting, truncation, sticky-bit formation, rounding, or packing.
+Because each normalized input significand is in `[2^63, 2^64−1]`, the product
+magnitude's leading bit is 126 or 127; the bounded input exponent range
+produces result exponents −2147…2047.
+
+If either input is zero, the helper returns `(false, 0, 0)`, regardless of operand signs or order. This is a signless mathematical-zero sentinel, not an architectural `+0` result. NaNs and infinities are outside the `BinaryFinite` domain. The helper returns no FP class or status, mutates no CPU state, and does not alter existing x87 state or helper behavior.
+
+The tuple and its scale are a project mathematical contract, not a result
+layout mandated by Intel. The underlying significand/value model and binary
+formats follow Intel SDM Vol. 1 Rev. 093 (September 2026), §§4.8.2,
+4.2.2/Table 4-3, and 4.8.4; §4.8.3.1 covers signed zero, which this sentinel
+leaves to a later operation-specific decision
+([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/929351)). S2-36
+rounding and exceptions, and S2-37/S2-38 instruction behavior, remain open.
+Independent Sol medium code review completed clean; no findings remain. See
+the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36b--exact-finite-significand-multiplication)
+and [plan](../plans/STAGE_2.md#s2-36b--exact-finite-significand-multiplication)
+for tests and claim limits.

@@ -42,6 +42,53 @@ Vol. 1 Rev. 093 (September 2026), §§4.2.2/Table 4-3 and 4.8.3.1–4
 the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-36a-raw-binary32binary64-classification-and-finite-normalization)
 and [Stage 2 plan](../plans/STAGE_2.md#s2-36a--raw-binary32binary64-classification-and-finite-normalization).
 
+## S2-36b — exact finite significand multiplication
+
+**Статус:** bounded mathematical helper and focused tests are implemented;
+independent Sol medium code review completed clean, with no findings remaining. The public
+`multiply_finite_significands(lhs: BinaryFinite, rhs: BinaryFinite) ->
+(bool, i32, u128)` returns `(sign, exponent, magnitude)` for nonzero finite
+inputs. It computes sign XOR, exponent sum plus one, and the full unsigned
+128-bit product, representing the exact result as
+`(-1)^sign × magnitude × 2^(exponent−127)`. It does not shift, truncate,
+round, or pack. If either operand is zero, the helper returns `(false, 0, 0)`
+as a signless mathematical sentinel, not as an architectural positive-zero
+decision. The helper does not mutate CPU state or x87 state.
+
+**Literal boundary results:**
+
+| Inputs | Tuple `(sign, exponent, magnitude)` |
+|---|---|
+| `1 × 1` | `(false, 1, 0x40000000000000000000000000000000)` |
+| `1.5 × 1.5` | `(false, 1, 0x90000000000000000000000000000000)` |
+| Binary32 successor of 1 squared | `(false, 1, 0x40000100000100000000000000000000)` |
+| Binary64 successor of 1 squared | `(false, 1, 0x40000000000008000000000000400000)` |
+| Minimum binary32 subnormal squared | `(false, -297, 0x40000000000000000000000000000000)` |
+| Minimum binary64 subnormal squared | `(false, -2147, 0x40000000000000000000000000000000)` |
+| Maximum binary32 finite squared | `(false, 255, 0xfffffe00000100000000000000000000)` |
+| Maximum binary64 finite squared | `(false, 2047, 0xfffffffffffff0000000000000400000)` |
+
+The successor-of-one literals retain low product bits that rounding or early
+truncation would lose. The tests also cover all four nonzero sign combinations,
+both signed-zero operand positions and zero×zero, mixed binary32/binary64
+inputs, and normal/subnormal combinations. Input exponents bound the returned
+exponent to −2147…2047; normalized 64-bit significands fit their exact product
+in `u128`.
+
+**Авторские проверки:** `cargo test -p od-isa --offline binary_float::tests`
+(6/6); `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --offline`;
+`git diff --check`; and `graphify update .` passed. Graphify emitted the
+pre-existing syntax-extractor warning for `include/open_desktop/host_abi.h`
+and exited successfully. Independent Sol review reran
+`cargo test -p od-isa binary_float --offline` (6/6) and found no issues. This
+is a mathematical helper only: no guest FP instruction, rounding/exception
+semantics, physical check, or x87 change is claimed. S2-36 rounding/exceptions
+and S2-37/S2-38 remain open. Normative
+context is Intel SDM Vol. 1 Rev. 093, §§4.8.2, 4.2.2/Table 4-3, 4.8.4, and
+4.8.3.1 ([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/929351)).
+See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-36b-exact-finite-significand-multiplication)
+and [Stage 2 plan](../plans/STAGE_2.md#s2-36b--exact-finite-significand-multiplication).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.
