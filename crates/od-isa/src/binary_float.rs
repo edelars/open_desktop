@@ -76,6 +76,58 @@ impl<T> BinaryRoundingResult<T> {
     }
 }
 
+/// Result of a same-format binary32/binary64 addition or subtraction.
+///
+/// The rounding diagnostics have the same local mathematical meaning as
+/// [`BinaryRoundingResult`]. `invalid_operation` is a local operation outcome,
+/// not an architectural exception flag or delivery decision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BinaryAddSubResult<T> {
+    rounding: BinaryRoundingResult<T>,
+    invalid_operation: bool,
+}
+
+impl<T> BinaryAddSubResult<T> {
+    const fn new(rounding: BinaryRoundingResult<T>, invalid_operation: bool) -> Self {
+        Self {
+            rounding,
+            invalid_operation,
+        }
+    }
+
+    fn exact(value: T, invalid_operation: bool) -> Self {
+        Self::new(
+            BinaryRoundingResult::new(value, false, false, false),
+            invalid_operation,
+        )
+    }
+
+    /// Returns the destination-format result encoding.
+    pub const fn value(&self) -> &T {
+        self.rounding.value()
+    }
+
+    /// Returns whether the result lost information in bounded encoding.
+    pub const fn inexact(&self) -> bool {
+        self.rounding.inexact()
+    }
+
+    /// Returns whether precision rounding exceeds the destination's finite range.
+    pub const fn overflow(&self) -> bool {
+        self.rounding.overflow()
+    }
+
+    /// Returns whether the precision-rounded nonzero result is below normal range.
+    pub const fn tiny_after_precision_rounding(&self) -> bool {
+        self.rounding.tiny_after_precision_rounding()
+    }
+
+    /// Returns the local invalid-operation outcome for this add/sub operation.
+    pub const fn invalid_operation(&self) -> bool {
+        self.invalid_operation
+    }
+}
+
 /// An immutable binary32 encoding.
 ///
 /// Equality is raw-bit identity, not guest floating-point equality.
@@ -509,6 +561,92 @@ impl Binary32 {
         let negated_rhs =
             BinaryFinite::new(!rhs.sign, rhs.significand, rhs.exponent, rhs.source_class);
         Self::add_finite_aligned_result(lhs, negated_rhs, mode)
+    }
+
+    /// Adds same-format raw binary32 operands and returns result diagnostics.
+    ///
+    /// Finite operands use the finite result path. NaN propagation follows the
+    /// Intel SDM Rev. 093 source-order rule: select the first NaN operand and
+    /// quiet it only when that selected operand is signaling. The local
+    /// invalid-operation result is set for any signaling NaN or invalid
+    /// infinity cancellation; no architectural state is updated.
+    pub fn add_raw_result(
+        lhs: Self,
+        rhs: Self,
+        mode: RationalRoundingMode,
+    ) -> BinaryAddSubResult<Self> {
+        Self::add_sub_raw_result(lhs, rhs, mode, false)
+    }
+
+    /// Subtracts same-format raw binary32 operands and returns result diagnostics.
+    ///
+    /// NaN selection is performed from the original source operands before the
+    /// finite/infinity subtraction sign is applied to the right operand.
+    pub fn subtract_raw_result(
+        lhs: Self,
+        rhs: Self,
+        mode: RationalRoundingMode,
+    ) -> BinaryAddSubResult<Self> {
+        Self::add_sub_raw_result(lhs, rhs, mode, true)
+    }
+
+    fn add_sub_raw_result(
+        lhs: Self,
+        rhs: Self,
+        mode: RationalRoundingMode,
+        subtract: bool,
+    ) -> BinaryAddSubResult<Self> {
+        let lhs_class = lhs.class();
+        let rhs_class = rhs.class();
+        let lhs_nan = matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+        let rhs_nan = matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+        if lhs_nan || rhs_nan {
+            let (selected, selected_class) = if lhs_nan {
+                (lhs, lhs_class)
+            } else {
+                (rhs, rhs_class)
+            };
+            let value = if selected_class == BinaryClass::SignalingNaN {
+                Self::from_bits(selected.0 | Self::QUIET_BIT)
+            } else {
+                selected
+            };
+            return BinaryAddSubResult::exact(
+                value,
+                lhs_class == BinaryClass::SignalingNaN || rhs_class == BinaryClass::SignalingNaN,
+            );
+        }
+
+        let lhs_infinity = lhs_class == BinaryClass::Infinity;
+        let rhs_infinity = rhs_class == BinaryClass::Infinity;
+        let effective_rhs_sign = rhs.sign() ^ subtract;
+        if lhs_infinity && rhs_infinity {
+            if lhs.sign() != effective_rhs_sign {
+                return BinaryAddSubResult::exact(Self::from_bits(0xffc0_0000), true);
+            }
+            return BinaryAddSubResult::exact(lhs, false);
+        }
+        if lhs_infinity {
+            return BinaryAddSubResult::exact(lhs, false);
+        }
+        if rhs_infinity {
+            return BinaryAddSubResult::exact(
+                Self::from_bits(
+                    (Self::EXPONENT_MASK << 23) | (u32::from(effective_rhs_sign) << 31),
+                ),
+                false,
+            );
+        }
+
+        let lhs_finite = lhs.normalize_finite().expect("finite binary32 operand");
+        let rhs_finite = rhs.normalize_finite().expect("finite binary32 operand");
+        let rounded = if subtract {
+            Self::subtract_finite_aligned_result(lhs_finite, rhs_finite, mode)
+        } else {
+            Self::add_finite_aligned_result(lhs_finite, rhs_finite, mode)
+        }
+        .expect("finite binary32 add/sub result is supported");
+        BinaryAddSubResult::new(rounded, false)
     }
 }
 
@@ -945,6 +1083,92 @@ impl Binary64 {
         let negated_rhs =
             BinaryFinite::new(!rhs.sign, rhs.significand, rhs.exponent, rhs.source_class);
         Self::add_finite_aligned_result(lhs, negated_rhs, mode)
+    }
+
+    /// Adds same-format raw binary64 operands and returns result diagnostics.
+    ///
+    /// Finite operands use the finite result path. NaN propagation follows the
+    /// Intel SDM Rev. 093 source-order rule: select the first NaN operand and
+    /// quiet it only when that selected operand is signaling. The local
+    /// invalid-operation result is set for any signaling NaN or invalid
+    /// infinity cancellation; no architectural state is updated.
+    pub fn add_raw_result(
+        lhs: Self,
+        rhs: Self,
+        mode: RationalRoundingMode,
+    ) -> BinaryAddSubResult<Self> {
+        Self::add_sub_raw_result(lhs, rhs, mode, false)
+    }
+
+    /// Subtracts same-format raw binary64 operands and returns result diagnostics.
+    ///
+    /// NaN selection is performed from the original source operands before the
+    /// finite/infinity subtraction sign is applied to the right operand.
+    pub fn subtract_raw_result(
+        lhs: Self,
+        rhs: Self,
+        mode: RationalRoundingMode,
+    ) -> BinaryAddSubResult<Self> {
+        Self::add_sub_raw_result(lhs, rhs, mode, true)
+    }
+
+    fn add_sub_raw_result(
+        lhs: Self,
+        rhs: Self,
+        mode: RationalRoundingMode,
+        subtract: bool,
+    ) -> BinaryAddSubResult<Self> {
+        let lhs_class = lhs.class();
+        let rhs_class = rhs.class();
+        let lhs_nan = matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+        let rhs_nan = matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+        if lhs_nan || rhs_nan {
+            let (selected, selected_class) = if lhs_nan {
+                (lhs, lhs_class)
+            } else {
+                (rhs, rhs_class)
+            };
+            let value = if selected_class == BinaryClass::SignalingNaN {
+                Self::from_bits(selected.0 | Self::QUIET_BIT)
+            } else {
+                selected
+            };
+            return BinaryAddSubResult::exact(
+                value,
+                lhs_class == BinaryClass::SignalingNaN || rhs_class == BinaryClass::SignalingNaN,
+            );
+        }
+
+        let lhs_infinity = lhs_class == BinaryClass::Infinity;
+        let rhs_infinity = rhs_class == BinaryClass::Infinity;
+        let effective_rhs_sign = rhs.sign() ^ subtract;
+        if lhs_infinity && rhs_infinity {
+            if lhs.sign() != effective_rhs_sign {
+                return BinaryAddSubResult::exact(Self::from_bits(0xfff8_0000_0000_0000), true);
+            }
+            return BinaryAddSubResult::exact(lhs, false);
+        }
+        if lhs_infinity {
+            return BinaryAddSubResult::exact(lhs, false);
+        }
+        if rhs_infinity {
+            return BinaryAddSubResult::exact(
+                Self::from_bits(
+                    (Self::EXPONENT_MASK << 52) | (u64::from(effective_rhs_sign) << 63),
+                ),
+                false,
+            );
+        }
+
+        let lhs_finite = lhs.normalize_finite().expect("finite binary64 operand");
+        let rhs_finite = rhs.normalize_finite().expect("finite binary64 operand");
+        let rounded = if subtract {
+            Self::subtract_finite_aligned_result(lhs_finite, rhs_finite, mode)
+        } else {
+            Self::add_finite_aligned_result(lhs_finite, rhs_finite, mode)
+        }
+        .expect("finite binary64 add/sub result is supported");
+        BinaryAddSubResult::new(rounded, false)
     }
 }
 
@@ -5972,5 +6196,432 @@ mod tests {
         assert_eq!(lhs.significand(), 1 << 63);
         assert_eq!(lhs.exponent(), -1074);
         assert_eq!(rhs.exponent(), 1023);
+    }
+
+    #[test]
+    fn raw_binary32_add_sub_nan_selection_and_invalid_are_literal() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        let qnan = Binary32::from_bits(0x7fc1_2345);
+        let negative_qnan = Binary32::from_bits(0xffc2_3456);
+        let snan = Binary32::from_bits(0x7f81_2345);
+        let quieted_snan = Binary32::from_bits(0x7fc1_2345);
+        let negative_snan = Binary32::from_bits(0xff81_3456);
+        let quieted_negative_snan = Binary32::from_bits(0xffc1_3456);
+        let one = Binary32::from_bits(0x3f80_0000);
+
+        for result in [
+            Binary32::add_raw_result(qnan, snan, Nearest),
+            Binary32::subtract_raw_result(qnan, snan, Nearest),
+        ] {
+            assert_eq!(*result.value(), qnan);
+            assert!(result.invalid_operation());
+            assert!(!result.inexact() && !result.overflow());
+        }
+        for result in [
+            Binary32::add_raw_result(snan, qnan, Nearest),
+            Binary32::subtract_raw_result(snan, qnan, Nearest),
+        ] {
+            assert_eq!(*result.value(), quieted_snan);
+            assert!(result.invalid_operation());
+        }
+
+        for result in [
+            Binary32::add_raw_result(one, negative_qnan, Nearest),
+            Binary32::subtract_raw_result(one, negative_qnan, Nearest),
+        ] {
+            assert_eq!(*result.value(), negative_qnan);
+            assert!(!result.invalid_operation());
+        }
+        for result in [
+            Binary32::add_raw_result(one, snan, Nearest),
+            Binary32::subtract_raw_result(one, snan, Nearest),
+        ] {
+            assert_eq!(*result.value(), quieted_snan);
+            assert!(result.invalid_operation());
+        }
+        assert_eq!(
+            *Binary32::add_raw_result(qnan, negative_qnan, Nearest).value(),
+            qnan,
+        );
+        assert_eq!(
+            *Binary32::subtract_raw_result(negative_qnan, qnan, Nearest).value(),
+            negative_qnan,
+        );
+        let negative_selected = Binary32::subtract_raw_result(negative_snan, qnan, Nearest);
+        assert_eq!(*negative_selected.value(), quieted_negative_snan);
+        assert!(negative_selected.invalid_operation());
+        let qnan_selected_over_snan = Binary32::subtract_raw_result(qnan, negative_snan, Nearest);
+        assert_eq!(*qnan_selected_over_snan.value(), qnan);
+        assert!(qnan_selected_over_snan.invalid_operation());
+    }
+
+    #[test]
+    fn raw_binary64_add_sub_nan_selection_and_invalid_are_literal() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        let qnan = Binary64::from_bits(0x7ff8_1234_5678_9abc);
+        let negative_qnan = Binary64::from_bits(0xfff8_2345_6789_abcd);
+        let snan = Binary64::from_bits(0x7ff0_1234_5678_9abc);
+        let quieted_snan = Binary64::from_bits(0x7ff8_1234_5678_9abc);
+        let negative_snan = Binary64::from_bits(0xfff0_2345_6789_abcd);
+        let quieted_negative_snan = Binary64::from_bits(0xfff8_2345_6789_abcd);
+        let one = Binary64::from_bits(0x3ff0_0000_0000_0000);
+
+        for result in [
+            Binary64::add_raw_result(qnan, snan, Nearest),
+            Binary64::subtract_raw_result(qnan, snan, Nearest),
+        ] {
+            assert_eq!(*result.value(), qnan);
+            assert!(result.invalid_operation());
+            assert!(!result.inexact() && !result.overflow());
+        }
+        for result in [
+            Binary64::add_raw_result(snan, qnan, Nearest),
+            Binary64::subtract_raw_result(snan, qnan, Nearest),
+        ] {
+            assert_eq!(*result.value(), quieted_snan);
+            assert!(result.invalid_operation());
+        }
+
+        for result in [
+            Binary64::add_raw_result(one, negative_qnan, Nearest),
+            Binary64::subtract_raw_result(one, negative_qnan, Nearest),
+        ] {
+            assert_eq!(*result.value(), negative_qnan);
+            assert!(!result.invalid_operation());
+        }
+        for result in [
+            Binary64::add_raw_result(one, snan, Nearest),
+            Binary64::subtract_raw_result(one, snan, Nearest),
+        ] {
+            assert_eq!(*result.value(), quieted_snan);
+            assert!(result.invalid_operation());
+        }
+        assert_eq!(
+            *Binary64::add_raw_result(qnan, negative_qnan, Nearest).value(),
+            qnan,
+        );
+        assert_eq!(
+            *Binary64::subtract_raw_result(negative_qnan, qnan, Nearest).value(),
+            negative_qnan,
+        );
+        let negative_selected = Binary64::subtract_raw_result(negative_snan, qnan, Nearest);
+        assert_eq!(*negative_selected.value(), quieted_negative_snan);
+        assert!(negative_selected.invalid_operation());
+        let qnan_selected_over_snan = Binary64::subtract_raw_result(qnan, negative_snan, Nearest);
+        assert_eq!(*qnan_selected_over_snan.value(), qnan);
+        assert!(qnan_selected_over_snan.invalid_operation());
+    }
+
+    #[test]
+    fn raw_binary32_add_sub_infinity_table_uses_indefinite_on_cancellation() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        let cases = [
+            (0x7f80_0000, 0x7f80_0000, false, 0x7f80_0000, false),
+            (0x7f80_0000, 0xff80_0000, false, 0xffc0_0000, true),
+            (0xff80_0000, 0x7f80_0000, false, 0xffc0_0000, true),
+            (0x7f80_0000, 0x7f80_0000, true, 0xffc0_0000, true),
+            (0x7f80_0000, 0xff80_0000, true, 0x7f80_0000, false),
+            (0xff80_0000, 0xff80_0000, false, 0xff80_0000, false),
+            (0xff80_0000, 0xff80_0000, true, 0xffc0_0000, true),
+            (0xff80_0000, 0x7f80_0000, true, 0xff80_0000, false),
+            (0x3f80_0000, 0xff80_0000, false, 0xff80_0000, false),
+            (0x3f80_0000, 0x7f80_0000, false, 0x7f80_0000, false),
+            (0x3f80_0000, 0x7f80_0000, true, 0xff80_0000, false),
+            (0x3f80_0000, 0xff80_0000, true, 0x7f80_0000, false),
+            (0xff80_0000, 0x3f80_0000, true, 0xff80_0000, false),
+        ];
+        for (lhs, rhs, subtract, expected, invalid) in cases {
+            let result = if subtract {
+                Binary32::subtract_raw_result(
+                    Binary32::from_bits(lhs),
+                    Binary32::from_bits(rhs),
+                    Nearest,
+                )
+            } else {
+                Binary32::add_raw_result(
+                    Binary32::from_bits(lhs),
+                    Binary32::from_bits(rhs),
+                    Nearest,
+                )
+            };
+            assert_eq!(result.value().to_bits(), expected);
+            assert_eq!(result.invalid_operation(), invalid);
+            assert!(!result.inexact() && !result.overflow());
+        }
+    }
+
+    #[test]
+    fn raw_binary64_add_sub_infinity_table_uses_indefinite_on_cancellation() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        let cases = [
+            (
+                0x7ff0_0000_0000_0000,
+                0x7ff0_0000_0000_0000,
+                false,
+                0x7ff0_0000_0000_0000,
+                false,
+            ),
+            (
+                0x7ff0_0000_0000_0000,
+                0xfff0_0000_0000_0000,
+                false,
+                0xfff8_0000_0000_0000,
+                true,
+            ),
+            (
+                0xfff0_0000_0000_0000,
+                0x7ff0_0000_0000_0000,
+                false,
+                0xfff8_0000_0000_0000,
+                true,
+            ),
+            (
+                0x7ff0_0000_0000_0000,
+                0x7ff0_0000_0000_0000,
+                true,
+                0xfff8_0000_0000_0000,
+                true,
+            ),
+            (
+                0xfff0_0000_0000_0000,
+                0xfff0_0000_0000_0000,
+                true,
+                0xfff8_0000_0000_0000,
+                true,
+            ),
+            (
+                0x7ff0_0000_0000_0000,
+                0xfff0_0000_0000_0000,
+                true,
+                0x7ff0_0000_0000_0000,
+                false,
+            ),
+            (
+                0xfff0_0000_0000_0000,
+                0x7ff0_0000_0000_0000,
+                true,
+                0xfff0_0000_0000_0000,
+                false,
+            ),
+            (
+                0xfff0_0000_0000_0000,
+                0xfff0_0000_0000_0000,
+                false,
+                0xfff0_0000_0000_0000,
+                false,
+            ),
+            (
+                0x3ff0_0000_0000_0000,
+                0x7ff0_0000_0000_0000,
+                false,
+                0x7ff0_0000_0000_0000,
+                false,
+            ),
+            (
+                0x3ff0_0000_0000_0000,
+                0xfff0_0000_0000_0000,
+                false,
+                0xfff0_0000_0000_0000,
+                false,
+            ),
+            (
+                0x3ff0_0000_0000_0000,
+                0x7ff0_0000_0000_0000,
+                true,
+                0xfff0_0000_0000_0000,
+                false,
+            ),
+            (
+                0x3ff0_0000_0000_0000,
+                0xfff0_0000_0000_0000,
+                true,
+                0x7ff0_0000_0000_0000,
+                false,
+            ),
+            (
+                0xfff0_0000_0000_0000,
+                0x3ff0_0000_0000_0000,
+                true,
+                0xfff0_0000_0000_0000,
+                false,
+            ),
+        ];
+        for (lhs, rhs, subtract, expected, invalid) in cases {
+            let result = if subtract {
+                Binary64::subtract_raw_result(
+                    Binary64::from_bits(lhs),
+                    Binary64::from_bits(rhs),
+                    Nearest,
+                )
+            } else {
+                Binary64::add_raw_result(
+                    Binary64::from_bits(lhs),
+                    Binary64::from_bits(rhs),
+                    Nearest,
+                )
+            };
+            assert_eq!(result.value().to_bits(), expected);
+            assert_eq!(result.invalid_operation(), invalid);
+            assert!(!result.inexact() && !result.overflow());
+        }
+    }
+
+    #[test]
+    fn raw_add_sub_signed_zero_literals_follow_effective_terms_and_rounding_mode() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        for (mode, add_expected, subtract_expected) in [
+            (
+                Nearest,
+                [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x8000_0000],
+                [0x0000_0000, 0x0000_0000, 0x8000_0000, 0x0000_0000],
+            ),
+            (
+                Zero,
+                [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x8000_0000],
+                [0x0000_0000, 0x0000_0000, 0x8000_0000, 0x0000_0000],
+            ),
+            (
+                Up,
+                [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x8000_0000],
+                [0x0000_0000, 0x0000_0000, 0x8000_0000, 0x0000_0000],
+            ),
+            (
+                Down,
+                [0x0000_0000, 0x8000_0000, 0x8000_0000, 0x8000_0000],
+                [0x8000_0000, 0x0000_0000, 0x8000_0000, 0x8000_0000],
+            ),
+        ] {
+            let zeros32 = [
+                Binary32::from_bits(0x0000_0000),
+                Binary32::from_bits(0x8000_0000),
+            ];
+            let zeros64 = [
+                Binary64::from_bits(0x0000_0000_0000_0000),
+                Binary64::from_bits(0x8000_0000_0000_0000),
+            ];
+            let mut index = 0;
+            for lhs_sign in 0..2 {
+                for rhs_sign in 0..2 {
+                    let add32 =
+                        Binary32::add_raw_result(zeros32[lhs_sign], zeros32[rhs_sign], mode);
+                    let sub32 =
+                        Binary32::subtract_raw_result(zeros32[lhs_sign], zeros32[rhs_sign], mode);
+                    let add64 =
+                        Binary64::add_raw_result(zeros64[lhs_sign], zeros64[rhs_sign], mode);
+                    let sub64 =
+                        Binary64::subtract_raw_result(zeros64[lhs_sign], zeros64[rhs_sign], mode);
+                    assert_eq!(add32.value().to_bits(), add_expected[index]);
+                    assert_eq!(
+                        sub32.value().to_bits(),
+                        subtract_expected[index],
+                        "binary32 subtraction zero mode={mode:?}, index={index}",
+                    );
+                    assert_eq!(
+                        add64.value().to_bits(),
+                        u64::from(add_expected[index]) << 32
+                    );
+                    assert_eq!(
+                        sub64.value().to_bits(),
+                        u64::from(subtract_expected[index]) << 32,
+                    );
+                    for result in [add32, sub32] {
+                        assert!(!result.invalid_operation());
+                        assert!(!result.inexact() && !result.overflow());
+                        assert!(!result.tiny_after_precision_rounding());
+                    }
+                    for result in [add64, sub64] {
+                        assert!(!result.invalid_operation());
+                        assert!(!result.inexact() && !result.overflow());
+                        assert!(!result.tiny_after_precision_rounding());
+                    }
+                    index += 1;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn raw_finite_add_sub_delegates_all_same_format_values_to_s2_36p() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let modes = [Nearest, Zero, Up, Down];
+        for (lhs_bits, rhs_bits) in [
+            (0x3f80_0000_u32, 1_u32),
+            (0x3f80_0000, 0xbf80_0000),
+            (0x7f7f_ffff, 0x7f7f_ffff),
+            (0x0080_0000, 0x807f_ffff),
+            (0x0000_0000, 0xbf80_0000),
+        ] {
+            let lhs_raw = Binary32::from_bits(lhs_bits);
+            let rhs_raw = Binary32::from_bits(rhs_bits);
+            let lhs = lhs_raw.normalize_finite().unwrap();
+            let rhs = rhs_raw.normalize_finite().unwrap();
+            for mode in modes {
+                for (raw, finite) in [
+                    (
+                        Binary32::add_raw_result(lhs_raw, rhs_raw, mode),
+                        Binary32::add_finite_aligned_result(lhs, rhs, mode).unwrap(),
+                    ),
+                    (
+                        Binary32::subtract_raw_result(lhs_raw, rhs_raw, mode),
+                        Binary32::subtract_finite_aligned_result(lhs, rhs, mode).unwrap(),
+                    ),
+                ] {
+                    assert_eq!(raw.value(), finite.value());
+                    assert_eq!(raw.inexact(), finite.inexact());
+                    assert_eq!(raw.overflow(), finite.overflow());
+                    assert_eq!(
+                        raw.tiny_after_precision_rounding(),
+                        finite.tiny_after_precision_rounding(),
+                    );
+                    assert!(!raw.invalid_operation());
+                }
+            }
+        }
+
+        for (lhs_bits, rhs_bits) in [
+            (0x3ff0_0000_0000_0000_u64, 1_u64),
+            (0x3ff0_0000_0000_0000, 0xbff0_0000_0000_0000),
+            (0x7fef_ffff_ffff_ffff, 0x7fef_ffff_ffff_ffff),
+            (0x0010_0000_0000_0000, 0x800f_ffff_ffff_ffff),
+            (0x0000_0000_0000_0000, 0xbff0_0000_0000_0000),
+        ] {
+            let lhs_raw = Binary64::from_bits(lhs_bits);
+            let rhs_raw = Binary64::from_bits(rhs_bits);
+            let lhs = lhs_raw.normalize_finite().unwrap();
+            let rhs = rhs_raw.normalize_finite().unwrap();
+            for mode in modes {
+                for (raw, finite) in [
+                    (
+                        Binary64::add_raw_result(lhs_raw, rhs_raw, mode),
+                        Binary64::add_finite_aligned_result(lhs, rhs, mode).unwrap(),
+                    ),
+                    (
+                        Binary64::subtract_raw_result(lhs_raw, rhs_raw, mode),
+                        Binary64::subtract_finite_aligned_result(lhs, rhs, mode).unwrap(),
+                    ),
+                ] {
+                    assert_eq!(raw.value(), finite.value());
+                    assert_eq!(raw.inexact(), finite.inexact());
+                    assert_eq!(raw.overflow(), finite.overflow());
+                    assert_eq!(
+                        raw.tiny_after_precision_rounding(),
+                        finite.tiny_after_precision_rounding(),
+                    );
+                    assert!(!raw.invalid_operation());
+                }
+            }
+        }
     }
 }

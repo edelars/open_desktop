@@ -741,6 +741,43 @@ Vol. 1 [official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436).
 Формулы `Q/T/E` и их доказательство относятся к математике локального API,
 а не к реализации или аппаратной проверке инструкций.
 
+## S2-36q — raw same-format binary32/binary64 add/sub results
+
+**Статус:** raw `Binary32`/`Binary64` add/sub result APIs реализованы и прошли
+авторские local checks; независимые Sol medium code review и docs review
+завершились без замечаний. Полная инструкция/exception integration и hardware
+acceptance не заявляются.
+
+`add_raw_result` и `subtract_raw_result` принимают same-format raw encoding и
+возвращают `BinaryAddSubResult`: output encoding, S2-36m rounding diagnostics
+и отдельный local `invalid_operation` boolean. Все finite classes делегируют
+S2-36p APIs; special paths не изменяют CPU/MXCSR/x87 state и не выполняют
+instruction dispatch или exception delivery.
+
+NaN selection сохраняет первый source NaN, quiet-ит только selected SNaN
+установкой quiet bit и отмечает invalid при любом SNaN, даже если результатом
+остаётся первый QNaN. RHS NaN в subtraction не sign-flip-ится. Infinity
+cancellation выдаёт Intel indefinite QNaN для соответствующей ширины и
+local invalid. Нули применяют сохранение sign для одинаковых effective signs
+и `-0` при противоположных signs только в `TowardNegative`.
+
+Literal checks cover обе ширины, add/sub, operand order, NaN payload/sign,
+SNaN invalid, infinity combinations, signed-zero modes и finite delegation.
+Пройдены `cargo test -p od-isa --offline binary_float::tests` (54/54),
+`cargo test -p od-isa --offline x87::tests` (47/47),
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`git diff --check` и `graphify update .`. Graphify завершился успешно с notice
+об изменении community labels. Independent Sol medium code review и docs review
+завершились clean; замечаний нет. Hardware/SSH execution не выполнялся и
+отложен до общего финального substage.
+
+NaN source ordering: Intel SDM Rev. 093, Vol. 1, §4.8.3.5/Table 4-8;
+invalid infinity encodings: Table D-1
+([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+Эти ссылки задают локальный result contract и не подтверждают architectural
+exception delivery, x87 operand ordering или hardware execution. См. также
+[план S2-36q](../plans/STAGE_2.md#s2-36q--raw-same-format-binary32binary64-addition-and-subtraction).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.

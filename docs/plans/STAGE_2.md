@@ -470,6 +470,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36n | Complete finite binary32/binary64 division output with rounding diagnostics | S2-36c, S2-36m; independent review |
 | [x] | S2-36o | Complete finite binary32/binary64 addition and subtraction results in the exponent-gap ≤64 profile | S2-36d–36g, S2-36m; independent review |
 | [x] | S2-36p | Extend finite binary32/binary64 add/sub result APIs across the full finite exponent range | S2-36o, S2-36m; independent review |
+| [x] | S2-36q | Same-format raw binary32/binary64 add/sub results for finite values, zeros, infinities and NaNs; local invalid-operation outcome | S2-36p, S2-36a; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -5391,6 +5392,59 @@ semantics или hardware integration.
 
 См. [отчёт S2-36p](../reports/STAGE_2_REPORT.md#s2-36p--finite-binary-addition-and-subtraction-result-apis-across-the-full-finite-exponent-range)
 и закрытую [ISSUE-024](../KNOWN_ISSUES.md#issue-024--s2-36-result-apis-lacked-large-gap-rounding).
+
+#### S2-36q — raw same-format binary32/binary64 addition and subtraction
+
+**Статус:** raw add/sub result APIs реализованы; независимые code и docs
+reviews Sol medium завершены чисто. Полная приёмка S2-36,
+инструкция/exception integration и hardware acceptance остаются открытыми.
+
+`Binary32::add_raw_result` / `subtract_raw_result` и соответствующие методы
+`Binary64` принимают только два raw операнда одного destination формата и
+возвращают `BinaryAddSubResult<Self>`: итоговое encoding, diagnostics
+`inexact`, `overflow`, `tiny_after_precision_rounding` и отдельный
+`invalid_operation`. Этот локальный boolean не является MXCSR/x87 status bit,
+не решает exception masking и не доставляет исключение. Для raw finite
+operands (zero, subnormal, normal) методы нормализуют только конечные поля и
+делегируют S2-36p finite result APIs; поэтому сохраняются gap≤64 exact path,
+large-gap bridge, exact-zero sign policy и signed zero при округлении
+ненулевого конечного значения в ноль.
+
+Для exact-zero суммы знак сохраняется при одинаковых signs effective zero
+terms; противоположные signs дают `-0` только при `TowardNegative`, иначе `+0`.
+Addition и subtraction используют знаки исходных terms после семантического
+переворота RHS только для subtraction. Конечная ненулевая сумма сохраняет свой
+точный sign, если округляется в zero.
+
+Infinity handling возвращает signed infinity для определённых случаев.
+`+∞ + -∞`, `-∞ + +∞`, `+∞ - +∞` и `-∞ - -∞` возвращают Intel QNaN
+indefinite (`0xffc00000` для binary32, `0xfff8000000000000` для binary64) и
+`invalid_operation=true`. Другие finite/infinity и infinity/infinity пары
+сохраняют знак определённого бесконечного результата; invalid не выводится
+из одного только присутствия infinity.
+
+Для одного или двух NaNs выбирается первый source operand, который является
+NaN. Выбранный QNaN возвращается без изменения; выбранный SNaN quiet-ится
+установкой только quiet bit с сохранением sign/payload. Любой входящий SNaN
+ставит локальный `invalid_operation`, даже если первым NaN был QNaN второго
+типа; subtraction не переворачивает sign RHS NaN до propagation. Это правило
+следует Intel SDM Rev. 093, Vol. 1, §4.8.3.5 / Table 4-8 для source-order
+NaN selection, а indefinite encodings — Vol. 1, Table D-1
+([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+Оно фиксирует локальную binary32/64 математическую операцию, не объявляя x87
+source ordering, instruction dispatch или архитектурную exception delivery.
+
+Literal-векторы для обеих ширин покрывают NaN source order, qNaN/sNaN,
+preserved sign/payload, invalid infinity cancellation и signed-zero
+combinations во всех четырёх rounding modes; конечные normal/subnormal/gap
+cases сверяются с S2-36p diagnostics. Авторские проверки прошли:
+`cargo test -p od-isa --offline binary_float::tests` (54/54),
+`cargo test -p od-isa --offline x87::tests` (47/47),
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`git diff --check` и `graphify update .` (успешно; Graphify сообщил notice об
+изменении community labels). Независимые Sol medium code review и docs review
+завершились без замечаний. Hardware/SSH проверка отложена до общего финального
+substage; полная S2-36 приёмка остаётся открытой.
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 
