@@ -9492,3 +9492,7 @@ Implement the legacy mandatory-66 `0F DA /r` XMM register form only, with option
 #### S2-35.56 — local-only bounded register `PMAXSW`
 
 Implement the legacy mandatory-66 `0F EE /r` XMM register form only, with optional REX.R/B register extension and signed 16-bit lane maximum. Support source aliasing and preserve unrelated state without data-memory effects. Assume SSE2 and CR0/CR4; do not add CPUID advertisement or JIT/native/physical admission. Maintain a distinct `s2-long-pmaxsw-reg-v1` profile. Verify all XMM register pairs, strict encoding rejects, atomic missing-state/fetch handling, fixture/testkit/runner denial, and document the local contract. Physical checks are deferred to the combined final substage.
+
+#### S2-35.57 — local-only bounded register `PMINSW`
+
+Implement the legacy mandatory-66 `0F EA /r` XMM register form only, with optional REX.R/B register extension and signed 16-bit lane minimum. Support source aliasing and preserve unrelated state without data-memory effects. Assume SSE2 and CR0/CR4; do not add CPUID advertisement or JIT/native/physical admission. Maintain a distinct `s2-long-pminsw-reg-v1` profile. Verify all XMM register pairs, strict encoding rejects, atomic missing-state/fetch handling, fixture/testkit/runner denial, and document the local contract. Physical checks are deferred to the combined final substage.

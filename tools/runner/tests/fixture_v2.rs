@@ -4658,6 +4658,28 @@ fn local_pavgw_register_fixture_averages_unsigned_words_and_keeps_jit_closed() {
 }
 
 #[test]
+fn local_pminsw_register_fixture_takes_signed_word_min_and_keeps_jit_closed() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_57_pminsw_register.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongPminswRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8] = "0080ffffffff000000800080ffff00ff".into();
+    assert_eq!(snapshot(&result).state, expected);
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
 fn local_pmaxsw_register_fixture_takes_signed_word_max_and_keeps_jit_closed() {
     let bytes =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_35_56_pmaxsw_register.case.json");
