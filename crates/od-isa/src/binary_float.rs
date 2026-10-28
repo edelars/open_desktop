@@ -227,6 +227,35 @@ impl BinaryComparisonResult {
     }
 }
 
+/// Selected raw value and local invalid-operation outcome for MIN/MAX.
+///
+/// This is a value-only result. It does not update architectural state, deliver
+/// exceptions, or report denormal-input status.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BinarySelectionResult<T> {
+    value: T,
+    invalid_operation: bool,
+}
+
+impl<T> BinarySelectionResult<T> {
+    const fn new(value: T, invalid_operation: bool) -> Self {
+        Self {
+            value,
+            invalid_operation,
+        }
+    }
+
+    /// Returns the selected value, preserving its raw encoding.
+    pub const fn value(&self) -> &T {
+        &self.value
+    }
+
+    /// Returns whether either source was a NaN.
+    pub const fn invalid_operation(&self) -> bool {
+        self.invalid_operation
+    }
+}
+
 impl<T> BinaryDivisionResult<T> {
     const fn new(
         rounding: BinaryRoundingResult<T>,
@@ -628,6 +657,39 @@ impl Binary32 {
             comparison_relation(compare_finite(lhs_finite, rhs_finite)),
             false,
         )
+    }
+
+    /// Selects the raw minimum of two binary32 values.
+    ///
+    /// NaN inputs select the right operand unchanged and report local invalid
+    /// operation, including for quiet NaNs. Equal values select the right
+    /// operand. Finite values, including subnormals, are compared by their raw
+    /// numeric values without DAZ/FTZ or denormal-exception handling.
+    pub fn min_sse_raw_result(lhs: Self, rhs: Self) -> BinarySelectionResult<Self> {
+        Self::select_min_max_raw(lhs, rhs, true)
+    }
+
+    /// Selects the raw maximum of two binary32 values.
+    ///
+    /// NaN inputs select the right operand unchanged and report local invalid
+    /// operation, including for quiet NaNs. Equal values select the right
+    /// operand. Finite values, including subnormals, are compared by their raw
+    /// numeric values without DAZ/FTZ or denormal-exception handling.
+    pub fn max_sse_raw_result(lhs: Self, rhs: Self) -> BinarySelectionResult<Self> {
+        Self::select_min_max_raw(lhs, rhs, false)
+    }
+
+    fn select_min_max_raw(lhs: Self, rhs: Self, minimum: bool) -> BinarySelectionResult<Self> {
+        if is_nan_class(lhs.class()) || is_nan_class(rhs.class()) {
+            return BinarySelectionResult::new(rhs, true);
+        }
+        let relation = Self::compare_raw(lhs, rhs, BinaryComparisonMode::Quiet).relation();
+        let select_lhs = if minimum {
+            relation == BinaryComparisonRelation::Less
+        } else {
+            relation == BinaryComparisonRelation::Greater
+        };
+        BinarySelectionResult::new(if select_lhs { lhs } else { rhs }, false)
     }
 
     /// Packs an already-rounded, normal binary32 significand.
@@ -1399,6 +1461,39 @@ impl Binary64 {
             comparison_relation(compare_finite(lhs_finite, rhs_finite)),
             false,
         )
+    }
+
+    /// Selects the raw minimum of two binary64 values.
+    ///
+    /// NaN inputs select the right operand unchanged and report local invalid
+    /// operation, including for quiet NaNs. Equal values select the right
+    /// operand. Finite values, including subnormals, are compared by their raw
+    /// numeric values without DAZ/FTZ or denormal-exception handling.
+    pub fn min_sse_raw_result(lhs: Self, rhs: Self) -> BinarySelectionResult<Self> {
+        Self::select_min_max_raw(lhs, rhs, true)
+    }
+
+    /// Selects the raw maximum of two binary64 values.
+    ///
+    /// NaN inputs select the right operand unchanged and report local invalid
+    /// operation, including for quiet NaNs. Equal values select the right
+    /// operand. Finite values, including subnormals, are compared by their raw
+    /// numeric values without DAZ/FTZ or denormal-exception handling.
+    pub fn max_sse_raw_result(lhs: Self, rhs: Self) -> BinarySelectionResult<Self> {
+        Self::select_min_max_raw(lhs, rhs, false)
+    }
+
+    fn select_min_max_raw(lhs: Self, rhs: Self, minimum: bool) -> BinarySelectionResult<Self> {
+        if is_nan_class(lhs.class()) || is_nan_class(rhs.class()) {
+            return BinarySelectionResult::new(rhs, true);
+        }
+        let relation = Self::compare_raw(lhs, rhs, BinaryComparisonMode::Quiet).relation();
+        let select_lhs = if minimum {
+            relation == BinaryComparisonRelation::Less
+        } else {
+            relation == BinaryComparisonRelation::Greater
+        };
+        BinarySelectionResult::new(if select_lhs { lhs } else { rhs }, false)
     }
 
     /// Packs an already-rounded, normal binary64 significand.
@@ -8296,6 +8391,165 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn raw_binary32_min_max_selection_is_literal_and_nonmutating() {
+        let operations = [Binary32::min_sse_raw_result, Binary32::max_sse_raw_result];
+        for (lhs_bits, rhs_bits, min_bits, max_bits) in [
+            (0x3f80_0000, 0x4000_0000, 0x3f80_0000, 0x4000_0000),
+            (0x4000_0000, 0x3f80_0000, 0x3f80_0000, 0x4000_0000),
+            (0xc000_0000, 0xbf80_0000, 0xc000_0000, 0xbf80_0000),
+            (0xbf80_0000, 0xc000_0000, 0xc000_0000, 0xbf80_0000),
+            (0x0000_0001, 0x0000_0002, 0x0000_0001, 0x0000_0002),
+            (0x8000_0002, 0x8000_0001, 0x8000_0002, 0x8000_0001),
+            (0xff80_0000, 0x7f7f_ffff, 0xff80_0000, 0x7f7f_ffff),
+            (0x0000_0000, 0x8000_0000, 0x8000_0000, 0x8000_0000),
+            (0x8000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000),
+            (0x3f80_0000, 0x3f80_0000, 0x3f80_0000, 0x3f80_0000),
+        ] {
+            let lhs = Binary32::from_bits(lhs_bits);
+            let rhs = Binary32::from_bits(rhs_bits);
+            for (operation, expected) in operations.into_iter().zip([min_bits, max_bits]) {
+                let result = operation(lhs, rhs);
+                assert_eq!(result.value().to_bits(), expected);
+                assert!(!result.invalid_operation());
+                assert_eq!(lhs.to_bits(), lhs_bits);
+                assert_eq!(rhs.to_bits(), rhs_bits);
+            }
+        }
+
+        let qnan = Binary32::from_bits(0xffc2_3456);
+        let other_qnan = Binary32::from_bits(0x7fc1_2345);
+        let snan = Binary32::from_bits(0x7f81_4321);
+        let one = Binary32::from_bits(0x3f80_0000);
+        for (lhs, rhs) in [
+            (qnan, one),
+            (one, qnan),
+            (qnan, other_qnan),
+            (snan, one),
+            (one, snan),
+            (qnan, snan),
+            (snan, qnan),
+        ] {
+            let lhs_bits = lhs.to_bits();
+            let rhs_bits = rhs.to_bits();
+            for operation in operations {
+                let result = operation(lhs, rhs);
+                assert_eq!(result.value().to_bits(), rhs_bits);
+                assert!(result.invalid_operation());
+                assert_eq!(lhs.to_bits(), lhs_bits);
+                assert_eq!(rhs.to_bits(), rhs_bits);
+            }
+        }
+
+        let lhs_nan = Binary32::min_sse_raw_result(qnan, one);
+        let rhs_nan = Binary32::min_sse_raw_result(one, qnan);
+        assert_eq!(lhs_nan.value().to_bits(), one.to_bits());
+        assert_eq!(rhs_nan.value().to_bits(), qnan.to_bits());
+        assert_ne!(lhs_nan.value().to_bits(), rhs_nan.value().to_bits());
+    }
+
+    #[test]
+    fn raw_binary64_min_max_selection_is_literal_and_nonmutating() {
+        let operations = [Binary64::min_sse_raw_result, Binary64::max_sse_raw_result];
+        for (lhs_bits, rhs_bits, min_bits, max_bits) in [
+            (
+                0x3ff0_0000_0000_0000,
+                0x4000_0000_0000_0000,
+                0x3ff0_0000_0000_0000,
+                0x4000_0000_0000_0000,
+            ),
+            (
+                0x4000_0000_0000_0000,
+                0x3ff0_0000_0000_0000,
+                0x3ff0_0000_0000_0000,
+                0x4000_0000_0000_0000,
+            ),
+            (
+                0xc000_0000_0000_0000,
+                0xbff0_0000_0000_0000,
+                0xc000_0000_0000_0000,
+                0xbff0_0000_0000_0000,
+            ),
+            (
+                0xbff0_0000_0000_0000,
+                0xc000_0000_0000_0000,
+                0xc000_0000_0000_0000,
+                0xbff0_0000_0000_0000,
+            ),
+            (0x0000_0000_0000_0001, 0x0000_0000_0000_0002, 1, 2),
+            (
+                0x8000_0000_0000_0002,
+                0x8000_0000_0000_0001,
+                0x8000_0000_0000_0002,
+                0x8000_0000_0000_0001,
+            ),
+            (
+                0xfff0_0000_0000_0000,
+                0x7fef_ffff_ffff_ffff,
+                0xfff0_0000_0000_0000,
+                0x7fef_ffff_ffff_ffff,
+            ),
+            (
+                0x0000_0000_0000_0000,
+                0x8000_0000_0000_0000,
+                0x8000_0000_0000_0000,
+                0x8000_0000_0000_0000,
+            ),
+            (
+                0x8000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+            ),
+            (
+                0x3ff0_0000_0000_0000,
+                0x3ff0_0000_0000_0000,
+                0x3ff0_0000_0000_0000,
+                0x3ff0_0000_0000_0000,
+            ),
+        ] {
+            let lhs = Binary64::from_bits(lhs_bits);
+            let rhs = Binary64::from_bits(rhs_bits);
+            for (operation, expected) in operations.into_iter().zip([min_bits, max_bits]) {
+                let result = operation(lhs, rhs);
+                assert_eq!(result.value().to_bits(), expected);
+                assert!(!result.invalid_operation());
+                assert_eq!(lhs.to_bits(), lhs_bits);
+                assert_eq!(rhs.to_bits(), rhs_bits);
+            }
+        }
+
+        let qnan = Binary64::from_bits(0xfff8_2345_6789_abcd);
+        let other_qnan = Binary64::from_bits(0x7ff8_1234_5678_9abc);
+        let snan = Binary64::from_bits(0x7ff0_4567_89ab_cdef);
+        let one = Binary64::from_bits(0x3ff0_0000_0000_0000);
+        for (lhs, rhs) in [
+            (qnan, one),
+            (one, qnan),
+            (qnan, other_qnan),
+            (snan, one),
+            (one, snan),
+            (qnan, snan),
+            (snan, qnan),
+        ] {
+            let lhs_bits = lhs.to_bits();
+            let rhs_bits = rhs.to_bits();
+            for operation in operations {
+                let result = operation(lhs, rhs);
+                assert_eq!(result.value().to_bits(), rhs_bits);
+                assert!(result.invalid_operation());
+                assert_eq!(lhs.to_bits(), lhs_bits);
+                assert_eq!(rhs.to_bits(), rhs_bits);
+            }
+        }
+
+        let lhs_nan = Binary64::max_sse_raw_result(qnan, one);
+        let rhs_nan = Binary64::max_sse_raw_result(one, qnan);
+        assert_eq!(lhs_nan.value().to_bits(), one.to_bits());
+        assert_eq!(rhs_nan.value().to_bits(), qnan.to_bits());
+        assert_ne!(lhs_nan.value().to_bits(), rhs_nan.value().to_bits());
     }
 
     #[test]

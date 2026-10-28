@@ -479,6 +479,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36w | Bounded signed i64-to-binary32/binary64 value conversion with explicit rounding mode | S2-36d, S2-36e; independent review |
 | [x] | S2-36x | Bounded raw binary32/binary64-to-signed-i32 conversion with explicit rounding mode and local invalid outcome | S2-36a, S2-36m; independent review |
 | [x] | S2-36y | Bounded raw binary32/binary64-to-signed-i64 conversion with explicit rounding mode and local invalid outcome | S2-36x; independent review |
+| [x] | S2-36z | Pure raw binary32/binary64 SSE MIN/MAX selection with right-operand NaN/equality selection and local invalid outcome | S2-36t, S2-36a; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -5673,6 +5674,32 @@ Vol. 1 §4.9.2 discusses invalid-exception precedence. These references do not
 extend this helper into architectural exception handling.
 [Official Intel Vol. 2A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)
 and [Vol. 1 PDF](https://cdrdv2-public.intel.com/835781/325462-sdm-vol-1-2abcd-3abcd-4.pdf).
+
+#### S2-36z — pure raw binary32/binary64 SSE MIN/MAX selection
+
+Implement `Binary32::min_sse_raw_result`/`max_sse_raw_result` and the matching
+`Binary64` methods as pure value selectors returning
+`BinarySelectionResult<T>`, which contains only the selected raw value and a
+local `invalid_operation` outcome. The SSE-specific method names distinguish
+the right-operand selection behavior from IEEE minNumber/fmin operations.
+Either quiet or signaling NaN selects the right operand unchanged and reports
+invalid. For non-NaN operands, MIN selects the left operand only for strict
+less-than and MAX only for strict greater-than; equality selects the right
+operand, including opposite-signed zeros. Numeric comparison includes
+subnormals without DAZ/FTZ. Do not report denormal exceptions, update MXCSR,
+deliver architectural exceptions, or add instruction dispatch in this slice.
+
+Literal tests cover lhs<rhs and lhs>rhs for both widths, subnormal order,
+infinities, equal values, signed-zero ties in both operand orders, NaNs in
+either position, multiple NaN payloads, unchanged signaling-NaN passthrough,
+invalid outcomes for quiet/signaling NaNs, NaN noncommutativity, and source
+immutability. Code review passed. The helper result APIs do not claim SSE
+instruction integration, native/JIT behavior, MXCSR, exception delivery, or
+physical-hardware acceptance.
+
+Provenance: Intel SDM Rev. 093 Vol. 2B MAXSS/MAXSD and MINSS/MINSD operation
+definitions and SIMD floating-point exception tables. [Official Intel Vol. 2B
+PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241).
 
 #### S2-36y — bounded raw binary32/binary64 to signed i64 conversion
 

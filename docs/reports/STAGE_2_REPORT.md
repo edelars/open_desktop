@@ -1090,6 +1090,46 @@ Provenance: Intel SDM Rev. 093 Vol. 2A `CVTSD2SI` p. 3-232,
 The architectural behavior is referenced for bounds only; no instruction,
 MXCSR, sticky-flag or exception-delivery semantics are implemented here.
 
+## S2-36z — pure raw binary32/binary64 SSE MIN/MAX selection
+
+Added `Binary32::min_sse_raw_result`/`max_sse_raw_result` and matching
+`Binary64` methods. The SSE-specific API names distinguish the legacy
+right-operand selection semantics from IEEE minNumber/fmin operations. Each
+returns `BinarySelectionResult<T>`, which contains only the selected raw value
+and local `invalid_operation`; no rounding or denormal diagnostics are
+fabricated.
+
+Either quiet or signaling NaN selects the RHS encoding unchanged and reports
+invalid, including RHS SNaN passthrough. For non-NaNs, MIN chooses the LHS only
+when it is strictly less, MAX only when strictly greater, and all equal values
+choose the RHS. This covers signed-zero ties and exact subnormal numeric order
+through the existing raw comparator. Sources remain unchanged. MXCSR updates,
+denormal-exception reporting, instruction dispatch, and architectural exception
+delivery are outside this helper slice.
+
+Literal tests cover strict ordering in both directions for both widths,
+subnormal order and infinities, equal values, opposite-signed zero in both
+operand orders, QNaNs and SNaNs in either position, distinct NaN payloads,
+unchanged SNaN payload passthrough, invalid outcomes for every NaN class, NaN
+noncommutativity, and source immutability. Passed:
+`cargo test -p od-isa binary_float::tests::raw_binary32_min_max_selection_is_literal_and_nonmutating --offline`
+(1/1),
+`cargo test -p od-isa binary_float::tests::raw_binary64_min_max_selection_is_literal_and_nonmutating --offline`
+(1/1), and `cargo test -p od-isa binary_float::tests:: --offline` (81/81).
+The independent code re-review passed with no remaining findings.
+
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+and `git diff --check` passed. The final `graphify update .` completed with
+7,968 nodes, 16,067 edges, and 287 communities. Graphify retained its existing
+warning for the unrelated `include/open_desktop/host_abi.h` parser error and listed
+unsupported metadata files; it reported no new source syntax errors. No
+physical-hardware or native/JIT run was performed.
+
+Provenance: Intel SDM Rev. 093 Vol. 2B MAXSS/MAXSD and MINSS/MINSD operation
+definitions and SIMD floating-point exception tables. [Official Intel Vol. 2B
+PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241). See the
+[S2-36z plan](../plans/STAGE_2.md#s2-36z--pure-raw-binary32binary64-sse-minmax-selection).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.
