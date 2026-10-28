@@ -5364,3 +5364,13 @@ The runner checks raw state and canary bytes; JIT/native admission is denied.
 This local slice does not establish hardware alignment/fault behavior or
 arbitrary backend rollback. Parent S2-34 remains open; physical status is
 `not_run`.
+
+### S2-34.24 local MOVUPD RIP-relative diagnostic profile
+
+`s2_34_24_movupd_rip_load.case.json` and
+`s2_34_24_movupd_rip_store.case.json` encode the separate
+`s2-long-movupd-mem-rip-v1` profile. They use mandatory `66`, REX.R to select
+XMM8, ModRM.mod=00/rm=101 and a signed disp32 targeting mapped data. The decoder
+uses the full instruction's next RIP; execution shares the existing 16-byte
+memory path. JIT and native execution are denied. Physical behavior remains
+unverified (`not_run`).

@@ -5357,6 +5357,101 @@ fn local_movupd_memory_base_rejects_rip_relative_when_target_is_mapped_data() {
 }
 
 #[test]
+fn local_movupd_rip_relative_load_and_store_fixtures_use_next_rip_and_jit_denies() {
+    for bytes in [
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_24_movupd_rip_load.case.json")
+            .as_slice(),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_24_movupd_rip_store.case.json")
+            .as_slice(),
+    ] {
+        let (input, interpreted) = run(bytes, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongMovupdMemRipV1
+        );
+        assert_eq!(count(&interpreted), 1);
+        assert_eq!(
+            snapshot(&interpreted).state.rip,
+            input.fixture.stop_rip.unwrap()
+        );
+        if input.fixture.case_id.ends_with("rip_load") {
+            assert_eq!(
+                snapshot(&interpreted).state.sse.as_ref().unwrap().xmm[8],
+                "000102030405060708090a0b0c0d0e0f"
+            );
+            assert_eq!(
+                snapshot(&interpreted).memory[1].bytes_hex,
+                input.fixture.memory[1].initial_bytes_hex
+            );
+        } else {
+            assert_eq!(
+                snapshot(&interpreted).state.sse,
+                input.fixture.initial_state.sse
+            );
+            assert_eq!(
+                snapshot(&interpreted).memory[1].bytes_hex,
+                "a5808182838485868788898a8b8c8d8e8f5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+            );
+        }
+        let (_, jit) = run(bytes, "jit", 4);
+        assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(jit.snapshot, Observation::Unavailable { .. }));
+    }
+    let mut mapped_rip = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_24_movupd_rip_load.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    mapped_rip.profile = od_testkit::v2::Profile::LongMovupdMemLoadV1;
+    let error = Fixture::from_json(&serde_json::to_vec(&mapped_rip).unwrap()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("outside the exact [RAX] packed memory profile")
+    );
+}
+
+#[test]
+fn local_movupd_rip_schema_rejects_non_rip_modes_and_prefixes() {
+    let original = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_24_movupd_rip_load.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    for code_hex in [
+        "66410f100500000000",   // REX.B
+        "66420f100500000000",   // REX.X
+        "66480f100500000000",   // REX.W
+        "660f10802500000000",   // base+disp32, not RIP
+        "660f10042500000000",   // SIB
+        "67660f100500000000",   // address-size override
+        "f3660f100500000000",   // scalar prefix
+        "660f1005f8ff",         // truncated disp32
+        "c5660f1005f8ff0f00",   // VEX
+        "62f17d086f05f8ff0f00", // EVEX
+        "660f1205f8ff0f00",     // unsupported neighboring opcode
+    ] {
+        let mut fixture = original.clone();
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = code_hex.into();
+        code.length = (code_hex.len() / 2) as u32;
+        code.comparison_mask_hex = "ff".repeat(code_hex.len() / 2);
+        fixture.stop_rip = Some(HexU64(
+            fixture.initial_state.rip.get() + u64::from(code.length),
+        ));
+        let error = Fixture::from_json(&serde_json::to_vec(&fixture).unwrap()).unwrap_err();
+        assert!(
+            error.to_string().contains("memory.code"),
+            "{code_hex}: {error}"
+        );
+    }
+}
+
+#[test]
 fn local_movss_memory_load_fixture_clears_xmm_upper_bits_and_keeps_native_closed() {
     let bytes = include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_34_8c_movss_memory_load_rax.case.json"

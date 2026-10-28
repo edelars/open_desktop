@@ -15036,6 +15036,8 @@ fn movupd_memory_base_uses_one_data_callback_and_commits_only_after_success() {
     for (fixture_bytes, failed_access) in [
         (include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_23_movupd_memory_base_load_r9_disp32.case.json").as_slice(), Some(AccessKind::Read)),
         (include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_23_movupd_memory_base_store_r8_disp8.case.json").as_slice(), Some(AccessKind::Write)),
+        (include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_24_movupd_rip_load.case.json").as_slice(), Some(AccessKind::Read)),
+        (include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_24_movupd_rip_store.case.json").as_slice(), Some(AccessKind::Write)),
     ] {
         let base = Fixture::from_json(fixture_bytes).unwrap().fixture;
         for fail in [false, true] {

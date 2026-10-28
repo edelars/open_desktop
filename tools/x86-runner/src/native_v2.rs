@@ -1475,6 +1475,7 @@ fn execute(loaded: &LoadedFixture) -> RunResult {
             | v2::Profile::LongMovupsMemStoreV1
             | v2::Profile::LongMovupsMemBaseV1
             | v2::Profile::LongMovupdMemBaseV1
+            | v2::Profile::LongMovupdMemRipV1
     ) {
         return empty_result(
             loaded,

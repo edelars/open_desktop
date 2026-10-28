@@ -74704,6 +74704,148 @@ mod tests {
     }
 
     #[test]
+    fn movupd_rip_relative_uses_next_rip_signed_disp32_all_xmms() {
+        let pattern = std::array::from_fn(|byte| (byte * 19 + 7) as u8);
+        for opcode in [0x10, 0x11] {
+            for xmm in 0..16u8 {
+                let rex = (xmm >= 8).then_some(0x44);
+                let length = if rex.is_some() { 9u64 } else { 8u64 };
+                for displacement in [0i32, 0x0000_0ff0, -16] {
+                    let mut code = Vec::new();
+                    code.push(0x66);
+                    if let Some(rex) = rex {
+                        code.push(rex);
+                    }
+                    code.extend([0x0f, opcode, 0x05 | ((xmm & 7) << 3)]);
+                    code.extend(displacement.to_le_bytes());
+                    let next_rip = 0x2000 + length;
+                    let address = next_rip.wrapping_add_signed(i64::from(displacement));
+                    let mut memory = Memory::at(&code, 0x2000);
+                    memory.bytes = vec![0xcc; 0x4000];
+                    let offset = (address - 0x1000) as usize;
+                    memory.bytes[offset - 1] = 0xa5;
+                    memory.bytes[offset..offset + 16].copy_from_slice(&pattern);
+                    memory.bytes[offset + 16] = 0x5a;
+                    let before_bytes = memory.bytes.clone();
+                    let mut state = LongModeState::default();
+                    state.rip = 0x2000;
+                    state.rflags = 0x0cd7;
+                    state.x87 = Some(X87State::fixture_seed());
+                    state.sse = Some(SseState {
+                        xmm: std::array::from_fn(|register| {
+                            std::array::from_fn(|byte| (register * 13 + byte) as u8)
+                        }),
+                        mxcsr: 0xdead_beef,
+                    });
+                    if opcode == 0x11 {
+                        state.sse.as_mut().unwrap().xmm[usize::from(xmm)] = pattern;
+                    }
+                    let before = state.clone();
+                    let result = step(&mut state, &mut memory, AccessContext::default()).unwrap();
+                    assert_eq!(result, StepOutcome::Advanced);
+                    assert_eq!(state.rip, next_rip);
+                    assert_eq!(
+                        memory.accesses,
+                        [(
+                            if opcode == 0x10 {
+                                AccessKind::Read
+                            } else {
+                                AccessKind::Write
+                            },
+                            address,
+                            16,
+                        )]
+                    );
+                    assert_eq!(memory.bytes[offset - 1], 0xa5);
+                    assert_eq!(memory.bytes[offset + 16], 0x5a);
+                    if opcode == 0x10 {
+                        assert_eq!(state.sse.as_ref().unwrap().xmm[usize::from(xmm)], pattern);
+                        for register in 0..16 {
+                            if register != usize::from(xmm) {
+                                assert_eq!(
+                                    state.sse.as_ref().unwrap().xmm[register],
+                                    before.sse.as_ref().unwrap().xmm[register]
+                                );
+                            }
+                        }
+                        assert_eq!(memory.bytes, before_bytes);
+                    } else {
+                        assert_eq!(&memory.bytes[offset..offset + 16], &pattern);
+                        assert_eq!(state.sse, before.sse);
+                    }
+                    assert_eq!(state.gpr, before.gpr);
+                    assert_eq!(state.rflags, before.rflags);
+                    assert_eq!(state.x87, before.x87);
+                    assert_eq!(state.sse.as_ref().unwrap().mxcsr, 0xdead_beef);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn movupd_rip_relative_range_and_pre_fetch_limits_are_atomic() {
+        for opcode in [0x10, 0x11] {
+            let code = [0x66, 0x0f, opcode, 0x05, 0, 0, 0, 0];
+            let mut memory = Memory::at(&code, 0x0000_7fff_ffff_fff8);
+            let mut state = LongModeState::default();
+            state.rip = 0x0000_7fff_ffff_fff8;
+            state.sse = Some(SseState {
+                xmm: [[0xa5; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            assert_ne!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced)
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let code = [0x66, 0x0f, 0x10, 0x05, 1, 2];
+        let mut memory = Memory::at(&code, 0x2000);
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        assert!(step(&mut state, &mut memory, AccessContext::default()).is_err());
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+
+        for (budget, stop_rip, exit) in [
+            (0, None, RunExit::InstructionBudgetExhausted),
+            (1, Some(0x2000), RunExit::StopAddress),
+        ] {
+            let code = [0x66, 0x0f, 0x10, 0x05, 0, 0, 0, 0];
+            let mut memory = Memory::at(&code, 0x2000);
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(result.exit, exit);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
     fn movups_sib_load_store_applies_index_scale_and_exactly_one_16_byte_access() {
         let pattern = std::array::from_fn(|byte| (byte * 23 + 5) as u8);
         let target = 0x1001u64;
