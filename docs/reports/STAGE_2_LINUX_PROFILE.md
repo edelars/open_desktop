@@ -143,31 +143,33 @@ candidates; они остаются unresolved до exact-source/binary gate.
 | Нормативный ABI/ISA floor | Generic amd64; baseline x86-64 psABI (v1), без v2/v3/v4 | Полный набор ISA форм и system semantics выбранной ОС |
 | Kernel config requirements | Для exact buildinfo зафиксированы required capabilities из таблицы выше | Что каждая capability обязательно включена в CPUID mask либо исполняется каждым boot path |
 | Upstream source reachability | Сопоставлены upstream v7.0 paths и Ubuntu source delta; см. audit ниже | Что конкретные ветви включены/достижимы в точном binary и выбранной конфигурации |
-| Exact Ubuntu source/binary | Source delta и package metadata исследованы; package `startup_64` disassembly и связка каждого пути с binary не завершены | Фактическая последовательность исполнения |
+| Exact Ubuntu source/binary | Exact kernel/source files подтверждены подписанным snapshot; распакованный kernel ELF совпал по 38 allocated sections с ELF из dbgsym того же build ID. Direct64 prefix, `startup_64`, CPUID, FPU init/save/restore и alternatives сопоставлены с source paths/lines | Compiled alternatives не означают, что ветка выполнялась; выбранные CPU identity/CPUID mask не закреплены |
 | Observed execution | Ubuntu kernel guest boot не наблюдался | Успешный boot, C/D или поддерживаемая ОС |
 
-До перехода к реализации/приёмке C/D остаются незакрытыми provenance
-исторического metapackage 7.0.0-38.38 из подписанного snapshot индекса,
-initramfs, command line, device/topology manifest и измеримый success
-milestone. Signed current index аутентифицирует exact image/buildinfo packages
-7.0.0-38.38, но в нём уже нет соответствующей версии metapackage. Это не
-меняет статус S2-00: принят диагностический A; profile C/D и boot остаются
-открытыми.
+Exact image, buildinfo, historical metapackage и source package `linux`
+7.0.0-38.38 подтверждены подписанным snapshot `resolute-updates` с timestamp
+`20261001T200000Z`. `.dsc`, source tarball и Ubuntu delta скачаны и повторно
+сверены с SHA-256 из подписанного `Sources.xz`. Main kernel paths сопоставлены
+с байтами exact image через совпадение ELF sections, build ID и DWARF; ранний
+compressed direct64 prefix сопоставлен с исходником и неизменённой Ubuntu delta.
+До scenario freeze остаются initramfs, command line, начальное
+CPU/CPUID/MSR/CR/segment/table/FP state, memory/device manifest и измеримый
+success milestone. Это не меняет статус S2-00: принят диагностический A;
+profile C/D и observed boot открыты.
 
 ## Что остаётся для C/D
 
-1. Для точного исторического metapackage либо подтвердить signed snapshot
-   индексом, либо исключить его из зафиксированного сценария; image/buildinfo
-   packages уже подтверждены signed `resolute-updates` index. Зафиксировать
-   exact initramfs/command line/memory map/device manifest, не полагаясь на
-   движущуюся зависимость метапакета.
-2. Сопоставить Ubuntu source version `7.0.0-38.38`, kernel build flags,
-   alternatives и CPU checks с полным ISA/CPUID/MSR/exception/state
-   inventory. Наличие capability не заменяет реализацию её семантики.
+1. Выбрать и зафиксировать CPU vendor/family/model/stepping, CPUID leaves и
+   subleaves, feature mask, physical/virtual address widths, MSR behavior и
+   начальное CR/EFER/segment/table/FP state, включая runtime ветви XSAVE и
+   workaround alternatives. Наличие capability в config не задаёт CPUID mask.
+2. Заморозить узкий diagnostic PID1 scenario: exact kernel, собственный
+   воспроизводимый initramfs, command line, memory map, device/interrupt model
+   и serial success marker. Не выдавать его за установленную Ubuntu 26.04.1.
 3. Проверить direct64 handoff, paging-level path и нужные mode transitions
-   на точном image. Отдельно определить потребности initramfs/userspace;
-   `IA32_EMULATION=y` не доказывает необходимость compat mode в выбранном
-   минимальном сценарии и не разрешает заранее удалить его из этапа.
+   для выбранного initial state. `IA32_EMULATION=y` не доказывает необходимость
+   compat mode в этом сценарии и не позволяет объявить его необязательным
+   для полного Ubuntu userspace.
 4. Зафиксировать каждое обязательное расширение и независимую проверку,
    включая то, что отсутствует у Mac mini. Наличие лишь SSE2 у тестового
    oracle или лишь целочисленного диагностического A не закрывает C/D.
@@ -280,8 +282,7 @@ buildinfo повторно извлечён config (308,501 bytes, SHA-256
 сохранены compiler и ABI metadata для последующего аудита.
 
 Это подтверждает точное повторное получение и целостность скачанных bytes
-относительно ранее зафиксированных digest. Пакеты image и buildinfo дополнительно
-криптографически привязаны к Ubuntu archive: подпись `InRelease` pocket
+относительно ранее зафиксированных digest. Подпись текущего `InRelease` pocket
 `resolute-updates` проверена ключом с полным fingerprint
 `F6ECB3762474EDA9D21B7022871920D1991BC93C`, опубликованным в [Ubuntu security
 documentation](https://documentation.ubuntu.com/security/software-integrity/image-verification/).
@@ -294,12 +295,84 @@ SHA-256 записи `main/binary-amd64/Packages.xz` совпал с digest ин
 `ebbcd81b1c46264144baa563be8d74971303ef8008ef291b8a01ec44f786f829`; индекс
 `Packages.xz` — 792,980 bytes, SHA-256
 `7684c1b9068894c293be6c8e911377bd9f36b47566e07480c8468ec02aa24a18`.
-Текущие подписанные индексы не содержат metapackage версии `7.0.0-38.38`:
-`resolute` содержит `7.0.0-14.14`, а `resolute-updates` — `7.0.0-42.42`.
-Локальный `apt-provenance.json` фиксирует эту границу и записи ядра.
+Также найдена историческая signed snapshot цепочка на
+`https://snapshot.ubuntu.com/ubuntu/20261001T200000Z/dists/resolute-updates/`:
+подпись `InRelease` прошла тем же fingerprint, а SHA-256/размеры `Packages.xz`
+и `Sources.xz` совпали с подписанными entries. В `Packages.xz` найдены точные
+image и metapackage 7.0.0-38.38 с совпадающими `.deb` hashes; `Sources.xz`
+aутентифицирует source `linux` 7.0.0-38.38 и файлы `.dsc`, `.orig.tar.gz`,
+`.diff.gz`. Все три source files скачаны; размеры и SHA-256 совпали с
+подписанным source index. Ubuntu delta содержит 5,769 paths и меняет 98 x86
+paths; среди затронутых startup/CPU paths — `arch/x86/entry/entry_64.S` и
+`arch/x86/kernel/fpu/signal.c`. Source files для startup_64, CPUID/common.c,
+alternative.c и FPU init/legacy ниже не изменены Ubuntu delta. Текущие индексы
+уже обновились: base `resolute` содержит
+metapackage 7.0.0-14.14, а `resolute-updates` — 7.0.0-42.42. Все локальные
+index bytes, package records и source hashes записаны в `apt-provenance.json`.
 PE/Authenticode signature по-прежнему не проверена. Локальные архивы и manifest находятся в игнорируемом `work/`; долговечная
 фиксация результата — этот отчёт. Извлечение `vmlinuz` ещё не является
-`startup_64` disassembly или source-to-binary mapping. Initramfs, command line,
-device/topology/memory manifest, success milestone, точное исполнение и полный
-ISA/CPUID/MSR/state matrix остаются открытыми; S2-00 по-прежнему принят только
-для диагностического A и x86-64-v1 ABI/ISA floor.
+observed execution. Initramfs, command line, initial CPU/CPUID/MSR/state,
+device/topology/memory manifest, success milestone и полный ISA/exception
+matrix остаются открытыми; S2-00 по-прежнему принят только для диагностического
+A и x86-64-v1 ABI/ISA floor.
+
+## Exact source-to-binary mapping — 28 октября 2026
+
+Snapshot metadata in local `apt-provenance.json` authenticates source package
+`linux` 7.0.0-38.38 and its three files. On-disk SHA-256 checks matched the
+signed source index: `linux_7.0.0.orig.tar.gz` (254,937,830 bytes,
+`c6343795c8c7e4feff55f5b309365c8e0eaf49cd6abcb412e32315313f149536`),
+`linux_7.0.0-38.38.diff.gz` (3,455,370 bytes,
+`98e913d4a1c1f810e4dcfa573cbcf0f1a3a4427bdcd503722555298a794c52b2`) and
+`.dsc` (7,845 bytes,
+`016d43577bd8a61629a02e140e3b88072b5ccdd1c90cb1ce2f3c8e5c28756e7e`).
+The Ubuntu delta has 5,769 paths, including 98 x86 paths. It changes
+`arch/x86/entry/entry_64.S` and `arch/x86/kernel/fpu/signal.c`; it does not
+change the source files listed below for startup, CPUID, CPU alternatives or
+FPU initialization/save/restore.
+
+The signed image package contains `vmlinuz-7.0.0-38-generic` (17,320,328
+bytes, SHA-256
+`9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e`). Its
+setup header gives a protected-mode base at file offset `0x5000`; direct64
+entry is at `0x5200`. Those bytes decode as `CLD; CLI; XOR EAX,EAX;
+MOV DS/ES/SS/FS/GS,AX`, matching `.org 0x200` and lines 278–299 of
+`arch/x86/boot/compressed/head_64.S`. This ties the prefix to exact source and
+image bytes, but does not prove a bootloader executed it.
+
+The exact zstd payload starts at file offset `0x52cc`; after excluding its
+four-byte uncompressed-size trailer it decompresses to a 71,005,544-byte ELF
+with SHA-256
+`ccaf590465e4e3bc6117efa8ac7cfe87ba0b348188e2608731961527dd05034f` and GNU
+build ID `338e542e384c46228f7a378babc0f9bb2b6a5997`. A matching Ubuntu
+debuginfod ELF was downloaded (506,419,160 bytes, SHA-256
+`7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f`); its
+build ID matches and all 38 allocated file-backed sections are byte-identical
+to the ELF extracted from the signed image package. Exact disassembly and
+DWARF locations include:
+
+| ELF virtual address | Binary evidence | Authenticated source location |
+|---|---|---|
+| `ffffffff83f253e0` | `startup_64`, 100 bytes; writes MSR `0xc0000101`, executes `LRETQ`, writes CR3 | `arch/x86/kernel/head_64.S:59` |
+| `ffffffff813b3931` | `DB E3` — `FNINIT` | `arch/x86/kernel/fpu/init.c:44` |
+| `ffffffff83f2b46e` | `0F AE 05 6B F9 17 00` — `FXSAVE` | `arch/x86/kernel/fpu/init.c:111` |
+| `ffffffff813b48ae` | `48 0F AE 40 40` — `FXSAVE64` | `arch/x86/kernel/fpu/legacy.h:108` |
+| `ffffffff813b4a59` | `48 0F AE 4B 40` — `FXRSTOR64` | `arch/x86/kernel/fpu/legacy.h:69` |
+| `ffffffff81408f32` | `0F A2` — `CPUID` | `arch/x86/include/asm/cpuid/api.h:29` |
+| `ffffffff813c0e90` | `get_cpu_cap` | `arch/x86/kernel/cpu/common.c:1017` |
+| `ffffffff813adfd0` | `apply_alternatives` | `arch/x86/kernel/alternative.c:682` |
+
+The mapped `fpu__init_cpu_generic` path clears CR0.EM/TS before `FNINIT` and
+sets CR4 mask `0x600` (OSFXSR/OSXMMEXCPT). Save and restore initially branch
+through `.altinstr_aux`: bit mask `0x04` at `boot_cpu_data+0x43` selects
+XSAVE/XRSTOR versus FXSAVE64/FXRSTOR64. A separate test at
+`boot_cpu_data+0x88`, mask `0x40`, selects an FPU workaround path. These are
+compiled alternatives; runtime selection still requires a frozen CPU and
+policy manifest. Generic amd64 x86-64-v1 alone does not select the branch.
+
+The source tarballs, full debug ELF, package artifacts, key and signed indexes
+remain ignored under `work/vms/s2-00-ubuntu-26.04.1/`; no large artifacts are
+in Git. The debug ELF came from Ubuntu debuginfod and was cross-checked against
+all allocated sections of the signed image-derived ELF; the `.ddeb` package
+itself was not separately authenticated by a signed ddebs index. PE/Authenticode
+and runtime execution remain unchecked.

@@ -11,17 +11,20 @@ slice не означает завершение этапа.
 floor принята нормативная интерпретация x86-64 psABI baseline (x86-64-v1);
 x86-64-v2/v3/v4 не входят в цель. Это не является принятием полного
 CPU/CPUID/MSR/OS boot profile. Конкретные synthetic vendor/family/model,
-CPUID mask и MSR allowlist остаются кандидатами до exact-source/binary gate.
+CPUID mask и MSR allowlist остаются кандидатами до выбора конкретного CPU и
+сверки его ветвей с exact-image evidence.
 
 Доказательства разделены на нормативный floor, kernel config requirements,
 upstream source reachability, exact Ubuntu source/binary и observed execution.
 Статические config/source/package findings не подтверждают загрузку. Initramfs,
 command line, device/topology manifest и success milestone не определены;
-Linux boot и C/D/System остаются открытыми. На 28 октября exact Ubuntu package
-bytes staged локально; SHA-256 kernel image/buildinfo подтверждены через
-подписанный `resolute-updates` index. Исторический metapackage 7.0.0-38.38 пока
-не аутентифицирован через snapshot index; PE signature и guest boot не
-проверены. Подробности и ограничения: [S2-00 Linux profile report](STAGE_2_LINUX_PROFILE.md#решение-по-generic-amd64-baseline).
+Linux boot и C/D/System остаются открытыми. На 28 октября подписанная
+`resolute-updates` snapshot chain аутентифицировала kernel/buildinfo,
+исторический metapackage и exact source package; exact direct64/FPU/CPUID paths
+сопоставлены с байтами образа и source lines. Runtime choice of alternatives,
+PE signature, frozen CPU/machine manifest и guest boot не проверены. Подробности
+и ограничения:
+[S2-00 Linux profile report](STAGE_2_LINUX_PROFILE.md#решение-по-generic-amd64-baseline).
 
 ## S2-22e — CPL3 GDT-only VERW
 
@@ -328,10 +331,11 @@ image `7.0.0-38-generic` и buildinfo config: измерены hashes и header 
 capabilities — в [Linux profile report](STAGE_2_LINUX_PROFILE.md) и
 [GUEST_REQUIREMENTS](../specs/GUEST_REQUIREMENTS.md). Это чтение bytes в памяти
 по официальным источникам; staging, boot и проверка APT/PE signatures не
-выполнены при первоначальном исследовании; на 28 октября package/image bytes
-staged локально, hashes kernel image/buildinfo подтверждены через подписанный
-Ubuntu package index (подробности в Linux profile report). PE signature и boot
-не проверены. Upstream v7.0 `configure_5level_paging` использует 32-bit trampoline
+выполнены при первоначальном исследовании; на 28 октября дополнительно
+подписанными Ubuntu index/snapshot подтверждены hashes exact kernel, buildinfo,
+metapackage и source package; распакованный ELF побайтно сопоставлен с
+соответствующим dbgsym ELF (подробности в Linux profile report). PE signature и
+boot не проверены. Upstream v7.0 `configure_5level_paging` использует 32-bit trampoline
 при mismatch текущего и требуемого LA57, поэтому direct64 не исключает
 дальнейший 32-bit путь. Сопоставление Ubuntu source/build, reachable ISA,
 полный C/D contract и Windows profile остаются открытыми.
