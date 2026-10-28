@@ -655,6 +655,16 @@ fn is_checked_memory_address(
         let indexed = indexed
             && operand.index.is_some_and(|index| (index as u8) < 4)
             && matches!(operand.scale, 1 | 2 | 4 | 8);
+        let rbp_indexed = matches!(instruction_length, 5 | 6 | 9)
+            && operand.index == Some(od_isa::Register::Rbp)
+            && matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
+            && matches!(operand.scale, 1 | 2 | 4 | 8)
+            && match instruction_length {
+                5 => operand.displacement == 0,
+                6 => i8::try_from(operand.displacement).is_ok(),
+                9 => i32::try_from(operand.displacement).is_ok(),
+                _ => false,
+            };
         let absolute_sib_disp32 = instruction_length == 9
             && matches!(operand.base, AddressBase::None)
             && operand.index.is_none()
@@ -672,6 +682,7 @@ fn is_checked_memory_address(
                         && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp)));
         return (base_supported && direct)
             || (indexed_base_supported && indexed)
+            || rbp_indexed
             || rsp_no_index_sib
             || rbp_direct
             || absolute_sib_disp32
@@ -899,6 +910,7 @@ fn is_scoped_memory_data_operand(
                     })))
             || is_address32_direct_stack_data_operand(operand, instruction_length)
             || is_address32_indexed_sib_stack_data_operand(operand, instruction_length)
+            || is_address32_rbp_indexed_sib_stack_data_operand(operand, instruction_length)
             || is_address32_rsp_sib_stack_base_operand(operand, instruction_length)
             || is_address32_rbp_direct_stack_base_operand(operand, instruction_length)
             || is_address32_absolute_sib_stack_data_operand(operand, instruction_length)
@@ -972,6 +984,24 @@ fn is_address32_indexed_sib_stack_data_operand(
             || matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
             || matches!(instruction_length, 6 | 9)
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp)))
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && displacement_valid
+}
+
+fn is_address32_rbp_indexed_sib_stack_data_operand(
+    operand: MemoryOperand,
+    instruction_length: u64,
+) -> bool {
+    let displacement_valid = match instruction_length {
+        5 => operand.displacement == 0,
+        6 => i8::try_from(operand.displacement).is_ok(),
+        9 => i32::try_from(operand.displacement).is_ok(),
+        _ => false,
+    };
+    operand.address_size == od_isa::OperandSize::Dword
+        && operand.size == od_isa::OperandSize::Qword
+        && matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
+        && operand.index == Some(od_isa::Register::Rbp)
         && matches!(operand.scale, 1 | 2 | 4 | 8)
         && displacement_valid
 }
