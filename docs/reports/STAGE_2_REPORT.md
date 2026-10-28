@@ -13008,3 +13008,35 @@ x86_64-unknown-linux-gnu`, and `git diff --check`, and `graphify update .` passe
 deny test was compile-checked, not executed on this Darwin host. Independent
 `gpt-6.1-sol` medium review found no remaining findings and independently
 reran the PSLLD interpreter and fixture tests.
+
+## S2-35.42 — local PSRLD immediate register profile
+
+Added local-only profile `s2-long-psrld-imm-reg-v1` for
+`66 [no REX or optional 41] 0F 72 /2 ib`, ModR/M.mod=3. `/2` selects PSRLD;
+`/6` remains PSLLD and is rejected by the PSRLD fixture profile. The destination
+is XMM0–15 through ModR/M.r/m with optional REX.B. Four independent
+little-endian u32 lanes shift logically right by unsigned, unmasked imm8;
+counts >=32 zero each lane. Flags and MXCSR are unchanged. SSE2 and
+CR0.EM=0/CR0.TS=0/CR4.OSFXSR=1 are assumptions only.
+
+Focused tests cover all 256 counts on every XMM destination against a widened
+reference, walking bits per lane, mixed-lane boundaries and the
+`80000000>>1=40000000`, `ffffffff>>1=7fffffff`, `00010000>>1=00008000`, and
+`80000000>>31=1` sentinels. Decoder/profile tests cover strict selector and
+prefix rejection, page-boundary immediate truncation and successful fetch,
+full-state preservation, no data callbacks, missing SSE state, and
+STOP/zero-budget atomicity. The handwritten XMM9 fixture runs in the
+interpreter with JIT denied; the native runner rejects it before process setup.
+No native execution or physical SSE/SSE2 acceptance is claimed.
+
+Verification passed: `cargo test -p od-isa psrld --offline` (6 tests),
+`cargo test -p od-runner --test fixture_v2 psrld --offline` (1 fixture test),
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+Linux-target `od-x86-runner` test compilation, `git diff --check`, and
+`graphify update .`. The Linux-only native-denial test was compile-checked but
+not executed on this Darwin host. Independent `gpt-6.1-sol` medium review is
+complete: the reviewer reran the focused PSRLD interpreter tests (6/6) and
+fixture test (1/1), and confirmed the workspace all-target check. Native
+runtime and physical SSE/SSE2 execution were not run. S2-34, S2-35, global
+`S2-35 → S2-34`, physical SSE/SSE2 validation, and combined Mac mini/SSH
+acceptance remain open.

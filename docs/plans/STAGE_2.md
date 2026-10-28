@@ -432,7 +432,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-35.37 | Local-only bounded register PSLLW immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.38 | Local-only bounded register PSRLW immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.39 | Local-only bounded register PSRAW immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
-| [ ] | S2-35.41 | Local-only bounded register PSLLD immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
+| [x] | S2-35.41 | Local-only bounded register PSLLD immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
+| [x] | S2-35.42 | Local-only bounded register PSRLD immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [ ] | S2-36 | Собственная binary32/binary64 семантика | S2-29, S2-34 |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
@@ -8822,6 +8823,42 @@ is compile-only on this Darwin host. Independent `gpt-6.1-sol` medium review
 found no remaining findings and independently reran the PSLLD interpreter and
 fixture tests.
 
+#### S2-35.42 — local-only bounded register immediate `PSRLD`
+
+The profile `s2-long-psrld-imm-reg-v1` admits exactly
+`66 [no REX or optional 41] 0F 72 /2 ib`, ModR/M.mod=3. ModR/M.r/m
+selects destination XMM0–15; `/2` is required and `/6` is the distinct PSLLD
+sibling. Four independent little-endian u32 lanes shift logically right by
+unsigned imm8. Counts 0–31 shift with zero-fill; counts >=32 clear every lane
+without masking the count. There is no cross-lane carry; flags and MXCSR are
+unchanged. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 remain assumptions only.
+
+Local checks cover all 256 counts on each of 16 destinations against an
+independent u64 reference for sub-32 counts, the `80000000>>1=40000000`,
+`ffffffff>>1=7fffffff`, `00010000>>1=00008000`, and `80000000>>31=1`
+sentinels, walking bits in each lane, mixed lanes, and no cross-lane carry.
+Strict selector/encoding negatives, full-state preservation, no data
+callbacks, missing SSE state, STOP/zero-budget atomicity, immediate
+truncation/page crossing, and complete cross-boundary fetch are covered. A
+handwritten XMM9 fixture checks interpreter execution with JIT denied. Native
+denial is before mapping/process setup; Linux-only guard compilation is not
+physical execution. Other shifts, memory/MMX, REX.R/X/W, extra prefixes,
+VEX/EVEX, feature gates, exception delivery, and physical execution remain
+excluded.
+
+S2-35.42 implementation check (2026-10-27): `cargo test -p od-isa psrld
+--offline` passed (6 focused tests); `cargo test -p od-runner --test fixture_v2
+psrld --offline` passed (1 fixture test), verifying the handwritten fixture,
+strict profile rejection matrix, and JIT denial. `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, x86_64 Linux-target
+`od-x86-runner` test compilation, `git diff --check`, and `graphify update .`
+passed. The Linux native-denial test was compile-checked only on this Darwin
+host. Independent `gpt-6.1-sol` medium review is complete: the reviewer reran
+the focused PSRLD interpreter tests (6/6) and fixture test (1/1), and confirmed
+the workspace all-target check. Native runtime and physical SSE/SSE2 execution
+were not run. S2-34, S2-35, global `S2-35 → S2-34`, physical SSE/SSE2
+validation, and combined Mac mini/SSH acceptance remain open.
+
 S2-35.39 implementation check (2026-10-27): focused PSRAW interpreter tests
 passed (5), including exhaustive counts/word values, every count on all XMM
 destinations, sentinels, strict encoding, page crossing, state/no-callback, and
@@ -8895,12 +8932,14 @@ remain open. Evidence is recorded in [STAGE_2_REPORT.md](../reports/STAGE_2_REPO
 This inventory reconciles implemented local slices with the task list; it
 does not define the eventual CPU profile or imply that every x86 form is
 required. “Implemented” below means only the exact local diagnostic forms
-named here. They share legacy `66 [one optional REX.R/B] 0F opcode /r`,
-ModR/M.mod=3, XMM0–15, except `PSHUFD`, which also consumes one imm8. Each
-has its own `s2-long-<mnemonic-lowercase>-reg-v1` profile, with the exact
-opcode and any profile-specific REX detail recorded in its numbered subsection;
-all reject forms outside their allowlist. The detailed literal fixtures are
-indexed in the [Stage 2 fixture README](../../tests/fixtures/x86/stage2/README.md).
+named here. Exact encodings and profile names are listed in each numbered
+subsection; all profiles are register-only and reject forms outside their
+allowlist. The ordinary packed arithmetic, logic, comparison, unpack and pack
+forms use `66 [REX.R/B] 0F opcode /r` with ModR/M.mod=3 and XMM0–15. The
+immediate shift profiles use grouped selectors (`/6`, `/2` or `/4`) with
+ModR/M.r/m selecting the XMM destination plus imm8; `PSHUFD` uses `/r` plus
+imm8. The detailed literal fixtures are indexed in the
+[Stage 2 fixture README](../../tests/fixtures/x86/stage2/README.md).
 
 | Operation group | Local forms evidenced in S2-35 | Local evidence and next technical dependency |
 |---|---|---|
@@ -8910,7 +8949,7 @@ indexed in the [Stage 2 fixture README](../../tests/fixtures/x86/stage2/README.m
 | Unpack | `PUNPCKLBW` 60, `PUNPCKHBW` 68, `PUNPCKLWD` 61, `PUNPCKHWD` 69, `PUNPCKLDQ` 62, `PUNPCKHDQ` 6A, `PUNPCKLQDQ` 6C, `PUNPCKHQDQ` 6D | Each byte is the final opcode in `66 [REX.R/B] 0F xx /r`, ModR/M.mod=3. Local register fixtures and lane-selection/state checks exist for all eight listed forms. No new local opcode dependency is evidenced; parent native-oracle acceptance remains outstanding. |
 | Pack | `PACKSSWB` 63, `PACKUSWB` 67, `PACKSSDW` 6B | Each byte is the final opcode in `66 [REX.R/B] 0F xx /r`, ModR/M.mod=3. Local fixtures and boundary/extrema checks; S2-35.33/.34 additionally record exhaustive sign-extended input-position checks and register-pair coverage. These are the only pack forms inventoried here. |
 | Shuffle | `PSHUFD` 70 + imm8 | `66 [REX.R/B] 0F 70 /r ib`, ModR/M.mod=3. Exact register-only profile and fixture; local tests cover all 256 controls and all 16×16 register pairs, aliasing, fetch truncation and strict negatives. Other shuffle forms have no selected S2-35 profile here. |
-| Shifts | `PSLLW` 71 `/6` + imm8 (`s2-long-psllw-imm-reg-v1`); `PSRLW` 71 `/2` + imm8 (`s2-long-psrlw-imm-reg-v1`); `PSRAW` 71 `/4` + imm8 (`s2-long-psraw-imm-reg-v1`) | Exact register-only forms are `66 [optional REX.B] 0F 71 /6 ib` (PSLLW), `66 [optional REX.B] 0F 71 /2 ib` (PSRLW), and `66 [no REX or optional 41] 0F 71 /4 ib` (PSRAW), all ModR/M.mod=3 with ModR/M.r/m selecting XMM0–15. Each uses an unsigned unmasked imm8; PSLLW/PSRLW counts >=16 clear lanes, while PSRAW sign-fills negative lanes and clears nonnegative lanes. Local interpreter evidence covers every count on all 16 destinations and all 65,536 lane values for counts 0–15; focused tests passed for PSLLW and PSRLW (6 each) and PSRAW (5). Handwritten XMM9 fixtures `s2_35_37_psllw_imm_register.case.json`, `s2_35_38_psrlw_imm_register.case.json`, and `s2_35_39_psraw_imm_register.case.json` each passed interpreter execution with JIT denied (one fixture test each). Native admission remains denied; Linux-only denial guards are compile-only and were not executed on Darwin. Physical SSE/SSE2 execution is `not_run`. Other shifts are not selected. |
+| Shifts | Word forms: `PSLLW` `0F 71 /6` + imm8 (`s2-long-psllw-imm-reg-v1`); `PSRLW` `0F 71 /2` + imm8 (`s2-long-psrlw-imm-reg-v1`); `PSRAW` `0F 71 /4` + imm8 (`s2-long-psraw-imm-reg-v1`). Dword forms: `PSLLD` `0F 72 /6` + imm8 (`s2-long-pslld-imm-reg-v1`); `PSRLD` `0F 72 /2` + imm8 (`s2-long-psrld-imm-reg-v1`). | Exact register-only encodings are `66 [optional REX.B] 0F 71 /6 ib` (PSLLW), `66 [optional REX.B] 0F 71 /2 ib` (PSRLW), `66 [no REX or optional 41] 0F 71 /4 ib` (PSRAW), `66 [no REX or optional 41] 0F 72 /6 ib` (PSLLD), and `66 [no REX or optional 41] 0F 72 /2 ib` (PSRLD), all ModR/M.mod=3 with ModR/M.r/m selecting XMM0–15. Each uses unsigned, unmasked imm8; word shifts clear lanes at counts >=16 except PSRAW, which sign-fills negative lanes and clears nonnegative lanes at counts >=16; dword shifts clear lanes at counts >=32. Local interpreter tests passed: PSLLW 6, PSRLW 6, PSRAW 5, PSLLD 5, PSRLD 6. Handwritten XMM9 fixtures `s2_35_37_psllw_imm_register.case.json`, `s2_35_38_psrlw_imm_register.case.json`, `s2_35_39_psraw_imm_register.case.json`, `s2_35_41_pslld_imm_register.case.json`, and `s2_35_42_psrld_imm_register.case.json` each passed interpreter execution with JIT denied (one fixture test each). Native admission remains denied; Linux-only denial guards were compile-checked only and not executed on Darwin. Physical SSE/SSE2 execution is `not_run`. Other shifts are not selected or required by this inventory. |
 
 For every implemented row, the local contract is register-only and assumes
 SSE2 plus CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 where the profile says so.
