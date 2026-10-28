@@ -1798,6 +1798,12 @@ JIT descriptor и host direct V2/shared IR/interpreter должны провер
 
 Проверить direct V2/shared IR/interpreter parity, data=RBP pre-state alias, все bases/scales/data/операции и mod00/disp8/disp32. Добавить независимую формулу адреса, wrap, фиксированный disp32 byte7 identity, точные callback/retirement, #GP на noncanonical start/end, отдельный AddressOverflow, fault no-commit, store+STOP, STOP/budget guards, continuation по фактическому RIP через формы 4/5/8 без повторных эффектов, partial windows и invalid neighbors. Результаты: [S3-20bn report](../reports/STAGE_3_S3-20bn_2026-10-28.md). Production owner/MMU, Stage 2/ISA, Mini и performance остаются вне среза.
 
+#### S3-20bo. Address32 indexed SIB с RSI/RDI base и RBP index
+
+Поддержать singleton `67 48 8B/89 /r sib [disp8|disp32]`: ModRM `mod=00/01/10,r/m=100`, SIB base RSI/RDI, index ровно RBP, scale 1/2/4/8, data RAX..RBP, длины 5/6/9. Effective address берётся только из decoder-owned `MemoryOperand::access_address_48`: `(low32(old base) + low32(old RBP) * scale + signed displacement) mod 2^32`, затем zero-extension; перенос qword остаётся 64-битным. RSI/RDI base сохраняются; индекс RBP читается из pre-state и меняется только если он является load destination после успешного доступа.
+
+Проверки должны покрывать load/store × обе базы × все data registers/scales × mod00 и signed disp8/disp32 edges, direct V2/shared IR/interpreter parity, точные адрес/count/retirement и pre-state `data=RBP`. Добавить high-half truncation, contiguous qword callback на `0xffff_fffc`, architectural/backend no-commit, STOP после успешного store, pre-entry STOP/zero-budget, continuation по actual RIP между 5/6/9-byte forms без replay, ninth disp32 byte sensitivity, partial windows и invalid neighbors. Отчёт: [S3-20bo report](../reports/STAGE_3_S3-20bo_2026-10-28.md). Production owner/MMU, Stage 2/ISA, Mini и performance остаются вне среза.
+
 ### S3-21. Подтвердить memory slice на физическом x86
 
 1. Выполнить после локального завершения Stage 3 как финальный gate. Использовать завершённый S2-09 native memory profile. Проверить одинаковые входы, наблюдение всех заявленных GPR, нормализацию guest addresses и сравнение memory effects.

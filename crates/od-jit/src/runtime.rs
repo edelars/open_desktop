@@ -116,6 +116,26 @@ fn is_address32_rbp_indexed_sib_profile(operand: MemoryOperand, length: u64) -> 
         }
 }
 
+fn is_address32_rsi_rdi_base_rbp_index_sib_profile(operand: MemoryOperand, length: u64) -> bool {
+    matches!(length, 5 | 6 | 9)
+        && operand.address_size == od_isa::OperandSize::Dword
+        && operand.size == od_isa::OperandSize::Qword
+        && matches!(
+            operand.base,
+            od_isa::long_decode::AddressBase::Register(
+                od_isa::Register::Rsi | od_isa::Register::Rdi
+            )
+        )
+        && operand.index == Some(od_isa::Register::Rbp)
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && match length {
+            5 => operand.displacement == 0,
+            6 => i8::try_from(operand.displacement).is_ok(),
+            9 => i32::try_from(operand.displacement).is_ok(),
+            _ => false,
+        }
+}
+
 fn is_address32_rsp_base_rbp_indexed_sib_profile(operand: MemoryOperand, length: u64) -> bool {
     matches!(length, 5 | 6 | 9)
         && operand.address_size == od_isa::OperandSize::Dword
@@ -386,6 +406,8 @@ impl MemorySiteV2 {
             };
         let address32_rbp_indexed_sib_data_profile =
             is_address32_rbp_indexed_sib_profile(self.operand, length);
+        let address32_rsi_rdi_base_rbp_index_sib_data_profile =
+            is_address32_rsi_rdi_base_rbp_index_sib_profile(self.operand, length);
         let address32_rsp_base_rbp_indexed_sib_data_profile =
             is_address32_rsp_base_rbp_indexed_sib_profile(self.operand, length);
         let address32_rbp_base_rbp_indexed_sib_data_profile =
@@ -470,6 +492,7 @@ impl MemorySiteV2 {
         let scoped_data_profile = address32_direct_data_profile
             || address32_indexed_sib_data_profile
             || address32_rbp_indexed_sib_data_profile
+            || address32_rsi_rdi_base_rbp_index_sib_data_profile
             || address32_rsp_base_rbp_indexed_sib_data_profile
             || address32_rbp_base_rbp_indexed_sib_data_profile
             || address32_rsp_sib_base_data_profile
@@ -627,7 +650,9 @@ impl MemorySiteV2 {
                 ) || rsi_rdi_direct_data_profile
                     || address32_rsi_rdi_direct_data_profile
                     || matches!(register, od_isa::Register::Rsi | od_isa::Register::Rdi)
-                        && (indexed_sib_data_profile || address32_indexed_sib_data_profile)
+                        && (indexed_sib_data_profile
+                            || address32_indexed_sib_data_profile
+                            || address32_rsi_rdi_base_rbp_index_sib_data_profile)
                     || register == od_isa::Register::Rbp && matches!(length, 4 | 7)
                     || register == od_isa::Register::Rsp
                         && matches!(length, 4 | 5 | 8)
@@ -726,6 +751,7 @@ impl MemorySiteV2 {
                     && !rbp_base_rbp_index_sib_data_profile
                     && !rsi_rdi_base_rbp_index_sib_data_profile
                     && !address32_rbp_index_sib_data_profile
+                    && !address32_rsi_rdi_base_rbp_index_sib_data_profile
                     && !address32_rsp_base_rbp_indexed_sib_data_profile
                     && !address32_rbp_base_rbp_indexed_sib_data_profile
                     && !indexed_no_base_rbp_sib_disp32_data_profile
@@ -750,7 +776,8 @@ impl MemorySiteV2 {
                         | od_isa::Register::Rbx
                 )
             ) || address32_rsi_rdi_direct_data_profile
-                || address32_indexed_sib_data_profile;
+                || address32_indexed_sib_data_profile
+                || address32_rsi_rdi_base_rbp_index_sib_data_profile;
             let direct = self.operand.index.is_none()
                 && self.operand.scale == 1
                 && match length {
@@ -859,7 +886,8 @@ impl MemorySiteV2 {
                     || rbp_direct
                     || absolute_sib_disp32
                     || indexed_no_base_sib_disp32
-                    || indexed_no_base_rbp_sib_disp32);
+                    || indexed_no_base_rbp_sib_disp32
+                    || address32_rsi_rdi_base_rbp_index_sib_data_profile);
         }
 
         let displacement_is_valid = match (self.operand.base, self.operand.index, length) {
@@ -968,6 +996,40 @@ impl MemorySiteV2 {
                     && self.operand.index == od_isa::Register::from_encoding((sib >> 3) & 7)
                     && self.operand.scale == 1_u8 << (sib >> 6)
                     && i32::try_from(self.operand.displacement).is_ok();
+            }
+            if self.operand.address_size == od_isa::OperandSize::Dword
+                && base == 4
+                && matches!((source.len(), mode), (5, 0) | (6, 1) | (9, 2))
+                && matches!(source[4] & 7, 6 | 7)
+                && (source[4] >> 3) & 7 == 5
+            {
+                let sib = source[4];
+                let displacement_valid = match source.len() {
+                    5 => self.operand.displacement == 0,
+                    6 => i8::try_from(self.operand.displacement).is_ok(),
+                    9 => i32::try_from(self.operand.displacement).is_ok(),
+                    _ => false,
+                };
+                return data_register <= 5
+                    && site_register == Some(data_register)
+                    && self.next_rip.checked_sub(self.guest_rip) == Some(source.len() as u64)
+                    && is_address32_rsi_rdi_base_rbp_index_sib_profile(
+                        self.operand,
+                        source.len() as u64,
+                    )
+                    && matches!(
+                        (source[4] & 7, self.operand.base),
+                        (
+                            6,
+                            od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsi)
+                        ) | (
+                            7,
+                            od_isa::long_decode::AddressBase::Register(od_isa::Register::Rdi)
+                        )
+                    )
+                    && self.operand.index == Some(od_isa::Register::Rbp)
+                    && self.operand.scale == 1_u8 << (sib >> 6)
+                    && displacement_valid;
             }
             if self.operand.address_size == od_isa::OperandSize::Dword
                 && base == 4
