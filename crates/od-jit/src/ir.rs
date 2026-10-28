@@ -352,12 +352,19 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                         });
                     }
                 } else if matches!(src.0, 6 | 7) {
-                    if instruction_length(program, active_instruction) != 3
+                    let length = instruction_length(program, active_instruction);
+                    let displacement_valid = match length {
+                        3 => operand.displacement == 0,
+                        4 => i8::try_from(operand.displacement).is_ok(),
+                        7 => i32::try_from(operand.displacement).is_ok(),
+                        _ => false,
+                    };
+                    if !matches!(length, 3 | 4 | 7)
                         || operand.address_size != od_isa::OperandSize::Qword
                         || operand.size != od_isa::OperandSize::Qword
                         || operand.index.is_some()
                         || operand.scale != 1
-                        || operand.displacement != 0
+                        || !displacement_valid
                         || !matches!(
                             operand.base,
                             od_isa::long_decode::AddressBase::Register(register)
@@ -1012,7 +1019,7 @@ fn is_direct_low_base_rsi_rdi_load_operand(
     data_register: u8,
 ) -> bool {
     matches!(data_register, 6 | 7)
-        && instruction_length == 3
+        && matches!(instruction_length, 3 | 4 | 7)
         && operand.address_size == od_isa::OperandSize::Qword
         && operand.size == od_isa::OperandSize::Qword
         && matches!(
@@ -1021,7 +1028,12 @@ fn is_direct_low_base_rsi_rdi_load_operand(
         )
         && operand.index.is_none()
         && operand.scale == 1
-        && operand.displacement == 0
+        && match instruction_length {
+            3 => operand.displacement == 0,
+            4 => i8::try_from(operand.displacement).is_ok(),
+            7 => i32::try_from(operand.displacement).is_ok(),
+            _ => false,
+        }
 }
 
 fn is_scoped_memory_data_operand(
@@ -2025,10 +2037,10 @@ mod tests {
             ));
 
             let mut wrong_length = allowed;
-            wrong_length.guest_instructions[0].next_rip = 0x2004;
-            wrong_length.code_end = 0x2004;
+            wrong_length.guest_instructions[0].next_rip = 0x2005;
+            wrong_length.code_end = 0x2005;
             if let Some(Operation::Exit { target_rip, .. }) = wrong_length.operations.last_mut() {
-                *target_rip = 0x2004;
+                *target_rip = 0x2005;
             }
             assert!(matches!(
                 verify(&wrong_length),

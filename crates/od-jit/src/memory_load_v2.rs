@@ -1940,7 +1940,7 @@ mod tests {
 
         for source in [
             vec![0x67, 0x48, 0x89, 0x30], // addr32
-            vec![0x48, 0x89, 0x70, 0x00], // displacement
+            vec![0x48, 0x89, 0x75, 0x00], // RSI source with RBP base
             vec![0x48, 0x89, 0x34, 0x20], // SIB
             vec![0x89, 0x30],             // non-qword width
             vec![0x49, 0x89, 0x30],       // REX.B
@@ -1992,6 +1992,147 @@ mod tests {
             let code = CodeView::new(0x5d00, &bytes).unwrap();
             assert!(compile_memory_load_block_v2(code, 0x5d00).is_err());
             assert!(compile_ir_memory_load_block_v2(code, 0x5d00).is_err());
+        }
+    }
+
+    #[test]
+    fn rsi_rdi_data_direct_displacement_profile_is_exactly_32_encodings() {
+        let displacements = [
+            (1_u8, i8::MIN as i64),
+            (1, -1),
+            (1, 0),
+            (1, i8::MAX as i64),
+            (2, i32::MIN as i64),
+            (2, -1),
+            (2, 0),
+            (2, 1),
+            (2, i32::MAX as i64),
+        ];
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data in [6_u8, 7] {
+                for base in 0..4_u8 {
+                    for (modrm_mode, displacement) in displacements {
+                        let mut bytes = vec![0x48, opcode, (modrm_mode << 6) | (data << 3) | base];
+                        if modrm_mode == 1 {
+                            bytes.push(displacement as i8 as u8);
+                        } else {
+                            bytes.extend_from_slice(&(displacement as i32).to_le_bytes());
+                        }
+                        let code = CodeView::new(0x5e00, &bytes).unwrap();
+                        let decoded = long_decode::decode(
+                            &mut CodeMemory::full_code(code),
+                            0x5e00,
+                            AccessContext::default(),
+                        )
+                        .unwrap();
+                        assert!(
+                            match operation {
+                                MemorySiteOperationV2::Load =>
+                                    crate::block::exact_direct_qword_load_rsi_rdi_bytes(
+                                        code,
+                                        0x5e00,
+                                        decoded.length
+                                    ),
+                                MemorySiteOperationV2::Store =>
+                                    crate::block::exact_direct_qword_store_rsi_rdi_bytes(
+                                        code,
+                                        0x5e00,
+                                        decoded.length
+                                    ),
+                            },
+                            "exact-byte predicate rejected {bytes:02x?}"
+                        );
+                        assert!(
+                            match operation {
+                                MemorySiteOperationV2::Load =>
+                                    crate::block::is_checked_qword_load_form(decoded),
+                                MemorySiteOperationV2::Store =>
+                                    crate::block::is_checked_qword_store_form(decoded),
+                            },
+                            "checked-form predicate rejected {bytes:02x?}"
+                        );
+                        match operation {
+                            MemorySiteOperationV2::Load => {
+                                let direct = compile_memory_load_block_v2(code, 0x5e00).unwrap();
+                                let ir = compile_ir_memory_load_block_v2(code, 0x5e00).unwrap();
+                                assert_eq!(direct.site(), ir.site());
+                                assert_eq!(direct.source_bytes(), bytes);
+                                assert_eq!(ir.source_bytes(), bytes);
+                                assert_eq!(direct.site().next_rip(), 0x5e00 + bytes.len() as u64);
+                                assert_eq!(direct.site().operand().displacement, displacement);
+                                assert!(direct.site().has_supported_profile());
+                                assert!(direct.site().matches_source_bytes(&bytes, operation));
+                                if modrm_mode == 2 {
+                                    let mut changed_final_disp = bytes.clone();
+                                    *changed_final_disp.last_mut().unwrap() ^= 1;
+                                    assert!(
+                                        !direct
+                                            .site()
+                                            .matches_source_bytes(&changed_final_disp, operation)
+                                    );
+                                }
+                                assert!(crate::block::is_checked_qword_load_form(decoded));
+                            }
+                            MemorySiteOperationV2::Store => {
+                                let direct = compile_memory_store_block_v2(code, 0x5e00).unwrap();
+                                let ir = compile_ir_memory_store_block_v2(code, 0x5e00).unwrap();
+                                assert_eq!(direct.site(), ir.site());
+                                assert_eq!(direct.source_bytes(), bytes);
+                                assert_eq!(ir.source_bytes(), bytes);
+                                assert_eq!(direct.site().next_rip(), 0x5e00 + bytes.len() as u64);
+                                assert_eq!(direct.site().operand().displacement, displacement);
+                                assert!(direct.site().has_supported_profile());
+                                assert!(direct.site().matches_source_bytes(&bytes, operation));
+                                if modrm_mode == 2 {
+                                    let mut changed_final_disp = bytes.clone();
+                                    *changed_final_disp.last_mut().unwrap() ^= 1;
+                                    assert!(
+                                        !direct
+                                            .site()
+                                            .matches_source_bytes(&changed_final_disp, operation)
+                                    );
+                                }
+                                assert!(crate::block::is_checked_qword_store_form(decoded));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for bytes in [
+            vec![0x48, 0x8b, 0x76, 0],          // RSI data and base
+            vec![0x48, 0x89, 0xbf, 0, 0, 0, 0], // RDI data, RDI base
+            vec![0x48, 0x8b, 0x74, 0x20, 0],    // SIB
+            vec![0x67, 0x48, 0x8b, 0x70, 0],    // address32
+            vec![0x49, 0x8b, 0x70, 0],          // REX.B
+            vec![0x4c, 0x8b, 0x30, 0],          // REX.R / R8 destination
+            vec![0x48, 0x8b, 0x75, 0],          // RBP base
+            vec![0x48, 0x8b, 0x34, 0x20],       // SIB base RAX, index RSP
+            vec![0x66, 0x48, 0x8b, 0x30],       // operand override
+        ] {
+            let code = CodeView::new(0x5e00, &bytes).unwrap();
+            assert!(compile_memory_load_block_v2(code, 0x5e00).is_err());
+            assert!(compile_ir_memory_load_block_v2(code, 0x5e00).is_err());
+            assert!(compile_memory_store_block_v2(code, 0x5e00).is_err());
+            assert!(compile_ir_memory_store_block_v2(code, 0x5e00).is_err());
+        }
+
+        for bytes in [
+            &[0x48, 0x8b, 0x30][..],
+            &[0x48, 0x8b, 0x70, 0][..],
+            &[0x48, 0x8b, 0xb0, 0, 0, 0, 0][..],
+        ] {
+            for length in 1..bytes.len() {
+                let code = CodeView::new(0x5e00, &bytes[..length]).unwrap();
+                assert!(compile_memory_load_block_v2(code, 0x5e00).is_err());
+                assert!(compile_ir_memory_load_block_v2(code, 0x5e00).is_err());
+                assert!(compile_memory_store_block_v2(code, 0x5e00).is_err());
+                assert!(compile_ir_memory_store_block_v2(code, 0x5e00).is_err());
+            }
         }
     }
 
@@ -3933,8 +4074,8 @@ mod tests {
         for bytes in [
             vec![0x67, 0x48, 0x8b, 0x64, 0], // incomplete SIB
             vec![0x48, 0x67, 0x89, 0xa8, 0, 0, 0, 0],
-            vec![0x48, 0x8b, 0x70, 0],
-            vec![0x48, 0x89, 0xb0, 0, 0, 0, 0],
+            vec![0x48, 0x8b, 0x7d, 0], // RDI destination with RBP base
+            vec![0x48, 0x89, 0x75, 0], // RSI source with RBP base
         ] {
             let code = CodeView::new(0x5750, &bytes).unwrap();
             let result = if bytes[1] == 0x8b || bytes[2] == 0x8b {
@@ -6988,7 +7129,7 @@ mod tests {
             vec![0x40, 0x48, 0x89, 0x18],       // extra prefix
             vec![0x48, 0x89, 0x1c],             // SIB
             vec![0x48, 0x89, 0x58],             // displacement
-            vec![0x48, 0x89, 0xb0, 0, 0, 0, 0], // R8 source
+            vec![0x48, 0x89, 0xbd, 0, 0, 0, 0], // RDI source with RBP base
         ] {
             let code = CodeView::new(0x5000, &bytes).unwrap();
             assert!(matches!(

@@ -1650,14 +1650,19 @@ pub(crate) fn is_checked_qword_load_form(instruction: Instruction) -> bool {
         && matches!(instruction.length, 3 | 4 | 5 | 6 | 7 | 8 | 9)
         && ((destination.register() as u8) < 4
             || matches!(destination.register() as u8, 6 | 7)
-                && instruction.length == 3
+                && matches!(instruction.length, 3 | 4 | 7)
                 && instruction.address_size == OperandSize::Qword
                 && operand.address_size == OperandSize::Qword
                 && operand.size == OperandSize::Qword
                 && matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
                 && operand.index.is_none()
                 && operand.scale == 1
-                && operand.displacement == 0
+                && match instruction.length {
+                    3 => operand.displacement == 0,
+                    4 => i8::try_from(operand.displacement).is_ok(),
+                    7 => i32::try_from(operand.displacement).is_ok(),
+                    _ => false,
+                }
             || destination.register() as u8 == 4
                 && is_rsp_memory_data_operand(instruction, operand)
             || destination.register() as u8 == 5
@@ -1688,12 +1693,17 @@ pub(crate) fn is_checked_qword_store_form(instruction: Instruction) -> bool {
             || source.register() as u8 == 4 && is_rsp_memory_data_operand(instruction, operand)
             || source.register() as u8 == 5 && is_rbp_memory_data_operand(instruction, operand)
             || matches!(source.register() as u8, 6 | 7)
-                && instruction.length == 3
+                && matches!(instruction.length, 3 | 4 | 7)
                 && instruction.address_size == OperandSize::Qword
                 && operand.address_size == OperandSize::Qword
                 && operand.index.is_none()
                 && operand.scale == 1
-                && operand.displacement == 0
+                && match instruction.length {
+                    3 => operand.displacement == 0,
+                    4 => i8::try_from(operand.displacement).is_ok(),
+                    7 => i32::try_from(operand.displacement).is_ok(),
+                    _ => false,
+                }
                 && matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4))
         && source.size() == OperandSize::Qword
         && operand.size == OperandSize::Qword
@@ -3345,16 +3355,21 @@ pub(crate) fn exact_direct_qword_store_rsi_rdi_bytes(
     else {
         return false;
     };
-    code.bytes
-        .get(offset..offset.saturating_add(3))
-        .is_some_and(|bytes| {
-            length == 3
-                && bytes.len() == 3
-                && bytes[0..2] == [0x48, 0x89]
-                && bytes[2] >> 6 == 0
-                && matches!((bytes[2] >> 3) & 7, 6 | 7)
-                && bytes[2] & 7 < 4
-        })
+    let Some(bytes) = code
+        .bytes
+        .get(offset..offset.saturating_add(usize::from(length)))
+    else {
+        return false;
+    };
+    bytes.len() == usize::from(length)
+        && bytes.get(0..2) == Some(&[0x48, 0x89])
+        && matches!(length, 3 | 4 | 7)
+        && matches!(bytes[2] >> 6, 0 | 1 | 2)
+        && (length == 3 && bytes[2] >> 6 == 0
+            || length == 4 && bytes[2] >> 6 == 1
+            || length == 7 && bytes[2] >> 6 == 2)
+        && matches!((bytes[2] >> 3) & 7, 6 | 7)
+        && bytes[2] & 7 < 4
 }
 
 pub(crate) fn exact_direct_qword_load_rsi_rdi_bytes(
@@ -3368,16 +3383,20 @@ pub(crate) fn exact_direct_qword_load_rsi_rdi_bytes(
     else {
         return false;
     };
-    code.bytes
-        .get(offset..offset.saturating_add(3))
-        .is_some_and(|bytes| {
-            length == 3
-                && bytes.len() == 3
-                && bytes[0..2] == [0x48, 0x8b]
-                && bytes[2] >> 6 == 0
-                && matches!((bytes[2] >> 3) & 7, 6 | 7)
-                && bytes[2] & 7 < 4
-        })
+    let Some(bytes) = code
+        .bytes
+        .get(offset..offset.saturating_add(usize::from(length)))
+    else {
+        return false;
+    };
+    bytes.len() == usize::from(length)
+        && bytes.get(0..2) == Some(&[0x48, 0x8b])
+        && matches!(length, 3 | 4 | 7)
+        && (length == 3 && bytes[2] >> 6 == 0
+            || length == 4 && bytes[2] >> 6 == 1
+            || length == 7 && bytes[2] >> 6 == 2)
+        && matches!((bytes[2] >> 3) & 7, 6 | 7)
+        && bytes[2] & 7 < 4
 }
 
 pub(crate) fn exact_qword_address32_memory_bytes(
