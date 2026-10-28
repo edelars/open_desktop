@@ -382,6 +382,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-34.14 | Separate local-only reverse-direction register MOVAPD `66 0F 29 /r`; raw 128-bit XMM copy, JIT/native closed | S2-34.13 |
 | [x] | S2-34.15 | Separate local-only register MOVUPD `66 0F 10 /r`; raw 128-bit XMM copy, JIT/native closed | S2-34.14 |
 | [x] | S2-34.16 | Separate local-only reverse-direction register MOVUPD `66 0F 11 /r`; raw 128-bit XMM copy, JIT/native closed | S2-34.15 |
+| [x] | S2-34.17 | Separate local-only register XORPD `66 0F 57 /r`; raw 128-bit XOR, JIT/native closed | S2-34.16 |
+| [x] | S2-34.18 | Separate local-only register ANDPD `66 0F 54 /r`; raw 128-bit AND, JIT/native closed | S2-34.17 |
 | [x] | S2-34.5 | Separate local-only legacy `MOVUPS [RAX],XMM` store profile; one exact 16-byte write with no CPU commit on backend failure | S2-34.4 |
 | [x] | S2-34.6a | Shared local-only MOVUPS base+displacement profile for legacy `0F 10`/`0F 11`, no SIB/RIP-relative | S2-34.5 |
 | [x] | S2-34.6b | Extend `s2-long-movups-mem-base-v1` with bounded legacy RIP-relative `0F 10`/`0F 11` disp32 forms | S2-34.6a |
@@ -9354,3 +9356,10 @@ claim.
 Добавлен отдельный diagnostic profile `s2-long-xorpd-reg-v1` для точной long-mode формы `66 [one optional REX.R/B] 0F 57 /r`, только при ModR/M.mod=3. ModR/M.reg с REX.R выбирает destination XMM0–15, ModR/M.r/m с REX.B — source. Все 128 бит XOR-ятся как raw bytes; alias/self-XOR корректен. Data memory не затрагивается, остальное состояние сохраняется, отсутствие SSE state и неполное instruction fetch отказывают без commit.
 
 Строгие отрицательные формы включают отсутствующий/повторный/переставленный `66`, REX.W/X, остальные legacy prefixes, memory ModRM, VEX/EVEX и truncation. Ранее существующий XORPS профиль остаётся отдельным и прежнего вида. Od-isa execution matrix сравнивает полное состояние для всех 16×16 XMM-пар (включая self-XOR) и явно проверяет ноль data-memory callbacks. Handwritten XMM8/XMM9 fixture проверяется как testkit, так и CLI fixture-runner: interpreter result сравнивается с literal state, а JIT выдаёт `Unsupported` без snapshot. Native admission остаётся запрещённой. Это не parent S2-34 acceptance и не физическое подтверждение. Проверены `cargo test -p od-isa xorpd --offline` (3 tests), `cargo test -p od-testkit xorpd --offline` (2 tests), `cargo test -p od-runner --test fixture_v2 local_xorpd_register_fixture_xors_raw_xmm_and_jit_denies_profile --offline` (1 test), `cargo check --workspace --all-targets --offline`, Linux x86 runner all-target check, `cargo fmt --all -- --check`, `git diff --check`; Linux native-denial test компилируется, но физический запуск не заявляется.
+
+
+#### S2-34.18 — local-only register ANDPD
+
+Добавлен отдельный diagnostic profile `s2-long-andpd-reg-v1` для точной long-mode формы `66 [one optional REX.R/B] 0F 54 /r`, только при ModR/M.mod=3. ModR/M.reg с REX.R выбирает destination XMM0–15, ModR/M.r/m с REX.B — source. Исполнение выполняет raw 128-bit AND с поддержкой alias/self-AND, без data-memory callback и без изменения остальных регистров/флагов/MXCSR/x87. ANDPS остаётся прежним отдельным профилем.
+
+Профиль отклоняет отсутствие, дублирование или перестановку mandatory `66`, остальные legacy prefixes, REX.W/X, memory ModRM, VEX/EVEX и неполное encoding. Отдельные negative cases запрещают PAND, ANDNPD, ORPD и XORPD. Handwritten fixture `s2_34_18_andpd_register.case.json` использует XMM8/XMM9 и проверяется testkit/CLI runner; JIT и native admission явно запрещены. SSE2 и CR0/CR4 prerequisites предполагаются; guest control gates, `#UD`/`#NM`, physical execution и parent S2-34 acceptance остаются открытыми. Physical status остаётся `not_run`.

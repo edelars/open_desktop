@@ -13455,3 +13455,12 @@ test groups (2, 1, and 1 passed).
 See the [plan](../plans/STAGE_2.md#s2-3415--local-only-register-movupd),
 [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-movupd-profile--s2-3415),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3415-local-register-movupd-diagnostic-profile).
+
+
+## S2-34.18 — local register ANDPD slice
+
+Added isolated schema-v2 profile `s2-long-andpd-reg-v1` for `66 [one optional REX.R/B] 0F 54 /r` in long mode with ModR/M.mod=3. The interpreter ANDs all 128 raw XMM bits, supports alias/self-AND and XMM0–15 in either operand field, preserves every other state field, and performs no data-memory callback. ANDPS and XORPD retain their existing profiles and behavior.
+
+The handwritten XMM8/XMM9 fixture is checked by testkit and the CLI interpreter/JIT runner; JIT reports `Unsupported` without a snapshot. Exact schema negatives include missing/repeated/reordered `66`, other legacy prefixes, REX.W/X, memory operands, truncation, VEX/EVEX, and PAND/ANDNPD/ORPD/XORPD neighbors. The native runner's unsupported-profile test includes this fixture; its Linux-only test target was compile-checked on this macOS host, not executed. SSE2 and CR0/CR4 prerequisites are assumed; control-gate exceptions, native execution and physical x86 remain outside scope. Parent S2-34 acceptance remains open; physical status is `not_run`. ISA semantics source: Intel SDM revision 093, Vol. 2A, ANDPD ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+
+Verification passed: `cargo test -p od-isa and --offline` (767 tests, including ANDPD), `cargo test -p od-testkit andpd --offline` (1), `cargo test -p od-runner --test fixture_v2 local_andpd_register_fixture_ands_raw_xmm_and_jit_denies_profile --offline` (1), `cargo test -p od-x86-runner --offline` (9), `cargo check --workspace --all-targets --offline`, `cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`, `cargo fmt --all -- --check`, `git diff --check`, and `graphify update .`. No physical x86 execution was performed.

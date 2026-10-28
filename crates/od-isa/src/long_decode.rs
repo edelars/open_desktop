@@ -506,6 +506,11 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only mandatory-66 `0F 54 /r` register form, raw 128-bit AND.
+    AndpdRegister {
+        destination: u8,
+        source: u8,
+    },
     /// Local-only legacy `66 0F EF /r` register form, raw 128-bit integer XOR.
     PxorRegister {
         destination: u8,
@@ -1867,6 +1872,19 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     && prefixes.rex.is_some()
                     && prefix_bytes[0] == prefixes.rex.unwrap()
                     && prefixes.rex.unwrap() & 0x0a == 0));
+        let andpd_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x54
+            && prefixes.operand_override
+            && !duplicate
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && !prefixes.address_override
+            && (prefix_bytes[..prefix_count] == [0x66]
+                || (prefix_count == 2
+                    && prefix_bytes[0] == 0x66
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
         let xorpd_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x57
             && prefixes.operand_override
@@ -2589,6 +2607,16 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     }
                 } else {
                     return Err(self.unsupported(opcode));
+                }
+            }
+            (OpcodeMap::Escape0f, 0x54) if andpd_register => {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::AndpdRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
                 }
             }
             (OpcodeMap::Escape0f, 0x54) => {
@@ -6985,6 +7013,47 @@ mod tests {
     }
 
     #[test]
+    fn andpd_register_decodes_exact_mandatory_66_high_register_forms() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut bytes = vec![0x66];
+                if rex != 0x40 {
+                    bytes.push(rex);
+                }
+                bytes.extend([0x0f, 0x54, modrm]);
+                let mut memory = Memory::new(&bytes);
+                let instruction = memory.decode().unwrap();
+                assert_eq!(
+                    instruction.operation,
+                    Operation::AndpdRegister {
+                        destination,
+                        source
+                    }
+                );
+            }
+        }
+        let mut andps = Memory::new(&[0x0f, 0x54, 0xc1]);
+        assert!(matches!(
+            andps.decode().unwrap().operation,
+            Operation::AndpsRegister { .. }
+        ));
+        for bytes in [
+            &[0x66, 0x0f, 0x54, 0x01][..],
+            &[0x66, 0x48, 0x0f, 0x54, 0xc1],
+            &[0x66, 0x42, 0x0f, 0x54, 0xc1],
+            &[0x66, 0x66, 0x0f, 0x54, 0xc1],
+            &[0xf2, 0x66, 0x0f, 0x54, 0xc1],
+            &[0x66, 0x67, 0x0f, 0x54, 0xc1],
+            &[0x66, 0x0f, 0x54],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn andps_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
         for destination in 0..16u8 {
             for source in 0..16u8 {
@@ -7006,8 +7075,15 @@ mod tests {
                 }
             }
         }
+        let mut andpd = Memory::new(&[0x66, 0x0f, 0x54, 0xc1]);
+        assert_eq!(
+            andpd.decode().unwrap().operation,
+            Operation::AndpdRegister {
+                destination: 0,
+                source: 1,
+            }
+        );
         for bytes in [
-            &[0x66, 0x0f, 0x54, 0xc1][..],
             &[0xf2, 0x0f, 0x54, 0xc1][..],
             &[0xf3, 0x0f, 0x54, 0xc1][..],
             &[0x67, 0x0f, 0x54, 0xc1][..],

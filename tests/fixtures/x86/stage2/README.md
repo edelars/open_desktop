@@ -5321,3 +5321,8 @@ profile assumes SSE2 preconditions and denies JIT and native execution.
 ### S2-34.17 local register XORPD diagnostic profile
 
 `s2_34_17_xorpd_register.case.json` is a handwritten schema-v2 XMM8/XMM9 fixture for `s2-long-xorpd-reg-v1`, encoded as `66 45 0F 57 C1` (`XORPD XMM8,XMM9`). Mandatory `66` selects packed SSE2 XORPD; REX.R/B select high destination/source registers. The interpreter XORs all 128 raw bits, preserves MXCSR, x87, GPR, flags and unrelated XMM state, and performs no data-memory access. Native and JIT admission deny this local profile. It makes no physical execution or parent S2-34 acceptance claim. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-profile-s2-3417-s2-long-xorpd-reg-v1) and [Stage 2 plan](../../../../docs/plans/STAGE_2.md#s2-3417--local-only-register-xorpd).
+
+
+### S2-34.18 local register ANDPD diagnostic profile
+
+`s2_34_18_andpd_register.case.json` is a handwritten schema-v2 XMM8/XMM9 fixture for `s2-long-andpd-reg-v1`, encoded as `66 45 0F 54 C1` (`ANDPD XMM8,XMM9`). Mandatory `66` selects packed SSE2 ANDPD; REX.R/B select high destination/source registers. The interpreter ANDs all 128 raw bits, including alias/self forms in the unit matrix, preserves MXCSR, x87, GPR, flags and unrelated XMM state, and performs no data-memory access. Native and JIT admission deny this local profile. The fixture asserts no parent S2-34 acceptance or physical execution; physical remains `not_run`. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-profile-s2-3418-s2-long-andpd-reg-v1) and [Stage 2 plan](../../../../docs/plans/STAGE_2.md#s2-3418--local-only-register-andpd).
