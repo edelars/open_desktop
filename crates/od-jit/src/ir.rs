@@ -351,6 +351,24 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                             register: src.0,
                         });
                     }
+                } else if matches!(src.0, 6 | 7) {
+                    if instruction_length(program, active_instruction) != 3
+                        || operand.address_size != od_isa::OperandSize::Qword
+                        || operand.size != od_isa::OperandSize::Qword
+                        || operand.index.is_some()
+                        || operand.scale != 1
+                        || operand.displacement != 0
+                        || !matches!(
+                            operand.base,
+                            od_isa::long_decode::AddressBase::Register(register)
+                                if (register as u8) < 4
+                        )
+                    {
+                        return Err(VerifyError::InvalidGpr {
+                            operation: operation_index,
+                            register: src.0,
+                        });
+                    }
                 } else {
                     validate_gpr(*src, operation_index)?;
                 }

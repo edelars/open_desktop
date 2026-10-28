@@ -5843,6 +5843,241 @@ mod tests {
             }
         }
 
+        for source_register in [6_u8, 7] {
+            for base in 0..4_u8 {
+                let source = [0x48, 0x89, (source_register << 3) | base];
+                let code = CodeView::new(0xa200, &source).unwrap();
+                let compiled =
+                    od_jit::memory_load_v2::compile_memory_store_block_v2(code, 0xa200).unwrap();
+                let published = PublishedCode::publish_memory_store_v2(&compiled).unwrap();
+                let ir_compiled = od_jit::memory_load_v2::compile_ir_memory_store_block_v2(
+                    CodeView::new(0xa300, &source).unwrap(),
+                    0xa300,
+                )
+                .unwrap();
+                let mut initial_state = od_isa::LongModeState {
+                    rip: 0xa200,
+                    rflags: 0x8d7,
+                    ..od_isa::LongModeState::default()
+                };
+                initial_state.gpr[base as usize] = 32;
+                initial_state.gpr[source_register as usize] =
+                    0xfedc_ba98_7654_3210_u64 ^ u64::from(base);
+                let mut initial_ram = MatrixRam {
+                    bytes: [0x5a; 512],
+                    code: [0; 8],
+                    code_len: source.len(),
+                    code_rip: 0xa200,
+                    reads: 0,
+                    write_attempts: 0,
+                    writes: 0,
+                    read_error: None,
+                    write_error: None,
+                    stop_on_write: None,
+                };
+                initial_ram.code[..source.len()].copy_from_slice(&source);
+                let mut native_state = initial_state.clone();
+                let mut interpreted_state = initial_state.clone();
+                let mut native_ram = initial_ram.clone();
+                let mut interpreted_ram = initial_ram.clone();
+                // SAFETY: this fixture uses private synchronous RAM with an
+                // all-or-nothing qword write and no executable alias.
+                let native = unsafe {
+                    published.execute_memory_store_v2(
+                        &mut native_state,
+                        &mut native_ram,
+                        AccessContext::default(),
+                        1,
+                        None,
+                        &stop,
+                    )
+                }
+                .unwrap();
+                drop(published);
+                let ir_published = PublishedCode::publish_ir_memory_store_v2(&ir_compiled).unwrap();
+                let mut ir_state = initial_state.clone();
+                ir_state.rip = 0xa300;
+                let mut ir_ram = initial_ram;
+                ir_ram.code_rip = 0xa300;
+                // SAFETY: same private synchronous all-or-nothing RAM fixture.
+                let ir_native = unsafe {
+                    ir_published.execute_ir_memory_store_v2(
+                        &mut ir_state,
+                        &mut ir_ram,
+                        AccessContext::default(),
+                        1,
+                        None,
+                        &stop,
+                    )
+                }
+                .unwrap();
+                drop(ir_published);
+                let interpreted = od_isa::execute::step(
+                    &mut interpreted_state,
+                    &mut interpreted_ram,
+                    AccessContext::default(),
+                )
+                .unwrap();
+                assert_eq!(native.exit, MemoryOperationExecutionExitV2::Complete);
+                assert_eq!(ir_native.exit, MemoryOperationExecutionExitV2::Complete);
+                assert_eq!(interpreted, od_isa::execute::StepOutcome::Advanced);
+                assert_eq!(native_state, interpreted_state);
+                assert_eq!(ir_state.rip, 0xa303);
+                ir_state.rip = interpreted_state.rip;
+                assert_eq!(ir_state, interpreted_state);
+                assert_eq!(native_ram.bytes, interpreted_ram.bytes);
+                assert_eq!(ir_ram.bytes, interpreted_ram.bytes);
+                assert_eq!(
+                    &native_ram.bytes[32..40],
+                    &initial_state.gpr[source_register as usize].to_le_bytes()
+                );
+                assert_eq!(native_ram.writes, 1);
+                assert_eq!(native.retired_instructions, 1);
+                assert_eq!(ir_ram.writes, 1);
+                assert_eq!(ir_native.retired_instructions, 1);
+            }
+        }
+
+        for (source_register, direct_rip, ir_rip) in
+            [(6_u8, 0xa400_u64, 0xa500_u64), (7, 0xa600, 0xa700)]
+        {
+            let source = [0x48, 0x89, source_register << 3]; // [RAX], RSI/RDI
+            let make_state = |rip| {
+                let mut state = od_isa::LongModeState {
+                    rip,
+                    rflags: 0x8d7,
+                    ..od_isa::LongModeState::default()
+                };
+                state.gpr[0] = 32;
+                state.gpr[source_register as usize] = 0xfedc_ba98_7654_3210;
+                state
+            };
+            let make_ram = |rip| {
+                let mut ram = MatrixRam {
+                    bytes: [0x5a; 512],
+                    code: [0; 8],
+                    code_len: source.len(),
+                    code_rip: rip,
+                    reads: 0,
+                    write_attempts: 0,
+                    writes: 0,
+                    read_error: None,
+                    write_error: Some(MemoryError::Unmapped {
+                        address: 32,
+                        access: AccessKind::Write,
+                    }),
+                    stop_on_write: None,
+                };
+                ram.code[..source.len()].copy_from_slice(&source);
+                ram
+            };
+
+            let direct_code = CodeView::new(direct_rip, &source).unwrap();
+            let direct_compiled =
+                od_jit::memory_load_v2::compile_memory_store_block_v2(direct_code, direct_rip)
+                    .unwrap();
+            let direct = PublishedCode::publish_memory_store_v2(&direct_compiled).unwrap();
+            let mut direct_state = make_state(direct_rip);
+            let before_direct_state = direct_state.clone();
+            let mut direct_ram = make_ram(direct_rip);
+            let before_direct_bytes = direct_ram.bytes;
+            // SAFETY: the private fixture injects a synchronous write failure
+            // and guarantees that the rejected write leaves RAM unchanged.
+            let direct_error = unsafe {
+                direct.execute_memory_store_v2(
+                    &mut direct_state,
+                    &mut direct_ram,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &stop,
+                )
+            };
+            assert!(matches!(
+                direct_error,
+                Err(MemoryOperationExecutionErrorV2::MemoryError(_))
+            ));
+            assert_eq!(direct_state, before_direct_state);
+            assert_eq!(direct_ram.bytes, before_direct_bytes);
+            assert_eq!(direct_ram.write_attempts, 1);
+            assert_eq!(direct_ram.writes, 0);
+            assert_eq!(direct_ram.reads, 0);
+
+            let mut guard_state = make_state(direct_rip);
+            let before_guard_state = guard_state.clone();
+            let mut guard_ram = make_ram(direct_rip);
+            let before_guard_bytes = guard_ram.bytes;
+            let guard = unsafe {
+                direct.execute_memory_store_v2(
+                    &mut guard_state,
+                    &mut guard_ram,
+                    AccessContext::default(),
+                    0,
+                    None,
+                    &stop,
+                )
+            }
+            .unwrap();
+            assert_eq!(guard.exit, MemoryOperationExecutionExitV2::BudgetExhausted);
+            assert_eq!(guard_state, before_guard_state);
+            assert_eq!(guard_ram.bytes, before_guard_bytes);
+            assert_eq!(guard_ram.write_attempts, 0);
+            assert_eq!(guard_ram.writes, 0);
+            drop(direct);
+
+            let ir_code = CodeView::new(ir_rip, &source).unwrap();
+            let ir_compiled =
+                od_jit::memory_load_v2::compile_ir_memory_store_block_v2(ir_code, ir_rip).unwrap();
+            let ir = PublishedCode::publish_ir_memory_store_v2(&ir_compiled).unwrap();
+            let mut ir_state = make_state(ir_rip);
+            let before_ir_state = ir_state.clone();
+            let mut ir_ram = make_ram(ir_rip);
+            let before_ir_bytes = ir_ram.bytes;
+            let ir_error = unsafe {
+                ir.execute_ir_memory_store_v2(
+                    &mut ir_state,
+                    &mut ir_ram,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &stop,
+                )
+            };
+            assert!(matches!(
+                ir_error,
+                Err(MemoryOperationExecutionErrorV2::MemoryError(_))
+            ));
+            assert_eq!(ir_state, before_ir_state);
+            assert_eq!(ir_ram.bytes, before_ir_bytes);
+            assert_eq!(ir_ram.write_attempts, 1);
+            assert_eq!(ir_ram.writes, 0);
+            assert_eq!(ir_ram.reads, 0);
+
+            let mut ir_guard_state = make_state(ir_rip);
+            let before_ir_guard_state = ir_guard_state.clone();
+            let mut ir_guard_ram = make_ram(ir_rip);
+            let before_ir_guard_bytes = ir_guard_ram.bytes;
+            let ir_guard = unsafe {
+                ir.execute_ir_memory_store_v2(
+                    &mut ir_guard_state,
+                    &mut ir_guard_ram,
+                    AccessContext::default(),
+                    0,
+                    None,
+                    &stop,
+                )
+            }
+            .unwrap();
+            assert_eq!(
+                ir_guard.exit,
+                MemoryOperationExecutionExitV2::BudgetExhausted
+            );
+            assert_eq!(ir_guard_state, before_ir_guard_state);
+            assert_eq!(ir_guard_ram.bytes, before_ir_guard_bytes);
+            assert_eq!(ir_guard_ram.write_attempts, 0);
+            assert_eq!(ir_guard_ram.writes, 0);
+        }
+
         // The decoded EA helper preserves wrapping addition before canonical
         // validation. RAX + RCX*2 + disp8 wraps to canonical address zero.
         let wrapping_code_bytes = [0x48, 0x8b, 0x44, 0x48, 0x04];

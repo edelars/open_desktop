@@ -618,6 +618,7 @@ pub fn compile_ir_memory_store_block_v2(
 ) -> Result<IrMemoryStoreBlockV2, MemoryLoadCompileErrorV2> {
     let (site, bytes) = checked_memory_metadata_v2(code, entry_rip, MemorySiteOperationV2::Store)?;
     if !(crate::block::exact_direct_qword_memory_bytes(code, entry_rip, bytes.len() as u8, 0x89)
+        || crate::block::exact_direct_qword_store_rsi_rdi_bytes(code, entry_rip, bytes.len() as u8)
         || crate::block::exact_qword_address32_memory_bytes(
             code,
             entry_rip,
@@ -1914,6 +1915,47 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn rsi_rdi_store_sources_are_limited_to_the_eight_direct_low_base_encodings() {
+        for source_register in [6_u8, 7] {
+            for base in 0..4_u8 {
+                let bytes = [0x48, 0x89, (source_register << 3) | base];
+                let code = CodeView::new(0x5c00, &bytes).unwrap();
+                let direct = compile_memory_store_block_v2(code, 0x5c00).unwrap();
+                let ir = compile_ir_memory_store_block_v2(code, 0x5c00).unwrap();
+                assert_eq!(direct.site(), ir.site());
+                assert_eq!(direct.source_bytes(), &bytes);
+                assert_eq!(ir.source_bytes(), &bytes);
+                assert_eq!(direct.site().source(), Some(source_register));
+                assert!(direct.site().has_supported_profile());
+                assert!(
+                    direct
+                        .site()
+                        .matches_source_bytes(&bytes, MemorySiteOperationV2::Store)
+                );
+            }
+        }
+
+        for source in [
+            vec![0x48, 0x8b, 0x30],       // symmetric RSI load
+            vec![0x48, 0x8b, 0x38],       // symmetric RDI load
+            vec![0x67, 0x48, 0x89, 0x30], // addr32
+            vec![0x48, 0x89, 0x70, 0x00], // displacement
+            vec![0x48, 0x89, 0x34, 0x20], // SIB
+            vec![0x89, 0x30],             // non-qword width
+            vec![0x49, 0x89, 0x30],       // REX.B
+            vec![0x4c, 0x89, 0x30],       // REX.R
+            vec![0x4c, 0x89, 0x00],       // R8 source
+            vec![0x66, 0x48, 0x89, 0x30], // word width
+        ] {
+            let code = CodeView::new(0x5c00, &source).unwrap();
+            assert!(compile_memory_store_block_v2(code, 0x5c00).is_err());
+            assert!(compile_ir_memory_store_block_v2(code, 0x5c00).is_err());
+            assert!(compile_memory_load_block_v2(code, 0x5c00).is_err());
+            assert!(compile_ir_memory_load_block_v2(code, 0x5c00).is_err());
+        }
     }
 
     #[test]
@@ -6906,11 +6948,11 @@ mod tests {
         assert!(!block.code().words().is_empty());
 
         for bytes in [
-            vec![0x48, 0x89, 0x18, 0x90], // trailing instruction
-            vec![0x40, 0x48, 0x89, 0x18], // extra prefix
-            vec![0x48, 0x89, 0x1c],       // SIB
-            vec![0x48, 0x89, 0x58],       // displacement
-            vec![0x48, 0x89, 0x30],       // out-of-profile source register
+            vec![0x48, 0x89, 0x18, 0x90],       // trailing instruction
+            vec![0x40, 0x48, 0x89, 0x18],       // extra prefix
+            vec![0x48, 0x89, 0x1c],             // SIB
+            vec![0x48, 0x89, 0x58],             // displacement
+            vec![0x48, 0x89, 0xb0, 0, 0, 0, 0], // R8 source
         ] {
             let code = CodeView::new(0x5000, &bytes).unwrap();
             assert!(matches!(
@@ -6919,6 +6961,11 @@ mod tests {
                     | Err(MemoryLoadCompileErrorV2::Decode)
             ));
         }
+        let symmetric_load = [0x48, 0x8b, 0x30];
+        assert!(
+            compile_memory_load_block_v2(CodeView::new(0x5000, &symmetric_load).unwrap(), 0x5000)
+                .is_err()
+        );
     }
 
     #[test]

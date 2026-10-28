@@ -545,6 +545,20 @@ impl MemorySiteV2 {
                 7 => i32::try_from(self.operand.displacement).is_ok(),
                 _ => false,
             };
+        let rsi_rdi_store_source_profile = self.operation == MemorySiteOperationV2::Store
+            && self.operand.address_size == od_isa::OperandSize::Qword
+            && self.operand.size == od_isa::OperandSize::Qword
+            && length == 3
+            && self
+                .source
+                .is_some_and(|register| matches!(register, 6 | 7))
+            && matches!(
+                self.operand.base,
+                od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4
+            )
+            && self.operand.index.is_none()
+            && self.operand.scale == 1
+            && self.operand.displacement == 0;
         let address32_rsi_rdi_direct_data_profile = self.operand.address_size
             == od_isa::OperandSize::Dword
             && self.operand.size == od_isa::OperandSize::Qword
@@ -980,7 +994,9 @@ impl MemorySiteV2 {
             }
             MemorySiteOperationV2::Store => {
                 self.source.is_some_and(|register| {
-                    register <= 3 || (4..=5).contains(&register) && scoped_data_profile
+                    register <= 3
+                        || (4..=5).contains(&register) && scoped_data_profile
+                        || rsi_rdi_store_source_profile
                 }) && self.destination.is_none()
             }
         };
@@ -1679,6 +1695,25 @@ impl MemorySiteV2 {
         let mode = modrm >> 6;
         let data_register = (modrm >> 3) & 7;
         let base = modrm & 7;
+        if expected_operation == MemorySiteOperationV2::Store
+            && source.len() == 3
+            && mode == 0
+            && base < 4
+            && matches!(data_register, 6 | 7)
+        {
+            return self.source == Some(data_register)
+                && self.next_rip.checked_sub(self.guest_rip) == Some(3)
+                && self.operand.address_size == od_isa::OperandSize::Qword
+                && self.operand.size == od_isa::OperandSize::Qword
+                && matches!(
+                    self.operand.base,
+                    od_isa::long_decode::AddressBase::Register(register)
+                        if (register as u8) == base
+                )
+                && self.operand.index.is_none()
+                && self.operand.scale == 1
+                && self.operand.displacement == 0;
+        }
         if matches!((source.len(), mode), (5, 1) | (8, 2))
             && base == 4
             && source.get(3) == Some(&0x25)

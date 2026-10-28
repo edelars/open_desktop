@@ -2305,6 +2305,10 @@ Direct linking и сложный allocator не являются самосто�
 
 Stage 3 не доказывает полную ISA, guest boot, MMU/APIC, SMP ordering/reclamation, AMD compatibility, GPU или release signing. Поддержанные профили и границы должны следовать из отчёта, а не из названия JIT.
 
+#### S3-20cg. Address64 qword store из RSI/RDI в low-base direct memory
+
+Добавить только singleton `48 89 /r` длины 3: ModRM `mod=00`, source RSI/RDI (`reg=6|7`), base RAX/RCX/RDX/RBX (`r/m=0..3`), без displacement и SIB. Admission остается operation-specific для `CheckedStore`; generic GPR whitelist, loads и frame/staging не расширяются. Store читает полное 64-битное значение source из canonical guest state. Симметричные `48 8B` load в RSI/RDI и addr32, displacement/SIB, REX.R/B, R8+ и другие неподдержанные формы отклоняются. См. [S3-20cg report](../reports/STAGE_3_S3-20cg_2026-10-28.md). Mini и performance отложены до конца Stage 3; owner/MMU и Stage 2 вне scope.
+
 ## 11. Проверки и команды
 
 Существующие команды до начала реализации нового runtime:
