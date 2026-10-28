@@ -420,3 +420,38 @@ in Git. The debug ELF came from Ubuntu debuginfod and was cross-checked against
 all allocated sections of the signed image-derived ELF; the `.ddeb` package
 itself was not separately authenticated by a signed ddebs index. PE/Authenticode
 and runtime execution remain unchecked.
+
+## S2-27a — exact Ubuntu LGDT candidate
+
+The exact instruction form selected from the Ubuntu 7.0.0-38.38 kernel image
+for this narrow slice is `0F 01 55 F6`, decoded as `LGDT m16&64 [RBP-10]`.
+The static source-to-binary mapping is:
+
+- After the `WRMSR` in `arch/x86/kernel/head_64.S:72–74`, control calls
+  `__pi_startup_64_setup_gdt_idt`.
+- `arch/x86/boot/startup/gdt_idt.c:49–60` builds the 10-byte pseudo-descriptor
+  and calls `native_load_gdt`.
+- In `vmlinux-7.0.0-38-generic.debug`, the mapped symbol begins at
+  `ffffffff83f132e0`; bytes at `ffffffff83f132f9` are `0f 01 55 f6`.
+- These source files are unchanged by Ubuntu delta `linux` 7.0.0-38.38.
+
+This is static package/disassembly evidence only. It does not establish that
+the instruction or surrounding path executes at runtime, and it is not a Linux
+boot claim. The wider package and ELF provenance is described in the preceding
+[exact source-to-binary mapping](#exact-source-to-binary-mapping--28-октября-2026).
+The local implementation contract admits only bare Long64
+`0F 01 55 ib` when `state.gdtr` is present, reads a 10-byte pseudo-descriptor,
+and excludes `LIDT` and other operand forms. Local implementation checks are
+recorded in the [Stage 2 report](STAGE_2_REPORT.md#s2-27a--exact-long64-lgdt-rbp-10).
+Independent Sol medium review completed clean after the GDTR field-comment
+clarification; no findings remain. Mac mini checks are deferred to the common
+final substage.
+
+Semantic references: Intel SDM Vol. 2A, `LGDT/LIDT` instruction entry
+(Order No. 253666-093US, September 2026,
+[official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199));
+Vol. 3A §§2.4.1, 3.5.2, 4.5.1 and 4.5.3 (Order No. 253668-093US, September
+2026, [official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
+See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27a--exact-long64-lgdt-rbp-10),
+[plan](../plans/STAGE_2.md#s2-27a--exact-long64-lgdt-rbp-10), and
+[stage report](STAGE_2_REPORT.md#s2-27a--exact-long64-lgdt-rbp-10).

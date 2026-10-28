@@ -420,6 +420,10 @@ pub enum Operation {
     MovGsSelectorToRax,
     /// The sole S2-22e descriptor-rights check: bare `0F 00 E8` (VERW AX).
     VerwGdt,
+    /// S2-27a bare `0F 01 55 ib` (LGDT [RBP + sign-extended disp8]).
+    LoadGdtr {
+        source: MemoryOperand,
+    },
     /// The sole S2-22f selector load: bare `8E E0` (MOV FS, AX).
     LoadFsSelector,
     /// The sole S2-22h selector load: bare `8E E8` (MOV GS, AX).
@@ -1722,6 +1726,44 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && prefixes.rex.is_none()
                 && self.length == 3
             {
+                return Err(DecodeError::Invalid {
+                    opcode,
+                    length: self.length,
+                });
+            }
+            return Err(self.unsupported(opcode));
+        }
+        if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x01 {
+            if prefixes == Prefixes::default() {
+                let modrm = self.byte()?;
+                if modrm != 0x55 {
+                    return Err(self.unsupported(opcode));
+                }
+                let Operand::Memory(source) =
+                    self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                else {
+                    unreachable!("LGDT requires the supported memory form")
+                };
+                return Ok(Instruction {
+                    length: self.length,
+                    opcode,
+                    prefixes,
+                    operand_size: OperandSize::Qword,
+                    address_size: OperandSize::Qword,
+                    operation: Operation::LoadGdtr { source },
+                });
+            }
+            if prefixes.group1 == Some(0xf0)
+                && prefixes.segment.is_none()
+                && !prefixes.operand_override
+                && !prefixes.address_override
+                && prefixes.rex.is_none()
+                && self.length == 3
+            {
+                if self.byte()? != 0x55 {
+                    return Err(self.unsupported(opcode));
+                }
+                self.byte()?;
                 return Err(DecodeError::Invalid {
                     opcode,
                     length: self.length,
@@ -16841,6 +16883,74 @@ mod tests {
             &[0x62, 0xf1, 0x7d, 0x08, 0x6b, 0xc1],
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn lgdt_decodes_only_bare_rbp_disp8_and_lock_ud_after_full_fetch() {
+        let mut memory = Memory::new(&[0x0f, 0x01, 0x55, 0x80]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.length, 4);
+        assert_eq!(
+            decoded.operation,
+            Operation::LoadGdtr {
+                source: MemoryOperand {
+                    base: AddressBase::Register(Register::Rbp),
+                    index: None,
+                    scale: 1,
+                    displacement: -128,
+                    address_size: OperandSize::Qword,
+                    size: OperandSize::Qword,
+                }
+            }
+        );
+
+        let mut locked = Memory::new(&[0xf0, 0x0f, 0x01, 0x55, 0x7f]);
+        assert!(matches!(
+            locked.decode(),
+            Err(DecodeError::Invalid { length: 5, .. })
+        ));
+        assert_eq!(locked.fetched, vec![0xfff, 0x1000, 0x1001, 0x1002, 0x1003]);
+
+        let mut truncated_lock = Memory::new(&[0xf0, 0x0f, 0x01, 0x55]);
+        assert!(matches!(
+            truncated_lock.decode(),
+            Err(DecodeError::Memory(MemoryError::Unmapped {
+                access: AccessKind::Fetch,
+                ..
+            }))
+        ));
+        assert_eq!(
+            truncated_lock.fetched,
+            vec![0xfff, 0x1000, 0x1001, 0x1002, 0x1003]
+        );
+
+        let mut truncated_bare = Memory::new(&[0x0f, 0x01, 0x55]);
+        assert!(matches!(
+            truncated_bare.decode(),
+            Err(DecodeError::Memory(MemoryError::Unmapped {
+                access: AccessKind::Fetch,
+                ..
+            }))
+        ));
+
+        for bytes in [
+            &[0xf2, 0x0f, 0x01, 0x55, 0][..],
+            &[0x66, 0x0f, 0x01, 0x55, 0][..],
+            &[0x67, 0x0f, 0x01, 0x55, 0][..],
+            &[0x2e, 0x0f, 0x01, 0x55, 0][..],
+            &[0x48, 0x0f, 0x01, 0x55, 0][..],
+            &[0xf0, 0x0f, 0x01, 0x15, 0, 0, 0, 0][..],
+            &[0x0f, 0x01, 0x15, 0, 0, 0, 0][..],
+            &[0x0f, 0x01, 0x95, 0, 0, 0, 0, 0, 0, 0, 0][..],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
         }
     }
 }

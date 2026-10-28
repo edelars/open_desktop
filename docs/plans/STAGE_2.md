@@ -2046,6 +2046,50 @@ and transitions listed below.
 3. CPU получает событие через узкую границу; не добавлять APIC/timer scheduler в `od-isa`. Stack/descriptor memory проверяется через выбранный backend.
 4. Вне принятого профиля return `unsupported`; внутри обязательного профиля неподдержанное поведение оставляет задачу незавершённой.
 
+#### S2-27a — exact Long64 `LGDT [RBP-10]`
+
+Добавить только локальный slice для exact Ubuntu bytes `0F 01 55 F6`
+(`LGDT m16&64 [RBP-10]`), с декодируемой формой bare Long64 `0F 01 55 ib`
+(`ib` — signed disp8) и обязательным `state.gdtr == Some(_)`. Это не общий
+LGDT implementation. Exact LOCK даёт `#UD` с существующим приоритетом fetch;
+прочие префиксы — `Unsupported`. `LIDT` и прочие operand/addressing формы
+остаются вне slice.
+
+Encoding: `0F 01` system-group opcode; ModR/M `55` selects `/2`, memory
+`[RBP+disp8]`; `ib` is sign-extended. CPL1–3 raises CPU-side `#GP(0)` before
+any data callback. At CPL0, perform exactly one explicit 10-byte read from
+`[RBP + sign_extend(ib)]` using SS default: 16-bit limit, then 64-bit base,
+both little-endian. A source-range fault is `#SS(0)`. Form a GDTR candidate;
+commit atomically only after the full read and canonical48 base validation.
+Noncanonical loaded base gives CPU-side `#GP(0)`. Any fault preserves the old
+GDTR, does not advance RIP, and does not retire. Success commits GDTR, advances
+RIP by 4, and retires once. Do not read the GDT at the new base, validate GDT
+descriptors, or reload segment caches.
+
+Проверочная матрица должна покрыть точную форму и rejected neighbors,
+`state.gdtr == None` gate, exact single 10-byte read, LE fields и signed disp8
+addressing, CPL0 success с RIP+4 и одной retirement, #GP на CPL1–3 до data
+callback, noncanonical loaded base и #SS на RBP source failure, отсутствие
+commit/retirement при fault, полную неизменность GDTR и отсутствие GDT target
+read, descriptor validation, cache reload и LIDT. `LongModeState::gdtr` field
+comment синхронизирован с bounded LGDT и GDT-only VERW profile consumers и
+сохраняет оговорку, что общая descriptor support и LDTR не моделируются.
+Локальные проверки автора
+записаны в отчёте этапа; независимое Sol medium review завершено чисто после
+уточнения GDTR field comment, замечаний не осталось. Linux boot не заявлять,
+Mac mini checks оставить общему финальному substage.
+
+Контракт и актуальные официальные Intel SDM Vol.2A/Vol.3A источники:
+[CPU contract](../specs/CPU_CONTRACT.md#s2-27a--exact-long64-lgdt-rbp-10).
+Vol. 2A (`LGDT/LIDT`, Order No. 253666-093US, September 2026):
+[Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199). Vol. 3A
+(§§2.4.1, 3.5.2, 4.5.1 and 4.5.3, Order No. 253668-093US, September 2026):
+[Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190).
+Статическое Ubuntu reference evidence и его ограничения:
+[Linux profile report](../reports/STAGE_2_LINUX_PROFILE.md#s2-27a--exact-ubuntu-lgdt-candidate).
+Локальные проверки автора записаны в фактическом
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-27a--exact-long64-lgdt-rbp-10).
+
 **Готово:** обязательные переходы имеют исполняемые tests с корректным state; полноценная доставка при paging/privilege transitions подтверждается интеграционно вместе с machine backend, а не mock callbacks.
 
 ## 9. x87, MMX и SSE/SSE2

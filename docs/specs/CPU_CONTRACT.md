@@ -880,6 +880,51 @@ schema isolation, old FS-profile compatibility, and native/legacy rejection.
 This task reuses the Intel SDM revision 093 MOV and descriptor sources already
 recorded for S2-22f/g; no new independent PDF verification is claimed.
 
+### S2-27a — exact Long64 LGDT [RBP-10]
+
+This local-only slice is anchored to the exact Ubuntu instruction bytes
+`0F 01 55 F6`, decoded as `LGDT m16&64 [RBP-10]`. Its only admitted byte shape
+is bare Long64 `0F 01 55 ib`, where `ib` is a signed 8-bit displacement; the
+selected Ubuntu instance has `ib=F6` (-10). Admission also requires
+`state.gdtr == Some(_)`. This state-presence gate is a local profile policy,
+not a general requirement of LGDT. No other ModR/M/addressing forms or
+instructions are admitted, and no `LIDT` support is added. An exact LOCK prefix
+raises `#UD` after the existing instruction-fetch priority; other prefixed
+forms return `Unsupported`.
+
+The admitted `0F 01 55 ib` encoding decodes `0F 01` as the system group,
+ModR/M `55` as `/2` with memory operand `[RBP+disp8]`, and the final byte as a
+signed displacement. At CPL1–3, execution raises CPU-side `#GP(0)` before any
+data-memory callback. At CPL0, the source operand is one 10-byte `m16&64`
+pseudo-descriptor: a 16-bit limit followed by a 64-bit base. The effective
+address is RBP plus sign-extended `ib`, with the SS default segment. The
+interpreter makes exactly one explicit 10-byte guest-memory read; source-range
+failure is `#SS(0)`. Both descriptor fields are parsed little-endian.
+
+The candidate GDTR is committed to `state.gdtr` only after the complete read
+and canonical48 validation of the loaded base. A noncanonical base yields
+CPU-side `#GP(0)`. Every fault preserves the previous GDTR, leaves RIP
+unadvanced, and does not retire the instruction. Success updates GDTR, advances
+RIP by four bytes, and retires once. The pseudo-descriptor is the only data
+read: no GDT target is read, no descriptor is validated, and no segment cache
+is reloaded.
+
+The optional `LongModeState::gdtr` remains profile-carried state; for this
+slice it must already be present. This does not add other descriptor-table or
+IDT behavior. The exact Ubuntu bytes are static reference evidence, not a Linux
+boot claim. Local implementation checks are recorded in the Stage 2 report.
+Independent Sol medium review completed clean after the GDTR field-comment
+clarification; no findings remain. Mac mini checks stay in the common final
+substage.
+Semantic references are the
+Intel SDM Vol. 2A `LGDT/LIDT` entry (Order No. 253666-093US, September 2026,
+[official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)) and
+Vol. 3A §§2.4.1, 3.5.2, 4.5.1 and 4.5.3 (Order No. 253668-093US, September
+2026, [official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
+See the [Linux profile evidence](../reports/STAGE_2_LINUX_PROFILE.md#s2-27a--exact-ubuntu-lgdt-candidate),
+[stage plan](../plans/STAGE_2.md#s2-27a--exact-long64-lgdt-rbp-10), and
+[stage report](../reports/STAGE_2_REPORT.md#s2-27a--exact-long64-lgdt-rbp-10).
+
 ### S2-22i — loaded GS.base composition fixture
 
 One additional local-only literal fixture uses the existing

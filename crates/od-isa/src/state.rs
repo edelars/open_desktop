@@ -218,7 +218,7 @@ pub struct LongModeState {
     pub es_selector: u16,
     pub ds_unusable: bool,
     pub es_unusable: bool,
-    /// Present only for the local GDT-only VERW profile; no LDTR is modeled.
+    /// GDTR state used by bounded LGDT and GDT-only VERW profiles; no general descriptor support or LDTR is modeled.
     pub gdtr: Option<Gdtr>,
     /// Hidden FS descriptor cache only in the local MOV-FS-load profile.
     pub fs_cache: Option<FsDescriptorCache>,

@@ -934,6 +934,19 @@ fn step_tracked_with_profiles(
             opcode: instruction.opcode.byte,
         });
     }
+    if matches!(instruction.operation, Operation::LoadGdtr { .. }) && state.gdtr.is_none() {
+        return Ok(StepOutcome::Unsupported {
+            opcode: instruction.opcode.byte,
+        });
+    }
+    if matches!(instruction.operation, Operation::LoadGdtr { .. })
+        && context.privilege != PrivilegeLevel::Ring0
+    {
+        let MemoryError::Architectural(fault) = general_protection() else {
+            unreachable!("general_protection returns an architectural fault")
+        };
+        return Ok(StepOutcome::Fault(fault));
+    }
     if matches!(instruction.operation, Operation::VerwGdt)
         && (context.privilege != PrivilegeLevel::Ring3
             || state.gdtr.is_none()
@@ -1426,6 +1439,7 @@ fn step_tracked_with_profiles(
         | Operation::MovFsSelectorToRax
         | Operation::MovGsSelectorToRax
         | Operation::VerwGdt
+        | Operation::LoadGdtr { .. }
         | Operation::Fnop
         | Operation::Fninit
         | Operation::Fnclex
@@ -5100,6 +5114,11 @@ fn step_tracked_with_profiles(
                 Err(error) => return Err(error),
             }
         }
+        Operation::LoadGdtr { source } => {
+            if let Err(error) = load_gdtr(state, memory, context, next_rip, source) {
+                return report_memory_error(error);
+            }
+        }
         Operation::LoadFsSelector => {
             let selector = state.gpr[Register::Rax as usize] as u16;
             match load_fs_gdt_selector(state, memory, context, selector) {
@@ -7691,6 +7710,42 @@ fn selector_fault(vector: u8, selector: u16) -> MemoryError {
         error_code: Some(u32::from(selector & 0xfffc)),
         linear_address: None,
     })
+}
+
+fn load_gdtr(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    next_rip: u64,
+    source: MemoryOperand,
+) -> Result<(), MemoryError> {
+    const PSEUDO_DESCRIPTOR_SIZE: usize = 10;
+    let address = source.effective_address(state, next_rip);
+    let last = address.checked_add(PSEUDO_DESCRIPTOR_SIZE as u64 - 1);
+    if !canonical(address) || last.is_none_or(|last| !canonical(last)) {
+        return Err(MemoryError::Architectural(ArchitecturalFault {
+            vector: 12,
+            error_code: Some(0),
+            linear_address: None,
+        }));
+    }
+
+    let mut pseudo_descriptor = [0; PSEUDO_DESCRIPTOR_SIZE];
+    memory.read(
+        address,
+        AccessContext {
+            origin: crate::memory::AccessOrigin::Explicit,
+            ..context
+        },
+        &mut pseudo_descriptor,
+    )?;
+    let limit = u16::from_le_bytes([pseudo_descriptor[0], pseudo_descriptor[1]]);
+    let base = u64::from_le_bytes(pseudo_descriptor[2..10].try_into().unwrap());
+    if !canonical(base) {
+        return Err(general_protection());
+    }
+    state.gdtr = Some(crate::state::Gdtr { base, limit });
+    Ok(())
 }
 
 fn load_fs_gdt_selector(
@@ -84466,5 +84521,323 @@ mod tests {
         assert_eq!(state, expected);
         assert_eq!(memory.fetches, [0x1000, 0x1001]);
         assert!(memory.accesses.is_empty());
+    }
+
+    fn lgdt_state(rbp: u64) -> LongModeState {
+        let mut state = LongModeState {
+            gdtr: Some(crate::state::Gdtr {
+                base: 0x2222,
+                limit: 0x3333,
+            }),
+            fs_cache: Some(crate::state::FsDescriptorCache {
+                limit: 0x1234,
+                access: 0xf3,
+                flags: 0xc,
+            }),
+            gs_cache: Some(crate::state::FsDescriptorCache {
+                limit: 0x5678,
+                access: 0xd3,
+                flags: 0xa,
+            }),
+            ..LongModeState::default()
+        };
+        state.gpr[Register::Rbp as usize] = rbp;
+        state.gpr[Register::Rax as usize] = 0x1122_3344_5566_7788;
+        state.gpr[Register::Rbx as usize] = 0x8877_6655_4433_2211;
+        state.fs_base = 0xffff_8000_0000_1234;
+        state.gs_base = 0x0000_7fff_ffff_5678;
+        state.fs_selector = 0xabcd;
+        state.gs_selector = 0xef01;
+        state.rflags = 0x0cd7;
+        state
+    }
+
+    fn lgdt_ring0() -> AccessContext {
+        AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        }
+    }
+
+    #[test]
+    fn lgdt_loads_ten_byte_descriptor_from_signed_rbp_disp8_and_preserves_other_state() {
+        let loaded = crate::state::Gdtr {
+            base: 0xffff_8000_1234_5678,
+            limit: 0x9abc,
+        };
+        let mut state = lgdt_state(0x1010);
+        state.rip = 0x400;
+        let mut expected = state.clone();
+        expected.rip += 4;
+        expected.gdtr = Some(loaded);
+        let mut memory = Memory::at(&[0x0f, 0x01, 0x55, 0xf8], 0x400); // RBP - 8
+        memory.bytes[8..10].copy_from_slice(&loaded.limit.to_le_bytes());
+        memory.bytes[10..18].copy_from_slice(&loaded.base.to_le_bytes());
+        let before_memory = memory.bytes.clone();
+        let mut flags_defined = crate::INTEGER_FLAGS & !crate::ZF;
+
+        assert_eq!(
+            step_tracked(&mut state, &mut memory, lgdt_ring0(), &mut flags_defined,),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state, expected);
+        assert_eq!(flags_defined, crate::INTEGER_FLAGS & !crate::ZF);
+        assert_eq!(memory.bytes, before_memory);
+        assert_eq!(memory.fetches, [0x400, 0x401, 0x402, 0x403]);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x1008, 10)]);
+        assert_eq!(
+            memory.contexts,
+            [(
+                AccessKind::Read,
+                AccessContext {
+                    origin: crate::memory::AccessOrigin::Explicit,
+                    ..lgdt_ring0()
+                }
+            )]
+        );
+    }
+
+    #[test]
+    fn lgdt_validates_entire_rbp_stack_span_before_reading() {
+        for address in [
+            0x0000_8000_0000_0000, // noncanonical start
+            0x0000_7fff_ffff_fff7, // canonical start, noncanonical end
+            0xffff_ffff_ffff_fff8, // canonical start, overflowing end
+        ] {
+            let mut state = lgdt_state(address);
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x0f, 0x01, 0x55, 0]);
+            assert_eq!(
+                step(&mut state, &mut memory, lgdt_ring0()),
+                Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 12,
+                    error_code: Some(0),
+                    linear_address: None,
+                })),
+                "address={address:#018x}"
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn lgdt_privilege_and_local_profile_admission_precede_data_reads() {
+        for privilege in [
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            let mut state = lgdt_state(0x1008);
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x0f, 0x01, 0x55, 0]);
+            assert_eq!(
+                step(
+                    &mut state,
+                    &mut memory,
+                    AccessContext {
+                        privilege,
+                        ..AccessContext::default()
+                    }
+                ),
+                Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }))
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut state = lgdt_state(0x1008);
+        state.gdtr = None;
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x0f, 0x01, 0x55, 0]);
+        assert_eq!(
+            step(&mut state, &mut memory, lgdt_ring0()),
+            Ok(StepOutcome::Unsupported { opcode: 0x01 })
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn lgdt_rejects_noncanonical_loaded_base_after_read_without_commit() {
+        for base in [0x0000_8000_0000_0000u64, 0xffff_7fff_ffff_ffffu64] {
+            let mut state = lgdt_state(0x1008);
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x0f, 0x01, 0x55, 0]);
+            memory.bytes[10..18].copy_from_slice(&base.to_le_bytes());
+            assert_eq!(
+                step(&mut state, &mut memory, lgdt_ring0()),
+                Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                })),
+                "base={base:#018x}"
+            );
+            assert_eq!(state, before);
+            assert_eq!(memory.accesses, [(AccessKind::Read, 0x1008, 10)]);
+        }
+    }
+
+    #[test]
+    fn lgdt_accepts_both_canonical48_base_boundaries() {
+        for base in [0x0000_7fff_ffff_ffffu64, 0xffff_8000_0000_0000u64] {
+            let mut state = lgdt_state(0x1008);
+            let mut memory = Memory::new(&[0x0f, 0x01, 0x55, 0]);
+            memory.bytes[10..18].copy_from_slice(&base.to_le_bytes());
+            assert_eq!(
+                step(&mut state, &mut memory, lgdt_ring0()),
+                Ok(StepOutcome::Advanced),
+                "base={base:#018x}"
+            );
+            assert_eq!(state.gdtr.unwrap().base, base);
+            assert_eq!(state.rip, 4);
+            assert_eq!(memory.accesses, [(AccessKind::Read, 0x1008, 10)]);
+        }
+    }
+
+    #[test]
+    fn lgdt_accepts_canonical_unmapped_table_base_without_reading_the_gdt() {
+        let loaded = crate::state::Gdtr {
+            base: 0xffff_8000_0000_1000,
+            limit: 0xffff,
+        };
+        let mut state = lgdt_state(0x1008);
+        let mut memory = Memory::new(&[0x0f, 0x01, 0x55, 0]);
+        memory.bytes[8..10].copy_from_slice(&loaded.limit.to_le_bytes());
+        memory.bytes[10..18].copy_from_slice(&loaded.base.to_le_bytes());
+        assert_eq!(
+            step(&mut state, &mut memory, lgdt_ring0()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state.gdtr, Some(loaded));
+        assert_eq!(state.rip, 4);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x1008, 10)]);
+    }
+
+    #[test]
+    fn lgdt_read_faults_leave_state_uncommitted() {
+        for error in [
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0),
+                linear_address: Some(0x1008),
+            }),
+            MemoryError::Backend("injected LGDT pseudo-descriptor read failure".into()),
+        ] {
+            let mut state = lgdt_state(0x1008);
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x0f, 0x01, 0x55, 0]);
+            memory.error = Some(error.clone());
+            memory.error_kind = Some(AccessKind::Read);
+            let result = step(&mut state, &mut memory, lgdt_ring0());
+            match error {
+                MemoryError::Architectural(fault) => {
+                    assert_eq!(result, Ok(StepOutcome::Fault(fault)));
+                }
+                other => assert_eq!(result, Err(other)),
+            }
+            assert_eq!(state, before);
+            assert_eq!(memory.accesses, [(AccessKind::Read, 0x1008, 10)]);
+        }
+    }
+
+    #[test]
+    fn lgdt_stop_address_and_zero_budget_do_not_fetch() {
+        for (stop_rip, budget, expected_exit) in [
+            (Some(0), 1, RunExit::StopAddress),
+            (None, 0, RunExit::InstructionBudgetExhausted),
+        ] {
+            let mut state = lgdt_state(0x1008);
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x0f, 0x01, 0x55, 0]);
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: lgdt_ring0(),
+                },
+                || false,
+            );
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.fetches.is_empty());
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn lgdt_run_retires_once_then_stops_at_next_rip() {
+        let mut state = lgdt_state(0x1008);
+        let mut memory = Memory::new(&[0x0f, 0x01, 0x55, 0]);
+        memory.bytes[8..10].copy_from_slice(&0x55aau16.to_le_bytes());
+        memory.bytes[10..18].copy_from_slice(&0x0000_7fff_ffff_ffffu64.to_le_bytes());
+        let result = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(4),
+                context: lgdt_ring0(),
+            },
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.rip, 4);
+        assert_eq!(
+            state.gdtr,
+            Some(crate::state::Gdtr {
+                base: 0x0000_7fff_ffff_ffff,
+                limit: 0x55aa
+            })
+        );
+        assert_eq!(memory.fetches, [0, 1, 2, 3]);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x1008, 10)]);
+    }
+
+    #[test]
+    fn lgdt_loaded_gdtr_can_feed_the_existing_verw_profile() {
+        let mut state = lgdt_state(0x1000);
+        state.gpr[Register::Rax as usize] = 0x0b;
+        let mut memory = Memory::new(&[0x0f, 0x01, 0x55, 0, 0x0f, 0x00, 0xe8]);
+        memory.bytes[0..2].copy_from_slice(&15u16.to_le_bytes());
+        memory.bytes[2..10].copy_from_slice(&0x1010u64.to_le_bytes());
+        memory.bytes[24 + 5] = 0xf3;
+
+        assert_eq!(
+            step(&mut state, &mut memory, lgdt_ring0()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(
+            state.gdtr,
+            Some(crate::state::Gdtr {
+                base: 0x1010,
+                limit: 15
+            })
+        );
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, 10)]);
+
+        state.rip = 4;
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_ne!(state.rflags & crate::ZF, 0);
+        assert_eq!(state.rip, 7);
+        assert_eq!(
+            memory.accesses,
+            [
+                (AccessKind::Read, 0x1000, 10),
+                (AccessKind::Read, 0x1018, 8)
+            ]
+        );
     }
 }

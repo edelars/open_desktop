@@ -5,6 +5,44 @@
 ISSUE-011/012 остаются открытыми; наличие нового состояния или local instruction
 slice не означает завершение этапа.
 
+## S2-27a — exact Long64 `LGDT [RBP-10]`
+
+**Статус:** в процессе; локальные проверки реализации автора записаны ниже.
+После уточнения GDTR field comment независимое Sol medium code review
+завершено чисто; оставшихся замечаний нет. Mac mini/SSH проверки остаются в
+общем финальном substage.
+
+Целевой Ubuntu reference form — точные байты `0F 01 55 F6` (`LGDT m16&64
+[RBP-10]`). Узкий local slice допускает только bare Long64 `0F 01 55 ib`
+(`ib` signed disp8) при `state.gdtr == Some(_)`. CPL0 читает ровно 10-byte
+pseudo-descriptor: little-endian 16-bit limit и 64-bit base. GDTR обновляется
+атомарно после полного чтения и canonical48 проверки. Nonzero CPL и
+noncanonical loaded base дают `#GP(0)`; RBP source-address failure даёт
+`#SS(0)`. Fault оставляет старый GDTR; GDT по загруженному base не читается.
+Privilege fault precedes data callbacks; success commits GDTR, advances RIP by
+4, and retires once. Fault does not commit or retire. Exact LOCK is `#UD` with
+existing fetch priority; other prefixes are `Unsupported`. LIDT, other
+operand/addressing forms, GDT target reads, descriptor validation, and cache
+reload are outside the slice. These are target contract details, not claims
+about Linux execution. This is a static reference candidate, not a Linux boot
+claim. Its package/source/binary evidence is recorded separately in the
+[Linux profile report](STAGE_2_LINUX_PROFILE.md#s2-27a--exact-ubuntu-lgdt-candidate).
+
+**Локальные проверки автора:** `cargo test -p od-isa --offline lgdt_` (11
+passed); `cargo test -p od-isa --offline verw_` (8 passed);
+`cargo check -p od-isa --all-targets --offline`;
+`cargo fmt --all -- --check`; `git diff --check`; `graphify update .`.
+Независимое Sol medium code review завершено чисто после уточнения GDTR field
+comment; оставшихся замечаний нет. Mac mini/SSH проверки, physical/native
+execution и Linux boot не выполнялись и не заявляются.
+
+Нормативные и source references: [CPU contract](../specs/CPU_CONTRACT.md#s2-27a--exact-long64-lgdt-rbp-10),
+[Linux profile evidence](STAGE_2_LINUX_PROFILE.md#s2-27a--exact-ubuntu-lgdt-candidate).
+Semantic references: Intel SDM Vol. 2A `LGDT/LIDT` entry (Order No.
+253666-093US, September 2026, [official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199));
+Vol. 3A §§2.4.1, 3.5.2, 4.5.1 and 4.5.3 (Order No. 253668-093US, September
+2026, [official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
+
 ## S2-26c — локальный `GsBaseV1` MSR
 
 **Статус:** в процессе. Локальные проверки автора внесены ниже. Независимое
