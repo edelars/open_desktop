@@ -24,7 +24,7 @@ use crate::statepoints::{
 use od_isa::integer_flags;
 
 const MAX_RUNTIME_FRAME_BYTES: u32 = 32_768;
-const MIN_RUNTIME_PREFIX_BYTES: u32 = 160;
+const MIN_RUNTIME_PREFIX_BYTES: u32 = 176;
 const FRAME_STAGING_GPRS_POINTER: u32 = 0;
 const FRAME_STAGING_FLAGS_POINTER: u32 = 16;
 const FRAME_STAGING_RIP_POINTER: u32 = 24;
@@ -32,10 +32,10 @@ const FRAME_HELPER_FLAGS_OUTPUT: u32 = 32;
 const FRAME_CANONICAL_STATE_POINTER: u32 = 40;
 const FRAME_RUNTIME_CONTEXT_POINTER: u32 = 48;
 const FRAME_STAGING_GPRS: u32 = 56;
-const FRAME_STAGING_FLAGS: u32 = 104;
-const FRAME_STAGING_RIP: u32 = 112;
-const FRAME_SAVED_X19_X20: i32 = 128;
-const FRAME_SAVED_X21_X22: i32 = 144;
+const FRAME_STAGING_FLAGS: u32 = 120;
+const FRAME_STAGING_RIP: u32 = 128;
+const FRAME_SAVED_X19_X20: i32 = 144;
+const FRAME_SAVED_X21_X22: i32 = 160;
 const MAX_BLOCK_INSTRUCTIONS: usize = 32;
 
 /// An emitted block entry with private code/map provenance. Only blocks made
@@ -245,9 +245,9 @@ pub fn emit_checked_load_runtime_block_v2(
             instruction_index: 0,
         });
     }
-    if allocation.frame().reserved_prefix_bytes < 160 {
+    if allocation.frame().reserved_prefix_bytes < MIN_RUNTIME_PREFIX_BYTES {
         return Err(BlockEmitterError::InsufficientFramePrefix {
-            required: 160,
+            required: MIN_RUNTIME_PREFIX_BYTES,
             actual: allocation.frame().reserved_prefix_bytes,
         });
     }
@@ -527,9 +527,9 @@ pub fn emit_checked_store_runtime_block_v2(
             operation: store_operation,
         }
     })?;
-    if allocation.frame().reserved_prefix_bytes < 160 {
+    if allocation.frame().reserved_prefix_bytes < MIN_RUNTIME_PREFIX_BYTES {
         return Err(BlockEmitterError::InsufficientFramePrefix {
-            required: 160,
+            required: MIN_RUNTIME_PREFIX_BYTES,
             actual: allocation.frame().reserved_prefix_bytes,
         });
     }
@@ -787,9 +787,9 @@ pub fn emit_two_memory_runtime_block_v2(
             instruction_index: 0,
         });
     }
-    if allocation.frame().reserved_prefix_bytes < 160 {
+    if allocation.frame().reserved_prefix_bytes < MIN_RUNTIME_PREFIX_BYTES {
         return Err(BlockEmitterError::InsufficientFramePrefix {
-            required: 160,
+            required: MIN_RUNTIME_PREFIX_BYTES,
             actual: allocation.frame().reserved_prefix_bytes,
         });
     }
@@ -1806,7 +1806,7 @@ fn emit_runtime_frame_setup(encoder: &mut Encoder) -> Result<(), BlockEmitterErr
         encoder.str_x(XRegOrZero::Reg(xreg(17)?), AddressBase::Sp, field_offset)?;
     }
 
-    for register in 0..6u32 {
+    for register in 0..8u32 {
         let guest_offset = checked_offset(LONG_MODE_GPR_OFFSET, register * 8)?;
         let staged_offset = FRAME_STAGING_GPRS + register * 8;
         encoder.ldr_x(
@@ -1979,13 +1979,15 @@ fn emit_commit(
     instruction_index: usize,
     _pair_count: usize,
 ) -> Result<(), BlockEmitterError> {
-    for register in 0..6u32 {
+    // The canonical state pointer is stable through this commit. Load it once
+    // before copying staged registers instead of reloading it for each GPR.
+    emit_saved_pointer_load(encoder, FRAME_CANONICAL_STATE_POINTER, xreg(16)?)?;
+    for register in 0..8u32 {
         encoder.ldr_x(
             XRegOrZero::Reg(xreg(13)?),
             AddressBase::Sp,
             FRAME_STAGING_GPRS + register * 8,
         )?;
-        emit_saved_pointer_load(encoder, FRAME_CANONICAL_STATE_POINTER, xreg(16)?)?;
         encoder.str_x(
             XRegOrZero::Reg(xreg(13)?),
             AddressBase::Reg(xreg(16)?),
@@ -2153,7 +2155,7 @@ fn emit_u64(encoder: &mut Encoder, destination: XReg, value: u64) -> Result<(), 
 }
 
 fn guest_gpr_offset(register: GuestGpr) -> Result<u32, BlockEmitterError> {
-    if register.0 > 5 {
+    if register.0 > 7 {
         return Err(BlockEmitterError::InvalidRegister(register));
     }
     Ok(u32::from(register.0) * 8)
@@ -2261,6 +2263,18 @@ mod tests {
     use crate::allocator::AllocatorConfig;
     use crate::ir::{GuestInstruction, Operation};
 
+    #[test]
+    fn runtime_frame_layout_keeps_gprs_flags_rip_and_saved_pairs_disjoint() {
+        assert_eq!(FRAME_STAGING_GPRS, 56);
+        assert_eq!(FRAME_STAGING_GPRS + 8 * 8, FRAME_STAGING_FLAGS);
+        assert_eq!(FRAME_STAGING_FLAGS, 120);
+        assert_eq!(FRAME_STAGING_RIP, 128);
+        assert_eq!(FRAME_SAVED_X19_X20, 144);
+        assert_eq!(FRAME_SAVED_X21_X22, 160);
+        assert_eq!(MIN_RUNTIME_PREFIX_BYTES, 176);
+        assert_eq!(MIN_RUNTIME_PREFIX_BYTES % 16, 0);
+    }
+
     fn mov_program() -> Program {
         Program {
             guest_instructions: vec![GuestInstruction {
@@ -2296,7 +2310,7 @@ mod tests {
             &program,
             AllocatorConfig {
                 register_homes: 1,
-                reserved_prefix_bytes: 160,
+                reserved_prefix_bytes: MIN_RUNTIME_PREFIX_BYTES,
             },
             &[],
         )

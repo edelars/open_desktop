@@ -849,7 +849,8 @@ fn build_block_with_profile(
         } else if profile == BlockBuildProfile::CheckedQwordLoad {
             instructions.is_empty()
                 && is_checked_qword_load_form(decoded)
-                && (exact_direct_qword_load_bytes(code, guest_rip, decoded.length)
+                && (exact_direct_qword_load_rsi_rdi_bytes(code, guest_rip, decoded.length)
+                    || exact_direct_qword_load_bytes(code, guest_rip, decoded.length)
                     || exact_qword_address32_memory_bytes(code, guest_rip, decoded.length, 0x8b)
                     || exact_qword_address32_sib_memory_bytes(
                         code,
@@ -1648,6 +1649,15 @@ pub(crate) fn is_checked_qword_load_form(instruction: Instruction) -> bool {
         && instruction.operand_size == OperandSize::Qword
         && matches!(instruction.length, 3 | 4 | 5 | 6 | 7 | 8 | 9)
         && ((destination.register() as u8) < 4
+            || matches!(destination.register() as u8, 6 | 7)
+                && instruction.length == 3
+                && instruction.address_size == OperandSize::Qword
+                && operand.address_size == OperandSize::Qword
+                && operand.size == OperandSize::Qword
+                && matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
+                && operand.index.is_none()
+                && operand.scale == 1
+                && operand.displacement == 0
             || destination.register() as u8 == 4
                 && is_rsp_memory_data_operand(instruction, operand)
             || destination.register() as u8 == 5
@@ -3341,6 +3351,29 @@ pub(crate) fn exact_direct_qword_store_rsi_rdi_bytes(
             length == 3
                 && bytes.len() == 3
                 && bytes[0..2] == [0x48, 0x89]
+                && bytes[2] >> 6 == 0
+                && matches!((bytes[2] >> 3) & 7, 6 | 7)
+                && bytes[2] & 7 < 4
+        })
+}
+
+pub(crate) fn exact_direct_qword_load_rsi_rdi_bytes(
+    code: CodeView<'_>,
+    guest_rip: u64,
+    length: u8,
+) -> bool {
+    let Some(offset) = guest_rip
+        .checked_sub(code.base_rip)
+        .and_then(|value| usize::try_from(value).ok())
+    else {
+        return false;
+    };
+    code.bytes
+        .get(offset..offset.saturating_add(3))
+        .is_some_and(|bytes| {
+            length == 3
+                && bytes.len() == 3
+                && bytes[0..2] == [0x48, 0x8b]
                 && bytes[2] >> 6 == 0
                 && matches!((bytes[2] >> 3) & 7, 6 | 7)
                 && bytes[2] & 7 < 4

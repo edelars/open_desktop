@@ -220,6 +220,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20cd | Address32 RBP-base no-index SIB qword MOV с displacement | Только `67 48 8B/89 /r sib disp8|disp32`, ModRM `mod=01/10,r/m=100`, SIB ровно `0x25`, data RAX..RBP; Dword EA/Qword data; длины 6/9; mod00 остаётся отдельной absolute/no-base формой |
 | [partial] | S3-20ce | Address64 RSI/RDI-base SIB qword MOV без индекса | Только `48 8B/89 /r sib [disp8|disp32]`, ModRM `mod=00/01/10,r/m=100`, SIB `0x26/0x27`, data RAX..RBP; scale 1/no index; lengths 4/5/8 |
 | [partial] | S3-20cf | Address32 RSI/RDI-base SIB qword MOV без индекса | Только `67 48 8B/89 /r sib [disp8|disp32]`, ModRM `mod=00/01/10,r/m=100`, SIB ровно `0x26/0x27`, data RAX..RBP; Dword EA/Qword transfer; lengths 5/6/9 |
+| [partial] | S3-20ch | Address64 direct-base qword load into RSI/RDI | Только `48 8B /r`, ModRM `mod=00`, destination RSI/RDI, base RAX..RBX; без SIB/displacement/prefix; длина 3; scoped IR write и 8-GPR runtime frame |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -2307,7 +2308,11 @@ Stage 3 не доказывает полную ISA, guest boot, MMU/APIC, SMP or
 
 #### S3-20cg. Address64 qword store из RSI/RDI в low-base direct memory
 
-Добавить только singleton `48 89 /r` длины 3: ModRM `mod=00`, source RSI/RDI (`reg=6|7`), base RAX/RCX/RDX/RBX (`r/m=0..3`), без displacement и SIB. Admission остается operation-specific для `CheckedStore`; generic GPR whitelist, loads и frame/staging не расширяются. Store читает полное 64-битное значение source из canonical guest state. Симметричные `48 8B` load в RSI/RDI и addr32, displacement/SIB, REX.R/B, R8+ и другие неподдержанные формы отклоняются. См. [S3-20cg report](../reports/STAGE_3_S3-20cg_2026-10-28.md). Mini и performance отложены до конца Stage 3; owner/MMU и Stage 2 вне scope.
+Добавить только singleton `48 89 /r` длины 3: ModRM `mod=00`, source RSI/RDI (`reg=6|7`), base RAX/RCX/RDX/RBX (`r/m=0..3`), без displacement и SIB. Admission остается operation-specific для `CheckedStore`; generic GPR whitelist, loads и frame/staging не расширяются. Store читает полное 64-битное значение source из canonical guest state. RSI/RDI как адресная база, addr32, displacement/SIB, REX.R/B, R8+ и другие неподдержанные формы отклоняются. См. [S3-20cg report](../reports/STAGE_3_S3-20cg_2026-10-28.md). Mini и performance отложены до конца Stage 3; owner/MMU и Stage 2 вне scope.
+
+#### S3-20ch. Address64 qword load в RSI/RDI из low-base direct memory
+
+Добавить только singleton `48 8B /r` длины 3: ModRM `mod=00`, destination RSI/RDI (`reg=6|7`), base RAX/RCX/RDX/RBX (`r/m=0..3`), без displacement и SIB. Admission разрешает `WriteGpr` для RSI/RDI только непосредственно после `CheckedLoad` с тем же temporary, qword operand, exact low-base direct адресом и длиной 3; `ReadGpr` и общий `validate_gpr` остаются прежними. Согласовать staged GPR frame: восемь qword слотов `[56,120)`, flags `120`, RIP `128`, сохранения X19/X20 `144`, X21/X22 `160`, reserved prefix `176` с 16-byte alignment. Shared emitter setup/commit, allocator/compiler prefixes и spills используют тот же layout; лимит кода остается 4096 bytes. Другие prefixes, addr32, displacement/SIB, extra REX, R8+ и ширины кроме qword отклоняются. Приёмка — direct/shared IR/interpreter full-state parity, high-bit transfer, single qword read/retirement, fault и budget guards без изменения state/access, frame regressions и прежние arithmetic/store/two-memory regressions. См. [S3-20ch report](../reports/STAGE_3_S3-20ch_2026-10-28.md). Mini/performance и owner/MMU/Stage 2 остаются вне scope.
 
 ## 11. Проверки и команды
 

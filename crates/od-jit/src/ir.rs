@@ -442,6 +442,24 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                             register: register.0,
                         });
                     }
+                } else if register.0 == 6 || register.0 == 7 {
+                    let valid_scoped_data_load = matches!(
+                        program.operations.get(operation_index.wrapping_sub(1)),
+                        Some(Operation::CheckedLoad {
+                            dst: loaded_value,
+                            operand,
+                        }) if *loaded_value == *src && is_direct_low_base_rsi_rdi_load_operand(
+                            *operand,
+                            instruction_length(program, active_instruction),
+                            register.0,
+                        )
+                    );
+                    if !valid_scoped_data_load {
+                        return Err(VerifyError::InvalidGpr {
+                            operation: operation_index,
+                            register: register.0,
+                        });
+                    }
                 } else {
                     validate_gpr(*register, operation_index)?;
                 }
@@ -986,6 +1004,24 @@ fn validate_gpr(register: GuestGpr, operation: usize) -> Result<(), VerifyError>
             register: register.0,
         })
     }
+}
+
+fn is_direct_low_base_rsi_rdi_load_operand(
+    operand: MemoryOperand,
+    instruction_length: u64,
+    data_register: u8,
+) -> bool {
+    matches!(data_register, 6 | 7)
+        && instruction_length == 3
+        && operand.address_size == od_isa::OperandSize::Qword
+        && operand.size == od_isa::OperandSize::Qword
+        && matches!(
+            operand.base,
+            od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4
+        )
+        && operand.index.is_none()
+        && operand.scale == 1
+        && operand.displacement == 0
 }
 
 fn is_scoped_memory_data_operand(
@@ -1956,6 +1992,52 @@ mod tests {
     }
 
     #[test]
+    fn rsi_rdi_write_is_scoped_to_immediately_preceding_exact_low_base_load() {
+        for register in [6_u8, 7] {
+            let mut allowed = checked_load_program();
+            let Operation::WriteGpr { register: dst, .. } = &mut allowed.operations[2] else {
+                unreachable!();
+            };
+            *dst = GuestGpr(register);
+            assert_eq!(verify(&allowed), Ok(()));
+
+            let mut wrong_temp = allowed.clone();
+            if let Operation::WriteGpr { src, .. } = &mut wrong_temp.operations[2] {
+                *src = TempId(99);
+            }
+            assert!(matches!(
+                verify(&wrong_temp),
+                Err(VerifyError::InvalidGpr { register: rejected, .. }) if rejected == register
+            ));
+
+            let mut non_adjacent = allowed.clone();
+            non_adjacent.operations.insert(
+                2,
+                Operation::Constant {
+                    dst: TempId(1),
+                    width: IntWidth::W64,
+                    value: 1,
+                },
+            );
+            assert!(matches!(
+                verify(&non_adjacent),
+                Err(VerifyError::InvalidGpr { register: rejected, .. }) if rejected == register
+            ));
+
+            let mut wrong_length = allowed;
+            wrong_length.guest_instructions[0].next_rip = 0x2004;
+            wrong_length.code_end = 0x2004;
+            if let Some(Operation::Exit { target_rip, .. }) = wrong_length.operations.last_mut() {
+                *target_rip = 0x2004;
+            }
+            assert!(matches!(
+                verify(&wrong_length),
+                Err(VerifyError::InvalidGpr { register: rejected, .. }) if rejected == register
+            ));
+        }
+    }
+
+    #[test]
     fn checked_load_addr32_no_base_rbp_index_requires_exact_nine_byte_profile() {
         for length in [8_u64, 9] {
             let mut forged = checked_load_program();
@@ -2251,6 +2333,30 @@ mod tests {
             verify(&program),
             Err(VerifyError::InvalidGpr { register: 4, .. })
         ));
+
+        for register in [6_u8, 7] {
+            let mut program = base_program();
+            program.operations[1] = Operation::ReadGpr {
+                dst: TempId(0),
+                register: GuestGpr(register),
+                width: IntWidth::W64,
+            };
+            assert!(matches!(
+                verify(&program),
+                Err(VerifyError::InvalidGpr { register: rejected, .. }) if rejected == register
+            ));
+
+            let mut program = base_program();
+            program.operations[4] = Operation::WriteGpr {
+                register: GuestGpr(register),
+                src: TempId(2),
+                width: IntWidth::W64,
+            };
+            assert!(matches!(
+                verify(&program),
+                Err(VerifyError::InvalidGpr { register: rejected, .. }) if rejected == register
+            ));
+        }
 
         let mut program = base_program();
         program.operations[3] = Operation::Integer {

@@ -16,9 +16,9 @@ use crate::ir::Operation;
 use crate::lowering::{self, LoweredProgram, LoweringError, LoweringOutcome};
 
 pub const MAX_EMITTED_BLOCK_BYTES: usize = 4096;
-const RUNTIME_FRAME_PREFIX_BYTES: u32 = 160;
-const CHECKED_LOAD_FRAME_PREFIX_BYTES_V2: u32 = 160;
-const CHECKED_STORE_FRAME_PREFIX_BYTES_V2: u32 = 160;
+const RUNTIME_FRAME_PREFIX_BYTES: u32 = 176;
+const CHECKED_LOAD_FRAME_PREFIX_BYTES_V2: u32 = 176;
+const CHECKED_STORE_FRAME_PREFIX_BYTES_V2: u32 = 176;
 const REGISTER_HOME_BUDGET: u8 = 4;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -438,6 +438,24 @@ mod tests {
     }
 
     #[test]
+    fn ten_mov_block_remains_inside_the_unchanged_code_size_limit() {
+        let mut source = Vec::new();
+        for immediate in 0..10_u64 {
+            source.extend_from_slice(&[0x48, 0xb8]);
+            source.extend_from_slice(&immediate.to_le_bytes());
+        }
+        let compiled = compile_block(CodeView::new(0, &source).unwrap(), 0).unwrap();
+        let BlockCompileOutcome::Compiled(compiled) = compiled else {
+            panic!("ten exact MOV instructions must compile within the existing cap");
+        };
+        assert_eq!(compiled.emitted().pc_map().instruction_count(), 10);
+        let code_len = compiled.emitted().pc_map().code_len() as usize;
+        assert_eq!(code_len, 3868);
+        assert!(code_len <= MAX_EMITTED_BLOCK_BYTES);
+        assert_eq!(MAX_EMITTED_BLOCK_BYTES, 4096);
+    }
+
+    #[test]
     fn dispatch_compile_requires_fixture_boundaries_and_legacy_path_stays_one_block() {
         let forward = [0x74, 0x02, 0x74, 0x00, 0x74, 0x00];
         let view = CodeView::new(0, &forward).unwrap();
@@ -560,7 +578,7 @@ mod tests {
     }
 
     #[test]
-    fn rbp_memory_data_spill_stays_after_six_gpr_runtime_prefix() {
+    fn rbp_memory_data_spill_stays_after_eight_gpr_runtime_prefix() {
         let source = [0x48, 0x8b, 0x28]; // MOV RBP,[RAX]
         let code = CodeView::new(0x5a00, &source).unwrap();
         let built = block::build_checked_qword_load_block(
@@ -597,7 +615,7 @@ mod tests {
             &lowered.program,
             AllocatorConfig {
                 register_homes: 0,
-                reserved_prefix_bytes: 160,
+                reserved_prefix_bytes: 176,
             },
             &helper_boundaries,
         )
@@ -606,8 +624,9 @@ mod tests {
         else {
             panic!("zero register homes must spill the checked-load value");
         };
-        assert!(slot.byte_offset() >= 160);
-        assert_eq!(allocation.frame().reserved_prefix_bytes, 160);
+        assert!(slot.byte_offset() >= 176);
+        assert_eq!(allocation.frame().reserved_prefix_bytes, 176);
+        assert_eq!(allocation.frame().frame_bytes % 16, 0);
         let emitted = emit_checked_load_runtime_block_v2(&lowered.program, &allocation).unwrap();
         assert_eq!(emitted.entry_rip(), 0x5a00);
         assert_eq!(emitted.pc_map().instruction_count(), 1);

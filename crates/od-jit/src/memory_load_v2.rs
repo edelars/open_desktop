@@ -933,7 +933,8 @@ fn checked_load_metadata_v2(
         .map_err(|_| MemoryLoadCompileErrorV2::Decode)?;
     if decoded.length as usize != bytes.len()
         || !crate::block::is_checked_qword_load_form(decoded)
-        || !(crate::block::exact_direct_qword_memory_bytes(code, entry_rip, decoded.length, 0x8b)
+        || !(crate::block::exact_direct_qword_load_rsi_rdi_bytes(code, entry_rip, decoded.length)
+            || crate::block::exact_direct_qword_memory_bytes(code, entry_rip, decoded.length, 0x8b)
             || crate::block::exact_qword_address32_memory_bytes(
                 code,
                 entry_rip,
@@ -1901,7 +1902,6 @@ mod tests {
             vec![0x48, 0x8b, 0x2c],       // SIB
             vec![0x48, 0x8b, 0x68],       // displacement
             vec![0x67, 0x48, 0x8b, 0x38], // unsupported data register
-            vec![0x48, 0x8b, 0x30],       // RSI data
         ] {
             let code = CodeView::new(0x5900, &invalid).unwrap();
             assert!(compile_ir_memory_load_block_v2(code, 0x5900).is_err());
@@ -1939,8 +1939,6 @@ mod tests {
         }
 
         for source in [
-            vec![0x48, 0x8b, 0x30],       // symmetric RSI load
-            vec![0x48, 0x8b, 0x38],       // symmetric RDI load
             vec![0x67, 0x48, 0x89, 0x30], // addr32
             vec![0x48, 0x89, 0x70, 0x00], // displacement
             vec![0x48, 0x89, 0x34, 0x20], // SIB
@@ -1955,6 +1953,45 @@ mod tests {
             assert!(compile_ir_memory_store_block_v2(code, 0x5c00).is_err());
             assert!(compile_memory_load_block_v2(code, 0x5c00).is_err());
             assert!(compile_ir_memory_load_block_v2(code, 0x5c00).is_err());
+        }
+    }
+
+    #[test]
+    fn rsi_rdi_load_destinations_are_limited_to_eight_direct_low_base_encodings() {
+        for destination in [6_u8, 7] {
+            for base in 0..4_u8 {
+                let bytes = [0x48, 0x8b, (destination << 3) | base];
+                let code = CodeView::new(0x5d00, &bytes).unwrap();
+                let direct = compile_memory_load_block_v2(code, 0x5d00).unwrap();
+                let ir = compile_ir_memory_load_block_v2(code, 0x5d00).unwrap();
+                assert_eq!(direct.site(), ir.site());
+                assert_eq!(direct.source_bytes(), &bytes);
+                assert_eq!(ir.source_bytes(), &bytes);
+                assert_eq!(direct.site().destination(), Some(destination));
+                assert_eq!(direct.site().next_rip(), 0x5d03);
+                assert!(direct.site().has_supported_profile());
+                assert!(
+                    direct
+                        .site()
+                        .matches_source_bytes(&bytes, MemorySiteOperationV2::Load)
+                );
+            }
+        }
+
+        for bytes in [
+            vec![0x48, 0x8b, 0x76, 0x00], // displacement
+            vec![0x48, 0x8b, 0x34, 0x20], // SIB
+            vec![0x67, 0x48, 0x8b, 0x30], // address32
+            vec![0x40, 0x48, 0x8b, 0x30], // extra REX prefix
+            vec![0x49, 0x8b, 0x30],       // REX.B
+            vec![0x4c, 0x8b, 0x30],       // REX.R
+            vec![0x4c, 0x8b, 0x00],       // R8 destination
+            vec![0x8b, 0x30],             // non-qword width
+            vec![0x66, 0x48, 0x8b, 0x30], // word width
+        ] {
+            let code = CodeView::new(0x5d00, &bytes).unwrap();
+            assert!(compile_memory_load_block_v2(code, 0x5d00).is_err());
+            assert!(compile_ir_memory_load_block_v2(code, 0x5d00).is_err());
         }
     }
 
@@ -4691,7 +4728,6 @@ mod tests {
     fn rejects_prefixes_displacements_and_out_of_profile_registers() {
         for bytes in [
             vec![0x40, 0x8b, 0x00],
-            vec![0x48, 0x8b, 0x30],       // unsupported RSI data register
             vec![0x48, 0x8b, 0xc0],       // register-register mod=11
             vec![0x48, 0x8b, 0x04],       // truncated SIB
             vec![0x48, 0x8b, 0x04, 0x66], // RSI base with no-index scale alias
@@ -6964,7 +7000,7 @@ mod tests {
         let symmetric_load = [0x48, 0x8b, 0x30];
         assert!(
             compile_memory_load_block_v2(CodeView::new(0x5000, &symmetric_load).unwrap(), 0x5000)
-                .is_err()
+                .is_ok()
         );
     }
 

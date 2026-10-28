@@ -24139,7 +24139,7 @@ mod tests {
                 stop_on_write: None,
             }
         }
-        fn make_state(data_register: u8, base_register: u8, target: u64) -> od_isa::LongModeState {
+        fn make_state(_data_register: u8, base_register: u8, target: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
                 rip: ENTRY,
                 gpr: [0xdead_beef_1234_5678; 16],
@@ -24149,9 +24149,6 @@ mod tests {
             state.gpr[6] = 0x40;
             state.gpr[7] = 0x80;
             state.gpr[base_register as usize] = target;
-            if data_register == 6 || data_register == 7 {
-                unreachable!("profile excludes RSI/RDI as data registers");
-            }
             state
         }
 
@@ -24303,6 +24300,138 @@ mod tests {
                         }
                     }
                 }
+            }
+        }
+
+        // S3-20ch: RSI/RDI are destination-only for the exact direct low-base
+        // load profile. The qword contains high bits and all paths preserve
+        // the complete guest state except destination, RIP, and retirement.
+        enum PublishedLoad {
+            Direct(PublishedCode),
+            Ir(PublishedCode),
+        }
+        for destination in [6_u8, 7] {
+            for base in 0..4_u8 {
+                let target = 0x40 + u64::from(base) * 8;
+                let source = [0x48, 0x8b, (destination << 3) | base];
+                let code = CodeView::new(ENTRY, &source).unwrap();
+                let initial_state = make_state(destination, base, target);
+                let expected_qword = 0xfedc_ba98_7654_3210_u64 ^ u64::from(base);
+                let mut initial_ram = make_ram(&source);
+                for (offset, byte) in expected_qword.to_le_bytes().into_iter().enumerate() {
+                    initial_ram.data.insert(target + offset as u64, byte);
+                }
+
+                let mut direct_state = initial_state.clone();
+                let mut direct_ram = initial_ram.clone();
+                let direct_block =
+                    od_jit::memory_load_v2::compile_memory_load_block_v2(code, ENTRY).unwrap();
+                let direct = PublishedCode::publish_memory_load_v2(&direct_block)
+                    .unwrap()
+                    .execute_memory_load_v2(
+                        &mut direct_state,
+                        &mut direct_ram,
+                        AccessContext::default(),
+                        1,
+                        None,
+                        &stop,
+                    )
+                    .unwrap();
+
+                let mut ir_state = initial_state.clone();
+                let mut ir_ram = initial_ram.clone();
+                let ir_block =
+                    od_jit::memory_load_v2::compile_ir_memory_load_block_v2(code, ENTRY).unwrap();
+                let ir = PublishedCode::publish_ir_memory_load_v2(&ir_block)
+                    .unwrap()
+                    .execute_ir_memory_load_v2(
+                        &mut ir_state,
+                        &mut ir_ram,
+                        AccessContext::default(),
+                        1,
+                        None,
+                        &stop,
+                    )
+                    .unwrap();
+
+                let mut interpreter_state = initial_state.clone();
+                let mut interpreter_ram = initial_ram.clone();
+                od_isa::execute::step(
+                    &mut interpreter_state,
+                    &mut interpreter_ram,
+                    AccessContext::default(),
+                )
+                .unwrap();
+                assert_eq!(interpreter_state.gpr[destination as usize], expected_qword);
+                assert_eq!(
+                    (direct.retired_instructions, ir.retired_instructions),
+                    (1, 1)
+                );
+                assert_eq!(direct_state, interpreter_state);
+                assert_eq!(ir_state, interpreter_state);
+                assert_eq!(direct_ram.data, interpreter_ram.data);
+                assert_eq!(ir_ram.data, interpreter_ram.data);
+                assert_eq!((direct_ram.reads, direct_ram.writes), (1, 0));
+                assert_eq!((ir_ram.reads, ir_ram.writes), (1, 0));
+                assert_eq!(direct_ram.last_read, Some((target, 8)));
+                assert_eq!(ir_ram.last_read, Some((target, 8)));
+            }
+        }
+
+        for destination in [6_u8, 7] {
+            for use_ir in [false, true] {
+                let source = [0x48, 0x8b, (destination << 3)];
+                let code = CodeView::new(ENTRY, &source).unwrap();
+                let block = if use_ir {
+                    let block =
+                        od_jit::memory_load_v2::compile_ir_memory_load_block_v2(code, ENTRY)
+                            .unwrap();
+                    PublishedLoad::Ir(PublishedCode::publish_ir_memory_load_v2(&block).unwrap())
+                } else {
+                    let block =
+                        od_jit::memory_load_v2::compile_memory_load_block_v2(code, ENTRY).unwrap();
+                    PublishedLoad::Direct(PublishedCode::publish_memory_load_v2(&block).unwrap())
+                };
+                let run = |state: &mut od_isa::LongModeState,
+                           ram: &mut Ram,
+                           budget: u64,
+                           stop_flag: &AtomicU8| {
+                    match &block {
+                        PublishedLoad::Direct(published) => published.execute_memory_load_v2(
+                            state,
+                            ram,
+                            AccessContext::default(),
+                            budget,
+                            None,
+                            stop_flag,
+                        ),
+                        PublishedLoad::Ir(published) => published.execute_ir_memory_load_v2(
+                            state,
+                            ram,
+                            AccessContext::default(),
+                            budget,
+                            None,
+                            stop_flag,
+                        ),
+                    }
+                };
+                let mut state = make_state(destination, 0, 0x40);
+                let before = state.clone();
+                let mut ram = make_ram(&source);
+                let guard = run(&mut state, &mut ram, 0, &AtomicU8::new(0)).unwrap();
+                assert_eq!(state, before);
+                assert_eq!(guard.retired_instructions, 0);
+                assert_eq!((ram.reads, ram.writes), (0, 0));
+
+                let mut fault_state = before.clone();
+                let mut fault_ram = make_ram(&source);
+                fault_ram.read_error = Some(MemoryError::Unmapped {
+                    address: 0x40,
+                    access: AccessKind::Read,
+                });
+                assert!(run(&mut fault_state, &mut fault_ram, 1, &AtomicU8::new(0)).is_err());
+                assert_eq!(fault_state, before);
+                assert_eq!((fault_ram.reads, fault_ram.writes), (1, 0));
             }
         }
 
@@ -30634,7 +30763,7 @@ mod tests {
             &lowered.program,
             AllocatorConfig {
                 register_homes,
-                reserved_prefix_bytes: 160,
+                reserved_prefix_bytes: 176,
             },
             &helper_boundaries,
         )
@@ -30673,7 +30802,7 @@ mod tests {
             &lowered.program,
             AllocatorConfig {
                 register_homes,
-                reserved_prefix_bytes: 160,
+                reserved_prefix_bytes: 176,
             },
             &helper_boundaries,
         )
