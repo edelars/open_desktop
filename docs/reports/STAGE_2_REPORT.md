@@ -686,9 +686,60 @@ binary_float::tests` (45/45), `cargo test -p od-isa --offline x87::tests`
 `graphify update .`. Graphify сообщил существующее предупреждение парсера для
 `include/open_desktop/host_abi.h` и notice об обновлении community labels,
 завершившись успешно. Независимое code review Sol medium и документационное
-ревью завершились без замечаний. Gap>64 остаётся открытым в
-[ISSUE-024](../KNOWN_ISSUES.md#issue-024--bounded-finite-addsub-helpers-reject-exponent-gaps-greater-than-64).
+ревью завершились без замечаний. В момент завершения S2-36o gap>64 оставался открытым в
+[ISSUE-024](../KNOWN_ISSUES.md#issue-024--s2-36-result-apis-lacked-large-gap-rounding).
 См. [план S2-36o](../plans/STAGE_2.md#s2-36o--finite-binary-addition-and-subtraction-output-in-the-gap-64-profile).
+
+## S2-36p — finite binary addition and subtraction result APIs across the full finite exponent range
+
+**Статус:** реализовано для новых finite add/sub result APIs `Binary32` и
+`Binary64` во всём конечном диапазоне exponent gaps. Low-level exact-alignment
+helpers и legacy APIs по-прежнему намеренно ограничены gap≤64; их контракты и
+поведение не менялись. [ISSUE-024](../KNOWN_ISSUES.md#issue-024--s2-36-result-apis-lacked-large-gap-rounding)
+закрыта для полного result path. Полная арифметическая приёмка S2-36 и
+аппаратная проверка остаются открытыми.
+
+Реализация расширила только новые `add_finite_aligned_result` и
+`subtract_finite_aligned_result` у `Binary32`/`Binary64` на весь конечный
+диапазон exponent gaps для поддерживаемых пар форматов. Low-level exact
+alignment и legacy APIs сохраняют gap≤64 и свои сигнатуры/поведение.
+
+При gap `d≥65`, старшем нормализованном significand `a`, младшем `b` и
+показателе старшего операнда `e`, private tail bridge получает
+`(Q+T)·2^(E-63)`. После преобразования subtraction к effective terms
+(rhs меняет знак в копии), одинаковые знаки дают `Q=a`, `T=b/2^d`, `E=e`;
+разные знаки означают вычитание меньшей величины из большей: при `a>2^63`
+`Q=a-1`, `T=1-b/2^d`, `E=e`; при `a=2^63` — `Q=u64::MAX`,
+`T=1-b/2^(d-1)`, `E=e-1`. Для `a,b∈[2^63,2^64)` и `d≥65` первый
+дробный член `b/2^d` лежит в `(0,1/2)`, во втором случае
+`T=1-b/2^d` лежит в `(1/2,1)`, а `b/2^(d-1)` — в `(0,1)`. Значит,
+в каждом случае `0<T<1`, `Q` нормализовано и большого
+gap недостаточно для cancellation.
+
+Хвост проходит через приватный round-equivalent bridge для destination
+precision 24/53. Представитель `r=1,d=4` (1/4) не является точным quotient;
+он сохраняет round/pack решения и diagnostics S2-36m: integer low bits задают
+сторону midpoint, ненулевой tail отличает tie от значения по другую сторону,
+а subnormal cases `k=64` и `k>64` используют только релевантные признаки
+ненулевого остатка. Это не общий precision-64 bridge. При gap≤64 остаётся
+прежний точный `u128` путь. Flags, exception delivery, DAZ/FTZ, NaN/infinity
+и instruction integration не входят в задачу.
+
+Literal-векторы покрывают все rounding modes, оба знака и операции, gap
+64/65/2097, significands `2^63`/`2^63+1`, midpoint sides, normal/subnormal
+и overflow boundaries, итоговые bits и diagnostics. Проверки автора прошли:
+`cargo test -p od-isa --offline binary_float::tests` (48/48),
+`cargo test -p od-isa --offline x87::tests` (47/47),
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`git diff --check` и `graphify update .` (успех; существующее предупреждение
+парсера `include/open_desktop/host_abi.h`). Независимые code review Sol medium
+и documentation review завершились без замечаний. Hardware/SSH regression
+отложена до общего финального substage; аппаратная проверка и полная S2-36
+приёмка не заявляются.
+Форматный finite exponent context binary32/binary64: Intel SDM Rev. 093,
+Vol. 1 [official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436).
+Формулы `Q/T/E` и их доказательство относятся к математике локального API,
+а не к реализации или аппаратной проверке инструкций.
 
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 

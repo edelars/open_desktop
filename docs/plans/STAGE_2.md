@@ -469,6 +469,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36m | Complete finite binary32/binary64 multiplication output with rounding diagnostics | S2-36i; independent review |
 | [x] | S2-36n | Complete finite binary32/binary64 division output with rounding diagnostics | S2-36c, S2-36m; independent review |
 | [x] | S2-36o | Complete finite binary32/binary64 addition and subtraction results in the exponent-gap ≤64 profile | S2-36d–36g, S2-36m; independent review |
+| [x] | S2-36p | Extend finite binary32/binary64 add/sub result APIs across the full finite exponent range | S2-36o, S2-36m; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -5324,9 +5325,72 @@ binary_float::tests` (45/45), `cargo test -p od-isa --offline x87::tests`
 `include/open_desktop/host_abi.h` и notice об обновлении community labels,
 завершившись успешно. Независимое code review Sol medium и документационное
 ревью завершились без замечаний. См. [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-36o--finite-binary-addition-and-subtraction-output-in-the-gap-64-profile).
-Issue [ISSUE-024](../KNOWN_ISSUES.md#issue-024--bounded-finite-addsub-helpers-reject-exponent-gaps-greater-than-64)
-остаётся открытым для exponent gap >64; S2-36 и hardware acceptance также
-остаются открытыми.
+В момент завершения S2-36o issue [ISSUE-024](../KNOWN_ISSUES.md#issue-024--s2-36-result-apis-lacked-large-gap-rounding)
+оставалась открытой для exponent gap >64; S2-36 и hardware acceptance также
+оставались открытыми.
+
+#### S2-36p — finite binary addition and subtraction result APIs across the full finite exponent range
+
+**Статус:** новые finite add/sub result APIs поддерживают весь конечный
+диапазон показателей. Low-level exact-alignment и legacy convenience APIs
+сохраняют контракт gap≤64. ISSUE-024 решена для полного result path; полная
+приёмка S2-36 и hardware acceptance остаются открытыми.
+
+Расширить только новые
+`add_finite_aligned_result(lhs, rhs, mode)` и
+`subtract_finite_aligned_result(lhs, rhs, mode)` для `Binary32`/`Binary64`:
+все конечные нормализованные операнды поддерживаемых destination/source
+сочетаний должны обрабатываться во всём диапазоне их конечных показателей.
+Существующие low-level exact-alignment helpers и legacy APIs сохраняют
+ограничение gap≤64 и текущие сигнатуры/поведение. Для gap≤64 сохранить
+результаты и diagnostics S2-36o; при большем gap новые result APIs не должны
+возвращать `None` только из-за величины gap.
+
+Для нормализованных 64-bit significands `a` (старший по показателю), `b`
+(младший), gap `d≥65`, и показателя старшего операнда `e` exact tail bridge
+представляет результат как `(Q+T)·2^(E-63)`. После преобразования вычитания
+в сумму эффективных слагаемых (rhs со знаком-копией, инвертированным для
+subtraction), совпадающие знаки дают `Q=a`, `T=b/2^d`, `E=e`. Разные знаки
+означают вычитание меньшей по модулю части из большей: при `a>2^63`
+`Q=a-1`, `T=1-b/2^d`, `E=e`; при `a=2^63` `Q=u64::MAX`,
+`T=1-b/2^(d-1)`, `E=e-1`. При `a,b∈[2^63,2^64)` и `d≥65` в первом случае
+`0<b/2^d<1/2`, во втором `1/2<1-b/2^d<1`, а в третьем
+`0<b/2^(d-1)<1`; следовательно, во всех трёх случаях `0<T<1` и `Q`
+нормализовано. Большой gap не допускает cancellation.
+
+Хвост проходит через приватный round-equivalent bridge, специализированный для
+destination precision 24 и 53; bridge передаёт `r=1,d=4` как representative,
+а не как точный quotient. Для нормального и subnormal округления число
+отбрасываемых bits положительно, а целочисленная часть `Q` задаёт сторону
+любого midpoint; ненулевой хвост отличает точный tie от значения выше/ниже.
+Ветка subnormal `k=64` использует только факт ненулевого остатка, `k>64` —
+только знак и ненулевость. Поэтому representative сохраняет итоговое значение
+и diagnostics S2-36m для binary32/64, включая `tiny_after_precision_rounding`,
+`overflow` и final `inexact`. Это не exact quotient и не общий bridge для
+precision 64 или произвольного формата. Gap≤64 остаётся на точном `u128`
+alignment path; low-level exact helpers и legacy APIs не изменены. Новые
+dependencies, CPU flags, exception delivery, DAZ/FTZ, NaN/infinity и
+instruction integration не добавлены.
+
+Literal-векторы покрывают все rounding modes, оба знака и операции, gap
+64/65/2097, significands `2^63`/`2^63+1`, midpoint sides, subnormal/min-normal
+и overflow boundaries, результатные bits и diagnostics. Проверки автора
+прошли: `cargo test -p od-isa --offline binary_float::tests` (48/48),
+`cargo test -p od-isa --offline x87::tests` (47/47),
+`cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `git diff --check`, и
+`graphify update .`. Graphify сообщил существующее предупреждение парсера для
+`include/open_desktop/host_abi.h` и обновил граф успешно. Независимое code
+review Sol medium и documentation review завершились без замечаний. ISSUE-024
+решена для полного result path; low-level/legacy APIs сохраняют explicit
+gap≤64 contract. Полная приёмка S2-36 и hardware acceptance остаются открытыми.
+Форматный контекст binary32/64 — Intel SDM Rev.093, Vol.1
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)); формулы
+`Q/T/E` являются проектной математикой, а не заявлением об instruction
+semantics или hardware integration.
+
+См. [отчёт S2-36p](../reports/STAGE_2_REPORT.md#s2-36p--finite-binary-addition-and-subtraction-result-apis-across-the-full-finite-exponent-range)
+и закрытую [ISSUE-024](../KNOWN_ISSUES.md#issue-024--s2-36-result-apis-lacked-large-gap-rounding).
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 
