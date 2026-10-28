@@ -823,6 +823,7 @@ fn step_tracked_with_stop(
         Operation::MovapdRegister { .. }
             | Operation::MovapdReverseRegister { .. }
             | Operation::MovupdRegister { .. }
+            | Operation::MovupdReverseRegister { .. }
     ) && state.sse.is_none()
     {
         return Ok(StepOutcome::Unsupported {
@@ -1282,6 +1283,7 @@ fn step_tracked_with_stop(
         | Operation::MovapdRegister { .. }
         | Operation::MovapdReverseRegister { .. }
         | Operation::MovupdRegister { .. }
+        | Operation::MovupdReverseRegister { .. }
         | Operation::XorpsRegister { .. }
         | Operation::PxorRegister { .. }
         | Operation::PaddbRegister { .. }
@@ -2680,6 +2682,10 @@ fn step_tracked_with_stop(
             sse.xmm[usize::from(destination)] = sse.xmm[usize::from(source)];
         }
         Operation::MovupdRegister {
+            destination,
+            source,
+        }
+        | Operation::MovupdReverseRegister {
             destination,
             source,
         } => {
@@ -73166,6 +73172,78 @@ mod tests {
             if !has_sse {
                 assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x10 }));
             }
+        }
+    }
+
+    #[test]
+    fn movupd_reverse_register_copies_raw_xmm_matrix_and_refuses_atomically() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let modrm = 0xc0 | ((source & 7) << 3) | (destination & 7);
+                let mut code = vec![0x66];
+                if destination >= 8 || source >= 8 {
+                    code.push(0x40 | ((source >> 3) << 2) | (destination >> 3));
+                }
+                code.extend([0x0f, 0x11, modrm]);
+                let mut memory = Memory::new(&code);
+                let mut state = LongModeState::default();
+                state.rip = 0;
+                state.rflags = 0x0cd7;
+                state.x87 = Some(X87State::fixture_seed());
+                let xmm = std::array::from_fn(|register| {
+                    std::array::from_fn(|byte| (register * 16 + byte) as u8)
+                });
+                state.sse = Some(SseState { xmm, mxcsr: 0x1f80 });
+                let before = state.clone();
+                let result = run(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(code.len() as u64),
+                        context: AccessContext::default(),
+                    },
+                    || false,
+                );
+                assert_eq!(result.exit, RunExit::StopAddress);
+                assert_eq!(result.instructions_executed, 1);
+                let mut expected = before.clone();
+                expected.rip = code.len() as u64;
+                expected.sse.as_mut().unwrap().xmm[destination as usize] =
+                    before.sse.as_ref().unwrap().xmm[source as usize];
+                assert_eq!(state, expected);
+                assert!(
+                    memory.accesses.is_empty(),
+                    "MOVUPD must not access data memory"
+                );
+            }
+        }
+        for (budget, stop, code, expect_unsupported) in [
+            (0, None, vec![0x66, 0x0f, 0x11, 0xc1], false),
+            (1, Some(0), vec![0x66, 0x0f, 0x11, 0xc1], false),
+            (1, None, vec![0x66, 0x0f, 0x11], false),
+            (1, None, vec![0x66, 0x0f, 0x11, 0xc1], true),
+        ] {
+            let mut memory = Memory::new(&code);
+            let mut state = LongModeState::default();
+            state.x87 = Some(X87State::fixture_seed());
+            let before = state.clone();
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip: stop,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(state, before);
+            assert_eq!(result.instructions_executed, 0);
+            if expect_unsupported {
+                assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x11 }));
+            }
+            assert!(memory.accesses.is_empty());
         }
     }
 

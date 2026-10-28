@@ -491,6 +491,11 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only mandatory-66 `0F 11 /r` reverse-direction MOVUPD XMM form.
+    MovupdReverseRegister {
+        destination: u8,
+        source: u8,
+    },
     /// Local-only legacy `0F 57 /r` register form, bitwise XOR of raw XMM bits.
     XorpsRegister {
         destination: u8,
@@ -1812,6 +1817,19 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     && prefixes.rex.unwrap() & 0x0a == 0));
         let movupd_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x10
+            && prefixes.operand_override
+            && !duplicate
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && !prefixes.address_override
+            && (prefix_bytes[..prefix_count] == [0x66]
+                || (prefix_count == 2
+                    && prefix_bytes[0] == 0x66
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0));
+        let movupd_reverse_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x11
             && prefixes.operand_override
             && !duplicate
             && prefixes.group1.is_none()
@@ -3175,13 +3193,23 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
             }
             (OpcodeMap::Escape0f, 0x10 | 0x11) => {
-                if !movupd_register && !movups_register && !movups_memory && !movups_memory_store {
+                if !movupd_register
+                    && !movupd_reverse_register
+                    && !movups_register
+                    && !movups_memory
+                    && !movups_memory_store
+                {
                     return Err(self.unsupported(opcode));
                 }
                 let modrm = self.byte()?;
-                if (modrm >> 6 == 3 && !movupd_register && !movups_register)
+                if (modrm >> 6 == 3
+                    && !movupd_register
+                    && !movupd_reverse_register
+                    && !movups_register)
                     || (modrm >> 6 != 3
-                        && (movupd_register || (!movups_memory && !movups_memory_store)))
+                        && (movupd_register
+                            || movupd_reverse_register
+                            || (!movups_memory && !movups_memory_store)))
                 {
                     return Err(self.unsupported(opcode));
                 }
@@ -3220,6 +3248,11 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     Operation::MovupdRegister {
                         destination: reg,
                         source: rm,
+                    }
+                } else if movupd_reverse_register {
+                    Operation::MovupdReverseRegister {
+                        destination: rm,
+                        source: reg,
                     }
                 } else if opcode.byte == 0x10 {
                     Operation::MovupsRegister {
@@ -7076,7 +7109,6 @@ mod tests {
         }
         for bytes in [
             &[0xf2, 0x0f, 0x10, 0x01][..],             // memory form
-            &[0x66, 0x0f, 0x10, 0xc1][..],             // MOVUPD
             &[0xf2, 0x48, 0x0f, 0x10, 0xc1][..],       // REX.W
             &[0xf2, 0x42, 0x0f, 0x10, 0xc1][..],       // REX.X
             &[0xf2, 0x40, 0x41, 0x0f, 0x10, 0xc1][..], // duplicate REX
@@ -7140,8 +7172,7 @@ mod tests {
             }
         }
         for bytes in [
-            &[0xf3, 0x0f, 0x10, 0x01][..], // memory operand
-            &[0x66, 0x0f, 0x10, 0xc1][..],
+            &[0xf3, 0x0f, 0x10, 0x01][..],       // memory operand
             &[0x40, 0xf3, 0x0f, 0x10, 0xc1][..], // REX before mandatory prefix
             &[0xf3, 0x48, 0x0f, 0x10, 0xc1][..],
             &[0xf3, 0x42, 0x0f, 0x10, 0xc1][..],
@@ -7202,15 +7233,14 @@ mod tests {
             }
         }
         for bytes in [
-            &[0xf3, 0x0f, 0x11, 0x01][..], // memory operand
-            &[0x66, 0x0f, 0x11, 0xc1][..],
-            &[0x67, 0xf3, 0x0f, 0x11, 0xc1][..], // address-size override
-            &[0x2e, 0xf3, 0x0f, 0x11, 0xc1][..], // segment override
-            &[0xf0, 0xf3, 0x0f, 0x11, 0xc1][..], // LOCK
-            &[0xf3, 0xf3, 0x0f, 0x11, 0xc1][..], // duplicate mandatory prefix
-            &[0x40, 0xf3, 0x0f, 0x11, 0xc1][..], // REX before F3
-            &[0xf3, 0x48, 0x0f, 0x11, 0xc1][..], // REX.W
-            &[0xf3, 0x42, 0x0f, 0x11, 0xc1][..], // REX.X
+            &[0xf3, 0x0f, 0x11, 0x01][..],             // memory operand
+            &[0x67, 0xf3, 0x0f, 0x11, 0xc1][..],       // address-size override
+            &[0x2e, 0xf3, 0x0f, 0x11, 0xc1][..],       // segment override
+            &[0xf0, 0xf3, 0x0f, 0x11, 0xc1][..],       // LOCK
+            &[0xf3, 0xf3, 0x0f, 0x11, 0xc1][..],       // duplicate mandatory prefix
+            &[0x40, 0xf3, 0x0f, 0x11, 0xc1][..],       // REX before F3
+            &[0xf3, 0x48, 0x0f, 0x11, 0xc1][..],       // REX.W
+            &[0xf3, 0x42, 0x0f, 0x11, 0xc1][..],       // REX.X
             &[0xf3, 0x40, 0x41, 0x0f, 0x11, 0xc1][..], // duplicate REX
             &[0xf3, 0x0f, 0x11][..],
             &[0xf3, 0x45, 0x0f, 0x11][..],             // missing ModR/M
@@ -7259,7 +7289,6 @@ mod tests {
         }
         for bytes in [
             &[0xf2, 0x0f, 0x11, 0x01][..],             // memory destination
-            &[0x66, 0x0f, 0x11, 0xc1][..],             // MOVUPD
             &[0x67, 0xf2, 0x0f, 0x11, 0xc1][..],       // address-size override
             &[0x2e, 0xf2, 0x0f, 0x11, 0xc1][..],       // segment override
             &[0xf0, 0xf2, 0x0f, 0x11, 0xc1][..],       // LOCK
@@ -7528,6 +7557,26 @@ mod tests {
                     ));
                     continue;
                 }
+                if prefix == 0x66 && opcode == 0x10 {
+                    assert_eq!(
+                        memory.decode().unwrap().operation,
+                        Operation::MovupdRegister {
+                            destination: 0,
+                            source: 1,
+                        }
+                    );
+                    continue;
+                }
+                if prefix == 0x66 && opcode == 0x11 {
+                    assert_eq!(
+                        memory.decode().unwrap().operation,
+                        Operation::MovupdReverseRegister {
+                            destination: 1,
+                            source: 0,
+                        }
+                    );
+                    continue;
+                }
                 assert!(
                     matches!(memory.decode(), Err(DecodeError::Unsupported { .. })),
                     "{bytes:02x?}"
@@ -7664,8 +7713,7 @@ mod tests {
         );
 
         for bytes in [
-            &[0x0f, 0x29, 0x00][..],       // memory
-            &[0x66, 0x0f, 0x29, 0xc1][..], // MOVAPD
+            &[0x0f, 0x29, 0x00][..], // memory
             &[0x66, 0x66, 0x0f, 0x29, 0xc1][..],
             &[0xf2, 0x0f, 0x29, 0xc1][..],
             &[0xf3, 0x0f, 0x29, 0xc1][..],
@@ -7738,8 +7786,6 @@ mod tests {
             }
         );
         for bytes in [
-            &[0x66, 0x0f, 0x29, 0xc1][..],
-            &[0x66, 0x0f, 0x10, 0xc1][..],
             &[0x66, 0x0f, 0x28, 0x00][..],
             &[0x66, 0xf2, 0x0f, 0x28, 0xc1][..],
             &[0x66, 0xf3, 0x0f, 0x28, 0xc1][..],
@@ -7801,7 +7847,6 @@ mod tests {
         ));
         for bytes in [
             &[0x66, 0x0f, 0x10, 0x00][..],
-            &[0x66, 0x0f, 0x11, 0xc1][..],
             &[0x66, 0x66, 0x0f, 0x10, 0xc1][..],
             &[0x40, 0x66, 0x0f, 0x10, 0xc1][..],
             &[0x66, 0x64, 0x0f, 0x10, 0xc1][..],
@@ -7815,6 +7860,27 @@ mod tests {
         ] {
             let mut memory = Memory::new(bytes);
             assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn movupd_reverse_register_requires_mandatory_66_and_decodes_all_xmm_pairs() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((source >> 3) << 2) | (destination >> 3);
+                let modrm = 0xc0 | ((source & 7) << 3) | (destination & 7);
+                let bytes = [0x66, rex, 0x0f, 0x11, modrm];
+                let mut memory = Memory::new(&bytes);
+                let instruction = memory.decode().unwrap();
+                assert_eq!(instruction.length, 5);
+                assert_eq!(
+                    instruction.operation,
+                    Operation::MovupdReverseRegister {
+                        destination,
+                        source
+                    }
+                );
+            }
         }
     }
 
@@ -7873,7 +7939,6 @@ mod tests {
         }
         for bytes in [
             &[0x66, 0x0f, 0x29, 0x00][..], // memory
-            &[0x66, 0x0f, 0x11, 0xc1][..], // MOVUPD
             &[0x66, 0xf2, 0x0f, 0x29, 0xc1][..],
             &[0x66, 0xf3, 0x0f, 0x29, 0xc1][..],
             &[0x66, 0x66, 0x0f, 0x29, 0xc1][..],

@@ -2106,3 +2106,15 @@ atomicity, plus zero-budget and stop-at-current-RIP preservation. The
 handwritten XMM8/XMM9 fixture is rejected by native admission;
 JIT support is not enabled and physical execution is not claimed. SSE2 and
 CR0/CR4 preconditions are assumptions only.
+
+# S2-34.16 — reverse-direction register MOVUPD
+
+Локальный профиль `s2-long-movupd-reg-reverse-v1` ограничен long-mode
+encoding `66 [one optional REX.R/B] 0F 11 /r` при ModR/M.mod=3. ModR/M.reg
+и REX.R выбирают источник, ModR/M.r/m и REX.B — назначение. Интерпретатор
+копирует все 128 raw bits без обращения к data memory; SSE2 и CR0/CR4
+предусловия предполагаются, отсутствие local SSE state отказывает без commit.
+Decoder/executor покрывают пары XMM0–XMM15 и строгие отрицательные формы.
+Добавлен handwritten literal high-XMM fixture; interpreter pass и JIT/native
+deny проверки включены. Это локальное подтверждение формы, без alignment,
+physical execution или parent S2-34 acceptance claim.

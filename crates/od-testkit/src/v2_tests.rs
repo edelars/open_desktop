@@ -1335,6 +1335,54 @@ fn movupd_register_profile_requires_mandatory_66_and_rejects_neighbors() {
 }
 
 #[test]
+fn movupd_reverse_register_profile_requires_mandatory_66_and_rejects_neighbors() {
+    let loaded = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_16_movupd_reverse_register.case.json"
+    ))
+    .unwrap();
+    let fixture = loaded.fixture;
+    assert_eq!(fixture.profile, Profile::LongMovupdReverseRegV1);
+    for bytes in [
+        "0f11c1",
+        "660f10c1",
+        "660f29c1",
+        "0f10c1",
+        "f20f11c1",
+        "f30f11c1",
+        "660f1100",
+        "66660f11c1",
+        "40660f11c1",
+        "26660f11c1",
+        "2e660f11c1",
+        "36660f11c1",
+        "3e660f11c1",
+        "64660f11c1",
+        "65660f11c1",
+        "67660f11c1",
+        "f0660f11c1",
+        "66480f11c1",
+        "66420f11c1",
+        "c5f911c1",
+        "62f1fd0811c1",
+        "66450f11",
+    ] {
+        let mut rejected = fixture.clone();
+        let code = rejected
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        rejected.stop_rip = Some(HexU64(
+            rejected.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(rejected.validate().is_err(), "{bytes}");
+    }
+}
+
+#[test]
 fn movapd_reverse_register_profile_requires_mandatory_66_and_rejects_neighbors() {
     let fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_34_14_movapd_reverse_register.case.json"
