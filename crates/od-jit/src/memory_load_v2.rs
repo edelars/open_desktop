@@ -630,6 +630,12 @@ pub fn compile_ir_memory_store_block_v2(
             bytes.len() as u8,
             0x89,
         )
+        || crate::block::exact_qword_address32_rbp_base_no_index_sib_disp_memory_bytes(
+            code,
+            entry_rip,
+            bytes.len() as u8,
+            0x89,
+        )
         || crate::block::exact_qword_sib_displacement_memory_bytes(
             code,
             entry_rip,
@@ -922,6 +928,12 @@ fn checked_load_metadata_v2(
                 0x8b,
             )
             || crate::block::exact_qword_address32_sib_memory_bytes(
+                code,
+                entry_rip,
+                decoded.length,
+                0x8b,
+            )
+            || crate::block::exact_qword_address32_rbp_base_no_index_sib_disp_memory_bytes(
                 code,
                 entry_rip,
                 decoded.length,
@@ -8748,9 +8760,7 @@ mod tests {
             for source in [
                 vec![0x48, opcode, 0x44, 0x65, 0],
                 vec![0x48, opcode, 0x84, 0x65, 0, 0, 0, 0],
-                vec![0x67, 0x48, opcode, 0x44, 0x25, 0], // addr32 RBP/no-index is not admitted
-                vec![0x67, 0x48, opcode, 0x84, 0x25, 0, 0, 0, 0], // addr32 RBP/no-index is not admitted
-                vec![0x67, 0x48, opcode, 0x74, 0x25, 0],          // unsupported RSI data register
+                vec![0x67, 0x48, opcode, 0x74, 0x25, 0], // unsupported RSI data register
             ] {
                 let code = CodeView::new(ENTRY, &source).unwrap();
                 let (direct, shared_ir) = if opcode == 0x8b {
@@ -8778,6 +8788,167 @@ mod tests {
                         compile_ir_memory_store_block_v2(partial, ENTRY).map(|_| ())
                     };
                     assert!(result.is_err(), "partial source admitted: {complete:02x?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn address32_rbp_base_no_index_sib_disp_has_exact_qword_profile() {
+        let cases = [
+            (1_u8, [i8::MIN as i32, -1, 0, i8::MAX as i32].as_slice()),
+            (2, [i32::MIN, -1, 0, 1, i32::MAX].as_slice()),
+        ];
+        const ENTRY: u64 = 0x5f00;
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data in 0_u8..=5 {
+                for &(mode, displacements) in &cases {
+                    for &displacement in displacements {
+                        let mut source =
+                            vec![0x67, 0x48, opcode, (mode << 6) | (data << 3) | 4, 0x25];
+                        if mode == 1 {
+                            source.push(displacement as u8);
+                        } else {
+                            source.extend_from_slice(&displacement.to_le_bytes());
+                        }
+                        let code = CodeView::new(ENTRY, &source).unwrap();
+                        let (direct_site, ir_site) = if opcode == 0x8b {
+                            (
+                                compile_memory_load_block_v2(code, ENTRY)
+                                    .unwrap_or_else(|error| {
+                                        panic!("direct load rejected {source:02x?}: {error:?}")
+                                    })
+                                    .site()
+                                    .clone(),
+                                compile_ir_memory_load_block_v2(code, ENTRY)
+                                    .unwrap_or_else(|error| {
+                                        panic!("IR load rejected {source:02x?}: {error:?}")
+                                    })
+                                    .site()
+                                    .clone(),
+                            )
+                        } else {
+                            (
+                                compile_memory_store_block_v2(code, ENTRY)
+                                    .unwrap_or_else(|error| {
+                                        panic!("direct store rejected {source:02x?}: {error:?}")
+                                    })
+                                    .site()
+                                    .clone(),
+                                compile_ir_memory_store_block_v2(code, ENTRY)
+                                    .unwrap_or_else(|error| {
+                                        panic!("IR store rejected {source:02x?}: {error:?}")
+                                    })
+                                    .site()
+                                    .clone(),
+                            )
+                        };
+                        assert_eq!(direct_site, ir_site, "{source:02x?}");
+                        for site in [&direct_site, &ir_site] {
+                            assert!(site.has_supported_profile(), "{source:02x?}");
+                            assert!(site.matches_source_bytes(&source, operation));
+                            assert_eq!(site.next_rip(), ENTRY + source.len() as u64);
+                            assert_eq!(site.operand.address_size, od_isa::OperandSize::Dword);
+                            assert_eq!(site.operand.size, od_isa::OperandSize::Qword);
+                            assert_eq!(site.operand.base, AddressBase::Register(Register::Rbp));
+                            assert_eq!(site.operand.index, None);
+                            assert_eq!(site.operand.scale, 1);
+                            assert_eq!(site.operand.displacement, i64::from(displacement));
+                            let state = od_isa::LongModeState {
+                                gpr: [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0xdead_beef_8000_0001,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                ],
+                                ..Default::default()
+                            };
+                            let expected =
+                                u64::from((state.gpr[5] as u32).wrapping_add(displacement as u32));
+                            assert_eq!(
+                                site.operand.access_address_48(&state, site.next_rip()),
+                                Ok(expected)
+                            );
+                        }
+
+                        let mut direct_bytes =
+                            vec![0x67, 0x48, opcode, (mode << 6) | (data << 3) | 5];
+                        if mode == 1 {
+                            direct_bytes.push(displacement as u8);
+                        } else {
+                            direct_bytes.extend_from_slice(&displacement.to_le_bytes());
+                        }
+                        let direct_code = CodeView::new(ENTRY, &direct_bytes).unwrap();
+                        let direct_operand = if opcode == 0x8b {
+                            compile_ir_memory_load_block_v2(direct_code, ENTRY)
+                                .unwrap()
+                                .site()
+                                .operand
+                        } else {
+                            compile_ir_memory_store_block_v2(direct_code, ENTRY)
+                                .unwrap()
+                                .site()
+                                .operand
+                        };
+                        assert_eq!(direct_operand, ir_site.operand);
+                        assert_eq!(direct_bytes.len() + 1, source.len());
+                    }
+                }
+            }
+        }
+
+        for opcode in [0x8b, 0x89] {
+            for source in [
+                vec![0x67, 0x48, opcode, 0x74, 0x25, 0], // unsupported RSI data register
+                vec![0x67, 0x48, opcode, 0x44, 0x65, 0], // non-unit scale/no index
+                vec![0x48, 0x67, opcode, 0x44, 0x25, 0], // reordered prefix
+            ] {
+                let code = CodeView::new(ENTRY, &source).unwrap();
+                let direct = if opcode == 0x8b {
+                    compile_memory_load_block_v2(code, ENTRY).map(|_| ())
+                } else {
+                    compile_memory_store_block_v2(code, ENTRY).map(|_| ())
+                };
+                let shared_ir = if opcode == 0x8b {
+                    compile_ir_memory_load_block_v2(code, ENTRY).map(|_| ())
+                } else {
+                    compile_ir_memory_store_block_v2(code, ENTRY).map(|_| ())
+                };
+                assert!(direct.is_err(), "direct admitted neighbor {source:02x?}");
+                assert!(shared_ir.is_err(), "IR admitted neighbor {source:02x?}");
+            }
+            for (mode, length) in [(1_u8, 6_usize), (2, 9)] {
+                let mut complete = vec![0x67, 0x48, opcode, (mode << 6) | 4, 0x25];
+                complete.resize(length, 0);
+                for visible in 1..length {
+                    let partial = CodeView::new(ENTRY, &complete[..visible]).unwrap();
+                    let direct = if opcode == 0x8b {
+                        compile_memory_load_block_v2(partial, ENTRY).map(|_| ())
+                    } else {
+                        compile_memory_store_block_v2(partial, ENTRY).map(|_| ())
+                    };
+                    let shared_ir = if opcode == 0x8b {
+                        compile_ir_memory_load_block_v2(partial, ENTRY).map(|_| ())
+                    } else {
+                        compile_ir_memory_store_block_v2(partial, ENTRY).map(|_| ())
+                    };
+                    assert!(direct.is_err(), "direct admitted partial {complete:02x?}");
+                    assert!(shared_ir.is_err(), "IR admitted partial {complete:02x?}");
                 }
             }
         }
