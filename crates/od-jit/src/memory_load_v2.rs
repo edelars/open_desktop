@@ -1987,8 +1987,8 @@ mod tests {
             vec![0x48, 0x8b, 0x04, 0x2e],             // RBP index with RSI base
             vec![0x48, 0x8b, 0x04, 0x2f],             // RBP index with RDI base
             vec![0x48, 0x8b, 0x04, 0x2d],             // no-base SIB with RBP index
-            vec![0x48, 0x8b, 0x44, 0x0e, 0],          // RSI base with disp8
-            vec![0x48, 0x8b, 0x84, 0x0e, 0, 0, 0, 0], // RSI base with disp32
+            vec![0x48, 0x8b, 0x44, 0x2e, 0],          // RSI base with RBP index
+            vec![0x48, 0x8b, 0x84, 0x2e, 0, 0, 0, 0], // RSI base with RBP index
             vec![0x67, 0x48, 0x8b, 0x04, 0x0e],       // address32 neighbor
             vec![0x48, 0x8b, 0x04],                   // missing SIB byte
         ] {
@@ -2017,6 +2017,108 @@ mod tests {
             assert!(compile_memory_store_block_v2(code, 0x5b00).is_err());
             assert!(compile_ir_memory_load_block_v2(code, 0x5b00).is_err());
             assert!(compile_ir_memory_store_block_v2(code, 0x5b00).is_err());
+        }
+    }
+
+    #[test]
+    fn rsi_rdi_indexed_sib_signed_displacements_have_exact_qword_profile() {
+        let displacement_cases = [
+            (1_u8, i8::MIN as i32),
+            (1, -1),
+            (1, 0),
+            (1, i8::MAX as i32),
+            (2, i32::MIN),
+            (2, -1),
+            (2, 0),
+            (2, 1),
+            (2, i32::MAX),
+        ];
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for base in [6_u8, 7] {
+                for index in 0..4_u8 {
+                    for scale_shift in 0..4_u8 {
+                        for data in 0..6_u8 {
+                            for (mode, displacement) in displacement_cases {
+                                let mut source = vec![
+                                    0x48,
+                                    opcode,
+                                    (mode << 6) | (data << 3) | 4,
+                                    (scale_shift << 6) | (index << 3) | base,
+                                ];
+                                match mode {
+                                    1 => source.push(displacement as i8 as u8),
+                                    2 => source.extend_from_slice(&displacement.to_le_bytes()),
+                                    _ => unreachable!(),
+                                }
+                                let length = source.len() as u8;
+                                let code = CodeView::new(0x5b00, &source).unwrap();
+                                let mut decoder_memory = CodeMemory::full_code(code);
+                                let decoded = long_decode::decode(
+                                    &mut decoder_memory,
+                                    0x5b00,
+                                    AccessContext::default(),
+                                )
+                                .unwrap();
+                                match operation {
+                                    MemorySiteOperationV2::Load => {
+                                        assert!(crate::block::is_checked_qword_load_form(decoded));
+                                        compile_memory_load_block_v2(code, 0x5b00).unwrap();
+                                        crate::block_compile::compile_checked_load_block_v2(
+                                            code, 0x5b00,
+                                        )
+                                        .unwrap_or_else(|error| panic!("checked: {error:?}"));
+                                        let ir = compile_ir_memory_load_block_v2(code, 0x5b00)
+                                            .unwrap_or_else(|error| {
+                                                panic!("{source:02x?}: {error:?}")
+                                            });
+                                        assert!(ir.site().matches_source_bytes(&source, operation));
+                                    }
+                                    MemorySiteOperationV2::Store => {
+                                        assert!(crate::block::is_checked_qword_store_form(decoded));
+                                        compile_memory_store_block_v2(code, 0x5b00).unwrap();
+                                        let ir =
+                                            compile_ir_memory_store_block_v2(code, 0x5b00).unwrap();
+                                        assert!(ir.site().matches_source_bytes(&source, operation));
+                                    }
+                                }
+                                assert!(crate::block::exact_direct_qword_memory_bytes(
+                                    code, 0x5b00, length, opcode
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for source in [
+            vec![0x48, 0x8b, 0x44, 0x2e, 0],          // RSI base with RBP index
+            vec![0x48, 0x8b, 0x84, 0x2e, 0, 0, 0, 0], // RSI base with RBP index
+            vec![0x48, 0x8b, 0x44, 0x35, 0],          // RBP base with out-of-profile RSI index
+            vec![0x48, 0x8b, 0x84, 0x35, 0, 0, 0, 0], // RBP base with out-of-profile RSI index
+            vec![0x48, 0x8b, 0x44, 0x0e],             // truncated disp8
+            vec![0x48, 0x8b, 0x84, 0x0e, 0, 0, 0],    // truncated disp32
+        ] {
+            let code = CodeView::new(0x5b00, &source).unwrap();
+            assert!(
+                compile_memory_load_block_v2(code, 0x5b00).is_err(),
+                "{source:02x?}"
+            );
+            assert!(
+                compile_memory_store_block_v2(code, 0x5b00).is_err(),
+                "{source:02x?}"
+            );
+            assert!(
+                compile_ir_memory_load_block_v2(code, 0x5b00).is_err(),
+                "{source:02x?}"
+            );
+            assert!(
+                compile_ir_memory_store_block_v2(code, 0x5b00).is_err(),
+                "{source:02x?}"
+            );
         }
     }
 

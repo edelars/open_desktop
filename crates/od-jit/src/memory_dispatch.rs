@@ -865,6 +865,54 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
             if modrm >> 6 == 1
                 && modrm & 7 == 4
                 && (modrm >> 3) & 7 <= 5
+                && matches!(sib & 7, 6 | 7)
+                && (sib >> 3) & 7 < 4 =>
+        {
+            compile_ir_memory_load_block_v2(view, rip)
+                .map(BoundedMemoryArtifact::Load)
+                .map(CompileAt::Block)
+                .unwrap_or(CompileAt::Unsupported)
+        }
+        [0x48, 0x89, modrm, sib, _disp]
+            if modrm >> 6 == 1
+                && modrm & 7 == 4
+                && (modrm >> 3) & 7 <= 5
+                && matches!(sib & 7, 6 | 7)
+                && (sib >> 3) & 7 < 4 =>
+        {
+            compile_ir_memory_store_block_v2(view, rip)
+                .map(BoundedMemoryArtifact::Store)
+                .map(CompileAt::Block)
+                .unwrap_or(CompileAt::Unsupported)
+        }
+        [0x48, 0x8b, modrm, sib, _, _, _, _disp]
+            if modrm >> 6 == 2
+                && modrm & 7 == 4
+                && (modrm >> 3) & 7 <= 5
+                && matches!(sib & 7, 6 | 7)
+                && (sib >> 3) & 7 < 4 =>
+        {
+            compile_ir_memory_load_block_v2(view, rip)
+                .map(BoundedMemoryArtifact::Load)
+                .map(CompileAt::Block)
+                .unwrap_or(CompileAt::Unsupported)
+        }
+        [0x48, 0x89, modrm, sib, _, _, _, _disp]
+            if modrm >> 6 == 2
+                && modrm & 7 == 4
+                && (modrm >> 3) & 7 <= 5
+                && matches!(sib & 7, 6 | 7)
+                && (sib >> 3) & 7 < 4 =>
+        {
+            compile_ir_memory_store_block_v2(view, rip)
+                .map(BoundedMemoryArtifact::Store)
+                .map(CompileAt::Block)
+                .unwrap_or(CompileAt::Unsupported)
+        }
+        [0x48, 0x8b, modrm, sib, _disp]
+            if modrm >> 6 == 1
+                && modrm & 7 == 4
+                && (modrm >> 3) & 7 <= 5
                 && (sib & 7 < 4 || sib & 7 == 4 || sib & 7 == 5)
                 && (sib >> 3) & 7 == 5 =>
         {

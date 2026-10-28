@@ -787,7 +787,7 @@ fn is_checked_memory_address(
                     || matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
                     || matches!(instruction_length, 5 | 8)
                         && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp))
-                    || instruction_length == 4
+                    || matches!(instruction_length, 4 | 5 | 8)
                         && matches!(
                             operand.base,
                             AddressBase::Register(od_isa::Register::Rsi | od_isa::Register::Rdi)
@@ -803,10 +803,15 @@ fn is_checked_memory_address(
             || operand.index.is_some()
                 && matches!(instruction_length, 5 | 8)
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp))
-            || instruction_length == 4
+            || matches!(instruction_length, 4 | 5 | 8)
                 && operand.index.is_some_and(|index| (index as u8) < 4)
                 && matches!(operand.scale, 1 | 2 | 4 | 8)
-                && operand.displacement == 0
+                && match instruction_length {
+                    4 => operand.displacement == 0,
+                    5 => i8::try_from(operand.displacement).is_ok(),
+                    8 => i32::try_from(operand.displacement).is_ok(),
+                    _ => false,
+                }
                 && matches!(
                     operand.base,
                     AddressBase::Register(od_isa::Register::Rsi | od_isa::Register::Rdi)
@@ -1253,7 +1258,7 @@ fn is_indexed_qword_sib_data_operand(operand: MemoryOperand, instruction_length:
     };
     (matches!(operand.base, AddressBase::Register(register) if (register as u8) < 4)
         || matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
-        || instruction_length == 4
+        || matches!(instruction_length, 4 | 5 | 8)
             && matches!(
                 operand.base,
                 AddressBase::Register(od_isa::Register::Rsi | od_isa::Register::Rdi)
@@ -1467,6 +1472,30 @@ mod tests {
                 assert!(verify(&forged).is_ok());
             }
         }
+    }
+
+    #[test]
+    fn checked_load_addr32_rsi_indexed_sib_is_not_admitted_by_address64_profile() {
+        let mut forged = checked_load_program();
+        forged.guest_instructions[0].next_rip = 0x2005;
+        forged.code_end = 0x2005;
+        if let Operation::CheckedLoad { operand, .. } = &mut forged.operations[1] {
+            *operand = MemoryOperand {
+                base: AddressBase::Register(od_isa::Register::Rsi),
+                index: Some(od_isa::Register::Rax),
+                scale: 1,
+                displacement: 0,
+                address_size: od_isa::OperandSize::Dword,
+                size: od_isa::OperandSize::Qword,
+            };
+        }
+        if let Operation::Exit { target_rip, .. } = forged.operations.last_mut().unwrap() {
+            *target_rip = 0x2005;
+        }
+        assert!(matches!(
+            verify(&forged),
+            Err(VerifyError::InvalidCheckedLoadDescriptor { .. })
+        ));
     }
 
     fn checked_store_program() -> Program {
