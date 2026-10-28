@@ -5,6 +5,44 @@
 ISSUE-011/012 остаются открытыми; наличие нового состояния или local instruction
 slice не означает завершение этапа.
 
+## S2-26c — локальный `GsBaseV1` MSR
+
+**Статус:** в процессе. Локальные проверки автора внесены ниже. Независимое
+Sol medium code review завершено чисто после уточнения одного замечания P3;
+оставшихся замечаний нет. Mac/SSH проверки
+отложены до общего финального substage.
+
+Заявленная узкая политика `MsrProfile::GsBaseV1` охватывает только
+`IA32_GS_BASE` (`0xC0000101`) через bare Long64 `RDMSR` (`0F 32`) и `WRMSR`
+(`0F 30`) с выбором индекса из `ECX[31:0]`. CPL0 может прочитать `gs_base` в
+`EDX:EAX` или записать в него 48-bit canonical значение; неканоническая запись
+и обе формы при CPL1–3 дают `#GP(0)`. Успешная запись меняет только `gs_base`;
+GS selector/cache и FS state не меняются. Профиль изолирован от
+`SysenterProbeV1`; неизвестные индексы и legacy APIs fail closed. CPUID
+`DiagnosticV1` feature masks остаются нулевыми.
+
+План проверок охватывает обе инструкции при CPL0 и CPL1–3, valid/unknown index,
+low32 ECX selection и high RCX bits, canonical/noncanonical write с проверкой
+отсутствия частичной мутации при fault, неизменность GS selector/cache и FS
+state, изоляцию от `SysenterProbeV1`, отказ legacy API и отсутствие regression
+CPUID нулевых feature masks; decoder cases включают prefix и fetch truncation.
+Это не заявление о Linux boot/fixup, guest `#GP` delivery или JIT/native/
+physical execution. Mac mini проверки отложены до общего финального substage.
+
+**Локальные проверки автора:** `cargo check -p od-isa --all-targets --offline`;
+`cargo test -p od-isa --offline gs_base_` (7 passed);
+`cargo test -p od-isa --offline sysenter_msr_` (3 passed);
+`cargo test -p od-isa --offline cpuid_` (3 passed);
+`cargo test -p od-isa --offline diagnostic_v1_returns` (1 passed);
+`cargo fmt --all -- --check`; `git diff --check`; `graphify update .`.
+Эти local checks не заменяют независимое code review или отложенные Mac/SSH
+проверки.
+
+Архитектурный источник: Intel SDM Vol. 3A §§2.8.7.1 и 4.5.3,
+[официальный PDF Intel](https://cdrdv2-public.intel.com/835754/253668-sdm-vol-3a.pdf).
+Контракт и матрица проверок: [CPU contract](../specs/CPU_CONTRACT.md#локальный-профиль-gsbasev1-s2-26c),
+[план](../plans/STAGE_2.md#s2-26c--локальный-gsbasev1-msr).
+
 ## S2-26b — локальный `SysenterProbeV1` MSR probe
 
 Реализованы immutable `MsrProfile::SysenterProbeV1` и явные
@@ -62,7 +100,7 @@ budget, одну retirement, отсутствие data callbacks и отказ l
 zero-budget и stop-at-current-RIP тестовая память отдельно считает code fetch
 и подтверждает, что ни одного fetch callback не было.
 
-**Независимое review:** ожидается отдельно. JIT/native/physical execution не
+**Независимое review:** завершено. JIT/native/physical execution не
 допущены и не запускались; Mac mini regressions объединены в финальный
 substage. `DiagnosticV1` не является x86-64-v1 CPU или Ubuntu/Linux boot
 contract. S2-26 и этап 2 остаются открытыми.

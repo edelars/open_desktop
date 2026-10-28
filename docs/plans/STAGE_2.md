@@ -1981,7 +1981,7 @@ JIT/native/physical admission остаётся закрытым.
 [CPU contract](../specs/CPU_CONTRACT.md#локальный-cpuid-профиль-diagnosticv1-s2-26a).
 Ограниченный interpreter slice реализован, local evidence внесён в
 [отчёт этапа](../reports/STAGE_2_REPORT.md#s2-26a--локальный-diagnosticv1-cpuid).
-Независимое code review ещё требуется. Не считать этот slice закрытием S2-26
+Независимое code review завершено. Не считать этот slice закрытием S2-26
 или подтверждением требований ОС.
 
 #### S2-26b — локальный `SysenterProbeV1` MSR probe
@@ -2007,6 +2007,33 @@ boot. JIT/native/physical admission закрыт; Mac mini checks остаютс
 [отчёте этапа](../reports/STAGE_2_REPORT.md#s2-26b--локальный-sysenterprobev1-msr-probe);
 повторное независимое Sol medium review завершено без замечаний. Substage не
 закрывает S2-26 или требования ОС.
+
+#### S2-26c — локальный `GsBaseV1` MSR
+
+Ограничить отдельный immutable `MsrProfile::GsBaseV1` одной MSR:
+`IA32_GS_BASE` (`0xC0000101`). Профиль исполняет только bare Long64 `0F 32`
+(`RDMSR`) и `0F 30` (`WRMSR`) с индексом `ECX[31:0]`; он изолирован от
+`SysenterProbeV1`. При CPL0 RDMSR успешно читает 64-bit `gs_base` в `EDX:EAX`.
+WRMSR успешно записывает `EDX:EAX` в `gs_base` только для canonical48 значения;
+noncanonical48 write даёт `#GP(0)` без изменения state. При CPL1–3 обе формы
+дают `#GP(0)`. Успешная запись меняет только `gs_base`; GS selector/cache и
+FS state не меняются. Legacy API и неизвестные MSR indices остаются fail closed.
+CPUID `DiagnosticV1` feature masks остаются нулевыми.
+
+Проверочная матрица S2-26c должна покрыть RDMSR и WRMSR для valid index и CPL0;
+все CPL1–3 для обеих форм; canonical48 и noncanonical48 WRMSR (включая
+атомарное отсутствие изменения при fault); exact `ECX[31:0]` selection и
+игнорирование верхних битов RCX; отказ неизвестного индекса и legacy API;
+изоляцию от `SysenterProbeV1`; отсутствие изменений FS/GS selector и hidden
+cache state; отсутствие regression в zero-feature `DiagnosticV1`; prefix and
+truncated-fetch behavior для точных кодировок. Не включать Linux boot/fixup,
+guest `#GP` delivery или JIT/native/physical claims. Evidence и independent
+review пока pending; Mac mini checks остаются в общем финальном substage.
+
+Нормативный контракт, включая прямую ссылку на Intel SDM Vol. 3A, находится в
+[CPU contract](../specs/CPU_CONTRACT.md#локальный-профиль-gsbasev1-s2-26c).
+После реализации внести только фактические результаты в
+[отчёт этапа](../reports/STAGE_2_REPORT.md#s2-26c--локальный-gsbasev1-msr).
 
 ### S2-27. Descriptors, события и системные переходы
 

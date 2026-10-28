@@ -10,7 +10,7 @@
 |---|---|
 | Идентичность архитектуры | Гостевая архитектура — x86-64; host ISA — ARM64. Представление гостевого состояния не зависит от host-регистров и ABI. |
 | Состояние CPU | В полном `CpuState` потребуются RIP, GPR, RFLAGS, режим, сегменты, control registers, MSR, векторное состояние и pending events. Поля появляются вместе с поддерживаемыми режимами; прототип ниже использует только подмножество. |
-| CPUID и MSR | Ограниченный локальный `DiagnosticV1` для CPUID описан ниже; это не CPU profile для Ubuntu и не x86-64-v1. Отдельный reference target Ubuntu `od-x86-64-v1-neutral-v0.1` зафиксирован ниже. Узкие срезы CPUID и selected SYSENTER probe описаны далее; общая реализация MSR и покрытие точных startup/runtime путей остаются незавершёнными. Нельзя объявлять возможности, не реализованные и не проверенные. |
+| CPUID и MSR | Ограниченный локальный `DiagnosticV1` для CPUID описан ниже; это не CPU profile для Ubuntu и не x86-64-v1. Отдельный reference target Ubuntu `od-x86-64-v1-neutral-v0.1` зафиксирован ниже. Узкие срезы CPUID, SYSENTER probe и GS-base MSR описаны далее; общая реализация MSR и покрытие точных startup/runtime путей остаются незавершёнными. Нельзя объявлять возможности, не реализованные и не проверенные. |
 | Режимы и привилегии | Для Windows boot потребуется определить long mode, CPL, сегменты, control registers, paging и переходы firmware/loader. Точный минимум ожидает анализа выбранного ISO и S0-05. |
 | Адреса | В целевой модели различать guest virtual/linear, guest physical и host address. Для Ubuntu reference target CPUID задаёт 48-bit linear и 36-bit physical widths; canonicality и выбор соответствующего CPU fault принадлежат CPU-контракту. Перевод linear → physical и MMIO остаются machine/MMU boundaries. |
 | Исключения/events | Каждый реализованный instruction form должен задавать decode faults, architectural faults и состояние на exit. Отображение в guest exception нельзя заменять host panic или общим перехватом. Приоритеты для незаданного набора инструкций не утверждаются этим черновиком. |
@@ -45,7 +45,7 @@ Input ECX/subleaf игнорируется. Для leaf 1 EBX содержит �
 формы возвращают `Unsupported`. JIT/native/physical execution для профиля не
 допускается. Это нормативная граница S2-26a. Реализация и local interpreter
 checks внесены в [отчёт этапа 2](../reports/STAGE_2_REPORT.md#s2-26a--локальный-diagnosticv1-cpuid);
-независимое review требуется отдельно. Это не подтверждает physical execution
+независимое review завершено. Это не подтверждает physical execution
 или требования загрузки ОС.
 
 ### Локальный probe-профиль `SysenterProbeV1` (S2-26b)
@@ -70,8 +70,39 @@ Linux exception-table fixup, не доставляет guest `#GP`, не мен�
 не вызывает data-memory callbacks и не retire-ит инструкцию. Он не подтверждает
 наблюдение Linux safe-write fixup или загрузку Linux. JIT/native/physical
 admission остаётся закрытым; Mac mini проверки отложены до общего финального
-substage. Реализация и evidence S2-26b будут зафиксированы в
+substage. Реализация, local evidence и повторное независимое review S2-26b
+зафиксированы в
 [отчёте этапа 2](../reports/STAGE_2_REPORT.md#s2-26b--локальный-sysenterprobev1-msr-probe).
+
+### Локальный профиль `GsBaseV1` (S2-26c)
+
+`MsrProfile::GsBaseV1` — отдельный immutable profile для одного MSR
+`IA32_GS_BASE` (`0xC0000101`). Он не расширяет `SysenterProbeV1`: каждый
+профиль принимает только собственный набор индексов, а legacy API и неизвестные
+индексы остаются fail closed. Допускаются только bare Long64 `0F 32`
+(`RDMSR`) и `0F 30` (`WRMSR`) с индексом `ECX[31:0] == 0xC0000101`.
+
+При CPL0 `RDMSR` возвращает текущее 64-битное значение `gs_base` в `EDX:EAX`;
+`WRMSR` берёт значение из `EDX:EAX` и успешно записывает его только если оно
+48-bit canonical (биты 63:48 совпадают с битом 47). Неканоническая запись даёт
+`#GP(0)` и не меняет состояние. При CPL1–3 обе операции дают `#GP(0)` без
+изменения состояния. Успешный `WRMSR` меняет только `gs_base`; он не изменяет
+GS selector или hidden GS descriptor cache и не изменяет `fs_base`, FS selector
+или hidden FS descriptor cache. `RDMSR` не изменяет эти поля и `gs_base`.
+Другие индексы не получают MSR semantics от этого профиля.
+
+Выбор canonical48 — фиксированная политика этого профиля, согласованная с
+выбранным 48-bit linear target; это не обобщение на процессоры с другой
+шириной linear address. В Intel SDM Vol. 3A §§2.8.7.1 и 4.5.3 описаны 32-bit
+индекс RDMSR/WRMSR в 64-bit mode и проверки canonicality при WRMSR к
+IA32_GS_BASE: [официальный Intel SDM Vol. 3A](https://cdrdv2-public.intel.com/835754/253668-sdm-vol-3a.pdf).
+
+Профиль не меняет нулевые feature masks CPUID `DiagnosticV1` и не заявляет
+Linux boot, Linux fixup или guest `#GP` delivery. JIT/native/physical admission
+не допускается. S2-26c evidence пока pending; Mac mini проверки отложены до
+общего финального substage. Матрица реализации и проверки указана в
+[плане](../plans/STAGE_2.md#s2-26c--локальный-gsbasev1-msr) и будет отражена в
+[отчёте этапа 2](../reports/STAGE_2_REPORT.md#s2-26c--локальный-gsbasev1-msr).
 
 ### Ubuntu Generic `amd64`: `od-x86-64-v1-neutral-v0.1`
 
