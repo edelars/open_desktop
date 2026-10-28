@@ -5304,3 +5304,7 @@ profile assumes SSE2 preconditions and denies JIT and native execution.
 ### S2-34.13 local register MOVAPD diagnostic profile
 
 `s2_34_13_movapd_register.case.json` is a handwritten schema-v2 XMM8/XMM9 fixture for `s2-long-movapd-reg-v1`, encoded as `66 45 0F 28 C1` (`MOVAPD XMM8, XMM9`). Mandatory `66` distinguishes this SSE2 form from MOVAPS. Its literal XMM9 source is `909192939495969798999a9b9c9d9e9f`; the interpreter copies those 16 raw bytes to XMM8. The local profile assumes SSE2 preconditions and is denied by JIT and native admission. It covers only the register form and makes no aligned-memory behavior claim or parent S2-34 acceptance claim.
+
+### S2-34.14 local reverse-direction register MOVAPD diagnostic profile
+
+`s2_34_14_movapd_reverse_register.case.json` is a handwritten schema-v2 XMM8-to-XMM9 fixture for `s2-long-movapd-reg-reverse-v1`, encoded as `66 45 0F 29 C1`. Mandatory `66` selects SSE2 MOVAPD; ModR/M.reg plus REX.R selects source XMM8, while ModR/M.r/m plus REX.B selects destination XMM9. The literal source bytes are `808182838485868788898a8b8c8d8e8f`; the interpreter copies all 16 bytes to XMM9 and preserves XMM8 and the remaining state. JIT and native admission deny this profile. The register form makes no aligned-memory behavior claim and does not represent parent S2-34 acceptance.

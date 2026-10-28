@@ -1269,6 +1269,68 @@ fn movapd_register_profile_requires_mandatory_66_and_rejects_neighbors() {
 }
 
 #[test]
+fn movapd_reverse_register_profile_requires_mandatory_66_and_rejects_neighbors() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_14_movapd_reverse_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongMovapdReverseRegV1);
+    for bytes in ["66450f29c1", "660f29c1"] {
+        let mut accepted = fixture.clone();
+        let code = accepted
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        accepted.stop_rip = Some(HexU64(
+            accepted.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(accepted.validate().is_ok(), "{bytes}");
+    }
+    for bytes in [
+        "0f29c1",         // missing mandatory 66 (MOVAPS is a separate profile)
+        "0f10c1",         // MOVUPS load form
+        "0f11c1",         // MOVUPS store form
+        "660f28c1",       // forward MOVAPD
+        "660f10c1",       // MOVUPD register load form
+        "660f11c1",       // MOVUPD
+        "660f1000",       // MOVUPD memory load
+        "660f2900",       // MOVAPD memory
+        "f2660f29c1",     // F2
+        "f3660f29c1",     // F3
+        "66660f29c1",     // duplicate 66
+        "40660f29c1",     // misplaced 66 after REX
+        "64660f29c1",     // segment
+        "67660f29c1",     // address override
+        "f0660f29c1",     // LOCK
+        "66480f29c1",     // REX.W
+        "66420f29c1",     // REX.X
+        "6640400f29c1",   // duplicate REX
+        "66c5f929c1",     // VEX
+        "6662f1fd0829c1", // EVEX
+        "66450f29",       // truncated
+    ] {
+        let mut rejected = fixture.clone();
+        let code = rejected
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        rejected.stop_rip = Some(HexU64(
+            rejected.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(rejected.validate().is_err(), "{bytes}");
+    }
+}
+
+#[test]
 fn movups_memory_load_profile_is_separate_and_exactly_bounds_rax_source() {
     let fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_34_4_movups_memory_load_rax.case.json"

@@ -13375,3 +13375,46 @@ passed).
 See the [plan](../plans/STAGE_2.md#s2-3413--local-only-register-movapd),
 [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-movapd-profile--s2-3413),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3413-local-register-movapd-diagnostic-profile).
+
+## S2-34.14 — reverse-direction register MOVAPD profile
+
+Implemented the distinct `s2-long-movapd-reg-reverse-v1` diagnostic profile for
+long-mode `66 [one optional REX.R/B] 0F 29 /r`, ModR/M.mod=3. Mandatory `66`
+selects SSE2 MOVAPD; ModR/M.reg plus REX.R is the source and ModR/M.r/m plus
+REX.B is the destination. The interpreter copies raw 128-bit values, supports
+aliasing, preserves the source and all other state, and performs no data-memory
+callbacks. Missing local SSE state refuses atomically. SSE2 and CR0.EM=0,
+CR0.TS=0, CR4.OSFXSR=1 remain assumptions.
+
+The exact profile rejects missing, duplicate or misplaced `66`, forward
+`66 0F 28`, MOVUPS/MOVUPD forms, memory, F2/F3 and other legacy prefixes,
+REX.W/X, VEX/EVEX and truncation. A handwritten literal high-XMM fixture
+encodes `66 45 0F 29 C1`, copying XMM8 bytes `80..8f` to XMM9. Interpreter
+execution passes; the JIT fixture path denies the profile. The Linux x86-runner
+native-denial test is compile-checked but was not executed on this Darwin host.
+This register-only slice does not imply aligned-memory behavior, physical x86
+execution, or parent S2-34/S2-35 acceptance.
+
+Focused checks passed (2026-10-28): `cargo test -p od-isa movapd_reverse
+--offline` (2 tests: 16×16 decode and execution matrices, strict encoding
+negatives, raw patterns, full-state preservation and atomic refusals);
+`cargo test -p od-testkit movapd_reverse --offline` (2 tests: literal fixture
+execution and schema/profile negatives); and `cargo test -p od-runner --test
+fixture_v2 movapd_reverse --offline` (1 test: interpreter result and JIT
+denial). The native early-refusal list now covers all four local MOVAPS/MOVAPD
+register profiles, and the native test asserts unavailable snapshots. `cargo fmt
+--all -- --check`, `git diff --check`,
+`cargo check --workspace --all-targets --offline`, Linux
+`cargo check -p od-x86-runner --all-targets --target
+x86_64-unknown-linux-gnu --offline`, and `graphify update .` passed. The Linux
+x86-runner compile includes the native-denial test, but that Linux-only test was
+not executed on this Darwin host. `python3 tools/check_layout.py` remains
+blocked by existing checkout issues: unmapped root `.git` and two unavailable
+archived Stage 1/Stage 2 oracle manifests referenced from the report. The
+combined Mac mini/SSH acceptance substage remains deferred. Independent
+Sol-medium review completed with no remaining findings after the native
+early-refusal correction.
+
+See the [plan](../plans/STAGE_2.md#s2-3414--local-only-reverse-direction-register-movapd),
+[CPU contract](../specs/CPU_CONTRACT.md#local-register-only-reverse-direction-movapd-profile--s2-3414),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3414-local-reverse-direction-register-movapd-diagnostic-profile).

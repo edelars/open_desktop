@@ -1401,6 +1401,10 @@ fn execute(loaded: &LoadedFixture) -> RunResult {
             | v2::Profile::LongX87StateV1
             | v2::Profile::LongX87SseStateV1
             | v2::Profile::LongMovupsRegV1
+            | v2::Profile::LongMovapsRegV1
+            | v2::Profile::LongMovapsReverseRegV1
+            | v2::Profile::LongMovapdRegV1
+            | v2::Profile::LongMovapdReverseRegV1
             | v2::Profile::LongXorpsRegV1
             | v2::Profile::LongPxorRegV1
             | v2::Profile::LongPandRegV1
@@ -4239,7 +4243,7 @@ mod tests {
     }
 
     #[test]
-    fn movups_register_profile_is_explicitly_native_unsupported() {
+    fn movaps_movapd_register_profiles_are_explicitly_native_unsupported() {
         for bytes in [
             &include_bytes!(
                 "../../../tests/fixtures/x86/stage2/s2_34_11_movaps_register.case.json"
@@ -4249,6 +4253,9 @@ mod tests {
             )[..],
             &include_bytes!(
                 "../../../tests/fixtures/x86/stage2/s2_34_13_movapd_register.case.json"
+            )[..],
+            &include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_34_14_movapd_reverse_register.case.json"
             )[..],
             &include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_2_movups_register.case.json")
                 [..],
@@ -4302,6 +4309,7 @@ mod tests {
             let loaded = Fixture::from_json(bytes).unwrap();
             let result = execute(&loaded);
             assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+            assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
         }
     }
 
