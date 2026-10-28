@@ -12881,11 +12881,14 @@ Independent review and focused checks passed; parent S2-34, S2-35 and
 `S2-35 → S2-34` remain open.
 
 The bounded group-by-group coverage and acceptance snapshot, including the
-reconciled S2-35 task checklist, is recorded in
+reconciled S2-35 task checklist and reviewed immediate shift profiles through
+S2-35.43, is recorded in
 [S2-35.36 of the Stage 2 plan](../plans/STAGE_2.md#s2-3536--bounded-coverage-and-acceptance-inventory).
 It records local interpreter/profile evidence separately from native admission
-and physical execution; the latter remains `not_run` for SSE/SSE2 under the
-current integer-only oracle harness.
+and physical execution; native admission remains denied for these local
+profiles, Linux-only denial guards are compile-only on Darwin, and physical
+SSE/SSE2 execution remains `not_run` under the current integer-only oracle
+harness. Parent S2-34, S2-35 and global `S2-35 → S2-34` acceptance remain open.
 
 ## S2-35.37 — local PSLLW immediate register profile
 
