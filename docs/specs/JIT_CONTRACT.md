@@ -2245,6 +2245,12 @@ Admit only singleton `48 8B/89 /r sib disp8|disp32` with ModRM `mod=01/10,r/m=10
 
 The descriptor/host matrices compare load and store for all six data registers, four scales, and signed disp8/disp32 edges. Direct V2/shared IR/interpreter runs compare CPU/RAM/callback/retirement against independent `RBP + RBP*scale + signed displacement` calculations; `data=base=index=RBP` uses the pre-instruction value. Fault tests check #SS at noncanonical qword start/end without callbacks, a low-base #GP control, qword-end AddressOverflow, and backend failure classification/callback identity without commit. Successful store+STOP commits exactly once. Bounded dispatch splits after the singleton and continues from actual RIP through NOP and the established pair without repeating the read; unsupported neighbors and partial windows stop before effects. See [S3-20bc report](../reports/STAGE_3_S3-20bc_2026-10-27.md). Production owner/MMU integration, Stage 2/ISA, Mini, physical x86, and performance remain open.
 
+#### S3-20bd: address32 SIB access with RSP base and RBP index
+
+Admit only singleton `67 48 8B/89 /r sib [disp8|disp32]`: ModRM `mod=00/01/10,r/m=100`, SIB base RSP/index RBP, scale 1/2/4/8, data RAX..RBP, Dword address and Qword transfer, exact lengths 5/6/9. This adds a single explicit base/index pair; it does not broaden the generic index whitelist. Existing no-index, RSP-base/low-index, low-base/RBP-index and address64 RSP/RBP-index forms remain distinct. No RBP base, no-base, other index, extra prefix, pair, or V3 form is included. The decoded `MemoryOperand` and `access_address_48` remain the only EA semantics.
+
+The descriptor matrix checks both directions, all data registers/scales and signed displacement edges. Host parity compares direct V2/shared IR/interpreter CPU/RAM/callback/retirement against `(low32(RSP) + low32(RBP)*scale + signed displacement) mod 2^32`, including aliases and ignored high halves. It confirms a contiguous qword callback across 4 GiB, distinct targets for immutable source artifacts differing in the ninth byte, backend no-commit, store+STOP, and dispatcher continuation through NOP and the existing pair without replay. Partial windows 1..8 and invalid SIB neighbors stop before effects. See [S3-20bd report](../reports/STAGE_3_S3-20bd_2026-10-27.md). Production owner/MMU integration, Stage 2/ISA, Mini, physical x86, and performance remain open.
+
 ## 6. Host и этапная приёмка
 
 Основной ARM64 host для первого JIT-среза — Apple Silicon M3 Max/macOS,

@@ -683,6 +683,12 @@ pub fn compile_ir_memory_store_block_v2(
             entry_rip,
             bytes.len() as u8,
             0x89,
+        )
+        || crate::block::exact_qword_address32_rsp_base_rbp_index_sib_memory_bytes(
+            code,
+            entry_rip,
+            bytes.len() as u8,
+            0x89,
         ))
         || !site.has_supported_profile()
         || !site.matches_source_bytes(bytes, MemorySiteOperationV2::Store)
@@ -868,6 +874,12 @@ fn checked_load_metadata_v2(
                 0x8b,
             )
             || crate::block::exact_qword_address32_rbp_index_sib_memory_bytes(
+                code,
+                entry_rip,
+                decoded.length,
+                0x8b,
+            )
+            || crate::block::exact_qword_address32_rsp_base_rbp_index_sib_memory_bytes(
                 code,
                 entry_rip,
                 decoded.length,
@@ -1789,7 +1801,7 @@ mod tests {
                 vec![0x48, opcode, 0x24, 0x25], // no base
                 vec![0x48, opcode, 0x04, 0x64], // scale > 1, no index
                 vec![0x48, opcode, 0x04, 0x25], // no base
-                vec![0x67, 0x48, opcode, 0x04, 0x2c],
+                vec![0x67, 0x48, opcode, 0x04, 0x34],
                 vec![0x48, 0x67, opcode, 0x04, 0x24],
                 vec![0x48, opcode, 0x04, 0x24, 0x90], // trailing byte
             ] {
@@ -1981,7 +1993,7 @@ mod tests {
                 vec![0x48, opcode, 0x34, 0x24],             // other data register
                 vec![0x48, opcode, 0x7c, 0x24, 0],          // unsupported data register
                 vec![0x48, opcode, 0xbc, 0x24, 0, 0, 0, 0], // unsupported disp32 data register
-                vec![0x67, 0x48, opcode, 0x2c, 0x2c],
+                vec![0x67, 0x48, opcode, 0x2c, 0x34],
                 vec![0x48, 0x67, opcode, 0x2c, 0x24],
             ] {
                 let code = CodeView::new(0x5718, &invalid).unwrap();
@@ -2039,7 +2051,7 @@ mod tests {
                 vec![0x48, opcode, 0x24, 0x64],       // non-unit scale with no index
                 vec![0x48, opcode, 0x24, 0x2d],       // no-base RBP index
                 vec![0x48, opcode, 0x24, 0x24, 0],    // displacement/trailing byte
-                vec![0x67, 0x48, opcode, 0x24, 0x2c], // indexed RBP
+                vec![0x67, 0x48, opcode, 0x24, 0x34], // unsupported RSI index
                 vec![0x48, 0x67, opcode, 0x24, 0x24], // reordered prefix
             ] {
                 let code = CodeView::new(0x5718, &bytes).unwrap();
@@ -2308,7 +2320,7 @@ mod tests {
                 vec![0x48, opcode, 0x64, 0x25, 0],       // SIB no-base
                 vec![0x48, opcode, 0x64, 0x64, 0],       // scale without index
                 vec![0x48, opcode, 0x64, 0x35, 0],       // RBP base with RSI index
-                vec![0x67, 0x48, opcode, 0x64, 0x2c, 0], // indexed RBP
+                vec![0x67, 0x48, opcode, 0x64, 0x34, 0], // unsupported RSI index
                 vec![0x48, 0x67, opcode, 0x64, 0x24, 0], // reordered prefix
                 vec![0x48, opcode, 0x64, 0x24, 0, 0x90], // trailing instruction
             ] {
@@ -2476,7 +2488,7 @@ mod tests {
                 vec![0x48, opcode, 0x44, 0x24],    // truncated before disp8
                 vec![0x48, opcode, 0x44, 0x35, 0], // RBP base with RSI index
                 vec![0x48, opcode, 0x44, 0x64, 0], // scale != 1, no index
-                vec![0x67, 0x48, opcode, 0x44, 0x2c, 0],
+                vec![0x67, 0x48, opcode, 0x44, 0x34, 0],
                 vec![0x48, 0x67, opcode, 0x44, 0x24, 0],
                 vec![0x48, opcode, 0x44, 0x24, 0, 0x90], // trailing byte
             ] {
@@ -2579,7 +2591,7 @@ mod tests {
                 vec![0x48, opcode, 0x84, 0x25, 0, 0, 0, 0], // no base
                 vec![0x48, opcode, 0x84, 0x35, 0, 0, 0, 0], // RBP base with RSI index
                 vec![0x48, opcode, 0x84, 0x24, 0, 0, 0, 0, 0x90], // trailing byte
-                vec![0x67, 0x48, opcode, 0x84, 0x2c, 0, 0, 0, 0], // addr32 indexed RBP
+                vec![0x67, 0x48, opcode, 0x84, 0x34, 0, 0, 0, 0], // unsupported RSI index
                 vec![0x48, 0x67, opcode, 0x84, 0x24, 0, 0, 0, 0], // reordered prefix
                 vec![0x64, 0x48, opcode, 0x84, 0x24, 0, 0, 0, 0], // segment prefix
                 vec![0xf3, 0x48, opcode, 0x84, 0x24, 0, 0, 0, 0], // group-1 prefix
@@ -3605,7 +3617,7 @@ mod tests {
                 vec![0x67, 0x48, opcode, 0xc0, 0x18], // register mode
                 vec![0x67, 0x48, opcode, 0x04, 0x20], // no-index
                 vec![0x67, 0x48, opcode, 0x04, 0x25], // no-base and no-index specials
-                vec![0x67, 0x48, opcode, 0x04, 0x2c], // RSP base with RBP index
+                vec![0x67, 0x48, opcode, 0x04, 0x34], // unsupported RSI index
                 vec![0x67, 0x48, opcode, 0x04, 0x1d], // no-base SIB with missing disp32
                 vec![0x67, 0x4c, opcode, 0x04, 0x18], // extended data
                 vec![0x48, 0x67, opcode, 0x04, 0x18], // wrong prefix order
@@ -3697,7 +3709,7 @@ mod tests {
                 vec![0x67, 0x48, opcode, 0x04, 0x18, 0], // wrong ModRM mode
                 vec![0x67, 0x48, opcode, 0x44, 0x20, 0], // no index
                 vec![0x67, 0x48, opcode, 0x44, 0x25, 0], // no base special
-                vec![0x67, 0x48, opcode, 0x44, 0x2c, 0], // RSP base with RBP index
+                vec![0x67, 0x48, opcode, 0x44, 0x34, 0], // unsupported RSI index
                 vec![0x67, 0x48, opcode, 0x44, 0x25, 0], // no index
                 vec![0x67, 0x4c, opcode, 0x44, 0x18, 0], // extended data
                 vec![0x48, 0x67, opcode, 0x44, 0x18, 0], // wrong prefix order
@@ -3798,7 +3810,7 @@ mod tests {
                 vec![0x67, 0x48, opcode, 0x44, 0x18, 0, 0, 0, 0], // disp8 shape
                 vec![0x67, 0x48, opcode, 0x84, 0x20, 0, 0, 0, 0], // no index
                 vec![0x67, 0x48, opcode, 0x84, 0x25, 0, 0, 0, 0], // no base
-                vec![0x67, 0x48, opcode, 0x84, 0x2c, 0, 0, 0, 0], // RSP base with RBP index
+                vec![0x67, 0x48, opcode, 0x84, 0x34, 0, 0, 0, 0], // unsupported RSI index
                 vec![0x67, 0x48, opcode, 0x84, 0x25, 0, 0, 0, 0], // no index
                 vec![0x67, 0x4c, opcode, 0x84, 0x18, 0, 0, 0, 0], // extended data
                 vec![0x48, 0x67, opcode, 0x84, 0x18, 0, 0, 0, 0], // wrong prefix order
@@ -4070,8 +4082,8 @@ mod tests {
                 vec![0x67, 0x48, opcode, 0x24, 0x20],             // no-index SIB
                 vec![0x67, 0x48, opcode, 0x24, 0x25],             // no-base SIB
                 vec![0x67, 0x48, opcode, 0x24, 0x23],             // no-index SIB with RSP data
-                vec![0x67, 0x48, opcode, 0x24, 0x2c],             // indexed RBP
-                vec![0x67, 0x48, opcode, 0x24, 0x2c],             // RBP index
+                vec![0x67, 0x48, opcode, 0x24, 0x34],             // unsupported RSI index
+                vec![0x67, 0x48, opcode, 0x24, 0x34],             // unsupported RSI index
                 vec![0x67, 0x48, opcode, 0x24, 0x25],             // RBP base special form
                 vec![0x67, 0x48, opcode, 0x64, 0x2d, 0],          // RBP index
                 vec![0x67, 0x48, opcode, 0xa4, 0x2d, 0, 0, 0, 0], // disp32 with RBP index
@@ -4088,6 +4100,105 @@ mod tests {
                 assert!(
                     result.is_err(),
                     "invalid indexed stack-data form admitted {bytes:02x?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn address32_sib_rsp_base_rbp_index_has_exact_qword_profile() {
+        let displacement_cases = [
+            (0_u8, 0_i32),
+            (1, i8::MIN as i32),
+            (1, -1),
+            (1, 0),
+            (1, i8::MAX as i32),
+            (2, i32::MIN),
+            (2, -1),
+            (2, 0),
+            (2, 1),
+            (2, i32::MAX),
+        ];
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data_register in 0_u8..6 {
+                for scale_shift in 0..4_u8 {
+                    for &(mode, displacement) in &displacement_cases {
+                        let mut bytes = vec![
+                            0x67,
+                            0x48,
+                            opcode,
+                            (mode << 6) | (data_register << 3) | 4,
+                            (scale_shift << 6) | (5 << 3) | 4,
+                        ];
+                        match mode {
+                            0 => {}
+                            1 => bytes.push(displacement as u8),
+                            _ => bytes.extend_from_slice(&displacement.to_le_bytes()),
+                        }
+                        let code = CodeView::new(0x29a0, &bytes).unwrap();
+                        let site = match operation {
+                            MemorySiteOperationV2::Load => {
+                                let ir = compile_ir_memory_load_block_v2(code, 0x29a0).unwrap();
+                                let direct = compile_memory_load_block_v2(code, 0x29a0).unwrap();
+                                assert_eq!(ir.site(), direct.site());
+                                ir.site().clone()
+                            }
+                            MemorySiteOperationV2::Store => {
+                                let ir = compile_ir_memory_store_block_v2(code, 0x29a0).unwrap();
+                                let direct = compile_memory_store_block_v2(code, 0x29a0).unwrap();
+                                assert_eq!(ir.site(), direct.site());
+                                ir.site().clone()
+                            }
+                        };
+                        assert!(site.has_supported_profile());
+                        assert!(site.matches_source_bytes(&bytes, operation));
+                        assert_eq!(site.operand.address_size, od_isa::OperandSize::Dword);
+                        assert_eq!(site.operand.size, od_isa::OperandSize::Qword);
+                        assert_eq!(
+                            site.operand.base,
+                            od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+                        );
+                        assert_eq!(site.operand.index, Some(od_isa::Register::Rbp));
+                        assert_eq!(site.operand.scale, 1 << scale_shift);
+                        assert_eq!(site.operand.displacement, i64::from(displacement));
+                        assert_eq!(site.next_rip(), 0x29a0 + bytes.len() as u64);
+                        let mut state = od_isa::LongModeState::default();
+                        state.gpr[4] = 0xface_cafe_ffff_fffdu64;
+                        state.gpr[5] = 0xdead_beef_8000_0003u64;
+                        let expected = (state.gpr[4] as u32)
+                            .wrapping_add((state.gpr[5] as u32).wrapping_mul(1_u32 << scale_shift))
+                            .wrapping_add(displacement as u32)
+                            as u64;
+                        assert_eq!(
+                            site.operand.access_address_48(&state, site.next_rip()),
+                            Ok(expected)
+                        );
+                    }
+                }
+            }
+        }
+        for opcode in [0x8b, 0x89] {
+            for bytes in [
+                vec![0x67, 0x48, opcode, 0x34, 0x2c], // unsupported data register
+                vec![0x67, 0x48, opcode, 0x04, 0x34], // index RSI
+                vec![0x67, 0x48, opcode, 0x44, 0x6d, 0], // RBP base
+                vec![0x67, 0x48, opcode, 0x04, 0x2d], // no base
+                vec![0x67, 0x48, opcode, 0x64, 0x6c], // missing disp8
+                vec![0x67, 0x48, opcode, 0xa4, 0xac, 0, 0, 0], // missing disp32
+                vec![0x48, 0x67, opcode, 0x04, 0x2c], // reordered prefix
+            ] {
+                let code = CodeView::new(0x29a0, &bytes).unwrap();
+                let result = if opcode == 0x8b {
+                    compile_ir_memory_load_block_v2(code, 0x29a0).map(|_| ())
+                } else {
+                    compile_ir_memory_store_block_v2(code, 0x29a0).map(|_| ())
+                };
+                assert!(
+                    result.is_err(),
+                    "invalid RSP-base/RBP-index profile admitted {bytes:02x?}"
                 );
             }
         }
@@ -4225,10 +4336,10 @@ mod tests {
         for opcode in [0x8b, 0x89] {
             for (modrm, sib, suffix) in [
                 (0x04, 0x2d, vec![]),  // mod00 SIB base=RBP means no base and needs disp32
-                (0x04, 0x2c, vec![]),  // RSP base with RBP index
+                (0x04, 0x34, vec![]),  // unsupported RSI index
                 (0x6c, 0x2d, vec![0]), // RBP base with RBP index
                 (0xac, 0x2d, vec![0, 0, 0, 0]), // RBP base with RBP index
-                (0x44, 0x2c, vec![0]), // RSP base with RBP index
+                (0x44, 0x34, vec![0]), // unsupported RSI index
                 (0x84, 0x2d, vec![0, 0, 0, 0]), // no-base disp32
             ] {
                 let mut bytes = vec![0x67, 0x48, opcode, modrm, sib];
@@ -4595,7 +4706,7 @@ mod tests {
             for source in [
                 vec![0x67, 0x48, opcode, 0x04],                // truncated before SIB
                 vec![0x67, 0x48, opcode, 0x04, 0x25],          // no-base SIB
-                vec![0x67, 0x48, opcode, 0x04, 0x2c],          // indexed RBP
+                vec![0x67, 0x48, opcode, 0x04, 0x34],          // unsupported RSI index
                 vec![0x67, 0x48, opcode, 0x04, 0x64],          // scale 2, no index
                 vec![0x67, 0x48, opcode, 0x44, 0x25, 0],       // no-base with disp8
                 vec![0x67, 0x48, opcode, 0x84, 0x24, 0, 0, 0], // short disp32
@@ -4697,7 +4808,7 @@ mod tests {
             }
             for invalid in [
                 vec![0x67, 0x48, opcode, 0x05, 0, 0, 0, 0], // mod00/rm101 absolute/RIP-like
-                vec![0x67, 0x48, opcode, 0x4c, 0x2c, 0],    // indexed RBP SIB
+                vec![0x67, 0x48, opcode, 0x4c, 0x34, 0],    // unsupported RSI index
                 vec![0x64, 0x67, 0x48, opcode, 0x4d, 0],    // extra segment prefix
                 vec![0x48, 0x67, opcode, 0x4d, 0],          // reordered prefixes
                 vec![0x67, 0x48, opcode, 0x75, 0],          // unsupported data register
@@ -5303,7 +5414,7 @@ mod tests {
                 vec![0x48, opcode, 0x04, 0x2d],       // no-base plus RBP index
                 vec![0x48, opcode, 0x04, 0x30],       // RSI index is outside the whitelist
                 vec![0x48, opcode, 0x04, 0x38],       // RDI index is outside the whitelist
-                vec![0x67, 0x48, opcode, 0x04, 0x2c], // unsupported address32 stack base
+                vec![0x67, 0x48, opcode, 0x04, 0x34], // unsupported RSI index
                 vec![0x48, 0x67, opcode, 0x04, 0x28], // reordered prefix
             ] {
                 let code = CodeView::new(0x2d00, &source).unwrap();
@@ -5425,7 +5536,7 @@ mod tests {
                 vec![0x48, opcode, 0x44, 0x30, 0], // RSI index
                 vec![0x48, opcode, 0x44, 0x38, 0], // RDI index
                 vec![0x48, opcode, 0x04, 0x2d, 0, 0, 0, 0], // no-base RBP index
-                vec![0x67, 0x48, opcode, 0x44, 0x2c, 0], // address32 stack base
+                vec![0x67, 0x48, opcode, 0x44, 0x34, 0], // unsupported RSI index
                 vec![0x48, 0x67, opcode, 0x44, 0x28, 0], // reordered prefix
             ] {
                 let code = CodeView::new(0x2d20, &source).unwrap();
@@ -5538,7 +5649,7 @@ mod tests {
             for bytes in [
                 vec![0x48, opcode, 0x04, 0x2d],       // no-base, RBP index
                 vec![0x48, opcode, 0x44, 0x35, 0],    // RBP base with RSI index
-                vec![0x67, 0x48, opcode, 0x04, 0x2c], // address32, RBP base
+                vec![0x67, 0x48, opcode, 0x04, 0x34], // unsupported RSI index
                 vec![0x66, 0x48, opcode, 0x04, 0x2c], // extra prefix
             ] {
                 let code = CodeView::new(0x2df0, &bytes).unwrap();

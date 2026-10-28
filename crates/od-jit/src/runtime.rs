@@ -116,6 +116,24 @@ fn is_address32_rbp_indexed_sib_profile(operand: MemoryOperand, length: u64) -> 
         }
 }
 
+fn is_address32_rsp_base_rbp_indexed_sib_profile(operand: MemoryOperand, length: u64) -> bool {
+    matches!(length, 5 | 6 | 9)
+        && operand.address_size == od_isa::OperandSize::Dword
+        && operand.size == od_isa::OperandSize::Qword
+        && matches!(
+            operand.base,
+            od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+        )
+        && operand.index == Some(od_isa::Register::Rbp)
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && match length {
+            5 => operand.displacement == 0,
+            6 => i8::try_from(operand.displacement).is_ok(),
+            9 => i32::try_from(operand.displacement).is_ok(),
+            _ => false,
+        }
+}
+
 fn is_rbp_base_rbp_index_sib_profile(operand: MemoryOperand, length: u64) -> bool {
     matches!(length, 5 | 8)
         && operand.address_size == od_isa::OperandSize::Qword
@@ -281,6 +299,8 @@ impl MemorySiteV2 {
             };
         let address32_rbp_indexed_sib_data_profile =
             is_address32_rbp_indexed_sib_profile(self.operand, length);
+        let address32_rsp_base_rbp_indexed_sib_data_profile =
+            is_address32_rsp_base_rbp_indexed_sib_profile(self.operand, length);
         let address32_rsp_sib_base_data_profile = self.operand.address_size
             == od_isa::OperandSize::Dword
             && self.operand.size == od_isa::OperandSize::Qword
@@ -345,6 +365,7 @@ impl MemorySiteV2 {
         let scoped_data_profile = address32_direct_data_profile
             || address32_indexed_sib_data_profile
             || address32_rbp_indexed_sib_data_profile
+            || address32_rsp_base_rbp_indexed_sib_data_profile
             || address32_rsp_sib_base_data_profile
             || address32_rbp_direct_base_data_profile
             || address32_absolute_sib_disp32_data_profile
@@ -532,6 +553,7 @@ impl MemorySiteV2 {
                         && (length == 5 && self.operand.displacement == 0
                             || length == 6 && i8::try_from(self.operand.displacement).is_ok()
                             || length == 9 && i32::try_from(self.operand.displacement).is_ok())
+                    || address32_rsp_base_rbp_indexed_sib_data_profile
                     || self.operand.address_size == od_isa::OperandSize::Dword
                         && register == od_isa::Register::Rbp
                         && matches!(length, 6 | 9)
@@ -577,6 +599,7 @@ impl MemorySiteV2 {
                     && !rsp_base_rbp_index_sib_data_profile
                     && !rbp_base_rbp_index_sib_data_profile
                     && !address32_rbp_index_sib_data_profile
+                    && !address32_rsp_base_rbp_indexed_sib_data_profile
             })
             || !matches!(
                 self.operand.address_size,
@@ -650,6 +673,8 @@ impl MemorySiteV2 {
                 && (length == 5 && self.operand.displacement == 0
                     || length == 6 && i8::try_from(self.operand.displacement).is_ok()
                     || length == 9 && i32::try_from(self.operand.displacement).is_ok());
+            let rsp_base_rbp_indexed_sib =
+                is_address32_rsp_base_rbp_indexed_sib_profile(self.operand, length);
             let rbp_indexed_sib = matches!(length, 6 | 9)
                 && matches!(
                     self.operand.base,
@@ -681,6 +706,7 @@ impl MemorySiteV2 {
             return (supported_base
                 || rsp_no_index_sib
                 || rsp_indexed_sib
+                || rsp_base_rbp_indexed_sib
                 || rbp_indexed_sib
                 || rbp_direct
                 || absolute_sib_disp32
@@ -689,6 +715,7 @@ impl MemorySiteV2 {
                     || indexed
                     || rsp_no_index_sib
                     || rsp_indexed_sib
+                    || rsp_base_rbp_indexed_sib
                     || rbp_indexed_sib
                     || rbp_direct
                     || absolute_sib_disp32
@@ -870,10 +897,13 @@ impl MemorySiteV2 {
                 };
                 let rsp_indexed_sib = sib_base == 4;
                 let rbp_indexed_sib = sib_base == 5 && matches!(mode, 1 | 2);
+                let rsp_base_rbp_indexed_sib = sib_base == 4 && sib_index == 5;
                 return matches!((source.len(), mode), (5, 0) | (6, 1) | (9, 2))
                     && data_register <= 5
-                    && (sib_base < 4 || rsp_indexed_sib || rbp_indexed_sib)
-                    && sib_index < 4
+                    && (sib_base < 4
+                        || rsp_indexed_sib && sib_index < 4
+                        || rbp_indexed_sib && sib_index < 4
+                        || rsp_base_rbp_indexed_sib)
                     && site_register == Some(data_register)
                     && self.next_rip.checked_sub(self.guest_rip) == Some(source.len() as u64)
                     && self.operand.address_size == od_isa::OperandSize::Dword
