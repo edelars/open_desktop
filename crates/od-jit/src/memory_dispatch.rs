@@ -649,6 +649,35 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
                 .unwrap_or(CompileAt::Unsupported)
         };
     }
+    if matches!(instruction_len, 4 | 5 | 8)
+        && instruction.starts_with(&[0x48])
+        && matches!(instruction[1], 0x8b | 0x89)
+    {
+        let modrm = instruction[2];
+        let expected_mode = match instruction_len {
+            4 => 0,
+            5 => 1,
+            8 => 2,
+            _ => unreachable!(),
+        };
+        if modrm >> 6 == expected_mode
+            && modrm & 7 == 4
+            && matches!((modrm >> 3) & 7, 6 | 7)
+            && instruction[3] == 0x24
+        {
+            return if instruction[1] == 0x8b {
+                compile_ir_memory_load_block_v2(view, rip)
+                    .map(BoundedMemoryArtifact::Load)
+                    .map(CompileAt::Block)
+                    .unwrap_or(CompileAt::Unsupported)
+            } else {
+                compile_ir_memory_store_block_v2(view, rip)
+                    .map(BoundedMemoryArtifact::Store)
+                    .map(CompileAt::Block)
+                    .unwrap_or(CompileAt::Unsupported)
+            };
+        }
+    }
     if matches!(instruction_len, 4 | 7)
         && instruction[0] == 0x48
         && matches!(instruction[1], 0x8b | 0x89)
@@ -2030,5 +2059,242 @@ fn result(
         remaining_budget,
         retired_instructions,
         blocks_executed,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct EmptyMemory;
+    impl GuestMemory for EmptyMemory {
+        fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Fetch,
+            })
+        }
+        fn read(
+            &mut self,
+            address: u64,
+            _: AccessContext,
+            _: &mut [u8],
+        ) -> Result<(), MemoryError> {
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Read,
+            })
+        }
+        fn write(&mut self, address: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Write,
+            })
+        }
+        fn atomic_exchange_integer(
+            &mut self,
+            address: u64,
+            _: AccessContext,
+            _: od_isa::OperandSize,
+            _: u64,
+        ) -> Result<u64, MemoryError> {
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Write,
+            })
+        }
+        fn atomic_fetch_add_integer(
+            &mut self,
+            address: u64,
+            _: AccessContext,
+            _: od_isa::OperandSize,
+            _: u64,
+        ) -> Result<u64, MemoryError> {
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Write,
+            })
+        }
+        fn atomic_compare_exchange_integer(
+            &mut self,
+            address: u64,
+            _: AccessContext,
+            _: od_isa::OperandSize,
+            _: u64,
+            _: u64,
+        ) -> Result<u64, MemoryError> {
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Write,
+            })
+        }
+        fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct AdvancingExecutor {
+        entries: Vec<(u64, usize)>,
+    }
+    unsafe impl MemoryBlockExecutor for AdvancingExecutor {
+        type Error = ();
+
+        unsafe fn execute_one_memory_block(
+            &mut self,
+            block: &BoundedMemoryArtifact,
+            state: &mut LongModeState,
+            _: &mut dyn GuestMemory,
+            _: AccessContext,
+            incoming_budget: u64,
+            _: Option<u64>,
+            _: &AtomicU8,
+        ) -> Result<MemoryBlockReport, Self::Error> {
+            let (site, source) = match block {
+                BoundedMemoryArtifact::Load(block) => (block.site(), block.source_bytes()),
+                BoundedMemoryArtifact::Store(block) => (block.site(), block.source_bytes()),
+                BoundedMemoryArtifact::Pair(_) => return Err(()),
+            };
+            self.entries.push((state.rip, source.len()));
+            state.rip = site.next_rip();
+            Ok(MemoryBlockReport {
+                exit: MemoryBlockExit::Complete,
+                remaining_budget: incoming_budget - 1,
+                retired_instructions: 1,
+            })
+        }
+    }
+
+    #[test]
+    fn rsp_sib_rsi_rdi_dispatch_respects_partial_windows_and_actual_rip() {
+        const ENTRY: u64 = 0x9000;
+        for opcode in [0x8b_u8, 0x89] {
+            for data_register in [6_u8, 7] {
+                for (mode, displacement) in
+                    [(0_u8, vec![]), (1, vec![0x80]), (2, vec![0, 0, 0, 0x80])]
+                {
+                    let mut source =
+                        vec![0x48, opcode, (mode << 6) | (data_register << 3) | 4, 0x24];
+                    source.extend_from_slice(&displacement);
+                    for window in 1..source.len() {
+                        let code = CodeView::new(ENTRY, &source).unwrap();
+                        let boundary =
+                            FixtureExecutionBoundary::new(code, ENTRY + window as u64).unwrap();
+                        let mut state = LongModeState {
+                            rip: ENTRY,
+                            ..Default::default()
+                        };
+                        let before = state.clone();
+                        let mut memory = EmptyMemory;
+                        let mut executor = AdvancingExecutor::default();
+                        let result = unsafe {
+                            run(
+                                code,
+                                boundary,
+                                &mut state,
+                                &mut memory,
+                                AccessContext::default(),
+                                2,
+                                None,
+                                &AtomicU8::new(0),
+                                &mut executor,
+                            )
+                        }
+                        .unwrap();
+                        assert_eq!(
+                            result.exit,
+                            BoundedMemoryExit::BoundaryReached { rip: ENTRY }
+                        );
+                        assert_eq!(result.blocks_executed, 0);
+                        assert_eq!(state, before);
+                        assert!(executor.entries.is_empty());
+                    }
+
+                    let code = CodeView::new(ENTRY, &source).unwrap();
+                    let boundary =
+                        FixtureExecutionBoundary::new(code, ENTRY + source.len() as u64).unwrap();
+                    let mut state = LongModeState {
+                        rip: ENTRY,
+                        ..Default::default()
+                    };
+                    let mut memory = EmptyMemory;
+                    let mut executor = AdvancingExecutor::default();
+                    let result = unsafe {
+                        run(
+                            code,
+                            boundary.clone(),
+                            &mut state,
+                            &mut memory,
+                            AccessContext::default(),
+                            2,
+                            None,
+                            &AtomicU8::new(0),
+                            &mut executor,
+                        )
+                    }
+                    .unwrap();
+                    assert_eq!(
+                        result.exit,
+                        BoundedMemoryExit::BoundaryReached {
+                            rip: ENTRY + source.len() as u64
+                        }
+                    );
+                    assert_eq!(
+                        (
+                            result.blocks_executed,
+                            result.retired_instructions,
+                            result.remaining_budget
+                        ),
+                        (1, 1, 1)
+                    );
+                    assert_eq!(executor.entries, [(ENTRY, source.len())]);
+                    assert_eq!(state.rip, ENTRY + source.len() as u64);
+
+                    let mut guarded_state = LongModeState {
+                        rip: ENTRY,
+                        ..Default::default()
+                    };
+                    let guarded_before = guarded_state.clone();
+                    let mut guarded_memory = EmptyMemory;
+                    let mut guarded_executor = AdvancingExecutor::default();
+                    let zero_budget = unsafe {
+                        run(
+                            code,
+                            boundary.clone(),
+                            &mut guarded_state,
+                            &mut guarded_memory,
+                            AccessContext::default(),
+                            0,
+                            None,
+                            &AtomicU8::new(0),
+                            &mut guarded_executor,
+                        )
+                    }
+                    .unwrap();
+                    assert_eq!(zero_budget.exit, BoundedMemoryExit::BudgetExhausted);
+                    assert_eq!(guarded_state, guarded_before);
+                    assert!(guarded_executor.entries.is_empty());
+
+                    let stop = AtomicU8::new(1);
+                    let stopped = unsafe {
+                        run(
+                            code,
+                            boundary,
+                            &mut guarded_state,
+                            &mut guarded_memory,
+                            AccessContext::default(),
+                            1,
+                            None,
+                            &stop,
+                            &mut guarded_executor,
+                        )
+                    }
+                    .unwrap();
+                    assert_eq!(stopped.exit, BoundedMemoryExit::StopRequested);
+                    assert_eq!(guarded_state, guarded_before);
+                    assert!(guarded_executor.entries.is_empty());
+                }
+            }
+        }
     }
 }

@@ -373,7 +373,19 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                         && operand.address_size == od_isa::OperandSize::Qword
                         && i32::try_from(operand.displacement).is_ok()
                         && matches!(operand.base, AddressBase::NextRip);
-                    if !(addr64_profile || addr32_profile || rip_relative_profile)
+                    let rsp_sib_profile = matches!(length, 4 | 5 | 8)
+                        && operand.address_size == od_isa::OperandSize::Qword
+                        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
+                        && match length {
+                            4 => operand.displacement == 0,
+                            5 => i8::try_from(operand.displacement).is_ok(),
+                            8 => i32::try_from(operand.displacement).is_ok(),
+                            _ => false,
+                        };
+                    if !(addr64_profile
+                        || addr32_profile
+                        || rip_relative_profile
+                        || rsp_sib_profile)
                         || operand.size != od_isa::OperandSize::Qword
                         || operand.index.is_some()
                         || operand.scale != 1
@@ -381,8 +393,9 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                             operand.base,
                             od_isa::long_decode::AddressBase::Register(register)
                                 if (register as u8) < 4
-                        ) || rip_relative_profile
-                            && matches!(operand.base, AddressBase::NextRip))
+                        ) || rsp_sib_profile
+                            && matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
+                            || rip_relative_profile && matches!(operand.base, AddressBase::NextRip))
                     {
                         return Err(VerifyError::InvalidGpr {
                             operation: operation_index,
@@ -469,6 +482,10 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                             dst: loaded_value,
                             operand,
                         }) if *loaded_value == *src && is_direct_low_base_rsi_rdi_load_operand(
+                            *operand,
+                            instruction_length(program, active_instruction),
+                            register.0,
+                        ) || *loaded_value == *src && is_rsp_base_no_index_rsi_rdi_load_operand(
                             *operand,
                             instruction_length(program, active_instruction),
                             register.0,
@@ -1073,6 +1090,25 @@ fn is_rip_relative_rsi_rdi_load_operand(
         && i32::try_from(operand.displacement).is_ok()
 }
 
+fn is_rsp_base_no_index_rsi_rdi_load_operand(
+    operand: MemoryOperand,
+    instruction_length: u64,
+    data_register: u8,
+) -> bool {
+    matches!(data_register, 6 | 7)
+        && operand.address_size == od_isa::OperandSize::Qword
+        && operand.size == od_isa::OperandSize::Qword
+        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
+        && operand.index.is_none()
+        && operand.scale == 1
+        && match instruction_length {
+            4 => operand.displacement == 0,
+            5 => i8::try_from(operand.displacement).is_ok(),
+            8 => i32::try_from(operand.displacement).is_ok(),
+            _ => false,
+        }
+}
+
 fn is_scoped_memory_data_operand(
     operand: MemoryOperand,
     instruction_length: u64,
@@ -1080,7 +1116,11 @@ fn is_scoped_memory_data_operand(
 ) -> bool {
     operand.size == od_isa::OperandSize::Qword
         && ((operand.address_size == od_isa::OperandSize::Qword
-            && (is_indexed_qword_sib_data_operand(operand, instruction_length)
+            && (is_rsp_base_no_index_rsi_rdi_load_operand(
+                operand,
+                instruction_length,
+                data_register,
+            ) || is_indexed_qword_sib_data_operand(operand, instruction_length)
                 || is_indexed_no_base_qword_sib_data_operand(operand, instruction_length)
                 || is_indexed_no_base_rsi_rdi_sib_data_operand(operand, instruction_length)
                 || is_rbp_index_qword_sib_data_operand(operand, instruction_length)

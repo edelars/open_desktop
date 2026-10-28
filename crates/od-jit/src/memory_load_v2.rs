@@ -1835,6 +1835,114 @@ mod tests {
     }
 
     #[test]
+    fn rsi_rdi_rsp_sib_qword_mov_has_exact_twelve_form_profile() {
+        for (opcode, operation) in [
+            (0x8b, MemorySiteOperationV2::Load),
+            (0x89, MemorySiteOperationV2::Store),
+        ] {
+            for data_register in [6_u8, 7] {
+                for (mode, displacement) in
+                    [(0_u8, vec![]), (1, vec![0x80]), (2, vec![0, 0, 0, 0x80])]
+                {
+                    let modrm = (mode << 6) | (data_register << 3) | 4;
+                    let mut source = vec![0x48, opcode, modrm, 0x24];
+                    source.extend_from_slice(&displacement);
+                    let code = CodeView::new(0x6800, &source).unwrap();
+                    let (site, copied) = match operation {
+                        MemorySiteOperationV2::Load => {
+                            let direct = compile_memory_load_block_v2(code, 0x6800).unwrap();
+                            let ir = compile_ir_memory_load_block_v2(code, 0x6800).unwrap();
+                            assert_eq!(ir.site(), direct.site());
+                            (ir.site().clone(), ir.source_bytes().to_vec())
+                        }
+                        MemorySiteOperationV2::Store => {
+                            let direct = compile_memory_store_block_v2(code, 0x6800).unwrap();
+                            let ir = compile_ir_memory_store_block_v2(code, 0x6800).unwrap();
+                            assert_eq!(ir.site(), direct.site());
+                            (ir.site().clone(), ir.source_bytes().to_vec())
+                        }
+                    };
+                    assert_eq!(copied, source);
+                    assert_eq!(
+                        site.source(),
+                        (operation == MemorySiteOperationV2::Store).then_some(data_register)
+                    );
+                    assert_eq!(
+                        site.destination(),
+                        (operation == MemorySiteOperationV2::Load).then_some(data_register)
+                    );
+                    assert_eq!(site.operand().address_size, od_isa::OperandSize::Qword);
+                    assert_eq!(site.operand().size, od_isa::OperandSize::Qword);
+                    assert_eq!(site.operand().base, AddressBase::Register(Register::Rsp));
+                    assert_eq!(site.operand().index, None);
+                    assert_eq!(site.operand().scale, 1);
+                    assert_eq!(
+                        site.operand().displacement,
+                        if mode == 0 {
+                            0
+                        } else if mode == 1 {
+                            -128
+                        } else {
+                            i32::MIN as i64
+                        }
+                    );
+                    assert_eq!(site.next_rip(), 0x6800 + source.len() as u64);
+                    assert!(site.has_supported_profile());
+                    assert!(site.matches_source_bytes(&source, operation));
+                    if mode != 0 {
+                        let mut forged = source.clone();
+                        *forged.last_mut().unwrap() ^= 1;
+                        assert!(
+                            !site.matches_source_bytes(&forged, operation),
+                            "changed displacement byte reused descriptor {source:02x?}"
+                        );
+                    }
+                }
+            }
+        }
+
+        for opcode in [0x8b, 0x89] {
+            for invalid in [
+                vec![0x48, opcode, 0x34, 0x20],             // index register RAX
+                vec![0x48, opcode, 0x34, 0x2c],             // indexed RSP
+                vec![0x48, opcode, 0x34, 0x64, 0],          // noncanonical SIB field
+                vec![0x48, opcode, 0x34, 0x24, 0, 0, 0, 0], // mode/length mismatch
+                vec![0x67, 0x48, opcode, 0x34, 0x24],       // address-size override
+                vec![0x49, opcode, 0x34, 0x24],             // extended REX
+            ] {
+                let code = CodeView::new(0x6800, &invalid).unwrap();
+                let result = if opcode == 0x8b {
+                    compile_ir_memory_load_block_v2(code, 0x6800).map(|_| ())
+                } else {
+                    compile_ir_memory_store_block_v2(code, 0x6800).map(|_| ())
+                };
+                assert!(
+                    result.is_err(),
+                    "unsupported neighbor admitted {invalid:02x?}"
+                );
+            }
+            for complete in [
+                vec![0x48, opcode, 0x34, 0x24],
+                vec![0x48, opcode, 0x74, 0x24, 1],
+                vec![0x48, opcode, 0xb4, 0x24, 1, 0, 0, 0],
+            ] {
+                for length in 1..complete.len() {
+                    let code = CodeView::new(0x6800, &complete[..length]).unwrap();
+                    let result = if opcode == 0x8b {
+                        compile_ir_memory_load_block_v2(code, 0x6800).map(|_| ())
+                    } else {
+                        compile_ir_memory_store_block_v2(code, 0x6800).map(|_| ())
+                    };
+                    assert!(
+                        result.is_err(),
+                        "partial form admitted {length}: {complete:02x?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn rbp_is_admitted_only_as_qword_memory_data_for_exact_direct_forms() {
         for (opcode, operation) in [
             (0x8b, MemorySiteOperationV2::Load),
@@ -3803,7 +3911,7 @@ mod tests {
                 let mut wrong_sib = valid.clone();
                 wrong_sib[3] = 0x65; // RBP base, no index, non-unit scale.
                 let mut wrong_modrm = valid.clone();
-                wrong_modrm[2] = if length == 5 { 0x74 } else { 0xb4 };
+                wrong_modrm[2] = if length == 5 { 0x70 } else { 0xb0 };
                 let mut wrong_prefix = vec![0x64];
                 wrong_prefix.extend_from_slice(&valid);
                 let mut reordered_prefix = vec![0x48, 0x67, opcode];
@@ -3894,9 +4002,9 @@ mod tests {
                 vec![0x48, opcode, 0x2c],                   // truncated SIB
                 vec![0x48, opcode, 0x2c, 0x2d],             // no-base RBP index
                 vec![0x48, opcode, 0x2c, 0x64],             // non-unit scale
-                vec![0x48, opcode, 0x34, 0x24],             // other data register
-                vec![0x48, opcode, 0x7c, 0x24, 0],          // unsupported data register
-                vec![0x48, opcode, 0xbc, 0x24, 0, 0, 0, 0], // unsupported disp32 data register
+                vec![0x48, opcode, 0x34, 0x20],             // indexed address
+                vec![0x48, opcode, 0x7c, 0x20, 0],          // indexed disp8 neighbor
+                vec![0x48, opcode, 0xbc, 0x20, 0, 0, 0, 0], // indexed disp32 neighbor
                 vec![0x67, 0x48, opcode, 0x34, 0x34],
                 vec![0x48, 0x67, opcode, 0x2c, 0x24],
             ] {

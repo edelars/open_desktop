@@ -1662,6 +1662,8 @@ pub(crate) fn is_checked_qword_load_form(instruction: Instruction) -> bool {
         && matches!(instruction.length, 3 | 4 | 5 | 6 | 7 | 8 | 9)
         && ((destination.register() as u8) < 4
             || matches!(destination.register() as u8, 6 | 7)
+                && is_rsp_base_no_index_qword_sib_data_operand(instruction, operand)
+            || matches!(destination.register() as u8, 6 | 7)
                 && operand.size == OperandSize::Qword
                 && matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
                 && operand.index.is_none()
@@ -1720,6 +1722,8 @@ pub(crate) fn is_checked_qword_store_form(instruction: Instruction) -> bool {
         && ((source.register() as u8) < 4
             || source.register() as u8 == 4 && is_rsp_memory_data_operand(instruction, operand)
             || source.register() as u8 == 5 && is_rbp_memory_data_operand(instruction, operand)
+            || matches!(source.register() as u8, 6 | 7)
+                && is_rsp_base_no_index_qword_sib_data_operand(instruction, operand)
             || matches!(source.register() as u8, 6 | 7)
                 && operand.index.is_none()
                 && operand.scale == 1
@@ -2096,6 +2100,27 @@ fn is_rsp_base_rsi_rdi_index_qword_sib_data_operand(
         )
         && matches!(operand.scale, 1 | 2 | 4 | 8)
         && displacement_valid
+}
+
+fn is_rsp_base_no_index_qword_sib_data_operand(
+    instruction: Instruction,
+    operand: od_isa::long_decode::MemoryOperand,
+) -> bool {
+    instruction.address_size == OperandSize::Qword
+        && operand.address_size == OperandSize::Qword
+        && operand.size == OperandSize::Qword
+        && matches!(
+            operand.base,
+            od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+        )
+        && operand.index.is_none()
+        && operand.scale == 1
+        && match instruction.length {
+            4 => operand.displacement == 0,
+            5 => i8::try_from(operand.displacement).is_ok(),
+            8 => i32::try_from(operand.displacement).is_ok(),
+            _ => false,
+        }
 }
 
 fn is_rbp_base_rbp_index_qword_sib_data_operand(
@@ -3181,6 +3206,8 @@ fn is_checked_qword_memory_address(
                 is_low_base_no_index_qword_sib_data_operand(instruction, operand);
             let rsi_rdi_base_no_index_sib =
                 is_rsi_rdi_base_no_index_qword_sib_data_operand(instruction, operand);
+            let rsp_base_no_index_sib =
+                is_rsp_base_no_index_qword_sib_data_operand(instruction, operand);
             let rip_relative = matches!(operand.base, od_isa::long_decode::AddressBase::NextRip)
                 && operand.index.is_none()
                 && operand.scale == 1
@@ -3209,6 +3236,7 @@ fn is_checked_qword_memory_address(
             !instruction.prefixes.address_override
                 && (register_base && (direct_form || indexed_form || low_base_no_index_sib)
                     || rsi_rdi_base_no_index_sib
+                    || rsp_base_no_index_sib
                     || rsi_rdi_direct
                     || rsi_rdi_indexed_profile
                     || rsi_rdi_base_rbp_indexed_profile
@@ -3309,6 +3337,12 @@ pub(crate) fn exact_direct_qword_memory_bytes(
             && bytes[0..2] == [0x48, opcode]
             && bytes[2] >> 6 == 0
             && bytes[2] & 7 == 4
+            && matches!((bytes[2] >> 3) & 7, 6 | 7)
+            && bytes[3] == 0x24)
+        || (bytes.len() == 4
+            && bytes[0..2] == [0x48, opcode]
+            && bytes[2] >> 6 == 0
+            && bytes[2] & 7 == 4
             && ((bytes[2] >> 3) & 7 < 4 || bytes[2] == 0x24)
             && bytes[3] == 0x24)
         || (bytes.len() == 4
@@ -3345,6 +3379,18 @@ pub(crate) fn exact_direct_qword_memory_bytes(
         || (bytes.len() == 8
             && bytes[0..2] == [0x48, opcode]
             && bytes[2] == 0xac
+            && bytes[3] == 0x24)
+        || (bytes.len() == 5
+            && bytes[0..2] == [0x48, opcode]
+            && bytes[2] >> 6 == 1
+            && bytes[2] & 7 == 4
+            && matches!((bytes[2] >> 3) & 7, 6 | 7)
+            && bytes[3] == 0x24)
+        || (bytes.len() == 8
+            && bytes[0..2] == [0x48, opcode]
+            && bytes[2] >> 6 == 2
+            && bytes[2] & 7 == 4
+            && matches!((bytes[2] >> 3) & 7, 6 | 7)
             && bytes[3] == 0x24)
         || (bytes.len() == 4
             && bytes[0..2] == [0x48, opcode]
