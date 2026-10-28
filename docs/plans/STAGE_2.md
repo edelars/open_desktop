@@ -416,6 +416,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-35.29 | Local-only bounded register PUNPCKHDQ XMM diagnostic slice; high-dword interleave, native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.31 | Local-only bounded register PUNPCKHQDQ XMM diagnostic slice; high-qword interleave, native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.32 | Local-only bounded register PACKSSWB XMM diagnostic slice; signed word-to-byte saturation, native/JIT closed | S2-34.1, S2-35.1; independent review |
+| [ ] | S2-35.35 | Local-only bounded register PSHUFD XMM diagnostic slice; imm8 dword shuffle, native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [ ] | S2-36 | Собственная binary32/binary64 семантика | S2-29, S2-34 |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
@@ -8682,6 +8683,24 @@ shuffle/shift operations, memory, MMX, extra prefixes, REX.W/X, VEX/EVEX,
 feature gates, exception delivery, and physical execution remain excluded.
 S2-34, S2-35, global `S2-35 → S2-34`, and combined Mac mini/SSH acceptance
 remain open. Evidence is recorded in [STAGE_2_REPORT.md](../reports/STAGE_2_REPORT.md).
+
+
+#### S2-35.35 — local-only bounded register `PSHUFD`
+
+The bounded profile `s2-long-pshufd-reg-v1` admits exactly
+`66 [one optional REX.R/B] 0F 70 /r ib`, with ModR/M.mod=3 and XMM0–15.
+ModR/M.reg is the destination and ModR/M.r/m is the source. For each of four
+destination dwords, the corresponding 2-bit field in imm8 selects one of the
+four dwords from the original source value; all selections are simultaneous.
+This also defines destination/source aliasing. Test all 256 control bytes for
+all 16×16 register pairs, strict sibling negatives, state/source preservation,
+missing state, truncated imm8 fetch/IP atomicity, stop/budget, no data callback,
+and literal fixture admission. Keep native/JIT and physical execution denied;
+SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 remain assumptions only. Other
+shuffle opcodes, memory, prefixes beyond the exact form, REX.W/X, VEX/EVEX,
+feature gates, and guest exception delivery are excluded. This child leaves
+S2-34, S2-35, global `S2-35 → S2-34`, and combined Mac mini/SSH acceptance
+open.
 
 
 #### S2-35.33 — local-only bounded register `PACKUSWB`

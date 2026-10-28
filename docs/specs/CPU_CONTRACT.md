@@ -9186,6 +9186,25 @@ other prefixes, REX.W/X, VEX/EVEX, native/JIT and physical execution are
 excluded. S2-34 and S2-35 and `S2-35 → S2-34` remain open. See the
 [S2-35.3 plan](../plans/STAGE_2.md#s2-353--local-only-bounded-register-psubb).
 
+## Local register-only `PSHUFD` profile — S2-35.35
+
+The exact profile `s2-long-pshufd-reg-v1` admits legacy
+`66 [one optional REX.R/B] 0F 70 /r ib` with ModR/M.mod=3. Mandatory `66`
+selects the XMM/SSE2 form. ModR/M.reg is destination and ModR/M.r/m is source,
+each selecting XMM0–XMM15. For output dword lane `i`, imm8 bits `2*i+1:2*i`
+select the source dword copied to that lane. Execution reads all four dwords
+from the original source before writing the destination, so aliasing is
+well-defined; other XMM, x87, MXCSR, GPR, RFLAGS and memory state is preserved,
+and execution makes no data-memory callback.
+
+The encoding and semantics follow the PSHUFD entry in Intel SDM revision 093,
+Vol. 2B: [official Intel SDM PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf),
+[Intel SDM page](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions, with no CPUID or
+control-fault claim. Memory, other prefixes, REX.W/X, VEX/EVEX, native/JIT and
+physical execution are excluded. S2-34, S2-35 and global `S2-35 → S2-34` remain
+open. See the [S2-35.35 plan](../plans/STAGE_2.md#s2-3535--local-only-bounded-register-pshufd).
+
 ## Local register-only `PADDUSB` profile — S2-35.4
 
 The exact profile `s2-long-paddusb-reg-v1` admits legacy

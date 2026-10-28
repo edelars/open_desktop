@@ -12887,6 +12887,43 @@ fn local_psubb_register_uses_literal_lanes_and_preserves_architectural_side_stat
 }
 
 #[test]
+fn local_pshufd_register_uses_literal_control_and_preserves_architectural_side_state() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_35_pshufd_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let memory_before = memory.snapshot();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, before.rip + 6);
+    let source = before.sse.as_ref().unwrap().xmm[9];
+    let expected: [u8; 16] = std::array::from_fn(|index| {
+        let lane = index / 4;
+        let selected = usize::from((0x1b_u8 >> (lane * 2)) & 3);
+        source[selected * 4 + index % 4]
+    });
+    let mut expected_state = before.clone();
+    expected_state.rip = fixture.stop_rip.unwrap().get();
+    expected_state.sse.as_mut().unwrap().xmm[8] = expected;
+    assert_eq!(state, expected_state);
+    assert_eq!(memory.snapshot(), memory_before);
+}
+
+#[test]
 fn local_paddusb_register_uses_literal_lanes_and_preserves_architectural_side_state() {
     let fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_35_4_paddusb_register.case.json"

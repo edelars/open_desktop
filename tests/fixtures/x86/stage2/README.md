@@ -4912,6 +4912,16 @@ from MMX; wider/saturating forms, memory, other prefixes, REX.W/X, VEX/EVEX,
 native/JIT and physical execution are excluded. SSE2, CR0.EM=0, CR0.TS=0 and
 CR4.OSFXSR=1 are assumptions only, with no CPUID claim.
 
+### S2-35.35 local register PSHUFD diagnostic profile
+
+`s2_35_35_pshufd_register.case.json` is a literal XMM8,XMM9 example for exact
+profile `s2-long-pshufd-reg-v1`. It admits only
+`66 [one optional REX.R/B] 0F 70 /r ib`, ModR/M.mod=3. Each immediate control
+field selects one dword from the original source value into the corresponding
+destination lane, including when source and destination alias. Tests cover all
+256 controls and all 16×16 register pairs. The profile assumes SSE2 and
+CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1; native/JIT and physical execution are excluded.
+
 ### S2-35.4 local register PADDUSB diagnostic profile
 
 `s2_35_4_paddusb_register.case.json` is a literal XMM8,XMM9 example for exact

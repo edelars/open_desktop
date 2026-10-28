@@ -12861,3 +12861,21 @@ prefix/VEX/EVEX/memory decoder and schema denials, and a literal XMM8/XMM9
 fixture. Linux-native denial is added and compile-checked on this Darwin host;
 it was not physically executed. These checks are local interpreter/profile
 evidence only and do not claim physical x86 acceptance.
+
+## S2-35.35 — local PSHUFD XMM register slice
+
+Implemented exact diagnostic profile `s2-long-pshufd-reg-v1` for
+`66 [one optional REX.R/B] 0F 70 /r ib`, ModR/M.mod=3. Four destination dwords
+select from the original source via two-bit imm8 fields, including source/
+destination aliasing. Local decoder tests cover every register pair, strict
+MMX/prefix/REX/memory/VEX/EVEX negatives, and truncation at the final immediate
+byte with exact fetch accounting. Interpreter coverage spans all 65,536
+register/control combinations, full-state and source preservation, missing
+SSE/x87 state, no data callbacks, atomic truncated-imm8 failure, zero-budget
+and stop-at-current-RIP preservation. A handwritten XMM8/XMM9 fixture is
+rejected by the JIT runner test; a Linux-only native-admission denial test is
+present but is not run on this macOS host. JIT remains disabled;
+no physical execution is claimed. Intel SDM revision 093 Vol. 2B PSHUFD entry
+is the encoding/semantics source. SSE2 and CR0/CR4 preconditions are assumed.
+Independent review and focused checks passed; parent S2-34, S2-35 and
+`S2-35 → S2-34` remain open.

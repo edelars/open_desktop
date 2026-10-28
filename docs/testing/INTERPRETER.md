@@ -2092,3 +2092,17 @@ missing state, truncation, stop/budget atomicity, strict encoding negatives,
 and the literal fixture. JIT and native admission remain closed; no physical
 acceptance is claimed. See the [CPU contract](../specs/CPU_CONTRACT.md) and
 [Stage 2 plan](../plans/STAGE_2.md#s2-3529--local-only-bounded-register-punpckhdq).
+
+## Local register-only PSHUFD slice — S2-35.35
+
+The `s2-long-pshufd-reg-v1` profile admits only
+`66 [one optional REX.R/B] 0F 70 /r ib`, ModR/M.mod=3. Local execution
+selects four dword lanes from the original source according to imm8, safely
+covering source/destination aliasing. Checks cover all 16×16 register pairs
+under all 256 controls, preserved full state/source, no data callbacks, strict
+decode negatives (including MMX, memory, prefix/REX, VEX and EVEX forms),
+missing state and truncation immediately before imm8 with exact fetch/IP
+atomicity, plus zero-budget and stop-at-current-RIP preservation. The
+handwritten XMM8/XMM9 fixture is rejected by native admission;
+JIT support is not enabled and physical execution is not claimed. SSE2 and
+CR0/CR4 preconditions are assumptions only.

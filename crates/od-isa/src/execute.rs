@@ -1291,6 +1291,7 @@ fn step_tracked_with_stop(
         | Operation::PacksswbRegister { .. }
         | Operation::PackuswbRegister { .. }
         | Operation::PackssdwRegister { .. }
+        | Operation::PshufdRegister { .. }
         | Operation::PsubwRegister { .. }
         | Operation::PadduswRegister { .. }
         | Operation::PsubuswRegister { .. }
@@ -3184,6 +3185,25 @@ fn step_tracked_with_stop(
                     &(source_value.clamp(i16::MIN as i32, i16::MAX as i32) as i16).to_le_bytes(),
                 );
             }
+        }
+        Operation::PshufdRegister {
+            destination,
+            source,
+            control,
+        } => {
+            let original_source = state
+                .sse
+                .as_ref()
+                .expect("PSHUFD state was prevalidated")
+                .xmm[usize::from(source)];
+            let sse = state.sse.as_mut().expect("PSHUFD state was prevalidated");
+            let mut shuffled = [0; 16];
+            for output_lane in 0..4 {
+                let selected = usize::from((control >> (output_lane * 2)) & 3);
+                shuffled[output_lane * 4..output_lane * 4 + 4]
+                    .copy_from_slice(&original_source[selected * 4..selected * 4 + 4]);
+            }
+            sse.xmm[usize::from(destination)] = shuffled;
         }
         Operation::PsubwRegister {
             destination,
@@ -69134,6 +69154,132 @@ mod tests {
                 assert_eq!(state, unchanged, "dest={destination}, src={source}");
                 assert!(memory.accesses.is_empty(), "PSUBB performed a data access");
             }
+        }
+    }
+
+    #[test]
+    fn pshufd_register_covers_all_pairs_and_immediates_with_alias_safe_source() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                for control in 0..=u8::MAX {
+                    let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                    let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                    let mut code = vec![0x66];
+                    if destination >= 8 || source >= 8 {
+                        code.push(rex);
+                    }
+                    code.extend([0x0f, 0x70, modrm, control]);
+                    let mut memory = Memory::at(&code, 0x1000);
+                    let mut state = LongModeState::default();
+                    state.rip = 0x1000;
+                    state.rflags = 0x8d7 | crate::DF;
+                    state.x87 = Some(X87State::fixture_seed());
+                    state.sse = Some(SseState {
+                        xmm: [[0; 16]; 16],
+                        mxcsr: 0x1f80,
+                    });
+                    for reg in 0..16usize {
+                        for lane in 0..4usize {
+                            let value = (reg as u32).wrapping_mul(0x1020_3041)
+                                ^ (lane as u32).wrapping_mul(0x1111_1111)
+                                ^ 0xdead_beef;
+                            state.sse.as_mut().unwrap().xmm[reg][lane * 4..lane * 4 + 4]
+                                .copy_from_slice(&value.to_le_bytes());
+                        }
+                    }
+                    let before = state.clone();
+                    let source_before = before.sse.as_ref().unwrap().xmm[source as usize];
+                    let expected: [u8; 16] = std::array::from_fn(|index| {
+                        let out_lane = index / 4;
+                        let in_lane = usize::from((control >> (out_lane * 2)) & 3);
+                        source_before[in_lane * 4 + index % 4]
+                    });
+                    assert_eq!(
+                        step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                        StepOutcome::Advanced
+                    );
+                    let mut unchanged = before;
+                    unchanged.rip += code.len() as u64;
+                    unchanged.sse.as_mut().unwrap().xmm[destination as usize] = expected;
+                    assert_eq!(
+                        state, unchanged,
+                        "dest={destination} src={source} control={control:#04x}"
+                    );
+                    assert!(memory.accesses.is_empty(), "PSHUFD performed a data access");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pshufd_missing_state_and_truncated_immediate_are_atomic() {
+        let complete = [0x66, 0x0f, 0x70, 0xc1, 0xe4];
+        for (with_x87, with_sse) in [(false, false), (true, false), (false, true)] {
+            let mut memory = Memory::at(&complete, 0x1000);
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            if with_x87 {
+                state.x87 = Some(X87State::fixture_seed());
+            }
+            if with_sse {
+                state.sse = Some(SseState {
+                    xmm: [[0xa5; 16]; 16],
+                    mxcsr: 0x1f80,
+                });
+            }
+            let before = state.clone();
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                StepOutcome::Unsupported { opcode: 0x70 }
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        let mut memory = Memory::at(&complete[..4], 0x1000);
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        state.x87 = Some(X87State::fixture_seed());
+        state.sse = Some(SseState {
+            xmm: [[0xa5; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        assert!(matches!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Err(MemoryError::Unmapped {
+                address: 0x1004,
+                access: AccessKind::Fetch,
+            })
+        ));
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+
+        for (budget, stop_rip, expected_exit) in [
+            (0, None, RunExit::InstructionBudgetExhausted),
+            (1, Some(0x1000), RunExit::StopAddress),
+        ] {
+            let mut memory = Memory::at(&complete, 0x1000);
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.x87 = Some(X87State::fixture_seed());
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
         }
     }
 
