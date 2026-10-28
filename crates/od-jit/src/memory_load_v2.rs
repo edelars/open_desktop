@@ -617,201 +617,181 @@ pub fn compile_ir_memory_store_block_v2(
     entry_rip: u64,
 ) -> Result<IrMemoryStoreBlockV2, MemoryLoadCompileErrorV2> {
     let (site, bytes) = checked_memory_metadata_v2(code, entry_rip, MemorySiteOperationV2::Store)?;
-    if !(crate::block::exact_direct_qword_memory_bytes(code, entry_rip, bytes.len() as u8, 0x89)
-        || crate::block::exact_direct_qword_store_rsi_rdi_bytes(code, entry_rip, bytes.len() as u8)
-        || crate::block::exact_qword_address32_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_address32_sib_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_address32_rbp_base_no_index_sib_disp_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_address32_rsi_rdi_base_no_index_sib_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_sib_displacement_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_absolute_sib_disp32_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_address32_absolute_sib_disp32_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_indexed_no_base_sib_disp32_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_indexed_no_base_rbp_sib_disp32_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_indexed_no_base_rsi_rdi_sib_disp32_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_address32_indexed_no_base_sib_disp32_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_address32_indexed_no_base_rbp_sib_disp32_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_address32_indexed_no_base_rsi_rdi_sib_disp32_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_rbp_index_sib_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_rsp_base_rbp_index_sib_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_rsp_base_rsi_rdi_index_sib_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_rbp_base_rbp_index_sib_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_rbp_base_rsi_rdi_index_sib_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_address32_rbp_index_sib_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_address32_rsi_rdi_base_rbp_index_sib_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_low_base_rsi_rdi_index_sib_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_low_base_no_index_sib_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_rsi_rdi_base_no_index_sib_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_rbp_base_no_index_sib_disp_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_rsi_rdi_base_index_sib_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_address32_low_base_rsi_rdi_index_sib_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_address32_low_base_no_index_sib_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_address32_rsi_rdi_base_rsi_rdi_index_sib_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_address32_rsp_base_rbp_index_sib_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_address32_rsp_base_rsi_rdi_index_sib_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_address32_rbp_base_rbp_index_sib_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        )
-        || crate::block::exact_qword_address32_rbp_base_rsi_rdi_index_sib_memory_bytes(
-            code,
-            entry_rip,
-            bytes.len() as u8,
-            0x89,
-        ))
-        || !site.has_supported_profile()
+    if !(crate::block::exact_rip_relative_qword_rsi_rdi_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_direct_qword_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_direct_qword_store_rsi_rdi_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+    ) || crate::block::exact_qword_address32_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_address32_sib_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_address32_rbp_base_no_index_sib_disp_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_address32_rsi_rdi_base_no_index_sib_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_sib_displacement_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_absolute_sib_disp32_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_address32_absolute_sib_disp32_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_indexed_no_base_sib_disp32_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_indexed_no_base_rbp_sib_disp32_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_indexed_no_base_rsi_rdi_sib_disp32_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_address32_indexed_no_base_sib_disp32_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_address32_indexed_no_base_rbp_sib_disp32_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_address32_indexed_no_base_rsi_rdi_sib_disp32_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_rbp_index_sib_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_rsp_base_rbp_index_sib_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_rsp_base_rsi_rdi_index_sib_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_rbp_base_rbp_index_sib_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_rbp_base_rsi_rdi_index_sib_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_address32_rbp_index_sib_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_address32_rsi_rdi_base_rbp_index_sib_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_low_base_rsi_rdi_index_sib_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_low_base_no_index_sib_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_rsi_rdi_base_no_index_sib_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_rbp_base_no_index_sib_disp_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_rsi_rdi_base_index_sib_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_address32_low_base_rsi_rdi_index_sib_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_address32_low_base_no_index_sib_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_address32_rsi_rdi_base_rsi_rdi_index_sib_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_address32_rsp_base_rbp_index_sib_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_address32_rsp_base_rsi_rdi_index_sib_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_address32_rbp_base_rbp_index_sib_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    ) || crate::block::exact_qword_address32_rbp_base_rsi_rdi_index_sib_memory_bytes(
+        code,
+        entry_rip,
+        bytes.len() as u8,
+        0x89,
+    )) || !site.has_supported_profile()
         || !site.matches_source_bytes(bytes, MemorySiteOperationV2::Store)
     {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
@@ -933,80 +913,81 @@ fn checked_load_metadata_v2(
         .map_err(|_| MemoryLoadCompileErrorV2::Decode)?;
     if decoded.length as usize != bytes.len()
         || !crate::block::is_checked_qword_load_form(decoded)
-        || !(crate::block::exact_direct_qword_load_rsi_rdi_bytes(code, entry_rip, decoded.length)
-            || crate::block::exact_direct_qword_memory_bytes(code, entry_rip, decoded.length, 0x8b)
-            || crate::block::exact_qword_address32_memory_bytes(
-                code,
-                entry_rip,
-                decoded.length,
-                0x8b,
-            )
-            || crate::block::exact_qword_address32_sib_memory_bytes(
-                code,
-                entry_rip,
-                decoded.length,
-                0x8b,
-            )
-            || crate::block::exact_qword_address32_rbp_base_no_index_sib_disp_memory_bytes(
-                code,
-                entry_rip,
-                decoded.length,
-                0x8b,
-            )
-            || crate::block::exact_qword_address32_rsi_rdi_base_no_index_sib_memory_bytes(
-                code,
-                entry_rip,
-                decoded.length,
-                0x8b,
-            )
-            || crate::block::exact_qword_sib_displacement_memory_bytes(
-                code,
-                entry_rip,
-                decoded.length,
-                0x8b,
-            )
-            || crate::block::exact_qword_absolute_sib_disp32_memory_bytes(
-                code,
-                entry_rip,
-                decoded.length,
-                0x8b,
-            )
-            || crate::block::exact_qword_address32_absolute_sib_disp32_memory_bytes(
-                code,
-                entry_rip,
-                decoded.length,
-                0x8b,
-            )
-            || crate::block::exact_qword_indexed_no_base_sib_disp32_memory_bytes(
-                code,
-                entry_rip,
-                decoded.length,
-                0x8b,
-            )
-            || crate::block::exact_qword_indexed_no_base_rbp_sib_disp32_memory_bytes(
-                code,
-                entry_rip,
-                decoded.length,
-                0x8b,
-            )
-            || crate::block::exact_qword_indexed_no_base_rsi_rdi_sib_disp32_memory_bytes(
-                code,
-                entry_rip,
-                decoded.length,
-                0x8b,
-            )
-            || crate::block::exact_qword_address32_indexed_no_base_sib_disp32_memory_bytes(
-                code,
-                entry_rip,
-                decoded.length,
-                0x8b,
-            )
-            || crate::block::exact_qword_address32_indexed_no_base_rbp_sib_disp32_memory_bytes(
-                code,
-                entry_rip,
-                decoded.length,
-                0x8b,
-            )
+        || !(crate::block::exact_rip_relative_qword_rsi_rdi_bytes(
+            code,
+            entry_rip,
+            decoded.length,
+            0x8b,
+        ) || crate::block::exact_direct_qword_load_rsi_rdi_bytes(
+            code,
+            entry_rip,
+            decoded.length,
+        ) || crate::block::exact_direct_qword_memory_bytes(
+            code,
+            entry_rip,
+            decoded.length,
+            0x8b,
+        ) || crate::block::exact_qword_address32_memory_bytes(
+            code,
+            entry_rip,
+            decoded.length,
+            0x8b,
+        ) || crate::block::exact_qword_address32_sib_memory_bytes(
+            code,
+            entry_rip,
+            decoded.length,
+            0x8b,
+        ) || crate::block::exact_qword_address32_rbp_base_no_index_sib_disp_memory_bytes(
+            code,
+            entry_rip,
+            decoded.length,
+            0x8b,
+        ) || crate::block::exact_qword_address32_rsi_rdi_base_no_index_sib_memory_bytes(
+            code,
+            entry_rip,
+            decoded.length,
+            0x8b,
+        ) || crate::block::exact_qword_sib_displacement_memory_bytes(
+            code,
+            entry_rip,
+            decoded.length,
+            0x8b,
+        ) || crate::block::exact_qword_absolute_sib_disp32_memory_bytes(
+            code,
+            entry_rip,
+            decoded.length,
+            0x8b,
+        ) || crate::block::exact_qword_address32_absolute_sib_disp32_memory_bytes(
+            code,
+            entry_rip,
+            decoded.length,
+            0x8b,
+        ) || crate::block::exact_qword_indexed_no_base_sib_disp32_memory_bytes(
+            code,
+            entry_rip,
+            decoded.length,
+            0x8b,
+        ) || crate::block::exact_qword_indexed_no_base_rbp_sib_disp32_memory_bytes(
+            code,
+            entry_rip,
+            decoded.length,
+            0x8b,
+        ) || crate::block::exact_qword_indexed_no_base_rsi_rdi_sib_disp32_memory_bytes(
+            code,
+            entry_rip,
+            decoded.length,
+            0x8b,
+        ) || crate::block::exact_qword_address32_indexed_no_base_sib_disp32_memory_bytes(
+            code,
+            entry_rip,
+            decoded.length,
+            0x8b,
+        ) || crate::block::exact_qword_address32_indexed_no_base_rbp_sib_disp32_memory_bytes(
+            code,
+            entry_rip,
+            decoded.length,
+            0x8b,
+        )
             || crate::block::exact_qword_address32_indexed_no_base_rsi_rdi_sib_disp32_memory_bytes(
                 code,
                 entry_rip,
@@ -4857,11 +4838,9 @@ mod tests {
     }
 
     #[test]
-    fn ir_rip_relative_singletons_reject_wrong_register_prefix_and_trailing_bytes() {
+    fn ir_rip_relative_singletons_reject_prefix_and_trailing_bytes() {
         for opcode in [0x8b, 0x89] {
             for bytes in [
-                vec![0x48, opcode, 0x35, 0, 0, 0, 0], // unsupported data register RSI
-                vec![0x48, opcode, 0x3d, 0, 0, 0, 0], // unsupported data register RDI
                 vec![0x67, 0x48, opcode, 0x05, 0, 0, 0, 0],
                 vec![0x48, opcode, 0x05, 0, 0, 0, 0, 0x90],
             ] {
@@ -7159,7 +7138,7 @@ mod tests {
     #[test]
     fn admits_only_exact_rip_relative_mod00_disp32_sites() {
         for (opcode, is_load) in [(0x8b, true), (0x89, false)] {
-            for register in 0..4_u8 {
+            for register in [0_u8, 1, 2, 3, 6, 7] {
                 for displacement in [i32::MIN, -8, -7, -1, 0, 1, 8, i32::MAX] {
                     let mut instruction = vec![0x48, opcode, (register << 3) | 5];
                     instruction.extend_from_slice(&displacement.to_le_bytes());
@@ -7167,14 +7146,29 @@ mod tests {
                     view_bytes.extend_from_slice(&instruction);
                     let code = CodeView::new(0x6000, &view_bytes).unwrap();
                     let entry_rip = 0x6002;
-                    let artifact = if is_load {
-                        compile_memory_load_block_v2(code, entry_rip)
+                    let (artifact, ir_site) = if is_load {
+                        let direct = compile_memory_load_block_v2(code, entry_rip)
                             .unwrap()
-                            .artifact
+                            .artifact;
+                        let ir = compile_ir_memory_load_block_v2(code, entry_rip).unwrap_or_else(
+                            |error| panic!("IR load rejected {instruction:02x?}: {error:?}"),
+                        );
+                        (direct, ir.site().clone())
                     } else {
-                        compile_memory_store_block_v2(code, entry_rip)
+                        let direct = compile_memory_store_block_v2(code, entry_rip)
                             .unwrap()
-                            .artifact
+                            .artifact;
+                        let ir = compile_ir_memory_store_block_v2(code, entry_rip).unwrap_or_else(
+                            |error| {
+                                panic!(
+                                    "IR store rejected {instruction:02x?}: {error:?}, block: {:?}",
+                                    crate::block_compile::compile_checked_store_block_v2(
+                                        code, entry_rip
+                                    )
+                                )
+                            },
+                        );
+                        (direct, ir.site().clone())
                     };
                     assert_eq!(artifact.source_len, 7);
                     assert_eq!(&artifact.source_bytes[..7], instruction.as_slice());
@@ -7184,6 +7178,7 @@ mod tests {
                     assert_eq!(artifact.site.operand.index, None);
                     assert_eq!(artifact.site.operand.scale, 1);
                     assert_eq!(artifact.site.operand.displacement, i64::from(displacement));
+                    assert_eq!(artifact.site, ir_site);
                     assert!(artifact.site.has_supported_profile());
                     assert!(artifact.site.matches_source_bytes(
                         &artifact.source_bytes[..7],
@@ -7193,6 +7188,102 @@ mod tests {
                             MemorySiteOperationV2::Store
                         }
                     ));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rip_relative_rsi_rdi_sites_reject_forged_descriptors_and_partial_windows() {
+        for (opcode, operation) in [
+            (0x8b_u8, MemorySiteOperationV2::Load),
+            (0x89_u8, MemorySiteOperationV2::Store),
+        ] {
+            for data_register in [6_u8, 7] {
+                let mut source = vec![0x48, opcode, (data_register << 3) | 5];
+                source.extend_from_slice(&(-17_i32).to_le_bytes());
+                let code = CodeView::new(0x6800, &source).unwrap();
+                let direct_site = if operation == MemorySiteOperationV2::Load {
+                    compile_memory_load_block_v2(code, 0x6800)
+                        .unwrap()
+                        .site()
+                        .clone()
+                } else {
+                    compile_memory_store_block_v2(code, 0x6800)
+                        .unwrap()
+                        .site()
+                        .clone()
+                };
+                let ir_site = if operation == MemorySiteOperationV2::Load {
+                    compile_ir_memory_load_block_v2(code, 0x6800)
+                        .unwrap()
+                        .site()
+                        .clone()
+                } else {
+                    compile_ir_memory_store_block_v2(code, 0x6800)
+                        .unwrap()
+                        .site()
+                        .clone()
+                };
+                assert_eq!(direct_site, ir_site);
+                assert!(direct_site.matches_source_bytes(&source, operation));
+                let mut changed_final_byte = source.clone();
+                changed_final_byte[6] ^= 1;
+                assert!(!direct_site.matches_source_bytes(&changed_final_byte, operation));
+                let mut changed_data = source.clone();
+                changed_data[2] = ((if data_register == 6 { 7 } else { 6 }) << 3) | 5;
+                assert!(!direct_site.matches_source_bytes(&changed_data, operation));
+                let mut changed_base = source.clone();
+                changed_base[2] = (data_register << 3) | 4;
+                assert!(!direct_site.matches_source_bytes(&changed_base, operation));
+                assert!(!direct_site.matches_source_bytes(&source[..6], operation));
+
+                let mut forged = direct_site;
+                forged.operand.displacement = i64::from(i32::MAX) + 1;
+                assert!(!forged.has_supported_profile());
+                let mut forged = direct_site;
+                forged.operand.base = AddressBase::Register(Register::Rax);
+                assert!(!forged.matches_source_bytes(&source, operation));
+                let mut forged = direct_site;
+                match operation {
+                    MemorySiteOperationV2::Load => {
+                        forged.destination = Some(if data_register == 6 { 7 } else { 6 });
+                    }
+                    MemorySiteOperationV2::Store => {
+                        forged.source = Some(if data_register == 6 { 7 } else { 6 });
+                    }
+                }
+                assert!(!forged.matches_source_bytes(&source, operation));
+                let mut forged = direct_site;
+                forged.operand.index = Some(Register::Rax);
+                assert!(!forged.has_supported_profile());
+                let mut forged = direct_site;
+                forged.operand.scale = 2;
+                assert!(!forged.has_supported_profile());
+                let mut forged = direct_site;
+                forged.operand.address_size = od_isa::OperandSize::Dword;
+                assert!(!forged.has_supported_profile());
+                let mut forged = direct_site;
+                forged.operand.size = od_isa::OperandSize::Dword;
+                assert!(!forged.has_supported_profile());
+                let mut forged = direct_site;
+                forged.next_rip += 1;
+                assert!(!forged.has_supported_profile());
+
+                for visible in 1..source.len() {
+                    let partial = CodeView::new(0x6800, &source[..visible]).unwrap();
+                    let direct = if operation == MemorySiteOperationV2::Load {
+                        compile_memory_load_block_v2(partial, 0x6800).map(|_| ())
+                    } else {
+                        compile_memory_store_block_v2(partial, 0x6800).map(|_| ())
+                    };
+                    let shared_ir = if operation == MemorySiteOperationV2::Load {
+                        compile_ir_memory_load_block_v2(partial, 0x6800).map(|_| ())
+                    } else {
+                        compile_ir_memory_store_block_v2(partial, 0x6800).map(|_| ())
+                    };
+                    assert!(direct.is_err(), "direct accepted partial {visible}");
+                    assert!(shared_ir.is_err(), "IR accepted partial {visible}");
                 }
             }
         }

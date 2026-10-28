@@ -630,6 +630,25 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
     let Ok(view) = CodeView::new(rip, instruction) else {
         return CompileAt::Unsupported;
     };
+    if instruction_len == 7
+        && instruction[0] == 0x48
+        && matches!(instruction[1], 0x8b | 0x89)
+        && instruction[2] >> 6 == 0
+        && instruction[2] & 7 == 5
+        && matches!((instruction[2] >> 3) & 7, 6 | 7)
+    {
+        return if instruction[1] == 0x8b {
+            compile_ir_memory_load_block_v2(view, rip)
+                .map(BoundedMemoryArtifact::Load)
+                .map(CompileAt::Block)
+                .unwrap_or(CompileAt::Unsupported)
+        } else {
+            compile_ir_memory_store_block_v2(view, rip)
+                .map(BoundedMemoryArtifact::Store)
+                .map(CompileAt::Block)
+                .unwrap_or(CompileAt::Unsupported)
+        };
+    }
     if matches!(instruction_len, 4 | 7)
         && instruction[0] == 0x48
         && matches!(instruction[1], 0x8b | 0x89)

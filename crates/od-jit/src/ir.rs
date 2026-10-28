@@ -369,15 +369,20 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                             8 => i32::try_from(operand.displacement).is_ok(),
                             _ => false,
                         };
-                    if !(addr64_profile || addr32_profile)
+                    let rip_relative_profile = length == 7
+                        && operand.address_size == od_isa::OperandSize::Qword
+                        && i32::try_from(operand.displacement).is_ok()
+                        && matches!(operand.base, AddressBase::NextRip);
+                    if !(addr64_profile || addr32_profile || rip_relative_profile)
                         || operand.size != od_isa::OperandSize::Qword
                         || operand.index.is_some()
                         || operand.scale != 1
-                        || !matches!(
+                        || !(matches!(
                             operand.base,
                             od_isa::long_decode::AddressBase::Register(register)
                                 if (register as u8) < 4
-                        )
+                        ) || rip_relative_profile
+                            && matches!(operand.base, AddressBase::NextRip))
                     {
                         return Err(VerifyError::InvalidGpr {
                             operation: operation_index,
@@ -464,6 +469,10 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                             dst: loaded_value,
                             operand,
                         }) if *loaded_value == *src && is_direct_low_base_rsi_rdi_load_operand(
+                            *operand,
+                            instruction_length(program, active_instruction),
+                            register.0,
+                        ) || *loaded_value == *src && is_rip_relative_rsi_rdi_load_operand(
                             *operand,
                             instruction_length(program, active_instruction),
                             register.0,
@@ -1047,6 +1056,21 @@ fn is_direct_low_base_rsi_rdi_load_operand(
             (od_isa::OperandSize::Dword, 8) => i32::try_from(operand.displacement).is_ok(),
             _ => false,
         }
+}
+
+fn is_rip_relative_rsi_rdi_load_operand(
+    operand: MemoryOperand,
+    instruction_length: u64,
+    data_register: u8,
+) -> bool {
+    instruction_length == 7
+        && matches!(data_register, 6 | 7)
+        && operand.address_size == od_isa::OperandSize::Qword
+        && operand.size == od_isa::OperandSize::Qword
+        && matches!(operand.base, AddressBase::NextRip)
+        && operand.index.is_none()
+        && operand.scale == 1
+        && i32::try_from(operand.displacement).is_ok()
 }
 
 fn is_scoped_memory_data_operand(
