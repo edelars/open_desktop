@@ -1130,6 +1130,62 @@ definitions and SIMD floating-point exception tables. [Official Intel Vol. 2B
 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241). See the
 [S2-36z plan](../plans/STAGE_2.md#s2-36z--pure-raw-binary32binary64-sse-minmax-selection).
 
+## S2-36aa — pure raw same-format binary32/binary64 square root
+
+Implemented `Binary32::sqrt_raw_result(mode)` and `Binary64::sqrt_raw_result(mode)`
+as pure same-format value helpers. They preserve signed zero and positive
+infinity; negative finite nonzero values and negative infinity return the
+negative Intel indefinite QNaN with local invalid; QNaN is preserved and SNaN
+is quieted by setting the quiet bit, with invalid only for SNaN. The NaN rule
+is an explicit local sign/payload-preserving policy and is not claimed as an
+exact payload mapping established by Intel Table 11-1. Finite positive inputs
+are normalized and handled entirely with integer arithmetic before one call
+to existing round-and-pack; the raw source is unchanged.
+
+The restoring `u128` integer square-root helper yields `q=floor(sqrt(N))` for
+full-width inputs. The normalized radicand uses Euclidean exponent splitting,
+including negative odd exponents. The packer receives `0/1` for exact roots or
+the documented rounding-equivalent representative `1/2` when the exact root
+has a nonzero fractional tail. This representative is not the exact root
+fraction; its correctness relies on binary32/binary64 precision and their 40/
+11 discarded bits. Positive finite results remain normal and only inexactness
+can be reported. No instruction dispatch, x87, packed lanes, MXCSR,
+architectural exception delivery, denormal-operand reporting, DAZ/FTZ input
+handling, native/JIT, or CPUID behavior is implemented. Subnormal inputs are
+still consumed as exact raw finite values by this helper.
+
+Literal tests cover sqrt(2) and sqrt(0.5) in every rounding mode for both
+formats, exact roots, signed zeros, infinities, negative finite/infinity
+invalid results, QNaN/SNaN policy, subnormal and normal source boundaries, and
+raw-source immutability. The minimum binary64 subnormal has an exact root
+(`2^-537`) and is asserted exact. Integer-root checks cover 0, 1, 2,
+perfect-square neighbors, and `u128::MAX` with overflow-safe floor inequalities.
+The focused `raw_sqrt` tests passed (2/2), the helper invariant test passed
+(1/1), and the complete `binary_float::tests` set passed (84/84). Reproduce
+with:
+
+```sh
+cargo test -p od-isa --offline binary_float::tests::raw_sqrt
+cargo test -p od-isa --offline binary_float::tests::integer_square_root_has_overflow_safe_floor_invariant
+cargo test -p od-isa --offline binary_float::tests
+```
+
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`git diff --check`, and `graphify update .` passed. Graphify reported the existing
+`include/open_desktop/host_abi.h` parser warning and rebuilt the graph to 7,977
+nodes, 16,105 edges, and 254 communities; no new source syntax errors were
+reported. Independent code and docs reviews completed clean with no remaining
+findings. No hardware or native/JIT run was performed.
+
+Provenance: Intel SDM Rev. 093 Vol. 1 Table 11-1 identifies negative SQRT
+inputs as invalid with QNaN indefinite response and refers SNaN handling to
+Table D-10. This does not prove the exact NaN sign/payload mapping selected by
+the local helper. Vol. 2B `SQRTSD` pp. 4-667–4-668 and `SQRTSS` pp. 4-669–4-670
+list invalid, precision, and denormal exceptions; this slice does not report
+denormal operands or apply DAZ/FTZ. [Official Intel Vol. 1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)
+and [Vol. 2B PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241). See the
+[S2-36aa plan](../plans/STAGE_2.md#s2-36aa--pure-raw-same-format-binary32binary64-square-root).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.

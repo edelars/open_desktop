@@ -480,6 +480,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36x | Bounded raw binary32/binary64-to-signed-i32 conversion with explicit rounding mode and local invalid outcome | S2-36a, S2-36m; independent review |
 | [x] | S2-36y | Bounded raw binary32/binary64-to-signed-i64 conversion with explicit rounding mode and local invalid outcome | S2-36x; independent review |
 | [x] | S2-36z | Pure raw binary32/binary64 SSE MIN/MAX selection with right-operand NaN/equality selection and local invalid outcome | S2-36t, S2-36a; independent review |
+| [x] | S2-36aa | Pure raw same-format binary32/binary64 square root with explicit rounding and local invalid outcome | S2-36a, S2-36d-f; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -5700,6 +5701,48 @@ physical-hardware acceptance.
 Provenance: Intel SDM Rev. 093 Vol. 2B MAXSS/MAXSD and MINSS/MINSD operation
 definitions and SIMD floating-point exception tables. [Official Intel Vol. 2B
 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241).
+
+#### S2-36aa — pure raw same-format binary32/binary64 square root
+
+Implement `Binary32::sqrt_raw_result(mode)` and the matching `Binary64` method
+as pure value operations returning `BinaryArithmeticResult<Self>`. Preserve
+both signed zeros and positive infinity. Negative finite nonzero inputs and
+negative infinity return the negative Intel indefinite QNaN and set local
+`invalid_operation`; QNaN is returned unchanged, while SNaN is quieted by
+setting its quiet bit and sets local invalid. This is a documented local
+sign/payload-preserving policy, not a payload mapping inferred from Intel
+Table 11-1. No source, CPU, MXCSR, or x87 state is changed, and no exception is
+delivered.
+
+For positive finite normalized `x = S * 2^(e-63)`, compute
+`E=floor(e/2)`, `b=e-2E`, and `N=S << (63+b)`. An integer square-root helper
+returns `q=floor(sqrt(N))`; verify `R=N-q²` using overflow-safe inequalities.
+Pass quotient `q` to the existing same-format round-and-pack path with a
+private representative tail of `0/1` when `R=0`, otherwise `1/2`. Document
+that this tail is rounding-equivalent for precisions 24 and 53 (discarded
+significand widths 40 and 11) and is not the exact fractional root remainder.
+Use Euclidean/floor exponent division for negative `e`. Positive finite results
+are normal and may report only `inexact`; the source can be subnormal.
+Subnormal raw inputs are treated as their exact finite values. Reporting a
+denormal-operand condition and DAZ/FTZ input handling are deferred; this pure
+helper does not produce denormal diagnostics.
+
+Tests include integer-square-root invariants for 0, 1, 2, perfect-square
+neighbors, and `u128::MAX`; literal sqrt(2) and sqrt(0.5) encodings under all
+modes for both formats; exact roots; subnormal and normal range boundaries;
+special classes; diagnostics; and source immutability. Do not use host
+floating-point square root or fabricated midpoint cases. Keep instruction
+dispatch, x87, packed lanes, MXCSR, exception delivery, DAZ/FTZ, native/JIT,
+and CPUID outside this slice.
+
+Provenance: Intel SDM Rev. 093 Vol. 1 Table 11-1 identifies negative SQRT
+inputs as invalid with QNaN indefinite response and refers SNaN handling to
+Table D-10. This establishes the invalid/special-class context, not an exact
+NaN sign or payload mapping for this local helper. Vol. 2B `SQRTSD` pp. 4-667–
+4-668 and `SQRTSS` pp. 4-669–4-670 list invalid, precision, and denormal
+exceptions. Architectural denormal reporting and MXCSR behavior remain outside
+the helper contract. [Official Intel Vol. 1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)
+and [Vol. 2B PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241).
 
 #### S2-36y — bounded raw binary32/binary64 to signed i64 conversion
 

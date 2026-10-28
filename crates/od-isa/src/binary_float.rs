@@ -331,6 +331,54 @@ fn normalize_i64(value: i64) -> (bool, i32, u64) {
     (sign, leading_bit, significand)
 }
 
+/// Returns `floor(sqrt(value))` for the full `u128` domain.
+///
+/// This restoring digit-by-digit algorithm processes two input bits per step
+/// and never forms a potentially overflowing square or trial product.
+fn integer_sqrt_u128(value: u128) -> u64 {
+    let mut remainder = value;
+    let mut root = 0_u128;
+    let mut bit = 1_u128 << 126;
+    while bit > remainder {
+        bit >>= 2;
+    }
+    while bit != 0 {
+        let trial = root + bit;
+        if remainder >= trial {
+            remainder -= trial;
+            root = (root >> 1) + bit;
+        } else {
+            root >>= 1;
+        }
+        bit >>= 2;
+    }
+    root as u64
+}
+
+/// Builds an integer radicand for a normalized nonzero finite value.
+///
+/// For `x = S * 2^(e-63)`, this returns `(E, q, has_tail)` with
+/// `E=floor(e/2)` and `q=floor(sqrt(S*2^(63+b)))`, where `b=e-2E`.
+/// The exact root is represented as `(q + δ) * 2^(E-63)`, with `δ=0` for an
+/// exact integer root and `0<δ<1` otherwise. The caller passes a rounding-
+/// equivalent representative tail (`0/1` or `1/2`) to the existing packer;
+/// this is not the exact fractional root remainder. It is sufficient for
+/// binary32 and binary64 because their discarded significand widths are 40
+/// and 11 bits: a nonzero tail only changes rounding when `q` is exactly at
+/// the halfway boundary, where every positive tail rounds above that tie.
+fn sqrt_finite_parts(finite: BinaryFinite) -> (i32, u64, bool) {
+    debug_assert_ne!(finite.significand(), 0);
+    let exponent = finite.exponent();
+    let result_exponent = exponent.div_euclid(2);
+    let parity = exponent.rem_euclid(2) as u32;
+    let radicand = u128::from(finite.significand()) << (63 + parity);
+    let root = integer_sqrt_u128(radicand);
+    let square = u128::from(root) * u128::from(root);
+    let remainder = radicand - square;
+    debug_assert!(remainder < (u128::from(root) * 2 + 1));
+    (result_exponent, root, remainder != 0)
+}
+
 /// Rounds the magnitude of one exact finite binary value to an integer.
 ///
 /// Exponents above 63 cannot fit any signed 64-bit destination and are
@@ -891,6 +939,47 @@ impl Binary32 {
             finite_product_quotient(lhs, rhs).expect("normalized finite product bridge");
         Self::round_pack_quotient(sign, exponent, quotient, remainder, denominator, mode)
             .expect("normalized finite product quotient")
+    }
+
+    /// Computes a same-format raw binary32 square root with one rounding step.
+    ///
+    /// This pure value helper preserves signed zero and positive infinity.
+    /// Negative nonzero values, including negative infinity, return the
+    /// negative Intel indefinite QNaN and set the local invalid outcome. NaNs
+    /// follow a local sign/payload-preserving policy: QNaN is returned as-is,
+    /// while SNaN is quieted by setting its quiet bit; only SNaN sets invalid.
+    /// Positive finite inputs use integer-only square root and one existing
+    /// round-and-pack operation. The returned diagnostics are local and do not
+    /// update MXCSR or deliver architectural exceptions.
+    pub fn sqrt_raw_result(self, mode: RationalRoundingMode) -> BinaryArithmeticResult<Self> {
+        match self.class() {
+            BinaryClass::Zero => BinaryArithmeticResult::exact(self, false),
+            BinaryClass::Infinity if !self.sign() => BinaryArithmeticResult::exact(self, false),
+            BinaryClass::Infinity => {
+                BinaryArithmeticResult::exact(Self::from_bits(0xffc0_0000), true)
+            }
+            BinaryClass::QuietNaN => BinaryArithmeticResult::exact(self, false),
+            BinaryClass::SignalingNaN => {
+                BinaryArithmeticResult::exact(Self::from_bits(self.0 | Self::QUIET_BIT), true)
+            }
+            BinaryClass::Subnormal | BinaryClass::Normal if self.sign() => {
+                BinaryArithmeticResult::exact(Self::from_bits(0xffc0_0000), true)
+            }
+            BinaryClass::Subnormal | BinaryClass::Normal => {
+                let finite = self.normalize_finite().expect("finite binary32 operand");
+                let (exponent, quotient, has_tail) = sqrt_finite_parts(finite);
+                let rounded = Self::round_pack_quotient(
+                    false,
+                    exponent,
+                    quotient,
+                    u64::from(has_tail),
+                    if has_tail { 2 } else { 1 },
+                    mode,
+                )
+                .expect("positive finite binary32 square root remains normal");
+                BinaryArithmeticResult::new(rounded, false)
+            }
+        }
     }
 
     /// Multiplies same-format raw binary32 operands and returns result diagnostics.
@@ -1695,6 +1784,47 @@ impl Binary64 {
             finite_product_quotient(lhs, rhs).expect("normalized finite product bridge");
         Self::round_pack_quotient(sign, exponent, quotient, remainder, denominator, mode)
             .expect("normalized finite product quotient")
+    }
+
+    /// Computes a same-format raw binary64 square root with one rounding step.
+    ///
+    /// This pure value helper preserves signed zero and positive infinity.
+    /// Negative nonzero values, including negative infinity, return the
+    /// negative Intel indefinite QNaN and set the local invalid outcome. NaNs
+    /// follow a local sign/payload-preserving policy: QNaN is returned as-is,
+    /// while SNaN is quieted by setting its quiet bit; only SNaN sets invalid.
+    /// Positive finite inputs use integer-only square root and one existing
+    /// round-and-pack operation. The returned diagnostics are local and do not
+    /// update MXCSR or deliver architectural exceptions.
+    pub fn sqrt_raw_result(self, mode: RationalRoundingMode) -> BinaryArithmeticResult<Self> {
+        match self.class() {
+            BinaryClass::Zero => BinaryArithmeticResult::exact(self, false),
+            BinaryClass::Infinity if !self.sign() => BinaryArithmeticResult::exact(self, false),
+            BinaryClass::Infinity => {
+                BinaryArithmeticResult::exact(Self::from_bits(0xfff8_0000_0000_0000), true)
+            }
+            BinaryClass::QuietNaN => BinaryArithmeticResult::exact(self, false),
+            BinaryClass::SignalingNaN => {
+                BinaryArithmeticResult::exact(Self::from_bits(self.0 | Self::QUIET_BIT), true)
+            }
+            BinaryClass::Subnormal | BinaryClass::Normal if self.sign() => {
+                BinaryArithmeticResult::exact(Self::from_bits(0xfff8_0000_0000_0000), true)
+            }
+            BinaryClass::Subnormal | BinaryClass::Normal => {
+                let finite = self.normalize_finite().expect("finite binary64 operand");
+                let (exponent, quotient, has_tail) = sqrt_finite_parts(finite);
+                let rounded = Self::round_pack_quotient(
+                    false,
+                    exponent,
+                    quotient,
+                    u64::from(has_tail),
+                    if has_tail { 2 } else { 1 },
+                    mode,
+                )
+                .expect("positive finite binary64 square root remains normal");
+                BinaryArithmeticResult::new(rounded, false)
+            }
+        }
     }
 
     /// Multiplies same-format raw binary64 operands and returns result diagnostics.
@@ -2572,10 +2702,204 @@ mod tests {
         Binary32, Binary64, BinaryClass, BinaryComparisonMode, BinaryComparisonRelation,
         BinaryFinite, BinaryFiniteQuotient, BinaryRoundingResult, RationalRoundingMode,
         add_finite_aligned, compare_finite, divide_finite_significands, finite_exponent_gap,
-        multiply_finite_significands, round_quotient_to_precision,
+        integer_sqrt_u128, multiply_finite_significands, round_quotient_to_precision,
     };
 
     use core::cmp::Ordering;
+
+    #[test]
+    fn integer_square_root_has_overflow_safe_floor_invariant() {
+        assert_eq!(integer_sqrt_u128(0), 0);
+        assert_eq!(integer_sqrt_u128(1), 1);
+        assert_eq!(integer_sqrt_u128(2), 1);
+        assert_eq!(integer_sqrt_u128(4), 2);
+        let check = |value: u128| {
+            let root = u128::from(integer_sqrt_u128(value));
+            let square = root * root;
+            assert!(square <= value);
+            assert!(value - square < 2 * root + 1);
+        };
+        let root = 12_345_u128;
+        let square = root * root;
+        for value in [square - 1, square, square + 1, u128::MAX] {
+            check(value);
+        }
+        assert_eq!(integer_sqrt_u128(u128::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn raw_sqrt_binary32_is_literal_pure_and_handles_boundaries() {
+        use RationalRoundingMode::{
+            NearestTiesEven as N, TowardNegative as D, TowardPositive as U, TowardZero as Z,
+        };
+        let modes = [N, D, Z, U];
+        let source = Binary32::from_bits(0x4000_0000);
+        for (mode, expected) in [
+            (N, 0x3fb5_04f3),
+            (D, 0x3fb5_04f3),
+            (Z, 0x3fb5_04f3),
+            (U, 0x3fb5_04f4),
+        ] {
+            let result = source.sqrt_raw_result(mode);
+            assert_eq!(result.value().to_bits(), expected);
+            assert!(result.inexact());
+            assert!(!result.overflow());
+            assert!(!result.tiny_after_precision_rounding());
+            assert!(!result.invalid_operation());
+        }
+        let half = Binary32::from_bits(0x3f00_0000);
+        for (mode, expected) in [
+            (N, 0x3f35_04f3),
+            (D, 0x3f35_04f3),
+            (Z, 0x3f35_04f3),
+            (U, 0x3f35_04f4),
+        ] {
+            let result = half.sqrt_raw_result(mode);
+            assert_eq!(result.value().to_bits(), expected);
+            assert!(result.inexact());
+        }
+        for (bits, expected) in [
+            (0x0000_0000, 0x0000_0000),
+            (0x8000_0000, 0x8000_0000),
+            (0x3f80_0000, 0x3f80_0000),
+            (0x4080_0000, 0x4000_0000),
+            (0x7f80_0000, 0x7f80_0000),
+        ] {
+            let value = Binary32::from_bits(bits);
+            for mode in modes {
+                let result = value.sqrt_raw_result(mode);
+                assert_eq!(result.value().to_bits(), expected);
+                assert!(!result.inexact());
+                assert!(!result.invalid_operation());
+            }
+            assert_eq!(value.to_bits(), bits);
+        }
+        for (bits, expected, invalid) in [
+            (0xff80_0000, 0xffc0_0000, true),
+            (0xbf80_0000, 0xffc0_0000, true),
+            (0x8000_0001, 0xffc0_0000, true),
+            (0x7fc1_2345, 0x7fc1_2345, false),
+            (0xffc1_2345, 0xffc1_2345, false),
+            (0x7f81_2345, 0x7fc1_2345, true),
+            (0xff81_2345, 0xffc1_2345, true),
+        ] {
+            let value = Binary32::from_bits(bits);
+            let result = value.sqrt_raw_result(N);
+            assert_eq!(result.value().to_bits(), expected);
+            assert_eq!(result.invalid_operation(), invalid);
+            assert!(!result.inexact());
+            assert_eq!(value.to_bits(), bits);
+        }
+        for bits in [0x0000_0001, 0x007f_ffff, 0x0080_0000, 0x7f7f_ffff] {
+            let value = Binary32::from_bits(bits);
+            let result = value.sqrt_raw_result(N);
+            assert_eq!(result.value().class(), BinaryClass::Normal);
+            assert_eq!(result.inexact(), bits != 0x0080_0000);
+            assert!(!result.overflow());
+            assert!(!result.tiny_after_precision_rounding());
+            assert!(!result.invalid_operation());
+            assert_eq!(value.to_bits(), bits);
+        }
+        assert_eq!(
+            Binary32::from_bits(0x3f00_0000)
+                .sqrt_raw_result(N)
+                .value()
+                .to_bits(),
+            0x3f35_04f3,
+        );
+        let min_normal = Binary32::from_bits(0x0080_0000).sqrt_raw_result(N);
+        assert_eq!(min_normal.value().to_bits(), 0x2000_0000);
+        assert!(!min_normal.inexact());
+    }
+
+    #[test]
+    fn raw_sqrt_binary64_is_literal_pure_and_handles_boundaries() {
+        use RationalRoundingMode::{
+            NearestTiesEven as N, TowardNegative as D, TowardPositive as U, TowardZero as Z,
+        };
+        let modes = [N, D, Z, U];
+        let source = Binary64::from_bits(0x4000_0000_0000_0000);
+        for (mode, expected) in [
+            (N, 0x3ff6_a09e_667f_3bcd),
+            (D, 0x3ff6_a09e_667f_3bcc),
+            (Z, 0x3ff6_a09e_667f_3bcc),
+            (U, 0x3ff6_a09e_667f_3bcd),
+        ] {
+            let result = source.sqrt_raw_result(mode);
+            assert_eq!(result.value().to_bits(), expected);
+            assert!(result.inexact());
+            assert!(!result.overflow());
+            assert!(!result.tiny_after_precision_rounding());
+            assert!(!result.invalid_operation());
+        }
+        let half = Binary64::from_bits(0x3fe0_0000_0000_0000);
+        for (mode, expected) in [
+            (N, 0x3fe6_a09e_667f_3bcd),
+            (D, 0x3fe6_a09e_667f_3bcc),
+            (Z, 0x3fe6_a09e_667f_3bcc),
+            (U, 0x3fe6_a09e_667f_3bcd),
+        ] {
+            let result = half.sqrt_raw_result(mode);
+            assert_eq!(result.value().to_bits(), expected);
+            assert!(result.inexact());
+        }
+        for (bits, expected) in [
+            (0x0000_0000_0000_0000, 0x0000_0000_0000_0000),
+            (0x8000_0000_0000_0000, 0x8000_0000_0000_0000),
+            (0x3ff0_0000_0000_0000, 0x3ff0_0000_0000_0000),
+            (0x4010_0000_0000_0000, 0x4000_0000_0000_0000),
+            (0x7ff0_0000_0000_0000, 0x7ff0_0000_0000_0000),
+        ] {
+            let value = Binary64::from_bits(bits);
+            for mode in modes {
+                let result = value.sqrt_raw_result(mode);
+                assert_eq!(result.value().to_bits(), expected);
+                assert!(!result.inexact());
+                assert!(!result.invalid_operation());
+            }
+            assert_eq!(value.to_bits(), bits);
+        }
+        for (bits, expected, invalid) in [
+            (0xfff0_0000_0000_0000, 0xfff8_0000_0000_0000, true),
+            (0xbff0_0000_0000_0000, 0xfff8_0000_0000_0000, true),
+            (0x8000_0000_0000_0001, 0xfff8_0000_0000_0000, true),
+            (0x7ff8_1234_5678_9abc, 0x7ff8_1234_5678_9abc, false),
+            (0xfff8_1234_5678_9abc, 0xfff8_1234_5678_9abc, false),
+            (0x7ff0_1234_5678_9abc, 0x7ff8_1234_5678_9abc, true),
+            (0xfff0_1234_5678_9abc, 0xfff8_1234_5678_9abc, true),
+        ] {
+            let value = Binary64::from_bits(bits);
+            let result = value.sqrt_raw_result(N);
+            assert_eq!(result.value().to_bits(), expected);
+            assert_eq!(result.invalid_operation(), invalid);
+            assert!(!result.inexact());
+            assert_eq!(value.to_bits(), bits);
+        }
+        for bits in [
+            0x0000_0000_0000_0001,
+            0x000f_ffff_ffff_ffff,
+            0x0010_0000_0000_0000,
+            0x7fef_ffff_ffff_ffff,
+        ] {
+            let value = Binary64::from_bits(bits);
+            let result = value.sqrt_raw_result(N);
+            assert_eq!(result.value().class(), BinaryClass::Normal);
+            assert_eq!(
+                result.inexact(),
+                bits != 0x0000_0000_0000_0001 && bits != 0x0010_0000_0000_0000
+            );
+            assert!(!result.overflow());
+            assert!(!result.tiny_after_precision_rounding());
+            assert!(!result.invalid_operation());
+            assert_eq!(value.to_bits(), bits);
+        }
+        let min_normal = Binary64::from_bits(0x0010_0000_0000_0000).sqrt_raw_result(N);
+        assert_eq!(min_normal.value().to_bits(), 0x2000_0000_0000_0000);
+        assert!(!min_normal.inexact());
+        let min_subnormal = Binary64::from_bits(1).sqrt_raw_result(N);
+        assert_eq!(min_subnormal.value().to_bits(), 0x1e60_0000_0000_0000);
+        assert!(!min_subnormal.inexact());
+    }
 
     fn normalized(
         value: BinaryFinite,
