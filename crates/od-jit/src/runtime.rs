@@ -209,7 +209,7 @@ fn is_rsi_rdi_base_rbp_index_sib_profile(operand: MemoryOperand, length: u64) ->
 }
 
 fn is_low_base_rsi_rdi_index_sib_profile(operand: MemoryOperand, length: u64) -> bool {
-    length == 4
+    matches!(length, 4 | 5 | 8)
         && operand.address_size == od_isa::OperandSize::Qword
         && operand.size == od_isa::OperandSize::Qword
         && matches!(
@@ -221,7 +221,12 @@ fn is_low_base_rsi_rdi_index_sib_profile(operand: MemoryOperand, length: u64) ->
             Some(od_isa::Register::Rsi | od_isa::Register::Rdi)
         )
         && matches!(operand.scale, 1 | 2 | 4 | 8)
-        && operand.displacement == 0
+        && match length {
+            4 => operand.displacement == 0,
+            5 => i8::try_from(operand.displacement).is_ok(),
+            8 => i32::try_from(operand.displacement).is_ok(),
+            _ => false,
+        }
 }
 
 impl MemorySiteV2 {
@@ -1413,21 +1418,24 @@ impl MemorySiteV2 {
                     && self.operand.scale == 1
                     && i32::try_from(self.operand.displacement).is_ok();
             }
-            let rbp_indexed_length = match (mode, source.len()) {
+            let indexed_length = match (mode, source.len()) {
                 (0, 4) => Some(4),
                 (1, 5) => Some(5),
                 (2, 8) => Some(8),
                 _ => None,
             };
-            if rbp_indexed_length == Some(4) && base < 4 && matches!(index, 6 | 7) {
+            if let Some(expected_length) = indexed_length
+                && base < 4
+                && matches!(index, 6 | 7)
+            {
                 return data_register <= 5
-                    && self.next_rip.checked_sub(self.guest_rip) == Some(4)
-                    && is_low_base_rsi_rdi_index_sib_profile(self.operand, 4)
+                    && self.next_rip.checked_sub(self.guest_rip) == Some(expected_length as u64)
+                    && is_low_base_rsi_rdi_index_sib_profile(self.operand, expected_length as u64)
                     && od_isa::Register::from_encoding(base) == Some(decoded_base)
                     && self.operand.index == od_isa::Register::from_encoding(index)
                     && self.operand.scale == scale;
             }
-            if let Some(expected_length) = rbp_indexed_length
+            if let Some(expected_length) = indexed_length
                 && (base < 4 || base == 4 && decoded_base == od_isa::Register::Rsp)
                 && index == 5
             {
@@ -1445,7 +1453,7 @@ impl MemorySiteV2 {
                         _ => false,
                     };
             }
-            if let Some(expected_length) = rbp_indexed_length
+            if let Some(expected_length) = indexed_length
                 && matches!(base, 6 | 7)
                 && index == 5
             {

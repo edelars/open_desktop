@@ -1585,7 +1585,13 @@ fn is_low_base_rsi_rdi_index_qword_sib_data_operand(
     instruction: Instruction,
     operand: od_isa::long_decode::MemoryOperand,
 ) -> bool {
-    instruction.length == 4
+    let displacement_valid = match instruction.length {
+        4 => operand.displacement == 0,
+        5 => i8::try_from(operand.displacement).is_ok(),
+        8 => i32::try_from(operand.displacement).is_ok(),
+        _ => false,
+    };
+    matches!(instruction.length, 4 | 5 | 8)
         && instruction.address_size == OperandSize::Qword
         && operand.address_size == OperandSize::Qword
         && operand.size == OperandSize::Qword
@@ -1595,7 +1601,7 @@ fn is_low_base_rsi_rdi_index_qword_sib_data_operand(
             Some(od_isa::Register::Rsi | od_isa::Register::Rdi)
         )
         && matches!(operand.scale, 1 | 2 | 4 | 8)
-        && operand.displacement == 0
+        && displacement_valid
 }
 
 fn is_rsp_base_rbp_index_qword_sib_data_operand(
@@ -3095,9 +3101,12 @@ pub(crate) fn exact_qword_low_base_rsi_rdi_index_sib_memory_bytes(
     length: u8,
     opcode: u8,
 ) -> bool {
-    if length != 4 {
-        return false;
-    }
+    let expected_mode = match length {
+        4 => 0,
+        5 => 1,
+        8 => 2,
+        _ => return false,
+    };
     let Some(offset) = guest_rip
         .checked_sub(code.base_rip)
         .and_then(|value| usize::try_from(value).ok())
@@ -3112,7 +3121,7 @@ pub(crate) fn exact_qword_low_base_rsi_rdi_index_sib_memory_bytes(
     };
     bytes[0] == 0x48
         && bytes[1] == opcode
-        && bytes[2] >> 6 == 0
+        && bytes[2] >> 6 == expected_mode
         && bytes[2] & 7 == 4
         && (bytes[2] >> 3) & 7 <= 5
         && bytes[3] & 7 < 4

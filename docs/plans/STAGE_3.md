@@ -1811,6 +1811,12 @@ JIT descriptor и host direct V2/shared IR/interpreter должны провер
 
 Проверить load/store × четыре low bases × RSI/RDI × все scales × шесть data regs через direct V2/shared IR/interpreter parity, включая полный CPU/RAM, независимый EA oracle, callback address/count и retirement. Добавить точную #GP проверку canonical start/noncanonical end, отдельный AddressOverflow без callback, architectural/backend fault без commit, successful store+STOP, entry STOP/zero budget, actual-RIP continuation singleton→NOP→pair без повторных эффектов и partial/invalid neighbors. Отчёт: [S3-20bp report](../reports/STAGE_3_S3-20bp_2026-10-28.md). Production owner/MMU, Stage 2/ISA, Mini и performance остаются вне среза.
 
+#### S3-20bq. Address64 indexed SIB с low base, RSI/RDI index и displacement
+
+Добавить только singleton `48 8B/89 /r sib disp8|disp32`: ModRM `mod=01/10,r/m=100`, SIB base RAX..RBX, index ровно RSI/RDI, scale 1/2/4/8, data RAX..RBP, длины 5/8. EA остаётся decoder-owned `MemoryOperand::access_address_48`: старый полный base + старый полный index×scale + signed displacement с wrapping u64. Не менять общие whitelist и не принимать address32, stack/no-base, другие indices, prefixes, pairs или V3.
+
+Проверить обе операции × четыре base × RSI/RDI × четыре scale × шесть data GPR на signed disp8/disp32 границах: parity direct V2/shared IR/interpreter, полный CPU/RAM, независимая формула и callback/count/retirement. Подтвердить data=base из pre-state, full-width high-index bits и u64 wrap, RSI/RDI preservation, последнюю disp32 byte sensitivity, #GP start/end без callback, отдельный AddressOverflow, guest/backend no-commit, store+STOP, entry STOP/stop-RIP/zero budget, partial/unsupported без эффекта и actual-RIP budget continuation по disp8/disp32 без replay. Отчёт: [S3-20bq report](../reports/STAGE_3_S3-20bq_2026-10-28.md). Production owner/MMU, Stage 2/ISA, Mini и performance остаются вне среза.
+
 ### S3-21. Подтвердить memory slice на физическом x86
 
 1. Выполнить после локального завершения Stage 3 как финальный gate. Использовать завершённый S2-09 native memory profile. Проверить одинаковые входы, наблюдение всех заявленных GPR, нормализацию guest addresses и сравнение memory effects.
