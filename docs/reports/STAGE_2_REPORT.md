@@ -13082,6 +13082,30 @@ passed. The Linux-only native-denial guard is compile-checked, not executed on
 this Darwin host. Independent `gpt-6.1-sol` medium review found no remaining
 findings and independently reran the PSRAD interpreter and fixture tests.
 
+## S2-35.45 — local PSRLQ immediate register profile
+
+Implemented `s2-long-psrlq-imm-reg-v1` for exact `66 [no REX or optional 41]
+0F 73 /2 ib`, ModR/M.mod=3, with destination XMM0–15 selected by r/m and
+extended by REX.B. `/2` selects PSRLQ; `/6` PSLLQ and `/3` PSRLDQ are rejected.
+Two independent little-endian u64 lanes shift logically right by unsigned,
+unmasked imm8; counts 0–63 zero-fill and counts >=64 clear both lanes. No
+cross-qword carry occurs; flags and MXCSR are preserved. SSE2 and CR0.EM=0,
+CR0.TS=0, CR4.OSFXSR=1 remain assumptions only.
+
+Local tests cover all 256 counts on all 16 destinations, a widened u128 oracle
+with walking-bit and mixed-qword inputs, right-shift sentinels, strict decoding,
+fetch boundaries, state/no-callback preservation, missing SSE, and atomicity.
+The literal XMM9 fixture passes in the interpreter; JIT and early native
+admission are denied. Native runtime and physical SSE/SSE2 execution remain
+unverified. Focused interpreter and fixture tests passed, as did formatting,
+workspace all-target checks, Linux-target `od-x86-runner --tests` compilation,
+Graphify update, and `git diff --check`. Independent Sol medium review found
+no remaining findings and reran the focused interpreter and fixture tests.
+
+See the [plan](../plans/STAGE_2.md#s2-3545--local-only-bounded-register-immediate-psrlq),
+[CPU contract](../specs/CPU_CONTRACT.md#local-register-only-immediate-psrlq-profile--s2-3545),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3545-local-register-psrlq-immediate-diagnostic-profile).
+
 ## S2-35.44 — local PSLLQ immediate register profile
 
 Implemented `s2-long-psllq-imm-reg-v1` for exact `66 [no REX or optional 41]

@@ -5211,6 +5211,15 @@ left by the unmasked unsigned imm8; counts >=32 clear every lane. The local
 profile assumes SSE2 architectural preconditions and denies JIT and native
 execution.
 
+### S2-35.45 local register PSRLQ immediate diagnostic profile
+
+`s2_35_45_psrlq_imm_register.case.json` is a handwritten literal XMM9 fixture
+for `s2-long-psrlq-imm-reg-v1`, encoded as `66 41 0F 73 D1 01`. `/2` selects
+PSRLQ and `r/m` selects XMM9; `/6` PSLLQ and `/3` PSRLDQ are distinct selectors.
+Two independent little-endian u64 lanes shift logically right by unmasked
+unsigned imm8; counts >=64 clear both lanes. The local profile assumes SSE2
+preconditions and denies JIT and native execution.
+
 ### S2-35.44 local register PSLLQ immediate diagnostic profile
 
 `s2_35_44_psllq_imm_register.case.json` is a handwritten literal XMM9 fixture

@@ -657,6 +657,11 @@ pub enum Operation {
         destination: u8,
         count: u8,
     },
+    /// Local-only register PSRLQ with an unmasked unsigned imm8 count.
+    PsrlqImmediateRegister {
+        destination: u8,
+        count: u8,
+    },
     /// Local-only register PSRLD with an unmasked unsigned imm8 count.
     PsrldImmediateRegister {
         destination: u8,
@@ -2034,6 +2039,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && prefix_bytes[0] == 0x66
             && (prefix_count == 1
                 || (prefix_count == 2 && prefixes.rex.is_some() && prefix_bytes[1] == 0x41));
+        // PSRLQ immediate uses ModR/M.reg as the /2 selector and r/m as destination.
+        let psrlq_immediate_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x73
+            && prefixes.operand_override
+            && prefix_count >= 1
+            && prefix_bytes[0] == 0x66
+            && (prefix_count == 1
+                || (prefix_count == 2 && prefixes.rex.is_some() && prefix_bytes[1] == 0x41));
         // PSRLW immediate uses ModR/M.reg as the /2 selector and r/m as destination.
         let psrlw_immediate_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x71
@@ -2512,16 +2525,21 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
             }
             (OpcodeMap::Escape0f, 0x73) => {
-                if !psllq_immediate_register {
+                if !psllq_immediate_register && !psrlq_immediate_register {
                     return Err(self.unsupported(opcode));
                 }
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 || (modrm >> 3) & 7 != 6 {
+                let selector = (modrm >> 3) & 7;
+                if modrm >> 6 != 3 || (selector != 2 && selector != 6) {
                     return Err(self.unsupported(opcode));
                 }
                 let count = self.byte()?;
                 let destination = (modrm & 7) | ((rex & 1) << 3);
-                Operation::PsllqImmediateRegister { destination, count }
+                if selector == 2 {
+                    Operation::PsrlqImmediateRegister { destination, count }
+                } else {
+                    Operation::PsllqImmediateRegister { destination, count }
+                }
             }
             (OpcodeMap::Escape0f, 0xfc) => {
                 if !paddb_register {
@@ -5620,7 +5638,7 @@ mod tests {
         assert!(Memory::new(&[0x66, 0x0f, 0x73, 0xf9, 1]).decode().is_err()); // /7 PSLLDQ sibling
         for bytes in [
             &[0x0f, 0x73, 0xf1, 1][..],
-            &[0x66, 0x0f, 0x73, 0x71, 1][..], // memory destination
+            &[0x66, 0x0f, 0x73, 0x71, 1][..], // /6 memory destination
             &[0x66, 0x40, 0x0f, 0x73, 0xf1, 1][..],
             &[0x66, 0x42, 0x0f, 0x73, 0xf1, 1][..],
             &[0x66, 0x48, 0x0f, 0x73, 0xf1, 1][..],
@@ -5628,6 +5646,62 @@ mod tests {
             &[0x66, 0x0f, 0x73, 0xf1][..],
             &[0x66, 0xf3, 0x0f, 0x73, 0xf1, 1][..],
             &[0xc5, 0xf9, 0x73, 0xf1, 1][..],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn psrlq_immediate_register_decodes_rmb_destination_and_strict_encoding() {
+        for destination in 0..16u8 {
+            let mut code = vec![0x66];
+            if destination >= 8 {
+                code.push(0x41);
+            }
+            code.extend([0x0f, 0x73, 0xd0 | (destination & 7), 0xff]);
+            let mut memory = Memory::new(&code);
+            let decoded = memory.decode().unwrap();
+            assert_eq!(
+                decoded.operation,
+                Operation::PsrlqImmediateRegister {
+                    destination,
+                    count: 0xff
+                }
+            );
+            assert_eq!(decoded.length, code.len() as u8);
+        }
+        assert_eq!(
+            Memory::new(&[0x66, 0x0f, 0x71, 0xf1, 1])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::PsllwImmediateRegister {
+                destination: 1,
+                count: 1
+            },
+        );
+        assert!(Memory::new(&[0x66, 0x0f, 0x73, 0xf9, 1]).decode().is_err()); // /7 PSLLDQ sibling
+        assert_eq!(
+            Memory::new(&[0x66, 0x0f, 0x73, 0xf1, 1])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::PsllqImmediateRegister {
+                destination: 1,
+                count: 1,
+            }
+        ); // /6 PSLLQ is distinct
+        assert!(Memory::new(&[0x66, 0x0f, 0x73, 0xd9, 1]).decode().is_err()); // /3 PSRLDQ
+        for bytes in [
+            &[0x0f, 0x73, 0xd1, 1][..],
+            &[0x66, 0x0f, 0x73, 0x51, 1][..], // /2 memory destination
+            &[0x66, 0x40, 0x0f, 0x73, 0xd1, 1][..],
+            &[0x66, 0x42, 0x0f, 0x73, 0xd1, 1][..],
+            &[0x66, 0x48, 0x0f, 0x73, 0xd1, 1][..],
+            &[0x66, 0x45, 0x0f, 0x73, 0xd1, 1][..],
+            &[0x66, 0x0f, 0x73, 0xd1][..],
+            &[0x66, 0xf3, 0x0f, 0x73, 0xd1, 1][..],
+            &[0xc5, 0xf9, 0x73, 0xd1, 1][..],
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }
@@ -5666,6 +5740,32 @@ mod tests {
         let mut complete = Memory::new(&[0x66, 0x0f, 0x73, 0xf0, 0x01]);
         complete.base = 0xffc;
         assert_eq!(complete.decode().unwrap().length, 5);
+        assert_eq!(complete.fetched, [0xffc, 0xffd, 0xffe, 0xfff, 0x1000]);
+    }
+
+    #[test]
+    fn psrlq_truncated_immediate_fetch_crosses_page_only_at_final_byte() {
+        let mut memory = Memory::new(&[0x66, 0x0f, 0x73, 0xd0]);
+        memory.base = 0xffc;
+        assert!(matches!(
+            memory.decode(),
+            Err(DecodeError::Memory(MemoryError::Unmapped {
+                address: 0x1000,
+                access: AccessKind::Fetch,
+            }))
+        ));
+        assert_eq!(memory.fetched, [0xffc, 0xffd, 0xffe, 0xfff, 0x1000]);
+        let mut complete = Memory::new(&[0x66, 0x0f, 0x73, 0xd0, 0x01]);
+        complete.base = 0xffc;
+        let decoded = complete.decode().unwrap();
+        assert_eq!(decoded.length, 5);
+        assert_eq!(
+            decoded.operation,
+            Operation::PsrlqImmediateRegister {
+                destination: 0,
+                count: 1,
+            }
+        );
         assert_eq!(complete.fetched, [0xffc, 0xffd, 0xffe, 0xfff, 0x1000]);
     }
 

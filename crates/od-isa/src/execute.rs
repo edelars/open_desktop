@@ -1295,6 +1295,7 @@ fn step_tracked_with_stop(
         | Operation::PsllwImmediateRegister { .. }
         | Operation::PslldImmediateRegister { .. }
         | Operation::PsllqImmediateRegister { .. }
+        | Operation::PsrlqImmediateRegister { .. }
         | Operation::PsrldImmediateRegister { .. }
         | Operation::PsrlwImmediateRegister { .. }
         | Operation::PsrawImmediateRegister { .. }
@@ -3272,6 +3273,27 @@ fn step_tracked_with_stop(
                 .sse
                 .as_mut()
                 .expect("PSLLQ state was prevalidated")
+                .xmm[usize::from(destination)] = shifted;
+        }
+        Operation::PsrlqImmediateRegister { destination, count } => {
+            let original = state
+                .sse
+                .as_ref()
+                .expect("PSRLQ state was prevalidated")
+                .xmm[usize::from(destination)];
+            let mut shifted = [0; 16];
+            if count < 64 {
+                for lane in 0..2 {
+                    let start = lane * 8;
+                    let value = u64::from_le_bytes(original[start..start + 8].try_into().unwrap());
+                    let result = value >> count;
+                    shifted[start..start + 8].copy_from_slice(&result.to_le_bytes());
+                }
+            }
+            state
+                .sse
+                .as_mut()
+                .expect("PSRLQ state was prevalidated")
                 .xmm[usize::from(destination)] = shifted;
         }
         Operation::PsrldImmediateRegister { destination, count } => {
@@ -69593,6 +69615,55 @@ mod tests {
     }
 
     #[test]
+    fn psrlq_immediate_honors_all_unsigned_counts_on_all_destinations() {
+        for destination in 0..16u8 {
+            for count in 0..=u8::MAX {
+                let mut code = vec![0x66];
+                if destination >= 8 {
+                    code.push(0x41);
+                }
+                code.extend([0x0f, 0x73, 0xd0 | (destination & 7), count]);
+                let mut memory = Memory::at(&code, 0x1000);
+                let mut state = LongModeState::default();
+                state.rip = 0x1000;
+                state.rflags = 0x8d7 | crate::DF;
+                state.x87 = Some(X87State::fixture_seed());
+                let mut xmm = [0; 16];
+                let values = [0x8000_0000_0000_0001u64, 0x8000_0000_0000_0000];
+                for lane in 0..2 {
+                    xmm[lane * 8..lane * 8 + 8].copy_from_slice(&values[lane].to_le_bytes());
+                }
+                let mut xmm_state = [[0x5a; 16]; 16];
+                xmm_state[usize::from(destination)] = xmm;
+                state.sse = Some(SseState {
+                    xmm: xmm_state,
+                    mxcsr: 0x1f80,
+                });
+                let before = state.clone();
+                let expected: [u8; 16] = std::array::from_fn(|index| {
+                    let lane = index / 8;
+                    let value = u64::from_le_bytes(xmm[lane * 8..lane * 8 + 8].try_into().unwrap());
+                    let result = if count >= 64 {
+                        0
+                    } else {
+                        (u128::from(value) >> count) as u64
+                    };
+                    result.to_le_bytes()[index % 8]
+                });
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                    StepOutcome::Advanced
+                );
+                let mut unchanged = before;
+                unchanged.rip += code.len() as u64;
+                unchanged.sse.as_mut().unwrap().xmm[usize::from(destination)] = expected;
+                assert_eq!(state, unchanged, "dest={destination} count={count}");
+                assert!(memory.accesses.is_empty());
+            }
+        }
+    }
+
+    #[test]
     fn psllq_u128_oracle_boundary_walking_and_no_lane_carry() {
         let mut state = LongModeState::default();
         state.x87 = Some(X87State::fixture_seed());
@@ -69644,6 +69715,62 @@ mod tests {
             (0x8000_0000_0000_0000, 1, 0),
         ] {
             assert_eq!((u128::from(value) << count) as u64, expected);
+        }
+    }
+
+    #[test]
+    fn psrlq_u128_oracle_boundary_walking_and_no_lane_carry() {
+        let mut state = LongModeState::default();
+        state.x87 = Some(X87State::fixture_seed());
+        state.sse = Some(SseState {
+            xmm: [[0; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let vectors = [
+            0x0000_0000_8000_0000u64,
+            1,
+            0x8000_0000_0000_0000,
+            u64::MAX,
+            0x0123_4567_89ab_cdef,
+        ];
+        for count in 0..64u8 {
+            for bit in 0..64 {
+                for (first, second) in [
+                    (1u64 << bit, 1u64 << (63 - bit)),
+                    (
+                        vectors[bit % vectors.len()],
+                        vectors[(bit + 1) % vectors.len()],
+                    ),
+                ] {
+                    let mut input = [0u8; 16];
+                    input[..8].copy_from_slice(&first.to_le_bytes());
+                    input[8..].copy_from_slice(&second.to_le_bytes());
+                    state.sse.as_mut().unwrap().xmm[0] = input;
+                    state.rip = 0x1000;
+                    let code = [0x66, 0x0f, 0x73, 0xd0, count];
+                    let mut memory = Memory::at(&code, 0x1000);
+                    step(&mut state, &mut memory, AccessContext::default()).unwrap();
+                    for lane in 0..2 {
+                        let v =
+                            u64::from_le_bytes(input[lane * 8..lane * 8 + 8].try_into().unwrap());
+                        let expected = (u128::from(v) >> count) as u64;
+                        assert_eq!(
+                            &state.sse.as_ref().unwrap().xmm[0][lane * 8..lane * 8 + 8],
+                            &expected.to_le_bytes(),
+                            "count={count} bit={bit} lane={lane}"
+                        );
+                    }
+                    assert!(memory.accesses.is_empty());
+                }
+            }
+        }
+        for (value, count, expected) in [
+            (0x8000_0000_0000_0000u64, 1, 0x4000_0000_0000_0000u64),
+            (u64::MAX, 1, 0x7fff_ffff_ffff_ffff),
+            (0x0000_0001_0000_0000, 1, 0x0000_0000_8000_0000),
+            (0x8000_0000_0000_0000, 63, 1),
+        ] {
+            assert_eq!((u128::from(value) >> count) as u64, expected);
         }
     }
 
@@ -70035,6 +70162,43 @@ mod tests {
     #[test]
     fn psllq_missing_sse_state_and_stop_or_zero_budget_are_atomic() {
         let code = [0x66, 0x0f, 0x73, 0xf0, 1];
+        let mut memory = Memory::at(&code, 0x1000);
+        let mut missing = LongModeState::default();
+        missing.rip = 0x1000;
+        let before = missing.clone();
+        assert_eq!(
+            step(&mut missing, &mut memory, AccessContext::default()).unwrap(),
+            StepOutcome::Unsupported { opcode: 0x73 }
+        );
+        assert_eq!(missing, before);
+        for (budget, stop_rip) in [(1, Some(0x1000)), (0, None)] {
+            let mut memory = Memory::at(&code, 0x1000);
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.sse = Some(SseState {
+                xmm: [[0xa5; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(state, before);
+            assert_eq!(result.instructions_executed, 0);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn psrlq_missing_sse_state_and_stop_or_zero_budget_are_atomic() {
+        let code = [0x66, 0x0f, 0x73, 0xd0, 1];
         let mut memory = Memory::at(&code, 0x1000);
         let mut missing = LongModeState::default();
         missing.rip = 0x1000;

@@ -433,6 +433,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-35.38 | Local-only bounded register PSRLW immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.39 | Local-only bounded register PSRAW immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.41 | Local-only bounded register PSLLD immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
+| [x] | S2-35.45 | Local-only bounded register PSRLQ immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.42 | Local-only bounded register PSRLD immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.43 | Local-only bounded register PSRAD immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [ ] | S2-36 | Собственная binary32/binary64 семантика | S2-29, S2-34 |
@@ -8823,6 +8824,35 @@ Linux native denial
 is compile-only on this Darwin host. Independent `gpt-6.1-sol` medium review
 found no remaining findings and independently reran the PSLLD interpreter and
 fixture tests.
+
+#### S2-35.45 — local-only bounded register immediate `PSRLQ`
+
+The profile `s2-long-psrlq-imm-reg-v1` admits exactly
+`66 [no REX or optional 41] 0F 73 /2 ib`, ModR/M.mod=3. ModR/M.r/m
+selects destination XMM0–15; `/2` is required, `/6` PSLLQ and `/3` PSRLDQ
+are rejected. Two independent little-endian u64 lanes shift logically right
+by unmasked unsigned imm8. Counts 0–63 zero-fill; counts >=64 clear both
+lanes. There is no cross-qword carry; flags and MXCSR are unchanged. SSE2 and
+CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 remain assumptions only.
+
+Local checks cover all 256 counts on all 16 destinations, an independent u128
+oracle with walking-bit and mixed-qword inputs, right-shift boundary sentinels,
+strict selector and prefix negatives, full-state/source preservation, no data
+callbacks, missing SSE state, STOP/zero-budget atomicity, and immediate
+truncation/page crossing with successful complete fetch. The handwritten XMM9
+fixture checks interpreter execution with JIT denied. Native denial is before
+mapping/process setup; Linux-only guard compilation is not physical execution.
+Other shifts, memory/MMX, REX.R/X/W, extra prefixes, VEX/EVEX, feature gates,
+exception delivery and physical execution remain excluded.
+
+S2-35.45 implementation check (2026-10-27): `cargo test -p od-isa psrlq
+--offline` passed (5 focused tests), and `cargo test -p od-runner --test
+fixture_v2 psrlq --offline` passed (1 fixture test). Formatting, workspace
+all-target offline check, Linux-target `od-x86-runner --tests` compilation,
+`git diff --check`, and Graphify update passed. Independent `gpt-6.1-sol`
+medium review found no remaining findings and independently reran the focused
+interpreter and fixture tests. Linux native denial remains compile-only on this
+Darwin host; physical SSE/SSE2 execution remains `not_run`.
 
 #### S2-35.44 — local-only bounded register immediate `PSLLQ`
 
