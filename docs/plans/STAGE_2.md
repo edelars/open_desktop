@@ -469,7 +469,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 
 ### S2-00. Принять проверяемый профиль
 
-**Статус:** выполнено для диагностического A и x86-64-v1 ABI/ISA floor; exact Ubuntu 7.0.0-38.38 image/config пакеты staged локально и их ранее зафиксированные hashes повторно подтверждены. Это не утверждает полный CPU/CPUID/MSR/OS boot profile: APT signature, C/D, точные source-to-binary требования, сценарный manifest и наблюдаемое исполнение остаются открытыми. См. [отчёт](../reports/STAGE_2_REPORT.md#s2-00--профиль) и [Linux profile evidence](../reports/STAGE_2_LINUX_PROFILE.md#решение-по-generic-amd64-baseline).
+**Статус:** выполнено для диагностического A и x86-64-v1 ABI/ISA floor; exact Ubuntu 7.0.0-38.38 kernel image/buildinfo packages staged локально и аутентифицированы через подписанный `resolute-updates` index. Историческая provenance metapackage, C/D, точные source-to-binary требования, сценарный manifest, PE signature и наблюдаемое исполнение остаются открытыми. См. [отчёт](../reports/STAGE_2_REPORT.md#s2-00--профиль) и [Linux profile evidence](../reports/STAGE_2_LINUX_PROFILE.md#решение-по-generic-amd64-baseline).
 
 **Файлы:** CPU_CONTRACT, GUEST_REQUIREMENTS по фактическим уточнениям, будущий INTERPRETER.
 

@@ -26,8 +26,9 @@ config и setup header конкретного пакета; Linux boot и пол
 
 Измеренный digest signed image package совпал с опубликованным
 [Ubuntu package download metadata](https://packages.ubuntu.com/resolute-updates/amd64/linux-image-7.0.0-38-generic/download).
-Подпись APT `InRelease` и PE/Authenticode signature в этой проверке не
-верифицировались. Слово signed — свойство пакета и его control metadata,
+При первоначальном исследовании подпись APT `InRelease` и PE/Authenticode
+signature не верифицировались; последующая проверка APT описана ниже. Слово
+signed — свойство пакета и его control metadata,
 не заявление о выполненной криптографической проверке.
 
 Из control metadata: metapackage имеет `Source: linux-meta`, version
@@ -145,16 +146,21 @@ candidates; они остаются unresolved до exact-source/binary gate.
 | Exact Ubuntu source/binary | Source delta и package metadata исследованы; package `startup_64` disassembly и связка каждого пути с binary не завершены | Фактическая последовательность исполнения |
 | Observed execution | Ubuntu kernel guest boot не наблюдался | Успешный boot, C/D или поддерживаемая ОС |
 
-До перехода к реализации/приёмке C/D остаются незакрытыми APT Release
-signature/provenance, initramfs, command line, device/topology manifest и
-измеримый success milestone. Это не меняет статус S2-00: принят диагностический
-A; profile C/D и boot остаются открытыми.
+До перехода к реализации/приёмке C/D остаются незакрытыми provenance
+исторического metapackage 7.0.0-38.38 из подписанного snapshot индекса,
+initramfs, command line, device/topology manifest и измеримый success
+milestone. Signed current index аутентифицирует exact image/buildinfo packages
+7.0.0-38.38, но в нём уже нет соответствующей версии metapackage. Это не
+меняет статус S2-00: принят диагностический A; profile C/D и boot остаются
+открытыми.
 
 ## Что остаётся для C/D
 
-1. Проверить APT Release signature/provenance для staged exact packages;
-   зафиксировать exact initramfs/command line/memory map/device manifest.
-   Содержимое не заменять движущейся зависимостью метапакета.
+1. Для точного исторического metapackage либо подтвердить signed snapshot
+   индексом, либо исключить его из зафиксированного сценария; image/buildinfo
+   packages уже подтверждены signed `resolute-updates` index. Зафиксировать
+   exact initramfs/command line/memory map/device manifest, не полагаясь на
+   движущуюся зависимость метапакета.
 2. Сопоставить Ubuntu source version `7.0.0-38.38`, kernel build flags,
    alternatives и CPU checks с полным ISA/CPUID/MSR/exception/state
    inventory. Наличие capability не заменяет реализацию её семантики.
@@ -274,9 +280,24 @@ buildinfo повторно извлечён config (308,501 bytes, SHA-256
 сохранены compiler и ABI metadata для последующего аудита.
 
 Это подтверждает точное повторное получение и целостность скачанных bytes
-относительно ранее зафиксированных digest, но не криптографическую APT
-provenance: подпись `InRelease` и PE/Authenticode здесь не проверялись.
-Локальные архивы и manifest находятся в игнорируемом `work/`; долговечная
+относительно ранее зафиксированных digest. Пакеты image и buildinfo дополнительно
+криптографически привязаны к Ubuntu archive: подпись `InRelease` pocket
+`resolute-updates` проверена ключом с полным fingerprint
+`F6ECB3762474EDA9D21B7022871920D1991BC93C`, опубликованным в [Ubuntu security
+documentation](https://documentation.ubuntu.com/security/software-integrity/image-verification/).
+Использованный экспортированный keyring хранится в том же ignored каталоге;
+его размер 1,167 bytes, SHA-256
+`5ebbeeb474034b1fa7e50abbe6f136e177fc826219e01f314b3623f7b3097e96`.
+SHA-256 записи `main/binary-amd64/Packages.xz` совпал с digest индекса, затем
+обе записи пакетов в индексе совпали с `.deb` bytes. `InRelease` имеет размер
+137,401 bytes и SHA-256
+`ebbcd81b1c46264144baa563be8d74971303ef8008ef291b8a01ec44f786f829`; индекс
+`Packages.xz` — 792,980 bytes, SHA-256
+`7684c1b9068894c293be6c8e911377bd9f36b47566e07480c8468ec02aa24a18`.
+Текущие подписанные индексы не содержат metapackage версии `7.0.0-38.38`:
+`resolute` содержит `7.0.0-14.14`, а `resolute-updates` — `7.0.0-42.42`.
+Локальный `apt-provenance.json` фиксирует эту границу и записи ядра.
+PE/Authenticode signature по-прежнему не проверена. Локальные архивы и manifest находятся в игнорируемом `work/`; долговечная
 фиксация результата — этот отчёт. Извлечение `vmlinuz` ещё не является
 `startup_64` disassembly или source-to-binary mapping. Initramfs, command line,
 device/topology/memory manifest, success milestone, точное исполнение и полный

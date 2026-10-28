@@ -18,8 +18,9 @@ upstream source reachability, exact Ubuntu source/binary и observed execution.
 Статические config/source/package findings не подтверждают загрузку. Initramfs,
 command line, device/topology manifest и success milestone не определены;
 Linux boot и C/D/System остаются открытыми. На 28 октября exact Ubuntu package
-bytes дополнительно staged локально и повторно сверены с ранее записанными
-размерами/SHA-256; APT Release signature, PE signature и guest boot всё ещё не
+bytes staged локально; SHA-256 kernel image/buildinfo подтверждены через
+подписанный `resolute-updates` index. Исторический metapackage 7.0.0-38.38 пока
+не аутентифицирован через snapshot index; PE signature и guest boot не
 проверены. Подробности и ограничения: [S2-00 Linux profile report](STAGE_2_LINUX_PROFILE.md#решение-по-generic-amd64-baseline).
 
 ## S2-22e — CPL3 GDT-only VERW
@@ -328,8 +329,9 @@ capabilities — в [Linux profile report](STAGE_2_LINUX_PROFILE.md) и
 [GUEST_REQUIREMENTS](../specs/GUEST_REQUIREMENTS.md). Это чтение bytes в памяти
 по официальным источникам; staging, boot и проверка APT/PE signatures не
 выполнены при первоначальном исследовании; на 28 октября package/image bytes
-staged локально и их hashes повторно сверены (подробности в Linux profile
-report). Проверка APT/PE signatures и boot не выполнены. Upstream v7.0 `configure_5level_paging` использует 32-bit trampoline
+staged локально, hashes kernel image/buildinfo подтверждены через подписанный
+Ubuntu package index (подробности в Linux profile report). PE signature и boot
+не проверены. Upstream v7.0 `configure_5level_paging` использует 32-bit trampoline
 при mismatch текущего и требуемого LA57, поэтому direct64 не исключает
 дальнейший 32-bit путь. Сопоставление Ubuntu source/build, reachable ISA,
 полный C/D contract и Windows profile остаются открытыми.
