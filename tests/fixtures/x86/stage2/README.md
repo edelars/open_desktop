@@ -5134,3 +5134,13 @@ receives its original high qword followed by the source high qword, and its low
 qword is ignored. PUNPCKHQDQ has no MMX form, so bare `0F 6D /r` without the
 mandatory `66` is rejected. Interpreter execution is supported; JIT/native
 execution remains denied.
+
+
+### S2-35.32 local register PACKSSWB diagnostic profile
+
+`s2_35_32_packsswb_register.case.json` is a handwritten literal XMM8,XMM9
+fixture for `s2-long-packsswb-reg-v1`, encoded as `66 45 0F 63 C1`. Its signed
+word inputs include the saturation boundaries and `0100`/`ff00`; destination
+bytes 0–7 contain the eight saturated original destination words, followed by
+the eight saturated original source words in bytes 8–15. The local profile
+assumes SSE2 architectural preconditions and denies JIT and native execution.

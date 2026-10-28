@@ -415,6 +415,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-35.28 | Local-only bounded register PUNPCKLDQ XMM diagnostic slice; low-dword interleave, native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.29 | Local-only bounded register PUNPCKHDQ XMM diagnostic slice; high-dword interleave, native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.31 | Local-only bounded register PUNPCKHQDQ XMM diagnostic slice; high-qword interleave, native/JIT closed | S2-34.1, S2-35.1; independent review |
+| [x] | S2-35.32 | Local-only bounded register PACKSSWB XMM diagnostic slice; signed word-to-byte saturation, native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [ ] | S2-36 | Собственная binary32/binary64 семантика | S2-29, S2-34 |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
@@ -8657,3 +8658,27 @@ exception delivery and physical execution remain excluded. SSE2 and
 CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only. S2-34, S2-35, global
 `S2-35 → S2-34`, and combined Mac mini/SSH acceptance remain open. Evidence is
 recorded in [STAGE_2_REPORT.md](../reports/STAGE_2_REPORT.md).
+
+
+#### S2-35.32 — local-only bounded register `PACKSSWB`
+
+The bounded profile `s2-long-packsswb-reg-v1` admits only legacy
+`66 [one optional REX.R/B] 0F 63 /r`, ModR/M.mod=3 and XMM0–15.
+ModR/M.reg is destination and ModR/M.r/m is source. Read eight signed
+little-endian i16 words from the original destination, then eight from the
+original source; clamp each independently to [-128, 127] and write the eight
+destination results into bytes 0–7 and eight source results into bytes 8–15.
+This output is concatenated in operand order, not interleaved. Source is
+preserved. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions only.
+
+Coverage includes -129/-128/-127, 127/128, 0100 and ff00 sentinels; every raw
+i16 value at each of the eight positions in each operand against a widened
+i32 reference; all 16×16 XMM/REX.R/B pairs; distinct order sentinels,
+self-aliasing, full architectural state and source preservation, and zero data
+callbacks. Truncation, missing-state, strict decoder negatives including
+VEX `C5 F9 63 C1`, and a handwritten literal XMM8/XMM9 fixture are covered.
+JIT and native execution are denied. PACKUSWB, PACKSSDW, other packing or
+shuffle/shift operations, memory, MMX, extra prefixes, REX.W/X, VEX/EVEX,
+feature gates, exception delivery, and physical execution remain excluded.
+S2-34, S2-35, global `S2-35 → S2-34`, and combined Mac mini/SSH acceptance
+remain open. Evidence is recorded in [STAGE_2_REPORT.md](../reports/STAGE_2_REPORT.md).

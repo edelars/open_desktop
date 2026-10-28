@@ -6972,4 +6972,36 @@ mod tests {
             "08090a0b88898a8b0c0d0e0f8c8d8e8f"
         );
     }
+    #[test]
+    fn packsswb_literal_fixture_runs_in_interpreter_and_jit_stays_denied() {
+        let fixture = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_32_packsswb_register.case.json"
+        ))
+        .expect("PACKSSWB schema");
+        fixture.fixture.validate().unwrap();
+        let code = [0x66, 0x45, 0x0f, 0x63, 0xc1];
+        assert!(
+            od_jit::compile(&code).is_err(),
+            "PACKSSWB remains JIT-denied"
+        );
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+        let result = execute_fixture_v2(&fixture, &mut memory);
+        result.validate_for(&fixture).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(1) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("PACKSSWB snapshot unavailable")
+        };
+        assert_eq!(
+            value.state.sse.as_ref().unwrap().xmm[8],
+            "80807f7f7f800000807f7f7f7f7fff80"
+        );
+        assert_eq!(
+            value.state.sse.as_ref().unwrap().xmm[9],
+            "0080ff7f8000ff008001ff00ffff0080"
+        );
+    }
 }

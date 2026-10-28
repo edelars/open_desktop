@@ -12764,3 +12764,37 @@ was compile-checked on this Darwin host but not executed. These results establis
 only local interpreter/profile behavior; S2-34, S2-35, global
 `S2-35 → S2-34`, physical x86 validation, and combined Mac mini/SSH acceptance
 remain open.
+
+
+## S2-35.32 — local PACKSSWB XMM register slice
+
+Added the local-only profile `s2-long-packsswb-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F 63 /r`, ModR/M.mod=3 and XMM0–15. The
+interpreter reads eight signed little-endian i16 lanes from the original
+destination and then eight from the original source, clamps each signed i16 to
+[-128,127] before narrowing, and writes the results
+concatenated into destination bytes 0–7 and 8–15. Source, x87, MXCSR, flags
+and other XMM state remain unchanged. SSE2 and CR0.EM=0, CR0.TS=0,
+CR4.OSFXSR=1 are assumptions only. PACKUSWB, PACKSSDW, other packing,
+shuffles/shifts, memory/MMX, extra prefixes, REX.W/X, VEX/EVEX execution,
+feature gates, exceptions, native/JIT execution and physical execution remain
+excluded.
+
+Coverage includes signed boundary sentinels (-129/-128/-127, 127/128, 0100,
+ff00), every raw i16 value at each of the eight positions in each operand,
+all 16×16 XMM/REX.R/B pairs, distinct operand-order sentinels, self-aliasing,
+source and full-state preservation, zero data callbacks, truncation/missing
+state/STOP/budget atomicity, strict decoder negatives including VEX
+`C5 F9 63 C1`, and a handwritten XMM8/XMM9 fixture with JIT denial.
+Focused `od-isa` coverage passed (4 tests), the literal runner fixture passed
+(1), and all 320 `od-testkit` tests passed. `cargo test --workspace
+--all-targets --offline --quiet` passed 1,764 tests. Host and
+`x86_64-unknown-linux-gnu` workspace all-target offline checks passed; Linux
+native-denial coverage was compile-checked but not executed on this Darwin host.
+`cargo fmt --all -- --check` and `git diff --check` passed. `graphify update .`
+completed with the existing `include/open_desktop/host_abi.h` extractor warning.
+Independent `gpt-6.1-sol` medium review found no semantic or code findings.
+The docs-only review identified and corrected the clamp/reference wording; the
+final docs re-review passed. This remains local
+interpreter/profile evidence only and does not close S2-34, S2-35, global
+`S2-35 → S2-34`, physical x86 validation, or combined Mac mini/SSH acceptance.
