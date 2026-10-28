@@ -687,6 +687,28 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
             };
         }
     }
+    if instruction.len() == 8 && instruction[0] == 0x48 && matches!(instruction[1], 0x8b | 0x89) {
+        let modrm = instruction[2];
+        let sib = instruction[3];
+        if modrm >> 6 == 0
+            && modrm & 7 == 4
+            && (modrm >> 3) & 7 <= 5
+            && sib & 7 == 5
+            && matches!((sib >> 3) & 7, 6 | 7)
+        {
+            return if instruction[1] == 0x8b {
+                compile_ir_memory_load_block_v2(view, rip)
+                    .map(BoundedMemoryArtifact::Load)
+                    .map(CompileAt::Block)
+                    .unwrap_or(CompileAt::Unsupported)
+            } else {
+                compile_ir_memory_store_block_v2(view, rip)
+                    .map(BoundedMemoryArtifact::Store)
+                    .map(CompileAt::Block)
+                    .unwrap_or(CompileAt::Unsupported)
+            };
+        }
+    }
     if matches!(instruction.len(), 5 | 6 | 9)
         && instruction[0] == 0x67
         && instruction[1] == 0x48
