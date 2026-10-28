@@ -211,6 +211,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20bm | Address32 indexed SIB qword MOV с RSI/RDI base | Только `67 48 8B/89 /r sib [disp8|disp32]`, ModRM `mod=00/01/10,r/m=100`, SIB base RSI/RDI, index RAX..RBX, scale 1/2/4/8, data RAX..RBP; Dword EA/Qword data; длины 5/6/9 |
 | [partial] | S3-20bn | Address64 indexed SIB qword MOV с RSI/RDI base и RBP index | Только `48 8B/89 /r sib [disp8|disp32]`, ModRM `mod=00/01/10,r/m=100`, SIB base RSI/RDI, index RBP, scale 1/2/4/8, data RAX..RBP; Qword EA/data; длины 4/5/8 |
 | [partial] | S3-20bp | Address64 no-displacement SIB qword MOV with RSI/RDI index | Только `48 8B/89 /r sib`, ModRM `mod=00/rm=100`, base RAX..RBX, index RSI/RDI, scale 1/2/4/8, data RAX..RBP; длина 4 |
+| [partial] | S3-20br | Address32 indexed SIB qword MOV с low base и RSI/RDI index | Только `67 48 8B/89 /r sib [disp8|disp32]`, ModRM `mod=00/01/10,r/m=100`, base RAX..RBX, index RSI/RDI, scale 1/2/4/8, data RAX..RBP; Dword EA/Qword data; длины 5/6/9 |
 | [ ] | S3-21 | Финальный физический gate для memory slice после локального Stage 3 | S3-20; S2-09 и нужный native profile |
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
@@ -1816,6 +1817,12 @@ JIT descriptor и host direct V2/shared IR/interpreter должны провер
 Добавить только singleton `48 8B/89 /r sib disp8|disp32`: ModRM `mod=01/10,r/m=100`, SIB base RAX..RBX, index ровно RSI/RDI, scale 1/2/4/8, data RAX..RBP, длины 5/8. EA остаётся decoder-owned `MemoryOperand::access_address_48`: старый полный base + старый полный index×scale + signed displacement с wrapping u64. Не менять общие whitelist и не принимать address32, stack/no-base, другие indices, prefixes, pairs или V3.
 
 Проверить обе операции × четыре base × RSI/RDI × четыре scale × шесть data GPR на signed disp8/disp32 границах: parity direct V2/shared IR/interpreter, полный CPU/RAM, независимая формула и callback/count/retirement. Подтвердить data=base из pre-state, full-width high-index bits и u64 wrap, RSI/RDI preservation, последнюю disp32 byte sensitivity, #GP start/end без callback, отдельный AddressOverflow, guest/backend no-commit, store+STOP, entry STOP/stop-RIP/zero budget, partial/unsupported без эффекта и actual-RIP budget continuation по disp8/disp32 без replay. Отчёт: [S3-20bq report](../reports/STAGE_3_S3-20bq_2026-10-28.md). Production owner/MMU, Stage 2/ISA, Mini и performance остаются вне среза.
+
+#### S3-20br. Address32 indexed SIB с low base и RSI/RDI index
+
+Поддержать только singleton `67 48 8B/89 /r sib [disp8|disp32]`: ModRM `mod=00/01/10,r/m=100`, SIB base RAX..RBX, index ровно RSI или RDI, scale 1/2/4/8, data RAX..RBP, длины 5/6/9. EA остаётся decoder-owned через `MemoryOperand::access_address_48`: `(low32(old base)+low32(old index)*scale+signed displacement) mod 2^32`, затем zero-extension; перенос и данные — полные qword. RSI/RDI используются только как индекс и сохраняются; data=base использует pre-state для адреса/store, а load commit происходит только после успешного чтения.
+
+Приёмка: direct V2/shared IR/interpreter parity CPU/RAM/callback/retirement; все операции × low bases × RSI/RDI × scales × data GPR и формы mod00/disp8/disp32; high-half truncation и modulo-2^32 wrap, включая product/addition wrap; qword crossing 4 GiB одним contiguous callback; final byte 9 меняет decoded disp32 target; noncanonical high halves не порождают #GP после address-size truncation (Dword EA плюс qword length также не может переполнить u64); architectural/backend load/store no-commit; store+STOP и entry STOP/stop-RIP/zero-budget; actual-RIP continuation через 5/6/9-byte формы без replay; partial windows и invalid neighbors без эффектов. Отчёт: [S3-20br report](../reports/STAGE_3_S3-20br_2026-10-28.md). Production owner/MMU, Stage 2/ISA, Mini и performance вне среза.
 
 ### S3-21. Подтвердить memory slice на физическом x86
 
