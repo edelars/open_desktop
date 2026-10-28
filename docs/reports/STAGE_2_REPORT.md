@@ -13526,3 +13526,12 @@ zero retirement); `cargo test -p od-testkit movupd_memory_store_profile --offlin
 `graphify update .` passed. Native denial was compile-checked only; physical
 execution remains `not_run`. Write-error checks assert CPU-state preservation,
 not memory rollback for arbitrary `GuestMemory` implementations.
+
+
+## S2-34.23 — local MOVUPD base+displacement memory profile
+
+Added separate profile `s2-long-movupd-mem-base-v1` for mandatory-66 MOVUPD loads/stores using 64-bit base plus absent/signed disp8/disp32. It reuses `rm_operand`/`MemoryOperand` and the existing 16-byte memory execution path. SIB, mod=00/rm=5, registers, REX.W/X, address-size override, malformed/other prefixes, scalar, VEX and EVEX encodings remain rejected. Existing exact `[RAX]` profiles are unchanged.
+
+The two handwritten fixtures test `[R9+1]` load and `[R8-7]` store using XMM8. The CLI interpreter test checks complete raw XMM/state results and store canaries; JIT denies the profile. Testkit validation checks forbidden prefixes/address modes and rejects these extended forms under the old exact MOVUPD `[RAX]` profile. A runner regression sets a signed RIP-relative disp32 to mapped data and confirms it is rejected as an out-of-profile encoding. Decoder tests check disp8 -128/+127, disp32 min/max, and inherited RBP/#SS versus R13/#GP attribution. Callback tests confirm one 16-byte data callback per operation; injected load and store failures preserve CPU state.
+
+Verification (2026-10-28): `cargo test -p od-isa movupd --offline` (13), `cargo test -p od-testkit movupd_memory_base --offline` (2), `cargo test -p od-runner --test fixture_v2 local_movupd_memory_base --offline` (2), `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, Linux `cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`, `git diff --check`, and `graphify update .` passed. Native denial was compile-checked only; physical execution is `not_run`. No arbitrary-backend memory rollback is claimed. Parent S2-34 remains open; ISSUE-012 remains open.

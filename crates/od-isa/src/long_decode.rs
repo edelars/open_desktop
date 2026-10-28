@@ -1856,6 +1856,18 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     && prefix_bytes[0] == 0x66
                     && prefixes.rex.is_some_and(|rex| matches!(rex, 0x40 | 0x44))
                     && prefix_bytes[1] == prefixes.rex.unwrap()));
+        let movupd_memory_base = opcode.map == OpcodeMap::Escape0f
+            && matches!(opcode.byte, 0x10 | 0x11)
+            && prefixes.operand_override
+            && !duplicate
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && !prefixes.address_override
+            && (prefix_bytes[..prefix_count] == [0x66]
+                || (prefix_count == 2
+                    && prefix_bytes[0] == 0x66
+                    && prefixes.rex.is_some_and(|rex| rex & 0x0a == 0)
+                    && prefix_bytes[1] == prefixes.rex.unwrap()));
         let movapd_reverse_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x29
             && prefixes.operand_override
@@ -3344,6 +3356,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     && !movupd_reverse_register
                     && !movupd_memory_load
                     && !movupd_memory_store
+                    && !movupd_memory_base
                     && !movups_register
                     && !movups_memory
                     && !movups_memory_store
@@ -3356,10 +3369,13 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     && !movupd_reverse_register
                     && !movups_register)
                     || (modrm >> 6 != 3
-                        && ((movupd_register && !movupd_memory_load)
-                            || (movupd_reverse_register && !movupd_memory_store)
+                        && ((movupd_register && !movupd_memory_load && !movupd_memory_base)
+                            || (movupd_reverse_register
+                                && !movupd_memory_store
+                                && !movupd_memory_base)
                             || (!movupd_memory_load
                                 && !movupd_memory_store
+                                && !movupd_memory_base
                                 && !movups_memory
                                 && !movups_memory_store)))
                 {
@@ -3397,23 +3413,37 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         },
                         source: reg,
                     }
-                } else if modrm >> 6 != 3 && (movups_memory || movups_memory_store) {
+                } else if modrm >> 6 != 3
+                    && (movups_memory || movups_memory_store || movupd_memory_base)
+                {
                     // Reuse the shared ModR/M decoder for disp8/disp32, extended
                     // base registers and the bounded RIP-relative form.
                     let operand = self.rm_operand(modrm, prefixes, OperandSize::Qword)?;
                     let Operand::Memory(memory) = operand else {
                         return Err(self.unsupported(opcode));
                     };
-                    if (modrm & 7 != 4 && rex & 2 != 0)
+                    if (movupd_memory_base && modrm & 7 == 4)
+                        || (modrm & 7 != 4 && rex & 2 != 0)
                         // In 64-bit mode mod=00/rm=101 stays RIP-relative when
                         // REX.B=1. This local profile bounds its REX.B allowlist
                         // to actual GPR bases, so reject rather than alias R13.
-                        || (matches!(memory.base, AddressBase::NextRip) && rex & 1 != 0)
+                        || (matches!(memory.base, AddressBase::NextRip)
+                            && (movupd_memory_base || rex & 1 != 0))
                         || prefixes.address_override
                     {
                         return Err(self.unsupported(opcode));
                     }
-                    if opcode.byte == 0x10 {
+                    if movupd_memory_base && opcode.byte == 0x10 {
+                        Operation::MovupdLoadMemory {
+                            destination: reg,
+                            source: memory,
+                        }
+                    } else if movupd_memory_base {
+                        Operation::MovupdStoreMemory {
+                            destination: memory,
+                            source: reg,
+                        }
+                    } else if opcode.byte == 0x10 {
                         Operation::MovupsLoadMemory {
                             destination: reg,
                             source: memory,
@@ -8298,8 +8328,19 @@ mod tests {
             movapd.decode().unwrap().operation,
             Operation::MovapdRegister { .. }
         ));
+        let mut disp8_load = Memory::new(&[0x66, 0x0f, 0x10, 0x40, 0x00]);
+        assert!(matches!(
+            disp8_load.decode().unwrap().operation,
+            Operation::MovupdLoadMemory {
+                destination: 0,
+                source: MemoryOperand {
+                    base: AddressBase::Register(Register::Rax),
+                    displacement: 0,
+                    ..
+                }
+            }
+        ));
         for bytes in [
-            &[0x66, 0x0f, 0x10, 0x40, 0x00][..],
             &[0x66, 0x66, 0x0f, 0x10, 0xc1][..],
             &[0x40, 0x66, 0x0f, 0x10, 0xc1][..],
             &[0x66, 0x64, 0x0f, 0x10, 0xc1][..],
@@ -8342,7 +8383,6 @@ mod tests {
             );
         }
         for bytes in [
-            &[0x66, 0x0f, 0x10, 0x40, 0x00][..],
             &[0x66, 0x0f, 0x10, 0x04, 0x00][..],
             &[0x66, 0x0f, 0x10, 0x05, 0, 0, 0, 0][..],
             &[0x66, 0x48, 0x0f, 0x10, 0x00][..],
@@ -8608,6 +8648,88 @@ mod tests {
         ] {
             let mut memory = Memory::new(bytes);
             assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn movupd_memory_base_decodes_signed_displacements_and_reuses_stack_attribution() {
+        for (bytes, base, displacement, length, xmm) in [
+            (
+                &[0x66, 0x0f, 0x10, 0x40, 0x80][..],
+                Register::Rax,
+                -128,
+                5,
+                0,
+            ),
+            (
+                &[0x66, 0x0f, 0x10, 0x40, 0x7f][..],
+                Register::Rax,
+                127,
+                5,
+                0,
+            ),
+            (
+                &[0x66, 0x45, 0x0f, 0x10, 0x81, 0, 0, 0, 0x80][..],
+                Register::R9,
+                i64::from(i32::MIN),
+                9,
+                8,
+            ),
+            (
+                &[0x66, 0x45, 0x0f, 0x11, 0x81, 0xff, 0xff, 0xff, 0x7f][..],
+                Register::R9,
+                i64::from(i32::MAX),
+                9,
+                8,
+            ),
+        ] {
+            let mut memory = Memory::new(bytes);
+            let instruction = memory.decode().unwrap();
+            let operand = match instruction.operation {
+                Operation::MovupdLoadMemory {
+                    destination,
+                    source,
+                } => {
+                    assert_eq!(destination, xmm);
+                    source
+                }
+                Operation::MovupdStoreMemory {
+                    destination,
+                    source,
+                } => {
+                    assert_eq!(source, xmm);
+                    destination
+                }
+                other => panic!("unexpected operation: {other:?}"),
+            };
+            assert_eq!(instruction.length, length);
+            assert_eq!(operand.base, AddressBase::Register(base));
+            assert_eq!(operand.displacement, displacement);
+            assert_eq!(operand.size, OperandSize::Qword);
+        }
+
+        for bytes in [
+            &[0x66, 0x0f, 0x10, 0x05, 0xf9, 0xff, 0x0f, 0x00][..],
+            &[0x66, 0x41, 0x0f, 0x10, 0x05, 0xf9, 0xff, 0x0f, 0x00][..],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+
+        for (bytes, base, vector) in [
+            (&[0x66, 0x0f, 0x10, 0x45, 0][..], Register::Rbp, 12),
+            (&[0x66, 0x41, 0x0f, 0x10, 0x45, 0][..], Register::R13, 13),
+        ] {
+            let mut memory = Memory::new(bytes);
+            let instruction = memory.decode().unwrap();
+            let Operation::MovupdLoadMemory { source, .. } = instruction.operation else {
+                panic!("expected MOVUPD memory load")
+            };
+            let mut state = LongModeState::default();
+            state.gpr[base as usize] = 0x0000_8000_0000_0000;
+            let error = source
+                .access_range_address_48(&state, u64::from(instruction.length), 16)
+                .unwrap_err();
+            assert!(matches!(error, MemoryError::Architectural(fault) if fault.vector == vector));
         }
     }
 

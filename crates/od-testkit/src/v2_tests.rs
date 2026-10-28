@@ -2224,6 +2224,120 @@ fn movups_memory_base_profile_admits_base_disp_and_rejects_other_address_forms()
 }
 
 #[test]
+fn movupd_memory_base_profile_is_separate_and_requires_66() {
+    let original = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_6_movups_memory_base.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    for xmm in 0u8..16 {
+        for opcode in [0x10u8, 0x11] {
+            let rex = if xmm >= 8 { vec![0x44] } else { Vec::new() };
+            let mut bytes = vec![0x66];
+            bytes.extend(rex);
+            bytes.extend([0x0f, opcode, (xmm & 7) << 3]);
+            let hex = bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let mut fixture = original.clone();
+            fixture.profile = Profile::LongMovupdMemBaseV1;
+            let code = fixture
+                .memory
+                .iter_mut()
+                .find(|r| r.region_id == "code")
+                .unwrap();
+            code.length = bytes.len() as u32;
+            code.initial_bytes_hex = hex;
+            code.comparison_mask_hex = "ff".repeat(bytes.len());
+            fixture.stop_rip = Some(HexU64(
+                fixture.initial_state.rip.get() + u64::from(code.length),
+            ));
+            assert!(fixture.validate().is_ok(), "xmm={xmm} opcode={opcode:#x}");
+        }
+    }
+
+    for (bytes, base_index, base_value) in [
+        ("660f1000", 0usize, 0x0020_0001u64),
+        ("66440f1000", 0usize, 0x0020_0001),   // REX.R only
+        ("66410f1040f9", 8usize, 0x0020_0008), // REX.B only
+        ("66450f1140f9", 8usize, 0x0020_0008),
+    ] {
+        let mut fixture = original.clone();
+        fixture.profile = Profile::LongMovupdMemBaseV1;
+        fixture.initial_state.gpr[base_index] = HexU64(base_value);
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.length = (bytes.len() / 2) as u32;
+        code.initial_bytes_hex = bytes.into();
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        fixture.stop_rip = Some(HexU64(
+            fixture.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(
+            fixture.validate().is_ok(),
+            "{bytes}: {:?}",
+            fixture.validate()
+        );
+
+        fixture.profile = Profile::LongMovupsMemBaseV1;
+        assert!(fixture.validate().is_err(), "old profile admitted {bytes}");
+    }
+
+    for bad_encoding in [
+        "0f1000",           // missing mandatory 66
+        "66660f1000",       // duplicate mandatory prefix
+        "41660f1000",       // REX before mandatory prefix
+        "64660f1000",       // segment override
+        "f3660f1000",       // scalar prefix
+        "67660f1000",       // address-size override
+        "66480f1000",       // REX.W
+        "66420f1000",       // REX.X
+        "660f10c0",         // register ModR/M
+        "660f1004",         // truncated SIB selector
+        "660f100400",       // SIB
+        "660f1005",         // truncated RIP-relative disp32
+        "660f1005f9ff0f00", // RIP-relative target reaches valid data but is excluded
+        "660f1040",         // truncated disp8
+        "660f1080000000",   // truncated disp32
+    ] {
+        let mut fixture = original.clone();
+        fixture.profile = Profile::LongMovupdMemBaseV1;
+        let code = fixture
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "code")
+            .unwrap();
+        code.length = (bad_encoding.len() / 2) as u32;
+        code.initial_bytes_hex = bad_encoding.into();
+        code.comparison_mask_hex = "ff".repeat(bad_encoding.len() / 2);
+        fixture.stop_rip = Some(HexU64(
+            fixture.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(fixture.validate().is_err(), "admitted {bad_encoding}");
+    }
+
+    let mut missing_66 = original;
+    missing_66.profile = Profile::LongMovupdMemBaseV1;
+    assert!(missing_66.validate().is_err());
+
+    for bytes in [
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_23_movupd_memory_base_load_r9_disp32.case.json").as_slice(),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_23_movupd_memory_base_store_r8_disp8.case.json").as_slice(),
+    ] {
+        let fixture = Fixture::from_json(bytes).unwrap().fixture;
+        assert_eq!(fixture.profile, Profile::LongMovupdMemBaseV1);
+        assert!(fixture.validate().is_ok(), "{}", fixture.case_id);
+        let mut old_exact = fixture;
+        old_exact.profile = Profile::LongMovupdMemLoadV1;
+        assert!(old_exact.validate().is_err());
+    }
+}
+
+#[test]
 fn x87_schema_admits_fdivr_forms_and_inexact_no_stop_case() {
     let mut fixture = x87_fixture().fixture;
     fixture.case_id = "local_fdivr_exact".into();

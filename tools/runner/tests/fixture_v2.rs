@@ -5271,6 +5271,92 @@ fn local_movupd_memory_load_fixture_reads_raw_xmm_and_jit_denies_profile() {
 }
 
 #[test]
+fn local_movupd_memory_base_load_and_store_fixtures_use_extended_base_disp_and_jit_denies() {
+    let load_bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_23_movupd_memory_base_load_r9_disp32.case.json"
+    );
+    let (load_input, load_result) = run(load_bytes, "interpreter", 0);
+    assert_eq!(
+        load_input.fixture.profile,
+        od_testkit::v2::Profile::LongMovupdMemBaseV1
+    );
+    assert_eq!(
+        load_input.fixture.memory[0].initial_bytes_hex,
+        "66450f108101000000"
+    );
+    assert_eq!(load_input.fixture.initial_state.gpr[9], HexU64(0x0020_0000));
+    assert_eq!(count(&load_result), 1);
+    let mut expected_load = load_input.fixture.initial_state.clone();
+    expected_load.rip = load_input.fixture.stop_rip.unwrap();
+    expected_load.sse.as_mut().unwrap().xmm[8] = "000102030405060708090a0b0c0d0e0f".into();
+    assert_eq!(snapshot(&load_result).state, expected_load);
+    assert_eq!(
+        snapshot(&load_result).memory[1].bytes_hex,
+        load_input.fixture.memory[1].initial_bytes_hex
+    );
+    let (_, jit_load) = run(load_bytes, "jit", 4);
+    assert!(matches!(jit_load.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(jit_load.snapshot, Observation::Unavailable { .. }));
+
+    let store_bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_23_movupd_memory_base_store_r8_disp8.case.json"
+    );
+    let (store_input, store_result) = run(store_bytes, "interpreter", 0);
+    assert_eq!(
+        store_input.fixture.profile,
+        od_testkit::v2::Profile::LongMovupdMemBaseV1
+    );
+    assert_eq!(
+        store_input.fixture.memory[0].initial_bytes_hex,
+        "66450f1140f9"
+    );
+    assert_eq!(
+        store_input.fixture.initial_state.gpr[8],
+        HexU64(0x0020_0008)
+    );
+    assert_eq!(count(&store_result), 1);
+    let mut expected_store = store_input.fixture.initial_state.clone();
+    expected_store.rip = store_input.fixture.stop_rip.unwrap();
+    assert_eq!(snapshot(&store_result).state, expected_store);
+    assert_eq!(
+        snapshot(&store_result).memory[1].bytes_hex,
+        "a5808182838485868788898a8b8c8d8e8f5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+    );
+    let (_, jit_store) = run(store_bytes, "jit", 4);
+    assert!(matches!(jit_store.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_store.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_movupd_memory_base_rejects_rip_relative_when_target_is_mapped_data() {
+    let mut fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_34_23_movupd_memory_base_load_r9_disp32.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let code = fixture
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    // Next RIP is 0x100008; signed disp32 0x000ffff9 targets mapped data at 0x200001.
+    code.length = 8;
+    code.initial_bytes_hex = "660f1005f9ff0f00".into();
+    code.comparison_mask_hex = "ff".repeat(8);
+    fixture.stop_rip = Some(HexU64(fixture.initial_state.rip.get() + 8));
+    let error = Fixture::from_json(&serde_json::to_vec(&fixture).unwrap()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("outside the base+displacement MOVUPD profile"),
+        "{error}"
+    );
+}
+
+#[test]
 fn local_movss_memory_load_fixture_clears_xmm_upper_bits_and_keeps_native_closed() {
     let bytes = include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_34_8c_movss_memory_load_rax.case.json"

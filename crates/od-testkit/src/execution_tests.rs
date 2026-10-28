@@ -15030,3 +15030,38 @@ fn local_packssdw_literal_fixture_uses_signed_dwords_and_preserves_side_state() 
     assert_eq!(state, expected_state);
     assert_eq!(memory.snapshot(), memory_before);
 }
+
+#[test]
+fn movupd_memory_base_uses_one_data_callback_and_commits_only_after_success() {
+    for (fixture_bytes, failed_access) in [
+        (include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_23_movupd_memory_base_load_r9_disp32.case.json").as_slice(), Some(AccessKind::Read)),
+        (include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_23_movupd_memory_base_store_r8_disp8.case.json").as_slice(), Some(AccessKind::Write)),
+    ] {
+        let base = Fixture::from_json(fixture_bytes).unwrap().fixture;
+        for fail in [false, true] {
+            let fixture = base.clone();
+            let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+            let before = state.clone();
+            let mut inner = FlatMemory::from_fixture(&fixture).unwrap();
+            if fail {
+                inner.inject_once(
+                    0x0020_0001,
+                    failed_access.unwrap(),
+                    MemoryError::Backend("injected MOVUPD memory-base failure".into()),
+                );
+            }
+            let mut memory = AccessTraceMemory { inner, accesses: Vec::new(), fetch_limit: None };
+            let result = step(&mut state, &mut memory, AccessContext::default());
+            let data_accesses: Vec<_> = memory.accesses.iter().filter(|(kind, ..)| *kind == failed_access.unwrap()).collect();
+            assert_eq!(data_accesses.len(), 1, "{} fail={fail}", fixture.case_id);
+            assert_eq!(data_accesses[0].2, 16, "{} fail={fail}", fixture.case_id);
+            if fail {
+                assert!(matches!(result, Err(MemoryError::Backend(_))), "{result:?}");
+                assert_eq!(state, before);
+            } else {
+                assert_eq!(result, Ok(StepOutcome::Advanced));
+                assert_eq!(state.rip, fixture.stop_rip.unwrap().get());
+            }
+        }
+    }
+}

@@ -5352,3 +5352,15 @@ data reads. Interpreter runs the fixture; JIT and native profiles deny it. This
 local profile makes no hardware atomicity, MMIO/SMP, `#AC`, fault-priority, or
 arbitrary-backend rollback claim. Parent S2-34 remains open and physical status
 is `not_run`.
+
+### S2-34.23 local MOVUPD memory-base diagnostic profile
+
+`s2_34_23_movupd_memory_base_load_r9_disp32.case.json` loads 16 unaligned raw
+bytes from `[R9+1]` using `66 45 0F 10 81 01 00 00 00`; REX.R selects XMM8
+and REX.B selects R9. `s2_34_23_movupd_memory_base_store_r8_disp8.case.json`
+writes XMM8 to `[R8-7]` using `66 45 0F 11 40 F9`. Both use the distinct
+`s2-long-movupd-mem-base-v1` profile and the shared memory operand/range path.
+The runner checks raw state and canary bytes; JIT/native admission is denied.
+This local slice does not establish hardware alignment/fault behavior or
+arbitrary backend rollback. Parent S2-34 remains open; physical status is
+`not_run`.
