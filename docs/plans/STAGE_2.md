@@ -472,6 +472,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36p | Extend finite binary32/binary64 add/sub result APIs across the full finite exponent range | S2-36o, S2-36m; independent review |
 | [x] | S2-36q | Same-format raw binary32/binary64 add/sub results for finite values, zeros, infinities and NaNs; local invalid-operation outcome | S2-36p, S2-36a; independent review |
 | [x] | S2-36r | Same-format raw binary32/binary64 multiplication results for finite values, zeros, infinities and NaNs; local invalid-operation outcome | S2-36m, S2-36q; independent review |
+| [x] | S2-36s | Same-format raw binary32/binary64 division results for finite values, zeros, infinities and NaNs; local invalid-operation and divide-by-zero outcomes | S2-36n, S2-36q, S2-36r; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -5482,6 +5483,44 @@ delegation. Авторские проверки прошли:
 `graphify update .`. Independent Sol medium code review и docs review завершены
 без замечаний; hardware/SSH и Mac mini проверка отложены до общего финального
 substage. S2-36 не завершён.
+
+#### S2-36s — raw same-format binary32/binary64 division
+
+**Статус:** raw division result APIs реализованы; независимые Sol medium
+code review и docs review завершены чисто. Полная приёмка S2-36 и
+hardware/Mac mini acceptance остаются открытыми.
+
+`Binary32::divide_raw_result` и `Binary64::divide_raw_result` принимают raw
+операнды одного формата и возвращают отдельный `BinaryDivisionResult<Self>`:
+result encoding, S2-36n rounding diagnostics, `invalid_operation` и
+`divide_by_zero`. Это отдельный тип, чтобы не добавлять несвязанный divzero
+outcome в общий arithmetic result. Все outcomes локальны и не обновляют
+MXCSR/x87 state, не выполняют masking или exception delivery.
+
+NaN propagation использует shared S2-36q/r first-source resolver до всех
+special-case проверок: выбранный QNaN сохраняется, выбранный SNaN quiet-ится,
+любой SNaN ставит invalid. Поэтому NaN над denominator zero не ставит
+`divide_by_zero`. `0/0` и `∞/∞` дают negative Intel QNaN indefinite и
+`invalid_operation=true`. Только finite nonzero divided by either signed zero
+ставит `divide_by_zero`; `∞/0` возвращает signed infinity без этого исхода.
+Остальные бесконечные случаи и zero/finite или finite/infinity дают знак через
+XOR. Для всех special results три rounding diagnostics false. Finite/finite
+включая zero numerator делегируют напрямую `divide_finite_result`, включая
+zero sign, single rounding и S2-36n diagnostics.
+
+Локальная классификация опирается на Intel SDM Rev. 093, Vol. 1:
+§4.9.1.3 (`#Z` только для finite nonzero/zero), §4.9.2 (QNaN precedes
+divide-by-zero) и §4.8.3.7/Table D-1 (negative indefinite encodings;
+[official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)). Эти правила
+задают результат API, а не MXCSR/x87 status или исключение инструкции.
+
+Literal tests обеих ширин покрывают zero/infinity/finite class combinations,
+NaN/signaling NaN versus zero, signs и operand order, invalid versus local
+divide-by-zero, нули во всех rounding modes и finite exact/inexact/subnormal/
+underflow/overflow delegation. Авторские проверки: binary_float (60/60), x87
+(47/47), fmt, workspace check, diff check и Graphify update. Независимые Sol
+medium code review и docs review завершились без замечаний; аппаратная/Mac mini
+проверка отложена до общего финального substage. S2-36 не завершён.
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 

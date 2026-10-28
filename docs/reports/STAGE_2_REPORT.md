@@ -819,6 +819,47 @@ zero×infinity encodings: Table D-1 ([official Intel PDF](https://cdrdv2.intel.c
 Ссылка фиксирует raw local result contract, не architectural exception
 delivery. См. [план S2-36r](../plans/STAGE_2.md#s2-36r--raw-same-format-binary32binary64-multiplication).
 
+## S2-36s — raw same-format binary32/binary64 division results
+
+**Статус:** `Binary32::divide_raw_result` / `Binary64::divide_raw_result`
+реализованы. Авторские local checks завершились успешно; independent Sol
+medium code review и docs review завершились без замечаний. Full S2-36 и
+hardware/Mac mini acceptance остаются открытыми.
+
+Методы принимают raw операнды одного формата и возвращают отдельный
+`BinaryDivisionResult<Self>` с result encoding, S2-36n diagnostics, local
+`invalid_operation` и local `divide_by_zero`. Для этого division outcome не
+добавлен к общему arithmetic result. API не изменяет MXCSR/x87 state, не
+выбирает masking и не выполняет exception delivery.
+
+NaN обработка идёт первой и использует shared resolver S2-36q/r: выбранный
+первый source QNaN сохраняется, выбранный SNaN quiet-ится сохранением sign и
+payload, любой SNaN ставит invalid. NaN над нулевым знаменателем не сообщает
+divide-by-zero. `0/0` и `∞/∞` возвращают negative Intel indefinite QNaN
+(`0xffc00000` для binary32, `0xfff8000000000000` для binary64) с invalid.
+Finite nonzero/±0 возвращает infinity с XOR sign и только
+`divide_by_zero=true`; `∞/0` возвращает тот же знаковый infinity без
+divide-by-zero. Ноль/конечное ненулевое и finite/infinity дают zero с XOR sign;
+infinity/finite nonzero даёт infinity с XOR sign. Все эти special results имеют
+false `inexact`, `overflow` и `tiny_after_precision_rounding`.
+
+Raw finite/finite pairs, включая zero numerator и ненулевой denominator,
+нормализуются и делегируют `divide_finite_result`, сохраняя single rounding и
+S2-36n diagnostics. Literal cases проверяют обе ширины, special class matrix,
+NaN versus zero, source order/sign/payload, signs и operand order, отсутствие
+ложного divzero, all-mode signed zero, а также finite exact/inexact/subnormal/
+underflow/overflow outputs. Пройдены `cargo test -p od-isa --offline
+binary_float::tests` (60/60), `cargo test -p od-isa --offline x87::tests`
+(47/47), fmt, workspace check, diff check и `graphify update .`. Independent Sol
+medium code review и docs review завершились без замечаний.
+
+Provenance: Intel SDM Rev. 093, Vol. 1 §4.9.1.3 (`#Z` is raised only for
+finite nonzero / zero), §4.9.2 (QNaN takes precedence over divide-by-zero),
+§4.8.3.7 / Table D-1 (negative indefinite QNaN values;
+[official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)). Эти ссылки
+обосновывают local raw result contract, не exception flags/delivery.
+См. [план S2-36s](../plans/STAGE_2.md#s2-36s--raw-same-format-binary32binary64-division).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.
