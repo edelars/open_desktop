@@ -1439,6 +1439,7 @@ fn execute(loaded: &LoadedFixture) -> RunResult {
             | v2::Profile::LongPslldImmRegV1
             | v2::Profile::LongPsllqImmRegV1
             | v2::Profile::LongPslldqImmRegV1
+            | v2::Profile::LongPsrldqImmRegV1
             | v2::Profile::LongPsrlqImmRegV1
             | v2::Profile::LongPsrldImmRegV1
             | v2::Profile::LongPsrlwImmRegV1
@@ -5296,6 +5297,19 @@ mod tests {
     fn s2_35_46_pslldq_fixture_is_denied_before_native_execution() {
         let loaded = Fixture::from_json(include_bytes!(
             "../../../tests/fixtures/x86/stage2/s2_35_46_pslldq_imm_register.case.json"
+        ))
+        .unwrap();
+        assert!(
+            matches!(execute(&loaded).outcome, Outcome::Unsupported { ref reason }
+            if reason == "this profile is local-only; native state does not observe every profile field")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s2_35_47_psrldq_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_35_47_psrldq_imm_register.case.json"
         ))
         .unwrap();
         assert!(

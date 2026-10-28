@@ -9269,6 +9269,21 @@ the profile.
 
 See the [S2-35.46 plan](../plans/STAGE_2.md#s2-3546--local-only-bounded-register-immediate-pslldq).
 
+## Local register-only immediate `PSRLDQ` profile — S2-35.47
+
+The diagnostic profile `s2-long-psrldq-imm-reg-v1` admits exactly
+`66 [no REX or optional 41] 0F 73 /3 ib`, ModR/M.mod=3. ModR/M.r/m selects
+destination XMM0–15, with REX.B extending the register. `/3` selects PSRLDQ;
+`/2` PSRLQ and `/7` PSLLDQ are separate forms. The imm8 is an unsigned,
+unmasked byte count. For count below 16, result byte `i` is original
+destination byte `i+count` when that source index is below 16, else zero.
+Count >=16 clears the full XMM. The operation uses an original-value snapshot;
+flags and MXCSR are unchanged. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are
+assumptions only. Bare REX 40, REX.R/X/W, extra prefixes, memory/MMX, VEX/EVEX,
+and JIT/native execution are outside this profile.
+
+See the [S2-35.47 plan](../plans/STAGE_2.md#s2-3547--local-only-bounded-register-immediate-psrldq).
+
 ## Local register-only immediate `PSRLD` profile — S2-35.42
 
 The diagnostic profile `s2-long-psrld-imm-reg-v1` admits exactly

@@ -13162,6 +13162,35 @@ fixture test). `cargo fmt --all -- --check`,
 --offline` passed. `git diff --check` and `graphify update .` passed. The
 Linux-only native-denial guard was compile-checked but not executed on this
 Darwin host; physical SSE/SSE2 remains `not_run`. Independent Sol medium
-review is pending. See the [plan](../plans/STAGE_2.md#s2-3546--local-only-bounded-register-immediate-pslldq),
+review found no remaining findings and independently reran the PSLLDQ
+interpreter and fixture tests. See the [plan](../plans/STAGE_2.md#s2-3546--local-only-bounded-register-immediate-pslldq),
 [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-immediate-pslldq-profile--s2-3546),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3546-local-register-pslldq-immediate-diagnostic-profile).
+
+## S2-35.47 — local PSRLDQ immediate register profile
+
+Implemented `s2-long-psrldq-imm-reg-v1` for exact
+`66 [no REX or optional 41] 0F 73 /3 ib`, ModR/M.mod=3, with r/m selecting
+XMM0–15. `/2` PSRLQ and `/7` PSLLDQ remain distinct. The unmasked unsigned
+imm8 shifts the entire XMM toward lower byte indices with zero fill and clears
+all bytes for counts >=16. Execution snapshots the original register; flags
+and MXCSR are untouched. JIT/native admission remains closed.
+
+Local checks cover all 256 counts on each destination against a byte-index
+oracle, all 128 walking-one positions, byte sentinels 1–16, count-1 movement
+across byte 7/8, count-8 qword-boundary behavior, selector/prefix negatives,
+missing SSE, STOP/zero-budget atomicity, immediate page crossing, and the
+handwritten XMM9 fixture. The fixture executes in the interpreter and is denied
+by JIT and native profiles.
+
+Focused verification: `cargo test -p od-isa psrldq --offline` passed (4 tests),
+and `cargo test -p od-runner --test fixture_v2 psrldq --offline` passed (1
+test). Workspace all-target offline checks, formatting, Linux-target x86-runner
+test compilation, Graphify update and `git diff --check` passed. Independent
+Sol review found no remaining findings and independently reran all four
+neighboring shift ISA suites and fixture tests. The Linux-only native-denial
+guard was compile-checked but not executed on Darwin; physical SSE/SSE2 remains
+`not_run`. See the
+[plan](../plans/STAGE_2.md#s2-3547--local-only-bounded-register-immediate-psrldq),
+[CPU contract](../specs/CPU_CONTRACT.md#local-register-only-immediate-psrldq-profile--s2-3547),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3547-local-register-psrldq-immediate-diagnostic-profile).

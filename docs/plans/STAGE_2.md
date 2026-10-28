@@ -436,6 +436,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-35.44 | Local-only bounded register PSLLQ immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.45 | Local-only bounded register PSRLQ immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [ ] | S2-35.46 | Local-only bounded register PSLLDQ immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
+| [ ] | S2-35.47 | Local-only bounded register PSRLDQ immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.42 | Local-only bounded register PSRLD immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.43 | Local-only bounded register PSRAD immediate profile; native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [ ] | S2-36 | Собственная binary32/binary64 семантика | S2-29, S2-34 |
@@ -8917,6 +8918,29 @@ Physical SSE/SSE2 execution remains `not_run`.
 
 S2-35.46 implementation check (2026-10-27): focused checks and independent
 review are recorded in [the stage report](../reports/STAGE_2_REPORT.md#s2-3546--local-pslldq-immediate-register-profile).
+
+#### S2-35.47 — local-only bounded register immediate `PSRLDQ`
+
+The profile `s2-long-psrldq-imm-reg-v1` admits exactly
+`66 [no REX or optional 41] 0F 73 /3 ib`, ModR/M.mod=3. ModR/M.r/m selects
+XMM0–15, with REX.B extending the destination. `/3` is required; `/2` PSRLQ
+and `/7` PSLLDQ are separate selectors. The unsigned imm8 is an unmasked byte
+count: for counts below 16, output byte `i` receives original destination byte
+`i+count` when the source index is below 16, else zero. Counts >=16 clear all
+bytes. The operation uses the original XMM snapshot and preserves flags/MXCSR.
+SSE2 preconditions remain assumptions; memory/MMX, other prefixes and JIT/native
+execution are outside this profile.
+
+S2-35.47 implementation check (2026-10-28): focused PSRLDQ interpreter tests
+passed (4), and the literal XMM9 fixture passed (1), including the independent
+byte-index oracle, all walking-one positions, qword-boundary sentinels, strict
+selector negatives, and x87-seeded missing-SSE/STOP/zero-budget atomicity.
+Workspace all-target checks, formatting, Linux-target x86-runner test
+compilation, `git diff --check`, and Graphify passed. Independent Sol review
+found no remaining findings and independently reran the neighboring ISA suites
+and all fixture tests. Native denial is compile-only on Darwin; physical
+SSE/SSE2 execution is `not_run`. S2-34, S2-35, and global `S2-35 → S2-34` remain
+open.
 
 #### S2-35.42 — local-only bounded register immediate `PSRLD`
 
