@@ -1,5 +1,16 @@
 # Собственные schema v2 fixtures этапа 2
 
+### S2-37a local legacy RSQRTSS register profile
+
+`s2_37a_rsqrtss_register.case.json` is a schema-v2 XMM8/XMM9 fixture for the
+exact `F3 45 0F 52 C1` register encoding. Its XMM9 low dword contains `4.0`,
+which produces the local raw-helper result `0.5`; the runner checks preservation
+of the destination upper 96 bits and other state. The profile assumes SSE and
+CR0/CR4 permission and performs no data-memory access. It does not model CPUID,
+SIMD FP exception/MXCSR behavior or guest FP flags. JIT/native and physical
+execution are closed; hardware approximation-envelope validation is deferred
+to the combined final Mac mini substage. See the [S2-37a plan](../../../../docs/plans/STAGE_2.md#s2-37a--local-long64-register-only-legacy-rsqrtss).
+
 Байты написаны вручную по Intel SDM revision 093: Vol.2B `MOV—Move`,
 Vol.2A `ADD—Add`, Vol.2A §§2.1.5 и 2.2.1.2 (ModR/M/SIB и REX),
 Vol.1 §3.4.1.1 (GPR/subregister aliases). Нормативная ссылка:

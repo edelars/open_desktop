@@ -484,6 +484,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36ab | Deterministic raw binary32 SSE reciprocal reference; no instruction dispatch or MXCSR | S2-36c, S2-36e, S2-36f; independent review |
 | [x] | S2-36ac | Deterministic pure raw binary32 SSE reciprocal-square-root reference; no diagnostics or state changes | S2-36aa, S2-36ab; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
+| [x] | S2-37a | Local-only Long64 legacy register RSQRTSS profile `s2-long-rsqrtss-reg-v1`, using S2-36ac raw helper; JIT/native closed | S2-34.1, S2-36ac; independent review |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
@@ -5861,6 +5862,20 @@ Full S2-36/Stage 2 acceptance and hardware/Mac mini validation remain open.
 3. Для approximate instructions использовать нормативные error bounds, для exact-result instructions — точное сравнение.
 
 **Готово:** NaNs, infinities, signed zeros, subnormals, boundary conversions и обычные cases сопоставлены с Mac mini в поддерживаемых формах.
+
+#### S2-37a — local Long64 register-only legacy RSQRTSS
+
+Add one schema-v2 diagnostic profile, `s2-long-rsqrtss-reg-v1`, for the exact
+legacy `F3 [one adjacent REX.R/B] 0F 52 /r` register form. Accept only XMM0–15
+with ModR/M.mod=3; reject other prefixes, REX.W/X, duplicate/nonadjacent REX,
+memory forms, VEX/EVEX, truncation, and neighboring opcodes. Use
+`Binary32::reciprocal_sqrt_sse_raw()` for only the source low 32 bits, update
+only the destination low 32 bits, and preserve its upper 96 bits and all other
+state. No data-memory callback occurs. SSE and CR0/CR4 permission are profile
+preconditions; generic CPUID, #UD/#NM, MXCSR state, SIMD exceptions, and guest
+FP flag effects are excluded. JIT and native admission stay closed. Approximate
+result bits are local helper output and are not claimed to match a CPU; final
+Mac mini validation belongs to the combined final hardware substage.
 
 ### S2-38. MXCSR и FP fault ordering
 

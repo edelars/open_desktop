@@ -96,6 +96,40 @@ cargo check --workspace --all-targets --offline
 `graphify update .` updated the code graph. Independent `gpt-6.1-sol` medium
 code and documentation reviews reported no findings.
 
+## S2-37a — local-only Long64 legacy register RSQRTSS
+
+Added schema-v2 profile `s2-long-rsqrtss-reg-v1` for the exact register
+encoding `F3 [one adjacent REX.R/B] 0F 52 /r`, ModR/M.mod=3, XMM0–15. The
+decoder rejects memory operands, other legacy prefixes, REX.W/X, duplicate or
+nonadjacent REX, truncation, VEX/EVEX, and opcode neighbors. Interpreter
+execution invokes only `Binary32::reciprocal_sqrt_sse_raw()` on the source low
+dword and writes only the destination low dword. The upper 96 destination bits,
+all other XMM/GPR/x87 state, RFLAGS, and MXCSR remain unchanged. The focused
+execution matrix covers all 256 source/destination register pairs including
+aliases, representative special inputs, and confirms zero data-memory
+callbacks. A schema-v2 fixture runs `RSQRTSS XMM8,XMM9` with `4.0` producing the
+local reference value `0.5`.
+
+The profile assumes SSE and CR0/CR4 permission. Generic CPUID, #UD/#NM,
+MXCSR state/exceptions, and guest FP flags are not implemented. The local
+approximation is not asserted to match hardware bits; JIT and native admission
+are explicitly denied. Physical/hardware envelope validation remains deferred
+to the combined final Mac mini substage, so this result establishes local
+semantic coverage only.
+
+**Checks:** `cargo test -p od-isa --offline rsqrtss_register` passed (2 tests);
+`cargo test -p od-testkit --offline` passed (369 tests);
+`cargo test -p od-runner --offline --test fixture_v2 local_rsqrtss_register`
+passed (1 test); `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, and `git diff --check`
+passed. `graphify update .` completed with the existing extractor warning for
+`include/open_desktop/host_abi.h`. The native runner's test module is gated to
+Linux x86-64 and was therefore unavailable on this macOS host; native admission
+remains closed by its explicit profile deny set and physical execution is
+`not_run`. Independent `gpt-6.1-sol` medium code and documentation review found
+no remaining defects after the review suggestion to use distinct source values
+for all sixteen XMM registers and compare the complete state was addressed.
+
 ## S2-36a — raw binary32/binary64 classification and finite normalization
 
 **Статус:** source implementation and focused tests are complete; workspace

@@ -5063,6 +5063,29 @@ fn local_movss_register_copies_only_scalar_low_bits_and_keeps_native_closed() {
 }
 
 #[test]
+fn local_rsqrtss_register_transforms_only_the_destination_low_dword_and_keeps_jit_closed() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_37a_rsqrtss_register.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongRsqrtssRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8].replace_range(..8, "0000003f");
+    assert_eq!(snapshot(&result).state, expected);
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
 fn local_movsd_register_copies_only_scalar_low_qword_and_keeps_native_closed() {
     let bytes =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_9a_movsd_register.case.json");

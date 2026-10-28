@@ -84,6 +84,7 @@ pub const PROFILE_ANDPS_REGISTER: &str = "s2-long-andps-reg-v1";
 pub const PROFILE_ORPS_REGISTER: &str = "s2-long-orps-reg-v1";
 pub const PROFILE_ANDNPS_REGISTER: &str = "s2-long-andnps-reg-v1";
 pub const PROFILE_MOVSS_REGISTER: &str = "s2-long-movss-reg-v1";
+pub const PROFILE_RSQRTSS_REGISTER: &str = "s2-long-rsqrtss-reg-v1";
 pub const PROFILE_MOVSD_REGISTER: &str = "s2-long-movsd-reg-v1";
 pub const PROFILE_MOVSD_STORE_REGISTER: &str = "s2-long-movsd-store-reg-v1";
 pub const PROFILE_MOVSD_MEMORY_LOAD: &str = "s2-long-movsd-mem-load-v1";
@@ -277,6 +278,8 @@ pub enum Profile {
     LongAndnpsRegV1,
     #[serde(rename = "s2-long-movss-reg-v1")]
     LongMovssRegV1,
+    #[serde(rename = "s2-long-rsqrtss-reg-v1")]
+    LongRsqrtssRegV1,
     #[serde(rename = "s2-long-movsd-reg-v1")]
     LongMovsdRegV1,
     #[serde(rename = "s2-long-movsd-store-reg-v1")]
@@ -816,6 +819,7 @@ impl IntegerState {
                     | Profile::LongAndnpsRegV1
                     | Profile::LongMovsdRegV1
                     | Profile::LongMovsdStoreRegV1
+                    | Profile::LongRsqrtssRegV1
                     | Profile::LongMovssRegV1
                     | Profile::LongMovssMemLoadV1
                     | Profile::LongMovsdMemLoadV1
@@ -914,6 +918,7 @@ impl IntegerState {
                     | Profile::LongAndnpsRegV1
                     | Profile::LongMovsdRegV1
                     | Profile::LongMovsdStoreRegV1
+                    | Profile::LongRsqrtssRegV1
                     | Profile::LongMovssRegV1
                     | Profile::LongMovssMemLoadV1
                     | Profile::LongMovsdMemLoadV1
@@ -1019,6 +1024,7 @@ impl IntegerState {
                 | Profile::LongAndnpsRegV1
                 | Profile::LongMovsdRegV1
                 | Profile::LongMovsdStoreRegV1
+                | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssMemLoadV1
                 | Profile::LongMovsdMemLoadV1
@@ -1118,6 +1124,7 @@ impl IntegerState {
                 | Profile::LongAndnpsRegV1
                 | Profile::LongMovsdRegV1
                 | Profile::LongMovsdStoreRegV1
+                | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssMemLoadV1
                 | Profile::LongMovsdMemLoadV1
@@ -1266,6 +1273,7 @@ impl IntegerState {
             | Profile::LongAndnpsRegV1
             | Profile::LongMovsdRegV1
             | Profile::LongMovsdStoreRegV1
+            | Profile::LongRsqrtssRegV1
             | Profile::LongMovssRegV1
             | Profile::LongMovssMemLoadV1
             | Profile::LongMovsdMemLoadV1
@@ -1364,6 +1372,7 @@ impl IntegerState {
                 | Profile::LongAndnpsRegV1
                 | Profile::LongMovsdRegV1
                 | Profile::LongMovsdStoreRegV1
+                | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssMemLoadV1
                 | Profile::LongMovsdMemLoadV1
@@ -1468,6 +1477,7 @@ impl IntegerState {
                 | Profile::LongAndnpsRegV1
                 | Profile::LongMovsdRegV1
                 | Profile::LongMovsdStoreRegV1
+                | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssMemLoadV1
                 | Profile::LongMovsdMemLoadV1
@@ -1577,6 +1587,7 @@ impl IntegerState {
                 | Profile::LongAndnpsRegV1
                 | Profile::LongMovsdRegV1
                 | Profile::LongMovsdStoreRegV1
+                | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssMemLoadV1
                 | Profile::LongMovsdMemLoadV1
@@ -1689,6 +1700,7 @@ impl IntegerState {
                 | Profile::LongAndnpsRegV1
                 | Profile::LongMovsdRegV1
                 | Profile::LongMovsdStoreRegV1
+                | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssMemLoadV1
                 | Profile::LongMovsdMemLoadV1
@@ -1952,6 +1964,7 @@ impl IntegerState {
                 | Profile::LongAndnpsRegV1
                 | Profile::LongMovsdRegV1
                 | Profile::LongMovsdStoreRegV1
+                | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssMemLoadV1
                 | Profile::LongMovsdMemLoadV1
@@ -2050,6 +2063,7 @@ impl IntegerState {
                 | Profile::LongAndnpsRegV1
                 | Profile::LongMovsdRegV1
                 | Profile::LongMovsdStoreRegV1
+                | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssMemLoadV1
                 | Profile::LongMovsdMemLoadV1
@@ -2151,6 +2165,7 @@ impl IntegerState {
                 | Profile::LongAndnpsRegV1
                 | Profile::LongMovsdRegV1
                 | Profile::LongMovsdStoreRegV1
+                | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssMemLoadV1
                 | Profile::LongMovsdMemLoadV1
@@ -2246,6 +2261,7 @@ impl IntegerState {
                 | Profile::LongAndnpsRegV1
                 | Profile::LongMovsdRegV1
                 | Profile::LongMovsdStoreRegV1
+                | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssMemLoadV1
                 | Profile::LongMovsdMemLoadV1
@@ -2472,6 +2488,7 @@ impl Fixture {
                 | Profile::LongAndnpsRegV1
                 | Profile::LongMovsdRegV1
                 | Profile::LongMovsdStoreRegV1
+                | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssStoreRegV1
         ) {
@@ -2549,6 +2566,7 @@ impl Fixture {
                 Profile::LongOrpsRegV1 => orps_register_length(&code_bytes),
                 Profile::LongAndnpsRegV1 => andnps_register_length(&code_bytes),
                 Profile::LongMovssRegV1 => movss_register_length(&code_bytes),
+                Profile::LongRsqrtssRegV1 => rsqrtss_register_length(&code_bytes),
                 Profile::LongMovsdRegV1 => movsd_register_length(&code_bytes),
                 Profile::LongMovsdStoreRegV1 => movsd_store_register_length(&code_bytes),
                 Profile::LongMovssStoreRegV1 => movss_store_register_length(&code_bytes),
@@ -6118,6 +6136,19 @@ fn movss_register_length(code_bytes: &str) -> Option<u32> {
     match bytes.as_slice() {
         [0xf3, 0x0f, 0x10, modrm] if modrm >> 6 == 3 => Some(4),
         [0xf3, rex, 0x0f, 0x10, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn rsqrtss_register_length(code_bytes: &str) -> Option<u32> {
+    let bytes = decode_bytes(code_bytes).ok()?;
+    match bytes.as_slice() {
+        [0xf3, 0x0f, 0x52, modrm] if modrm >> 6 == 3 => Some(4),
+        [0xf3, rex, 0x0f, 0x52, modrm]
             if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
         {
             Some(5)
