@@ -5410,3 +5410,7 @@ JIT/native admission is denied; physical status remains `not_run`.
 ### S2-35.55 local register PMINUB diagnostic profile
 
 `s2_35_55_pminub_register.case.json` is a handwritten high-XMM fixture for `s2-long-pminub-reg-v1`, encoded as `66 45 0F DA C1` (`PMINUB XMM8, XMM9`). It checks unsigned byte minima across sign-boundary values and preserves unrelated state. SSE2 and CR0/CR4 are assumed; JIT/native/physical admission remain closed.
+
+### S2-35.56 local register PMAXSW diagnostic profile
+
+`s2_35_56_pmaxsw_register.case.json` is a handwritten high-XMM fixture for `s2-long-pmaxsw-reg-v1`, encoded as `66 45 0F EE C1` (`PMAXSW XMM8, XMM9`). It checks signed 16-bit maxima across positive/negative boundary values and preserves unrelated state. SSE2 and CR0/CR4 are assumed; JIT/native/physical admission remain closed.
