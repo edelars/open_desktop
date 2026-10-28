@@ -381,6 +381,14 @@ impl MemorySiteV2 {
             && matches!(self.operand.scale, 1 | 2 | 4 | 8)
             && length == 8
             && i32::try_from(self.operand.displacement).is_ok();
+        let indexed_no_base_rbp_sib_disp32_data_profile = self.operand.address_size
+            == od_isa::OperandSize::Qword
+            && self.operand.size == od_isa::OperandSize::Qword
+            && matches!(self.operand.base, od_isa::long_decode::AddressBase::None)
+            && self.operand.index == Some(od_isa::Register::Rbp)
+            && matches!(self.operand.scale, 1 | 2 | 4 | 8)
+            && length == 8
+            && i32::try_from(self.operand.displacement).is_ok();
         let scoped_data_profile = address32_direct_data_profile
             || address32_indexed_sib_data_profile
             || address32_rbp_indexed_sib_data_profile
@@ -392,6 +400,7 @@ impl MemorySiteV2 {
             || address32_indexed_no_base_sib_disp32_data_profile
             || absolute_sib_disp32_data_profile
             || indexed_no_base_sib_disp32_data_profile
+            || indexed_no_base_rbp_sib_disp32_data_profile
             || (self.operand.address_size == od_isa::OperandSize::Qword
                 && self.operand.size == od_isa::OperandSize::Qword
                 && (indexed_sib_data_profile
@@ -600,6 +609,10 @@ impl MemorySiteV2 {
                         || self.operand.address_size == od_isa::OperandSize::Qword
                             && self.operand.index.is_some_and(|index| (index as u8) < 4)
                             && matches!(self.operand.scale, 1 | 2 | 4 | 8)
+                        || self.operand.address_size == od_isa::OperandSize::Qword
+                            && length == 8
+                            && self.operand.index == Some(od_isa::Register::Rbp)
+                            && matches!(self.operand.scale, 1 | 2 | 4 | 8)
                         || self.operand.address_size == od_isa::OperandSize::Dword
                             && self.operand.index.is_some_and(|index| (index as u8) < 4)
                             && matches!(self.operand.scale, 1 | 2 | 4 | 8))
@@ -622,6 +635,7 @@ impl MemorySiteV2 {
                     && !address32_rbp_index_sib_data_profile
                     && !address32_rsp_base_rbp_indexed_sib_data_profile
                     && !address32_rbp_base_rbp_indexed_sib_data_profile
+                    && !indexed_no_base_rbp_sib_disp32_data_profile
             })
             || !matches!(
                 self.operand.address_size,
@@ -1015,6 +1029,27 @@ impl MemorySiteV2 {
                 && self.operand.scale == 1_u8 << (sib >> 6)
                 && i32::try_from(self.operand.displacement).is_ok();
         }
+        if mode == 0
+            && modrm & 7 == 4
+            && source.len() == 8
+            && source[3] & 7 == 5
+            && (source[3] >> 3) & 7 == 5
+        {
+            let site_register = match expected_operation {
+                MemorySiteOperationV2::Load => self.destination,
+                MemorySiteOperationV2::Store => self.source,
+            };
+            let sib = source[3];
+            return data_register <= 5
+                && site_register == Some(data_register)
+                && self.next_rip.checked_sub(self.guest_rip) == Some(8)
+                && self.operand.address_size == od_isa::OperandSize::Qword
+                && self.operand.size == od_isa::OperandSize::Qword
+                && matches!(self.operand.base, od_isa::long_decode::AddressBase::None)
+                && self.operand.index == Some(od_isa::Register::Rbp)
+                && self.operand.scale == 1_u8 << (sib >> 6)
+                && i32::try_from(self.operand.displacement).is_ok();
+        }
         if mode == 3
             || data_register > 5
             || data_register >= 4
@@ -1047,6 +1082,12 @@ impl MemorySiteV2 {
                         && source.len() == 8
                         && source[3] & 7 == 5
                         && (source[3] >> 3) & 7 < 4)
+                    || (data_register >= 4
+                        && mode == 0
+                        && modrm & 7 == 4
+                        && source.len() == 8
+                        && source[3] & 7 == 5
+                        && (source[3] >> 3) & 7 == 5)
                     || (data_register >= 4
                         && modrm & 7 == 4
                         && matches!((mode, source.len()), (0, 4) | (1, 5) | (2, 8))

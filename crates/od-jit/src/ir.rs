@@ -744,12 +744,18 @@ fn is_checked_memory_address(
             8 => i32::try_from(operand.displacement).is_ok(),
             _ => false,
         };
+    let indexed_no_base_rbp_sib_disp32 = instruction_length == 8
+        && matches!(operand.base, AddressBase::None)
+        && operand.index == Some(od_isa::Register::Rbp)
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && i32::try_from(operand.displacement).is_ok();
     let supported_index = match operand.index {
         Some(index) => {
             (matches!(index as u8, 0..=3)
                 || rbp_indexed_sib
                 || rsp_base_rbp_indexed_sib
-                || rbp_base_rbp_indexed_sib)
+                || rbp_base_rbp_indexed_sib
+                || indexed_no_base_rbp_sib_disp32)
                 && matches!(operand.scale, 1 | 2 | 4 | 8)
                 && match instruction_length {
                     4 => operand.displacement == 0,
@@ -802,7 +808,8 @@ fn is_checked_memory_address(
                 && matches!(operand.base, AddressBase::None)
                 && operand.index.is_some_and(|index| (index as u8) < 4)
                 && matches!(operand.scale, 1 | 2 | 4 | 8)
-                && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement))
+                && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
+            || indexed_no_base_rbp_sib_disp32)
 }
 
 fn validate_gpr(register: GuestGpr, operation: usize) -> Result<(), VerifyError> {
@@ -967,7 +974,8 @@ fn is_scoped_memory_data_operand(
             || is_address32_rsp_sib_stack_base_operand(operand, instruction_length)
             || is_address32_rbp_direct_stack_base_operand(operand, instruction_length)
             || is_address32_absolute_sib_stack_data_operand(operand, instruction_length)
-            || is_address32_indexed_no_base_sib_stack_data_operand(operand, instruction_length))
+            || is_address32_indexed_no_base_sib_stack_data_operand(operand, instruction_length)
+            || is_indexed_no_base_rbp_sib_stack_data_operand(operand, instruction_length))
 }
 
 fn is_indexed_no_base_qword_sib_data_operand(
@@ -980,6 +988,19 @@ fn is_indexed_no_base_qword_sib_data_operand(
         && matches!(operand.scale, 1 | 2 | 4 | 8)
         && operand.size == od_isa::OperandSize::Qword
         && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)
+}
+
+fn is_indexed_no_base_rbp_sib_stack_data_operand(
+    operand: MemoryOperand,
+    instruction_length: u64,
+) -> bool {
+    instruction_length == 8
+        && operand.address_size == od_isa::OperandSize::Qword
+        && operand.size == od_isa::OperandSize::Qword
+        && matches!(operand.base, AddressBase::None)
+        && operand.index == Some(od_isa::Register::Rbp)
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && i32::try_from(operand.displacement).is_ok()
 }
 
 fn is_address32_absolute_sib_stack_data_operand(
@@ -1314,6 +1335,33 @@ mod tests {
             verify(&early_commit),
             Err(VerifyError::CheckedLoadWithoutWrite { .. })
         ));
+    }
+
+    #[test]
+    fn checked_load_rejects_addr32_no_base_rbp_index_even_at_length_eight() {
+        for length in [8_u64, 9] {
+            let mut forged = checked_load_program();
+            let next_rip = 0x2000 + length;
+            forged.guest_instructions[0].next_rip = next_rip;
+            forged.code_end = next_rip;
+            if let Operation::CheckedLoad { operand, .. } = &mut forged.operations[1] {
+                *operand = MemoryOperand {
+                    base: AddressBase::None,
+                    index: Some(od_isa::Register::Rbp),
+                    scale: 1,
+                    displacement: 0,
+                    address_size: od_isa::OperandSize::Dword,
+                    size: od_isa::OperandSize::Qword,
+                };
+            }
+            if let Operation::Exit { target_rip, .. } = forged.operations.last_mut().unwrap() {
+                *target_rip = next_rip;
+            }
+            assert!(matches!(
+                verify(&forged),
+                Err(VerifyError::InvalidCheckedLoadDescriptor { .. })
+            ));
+        }
     }
 
     fn checked_store_program() -> Program {

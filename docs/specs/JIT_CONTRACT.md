@@ -2274,3 +2274,9 @@ vs JIT, старый S0 JIT, сборка или ARM64 smoke не заменяю
 Измерения скорости относятся к S3-35 и S3-36 и проводятся раздельно для
 холодной компиляции/исполнения и прогретого cache. До этих данных contract не
 заявляет ускорения.
+
+#### S3-20bf: address64 indexed no-base SIB with RBP index
+
+Admit only singleton `48 8B/89 /r sib disp32`, ModRM `mod=00,r/m=100`, SIB base field `101` (no base), index RBP, scale 1/2/4/8, data RAX..RBP, exact length eight. The Qword effective address is `RBP*scale + signed disp32` modulo 2^64; there is no base or RIP contribution. `MemoryOperand::access_address_48` remains the only EA/range/canonicality implementation. Since the operand has no stack base, noncanonical start/end faults are #GP rather than #SS. Address32 no-base/RBP-index remains unsupported; do not add prefixes, other indices, disp8/base forms, pairs or V3.
+
+The descriptor and host matrices compare both directions, six data registers, four scales and signed disp32 edges. Host parity checks direct V2/shared IR/interpreter CPU/RAM/callback/retirement against an independent wrapping-u64 formula and pre-state `data=RBP` aliasing. It also checks #GP without callback, AddressOverflow independently, store+STOP commit, exact byte-8 displacement identity, windows 1..7 and invalid neighbors, plus bounded publication at the actual RIP. See [S3-20bf report](../reports/STAGE_3_S3-20bf_2026-10-27.md). Owner/MMU, Stage 2/ISA, Mini, physical x86 and performance remain open.

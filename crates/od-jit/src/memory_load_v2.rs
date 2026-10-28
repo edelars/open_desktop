@@ -654,6 +654,12 @@ pub fn compile_ir_memory_store_block_v2(
             bytes.len() as u8,
             0x89,
         )
+        || crate::block::exact_qword_indexed_no_base_rbp_sib_disp32_memory_bytes(
+            code,
+            entry_rip,
+            bytes.len() as u8,
+            0x89,
+        )
         || crate::block::exact_qword_address32_indexed_no_base_sib_disp32_memory_bytes(
             code,
             entry_rip,
@@ -850,6 +856,12 @@ fn checked_load_metadata_v2(
                 0x8b,
             )
             || crate::block::exact_qword_indexed_no_base_sib_disp32_memory_bytes(
+                code,
+                entry_rip,
+                decoded.length,
+                0x8b,
+            )
+            || crate::block::exact_qword_indexed_no_base_rbp_sib_disp32_memory_bytes(
                 code,
                 entry_rip,
                 decoded.length,
@@ -2695,7 +2707,7 @@ mod tests {
                 vec![0x48, opcode, 0x44],                         // truncated before SIB
                 vec![0x48, opcode, 0x44, 0x20, 0],                // no-index SIB
                 vec![0x48, opcode, 0x44, 0x35, 0], // RBP base with out-of-profile RSI index
-                vec![0x48, opcode, 0x04, 0x2d, 0, 0, 0, 0], // no-base with unsupported RBP index
+                vec![0x48, opcode, 0x04, 0x35, 0, 0, 0, 0], // no-base with unsupported RSI index
                 vec![0x48, opcode, 0x44, 0x18],    // missing disp8
                 vec![0x48, opcode, 0x44, 0x18, 0, 0x90], // tail byte
                 vec![0x48, opcode, 0x84, 0x18, 0, 0, 0], // partial disp32
@@ -3039,7 +3051,7 @@ mod tests {
             vec![0x48, 0x89, 0x2d, 0, 0, 0],
             vec![0x67, 0x48, 0x8b, 0x25, 0, 0, 0, 0],
             vec![0x48, 0x89, 0x2d, 0, 0, 0, 0, 0x90], // trailing byte
-            vec![0x48, 0x8b, 0x24, 0x2d, 0, 0, 0, 0], // no-base with unsupported RBP index
+            vec![0x48, 0x8b, 0x24, 0x35, 0, 0, 0, 0], // no-base with unsupported RSI index
         ] {
             let code = CodeView::new(0x5a00, &bytes).unwrap();
             let result = if bytes[1] == 0x8b || bytes[2] == 0x8b {
@@ -3078,7 +3090,7 @@ mod tests {
             vec![0x48, 0x8b, 0x04, 0x30], // unsupported RSI index
             vec![0x48, 0x8b, 0x04, 0x20], // no-index SIB
             vec![0x48, 0x8b, 0x04, 0x05], // no-base SIB requires disp32
-            vec![0x48, 0x8b, 0x04, 0x2d, 0, 0, 0, 0], // no-base with unsupported RBP index
+            vec![0x48, 0x8b, 0x04, 0x35, 0, 0, 0, 0], // no-base with unsupported RSI index
             vec![0x48, 0x8b, 0x44, 0x20, 1], // no-index SIB with disp8
             vec![0x48, 0x8b, 0x84, 0x20, 1, 0, 0, 0], // no-index SIB with disp32
             vec![0x48, 0x8b, 0x44, 0x00], // mod=01 displacement
@@ -4347,11 +4359,11 @@ mod tests {
         }
         for opcode in [0x8b, 0x89] {
             for (modrm, sib, suffix) in [
-                (0x04, 0x2d, vec![]),  // mod00 SIB base=RBP means no base and needs disp32
-                (0x04, 0x34, vec![]),  // unsupported RSI index
-                (0x6c, 0x35, vec![0]), // unsupported RSI index
+                (0x04, 0x35, vec![]),           // mod00 no-base with unsupported RSI index
+                (0x04, 0x34, vec![]),           // unsupported RSI index
+                (0x6c, 0x35, vec![0]),          // unsupported RSI index
                 (0xac, 0x35, vec![0, 0, 0, 0]), // unsupported RSI index
-                (0x44, 0x34, vec![0]), // unsupported RSI index
+                (0x44, 0x34, vec![0]),          // unsupported RSI index
                 (0x84, 0x35, vec![0, 0, 0, 0]), // unsupported RSI index
             ] {
                 let mut bytes = vec![0x67, 0x48, opcode, modrm, sib];
@@ -4642,7 +4654,7 @@ mod tests {
 
         for opcode in [0x8b, 0x89] {
             for source in [
-                vec![0x48, opcode, 0x04, 0x2d, 0, 0, 0, 0], // unsupported index
+                vec![0x48, opcode, 0x04, 0x35, 0, 0, 0, 0], // unsupported RSI index
                 vec![0x48, opcode, 0x44, 0x25, 0],          // displaced no-index
                 vec![0x67, 0x48, opcode, 0x04, 0x2d, 0, 0, 0, 0], // unsupported addr32 RBP index
                 vec![0x48, opcode, 0x04, 0x25, 0, 0, 0],    // truncated disp32
@@ -5302,7 +5314,7 @@ mod tests {
             (0x89, MemorySiteOperationV2::Store),
         ] {
             for data_register in 0..6_u8 {
-                for index_register in 0..4_u8 {
+                for index_register in [0_u8, 1, 2, 3, 5] {
                     for scale in [1_u8, 2, 4, 8] {
                         for displacement in [i32::MIN, -1, 0, 1, i32::MAX] {
                             let scale_bits = scale.trailing_zeros() as u8;
@@ -5357,7 +5369,7 @@ mod tests {
         for opcode in [0x8b, 0x89] {
             for source in [
                 vec![0x48, opcode, 0x04, 0x65, 0, 0, 0, 0], // no-index but not exact 0x25
-                vec![0x48, opcode, 0x04, 0x2d, 0, 0, 0, 0], // unsupported RBP index
+                vec![0x48, opcode, 0x04, 0x35, 0, 0, 0, 0], // unsupported RSI index
                 vec![0x48, opcode, 0x04, 0x06, 0, 0, 0, 0], // unsupported RSI base
                 vec![0x48, opcode, 0x04, 0x35, 0, 0, 0, 0], // unsupported RBP index
                 vec![0x67, 0x48, opcode, 0x04, 0x2d, 0, 0, 0, 0], // unsupported address32 RBP index
@@ -5448,7 +5460,7 @@ mod tests {
                 vec![0x67, 0x48, opcode, 0x04, 0x2d, 0, 0, 0, 0], // RBP index
                 vec![0x67, 0x48, opcode, 0x04, 0x65, 0, 0, 0, 0], // non-exact no-index SIB
                 vec![0x67, 0x48, opcode, 0x04, 0x05, 0, 0, 0, 0, 0], // extra byte
-                vec![0x48, 0x8b, 0x04, 0x2d, 0, 0, 0, 0],         // address64 with RBP index
+                vec![0x48, 0x8b, 0x04, 0x35, 0, 0, 0, 0],         // address64 with RSI index
                 vec![0x48, 0x67, opcode, 0x04, 0x05, 0, 0, 0, 0], // wrong prefix order
                 vec![0x67, 0x48, opcode, 0x05, 0, 0, 0, 0],       // direct rm=101
             ] {
@@ -5650,7 +5662,7 @@ mod tests {
                 vec![0x48, opcode, 0x44, 0x35, 0], // RBP base with RSI index
                 vec![0x48, opcode, 0x44, 0x30, 0], // RSI index
                 vec![0x48, opcode, 0x44, 0x38, 0], // RDI index
-                vec![0x48, opcode, 0x04, 0x2d, 0, 0, 0, 0], // no-base RBP index
+                vec![0x48, opcode, 0x04, 0x35, 0, 0, 0, 0], // no-base RSI index
                 vec![0x67, 0x48, opcode, 0x44, 0x34, 0], // unsupported RSI index
                 vec![0x48, 0x67, opcode, 0x44, 0x28, 0], // reordered prefix
             ] {

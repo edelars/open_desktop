@@ -872,7 +872,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
                 && modrm & 7 == 4
                 && (modrm >> 3) & 7 <= 5
                 && sib & 7 == 5
-                && (sib >> 3) & 7 < 4 =>
+                && ((sib >> 3) & 7 < 4 || (sib >> 3) & 7 == 5) =>
         {
             compile_ir_memory_load_block_v2(view, rip)
                 .map(BoundedMemoryArtifact::Load)
@@ -884,7 +884,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
                 && modrm & 7 == 4
                 && (modrm >> 3) & 7 <= 5
                 && sib & 7 == 5
-                && (sib >> 3) & 7 < 4 =>
+                && ((sib >> 3) & 7 < 4 || (sib >> 3) & 7 == 5) =>
         {
             compile_ir_memory_store_block_v2(view, rip)
                 .map(BoundedMemoryArtifact::Store)
