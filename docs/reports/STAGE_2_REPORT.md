@@ -13081,3 +13081,31 @@ fixture test). `cargo fmt --all -- --check`,
 passed. The Linux-only native-denial guard is compile-checked, not executed on
 this Darwin host. Independent `gpt-6.1-sol` medium review found no remaining
 findings and independently reran the PSRAD interpreter and fixture tests.
+
+## S2-35.44 — local PSLLQ immediate register profile
+
+Implemented `s2-long-psllq-imm-reg-v1` for exact `66 [no REX or optional 41]
+0F 73 /6 ib`, ModR/M.mod=3, with destination XMM0–15 selected by r/m. `/7`
+PSLLDQ remains outside the profile. Two independent little-endian u64 lanes
+shift logically left by unsigned, unmasked imm8; counts 0–63 retain low 64
+bits and counts >=64 clear both lanes. There is no cross-qword carry; flags and
+MXCSR are preserved. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 are assumptions.
+
+Local tests cover all 256 counts on all 16 destinations, a widened u128 oracle,
+walking-bit/carry-chain vectors in both lanes, boundary sentinels, strict `/6`
+selection and `/7` rejection, state/no-callback preservation, missing SSE, STOP/budget
+atomicity, and immediate truncation plus complete fetch across a page boundary.
+The literal XMM9 fixture passes in the interpreter; JIT and early native
+admission are denied. Native denial was checked with Linux-target compilation,
+not executed on this Darwin host. A Linux `cargo test --no-run` attempt reached
+linking but failed because the configured Darwin linker rejects Linux GNU flags.
+Physical SSE/SSE2 execution remains `not_run`.
+
+`cargo test -p od-isa psllq --offline` passed (5 tests), and the fixture runner
+test passed (1). Workspace all-target checks, formatting, the Linux-target
+`od-x86-runner --tests` check, `git diff --check`, and Graphify passed.
+Independent Sol review found no remaining findings and independently reran
+the PSLLQ interpreter and fixture tests. S2-34, S2-35, global `S2-35 → S2-34`,
+and combined Mac mini/SSH acceptance remain open. See the [plan](../plans/STAGE_2.md#s2-3544--local-only-bounded-register-immediate-psllq),
+[CPU contract](../specs/CPU_CONTRACT.md#local-register-only-immediate-psllq-profile--s2-3544),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3544-local-register-psllq-immediate-diagnostic-profile).

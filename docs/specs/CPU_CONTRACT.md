@@ -9229,6 +9229,19 @@ REX.R/X/W, extra prefixes, VEX/EVEX, feature gating, exception delivery,
 JIT/native execution, and physical behavior are outside this profile. See the
 [S2-35.41 plan](../plans/STAGE_2.md#s2-3541--local-only-bounded-register-immediate-pslld).
 
+## Local register-only immediate `PSLLQ` profile — S2-35.44
+
+The diagnostic profile `s2-long-psllq-imm-reg-v1` admits exactly
+`66 [no REX or optional 41] 0F 73 /6 ib`, ModR/M.mod=3. `/6` selects PSLLQ,
+`/7` PSLLDQ is rejected, and ModR/M.r/m selects XMM0–15. Two independent
+little-endian u64 lanes shift logically left by unmasked unsigned imm8: counts
+0–63 retain the low 64 bits and counts >=64 clear both lanes. Lane bits never
+carry between qwords. Flags and MXCSR are unchanged. SSE2 and CR0.EM=0,
+CR0.TS=0, CR4.OSFXSR=1 are assumptions only. Memory/MMX, bare REX, REX.R/X/W,
+extra prefixes, VEX/EVEX, feature gating, exception delivery, JIT/native
+execution, and physical behavior are outside this profile. See the
+[S2-35.44 plan](../plans/STAGE_2.md#s2-3544--local-only-bounded-register-immediate-psllq).
+
 ## Local register-only immediate `PSRLD` profile — S2-35.42
 
 The diagnostic profile `s2-long-psrld-imm-reg-v1` admits exactly

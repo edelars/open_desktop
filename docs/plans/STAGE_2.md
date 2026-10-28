@@ -8824,6 +8824,43 @@ is compile-only on this Darwin host. Independent `gpt-6.1-sol` medium review
 found no remaining findings and independently reran the PSLLD interpreter and
 fixture tests.
 
+#### S2-35.44 — local-only bounded register immediate `PSLLQ`
+
+The profile `s2-long-psllq-imm-reg-v1` admits exactly
+`66 [no REX or optional 41] 0F 73 /6 ib`, ModR/M.mod=3. ModR/M.r/m
+selects destination XMM0–15; `/6` is required and `/7` PSLLDQ is rejected.
+Two independent little-endian u64 lanes shift logically left by unsigned imm8.
+Counts 0–63 retain the low 64 result bits; counts >=64 clear both lanes
+without masking the count. There is no cross-qword carry; flags and MXCSR are
+unchanged. SSE2 and CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 remain assumptions only.
+
+Local checks cover all 256 counts on each of 16 destinations, an independent
+u128 widened oracle for counts below 64 with raw boundary, walking-bit and
+carry-chain vectors in both lanes, explicit `0000000080000000<<1`, `1<<63`,
+and `8000000000000000<<1` sentinels, strict `/6` and `/7` encoding, state and
+no-callback preservation, missing SSE state, STOP/zero-budget atomicity, and
+immediate truncation/page crossing with successful complete fetch. The
+handwritten XMM9 fixture checks interpreter execution with JIT denied. Native
+denial is before mapping/process setup; Linux-only guard compilation is not
+physical execution. Other shifts, memory/MMX, REX.R/X/W, bare REX, extra
+prefixes, VEX/EVEX, feature gates, exception delivery and physical execution
+remain excluded.
+
+S2-35.44 implementation check (2026-10-27): `cargo test -p od-isa psllq
+--offline` passed (5 tests), covering all counts/destinations, u128 widened and
+walking-bit vectors, strict decode and `/7` sibling rejection, fetch boundaries,
+state preservation, missing SSE, and atomicity. `cargo test -p od-runner
+--test fixture_v2 psllq --offline` passed (1 test), verifying the handwritten
+XMM9 fixture, profile rejection matrix, and JIT denial. `cargo fmt --all
+-- --check`, `cargo check --workspace --all-targets --offline`, and
+`cargo check -p od-x86-runner --tests --target x86_64-unknown-linux-gnu
+--offline` passed. `cargo test ... --no-run` for that Linux target compiled the
+runner but could not link on this Darwin host because the configured `cc`/`ld`
+is a Darwin linker and rejects Linux GNU linker flags; physical native denial
+therefore remains compile-only here. Graphify update and `git diff --check`
+passed. Independent `gpt-6.1-sol` medium review found no remaining findings and
+independently reran the PSLLQ interpreter and fixture tests.
+
 #### S2-35.42 — local-only bounded register immediate `PSRLD`
 
 The profile `s2-long-psrld-imm-reg-v1` admits exactly

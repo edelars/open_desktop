@@ -652,6 +652,11 @@ pub enum Operation {
         destination: u8,
         count: u8,
     },
+    /// Local-only register PSLLQ with an unmasked unsigned imm8 count.
+    PsllqImmediateRegister {
+        destination: u8,
+        count: u8,
+    },
     /// Local-only register PSRLD with an unmasked unsigned imm8 count.
     PsrldImmediateRegister {
         destination: u8,
@@ -1541,7 +1546,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && (direct_arithmetic(opcode.byte).is_some() || direct_logic(opcode.byte).is_some()))
             || matches!((opcode.map, opcode.byte),
             (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9c | 0x9d | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa7 | 0xa8 | 0xa9 | 0xaa | 0xab | 0xac | 0xad | 0xae | 0xaf | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe8 | 0xe9 | 0xeb | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf6 | 0xf7 | 0xfc | 0xfd)
-            | (OpcodeMap::Escape0f, 0x00 | 0x10 | 0x11 | 0x40..=0x4f | 0x54..=0x57 | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x70 | 0x71 | 0x72 | 0x74 | 0x75 | 0x76 | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc1 | 0xc8..=0xcf | 0xd4 | 0xd8 | 0xd9 | 0xdc | 0xdd | 0xe8 | 0xe9 | 0xec | 0xed | 0xef | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
+            | (OpcodeMap::Escape0f, 0x00 | 0x10 | 0x11 | 0x40..=0x4f | 0x54..=0x57 | 0x60 | 0x61 | 0x62 | 0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6a | 0x6b | 0x6c | 0x6d | 0x70 | 0x71 | 0x72 | 0x73 | 0x74 | 0x75 | 0x76 | 0x80..=0x8f | 0x90..=0x9f | 0xa3 | 0xab | 0xae | 0xaf | 0xb1 | 0xb3 | 0xbb | 0xba | 0xa4 | 0xa5 | 0xac | 0xad | 0xb6 | 0xb7 | 0xbc | 0xbd | 0xbe | 0xbf | 0xc1 | 0xc8..=0xcf | 0xd4 | 0xd8 | 0xd9 | 0xdc | 0xdd | 0xe8 | 0xe9 | 0xec | 0xed | 0xef | 0xf8 | 0xf9 | 0xfa | 0xfb | 0xfc | 0xfd | 0xfe));
         if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x0b {
             return Err(DecodeError::Invalid {
                 opcode,
@@ -2016,6 +2021,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
         // PSLLD immediate uses ModR/M.reg as the /6 selector and r/m as destination.
         let pslld_immediate_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x72
+            && prefixes.operand_override
+            && prefix_count >= 1
+            && prefix_bytes[0] == 0x66
+            && (prefix_count == 1
+                || (prefix_count == 2 && prefixes.rex.is_some() && prefix_bytes[1] == 0x41));
+        // PSLLQ immediate uses ModR/M.reg as the /6 selector and r/m as destination.
+        let psllq_immediate_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x73
             && prefixes.operand_override
             && prefix_count >= 1
             && prefix_bytes[0] == 0x66
@@ -2497,6 +2510,18 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 } else {
                     Operation::PslldImmediateRegister { destination, count }
                 }
+            }
+            (OpcodeMap::Escape0f, 0x73) => {
+                if !psllq_immediate_register {
+                    return Err(self.unsupported(opcode));
+                }
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 || (modrm >> 3) & 7 != 6 {
+                    return Err(self.unsupported(opcode));
+                }
+                let count = self.byte()?;
+                let destination = (modrm & 7) | ((rex & 1) << 3);
+                Operation::PsllqImmediateRegister { destination, count }
             }
             (OpcodeMap::Escape0f, 0xfc) => {
                 if !paddb_register {
@@ -5564,6 +5589,51 @@ mod tests {
     }
 
     #[test]
+    fn psllq_immediate_register_decodes_rmb_destination_and_strict_encoding() {
+        for destination in 0..16u8 {
+            let mut code = vec![0x66];
+            if destination >= 8 {
+                code.push(0x41);
+            }
+            code.extend([0x0f, 0x73, 0xf0 | (destination & 7), 0xff]);
+            let mut memory = Memory::new(&code);
+            let decoded = memory.decode().unwrap();
+            assert_eq!(
+                decoded.operation,
+                Operation::PsllqImmediateRegister {
+                    destination,
+                    count: 0xff
+                }
+            );
+            assert_eq!(decoded.length, code.len() as u8);
+        }
+        assert_eq!(
+            Memory::new(&[0x66, 0x0f, 0x71, 0xf1, 1])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::PsllwImmediateRegister {
+                destination: 1,
+                count: 1
+            },
+        );
+        assert!(Memory::new(&[0x66, 0x0f, 0x73, 0xf9, 1]).decode().is_err()); // /7 PSLLDQ sibling
+        for bytes in [
+            &[0x0f, 0x73, 0xf1, 1][..],
+            &[0x66, 0x0f, 0x73, 0x71, 1][..], // memory destination
+            &[0x66, 0x40, 0x0f, 0x73, 0xf1, 1][..],
+            &[0x66, 0x42, 0x0f, 0x73, 0xf1, 1][..],
+            &[0x66, 0x48, 0x0f, 0x73, 0xf1, 1][..],
+            &[0x66, 0x45, 0x0f, 0x73, 0xf1, 1][..],
+            &[0x66, 0x0f, 0x73, 0xf1][..],
+            &[0x66, 0xf3, 0x0f, 0x73, 0xf1, 1][..],
+            &[0xc5, 0xf9, 0x73, 0xf1, 1][..],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn pslld_truncated_immediate_fetch_crosses_page_only_at_final_byte() {
         let mut memory = Memory::new(&[0x66, 0x0f, 0x72, 0xf0]);
         memory.base = 0xffc;
@@ -5576,6 +5646,24 @@ mod tests {
         ));
         assert_eq!(memory.fetched, [0xffc, 0xffd, 0xffe, 0xfff, 0x1000]);
         let mut complete = Memory::new(&[0x66, 0x0f, 0x72, 0xf0, 0x01]);
+        complete.base = 0xffc;
+        assert_eq!(complete.decode().unwrap().length, 5);
+        assert_eq!(complete.fetched, [0xffc, 0xffd, 0xffe, 0xfff, 0x1000]);
+    }
+
+    #[test]
+    fn psllq_truncated_immediate_fetch_crosses_page_only_at_final_byte() {
+        let mut memory = Memory::new(&[0x66, 0x0f, 0x73, 0xf0]);
+        memory.base = 0xffc;
+        assert!(matches!(
+            memory.decode(),
+            Err(DecodeError::Memory(MemoryError::Unmapped {
+                address: 0x1000,
+                access: AccessKind::Fetch,
+            }))
+        ));
+        assert_eq!(memory.fetched, [0xffc, 0xffd, 0xffe, 0xfff, 0x1000]);
+        let mut complete = Memory::new(&[0x66, 0x0f, 0x73, 0xf0, 0x01]);
         complete.base = 0xffc;
         assert_eq!(complete.decode().unwrap().length, 5);
         assert_eq!(complete.fetched, [0xffc, 0xffd, 0xffe, 0xfff, 0x1000]);
