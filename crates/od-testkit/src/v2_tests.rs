@@ -874,6 +874,50 @@ fn pmulhuw_profile_is_exact_requires_raw_state_and_rejects_neighbors() {
 }
 
 #[test]
+fn pmuludq_profile_is_exact_requires_raw_state_and_rejects_neighbors() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_35_62_pmuludq_register.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongPmuludqRegV1);
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "66450ff4c1");
+    fixture.validate().unwrap();
+    for bytes in [
+        "0ff4c1", // MMX
+        "f2660ff4c1",
+        "f3660ff4c1",
+        "67660ff4c1",
+        "f0660ff4c1",
+        "66480ff4c1",   // REX.W
+        "66420ff4c1",   // REX.X
+        "6640410ff4c1", // duplicate REX
+        "660ff401",     // memory
+        "660ff4",       // truncated
+        "660fe4c1",     // PMAXSW sibling
+        "660febc1",     // POR sibling
+        "c5f9f4c1",     // VEX
+        "c4e179f4c1",   // VEX3
+        "62f17d08f4c1", // EVEX
+    ] {
+        let mut invalid = fixture.clone();
+        invalid.memory[0].initial_bytes_hex = bytes.into();
+        invalid.memory[0].length = (bytes.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (bytes.len() / 2) as u64,
+        ));
+        assert!(invalid.validate().is_err(), "{bytes}");
+    }
+    let mut missing_sse = fixture.clone();
+    missing_sse.initial_state.sse = None;
+    assert!(missing_sse.validate().is_err());
+    let mut wrong_profile = fixture;
+    wrong_profile.profile = Profile::LongPmulhuwRegV1;
+    assert!(wrong_profile.validate().is_err());
+}
+
+#[test]
 fn psadbw_profile_is_exact_requires_raw_state_and_rejects_neighbors() {
     let fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_35_60_psadbw_register.case.json"

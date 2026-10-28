@@ -1346,6 +1346,7 @@ fn step_tracked_with_stop(
         | Operation::PmulhuwRegister { .. }
         | Operation::PsadbwRegister { .. }
         | Operation::PmovmskbXmmToGpr { .. }
+        | Operation::PmuludqRegister { .. }
         | Operation::AndpsRegister { .. }
         | Operation::AndpdRegister { .. }
         | Operation::OrpdRegister { .. }
@@ -3114,6 +3115,35 @@ fn step_tracked_with_stop(
                 mask | (u32::from(byte >> 7) << lane)
             });
             state.gpr[usize::from(destination)] = u64::from(mask);
+        }
+        Operation::PmuludqRegister {
+            destination,
+            source,
+        } => {
+            let source = state
+                .sse
+                .as_ref()
+                .expect("PMULUDQ local profile state was prevalidated")
+                .xmm[usize::from(source)];
+            let sse = state
+                .sse
+                .as_mut()
+                .expect("PMULUDQ local profile state was prevalidated");
+            let destination = &mut sse.xmm[usize::from(destination)];
+            let old_destination = *destination;
+            for lane in 0..2 {
+                let offset = lane * 8;
+                let dword_offset = lane * 8;
+                let lhs = u32::from_le_bytes(
+                    old_destination[dword_offset..dword_offset + 4]
+                        .try_into()
+                        .unwrap(),
+                );
+                let rhs =
+                    u32::from_le_bytes(source[dword_offset..dword_offset + 4].try_into().unwrap());
+                let product = u64::from(lhs) * u64::from(rhs);
+                destination[offset..offset + 8].copy_from_slice(&product.to_le_bytes());
+            }
         }
         Operation::PaddbRegister {
             destination,
@@ -70848,6 +70878,125 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn pmuludq_register_multiplies_unsigned_dword_lanes_zeroes_ignored_lanes_for_all_xmm_pairs() {
+        let lhs = [u32::MAX, 0xdead_beef, 0x8000_0000, 0x1234_5678];
+        let rhs = [2, 0x7654_3210, u32::MAX, 0x8765_4321];
+        let patterns = [
+            (lhs, rhs),
+            ([0; 4], [u32::MAX; 4]),
+            ([u32::MAX; 4], [u32::MAX; 4]),
+            ([0x8000_0000; 4], [2; 4]),
+        ];
+        let to_bytes = |words: [u32; 4]| -> [u8; 16] {
+            let mut bytes = [0; 16];
+            for (i, word) in words.into_iter().enumerate() {
+                bytes[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
+            }
+            bytes
+        };
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                for (left, right) in patterns {
+                    let mut code = vec![0x66];
+                    if destination >= 8 || source >= 8 {
+                        code.push(rex);
+                    }
+                    code.extend([0x0f, 0xf4, modrm]);
+                    let mut memory = Memory::at(&code, 0x1000);
+                    let mut state = LongModeState::default();
+                    state.x87 = Some(X87State::fixture_seed());
+                    state.sse = Some(SseState {
+                        xmm: [[0xa5; 16]; 16],
+                        mxcsr: 0xe1a5_5a7e,
+                    });
+                    state.sse.as_mut().unwrap().xmm[destination as usize] = to_bytes(left);
+                    if source != destination {
+                        state.sse.as_mut().unwrap().xmm[source as usize] = to_bytes(right);
+                    }
+                    state.rip = 0x1000;
+                    state.rflags = 0x8d7 | crate::DF;
+                    let before = state.clone();
+                    let old_source = if source == destination { left } else { right };
+                    let expected = [
+                        u64::from(left[0]) * u64::from(old_source[0]),
+                        u64::from(left[2]) * u64::from(old_source[2]),
+                    ];
+                    assert_eq!(
+                        step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                        StepOutcome::Advanced
+                    );
+                    let mut expected_bytes = [0; 16];
+                    expected_bytes[..8].copy_from_slice(&expected[0].to_le_bytes());
+                    expected_bytes[8..].copy_from_slice(&expected[1].to_le_bytes());
+                    let mut unchanged = before;
+                    unchanged.rip += code.len() as u64;
+                    unchanged.sse.as_mut().unwrap().xmm[destination as usize] = expected_bytes;
+                    assert_eq!(state, unchanged, "dest={destination}, src={source}");
+                    assert!(
+                        memory.accesses.is_empty(),
+                        "PMULUDQ performed a data access"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pmuludq_missing_state_truncated_fetch_and_unstarted_run_are_atomic() {
+        let code = [0x66, 0x0f, 0xf4, 0xc1];
+        let mut memory = Memory::at(&code, 0x1000);
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        let before = state.clone();
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+            StepOutcome::Unsupported { opcode: 0xf4 }
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+        let mut memory = Memory::at(&[0x66, 0x0f, 0xf4], 0x1000);
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        state.sse = Some(SseState {
+            xmm: [[0xa5; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        assert!(step(&mut state, &mut memory, AccessContext::default()).is_err());
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+        for (budget, stop_rip, expected_exit) in [
+            (0, None, RunExit::InstructionBudgetExhausted),
+            (1, Some(0x1000), RunExit::StopAddress),
+        ] {
+            let mut memory = Memory::at(&code, 0x1000);
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
         }
     }
 

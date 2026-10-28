@@ -5434,3 +5434,7 @@ JIT/native admission is denied; physical status remains `not_run`.
 ### S2-35.61 local XMM-source PMOVMSKB diagnostic profile
 
 `s2_35_61_pmovmskb_xmm_gpr.case.json` is a handwritten fixture for `s2-long-pmovmskb-xmm-gpr-v1`, encoded as `66 45 0F D7 C1` (`PMOVMSKB R8D, XMM9`). It checks byte-order sign-mask extraction, 32-bit zero extension, and unrelated-state preservation. The local subset permits REX.R/B, rejects REX.W/X and memory forms, and keeps JIT/native/physical admission closed.
+
+### S2-35.62 local register PMULUDQ diagnostic profile
+
+`s2_35_62_pmuludq_register.case.json` is a handwritten high-XMM fixture for `s2-long-pmuludq-reg-v1`, encoded as `66 45 0F F4 C1` (`PMULUDQ XMM8, XMM9`). It uses independent odd-dword sentinels to verify that only lanes 0 and 2 are multiplied and that both complete qword products are stored. SSE2 and CR0/CR4 are assumed; JIT/native/physical admission remain closed.
