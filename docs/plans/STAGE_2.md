@@ -404,19 +404,31 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-35.11 | Local-only bounded register PSUBSB XMM diagnostic slice; prerequisite S2-34.1 + S2-35.1 + reviewed S2-35.3 byte-subtract order infrastructure + S2-35.10 signed saturation coverage | S2-34.1, S2-35.1, S2-35.3 review, S2-35.10 review |
 | [x] | S2-35.12 | Local-only bounded register PADDSW XMM diagnostic slice; prerequisite S2-34.1 raw SSE state, S2-35.1 mandatory-66 decode and reviewed S2-35.6 word-lane representation | S2-34.1, S2-35.1, S2-35.6 review |
 | [x] | S2-35.13 | Local-only bounded register PSUBSW XMM diagnostic slice; prerequisite S2-34.1 raw SSE state, S2-35.1 mandatory-66 decode and reviewed S2-35.6 word-lane representation | S2-34.1, S2-35.1, S2-35.6 review |
+| [x] | S2-35.14 | Local-only bounded register PADDD XMM diagnostic slice; wrapping dword lanes, native/JIT closed | S2-34.1, S2-35.1 |
+| [x] | S2-35.15 | Local-only bounded register PSUBD XMM diagnostic slice; wrapping dword subtraction, native/JIT closed | S2-34.1, S2-35.1 |
+| [x] | S2-35.16 | Local-only bounded register PADDQ XMM diagnostic slice; wrapping qword lanes, native/JIT closed | S2-34.1, S2-35.1 |
 | [x] | S2-35.17 | Local-only bounded register PSUBQ XMM diagnostic slice; destination-minus-source wrapping qword lanes, native/JIT closed | S2-34.1, S2-35.1, S2-35.16 review |
 | [x] | S2-35.1 | Local-only PXOR XMM register diagnostic slice; child prerequisite S2-34.1 raw x87/SSE state only | S2-34.1 |
 | [x] | S2-35.2 | Local-only PADDB XMM register diagnostic slice; requires S2-34.1 state and reviewed S2-35.1 mandatory-66 register decoder | S2-34.1, S2-35.1 review |
+| [x] | S2-35.18 | Local-only bounded register PCMPEQB XMM diagnostic slice; byte equality masks, native/JIT closed | S2-34.1, S2-35.1 |
+| [x] | S2-35.19 | Local-only bounded register PCMPEQW XMM diagnostic slice; word equality masks, native/JIT closed | S2-34.1, S2-35.1 |
 | [x] | S2-35.20 | Local-only bounded register PCMPEQD XMM diagnostic slice; dword equality masks, native/JIT closed | S2-34.1, S2-35.1 |
 | [x] | S2-35.21 | Local-only bounded register PCMPGTB XMM diagnostic slice; signed byte greater-than masks, native/JIT closed | S2-34.1, S2-35.1 |
 | [x] | S2-35.22 | Local-only bounded register PCMPGTW XMM diagnostic slice; signed word greater-than masks, native/JIT closed | S2-34.1, S2-35.1 |
+| [x] | S2-35.23 | Local-only bounded register PCMPGTD XMM diagnostic slice; signed dword greater-than masks, native/JIT closed | S2-34.1, S2-35.1 |
+| [x] | S2-35.24 | Local-only bounded register PUNPCKLBW XMM diagnostic slice; low-byte interleave, native/JIT closed | S2-34.1, S2-35.1 |
 | [x] | S2-35.25 | Local-only bounded register PUNPCKHBW XMM diagnostic slice; high-byte interleave, native/JIT closed | S2-34.1, S2-35.1 |
 | [x] | S2-35.26 | Local-only bounded register PUNPCKLWD XMM diagnostic slice; low-word interleave, native/JIT closed | S2-34.1, S2-35.1 |
+| [x] | S2-35.27 | Local-only bounded register PUNPCKHWD XMM diagnostic slice; high-word interleave, native/JIT closed | S2-34.1, S2-35.1 |
 | [x] | S2-35.28 | Local-only bounded register PUNPCKLDQ XMM diagnostic slice; low-dword interleave, native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.29 | Local-only bounded register PUNPCKHDQ XMM diagnostic slice; high-dword interleave, native/JIT closed | S2-34.1, S2-35.1; independent review |
+| [x] | S2-35.30 | Local-only bounded register PUNPCKLQDQ XMM diagnostic slice; low-qword interleave, native/JIT closed | S2-34.1, S2-35.1 |
 | [x] | S2-35.31 | Local-only bounded register PUNPCKHQDQ XMM diagnostic slice; high-qword interleave, native/JIT closed | S2-34.1, S2-35.1; independent review |
 | [x] | S2-35.32 | Local-only bounded register PACKSSWB XMM diagnostic slice; signed word-to-byte saturation, native/JIT closed | S2-34.1, S2-35.1; independent review |
-| [ ] | S2-35.35 | Local-only bounded register PSHUFD XMM diagnostic slice; imm8 dword shuffle, native/JIT closed | S2-34.1, S2-35.1; independent review |
+| [x] | S2-35.33 | Local-only bounded register PACKUSWB XMM diagnostic slice; signed-word to unsigned-byte saturation, native/JIT closed | S2-34.1, S2-35.1; independent review |
+| [x] | S2-35.34 | Local-only bounded register PACKSSDW XMM diagnostic slice; signed-dword to signed-word saturation, native/JIT closed | S2-34.1, S2-35.1; independent review |
+| [x] | S2-35.35 | Local-only bounded register PSHUFD XMM diagnostic slice; imm8 dword shuffle, native/JIT closed | S2-34.1, S2-35.1; independent review |
+| [x] | S2-35.36 | Packed-integer bounded coverage and acceptance inventory; no ISA/profile expansion | S2-34.10, existing S2-35 local evidence |
 | [ ] | S2-36 | Собственная binary32/binary64 семантика | S2-29, S2-34 |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
@@ -8753,3 +8765,47 @@ shuffles/shifts, memory, MMX, extra prefixes, REX.W/X, VEX/EVEX execution,
 feature gates, exception delivery and physical execution remain excluded.
 S2-34, S2-35, global `S2-35 → S2-34`, and combined Mac mini/SSH acceptance
 remain open. Evidence is recorded in [STAGE_2_REPORT.md](../reports/STAGE_2_REPORT.md).
+
+#### S2-35.36 — bounded coverage and acceptance inventory
+
+This inventory reconciles implemented local slices with the task list; it
+does not define the eventual CPU profile or imply that every x86 form is
+required. “Implemented” below means only the exact local diagnostic forms
+named here. They share legacy `66 [one optional REX.R/B] 0F opcode /r`,
+ModR/M.mod=3, XMM0–15, except `PSHUFD`, which also consumes one imm8. Each
+has its own `s2-long-<mnemonic-lowercase>-reg-v1` profile, with the exact
+opcode and any profile-specific REX detail recorded in its numbered subsection;
+all reject forms outside their allowlist. The detailed literal fixtures are
+indexed in the [Stage 2 fixture README](../../tests/fixtures/x86/stage2/README.md).
+
+| Operation group | Local forms evidenced in S2-35 | Local evidence and next technical dependency |
+|---|---|---|
+| Arithmetic | `PADDB` FC, `PSUBB` F8, `PADDUSB` DC, `PSUBUSB` D8, `PADDW` FD, `PSUBW` F9, `PADDUSW` DD, `PSUBUSW` D9, `PADDSB` EC, `PSUBSB` E8, `PADDSW` ED, `PSUBSW` E9, `PADDD` FE, `PSUBD` FA, `PADDQ` D4, `PSUBQ` FB | Each byte is the final opcode in `66 [REX.R/B] 0F xx /r`, ModR/M.mod=3. Per-profile interpreter/decoder coverage and literal XMM fixtures exercise lane order, wrap or saturation, state preservation, and profile rejection; several entries record exhaustive lane/register matrices. Other arithmetic mnemonics or memory/MMX forms are not selected. Any extension first depends on the parent profile choosing exact forms; reviewed byte/word/dword/qword operations are local semantic precedents, not evidence of parent acceptance. |
+| Logic | `PXOR` EF | `66 [REX.R/B] 0F EF /r`, ModR/M.mod=3. Local register profile, fixture, full-state checks and strict rejection. `PAND`, `PANDN`, `POR` and other logical forms are not evidenced as S2-35 implementations. A selected next form can reuse the S2-35.1 mandatory-66 XMM decoder/state boundary; no architectural profile decision follows from that reuse. |
+| Comparison | `PCMPEQB` 74, `PCMPEQW` 75, `PCMPEQD` 76, `PCMPGTB` 64, `PCMPGTW` 65, `PCMPGTD` 66 | Each byte is the final opcode in `66 [REX.R/B] 0F xx /r`, ModR/M.mod=3. Local fixtures and per-profile lane/equality/signed-order checks; S2-35.21 records exhaustive raw byte-pair and 16×16 register-pair coverage. `PCMPEQQ` (SSE4.1) and `PCMPGTQ` (SSE4.2) are explicitly outside these SSE2 slices. More forms require explicit profile selection and parent acceptance. |
+| Unpack | `PUNPCKLBW` 60, `PUNPCKHBW` 68, `PUNPCKLWD` 61, `PUNPCKHWD` 69, `PUNPCKLDQ` 62, `PUNPCKHDQ` 6A, `PUNPCKLQDQ` 6C, `PUNPCKHQDQ` 6D | Each byte is the final opcode in `66 [REX.R/B] 0F xx /r`, ModR/M.mod=3. Local register fixtures and lane-selection/state checks exist for all eight listed forms. No new local opcode dependency is evidenced; parent native-oracle acceptance remains outstanding. |
+| Pack | `PACKSSWB` 63, `PACKUSWB` 67, `PACKSSDW` 6B | Each byte is the final opcode in `66 [REX.R/B] 0F xx /r`, ModR/M.mod=3. Local fixtures and boundary/extrema checks; S2-35.33/.34 additionally record exhaustive sign-extended input-position checks and register-pair coverage. These are the only pack forms inventoried here. |
+| Shuffle | `PSHUFD` 70 + imm8 | `66 [REX.R/B] 0F 70 /r ib`, ModR/M.mod=3. Exact register-only profile and fixture; local tests cover all 256 controls and all 16×16 register pairs, aliasing, fetch truncation and strict negatives. Other shuffle forms have no selected S2-35 profile here. |
+| Shifts | None | No shift profile, fixture, or local evidence is recorded in the CPU contract, Stage 2 report, or fixture index. Before a shift slice, select a bounded operation and define its operand width, count source/masking, lane behavior and exact encoding from the architectural source; no specific x86 shift set is declared required here. |
+
+For every implemented row, the local contract is register-only and assumes
+SSE2 plus CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 where the profile says so.
+Memory operands, memory-fault delivery, alignment behavior, MMX, unlisted
+prefix/REX encodings, VEX/EVEX, control-state transitions and general CPU
+feature gating are not established by these slices. Local implementation
+presence is recorded by the named profiles and focused interpreter/fixture
+evidence in the plan and report. Native admission remains closed for these
+diagnostic profiles; where Linux-only denial guards exist, their compile-only
+result on macOS is not an executed admission test. This is distinct from
+physical execution. Physical SSE/SSE2 execution is `not_run`: the current oracle
+harness admits integer profiles only, as recorded by [S2-34.10](#s2-3410--closure-inventory-and-remaining-acceptance).
+
+S2-34.10 remains the acceptance boundary: completion still requires an explicit
+parent profile and real native-oracle register and memory cases for required
+forms, with faults, alignment and feature/state requirements accounted for.
+Native denial checks and local interpreter PASS do not satisfy that boundary.
+The cross-cutting dependencies include raw SIMD state and gates from S2-34,
+profile/CPUID decisions, and required save/restore or extended-state capture
+from S2-39/S2-40; this inventory makes no CPUID, boot, allowlist, or extended
+state decision. S2-34, S2-35, and global `S2-35 → S2-34` remain open; the
+combined Mac mini/SSH acceptance remains deferred.

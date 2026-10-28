@@ -12879,3 +12879,10 @@ no physical execution is claimed. Intel SDM revision 093 Vol. 2B PSHUFD entry
 is the encoding/semantics source. SSE2 and CR0/CR4 preconditions are assumed.
 Independent review and focused checks passed; parent S2-34, S2-35 and
 `S2-35 → S2-34` remain open.
+
+The bounded group-by-group coverage and acceptance snapshot, including the
+reconciled S2-35 task checklist, is recorded in
+[S2-35.36 of the Stage 2 plan](../plans/STAGE_2.md#s2-3536--bounded-coverage-and-acceptance-inventory).
+It records local interpreter/profile evidence separately from native admission
+and physical execution; the latter remains `not_run` for SSE/SSE2 under the
+current integer-only oracle harness.
