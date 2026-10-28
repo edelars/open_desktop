@@ -247,6 +247,23 @@ impl<T> BinaryDivisionResult<T> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Binary32(u32);
 
+/// Returns the exact normalized binary significand for a signed integer.
+///
+/// The zero tuple is canonical and signless. For nonzero values, `significand`
+/// has bit 63 set and the exact magnitude is
+/// `significand * 2^(exponent - 63)`.
+fn normalize_i64(value: i64) -> (bool, i32, u64) {
+    if value == 0 {
+        return (false, 0, 0);
+    }
+
+    let sign = value < 0;
+    let magnitude = value.unsigned_abs();
+    let leading_bit = 63 - magnitude.leading_zeros() as i32;
+    let significand = magnitude << (63 - leading_bit);
+    (sign, leading_bit, significand)
+}
+
 impl Binary32 {
     const SIGN_MASK: u32 = 1 << 31;
     const EXPONENT_MASK: u32 = 0xff;
@@ -256,6 +273,22 @@ impl Binary32 {
     /// Constructs a binary32 value without interpreting or changing its bits.
     pub const fn from_bits(bits: u32) -> Self {
         Self(bits)
+    }
+
+    /// Converts a signed 64-bit integer directly to binary32 using `mode`.
+    ///
+    /// The integer is normalized exactly and rounded once to binary32
+    /// precision. This value-only conversion uses no host floating point, does
+    /// not modify MXCSR or CPU state, and does not model instruction exception
+    /// delivery. Zero is always positive zero. Nonzero results are normal and
+    /// finite; only `inexact` may be set in the rounding diagnostics.
+    pub fn from_i64(value: i64, mode: RationalRoundingMode) -> BinaryRoundingResult<Self> {
+        if value == 0 {
+            return BinaryRoundingResult::new(Self::from_bits(0), false, false, false);
+        }
+        let (sign, exponent, significand) = normalize_i64(value);
+        Self::round_pack_quotient(sign, exponent, significand, 0, 1, mode)
+            .expect("normalized i64 significand is valid for binary32 rounding")
     }
 
     /// Returns the exact stored encoding.
@@ -1001,6 +1034,22 @@ impl Binary64 {
     /// Constructs a binary64 value without interpreting or changing its bits.
     pub const fn from_bits(bits: u64) -> Self {
         Self(bits)
+    }
+
+    /// Converts a signed 64-bit integer directly to binary64 using `mode`.
+    ///
+    /// The integer is normalized exactly and rounded once to binary64
+    /// precision. This value-only conversion uses no host floating point, does
+    /// not modify MXCSR or CPU state, and does not model instruction exception
+    /// delivery. Zero is always positive zero. Nonzero results are normal and
+    /// finite; only `inexact` may be set in the rounding diagnostics.
+    pub fn from_i64(value: i64, mode: RationalRoundingMode) -> BinaryRoundingResult<Self> {
+        if value == 0 {
+            return BinaryRoundingResult::new(Self::from_bits(0), false, false, false);
+        }
+        let (sign, exponent, significand) = normalize_i64(value);
+        Self::round_pack_quotient(sign, exponent, significand, 0, 1, mode)
+            .expect("normalized i64 significand is valid for binary64 rounding")
     }
 
     /// Returns the exact stored encoding.
@@ -8371,6 +8420,312 @@ mod tests {
             assert!(result.inexact());
             assert!(result.overflow());
             assert!(!result.tiny_after_precision_rounding());
+        }
+    }
+
+    #[test]
+    fn signed_i64_to_binary_formats_covers_every_leading_bit_position() {
+        for (value, expected32, expected64) in [
+            (1_i64 << 0, 0x3f800000, 0x3ff0000000000000),
+            (1_i64 << 1, 0x40000000, 0x4000000000000000),
+            (1_i64 << 2, 0x40800000, 0x4010000000000000),
+            (1_i64 << 3, 0x41000000, 0x4020000000000000),
+            (1_i64 << 4, 0x41800000, 0x4030000000000000),
+            (1_i64 << 5, 0x42000000, 0x4040000000000000),
+            (1_i64 << 6, 0x42800000, 0x4050000000000000),
+            (1_i64 << 7, 0x43000000, 0x4060000000000000),
+            (1_i64 << 8, 0x43800000, 0x4070000000000000),
+            (1_i64 << 9, 0x44000000, 0x4080000000000000),
+            (1_i64 << 10, 0x44800000, 0x4090000000000000),
+            (1_i64 << 11, 0x45000000, 0x40a0000000000000),
+            (1_i64 << 12, 0x45800000, 0x40b0000000000000),
+            (1_i64 << 13, 0x46000000, 0x40c0000000000000),
+            (1_i64 << 14, 0x46800000, 0x40d0000000000000),
+            (1_i64 << 15, 0x47000000, 0x40e0000000000000),
+            (1_i64 << 16, 0x47800000, 0x40f0000000000000),
+            (1_i64 << 17, 0x48000000, 0x4100000000000000),
+            (1_i64 << 18, 0x48800000, 0x4110000000000000),
+            (1_i64 << 19, 0x49000000, 0x4120000000000000),
+            (1_i64 << 20, 0x49800000, 0x4130000000000000),
+            (1_i64 << 21, 0x4a000000, 0x4140000000000000),
+            (1_i64 << 22, 0x4a800000, 0x4150000000000000),
+            (1_i64 << 23, 0x4b000000, 0x4160000000000000),
+            (1_i64 << 24, 0x4b800000, 0x4170000000000000),
+            (1_i64 << 25, 0x4c000000, 0x4180000000000000),
+            (1_i64 << 26, 0x4c800000, 0x4190000000000000),
+            (1_i64 << 27, 0x4d000000, 0x41a0000000000000),
+            (1_i64 << 28, 0x4d800000, 0x41b0000000000000),
+            (1_i64 << 29, 0x4e000000, 0x41c0000000000000),
+            (1_i64 << 30, 0x4e800000, 0x41d0000000000000),
+            (1_i64 << 31, 0x4f000000, 0x41e0000000000000),
+            (1_i64 << 32, 0x4f800000, 0x41f0000000000000),
+            (1_i64 << 33, 0x50000000, 0x4200000000000000),
+            (1_i64 << 34, 0x50800000, 0x4210000000000000),
+            (1_i64 << 35, 0x51000000, 0x4220000000000000),
+            (1_i64 << 36, 0x51800000, 0x4230000000000000),
+            (1_i64 << 37, 0x52000000, 0x4240000000000000),
+            (1_i64 << 38, 0x52800000, 0x4250000000000000),
+            (1_i64 << 39, 0x53000000, 0x4260000000000000),
+            (1_i64 << 40, 0x53800000, 0x4270000000000000),
+            (1_i64 << 41, 0x54000000, 0x4280000000000000),
+            (1_i64 << 42, 0x54800000, 0x4290000000000000),
+            (1_i64 << 43, 0x55000000, 0x42a0000000000000),
+            (1_i64 << 44, 0x55800000, 0x42b0000000000000),
+            (1_i64 << 45, 0x56000000, 0x42c0000000000000),
+            (1_i64 << 46, 0x56800000, 0x42d0000000000000),
+            (1_i64 << 47, 0x57000000, 0x42e0000000000000),
+            (1_i64 << 48, 0x57800000, 0x42f0000000000000),
+            (1_i64 << 49, 0x58000000, 0x4300000000000000),
+            (1_i64 << 50, 0x58800000, 0x4310000000000000),
+            (1_i64 << 51, 0x59000000, 0x4320000000000000),
+            (1_i64 << 52, 0x59800000, 0x4330000000000000),
+            (1_i64 << 53, 0x5a000000, 0x4340000000000000),
+            (1_i64 << 54, 0x5a800000, 0x4350000000000000),
+            (1_i64 << 55, 0x5b000000, 0x4360000000000000),
+            (1_i64 << 56, 0x5b800000, 0x4370000000000000),
+            (1_i64 << 57, 0x5c000000, 0x4380000000000000),
+            (1_i64 << 58, 0x5c800000, 0x4390000000000000),
+            (1_i64 << 59, 0x5d000000, 0x43a0000000000000),
+            (1_i64 << 60, 0x5d800000, 0x43b0000000000000),
+            (1_i64 << 61, 0x5e000000, 0x43c0000000000000),
+            (1_i64 << 62, 0x5e800000, 0x43d0000000000000),
+        ] {
+            for (input, negative) in [(value, false), (-value, true)] {
+                let expected32 = expected32 | if negative { 0x8000_0000 } else { 0 };
+                let expected64 = expected64 | if negative { 0x8000_0000_0000_0000 } else { 0 };
+                let result32 = Binary32::from_i64(input, RationalRoundingMode::NearestTiesEven);
+                assert_eq!(result32.value().to_bits(), expected32, "{input}");
+                assert_eq!(result32.value().class(), BinaryClass::Normal);
+                assert!(!result32.inexact());
+                assert!(!result32.overflow());
+                assert!(!result32.tiny_after_precision_rounding());
+
+                let result64 = Binary64::from_i64(input, RationalRoundingMode::NearestTiesEven);
+                assert_eq!(result64.value().to_bits(), expected64, "{input}");
+                assert_eq!(result64.value().class(), BinaryClass::Normal);
+                assert!(!result64.inexact());
+                assert!(!result64.overflow());
+                assert!(!result64.tiny_after_precision_rounding());
+            }
+        }
+
+        for mode in [
+            RationalRoundingMode::NearestTiesEven,
+            RationalRoundingMode::TowardZero,
+            RationalRoundingMode::TowardPositive,
+            RationalRoundingMode::TowardNegative,
+        ] {
+            let zero32 = Binary32::from_i64(0, mode);
+            let zero64 = Binary64::from_i64(0, mode);
+            assert_eq!(zero32.value().to_bits(), 0x0000_0000);
+            assert_eq!(zero64.value().to_bits(), 0x0000_0000_0000_0000);
+            assert!(
+                !zero32.inexact() && !zero32.overflow() && !zero32.tiny_after_precision_rounding()
+            );
+            assert!(
+                !zero64.inexact() && !zero64.overflow() && !zero64.tiny_after_precision_rounding()
+            );
+        }
+
+        for (input, expected32, expected64) in [(i64::MIN, 0xdf00_0000, 0xc3e0_0000_0000_0000)] {
+            let result32 = Binary32::from_i64(input, RationalRoundingMode::NearestTiesEven);
+            let result64 = Binary64::from_i64(input, RationalRoundingMode::NearestTiesEven);
+            assert_eq!(result32.value().to_bits(), expected32);
+            assert_eq!(result64.value().to_bits(), expected64);
+            assert!(!result32.inexact() && !result64.inexact());
+        }
+    }
+
+    #[test]
+    fn signed_i64_to_binary_formats_round_boundaries_and_ties_by_mode() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        for (input, expected32, expected64, inexact32, inexact64) in [
+            (1, 0x3f80_0000, 0x3ff0_0000_0000_0000, false, false),
+            (-1, 0xbf80_0000, 0xbff0_0000_0000_0000, false, false),
+            (
+                i32::MIN as i64,
+                0xcf00_0000,
+                0xc1e0_0000_0000_0000,
+                false,
+                false,
+            ),
+            (
+                i32::MAX as i64,
+                0x4f00_0000,
+                0x41df_ffff_ffc0_0000,
+                true,
+                false,
+            ),
+            (i64::MIN, 0xdf00_0000, 0xc3e0_0000_0000_0000, false, false),
+            (i64::MIN + 1, 0xdf00_0000, 0xc3e0_0000_0000_0000, true, true),
+            (i64::MAX - 1, 0x5f00_0000, 0x43e0_0000_0000_0000, true, true),
+            (i64::MAX, 0x5f00_0000, 0x43e0_0000_0000_0000, true, true),
+            (16_777_215, 0x4b7f_ffff, 0x416f_ffff_e000_0000, false, false),
+            (16_777_216, 0x4b80_0000, 0x4170_0000_0000_0000, false, false),
+            (16_777_217, 0x4b80_0000, 0x4170_0000_1000_0000, true, false),
+            (16_777_218, 0x4b80_0001, 0x4170_0000_2000_0000, false, false),
+            (16_777_219, 0x4b80_0002, 0x4170_0000_3000_0000, true, false),
+            (
+                9_007_199_254_740_991,
+                0x5a00_0000,
+                0x433f_ffff_ffff_ffff,
+                true,
+                false,
+            ),
+            (
+                9_007_199_254_740_992,
+                0x5a00_0000,
+                0x4340_0000_0000_0000,
+                false,
+                false,
+            ),
+            (
+                9_007_199_254_740_993,
+                0x5a00_0000,
+                0x4340_0000_0000_0000,
+                true,
+                true,
+            ),
+            (
+                9_007_199_254_740_994,
+                0x5a00_0000,
+                0x4340_0000_0000_0001,
+                true,
+                false,
+            ),
+            (
+                9_007_199_254_740_995,
+                0x5a00_0000,
+                0x4340_0000_0000_0002,
+                true,
+                true,
+            ),
+            // Direct binary32 rounding goes above the midpoint; a binary64
+            // intermediate would erase the final +1 and tie back down.
+            (
+                (1_i64 << 62) + (1_i64 << 38) + 1,
+                0x5e80_0001,
+                0x43d0_0000_1000_0000,
+                true,
+                true,
+            ),
+        ] {
+            let result32 = Binary32::from_i64(input, Nearest);
+            assert_eq!(result32.value().to_bits(), expected32, "{input}");
+            assert_eq!(result32.inexact(), inexact32, "{input}");
+            assert!(!result32.overflow());
+            assert!(!result32.tiny_after_precision_rounding());
+
+            let result64 = Binary64::from_i64(input, Nearest);
+            assert_eq!(result64.value().to_bits(), expected64, "{input}");
+            assert_eq!(result64.inexact(), inexact64, "{input}");
+            assert!(!result64.overflow());
+            assert!(!result64.tiny_after_precision_rounding());
+        }
+
+        for (input, expected32, expected64, inexact32, inexact64) in [
+            (
+                16_777_217,
+                [0x4b80_0000, 0x4b80_0000, 0x4b80_0001, 0x4b80_0000],
+                [0x4170_0000_1000_0000; 4],
+                true,
+                false,
+            ),
+            (
+                -16_777_217,
+                [0xcb80_0000, 0xcb80_0000, 0xcb80_0000, 0xcb80_0001],
+                [0xc170_0000_1000_0000; 4],
+                true,
+                false,
+            ),
+            (
+                9_007_199_254_740_993,
+                [0x5a00_0000, 0x5a00_0000, 0x5a00_0001, 0x5a00_0000],
+                [
+                    0x4340_0000_0000_0000,
+                    0x4340_0000_0000_0000,
+                    0x4340_0000_0000_0001,
+                    0x4340_0000_0000_0000,
+                ],
+                true,
+                true,
+            ),
+            (
+                -9_007_199_254_740_993,
+                [0xda00_0000, 0xda00_0000, 0xda00_0000, 0xda00_0001],
+                [
+                    0xc340_0000_0000_0000,
+                    0xc340_0000_0000_0000,
+                    0xc340_0000_0000_0000,
+                    0xc340_0000_0000_0001,
+                ],
+                true,
+                true,
+            ),
+            (
+                i64::MAX,
+                [0x5f00_0000, 0x5eff_ffff, 0x5f00_0000, 0x5eff_ffff],
+                [
+                    0x43e0_0000_0000_0000,
+                    0x43df_ffff_ffff_ffff,
+                    0x43e0_0000_0000_0000,
+                    0x43df_ffff_ffff_ffff,
+                ],
+                true,
+                true,
+            ),
+            (
+                -i64::MAX,
+                [0xdf00_0000, 0xdeff_ffff, 0xdeff_ffff, 0xdf00_0000],
+                [
+                    0xc3e0_0000_0000_0000,
+                    0xc3df_ffff_ffff_ffff,
+                    0xc3df_ffff_ffff_ffff,
+                    0xc3e0_0000_0000_0000,
+                ],
+                true,
+                true,
+            ),
+        ] {
+            for (index, mode) in [Nearest, Zero, Up, Down].into_iter().enumerate() {
+                let result32 = Binary32::from_i64(input, mode);
+                assert_eq!(
+                    result32.value().to_bits(),
+                    expected32[index],
+                    "{input} {mode:?}"
+                );
+                assert_eq!(result32.inexact(), inexact32);
+                assert!(!result32.overflow());
+                assert!(!result32.tiny_after_precision_rounding());
+
+                let result64 = Binary64::from_i64(input, mode);
+                assert_eq!(
+                    result64.value().to_bits(),
+                    expected64[index],
+                    "{input} {mode:?}"
+                );
+                assert_eq!(result64.inexact(), inexact64);
+                assert!(!result64.overflow());
+                assert!(!result64.tiny_after_precision_rounding());
+            }
+        }
+
+        for mode in [Nearest, Zero, Up, Down] {
+            for (input, expected32, expected64) in [(i64::MIN, 0xdf00_0000, 0xc3e0_0000_0000_0000)]
+            {
+                let result32 = Binary32::from_i64(input, mode);
+                let result64 = Binary64::from_i64(input, mode);
+                assert_eq!(result32.value().to_bits(), expected32);
+                assert_eq!(result64.value().to_bits(), expected64);
+                assert!(!result32.inexact());
+                assert!(!result64.inexact());
+                assert!(!result32.overflow() && !result32.tiny_after_precision_rounding());
+                assert!(!result64.overflow() && !result64.tiny_after_precision_rounding());
+            }
         }
     }
 }

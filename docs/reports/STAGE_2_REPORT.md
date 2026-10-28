@@ -969,6 +969,45 @@ rounding control для double-to-single conversion. См. [Vol. 1](https://cdrd
 raw conversion contract, не admission инструкции или hardware evidence. См.
 [план S2-36v](../plans/STAGE_2.md#s2-36v--raw-binary64-to-binary32-narrowing).
 
+## S2-36w — bounded signed i64-to-binary32/binary64 conversion
+
+`Binary32::from_i64(value, mode)` and `Binary64::from_i64(value, mode)` now
+provide value-only conversions with an explicit `RationalRoundingMode`. A
+shared integer-only normalizer forms sign, `floor(log2(abs(value)))`, and a
+normalized u64 significand; `i64::unsigned_abs()` handles `i64::MIN` without
+signed overflow. Zero returns positive zero. Each nonzero conversion calls
+only its destination format's existing `round_pack_quotient` once with the
+exact normalized integer significand and zero rational remainder. The
+binary32 path does not pass through binary64. Nonzero results are normal finite values;
+only `inexact` may be set. Overflow and tininess diagnostics remain false,
+including when `i64::MAX` rounds to +2^63. No host FP, x87, CPU/MXCSR mutation,
+or architectural exception delivery is involved; an i32 caller can sign-extend
+through the i64 API.
+
+Literal tests cover zero, ±1, every leading-bit position through the 2^63
+magnitude of `i64::MIN`, i32 extrema, i64 extrema and adjacent values, and
+boundaries around 2^24 and 2^53. Both signs and all four rounding modes are
+checked for ties and directed rounding, with explicit value bits, inexact,
+overflow, and tiny diagnostics; normal-class assertions cover every
+leading-bit position. The focused conversion tests passed 2/2;
+one literal proves binary32 rounds directly from i64: an integer just above a
+binary32 midpoint rounds upward even though an intermediate binary64 would
+round to the midpoint first. The complete `binary_float::tests` suite passed
+72/72, `cargo fmt --all -- --check`, `cargo check --workspace --all-targets
+--offline`, and `git diff --check` passed. Independent Sol medium code and
+documentation reviews found no remaining issues after the recommended
+anti-double-rounding literal and accuracy edits were incorporated. Full S2-36
+and S2-36w hardware/Mac mini acceptance remain open; instruction-level
+integration and hardware execution are deferred to later work and the combined
+final substage, respectively.
+
+Provenance: Intel SDM Rev. 093 Vol. 2A `CVTSI2SD` §3-236–237 and `CVTSI2SS`
+§3-238–239 specify signed integer-to-floating conversion, MXCSR rounding
+control, and SIMD Precision exception behavior. The explicit-mode helper is
+only a local mathematical conversion contract; it does not update MXCSR or
+deliver that architectural exception. See [official Intel Vol. 2A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)
+and the [S2-36w plan](../plans/STAGE_2.md#s2-36w--bounded-signed-i64-to-binary32binary64-value-conversion).
+
 ## S2-27a — exact Long64 `LGDT [RBP-10]`
 
 **Статус:** в процессе; локальные проверки реализации автора записаны ниже.

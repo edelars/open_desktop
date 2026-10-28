@@ -476,6 +476,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-36t | Same-format raw binary32/binary64 comparison relation with quiet/signaling NaN modes and local invalid outcome | S2-36l, S2-36a; independent review |
 | [x] | S2-36u | Exact raw binary32-to-binary64 widening with local SNaN invalid outcome | S2-36a, S2-36q; independent review |
 | [x] | S2-36v | Raw binary64-to-binary32 narrowing with explicit rounding mode and local diagnostics | S2-36a, S2-36m; independent review |
+| [x] | S2-36w | Bounded signed i64-to-binary32/binary64 value conversion with explicit rounding mode | S2-36d, S2-36e; independent review |
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
@@ -5612,6 +5613,34 @@ zeros/infinities, payload truncation boundaries, exact finite encodings,
 positive and negative tie cases, subnormal/tininess boundaries, and signed
 overflow under all rounding modes. Keep full S2-36 and hardware/Mac mini
 acceptance open; hardware execution is deferred to the combined final substage.
+
+#### S2-36w — bounded signed i64-to-binary32/binary64 value conversion
+
+Add `Binary32::from_i64(value: i64, mode)` and
+`Binary64::from_i64(value: i64, mode)`, returning
+`BinaryRoundingResult` for the corresponding format. Normalize the exact
+unsigned magnitude without signed overflow (including `i64::MIN`), then call
+the destination's existing `round_pack_quotient(sign, exponent, significand,
+0, 1, mode)` exactly once. Zero is always positive zero. No i32-specific API is
+needed; i32 values sign-extend through i64. Do not use host floating point,
+binary64 as an intermediate for binary32, x87, CPU state, or MXCSR. Nonzero
+results are normal finite values; `inexact` may be true, while overflow and
+tininess are always false. In particular, `i64::MAX` may round to positive 2^63 without an
+invalid or overflow outcome.
+
+Use literal output encodings for zero, ±1, powers across every leading-bit
+position, i32 limits, i64 limits and adjacent i64 values, and the integer
+rounding boundaries around 2^24 and 2^53. Exercise both signs and all four
+modes at ties and directed-rounding cases; include a binary32 literal above a
+midpoint that would tie down after an intermediate binary64 rounding. Assert
+literal bits and diagnostics; check normal class across each leading-bit case.
+Intel SDM Rev.
+093 Vol. 2A `CVTSI2SD` §3-236–237 and `CVTSI2SS` §3-238–239 specify signed
+dword/qword conversion, MXCSR rounding control, and the SIMD Precision
+exception. This pure helper accepts an explicit mode and does not mutate MXCSR
+or deliver architectural exceptions. Full S2-36, instruction integration, and
+hardware/Mac mini acceptance remain open; hardware execution stays deferred to
+the combined final substage.
 
 ### S2-37. SSE/SSE2 FP arithmetic и conversions
 
