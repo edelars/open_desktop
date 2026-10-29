@@ -37602,6 +37602,522 @@ mod tests {
     }
 
     #[test]
+    fn native_nop_fallback_demand_flags_candidate_dispatches_uncached_blocks() {
+        let _guard = jit_test_lock();
+        use od_jit::statepoints::{SnapshotAdmissibility, StatePhase};
+
+        struct CandidateWitness {
+            executor: PublishedBlockExecutor,
+            pending_flags_seen: bool,
+            entries: Vec<u64>,
+        }
+
+        impl od_jit::dispatch::ControlledBlockExecutor for CandidateWitness {
+            type Error = PublishedBlockExecutionError;
+
+            fn execute_one_block_controlled(
+                &mut self,
+                block: &od_jit::block_compile::CompiledBlock,
+                state: &mut od_isa::LongModeState,
+                budget: u64,
+                control: od_jit::dispatch::DispatchControl<'_>,
+            ) -> Result<od_jit::dispatch::BlockExecutionReport, Self::Error> {
+                self.entries.push(state.rip);
+                self.pending_flags_seen |= block.emitted().pc_map().ranges().iter().any(|range| {
+                    range.phase != StatePhase::Exit
+                        && range.snapshot == SnapshotAdmissibility::InadmissiblePendingFlags
+                });
+                od_jit::dispatch::ControlledBlockExecutor::execute_one_block_controlled(
+                    &mut self.executor,
+                    block,
+                    state,
+                    budget,
+                    control,
+                )
+            }
+        }
+
+        let base_rip = 0x7D00;
+        // ADD RAX,RCX; JNZ back to ADD; NOP; CMP RAX,RDX; JZ code_end;
+        // MOV RBX,0x11. The loop executes two taken and one non-taken JNZ.
+        let mut code = vec![
+            0x48, 0x03, 0xC1, 0x75, 0xFB, 0x90, 0x48, 0x3B, 0xC2, 0x74, 0x0A,
+        ];
+        code.extend_from_slice(&[0x48, 0xBB]);
+        code.extend_from_slice(&0x11_u64.to_le_bytes());
+        let view = CodeView::new(base_rip, &code).unwrap();
+        let admission = od_jit::dispatch::InterpreterFallbackAdmission::from_code(view).unwrap();
+        let mut initial = od_isa::LongModeState::default();
+        initial.rip = base_rip;
+        initial.rflags = 0x202;
+        initial.gpr[0] = 3;
+        initial.gpr[1] = u64::MAX;
+        initial.gpr[2] = 0;
+        let stop = AtomicU8::new(0);
+        let control = od_jit::dispatch::DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+
+        fn interpret(
+            code: &[u8],
+            base: u64,
+            state: &mut od_isa::LongModeState,
+            budget: u64,
+            stop_rip: Option<u64>,
+        ) -> u64 {
+            struct CodeOnly<'a> {
+                base: u64,
+                bytes: &'a [u8],
+            }
+            impl od_isa::memory::GuestMemory for CodeOnly<'_> {
+                fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                    address
+                        .checked_sub(self.base)
+                        .and_then(|offset| self.bytes.get(offset as usize))
+                        .copied()
+                        .ok_or(MemoryError::Unmapped {
+                            address,
+                            access: od_isa::memory::AccessKind::Fetch,
+                        })
+                }
+                fn read(
+                    &mut self,
+                    address: u64,
+                    _: AccessContext,
+                    _: &mut [u8],
+                ) -> Result<(), MemoryError> {
+                    Err(MemoryError::Unmapped {
+                        address,
+                        access: od_isa::memory::AccessKind::Read,
+                    })
+                }
+                fn write(
+                    &mut self,
+                    address: u64,
+                    _: AccessContext,
+                    _: &[u8],
+                ) -> Result<(), MemoryError> {
+                    Err(MemoryError::Unmapped {
+                        address,
+                        access: od_isa::memory::AccessKind::Write,
+                    })
+                }
+                fn atomic_exchange_integer(
+                    &mut self,
+                    address: u64,
+                    _: AccessContext,
+                    _: od_isa::OperandSize,
+                    _: u64,
+                ) -> Result<u64, MemoryError> {
+                    Err(MemoryError::Unmapped {
+                        address,
+                        access: od_isa::memory::AccessKind::Read,
+                    })
+                }
+                fn atomic_fetch_add_integer(
+                    &mut self,
+                    address: u64,
+                    _: AccessContext,
+                    _: od_isa::OperandSize,
+                    _: u64,
+                ) -> Result<u64, MemoryError> {
+                    Err(MemoryError::Unmapped {
+                        address,
+                        access: od_isa::memory::AccessKind::Read,
+                    })
+                }
+                fn atomic_compare_exchange_integer(
+                    &mut self,
+                    address: u64,
+                    _: AccessContext,
+                    _: od_isa::OperandSize,
+                    _: u64,
+                    _: u64,
+                ) -> Result<u64, MemoryError> {
+                    Err(MemoryError::Unmapped {
+                        address,
+                        access: od_isa::memory::AccessKind::Read,
+                    })
+                }
+                fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                    Ok(())
+                }
+            }
+            let mut retired = 0;
+            let mut memory = CodeOnly { base, bytes: code };
+            while retired < budget
+                && state.rip < base + code.len() as u64
+                && stop_rip != Some(state.rip)
+            {
+                assert!(matches!(
+                    od_isa::execute::step(state, &mut memory, AccessContext::default()).unwrap(),
+                    od_isa::execute::StepOutcome::Advanced | od_isa::execute::StepOutcome::Branched
+                ));
+                retired += 1;
+            }
+            retired
+        }
+
+        for budget in 0..=10 {
+            let mut candidate = initial.clone();
+            let mut witness = CandidateWitness {
+                executor: PublishedBlockExecutor,
+                pending_flags_seen: false,
+                entries: Vec::new(),
+            };
+            let result = od_jit::dispatch::run_with_nop_fallback_demand_flags_candidate(
+                view,
+                &admission,
+                &mut candidate,
+                budget,
+                control,
+                &mut witness,
+            )
+            .unwrap();
+            let mut interpreted = initial.clone();
+            let retired = interpret(&code, base_rip, &mut interpreted, budget, None);
+            assert_eq!(candidate, interpreted, "budget {budget}");
+            assert_eq!(result.remaining_budget, budget - retired, "budget {budget}");
+            assert_eq!(
+                result.retired_native + result.retired_interpreter,
+                retired,
+                "budget {budget}"
+            );
+            assert_eq!(
+                result.exit,
+                if interpreted.rip == view.code_end() {
+                    od_jit::dispatch::DispatchExit::CodeEnd
+                } else {
+                    od_jit::dispatch::DispatchExit::BudgetExhausted
+                },
+                "budget {budget}"
+            );
+        }
+
+        let mut candidate = initial.clone();
+        let mut witness = CandidateWitness {
+            executor: PublishedBlockExecutor,
+            pending_flags_seen: false,
+            entries: Vec::new(),
+        };
+        let candidate_result = od_jit::dispatch::run_with_nop_fallback_demand_flags_candidate(
+            view,
+            &admission,
+            &mut candidate,
+            10,
+            control,
+            &mut witness,
+        )
+        .unwrap();
+        assert_eq!(
+            candidate_result.exit,
+            od_jit::dispatch::DispatchExit::CodeEnd
+        );
+        assert_eq!(candidate_result.retired_native, 8);
+        assert_eq!(candidate_result.retired_interpreter, 1);
+        assert_eq!(candidate_result.remaining_budget, 1);
+        assert!(candidate_result.blocks_executed >= 4);
+        assert!(
+            witness.pending_flags_seen,
+            "candidate PC-map path was not observed"
+        );
+        assert!(witness.entries.contains(&base_rip));
+        assert!(witness.entries.contains(&(base_rip + 6)));
+
+        let mut eager = initial.clone();
+        let mut eager_executor = PublishedBlockExecutor;
+        let eager_result = od_jit::dispatch::run_with_nop_fallback(
+            view,
+            &admission,
+            &mut eager,
+            10,
+            control,
+            &mut eager_executor,
+        )
+        .unwrap();
+        assert_eq!(candidate, eager);
+        assert_eq!(candidate_result, eager_result);
+        assert_eq!(candidate.gpr[3], 0);
+        assert_eq!(candidate.rip, view.code_end());
+
+        let mut not_equal = initial.clone();
+        not_equal.gpr[2] = 1;
+        let mut not_equal_expected = not_equal.clone();
+        assert_eq!(
+            interpret(&code, base_rip, &mut not_equal_expected, 10, None),
+            10
+        );
+        let mut not_equal_candidate_executor = PublishedBlockExecutor;
+        let not_equal_result = od_jit::dispatch::run_with_nop_fallback_demand_flags_candidate(
+            view,
+            &admission,
+            &mut not_equal,
+            10,
+            control,
+            &mut not_equal_candidate_executor,
+        )
+        .unwrap();
+        assert_eq!(
+            not_equal_result.exit,
+            od_jit::dispatch::DispatchExit::CodeEnd
+        );
+        assert_eq!(not_equal, not_equal_expected);
+        assert_eq!(not_equal.gpr[3], 0x11);
+        let mut not_equal_eager = initial.clone();
+        not_equal_eager.gpr[2] = 1;
+        let mut eager_executor = PublishedBlockExecutor;
+        let not_equal_eager_result = od_jit::dispatch::run_with_nop_fallback(
+            view,
+            &admission,
+            &mut not_equal_eager,
+            10,
+            control,
+            &mut eager_executor,
+        )
+        .unwrap();
+        assert_eq!(not_equal, not_equal_eager);
+        assert_eq!(not_equal_result, not_equal_eager_result);
+
+        // Stop at every reachable decoded boundary, then resume with the
+        // remaining budget. This detects replay of the boundary instruction.
+        for offset in [0_u64, 3, 5, 6, 9, 11, code.len() as u64] {
+            let target = base_rip + offset;
+            let mut stopped_initial = initial.clone();
+            stopped_initial.gpr[2] = 1;
+            let mut interpreted_prefix = stopped_initial.clone();
+            let interpreted_retired =
+                interpret(&code, base_rip, &mut interpreted_prefix, 20, Some(target));
+            assert_eq!(
+                interpreted_prefix.rip, target,
+                "target {target:#x} unreachable"
+            );
+            let stop_at_boundary = AtomicU8::new(0);
+            let first_control = od_jit::dispatch::DispatchControl {
+                stop_rip: Some(target),
+                stop_requested: &stop_at_boundary,
+                event_requested: None,
+            };
+            let mut actual = stopped_initial;
+            let mut executor = PublishedBlockExecutor;
+            let stopped = od_jit::dispatch::run_with_nop_fallback_demand_flags_candidate(
+                view,
+                &admission,
+                &mut actual,
+                20,
+                first_control,
+                &mut executor,
+            )
+            .unwrap();
+            assert_eq!(
+                stopped.exit,
+                od_jit::dispatch::DispatchExit::Runtime(RuntimeExitTag::StopAddress)
+            );
+            assert_eq!(actual, interpreted_prefix, "stop at {target:#x}");
+            assert_eq!(
+                stopped.retired_native + stopped.retired_interpreter,
+                interpreted_retired
+            );
+            assert_eq!(stopped.remaining_budget, 20 - interpreted_retired);
+
+            let resume_control = od_jit::dispatch::DispatchControl {
+                stop_rip: None,
+                stop_requested: &stop_at_boundary,
+                event_requested: None,
+            };
+            let resumed = od_jit::dispatch::run_with_nop_fallback_demand_flags_candidate(
+                view,
+                &admission,
+                &mut actual,
+                stopped.remaining_budget,
+                resume_control,
+                &mut executor,
+            )
+            .unwrap();
+            assert_eq!(resumed.exit, od_jit::dispatch::DispatchExit::CodeEnd);
+            let mut interpreted_final = interpreted_prefix;
+            interpret(
+                &code,
+                base_rip,
+                &mut interpreted_final,
+                20 - interpreted_retired,
+                None,
+            );
+            assert_eq!(actual, interpreted_final, "resume at {target:#x}");
+            assert_eq!(
+                resumed.retired_native + resumed.retired_interpreter,
+                10 - interpreted_retired
+            );
+        }
+
+        struct EventAfterBoundary {
+            executor: PublishedBlockExecutor,
+            boundary: u64,
+            fired: bool,
+        }
+        impl od_jit::dispatch::ControlledBlockExecutor for EventAfterBoundary {
+            type Error = PublishedBlockExecutionError;
+
+            fn execute_one_block_controlled(
+                &mut self,
+                block: &od_jit::block_compile::CompiledBlock,
+                state: &mut od_isa::LongModeState,
+                budget: u64,
+                control: od_jit::dispatch::DispatchControl<'_>,
+            ) -> Result<od_jit::dispatch::BlockExecutionReport, Self::Error> {
+                let report =
+                    od_jit::dispatch::ControlledBlockExecutor::execute_one_block_controlled(
+                        &mut self.executor,
+                        block,
+                        state,
+                        budget,
+                        control,
+                    )?;
+                if !self.fired && state.rip == self.boundary {
+                    self.fired = true;
+                    control
+                        .event_requested
+                        .expect("event enabled")
+                        .store(true, Ordering::Release);
+                }
+                Ok(report)
+            }
+        }
+
+        // An event arriving between native blocks is surfaced at the exact
+        // canonical boundary. In particular, arrival at the NOP entry must
+        // not execute the interpreter bridge until the event is cleared.
+        for boundary in [base_rip, base_rip + 5] {
+            let event = AtomicBool::new(false);
+            let event_control = od_jit::dispatch::DispatchControl {
+                stop_rip: None,
+                stop_requested: &stop,
+                event_requested: Some(&event),
+            };
+            let mut actual = initial.clone();
+            let mut executor = EventAfterBoundary {
+                executor: PublishedBlockExecutor,
+                boundary,
+                fired: false,
+            };
+            let result = od_jit::dispatch::run_with_nop_fallback_demand_flags_candidate(
+                view,
+                &admission,
+                &mut actual,
+                20,
+                event_control,
+                &mut executor,
+            )
+            .unwrap();
+            assert_eq!(result.exit, od_jit::dispatch::DispatchExit::EventPending);
+            assert!(event.load(Ordering::Acquire));
+            assert_eq!(actual.rip, boundary);
+            if boundary == base_rip + 5 {
+                assert_eq!(result.retired_interpreter, 0);
+            }
+            let mut expected_prefix = initial.clone();
+            let prefix_retired = if boundary == base_rip {
+                interpret(
+                    &code,
+                    base_rip,
+                    &mut expected_prefix,
+                    result.retired_native + result.retired_interpreter,
+                    None,
+                )
+            } else {
+                interpret(&code, base_rip, &mut expected_prefix, 20, Some(boundary))
+            };
+            assert_eq!(actual, expected_prefix);
+            assert_eq!(
+                result.retired_native + result.retired_interpreter,
+                prefix_retired
+            );
+
+            event.store(false, Ordering::Release);
+            let resume = od_jit::dispatch::run_with_nop_fallback_demand_flags_candidate(
+                view,
+                &admission,
+                &mut actual,
+                result.remaining_budget,
+                event_control,
+                &mut executor,
+            )
+            .unwrap();
+            assert_eq!(resume.exit, od_jit::dispatch::DispatchExit::CodeEnd);
+            let mut expected_final = expected_prefix;
+            interpret(
+                &code,
+                base_rip,
+                &mut expected_final,
+                20 - prefix_retired,
+                None,
+            );
+            assert_eq!(actual, expected_final);
+        }
+
+        // S3-28a priority remains: STOP controls and exhausted budget win
+        // over a simultaneously pending cooperative event.
+        let event = AtomicBool::new(true);
+        let mut executor = PublishedBlockExecutor;
+        let stop_at_entry = od_jit::dispatch::DispatchControl {
+            stop_rip: Some(base_rip),
+            stop_requested: &stop,
+            event_requested: Some(&event),
+        };
+        let mut state = initial.clone();
+        assert_eq!(
+            od_jit::dispatch::run_with_nop_fallback_demand_flags_candidate(
+                view,
+                &admission,
+                &mut state,
+                10,
+                stop_at_entry,
+                &mut executor,
+            )
+            .unwrap()
+            .exit,
+            od_jit::dispatch::DispatchExit::Runtime(RuntimeExitTag::StopAddress)
+        );
+        let requested_stop = AtomicU8::new(1);
+        let stop_requested_control = od_jit::dispatch::DispatchControl {
+            stop_rip: None,
+            stop_requested: &requested_stop,
+            event_requested: Some(&event),
+        };
+        assert_eq!(
+            od_jit::dispatch::run_with_nop_fallback_demand_flags_candidate(
+                view,
+                &admission,
+                &mut state,
+                10,
+                stop_requested_control,
+                &mut executor,
+            )
+            .unwrap()
+            .exit,
+            od_jit::dispatch::DispatchExit::Runtime(RuntimeExitTag::StopRequested)
+        );
+        assert_eq!(
+            od_jit::dispatch::run_with_nop_fallback_demand_flags_candidate(
+                view,
+                &admission,
+                &mut state,
+                0,
+                od_jit::dispatch::DispatchControl {
+                    stop_rip: None,
+                    stop_requested: &stop,
+                    event_requested: Some(&event),
+                },
+                &mut executor,
+            )
+            .unwrap()
+            .exit,
+            od_jit::dispatch::DispatchExit::BudgetExhausted
+        );
+    }
+
+    #[test]
     fn native_fallback_nop_preserves_preceding_arithmetic_flags() {
         let _guard = jit_test_lock();
         let base_rip = 0x7BC0;

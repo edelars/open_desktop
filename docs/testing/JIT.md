@@ -34,6 +34,14 @@ partial flag writers, ADC/SBB, memory/helper handoff, physical x86, Mini, or
 performance. Eager remains the reference/default; S3-29 remains open until the
 remaining correctness gates and final performance comparison determine policy.
 
+## S3-29b: uncached multi-block NOP dispatch
+
+Run `cargo test -p od-host --lib native_nop_fallback_demand_flags_candidate_dispatches_uncached_blocks --offline` on macOS ARM64. This executes the explicit opt-in dispatcher with `PublishedBlockExecutor`; its witness requires a candidate `InadmissiblePendingFlags` PC-map range and observes native entries across loop and post-NOP blocks. The eager `run_with_nop_fallback` regression entry remains separately exercised.
+
+The fixture runs taken and non-taken back-edge JNZ, arithmetic → bare NOP → CMP/JZ, both JZ outcomes, and the non-taken path's following MOV. Compare full CPU state and retirement/budget counts with `od_isa::execute::step` for budgets 0..full completion. Stop at every reachable instruction boundary, compare exact prefix state and accounting, clear stop-RIP, and resume to the same final state without replay. Inject an event after blocks at loop re-entry and at NOP entry; require `EventPending` before the NOP interpreter bridge, then clear and resume. Check simultaneous STOP-RIP/STOP and budget exhaustion retain S3-28a priority over an event. Each block goes through the existing publish/execute/drop callback, so the mapping is released before the dispatcher continues.
+
+Mini and performance checks are intentionally deferred to the end of Stage 3. The candidate remains uncached and unselected; this is local correctness evidence, not physical-x86 or performance evidence.
+
 ## Срез A: один register-only блок
 
 1. Использовать только точные S0-09 формы из JIT contract и fixtures с

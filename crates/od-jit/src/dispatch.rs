@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use crate::block::{AdmittedInstructionBoundaries, CodeMemory, CodeView};
 use crate::block_compile::{
     BlockCompileError, BlockCompileOutcome, build_dispatch_block, compile_block_for_dispatch,
-    compile_block_for_nop_fallback, compile_prepared_dispatch_block,
+    compile_block_for_nop_fallback, compile_block_for_nop_fallback_demand_flags_candidate,
+    compile_prepared_dispatch_block,
 };
 use crate::runtime::RuntimeExitTag;
 use crate::translation::{
@@ -1438,6 +1439,55 @@ pub fn run_with_nop_fallback<E: ControlledBlockExecutor>(
     control: DispatchControl<'_>,
     executor: &mut E,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
+    run_with_nop_fallback_strategy(
+        code,
+        admission,
+        state,
+        total_budget,
+        control,
+        executor,
+        NopFallbackCompilation::Eager,
+    )
+}
+
+/// Opt-in uncached dispatcher for the demand-driven flags candidate. It uses
+/// the same control, fallback, and accounting loop as [`run_with_nop_fallback`]
+/// while compiling each reached native block with candidate flag materialization.
+/// The shared translation cache and eager default API remain unchanged.
+pub fn run_with_nop_fallback_demand_flags_candidate<E: ControlledBlockExecutor>(
+    code: CodeView<'_>,
+    admission: &InterpreterFallbackAdmission,
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    executor: &mut E,
+) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
+    run_with_nop_fallback_strategy(
+        code,
+        admission,
+        state,
+        total_budget,
+        control,
+        executor,
+        NopFallbackCompilation::DemandFlagsCandidate,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum NopFallbackCompilation {
+    Eager,
+    DemandFlagsCandidate,
+}
+
+fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
+    code: CodeView<'_>,
+    admission: &InterpreterFallbackAdmission,
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    executor: &mut E,
+    compilation: NopFallbackCompilation,
+) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
     if !admission.matches_code(code) {
         return Err(DispatchError::NopAdmissionDoesNotMatchCode);
     }
@@ -1472,9 +1522,13 @@ pub fn run_with_nop_fallback<E: ControlledBlockExecutor>(
             );
         }
 
-        let block = match compile_block_for_nop_fallback(code, state.rip, admission)
-            .map_err(DispatchError::Compile)?
-        {
+        let compile = match compilation {
+            NopFallbackCompilation::Eager => compile_block_for_nop_fallback,
+            NopFallbackCompilation::DemandFlagsCandidate => {
+                compile_block_for_nop_fallback_demand_flags_candidate
+            }
+        };
+        let block = match compile(code, state.rip, admission).map_err(DispatchError::Compile)? {
             BlockCompileOutcome::Compiled(block) => block,
             BlockCompileOutcome::NoNativePrefix { rip, .. } => {
                 if !admission.admits_nop(rip) || rip != state.rip {

@@ -2149,6 +2149,14 @@ JZ/JNZ. Native tests сравнивают его с eager и interpreter на п
 gates и итогового сравнения стратегий. Подробности и фактические проверки — в
 [S3-29a report](../reports/STAGE_3_S3-29a_2026-10-29.md).
 
+S3-29b connects this compiler as an explicit opt-in uncached multi-block
+dispatcher over the existing bounded NOP-fallback loop. Native checks require
+candidate PC-map evidence and compare full CPU state/accounting with eager and
+interpreter execution across Jcc loops, both JZ outcomes, budgets, stop-RIP,
+resume, event handoff and S3-28a priority. It does not change the eager default,
+shared cache, ISA or memory profile. Mini/performance remain deferred to the end
+of Stage 3; S3-29 is still open. See [S3-29b report](../reports/STAGE_3_S3-29b_2026-10-29.md).
+
 ### S3-30. Выбрать register allocator
 
 1. На измеренных горячих workloads определить цену spills/reloads и helper clobbers текущего простого allocator.

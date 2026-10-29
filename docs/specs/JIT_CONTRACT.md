@@ -1318,6 +1318,35 @@ candidate only. Partial writers, ADC/SBB consumers, memory/helper handoff,
 physical-x86 validation, the final eager-vs-candidate performance comparison,
 policy selection and overall S3-29 acceptance remain open.
 
+### S3-29b: uncached demand-flags multi-block NOP dispatcher
+
+`dispatch::run_with_nop_fallback_demand_flags_candidate` is an explicit opt-in
+entry point over the same bounded dispatcher loop as
+`dispatch::run_with_nop_fallback`. It recompiles each reached native block
+with `compile_block_for_nop_fallback_demand_flags_candidate`; it does not use
+the shared translation cache. The existing admission, `DispatchControl`,
+`ControlledBlockExecutor`, counter validation, bare-NOP interpreter bridge,
+event ordering, and terminal/error handling remain shared. The eager entry
+point continues compiling eager blocks and remains the default/reference.
+
+Native coverage includes taken and non-taken JNZ back-edge iterations followed
+by bare NOP, native CMP/JZ with both branch outcomes, and a following native
+MOV on the non-taken path. The executor witness requires an actual
+`InadmissiblePendingFlags` candidate PC-map range. Budget 0 through full
+completion and every reachable instruction stop-RIP boundary compare complete
+CPU state with the interpreter; resuming from each boundary consumes only the
+remaining instructions. Events injected between blocks, including at the NOP
+entry, return `EventPending` with the event retained; clearing the event and
+resuming reaches the same final state without replay. STOP-RIP, STOP and budget
+remain ahead of a simultaneous event as in S3-28a. Published executable code
+is dropped by the existing executor before the shared loop compiles or steps
+the next instruction.
+
+This remains an uncached correctness candidate only. It does not select a
+default, expand the ISA/admission or memory profile, integrate a production
+owner, or claim performance. Full S3-29 and the final eager/candidate comparison
+remain open.
+
 ### S3-13: opt-in one-block fixture CLI
 
 Fixture schema v1 accepts `--engine jit-block`, producing the distinct result

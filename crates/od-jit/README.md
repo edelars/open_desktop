@@ -155,6 +155,15 @@ operands в dedicated frame slots, материализует flags при JZ/JN
 попадает в shared cache, не выбирает production policy и не заявляет speedup.
 S3-29 остаётся open до остальных correctness gates и итогового сравнения.
 
+S3-29b adds `dispatch::run_with_nop_fallback_demand_flags_candidate`, an
+explicit uncached multi-block entry point. It shares the existing NOP-fallback
+dispatcher loop and changes only which compiler is called per native block.
+The eager `run_with_nop_fallback` entry point and shared cache identity remain
+unchanged. Native host coverage verifies candidate PC-map metadata, Jcc loops,
+arithmetic/NOP/native continuation, budgets, exact stop/resume boundaries,
+event handoff and mapping release. This path remains opt-in and unselected;
+performance comparison and Mini checks are deferred until Stage 3 ends.
+
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).
 Проверки корректности и измерений по задачам этапа — в
