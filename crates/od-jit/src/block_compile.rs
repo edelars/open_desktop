@@ -5,7 +5,7 @@ use od_isa::memory::AccessContext;
 use crate::allocator::{Allocation, AllocatorConfig, AllocatorError, HelperBoundaryPosition};
 use crate::block::{
     self, AdmittedInstructionBoundaries, BlockLimits, BlockStopReason, BuildError, BuildOutcome,
-    CodeView, DecodeBoundary, S0_09NopAdmission,
+    CodeView, DecodeBoundary, S0_09NopAdmission, S0_09NopIncRaxAdmission,
 };
 use crate::block_emitter::{
     BlockEmitterError, EmittedCheckedLoadBlockV2, EmittedCheckedStoreBlockV2, EmittedRuntimeBlock,
@@ -83,6 +83,7 @@ pub fn compile_block(
         entry_rip,
         None,
         None,
+        None,
         crate::block_emitter::FlagMaterializationStrategy::Eager,
     )
 }
@@ -98,6 +99,7 @@ pub fn compile_block_demand_flags_candidate(
     compile_block_inner(
         code,
         entry_rip,
+        None,
         None,
         None,
         crate::block_emitter::FlagMaterializationStrategy::DemandDrivenCandidate,
@@ -319,6 +321,7 @@ pub fn compile_block_for_nop_fallback(
         entry_rip,
         Some(admission.boundaries()),
         Some(admission),
+        None,
         crate::block_emitter::FlagMaterializationStrategy::Eager,
     )
 }
@@ -343,6 +346,49 @@ pub fn compile_block_for_nop_fallback_demand_flags_candidate(
         entry_rip,
         Some(admission.boundaries()),
         Some(admission),
+        None,
+        crate::block_emitter::FlagMaterializationStrategy::DemandDrivenCandidate,
+    )
+}
+
+pub fn compile_block_for_nop_inc_rax_fallback(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopIncRaxAdmission,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    if !admission.matches_code(code) {
+        return Err(BlockCompileError::NopAdmissionDoesNotMatchCode);
+    }
+    if !admission.contains(entry_rip) {
+        return Err(BlockCompileError::NopEntryNotAdmitted { entry_rip });
+    }
+    compile_block_inner(
+        code,
+        entry_rip,
+        Some(admission.boundaries()),
+        None,
+        Some(admission),
+        crate::block_emitter::FlagMaterializationStrategy::Eager,
+    )
+}
+
+pub fn compile_block_for_nop_inc_rax_fallback_demand_flags_candidate(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopIncRaxAdmission,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    if !admission.matches_code(code) {
+        return Err(BlockCompileError::NopAdmissionDoesNotMatchCode);
+    }
+    if !admission.contains(entry_rip) {
+        return Err(BlockCompileError::NopEntryNotAdmitted { entry_rip });
+    }
+    compile_block_inner(
+        code,
+        entry_rip,
+        Some(admission.boundaries()),
+        None,
+        Some(admission),
         crate::block_emitter::FlagMaterializationStrategy::DemandDrivenCandidate,
     )
 }
@@ -352,6 +398,7 @@ fn compile_block_inner(
     entry_rip: u64,
     admission: Option<&AdmittedInstructionBoundaries>,
     nop_admission: Option<&S0_09NopAdmission>,
+    nop_inc_rax_admission: Option<&S0_09NopIncRaxAdmission>,
     flag_strategy: crate::block_emitter::FlagMaterializationStrategy,
 ) -> Result<BlockCompileOutcome, BlockCompileError> {
     let built = block::build_block(
@@ -372,12 +419,14 @@ fn compile_block_inner(
             }
         }
     }
-    let lowered_outcome = match nop_admission {
-        Some(admission) => lowering::lower_for_nop_fallback(&built, admission),
-        None => match admission {
-            Some(admission) => lowering::lower_for_dispatch(&built, admission),
-            None => lowering::lower(&built),
-        },
+    let lowered_outcome = if let Some(admission) = nop_admission {
+        lowering::lower_for_nop_fallback(&built, admission)
+    } else if let Some(admission) = nop_inc_rax_admission {
+        lowering::lower_for_nop_inc_rax_fallback(&built, admission)
+    } else if let Some(admission) = admission {
+        lowering::lower_for_dispatch(&built, admission)
+    } else {
+        lowering::lower(&built)
     }
     .map_err(BlockCompileError::Lowering)?;
     let lowered = match lowered_outcome {

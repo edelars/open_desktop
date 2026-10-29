@@ -134,6 +134,15 @@ pub struct S0_09NopAdmission {
     nop_rips: Vec<u64>,
 }
 
+/// Separate bounded admission for S0-09 plus bare NOP and exact `INC RAX`.
+/// The NOP-only admission above intentionally remains strict.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct S0_09NopIncRaxAdmission {
+    boundaries: AdmittedInstructionBoundaries,
+    nop_rips: Vec<u64>,
+    inc_rax_rips: Vec<u64>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum S0_09NopAdmissionError {
     Decode {
@@ -241,6 +250,110 @@ impl S0_09NopAdmission {
     pub(crate) fn admits_nop(&self, rip: u64) -> bool {
         self.nop_rips.contains(&rip)
     }
+}
+
+impl S0_09NopIncRaxAdmission {
+    /// Decode the full immutable view, admitting only S0-09, exact bare NOP,
+    /// and exact `48 FF C0` (`INC RAX`).
+    pub fn from_code(code: CodeView<'_>) -> Result<Self, S0_09NopAdmissionError> {
+        let mut rip = code.base_rip();
+        let mut boundaries = Vec::new();
+        let mut instructions = Vec::new();
+        let mut nop_rips = Vec::new();
+        let mut inc_rax_rips = Vec::new();
+
+        while rip < code.code_end() {
+            let offset = usize::try_from(rip - code.base_rip())
+                .map_err(|_| S0_09NopAdmissionError::RangeOverflow { rip, length: 0 })?;
+            let mut memory = CodeMemory::full_code(code);
+            let instruction = long_decode::decode(&mut memory, rip, AccessContext::default())
+                .map_err(|error| S0_09NopAdmissionError::Decode { rip, error })?;
+            if !(1..=15).contains(&instruction.length) {
+                return Err(S0_09NopAdmissionError::InvalidLength {
+                    rip,
+                    length: instruction.length,
+                });
+            }
+            let next_rip = rip.checked_add(u64::from(instruction.length)).ok_or(
+                S0_09NopAdmissionError::RangeOverflow {
+                    rip,
+                    length: instruction.length,
+                },
+            )?;
+            if next_rip > code.code_end() {
+                return Err(S0_09NopAdmissionError::RangeOverflow {
+                    rip,
+                    length: instruction.length,
+                });
+            }
+            if is_exact_bare_nop(instruction, code.bytes()[offset]) {
+                nop_rips.push(rip);
+            } else if is_exact_inc_rax(instruction, &code.bytes()[offset..]) {
+                inc_rax_rips.push(rip);
+            } else if !is_s0_09_form(instruction) {
+                return Err(S0_09NopAdmissionError::UnsupportedInstruction { rip });
+            }
+            boundaries.push(rip);
+            instructions.push((rip, next_rip, instruction));
+            rip = next_rip;
+        }
+        boundaries.push(code.code_end());
+        for (branch_rip, next_rip, instruction) in &instructions {
+            let Operation::Branch { displacement, .. } = instruction.operation else {
+                continue;
+            };
+            let target = next_rip.wrapping_add_signed(i64::from(displacement));
+            if !boundaries.contains(&target) {
+                return Err(S0_09NopAdmissionError::BranchTargetNotBoundary {
+                    rip: *branch_rip,
+                    target,
+                });
+            }
+        }
+        Ok(Self {
+            boundaries: AdmittedInstructionBoundaries {
+                code_base: code.base_rip(),
+                code_end: code.code_end(),
+                code_bytes: code.bytes().to_vec(),
+                boundaries,
+            },
+            nop_rips,
+            inc_rax_rips,
+        })
+    }
+
+    pub(crate) fn boundaries(&self) -> &AdmittedInstructionBoundaries {
+        &self.boundaries
+    }
+    pub(crate) fn matches_code(&self, code: CodeView<'_>) -> bool {
+        self.boundaries.matches_code(code)
+    }
+    pub(crate) fn contains(&self, rip: u64) -> bool {
+        self.boundaries.contains(rip)
+    }
+    pub(crate) fn admits_nop(&self, rip: u64) -> bool {
+        self.nop_rips.contains(&rip)
+    }
+    pub(crate) fn admits_inc_rax(&self, rip: u64) -> bool {
+        self.inc_rax_rips.contains(&rip)
+    }
+}
+
+pub(crate) fn is_exact_inc_rax(instruction: Instruction, bytes: &[u8]) -> bool {
+    matches!(instruction.operation,
+        Operation::Arithmetic { kind: ArithmeticKind::Inc, dst: Operand::Register(dst), src: Operand::Immediate(1) }
+        if dst.register() == od_isa::Register::Rax && dst.size() == OperandSize::Qword)
+        && instruction.opcode.map == OpcodeMap::Primary
+        && instruction.opcode.byte == 0xff
+        && instruction.prefixes.rex == Some(0x48)
+        && instruction.prefixes.group1.is_none()
+        && instruction.prefixes.segment.is_none()
+        && !instruction.prefixes.operand_override
+        && !instruction.prefixes.address_override
+        && instruction.operand_size == OperandSize::Qword
+        && instruction.address_size == OperandSize::Qword
+        && instruction.length == 3
+        && bytes.get(..3) == Some(&[0x48, 0xff, 0xc0])
 }
 
 pub(crate) fn is_exact_bare_nop(instruction: Instruction, first_byte: u8) -> bool {
@@ -1210,6 +1323,42 @@ mod tests {
         bytes[1] = 0xb8;
         bytes[2..].copy_from_slice(&value.to_le_bytes());
         bytes
+    }
+
+    #[test]
+    fn inc_rax_admission_is_exact_and_separate_from_nop_profile() {
+        let inc = [0x48, 0xff, 0xc0];
+        let view = CodeView::new(0x1000, &inc).unwrap();
+        let admitted = S0_09NopIncRaxAdmission::from_code(view).unwrap();
+        assert!(admitted.admits_inc_rax(0x1000));
+        assert!(!admitted.admits_nop(0x1000));
+        assert!(matches!(
+            S0_09NopAdmission::from_code(view),
+            Err(S0_09NopAdmissionError::UnsupportedInstruction { rip: 0x1000 })
+        ));
+
+        for bytes in [
+            &[0x48, 0xff][..],
+            &[0xf3, 0x48, 0xff, 0xc0][..],
+            &[0x66, 0x48, 0xff, 0xc0][..],
+            &[0x48, 0x40, 0xff, 0xc0][..],
+            &[0x48, 0xff, 0xc8][..],
+            &[0x48, 0xff, 0xc1][..],
+            &[0x48, 0xff, 0xc3][..],
+            &[0xff, 0xc0][..],
+        ] {
+            let view = CodeView::new(0x2000, bytes).unwrap();
+            assert!(
+                S0_09NopIncRaxAdmission::from_code(view).is_err(),
+                "{bytes:02x?}"
+            );
+        }
+        let branch_into_inc = [0x74, 0x01, 0x48, 0xff, 0xc0];
+        let view = CodeView::new(0x3000, &branch_into_inc).unwrap();
+        assert!(matches!(
+            S0_09NopIncRaxAdmission::from_code(view),
+            Err(S0_09NopAdmissionError::BranchTargetNotBoundary { target: 0x3003, .. })
+        ));
     }
 
     fn block(outcome: BuildOutcome) -> BasicBlock {

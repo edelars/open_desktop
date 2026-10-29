@@ -42,6 +42,14 @@ The fixture runs taken and non-taken back-edge JNZ, arithmetic → bare NOP → 
 
 Mini and performance checks are intentionally deferred to the end of Stage 3. The candidate remains uncached and unselected; this is local correctness evidence, not physical-x86 or performance evidence.
 
+## S3-29c: partial-flags INC RAX handoff
+
+Run `cargo test -p od-jit --lib inc_rax_admission_is_exact_and_separate_from_nop_profile --offline` and `cargo test -p od-host --lib native_inc_rax_fallback_carries_canonical_flags_into_native_branches --offline` on macOS ARM64. Only the separate `S0_09NopIncRaxAdmission` and eager/candidate `run_with_nop_inc_rax_fallback*` APIs admit exact `48 FF C0`; the legacy NOP-only admission still rejects it. Admission rejects truncation, extra prefixes, wrong width/register/opcode, DEC and branches into the INC encoding.
+
+The host test runs `CMP→MOV RAX,imm64→INC RAX→JZ→MOV/JNZ→suffix` through candidate and eager dispatch and compares full CPU state/accounting with `od_isa::execute::step`. It checks both CF inputs and literal OF/SF/ZF/AF/PF results for zero, signed qword extrema, `u64::MAX`, nibble and parity edges, with both JZ/JNZ outcomes and unchanged GPR/non-arithmetic flags. Budgets 0..full and stop/resume at every reachable instruction boundary must not replay an instruction. The PC-map witness requires pending-flags state before fallback; interpreter retirement counts only INC. An event raised after the native prefix remains pending and yields before INC; after clearing, resume continues from the same RIP. Simultaneous STOP-RIP or atomic STOP and event retain STOP priority. Events are sampled before the synchronous one-step interpreter call; there is no deterministic executor hook between INC and the following dispatcher guard.
+
+Mini and performance checks remain deferred to the end of Stage 3. This is uncached local correctness evidence; it does not select a default or extend the ISA beyond exact INC RAX fallback.
+
 ## Срез A: один register-only блок
 
 1. Использовать только точные S0-09 формы из JIT contract и fixtures с

@@ -2157,6 +2157,20 @@ resume, event handoff and S3-28a priority. It does not change the eager default,
 shared cache, ISA or memory profile. Mini/performance remain deferred to the end
 of Stage 3; S3-29 is still open. See [S3-29b report](../reports/STAGE_3_S3-29b_2026-10-29.md).
 
+S3-29c adds a separate exact-INC-RAX interpreter bridge for `48 FF C0` between
+native register-only prefixes and native Jcc/suffix blocks. Candidate flags
+must be canonical before the bridge; the interpreter uses a three-byte bounded
+fetch and retires exactly one instruction. Host parity covers both CF values,
+literal INC flags, both branch outcomes, budgets and stop/resume at every
+reachable instruction boundary. Event requests are checked before INC and
+remain pending on yield; STOP-RIP and atomic STOP retain priority over a
+simultaneous event. A
+synchronous interpreter step has no deterministic executor callback after
+retirement, so event-after-step timing is not independently injected; STOP-RIP
+at the post-INC boundary and normal next-entry event guards cover continuation.
+The eager default, cache and Mini/performance status do not change. See the
+[S3-29c report](../reports/STAGE_3_S3-29c_2026-10-29.md).
+
 ### S3-30. Выбрать register allocator
 
 1. На измеренных горячих workloads определить цену spills/reloads и helper clobbers текущего простого allocator.

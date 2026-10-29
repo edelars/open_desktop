@@ -13,7 +13,7 @@ use od_isa::long_decode::{
 
 use crate::block::{
     self, AdmittedInstructionBoundaries, BlockStopReason, BranchTargetResolution, BuildOutcome,
-    DecodeBoundary, DecodedInstruction, S0_09NopAdmission,
+    DecodeBoundary, DecodedInstruction, S0_09NopAdmission, S0_09NopIncRaxAdmission,
 };
 use crate::ir::{
     self, BranchCondition, ExitKind, FlagEffect, GuestGpr, GuestInstruction, IntWidth, IntegerKind,
@@ -47,7 +47,7 @@ pub enum LoweringError {
 
 /// Lower one bounded block-builder result and verify every emitted Program.
 pub fn lower(outcome: &BuildOutcome) -> Result<LoweringOutcome, LoweringError> {
-    lower_with_admission(outcome, None, None)
+    lower_with_admission(outcome, None, None, None)
 }
 
 /// Lower a block for a future dispatcher using complete fixture-v1 decode
@@ -58,7 +58,7 @@ pub(crate) fn lower_for_dispatch(
     outcome: &BuildOutcome,
     admission: &AdmittedInstructionBoundaries,
 ) -> Result<LoweringOutcome, LoweringError> {
-    lower_with_admission(outcome, Some(admission), None)
+    lower_with_admission(outcome, Some(admission), None, None)
 }
 
 /// Lower a bounded block for the separately admitted S0-09-plus-bare-NOP
@@ -67,13 +67,21 @@ pub(crate) fn lower_for_nop_fallback(
     outcome: &BuildOutcome,
     admission: &S0_09NopAdmission,
 ) -> Result<LoweringOutcome, LoweringError> {
-    lower_with_admission(outcome, Some(admission.boundaries()), Some(admission))
+    lower_with_admission(outcome, Some(admission.boundaries()), Some(admission), None)
+}
+
+pub(crate) fn lower_for_nop_inc_rax_fallback(
+    outcome: &BuildOutcome,
+    admission: &S0_09NopIncRaxAdmission,
+) -> Result<LoweringOutcome, LoweringError> {
+    lower_with_admission(outcome, Some(admission.boundaries()), None, Some(admission))
 }
 
 fn lower_with_admission(
     outcome: &BuildOutcome,
     admission: Option<&AdmittedInstructionBoundaries>,
     nop_admission: Option<&S0_09NopAdmission>,
+    nop_inc_rax_admission: Option<&S0_09NopIncRaxAdmission>,
 ) -> Result<LoweringOutcome, LoweringError> {
     let block = match outcome {
         BuildOutcome::NoBlock(no_block) => {
@@ -162,6 +170,11 @@ fn lower_with_admission(
             if nop_admission.is_some_and(|admission| {
                 admission.admits_nop(*guest_rip)
                     && matches!(decoded.operation, DecodedOperation::Nop)
+            }) || nop_inc_rax_admission.is_some_and(|admission| {
+                admission.admits_nop(*guest_rip)
+                    && matches!(decoded.operation, DecodedOperation::Nop)
+                    || admission.admits_inc_rax(*guest_rip)
+                        && block::is_exact_inc_rax(*decoded, &[0x48, 0xff, 0xc0])
             }) =>
         {
             (

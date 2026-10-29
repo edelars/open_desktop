@@ -13,7 +13,8 @@ use crate::block::{AdmittedInstructionBoundaries, CodeMemory, CodeView};
 use crate::block_compile::{
     BlockCompileError, BlockCompileOutcome, build_dispatch_block, compile_block_for_dispatch,
     compile_block_for_nop_fallback, compile_block_for_nop_fallback_demand_flags_candidate,
-    compile_prepared_dispatch_block,
+    compile_block_for_nop_inc_rax_fallback,
+    compile_block_for_nop_inc_rax_fallback_demand_flags_candidate, compile_prepared_dispatch_block,
 };
 use crate::runtime::RuntimeExitTag;
 use crate::translation::{
@@ -86,6 +87,7 @@ pub struct BlockExecutionReport {
 }
 
 pub use crate::block::S0_09NopAdmission as InterpreterFallbackAdmission;
+pub use crate::block::S0_09NopIncRaxAdmission as IncRaxInterpreterFallbackAdmission;
 
 /// One cooperative control context is shared for the full dispatch invocation.
 /// STOP fields are forwarded to generated guards; an event request is sampled
@@ -1441,7 +1443,7 @@ pub fn run_with_nop_fallback<E: ControlledBlockExecutor>(
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
     run_with_nop_fallback_strategy(
         code,
-        admission,
+        FallbackAdmission::Nop(admission),
         state,
         total_budget,
         control,
@@ -1464,7 +1466,48 @@ pub fn run_with_nop_fallback_demand_flags_candidate<E: ControlledBlockExecutor>(
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
     run_with_nop_fallback_strategy(
         code,
-        admission,
+        FallbackAdmission::Nop(admission),
+        state,
+        total_budget,
+        control,
+        executor,
+        NopFallbackCompilation::DemandFlagsCandidate,
+    )
+}
+
+/// Opt-in uncached dispatcher that admits exact `INC RAX` interpreter
+/// handoffs between native S0-09 prefixes. Existing NOP-only APIs remain
+/// bounded by their original admission type.
+pub fn run_with_nop_inc_rax_fallback<E: ControlledBlockExecutor>(
+    code: CodeView<'_>,
+    admission: &IncRaxInterpreterFallbackAdmission,
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    executor: &mut E,
+) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
+    run_with_nop_fallback_strategy(
+        code,
+        FallbackAdmission::NopIncRax(admission),
+        state,
+        total_budget,
+        control,
+        executor,
+        NopFallbackCompilation::Eager,
+    )
+}
+
+pub fn run_with_nop_inc_rax_fallback_demand_flags_candidate<E: ControlledBlockExecutor>(
+    code: CodeView<'_>,
+    admission: &IncRaxInterpreterFallbackAdmission,
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    executor: &mut E,
+) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
+    run_with_nop_fallback_strategy(
+        code,
+        FallbackAdmission::NopIncRax(admission),
         state,
         total_budget,
         control,
@@ -1479,9 +1522,42 @@ enum NopFallbackCompilation {
     DemandFlagsCandidate,
 }
 
+#[derive(Clone, Copy)]
+enum FallbackAdmission<'a> {
+    Nop(&'a InterpreterFallbackAdmission),
+    NopIncRax(&'a IncRaxInterpreterFallbackAdmission),
+}
+
+impl FallbackAdmission<'_> {
+    fn matches_code(self, code: CodeView<'_>) -> bool {
+        match self {
+            Self::Nop(admission) => admission.matches_code(code),
+            Self::NopIncRax(admission) => admission.matches_code(code),
+        }
+    }
+    fn contains(self, rip: u64) -> bool {
+        match self {
+            Self::Nop(admission) => admission.contains(rip),
+            Self::NopIncRax(admission) => admission.contains(rip),
+        }
+    }
+    fn admits_nop(self, rip: u64) -> bool {
+        match self {
+            Self::Nop(admission) => admission.admits_nop(rip),
+            Self::NopIncRax(admission) => admission.admits_nop(rip),
+        }
+    }
+    fn admits_inc_rax(self, rip: u64) -> bool {
+        match self {
+            Self::Nop(_) => false,
+            Self::NopIncRax(admission) => admission.admits_inc_rax(rip),
+        }
+    }
+}
+
 fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
     code: CodeView<'_>,
-    admission: &InterpreterFallbackAdmission,
+    admission: FallbackAdmission<'_>,
     state: &mut LongModeState,
     total_budget: u64,
     control: DispatchControl<'_>,
@@ -1522,19 +1598,32 @@ fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
             );
         }
 
-        let compile = match compilation {
-            NopFallbackCompilation::Eager => compile_block_for_nop_fallback,
-            NopFallbackCompilation::DemandFlagsCandidate => {
-                compile_block_for_nop_fallback_demand_flags_candidate
+        let compiled = match (admission, compilation) {
+            (FallbackAdmission::Nop(admission), NopFallbackCompilation::Eager) => {
+                compile_block_for_nop_fallback(code, state.rip, admission)
             }
-        };
-        let block = match compile(code, state.rip, admission).map_err(DispatchError::Compile)? {
+            (FallbackAdmission::Nop(admission), NopFallbackCompilation::DemandFlagsCandidate) => {
+                compile_block_for_nop_fallback_demand_flags_candidate(code, state.rip, admission)
+            }
+            (FallbackAdmission::NopIncRax(admission), NopFallbackCompilation::Eager) => {
+                compile_block_for_nop_inc_rax_fallback(code, state.rip, admission)
+            }
+            (
+                FallbackAdmission::NopIncRax(admission),
+                NopFallbackCompilation::DemandFlagsCandidate,
+            ) => compile_block_for_nop_inc_rax_fallback_demand_flags_candidate(
+                code, state.rip, admission,
+            ),
+        }
+        .map_err(DispatchError::Compile)?;
+        let block = match compiled {
             BlockCompileOutcome::Compiled(block) => block,
             BlockCompileOutcome::NoNativePrefix { rip, .. } => {
-                if !admission.admits_nop(rip) || rip != state.rip {
+                if !(admission.admits_nop(rip) || admission.admits_inc_rax(rip)) || rip != state.rip
+                {
                     return Err(DispatchError::NoNativePrefix { rip });
                 }
-                if let Some(exit) = step_admitted_nop(
+                if let Some(exit) = step_admitted_fallback(
                     code,
                     admission,
                     state,
@@ -1592,10 +1681,10 @@ fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
                         blocks_executed,
                     );
                 }
-                if !admission.admits_nop(rip) {
+                if !(admission.admits_nop(rip) || admission.admits_inc_rax(rip)) {
                     return Err(DispatchError::InterpreterInstructionNotAdmitted { rip });
                 }
-                if let Some(exit) = step_admitted_nop(
+                if let Some(exit) = step_admitted_fallback(
                     code,
                     admission,
                     state,
@@ -1701,9 +1790,9 @@ fn event_exit(control: DispatchControl<'_>) -> Option<DispatchExit> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn step_admitted_nop<E>(
+fn step_admitted_fallback<E>(
     code: CodeView<'_>,
-    admission: &InterpreterFallbackAdmission,
+    admission: FallbackAdmission<'_>,
     state: &mut LongModeState,
     remaining: &mut u64,
     retired_interpreter: &mut u64,
@@ -1712,7 +1801,9 @@ fn step_admitted_nop<E>(
     control: DispatchControl<'_>,
 ) -> Result<Option<DispatchExit>, DispatchError<E>> {
     let rip = state.rip;
-    if !admission.matches_code(code) || !admission.admits_nop(rip) {
+    let is_nop = admission.admits_nop(rip);
+    let is_inc_rax = admission.admits_inc_rax(rip);
+    if !admission.matches_code(code) || !(is_nop || is_inc_rax) {
         return Err(DispatchError::InterpreterInstructionNotAdmitted { rip });
     }
     if let Some(exit) = control_exit(rip, code.code_end(), *remaining, control) {
@@ -1722,17 +1813,22 @@ fn step_admitted_nop<E>(
         return Ok(Some(exit));
     }
 
-    let mut memory =
-        CodeMemory::one_instruction(code, rip).ok_or(DispatchError::InterpreterMemoryError {
+    let length = if is_inc_rax { 3 } else { 1 };
+    let end_rip = rip
+        .checked_add(length)
+        .ok_or(DispatchError::InterpreterInstructionNotAdmitted { rip })?;
+    let mut memory = CodeMemory::bounded_range(code, rip, end_rip).ok_or(
+        DispatchError::InterpreterMemoryError {
             rip,
             error: MemoryError::Unmapped {
                 address: rip,
                 access: od_isa::memory::AccessKind::Fetch,
             },
-        })?;
+        },
+    )?;
     match od_isa::execute::step(state, &mut memory, AccessContext::default()) {
         Ok(StepOutcome::Advanced) => {
-            let expected_rip = rip.wrapping_add(1);
+            let expected_rip = end_rip;
             if state.rip != expected_rip {
                 return Err(DispatchError::InterpreterProgressMismatch {
                     expected_rip,

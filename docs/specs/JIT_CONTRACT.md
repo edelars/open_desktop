@@ -1347,6 +1347,36 @@ default, expand the ISA/admission or memory profile, integrate a production
 owner, or claim performance. Full S3-29 and the final eager/candidate comparison
 remain open.
 
+### S3-29c: partial-flags interpreter handoff
+
+Separate `S0_09NopIncRaxAdmission` and `run_with_nop_inc_rax_fallback*` APIs
+admit S0-09 forms, exact bare NOP, and only exact `48 FF C0` (`INC RAX`). The
+existing NOP-only admission and entry points continue rejecting INC. Branch
+targets must be decoded instruction boundaries; malformed/truncated bytes,
+prefixes, other widths/registers, DEC and branches into the INC bytes are not
+admitted.
+
+Native eager and demand-flags candidate prefixes stop at the admitted INC
+boundary. The candidate materializes canonical RFLAGS before returning
+`NeedInterpreter`; the dispatcher then drops the completed native mapping and
+uses `od_isa::execute::step` with an immutable three-byte fetch window. The
+bridge retires exactly one instruction and requires RIP to advance by three.
+INC itself is never lowered natively. Its existing interpreter semantics
+preserve CF and compute OF/SF/ZF/AF/PF; the next native Jcc/suffix block begins
+from the resulting state. Event requests are sampled before the synchronous
+INC step and remain pending on yield; there is no deterministic callback point
+between that one interpreter step and the following dispatcher guard. STOP-RIP
+and STOP are checked before the step and may stop at either side of INC.
+
+Native host coverage compares full CPU state and accounting with eager and
+interpreter paths for CMP→MOV RAX,imm64→INC→JZ/JNZ→native suffix, both CF inputs,
+both branch outcomes, budgets, and stop/resume at every reachable instruction
+boundary. Literal
+flags cover zero, signed qword extrema, `u64::MAX`, nibble and parity edges;
+the candidate PC-map witness requires pending flags before handoff. S3-29
+remains open pending remaining correctness gates, final strategy comparison,
+and deferred Mini/performance work.
+
 ### S3-13: opt-in one-block fixture CLI
 
 Fixture schema v1 accepts `--engine jit-block`, producing the distinct result
