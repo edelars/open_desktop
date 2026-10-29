@@ -141,6 +141,19 @@ rejected by the normal comparator. The generic reducer does not reserve GPR[11]
 and can reduce it when the mismatch predicate permits. This synthetic case
 validates reducer behavior and is not a JIT defect report.
 
+### S3-34d SMC lifecycle comparator self-check
+
+Run `cargo test -p od-host --offline code_region_store_invalidates_cached_prefix_and_tail_before_redispatch`.
+The existing tracked-code fixture warms a `MOV RDX,imm64` prefix and its guest
+alias, commits a store that changes the immediate, and applies the backing
+notification. It checks both alias prefix/tail cache entries are removed while
+an unrelated entry remains reusable, then compares fresh native re-entry with
+the interpreter over full CPU state and all backing bytes/generations. The
+test-only lifecycle comparator must classify a controlled old-immediate
+observation as `StaleCodeResult` and a corrupted backing generation as
+`BackingGenerationMismatch`. This does not disable production validation or
+claim physical x86 equivalence.
+
 Каждая новая строка support matrix получает literal positive/negative cases,
 точный сравниваемый state и внешний prerequisite. В отчёте сохранять git
 revision, build fingerprint, host/OS/toolchain, fixtures/corpus fingerprint,

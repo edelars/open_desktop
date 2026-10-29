@@ -34877,6 +34877,51 @@ mod tests {
         let store_bytes = &program[10..13];
         let target_code = [0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0];
         let unrelated_code = [0x48, 0xB8, 9, 0, 0, 0, 0, 0, 0, 0];
+
+        #[derive(Clone)]
+        struct LifecycleObservation {
+            state: od_isa::LongModeState,
+            backing_bytes: Vec<Vec<u8>>,
+            backing_generations: Vec<u64>,
+            invalidated_alias_entries: usize,
+            unrelated_entry_reused: bool,
+        }
+
+        #[derive(Debug, Eq, PartialEq)]
+        enum LifecycleMismatch {
+            StaleCodeResult,
+            BackingGenerationMismatch,
+            CpuStateMismatch,
+            BackingBytesMismatch,
+            AliasInvalidationMismatch,
+            UnrelatedEntryEvicted,
+        }
+
+        fn compare_lifecycle_observation(
+            expected: &LifecycleObservation,
+            observed: &LifecycleObservation,
+        ) -> Result<(), LifecycleMismatch> {
+            if observed.state.gpr[2] != expected.state.gpr[2] {
+                return Err(LifecycleMismatch::StaleCodeResult);
+            }
+            if observed.backing_generations != expected.backing_generations {
+                return Err(LifecycleMismatch::BackingGenerationMismatch);
+            }
+            if observed.state != expected.state {
+                return Err(LifecycleMismatch::CpuStateMismatch);
+            }
+            if observed.backing_bytes != expected.backing_bytes {
+                return Err(LifecycleMismatch::BackingBytesMismatch);
+            }
+            if observed.invalidated_alias_entries != expected.invalidated_alias_entries {
+                return Err(LifecycleMismatch::AliasInvalidationMismatch);
+            }
+            if !observed.unrelated_entry_reused {
+                return Err(LifecycleMismatch::UnrelatedEntryEvicted);
+            }
+            Ok(())
+        }
+
         let mut jit_owner = TrackedCodeFixture::new(store_bytes, &target_code, &unrelated_code);
         let mut interpreter_owner =
             TrackedCodeFixture::new(store_bytes, &target_code, &unrelated_code);
@@ -34916,7 +34961,11 @@ mod tests {
             &mut jit_cache,
             &mut arena,
         );
-        assert_eq!(jit_cache.resident_entries(), 4);
+        let (unrelated_warmup, unrelated_warmup_state) =
+            run_tracked_code_block(&jit_owner, 0x4000, &mut jit_cache, &mut arena);
+        assert_eq!(unrelated_warmup.retired_instructions, 1);
+        assert_eq!(unrelated_warmup_state.gpr[0], 9);
+        assert_eq!(jit_cache.resident_entries(), 5);
 
         let initial = od_isa::LongModeState {
             rip: entry,
@@ -35016,7 +35065,19 @@ mod tests {
             invalidated, 4,
             "prefix and tail artifacts were removed through both guest aliases"
         );
-        assert_eq!(jit_cache.resident_entries(), 0);
+        assert_eq!(jit_cache.resident_entries(), 1);
+        let publications_before_unrelated_reuse = jit_cache.counters().successful_publications;
+        let (unrelated_result, unrelated_state) =
+            run_tracked_code_block(&jit_owner, 0x4000, &mut jit_cache, &mut arena);
+        assert_eq!(unrelated_result.retired_instructions, 1);
+        assert_eq!(unrelated_state.gpr[0], 9);
+        let unrelated_entry_reused =
+            jit_cache.counters().successful_publications == publications_before_unrelated_reuse;
+        assert!(
+            unrelated_entry_reused,
+            "unrelated cached entry was preserved"
+        );
+        assert_eq!(jit_cache.resident_entries(), 1);
         assert_eq!(jit_state.rip, entry + 13);
         assert_eq!(jit_state.gpr[2], old);
         assert_eq!(
@@ -35043,7 +35104,7 @@ mod tests {
         );
         assert_eq!(fresh_tail.retired_instructions, 1);
         assert_eq!(after_tail.gpr[1], sentinel);
-        assert_eq!(jit_cache.counters().successful_publications, 5);
+        assert_eq!(jit_cache.counters().successful_publications, 6);
 
         let mut interpreter_after_tail = interpreter_state.clone();
         let (interpreter_tail, _, _) = run_tracked_interpreter_step(
@@ -35058,6 +35119,20 @@ mod tests {
         ));
         assert_eq!(after_tail, interpreter_after_tail);
 
+        let mut interpreter_reentry = interpreter_after_tail.clone();
+        interpreter_reentry.rip = entry;
+        let (interpreter_reentry_step, _, _) = run_tracked_interpreter_step(
+            &mut interpreter_owner,
+            &mut interpreter_reentry,
+            &mut interpreter_cache,
+            None,
+        );
+        assert!(matches!(
+            interpreter_reentry_step,
+            Ok(od_isa::execute::StepOutcome::Advanced)
+        ));
+        assert_eq!(interpreter_reentry.gpr[2], new);
+
         // Re-entering the source address recompiles the changed immediate.
         let mut reentry = after_tail;
         reentry.rip = entry;
@@ -35070,7 +35145,8 @@ mod tests {
         );
         assert_eq!(reentry_result.retired_instructions, 1);
         assert_eq!(reentry_state.gpr[2], new);
-        assert_eq!(jit_cache.counters().successful_publications, 6);
+        assert_eq!(reentry_state, interpreter_reentry);
+        assert_eq!(jit_cache.counters().successful_publications, 7);
         let mut alias_reentry = reentry_state.clone();
         alias_reentry.rip = 0x5000;
         let (alias_result, alias_state) = run_tracked_code_block_with_state(
@@ -35082,7 +35158,56 @@ mod tests {
         );
         assert_eq!(alias_result.retired_instructions, 1);
         assert_eq!(alias_state.gpr[2], new);
-        assert_eq!(jit_cache.counters().successful_publications, 7);
+        assert_eq!(jit_cache.counters().successful_publications, 8);
+
+        let expected_observation = LifecycleObservation {
+            state: interpreter_reentry,
+            backing_bytes: interpreter_owner
+                .backings
+                .iter()
+                .map(|backing| backing.bytes.clone())
+                .collect(),
+            backing_generations: interpreter_owner
+                .backings
+                .iter()
+                .map(|backing| backing.version.get())
+                .collect(),
+            invalidated_alias_entries: 4,
+            unrelated_entry_reused: true,
+        };
+        let actual_observation = LifecycleObservation {
+            state: reentry_state,
+            backing_bytes: jit_owner
+                .backings
+                .iter()
+                .map(|backing| backing.bytes.clone())
+                .collect(),
+            backing_generations: jit_owner
+                .backings
+                .iter()
+                .map(|backing| backing.version.get())
+                .collect(),
+            invalidated_alias_entries: invalidated,
+            unrelated_entry_reused,
+        };
+        assert_eq!(
+            compare_lifecycle_observation(&expected_observation, &actual_observation),
+            Ok(())
+        );
+
+        let mut stale_observation = actual_observation.clone();
+        stale_observation.state.gpr[2] = old;
+        assert_eq!(
+            compare_lifecycle_observation(&expected_observation, &stale_observation),
+            Err(LifecycleMismatch::StaleCodeResult)
+        );
+
+        let mut wrong_generation_observation = actual_observation;
+        wrong_generation_observation.backing_generations[0] = 1;
+        assert_eq!(
+            compare_lifecycle_observation(&expected_observation, &wrong_generation_observation),
+            Err(LifecycleMismatch::BackingGenerationMismatch)
+        );
         drop(store);
     }
 
