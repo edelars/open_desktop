@@ -779,3 +779,12 @@ delivery, memory forms and fault ordering remain out of scope. See
 [fixture](../../tests/fixtures/x86/stage2/s2_37k_minpd_masked_register.case.json),
 [plan](../plans/STAGE_2.md#s2-37k--local-long64-register-only-legacy-minpd-with-masked-status),
 and [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37k-register-only-minpd-with-masked-status).
+
+The local MAXPD profile `s2-long-maxpd-reg-masked-v1` admits only the legacy
+Long64 register form `66 [optional adjacent REX.R/B] 0F 5F /r`. It snapshots
+both full XMM operands, selects raw RHS for NaNs and ties, applies same-lane
+IE-over-DE priority and aggregates effective IE/DE across both lanes. Missing
+SSE and unsupported MXCSR refuse atomically; memory and unmasked-delivery paths
+remain closed. See [fixture](../../tests/fixtures/x86/stage2/s2_37l_maxpd_masked_register.case.json),
+[plan](../plans/STAGE_2.md#s2-37l--local-long64-register-only-legacy-maxpd-with-masked-status),
+and [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37l-register-only-maxpd-with-masked-status).

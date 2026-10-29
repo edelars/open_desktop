@@ -5582,9 +5582,24 @@ Appendix D Tables D-9/D-13/D-15, and Vol. 2B MAXSD. See the
 fixture for `66 45 0F 5D C1`. Lane 0 pairs a destination QNaN with the
 minimum positive subnormal and sets IE without DE. Lane 1 pairs 1.0 with a
 minimum positive subnormal and sets DE; aggregate sticky status is IE|DE.
-Both results select raw operand 2. The fixture uses all MXCSR exception masks,
+Both results select raw operand 2.
+The fixture uses all MXCSR exception masks,
 DAZ/FTZ clear and reserved bits clear, with RC 0. JIT/native and physical
 execution are not claimed; physical acceptance is deferred to the combined
 final Mac mini substage. Normative references: Intel SDM Rev. 093 Vol. 1
 §§4.9.2, 11.5.2 and Appendix D Tables D-9/D-13/D-15, and Vol. 2B MINPD. See
 the [plan](../../../../docs/plans/STAGE_2.md#s2-37k--local-long64-register-only-legacy-minpd-with-masked-status).
+
+### S2-37l local masked-status MAXPD register profile
+
+`s2_37l_maxpd_masked_register.case.json` is a handwritten schema-v2 XMM8←XMM9
+fixture for `66 45 0F 5F C1`. Lane 0 pairs a destination QNaN with the
+minimum positive subnormal and sets IE without DE. Lane 1 pairs 1.0 with a
+minimum positive subnormal and sets DE; aggregate sticky status is IE|DE.
+Lane 0 selects raw operand 2; lane 1 retains the larger destination operand.
+The fixture uses all MXCSR exception masks,
+DAZ/FTZ clear and reserved bits clear, with RC 0. JIT/native and physical
+execution are not claimed; physical acceptance is deferred to the combined
+final Mac mini substage. Normative references: Intel SDM Rev. 093 Vol. 1
+Appendix D Tables D-9/D-13/D-15 and Vol. 2B MAXPD. See the
+[plan](../../../../docs/plans/STAGE_2.md#s2-37l--local-long64-register-only-legacy-maxpd-with-masked-status).

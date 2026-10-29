@@ -2357,3 +2357,21 @@ subnormal cases, every RC value, refusal and closed JIT/native paths. Full
 unmasked delivery remains open. See [plan](../plans/STAGE_2.md#s2-37k--local-long64-register-only-legacy-minpd-with-masked-status),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37k-register-only-minpd-with-masked-status),
 and [fixture](../../tests/fixtures/x86/stage2/s2_37k_minpd_masked_register.case.json).
+
+## Local packed MAXPD register profile — S2-37l
+
+`s2-long-maxpd-reg-masked-v1` admits one Long64 `66 [optional adjacent
+REX.R/B] 0F 5F /r` register instruction (ModR/M.mod=3, XMM0–15); bare MAXPS,
+F3 MAXSS and F2 MAXSD remain distinct. The profile requires SSE state, all six
+MXCSR exception masks, DAZ/FTZ clear and reserved bits 16–31 clear.
+
+The interpreter snapshots both complete XMM operands and applies the raw
+Binary64 MAX selector to each 64-bit lane. Each lane selects raw RHS for NaN,
+equal values and signed-zero ties. New DE is suppressed only in a lane that
+also raises IE; effective IE/DE are ORed across lanes and old sticky flags are
+preserved. The complete destination XMM is committed after preflight. Tests
+cover all 256 register pairs, lane order and aliasing, raw NaN/zero/infinity/
+equality/subnormal cases, every RC value, refusal and closed JIT/native paths.
+Full unmasked delivery remains open. See [plan](../plans/STAGE_2.md#s2-37l--local-long64-register-only-legacy-maxpd-with-masked-status),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-37l-register-only-maxpd-with-masked-status),
+and [fixture](../../tests/fixtures/x86/stage2/s2_37l_maxpd_masked_register.case.json).

@@ -1477,6 +1477,7 @@ fn execute(loaded: &LoadedFixture) -> RunResult {
             | v2::Profile::LongMinsdMaskedRegV1
             | v2::Profile::LongMaxsdMaskedRegV1
             | v2::Profile::LongMinpdMaskedRegV1
+            | v2::Profile::LongMaxpdMaskedRegV1
             | v2::Profile::LongMaxssMaskedRegV1
             | v2::Profile::LongMinpsMaskedRegV1
             | v2::Profile::LongMaxpsMaskedRegV1
@@ -4273,6 +4274,17 @@ mod tests {
     }
 
     #[test]
+    fn maxpd_masked_register_profile_is_native_unsupported() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_37l_maxpd_masked_register.case.json"
+        ))
+        .unwrap();
+        let result = execute(&loaded);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+    }
+
+    #[test]
     fn movaps_movapd_register_profiles_are_explicitly_native_unsupported() {
         for bytes in [
             &include_bytes!(
@@ -4335,6 +4347,9 @@ mod tests {
             )[..],
             &include_bytes!(
                 "../../../tests/fixtures/x86/stage2/s2_37k_minpd_masked_register.case.json"
+            )[..],
+            &include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_37l_maxpd_masked_register.case.json"
             )[..],
             &include_bytes!(
                 "../../../tests/fixtures/x86/stage2/s2_34_8b_movss_store_register.case.json"

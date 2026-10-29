@@ -1183,6 +1183,7 @@ fn step_tracked_with_profiles(
             | Operation::MinsdRegisterMasked { .. }
             | Operation::MaxsdRegisterMasked { .. }
             | Operation::MinpdRegisterMasked { .. }
+            | Operation::MaxpdRegisterMasked { .. }
             | Operation::MinpsRegisterMasked { .. }
             | Operation::MaxpsRegisterMasked { .. }
     ) && state.sse.is_none()
@@ -1198,6 +1199,7 @@ fn step_tracked_with_profiles(
             | Operation::MinsdRegisterMasked { .. }
             | Operation::MaxsdRegisterMasked { .. }
             | Operation::MinpdRegisterMasked { .. }
+            | Operation::MaxpdRegisterMasked { .. }
             | Operation::MinpsRegisterMasked { .. }
             | Operation::MaxpsRegisterMasked { .. }
     ) && !state
@@ -1745,6 +1747,7 @@ fn step_tracked_with_profiles(
         | Operation::MinsdRegisterMasked { .. }
         | Operation::MaxsdRegisterMasked { .. }
         | Operation::MinpdRegisterMasked { .. }
+        | Operation::MaxpdRegisterMasked { .. }
         | Operation::MinpsRegisterMasked { .. }
         | Operation::MaxpsRegisterMasked { .. }
         | Operation::MovsdRegister { .. }
@@ -4814,6 +4817,54 @@ fn step_tracked_with_profiles(
                 .sse
                 .as_mut()
                 .expect("MINPD local profile state was prevalidated");
+            sse.xmm[usize::from(destination)] = result_xmm;
+            sse.mxcsr =
+                old_mxcsr | u32::from(invalid_operation) | (u32::from(denormal_operand) << 1);
+        }
+        Operation::MaxpdRegisterMasked {
+            destination,
+            source,
+        } => {
+            let (destination_xmm, source_xmm, old_mxcsr) = {
+                let sse = state
+                    .sse
+                    .as_ref()
+                    .expect("MAXPD local profile state was prevalidated");
+                (
+                    sse.xmm[usize::from(destination)],
+                    sse.xmm[usize::from(source)],
+                    sse.mxcsr,
+                )
+            };
+            let mut result_xmm = destination_xmm;
+            let mut invalid_operation = false;
+            let mut denormal_operand = false;
+            for offset in [0, 8] {
+                let lhs_bits = u64::from_le_bytes(
+                    destination_xmm[offset..offset + 8]
+                        .try_into()
+                        .expect("binary64 lane has eight bytes"),
+                );
+                let rhs_bits = u64::from_le_bytes(
+                    source_xmm[offset..offset + 8]
+                        .try_into()
+                        .expect("binary64 lane has eight bytes"),
+                );
+                let lhs = Binary64::from_bits(lhs_bits);
+                let rhs = Binary64::from_bits(rhs_bits);
+                let result = Binary64::max_sse_raw_result(lhs, rhs);
+                let invalid = result.invalid_operation();
+                invalid_operation |= invalid;
+                denormal_operand |= !invalid
+                    && (lhs.class() == BinaryClass::Subnormal
+                        || rhs.class() == BinaryClass::Subnormal);
+                result_xmm[offset..offset + 8]
+                    .copy_from_slice(&result.value().to_bits().to_le_bytes());
+            }
+            let sse = state
+                .sse
+                .as_mut()
+                .expect("MAXPD local profile state was prevalidated");
             sse.xmm[usize::from(destination)] = result_xmm;
             sse.mxcsr =
                 old_mxcsr | u32::from(invalid_operation) | (u32::from(denormal_operand) << 1);
@@ -77240,6 +77291,187 @@ mod tests {
             assert_eq!(state.sse.as_ref().unwrap().mxcsr, 0x1f80 | expected_sticky);
             assert!(memory.accesses.is_empty());
         }
+    }
+
+    #[test]
+    fn maxpd_register_masked_updates_ie_de_for_all_register_pairs_and_rounding_modes() {
+        use crate::binary_float::{Binary64, BinaryClass};
+
+        let values: [u64; 16] = [
+            0x3ff0_0000_0000_0000, // 1
+            0x4000_0000_0000_0000, // 2
+            0xbff0_0000_0000_0000, // -1
+            0xc000_0000_0000_0000, // -2
+            0x0000_0000_0000_0000, // +0
+            0x8000_0000_0000_0000, // -0
+            0x0000_0000_0000_0001, // positive subnormal
+            0x800f_ffff_ffff_ffff, // negative maximum subnormal
+            0x7ff0_0000_0000_0000, // +infinity
+            0xfff0_0000_0000_0000, // -infinity
+            0x7ff8_1234_5678_9abc, // QNaN
+            0xfff8_2345_6789_abcd, // negative QNaN
+            0x7ff0_1234_5678_9abc, // SNaN
+            0xfff0_0000_0000_0001, // negative SNaN
+            0x0010_0000_0000_0000, // minimum normal
+            0x3fe0_0000_0000_0000, // 0.5
+        ];
+
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let code = [0x66, rex, 0x0f, 0x5f, modrm];
+                let mut state = LongModeState::default();
+                state.rip = 0x1000;
+                state.rflags = crate::DF | 2;
+                state.gpr[Register::Rcx as usize] = 0x0123_4567_89ab_cdef;
+                state.x87 = Some(X87State::fixture_seed());
+                let mut xmm = std::array::from_fn(|register| {
+                    std::array::from_fn(|byte| (register * 16 + byte) as u8)
+                });
+                for register in 0..16 {
+                    for lane in 0..2 {
+                        let bits = values[(register + lane * 5) % values.len()];
+                        let offset = lane * 8;
+                        xmm[register][offset..offset + 8].copy_from_slice(&bits.to_le_bytes());
+                    }
+                }
+                let destination_xmm = xmm[usize::from(destination)];
+                let source_xmm = xmm[usize::from(source)];
+                let mut expected_xmm = destination_xmm;
+                let mut invalid_operation = false;
+                let mut denormal_operand = false;
+                for lane in 0..2 {
+                    let offset = lane * 8;
+                    let lhs = Binary64::from_bits(u64::from_le_bytes(
+                        destination_xmm[offset..offset + 8].try_into().unwrap(),
+                    ));
+                    let rhs = Binary64::from_bits(u64::from_le_bytes(
+                        source_xmm[offset..offset + 8].try_into().unwrap(),
+                    ));
+                    let selection = Binary64::max_sse_raw_result(lhs, rhs);
+                    let invalid = selection.invalid_operation();
+                    invalid_operation |= invalid;
+                    denormal_operand |= !invalid
+                        && (lhs.class() == BinaryClass::Subnormal
+                            || rhs.class() == BinaryClass::Subnormal);
+                    expected_xmm[offset..offset + 8]
+                        .copy_from_slice(&selection.value().to_bits().to_le_bytes());
+                }
+
+                for rounding_control in 0..4u32 {
+                    let mut lane_memory = Memory::at(&code, 0x1000);
+                    let mut lane_state = state.clone();
+                    lane_state.sse = Some(SseState {
+                        xmm,
+                        mxcsr: 0x1f80 | (rounding_control << 13) | 0x12,
+                    });
+                    let before = lane_state.clone();
+                    assert_eq!(
+                        step(&mut lane_state, &mut lane_memory, AccessContext::default()).unwrap(),
+                        StepOutcome::Advanced,
+                        "destination={destination}, source={source}, RC={rounding_control}"
+                    );
+                    let mut expected = before.clone();
+                    expected.rip = 0x1005;
+                    expected.sse.as_mut().unwrap().xmm[usize::from(destination)] = expected_xmm;
+                    expected.sse.as_mut().unwrap().mxcsr = 0x1f80
+                        | (rounding_control << 13)
+                        | 0x12
+                        | u32::from(invalid_operation)
+                        | (u32::from(denormal_operand) << 1);
+                    assert_eq!(
+                        lane_state, expected,
+                        "destination={destination}, source={source}, RC={rounding_control}"
+                    );
+                    assert!(lane_memory.accesses.is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn maxpd_register_masked_aggregates_lane_status_and_preflights_atomically() {
+        let code = [0x66, 0x45, 0x0f, 0x5f, 0xc1]; // MAXPD XMM8, XMM9
+        let mut xmm = [[0x5a; 16]; 16];
+        xmm[8][..8].copy_from_slice(&0x7ff8_1234_5678_9abcu64.to_le_bytes());
+        xmm[9][..8].copy_from_slice(&1u64.to_le_bytes());
+        xmm[8][8..].copy_from_slice(&0x3ff0_0000_0000_0000u64.to_le_bytes());
+        xmm[9][8..].copy_from_slice(&1u64.to_le_bytes());
+        let mut memory = Memory::at(&code, 0x3800);
+        let mut state = LongModeState::default();
+        state.rip = 0x3800;
+        state.x87 = Some(X87State::fixture_seed());
+        state.sse = Some(SseState { xmm, mxcsr: 0x1f80 });
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+            StepOutcome::Advanced
+        );
+        assert_eq!(
+            state.sse.as_ref().unwrap().xmm[8],
+            [
+                0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0xf0, 0x3f
+            ]
+        );
+        assert_eq!(state.sse.as_ref().unwrap().mxcsr, 0x1f83);
+        assert!(memory.accesses.is_empty());
+
+        let mut same_lane_xmm = xmm;
+        same_lane_xmm[9][8..].copy_from_slice(&0x3fe0_0000_0000_0000u64.to_le_bytes());
+        for (initial_mxcsr, expected_mxcsr) in [(0x1f80, 0x1f81), (0x1f82, 0x1f83)] {
+            let mut same_lane_memory = Memory::at(&code, 0x3800);
+            let mut same_lane = LongModeState::default();
+            same_lane.rip = 0x3800;
+            same_lane.x87 = Some(X87State::fixture_seed());
+            same_lane.sse = Some(SseState {
+                xmm: same_lane_xmm,
+                mxcsr: initial_mxcsr,
+            });
+            assert_eq!(
+                step(
+                    &mut same_lane,
+                    &mut same_lane_memory,
+                    AccessContext::default()
+                )
+                .unwrap(),
+                StepOutcome::Advanced
+            );
+            assert_eq!(same_lane.sse.as_ref().unwrap().mxcsr, expected_mxcsr);
+            assert!(same_lane_memory.accesses.is_empty());
+        }
+
+        for mxcsr in [0x0000_1f00, 0x0000_1fc0, 0x0000_9f80, 0x0001_1f80] {
+            let mut refused_memory = Memory::at(&code, 0x3800);
+            let mut refused = LongModeState::default();
+            refused.rip = 0x3800;
+            refused.x87 = Some(X87State::fixture_seed());
+            refused.sse = Some(SseState { xmm, mxcsr });
+            let before = refused.clone();
+            assert_eq!(
+                step(&mut refused, &mut refused_memory, AccessContext::default()).unwrap(),
+                StepOutcome::Unsupported { opcode: 0x5f }
+            );
+            assert_eq!(refused, before);
+            assert!(refused_memory.accesses.is_empty());
+        }
+
+        let mut missing_sse_memory = Memory::at(&code, 0x3800);
+        let mut missing_sse = LongModeState::default();
+        missing_sse.rip = 0x3800;
+        missing_sse.x87 = Some(X87State::fixture_seed());
+        let before = missing_sse.clone();
+        assert_eq!(
+            step(
+                &mut missing_sse,
+                &mut missing_sse_memory,
+                AccessContext::default()
+            )
+            .unwrap(),
+            StepOutcome::Unsupported { opcode: 0x5f }
+        );
+        assert_eq!(missing_sse, before);
+        assert!(missing_sse_memory.accesses.is_empty());
     }
 
     #[test]

@@ -10985,3 +10985,28 @@ combined final Mac mini substage.
 This extends only the bounded S2-38a masked-status subset. Sources: Intel SDM
 Rev. 093 Vol. 1 §§4.9.2, 11.5.2 and Appendix D Tables D-9/D-13/D-15; Vol. 2B
 MINPD. See the [plan](../plans/STAGE_2.md#s2-37k--local-long64-register-only-legacy-minpd-with-masked-status).
+
+## Local S2-37l register-only MAXPD with masked status
+
+The schema-v2 profile `s2-long-maxpd-reg-masked-v1` admits exactly one Long64
+legacy `66 [optional adjacent REX.R/B] 0F 5F /r` instruction, ModR/M.mod=3,
+XMM0–15. `66` selects MAXPD; bare `0F 5F /r` remains MAXPS, F3 selects MAXSS
+and F2 selects MAXSD. The decoder and profile preserve these forms distinctly.
+SSE state, all six MXCSR exception masks, DAZ/FTZ clear and reserved bits
+16–31 zero are required; any RC and prior sticky bits are accepted.
+
+Execution snapshots both full XMM operands and applies
+`Binary64::max_sse_raw_result` to two little-endian binary64 lanes. QNaN and
+SNaN select raw operand 2 and contribute IE. Same-lane invalid suppresses new
+DE in that lane, then effective IE/DE are aggregated across both lanes. The
+complete destination and sticky status commit only after preflight. Aliasing is
+supported and no data-memory access occurs. Missing SSE or unsupported MXCSR
+refuses without mutation. JIT/native/CPUID, memory forms, unmasked delivery and
+fault ordering remain out of scope.
+
+The handwritten XMM8←XMM9 fixture checks mixed-lane IE|DE aggregation. Local
+checks cover all 256 register pairs, both lane order and aliasing, edge values,
+all RC settings, prior sticky flags, atomic refusal and strict form rejection.
+Physical acceptance remains in the combined final Mac mini substage. Normative
+source: Intel SDM Rev. 093 Vol. 1 Appendix D Tables D-9/D-13/D-15 and Vol. 2B
+MAXPD. See the [plan](../plans/STAGE_2.md#s2-37l--local-long64-register-only-legacy-maxpd-with-masked-status).
