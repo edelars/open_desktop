@@ -4,8 +4,8 @@ use crate::HexU64;
 use crate::case::{MemoryPermissions, MemoryRegionSpec, Provenance};
 use crate::sha256_hex;
 use crate::v2::{
-    ExpectedExit, Fixture, IntegerState, Mode, PROFILE_NATIVE_XORPD_XMM0_XMM1, Profile,
-    SCHEMA_VERSION, SseSnapshot,
+    ExpectedExit, Fixture, IntegerState, Mode, Outcome, PROFILE_NATIVE_XORPD_XMM0_XMM1, Profile,
+    RunResult, SCHEMA_VERSION, SseSnapshot,
 };
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +18,561 @@ pub const NATIVE_XORPD_FIXED_SEEDS: [u64; 4] = [
     0x082e_fa98_ec4e_6c89,
 ];
 pub const NATIVE_XORPD_MANIFEST_VERSION: u32 = 1;
+pub const NATIVE_XORPD_REDUCER_DEFAULT_BUDGET: usize = 5120;
+pub const NATIVE_XORPD_REDUCER_MAX_BUDGET: usize = 5120;
+
+/// A mismatch fingerprint for this reducer is the exact set of XMM byte positions
+/// that differ from the independent bytewise-XOR oracle.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeXorpdMismatchFingerprint {
+    pub mismatching_xmm_bytes: Vec<[u8; 2]>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeXorpdReductionStop {
+    Reduced,
+    NoReduction,
+    NoInitialMismatch,
+    FlakyInitial,
+    FlakyCandidate,
+    CandidateBudgetExhausted,
+    CallbackError,
+    FinalConfirmationFailed,
+}
+
+/// The bounded result keeps all callback evidence needed by the runner to write
+/// a reproducible local report. `reduced_fixture` is absent unless the initial
+/// mismatch reproduced and both final confirmations succeeded.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeXorpdReduction {
+    pub stop: NativeXorpdReductionStop,
+    pub stop_detail: Option<String>,
+    pub original_fixture: Fixture,
+    pub reduced_fixture: Option<Fixture>,
+    pub initial_results: Vec<RunResult>,
+    pub final_results: Vec<RunResult>,
+    pub initial_fingerprint: Option<NativeXorpdMismatchFingerprint>,
+    pub final_fingerprint: Option<NativeXorpdMismatchFingerprint>,
+    pub actual_callbacks: usize,
+    pub candidate_proposals: usize,
+    pub candidate_runs: usize,
+    pub accepted_candidates: usize,
+    pub initial_hamming_weight: usize,
+    pub final_hamming_weight: Option<usize>,
+}
+
+/// Reduce only the 16 initial XMM registers of one exact S2-40b fixture.
+/// The callback is deliberately supplied by the caller so this crate does not
+/// choose or launch a native/hardware backend.
+pub fn reduce_native_xorpd_fixture<F>(
+    original: &Fixture,
+    call_budget: usize,
+    execute: F,
+) -> Result<NativeXorpdReduction, String>
+where
+    F: FnMut(&Fixture) -> Result<RunResult, String>,
+{
+    let original_json = original.to_json().map_err(|error| error.to_string())?;
+    reduce_native_xorpd_fixture_with_input_digest(
+        original,
+        &sha256_hex(&original_json),
+        call_budget,
+        execute,
+    )
+}
+
+/// Variant used when the original fixture was loaded from user-provided JSON
+/// bytes. Its exact digest binds the two original-input callback pairs, while
+/// generated candidates use their own canonical serialized bytes.
+pub fn reduce_native_xorpd_fixture_with_input_digest<F>(
+    original: &Fixture,
+    original_input_sha256: &str,
+    call_budget: usize,
+    mut execute: F,
+) -> Result<NativeXorpdReduction, String>
+where
+    F: FnMut(&Fixture) -> Result<RunResult, String>,
+{
+    if !(4..=NATIVE_XORPD_REDUCER_MAX_BUDGET).contains(&call_budget) {
+        return Err(format!(
+            "native XORPD reducer call budget must be 4..={NATIVE_XORPD_REDUCER_MAX_BUDGET}"
+        ));
+    }
+    validate_reducer_fixture(original)?;
+    let original_weight = xmm_hamming_weight(original)?;
+    let mut report = NativeXorpdReduction {
+        stop: NativeXorpdReductionStop::NoInitialMismatch,
+        stop_detail: None,
+        original_fixture: original.clone(),
+        reduced_fixture: None,
+        initial_results: Vec::with_capacity(2),
+        final_results: Vec::new(),
+        initial_fingerprint: None,
+        final_fingerprint: None,
+        actual_callbacks: 0,
+        candidate_proposals: 0,
+        candidate_runs: 0,
+        accepted_candidates: 0,
+        initial_hamming_weight: original_weight,
+        final_hamming_weight: None,
+    };
+
+    let first = match invoke(&mut execute, original, &mut report.actual_callbacks) {
+        Ok(result) => result,
+        Err(error) => {
+            report.stop = NativeXorpdReductionStop::CallbackError;
+            report.stop_detail = Some(error);
+            return Ok(report);
+        }
+    };
+    let second = match invoke(&mut execute, original, &mut report.actual_callbacks) {
+        Ok(result) => result,
+        Err(error) => {
+            report.initial_results.push(first);
+            report.stop = NativeXorpdReductionStop::CallbackError;
+            report.stop_detail = Some(error);
+            return Ok(report);
+        }
+    };
+    report
+        .initial_results
+        .extend([first.clone(), second.clone()]);
+    if !same_semantic_result(&first, &second) {
+        report.stop = NativeXorpdReductionStop::FlakyInitial;
+        report.stop_detail = Some("the two initial callback results differ semantically".into());
+        return Ok(report);
+    }
+    if let Some(detail) = callback_infrastructure_error(&first) {
+        report.stop = NativeXorpdReductionStop::CallbackError;
+        report.stop_detail = Some(detail);
+        return Ok(report);
+    }
+    let fingerprints =
+        mismatch_fingerprint_with_input_digest(original, &first, original_input_sha256).and_then(
+            |first| {
+                mismatch_fingerprint_with_input_digest(original, &second, original_input_sha256)
+                    .map(|second| (first, second))
+            },
+        );
+    let (first_fingerprint, second_fingerprint) = match fingerprints {
+        Ok(fingerprints) => fingerprints,
+        Err(error) => {
+            report.stop = NativeXorpdReductionStop::CallbackError;
+            report.stop_detail = Some(format!("invalid initial callback result: {error}"));
+            return Ok(report);
+        }
+    };
+    if first_fingerprint.is_none() || first_fingerprint != second_fingerprint {
+        return Ok(report);
+    }
+    let target_fingerprint = first_fingerprint.expect("checked above");
+    report.initial_fingerprint = Some(target_fingerprint.clone());
+
+    let mut accepted = original.clone();
+    let mut accepted_weight = original_weight;
+    'registers: for register in 0..16 {
+        let mut ranges = vec![(0usize, 16usize)];
+        for block_size in [8usize, 4, 2, 1] {
+            ranges.extend((0..16).step_by(block_size).map(|start| (start, block_size)));
+        }
+        for (start, length) in ranges {
+            let current_bytes = xmm_bytes(&accepted, register)?;
+            if current_bytes[start..start + length]
+                .iter()
+                .all(|byte| *byte == 0)
+            {
+                continue;
+            }
+            let mut candidate = accepted.clone();
+            let mut candidate_bytes = current_bytes;
+            candidate_bytes[start..start + length].fill(0);
+            set_xmm_bytes(&mut candidate, register, &candidate_bytes)?;
+            if !proposal_decreases_weight(&candidate, accepted_weight)? {
+                continue;
+            }
+            report.candidate_proposals += 1;
+            if !has_room_for_candidate(call_budget, report.actual_callbacks) {
+                report.stop = NativeXorpdReductionStop::CandidateBudgetExhausted;
+                report.stop_detail = Some("call budget exhausted before candidate pair".into());
+                break 'registers;
+            }
+            match try_candidate(&candidate, &target_fingerprint, &mut execute, &mut report)? {
+                CandidateDecision::Accept => {
+                    accepted_weight = xmm_hamming_weight(&candidate)?;
+                    accepted = candidate;
+                    report.accepted_candidates += 1;
+                }
+                CandidateDecision::Reject => {}
+                CandidateDecision::Flaky(detail) => {
+                    report.stop = NativeXorpdReductionStop::FlakyCandidate;
+                    report.stop_detail = Some(detail);
+                    break 'registers;
+                }
+                CandidateDecision::Error(detail) => {
+                    report.stop = NativeXorpdReductionStop::CallbackError;
+                    report.stop_detail = Some(detail);
+                    break 'registers;
+                }
+            }
+        }
+        // Clear each remaining set bit in deterministic byte order, MSB first.
+        for byte_index in 0..16 {
+            for bit in (0..8).rev() {
+                let current_bytes = xmm_bytes(&accepted, register)?;
+                let mask = 1u8 << bit;
+                if current_bytes[byte_index] & mask == 0 {
+                    continue;
+                }
+                let mut candidate = accepted.clone();
+                let mut candidate_bytes = current_bytes;
+                candidate_bytes[byte_index] &= !mask;
+                set_xmm_bytes(&mut candidate, register, &candidate_bytes)?;
+                report.candidate_proposals += 1;
+                if !has_room_for_candidate(call_budget, report.actual_callbacks) {
+                    report.stop = NativeXorpdReductionStop::CandidateBudgetExhausted;
+                    report.stop_detail = Some("call budget exhausted before candidate pair".into());
+                    break 'registers;
+                }
+                match try_candidate(&candidate, &target_fingerprint, &mut execute, &mut report)? {
+                    CandidateDecision::Accept => {
+                        accepted_weight = xmm_hamming_weight(&candidate)?;
+                        accepted = candidate;
+                        report.accepted_candidates += 1;
+                    }
+                    CandidateDecision::Reject => {}
+                    CandidateDecision::Flaky(detail) => {
+                        report.stop = NativeXorpdReductionStop::FlakyCandidate;
+                        report.stop_detail = Some(detail);
+                        break 'registers;
+                    }
+                    CandidateDecision::Error(detail) => {
+                        report.stop = NativeXorpdReductionStop::CallbackError;
+                        report.stop_detail = Some(detail);
+                        break 'registers;
+                    }
+                }
+            }
+        }
+    }
+
+    if matches!(
+        report.stop,
+        NativeXorpdReductionStop::FlakyCandidate | NativeXorpdReductionStop::CallbackError
+    ) {
+        return Ok(report);
+    }
+    // The final two calls are reserved from the beginning and never consumed by
+    // candidates. A reduction is published only after both confirmations.
+    let final_first = match invoke(&mut execute, &accepted, &mut report.actual_callbacks) {
+        Ok(result) => result,
+        Err(error) => {
+            report.stop = NativeXorpdReductionStop::CallbackError;
+            report.stop_detail = Some(error);
+            return Ok(report);
+        }
+    };
+    let final_second = match invoke(&mut execute, &accepted, &mut report.actual_callbacks) {
+        Ok(result) => result,
+        Err(error) => {
+            report.final_results.push(final_first);
+            report.stop = NativeXorpdReductionStop::CallbackError;
+            report.stop_detail = Some(error);
+            return Ok(report);
+        }
+    };
+    report
+        .final_results
+        .extend([final_first.clone(), final_second.clone()]);
+    if !same_semantic_result(&final_first, &final_second) {
+        report.stop = NativeXorpdReductionStop::FinalConfirmationFailed;
+        report.stop_detail = Some("the two final callback results differ semantically".into());
+        return Ok(report);
+    }
+    if let Some(detail) = callback_infrastructure_error(&final_first) {
+        report.stop = NativeXorpdReductionStop::CallbackError;
+        report.stop_detail = Some(detail);
+        return Ok(report);
+    }
+    let accepted_input_digest = if &accepted == original {
+        original_input_sha256.to_string()
+    } else {
+        sha256_hex(&accepted.to_json().map_err(|error| error.to_string())?)
+    };
+    let final_fingerprint = match mismatch_fingerprint_with_input_digest(
+        &accepted,
+        &final_first,
+        &accepted_input_digest,
+    ) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => {
+            report.stop = NativeXorpdReductionStop::CallbackError;
+            report.stop_detail = Some(format!("invalid final callback result: {error}"));
+            return Ok(report);
+        }
+    };
+    if final_fingerprint.as_ref() != Some(&target_fingerprint) {
+        report.stop = NativeXorpdReductionStop::FinalConfirmationFailed;
+        report.stop_detail =
+            Some("final confirmations did not preserve the initial fingerprint".into());
+        return Ok(report);
+    }
+    report.final_fingerprint = final_fingerprint;
+    report.final_hamming_weight = Some(accepted_weight);
+    if report.stop == NativeXorpdReductionStop::CandidateBudgetExhausted {
+        if report.accepted_candidates > 0 {
+            report.reduced_fixture = Some(accepted);
+        }
+    } else {
+        if report.accepted_candidates > 0 {
+            report.reduced_fixture = Some(accepted);
+            report.stop = NativeXorpdReductionStop::Reduced;
+        } else {
+            report.stop = NativeXorpdReductionStop::NoReduction;
+        }
+    }
+    Ok(report)
+}
+
+fn invoke<F>(execute: &mut F, fixture: &Fixture, actual: &mut usize) -> Result<RunResult, String>
+where
+    F: FnMut(&Fixture) -> Result<RunResult, String>,
+{
+    *actual += 1;
+    execute(fixture)
+}
+
+enum CandidateDecision {
+    Accept,
+    Reject,
+    Flaky(String),
+    Error(String),
+}
+
+fn try_candidate<F>(
+    candidate: &Fixture,
+    expected: &NativeXorpdMismatchFingerprint,
+    execute: &mut F,
+    report: &mut NativeXorpdReduction,
+) -> Result<CandidateDecision, String>
+where
+    F: FnMut(&Fixture) -> Result<RunResult, String>,
+{
+    report.candidate_runs += 1;
+    let first = match invoke(execute, candidate, &mut report.actual_callbacks) {
+        Ok(result) => result,
+        Err(error) => return Ok(CandidateDecision::Error(error)),
+    };
+    let second = match invoke(execute, candidate, &mut report.actual_callbacks) {
+        Ok(result) => result,
+        Err(error) => return Ok(CandidateDecision::Error(error)),
+    };
+    if !same_semantic_result(&first, &second) {
+        return Ok(CandidateDecision::Flaky(
+            "two candidate callback results differ semantically".into(),
+        ));
+    }
+    if let Some(detail) = callback_infrastructure_error(&first) {
+        return Ok(CandidateDecision::Error(detail));
+    }
+    let fingerprints = mismatch_fingerprint(candidate, &first)
+        .and_then(|first| mismatch_fingerprint(candidate, &second).map(|second| (first, second)));
+    let (first_fp, second_fp) = match fingerprints {
+        Ok(fingerprints) => fingerprints,
+        Err(error) => {
+            return Ok(CandidateDecision::Error(format!(
+                "invalid candidate callback result: {error}"
+            )));
+        }
+    };
+    Ok(
+        if first_fp.as_ref() == Some(expected) && second_fp == first_fp {
+            CandidateDecision::Accept
+        } else {
+            CandidateDecision::Reject
+        },
+    )
+}
+
+fn has_room_for_candidate(budget: usize, actual: usize) -> bool {
+    actual.saturating_add(4) <= budget
+}
+
+fn proposal_decreases_weight(candidate: &Fixture, current: usize) -> Result<bool, String> {
+    Ok(xmm_hamming_weight(candidate)? < current)
+}
+
+fn validate_reducer_fixture(fixture: &Fixture) -> Result<(), String> {
+    fixture.validate().map_err(|error| error.to_string())?;
+    if fixture.profile != Profile::LongNativeXorpdXmm0Xmm1V1 {
+        return Err("reducer accepts only s2-long-native-xorpd-xmm0-xmm1-v1".into());
+    }
+    Ok(())
+}
+
+fn xmm_bytes(fixture: &Fixture, register: usize) -> Result<Vec<u8>, String> {
+    let sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or_else(|| "reducer fixture is missing SSE state".to_string())?;
+    decode_hex(&sse.xmm[register])
+}
+
+fn set_xmm_bytes(fixture: &mut Fixture, register: usize, bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() != 16 {
+        return Err("reducer XMM register must contain exactly 16 bytes".into());
+    }
+    let sse = fixture
+        .initial_state
+        .sse
+        .as_mut()
+        .ok_or_else(|| "reducer fixture is missing SSE state".to_string())?;
+    sse.xmm[register] = encode_hex(bytes);
+    Ok(())
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
+    if value.len() % 2 != 0 {
+        return Err("XMM hex value has an odd character count".into());
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let pair = std::str::from_utf8(pair).map_err(|error| error.to_string())?;
+            u8::from_str_radix(pair, 16).map_err(|error| error.to_string())
+        })
+        .collect()
+}
+
+fn xmm_hamming_weight(fixture: &Fixture) -> Result<usize, String> {
+    (0..16).try_fold(0usize, |weight, register| {
+        Ok(weight
+            + xmm_bytes(fixture, register)?
+                .iter()
+                .map(|byte| byte.count_ones() as usize)
+                .sum::<usize>())
+    })
+}
+
+fn same_semantic_result(left: &RunResult, right: &RunResult) -> bool {
+    left.schema_version == right.schema_version
+        && left.case_id == right.case_id
+        && left.input_sha256 == right.input_sha256
+        && left.profile == right.profile
+        && left.backend == right.backend
+        && left.outcome == right.outcome
+        && left.instructions_executed == right.instructions_executed
+        && left.snapshot == right.snapshot
+}
+
+fn callback_infrastructure_error(result: &RunResult) -> Option<String> {
+    match &result.outcome {
+        Outcome::HarnessError { reason } => Some(format!("callback harness error: {reason}")),
+        Outcome::Signaled { signal, reason } => {
+            Some(format!("callback process signaled ({signal}): {reason}"))
+        }
+        _ => None,
+    }
+}
+
+/// Return a fingerprint only for successful one-instruction results whose
+/// complete non-XMM state matches the independent XOR oracle and whose XMM
+/// mismatch is nonempty. Refusal/fault/timeout/infrastructure outcomes do not
+/// preserve a mismatch.
+pub fn mismatch_fingerprint(
+    fixture: &Fixture,
+    result: &RunResult,
+) -> Result<Option<NativeXorpdMismatchFingerprint>, String> {
+    let fixture_json = fixture.to_json().map_err(|error| error.to_string())?;
+    mismatch_fingerprint_with_input_digest(fixture, result, &sha256_hex(&fixture_json))
+}
+
+fn mismatch_fingerprint_with_input_digest(
+    fixture: &Fixture,
+    result: &RunResult,
+    expected_input_sha256: &str,
+) -> Result<Option<NativeXorpdMismatchFingerprint>, String> {
+    use crate::result::Observation;
+
+    if result.profile != Profile::LongNativeXorpdXmm0Xmm1V1
+        || result.backend != crate::result::Backend::Interpreter
+        || result.case_id != fixture.case_id
+        || result.input_sha256 != expected_input_sha256
+    {
+        return Err("callback result identity does not match its exact fixture".into());
+    }
+    let success = matches!(result.outcome, Outcome::StopAddress {})
+        && result.instructions_executed == (Observation::Available { value: HexU64(1) });
+    if !success {
+        return Ok(None);
+    }
+    let Observation::Available { value: snapshot } = &result.snapshot else {
+        return Err("successful callback result has no snapshot".into());
+    };
+    let Some(initial_sse) = fixture.initial_state.sse.as_ref() else {
+        return Ok(None);
+    };
+    let mut expected = fixture.initial_state.clone();
+    let mut xmm0 = decode_hex(&initial_sse.xmm[0])?;
+    let xmm1 = decode_hex(&initial_sse.xmm[1])?;
+    if xmm0.len() != 16 || xmm1.len() != 16 {
+        return Ok(None);
+    }
+    for (destination, source) in xmm0.iter_mut().zip(xmm1) {
+        *destination ^= source;
+    }
+    expected.sse.as_mut().expect("SSE checked").xmm[0] = encode_hex(&xmm0);
+    expected.rip = fixture
+        .stop_rip
+        .ok_or_else(|| "strict fixture has no stop RIP".to_string())?;
+    let mut actual_non_xmm = snapshot.state.clone();
+    let Some(actual_sse) = actual_non_xmm.sse.as_mut() else {
+        return Err("successful callback result has no SSE state".into());
+    };
+    let Some(expected_sse) = expected.sse.as_ref() else {
+        return Ok(None);
+    };
+    let mut mismatches = Vec::new();
+    for register in 0..16 {
+        let actual_bytes = decode_hex(&actual_sse.xmm[register])?;
+        let expected_bytes = decode_hex(&expected_sse.xmm[register])?;
+        if actual_bytes.len() != 16 || expected_bytes.len() != 16 {
+            return Err(format!(
+                "successful callback result has invalid XMM{register} width"
+            ));
+        }
+        for byte in 0..16 {
+            if actual_bytes[byte] != expected_bytes[byte] {
+                mismatches.push([register as u8, byte as u8]);
+            }
+        }
+        actual_sse.xmm[register] = expected_sse.xmm[register].clone();
+    }
+    if actual_non_xmm != expected
+        || snapshot.rflags_defined != fixture.rflags_mask
+        || !matches!(snapshot.exception, Observation::Available { value: None })
+        || snapshot.xorpd_prerequisites.is_some()
+        || snapshot.minss_invalid_controls.is_some()
+        || snapshot.fxsave64_cr0_controls.is_some()
+        || snapshot.fxrstor64_cr0_controls.is_some()
+        || snapshot.memory.len() != 1
+        || snapshot.memory[0].region_id != "code"
+        || snapshot.memory[0].guest_address != fixture.memory[0].guest_address
+        || snapshot.memory[0].bytes_hex != fixture.memory[0].initial_bytes_hex
+    {
+        return Ok(None);
+    }
+    if mismatches.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(NativeXorpdMismatchFingerprint {
+        mismatching_xmm_bytes: mismatches,
+    }))
+}
 
 /// One deterministic schema-v2 input for the exact native XORPD profile.
 pub fn generate_native_xorpd_fixture(seed: u64, sequence: u32) -> Fixture {
@@ -209,6 +764,10 @@ impl SplitMix64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::result::{
+        Backend, BuildMetadata, MachineMetadata, MemoryRegionSnapshot, Observation,
+    };
+    use crate::v2::Snapshot;
     use std::collections::HashSet;
 
     fn fixed_case_bytes() -> Vec<Vec<u8>> {
@@ -254,6 +813,362 @@ mod tests {
             NativeXorpdCorpusManifest::from_json(&manifest.to_json().unwrap()).unwrap(),
             manifest
         );
+    }
+
+    fn reducer_fixture() -> Fixture {
+        let mut fixture = generate_native_xorpd_fixture(NATIVE_XORPD_FIXED_SEEDS[0], 0);
+        let sse = fixture.initial_state.sse.as_mut().unwrap();
+        for register in &mut sse.xmm {
+            *register = "00000000000000000000000000000000".into();
+        }
+        sse.xmm[0] = "01000000000000000000000000000000".into();
+        sse.xmm[1] = "02000000000000000000000000000000".into();
+        sse.xmm[15] = "01000000000000000000000000000000".into();
+        fixture
+    }
+
+    fn synthetic_result(fixture: &Fixture, mismatch_byte: Option<usize>) -> RunResult {
+        let mut state = fixture.initial_state.clone();
+        let sse = state.sse.as_mut().unwrap();
+        let mut x0 = decode_hex(&sse.xmm[0]).unwrap();
+        let x1 = decode_hex(&sse.xmm[1]).unwrap();
+        for (left, right) in x0.iter_mut().zip(x1) {
+            *left ^= right;
+        }
+        sse.xmm[0] = encode_hex(&x0);
+        state.rip = fixture.stop_rip.unwrap();
+        if let Some(byte) = mismatch_byte {
+            let mut bytes = decode_hex(&sse.xmm[0]).unwrap();
+            bytes[byte] ^= 0x80;
+            sse.xmm[0] = encode_hex(&bytes);
+        }
+        RunResult {
+            schema_version: crate::v2::SCHEMA_VERSION,
+            case_id: fixture.case_id.clone(),
+            input_sha256: sha256_hex(&fixture.to_json().unwrap()),
+            profile: fixture.profile,
+            backend: Backend::Interpreter,
+            outcome: Outcome::StopAddress {},
+            instructions_executed: Observation::Available { value: HexU64(1) },
+            snapshot: Observation::Available {
+                value: Snapshot {
+                    state,
+                    rflags_defined: fixture.rflags_mask,
+                    memory: vec![MemoryRegionSnapshot {
+                        region_id: "code".into(),
+                        guest_address: fixture.memory[0].guest_address,
+                        bytes_hex: fixture.memory[0].initial_bytes_hex.clone(),
+                    }],
+                    xorpd_prerequisites: None,
+                    minss_invalid_controls: None,
+                    fxsave64_cr0_controls: None,
+                    fxrstor64_cr0_controls: None,
+                    exception: Observation::Available { value: None },
+                },
+            },
+            build: BuildMetadata {
+                revision: "synthetic-test-only".into(),
+                target: "test".into(),
+                profile: "test".into(),
+                compiler: "test".into(),
+            },
+            machine: MachineMetadata {
+                host_os: "test".into(),
+                host_arch: "test".into(),
+                cpu_model: None,
+                kernel: None,
+                page_size: None,
+            },
+        }
+    }
+
+    fn synthetic_xmm15_bug(fixture: &Fixture) -> RunResult {
+        let has_xmm15_input = decode_hex(&fixture.initial_state.sse.as_ref().unwrap().xmm[15])
+            .unwrap()
+            .iter()
+            .any(|byte| *byte != 0);
+        synthetic_result(fixture, has_xmm15_input.then_some(0))
+    }
+
+    fn synthetic_upper_xmm_bug(fixture: &Fixture) -> RunResult {
+        let sse = fixture.initial_state.sse.as_ref().unwrap();
+        let has_upper_input = (2..16).any(|register| {
+            decode_hex(&sse.xmm[register])
+                .unwrap()
+                .iter()
+                .any(|byte| *byte != 0)
+        });
+        synthetic_result(fixture, has_upper_input.then_some(0))
+    }
+
+    #[test]
+    fn reducer_is_deterministic_and_reduces_full_xmm_state() {
+        let fixture = reducer_fixture();
+        let first =
+            reduce_native_xorpd_fixture(&fixture, 5120, |input| Ok(synthetic_xmm15_bug(input)))
+                .unwrap();
+        let second =
+            reduce_native_xorpd_fixture(&fixture, 5120, |input| Ok(synthetic_xmm15_bug(input)))
+                .unwrap();
+        assert_eq!(first.stop, NativeXorpdReductionStop::Reduced);
+        assert_eq!(first.reduced_fixture, second.reduced_fixture);
+        assert_eq!(first.final_fingerprint, second.final_fingerprint);
+        let reduced = first.reduced_fixture.unwrap();
+        assert_eq!(
+            reduced.initial_state.sse.as_ref().unwrap().xmm[0],
+            "00000000000000000000000000000000"
+        );
+        assert_eq!(
+            reduced.initial_state.sse.as_ref().unwrap().xmm[1],
+            "00000000000000000000000000000000"
+        );
+        let mut normalized = reduced.clone();
+        normalized.initial_state.sse.as_mut().unwrap().xmm =
+            fixture.initial_state.sse.as_ref().unwrap().xmm.clone();
+        assert_eq!(
+            normalized, fixture,
+            "reduction changed non-XMM fixture fields"
+        );
+        assert_ne!(
+            reduced.initial_state.sse.as_ref().unwrap().xmm[15],
+            "00000000000000000000000000000000"
+        );
+        assert!(first.actual_callbacks <= 5092);
+        assert_eq!(first.initial_results.len(), 2);
+        assert_eq!(first.final_results.len(), 2);
+    }
+
+    #[test]
+    fn reducer_checks_xmm2_through_xmm15_dependencies() {
+        let mut fixture = reducer_fixture();
+        let sse = fixture.initial_state.sse.as_mut().unwrap();
+        for register in 2..16 {
+            sse.xmm[register] = "01000000000000000000000000000000".into();
+        }
+        let report =
+            reduce_native_xorpd_fixture(&fixture, 5120, |input| Ok(synthetic_upper_xmm_bug(input)))
+                .unwrap();
+        assert_eq!(report.stop, NativeXorpdReductionStop::Reduced);
+        let reduced = report.reduced_fixture.unwrap();
+        for register in 2..15 {
+            assert_eq!(
+                reduced.initial_state.sse.as_ref().unwrap().xmm[register],
+                "00000000000000000000000000000000",
+                "XMM{register} was not considered by the reducer"
+            );
+        }
+        assert_ne!(
+            reduced.initial_state.sse.as_ref().unwrap().xmm[15],
+            "00000000000000000000000000000000"
+        );
+    }
+
+    #[test]
+    fn mismatch_fingerprint_keeps_positions_but_ignores_wrong_values() {
+        let fixture = reducer_fixture();
+        let mut a = synthetic_result(&fixture, Some(0));
+        let mut b = a.clone();
+        let Observation::Available { value: snapshot } = &mut b.snapshot else {
+            unreachable!()
+        };
+        let sse = snapshot.state.sse.as_mut().unwrap();
+        let mut bytes = decode_hex(&sse.xmm[0]).unwrap();
+        bytes[0] ^= 0x40;
+        sse.xmm[0] = encode_hex(&bytes);
+        assert_eq!(
+            mismatch_fingerprint(&fixture, &a).unwrap(),
+            mismatch_fingerprint(&fixture, &b).unwrap()
+        );
+        let Observation::Available { value: snapshot } = &mut b.snapshot else {
+            unreachable!()
+        };
+        let sse = snapshot.state.sse.as_mut().unwrap();
+        let mut bytes = decode_hex(&sse.xmm[0]).unwrap();
+        bytes[1] ^= 0x80;
+        sse.xmm[0] = encode_hex(&bytes);
+        assert_ne!(
+            mismatch_fingerprint(&fixture, &a).unwrap(),
+            mismatch_fingerprint(&fixture, &b).unwrap()
+        );
+        a.build.revision = "different-metadata-does-not-matter".into();
+    }
+
+    #[test]
+    fn no_initial_mismatch_does_not_create_reduced_case() {
+        let fixture = reducer_fixture();
+        let report =
+            reduce_native_xorpd_fixture(&fixture, 4, |input| Ok(synthetic_result(input, None)))
+                .unwrap();
+        assert_eq!(report.stop, NativeXorpdReductionStop::NoInitialMismatch);
+        assert!(report.reduced_fixture.is_none());
+        assert_eq!(report.actual_callbacks, 2);
+    }
+
+    #[test]
+    fn callback_budget_reserves_initial_and_final_pairs() {
+        for budget in [4, 5, 6] {
+            let fixture = reducer_fixture();
+            let report = reduce_native_xorpd_fixture(&fixture, budget, |input| {
+                Ok(synthetic_xmm15_bug(input))
+            })
+            .unwrap();
+            assert!(report.actual_callbacks <= budget);
+            assert_eq!(report.initial_results.len(), 2);
+            if budget < 6 {
+                assert_eq!(report.candidate_runs, 0);
+                assert_eq!(report.final_results.len(), 2);
+            }
+        }
+    }
+
+    #[test]
+    fn zero_proposals_skip_noops_and_refusals_do_not_preserve_mismatch() {
+        let mut zero = reducer_fixture();
+        let sse = zero.initial_state.sse.as_mut().unwrap();
+        for register in &mut sse.xmm {
+            *register = "00000000000000000000000000000000".into();
+        }
+        let no_op =
+            reduce_native_xorpd_fixture(&zero, 32, |input| Ok(synthetic_result(input, Some(0))))
+                .unwrap();
+        assert_eq!(no_op.stop, NativeXorpdReductionStop::NoReduction);
+        assert_eq!(no_op.candidate_proposals, 0);
+        assert!(no_op.reduced_fixture.is_none());
+
+        let fixture = reducer_fixture();
+        let initial_digest = sha256_hex(&fixture.to_json().unwrap());
+        let refused = reduce_native_xorpd_fixture(&fixture, 20, |candidate| {
+            let mut result = synthetic_xmm15_bug(candidate);
+            if sha256_hex(&candidate.to_json().unwrap()) != initial_digest {
+                result.outcome = Outcome::Unsupported {
+                    reason: "synthetic refusal".into(),
+                };
+            }
+            Ok(result)
+        })
+        .unwrap();
+        assert_eq!(
+            refused.stop,
+            NativeXorpdReductionStop::CandidateBudgetExhausted
+        );
+        assert_eq!(refused.accepted_candidates, 0);
+        assert!(refused.reduced_fixture.is_none());
+
+        for outcome in [
+            Outcome::TimedOut {
+                reason: "synthetic timeout".into(),
+            },
+            Outcome::Exception {},
+        ] {
+            let fixture = reducer_fixture();
+            let original_digest = sha256_hex(&fixture.to_json().unwrap());
+            let report = reduce_native_xorpd_fixture(&fixture, 6, |candidate| {
+                let mut result = synthetic_xmm15_bug(candidate);
+                if sha256_hex(&candidate.to_json().unwrap()) != original_digest {
+                    result.outcome = outcome.clone();
+                }
+                Ok(result)
+            })
+            .unwrap();
+            assert_eq!(report.candidate_runs, 1);
+            assert_eq!(report.accepted_candidates, 0);
+            assert_eq!(report.final_results.len(), 2);
+            assert!(report.reduced_fixture.is_none());
+        }
+    }
+
+    #[test]
+    fn flaky_initial_candidate_final_and_callback_error_are_reported() {
+        let fixture = reducer_fixture();
+        let mut calls = 0usize;
+        let initial_flaky = reduce_native_xorpd_fixture(&fixture, 4, |input| {
+            calls += 1;
+            Ok(synthetic_result(input, (calls == 2).then_some(1)))
+        })
+        .unwrap();
+        assert_eq!(initial_flaky.stop, NativeXorpdReductionStop::FlakyInitial);
+
+        let mut calls = 0usize;
+        let candidate_flaky = reduce_native_xorpd_fixture(&fixture, 8, |input| {
+            calls += 1;
+            let mut result = synthetic_xmm15_bug(input);
+            if calls == 4 {
+                let Observation::Available { value: snapshot } = &mut result.snapshot else {
+                    unreachable!()
+                };
+                let xmm = &mut snapshot.state.sse.as_mut().unwrap().xmm[0];
+                *xmm = "00000000000000000000000000000080".into();
+            }
+            Ok(result)
+        })
+        .unwrap();
+        assert_eq!(
+            candidate_flaky.stop,
+            NativeXorpdReductionStop::FlakyCandidate
+        );
+        assert!(candidate_flaky.reduced_fixture.is_none());
+
+        let mut calls = 0usize;
+        let final_flaky = reduce_native_xorpd_fixture(&fixture, 4, |input| {
+            calls += 1;
+            let mut result = synthetic_xmm15_bug(input);
+            if calls == 4 {
+                let Observation::Available { value: snapshot } = &mut result.snapshot else {
+                    unreachable!()
+                };
+                snapshot.state.gpr[0].0 ^= 1;
+            }
+            Ok(result)
+        })
+        .unwrap();
+        assert_eq!(
+            final_flaky.stop,
+            NativeXorpdReductionStop::FinalConfirmationFailed
+        );
+        assert!(final_flaky.reduced_fixture.is_none());
+
+        let mut calls = 0usize;
+        let callback_error = reduce_native_xorpd_fixture(&fixture, 4, |_| {
+            calls += 1;
+            if calls == 2 {
+                Err("synthetic timeout/infra error".into())
+            } else {
+                Ok(synthetic_xmm15_bug(&fixture))
+            }
+        })
+        .unwrap();
+        assert_eq!(callback_error.stop, NativeXorpdReductionStop::CallbackError);
+        assert!(callback_error.reduced_fixture.is_none());
+
+        let harness_error = reduce_native_xorpd_fixture(&fixture, 4, |input| {
+            let mut result = synthetic_xmm15_bug(input);
+            result.outcome = Outcome::HarnessError {
+                reason: "synthetic callback failure".into(),
+            };
+            Ok(result)
+        })
+        .unwrap();
+        assert_eq!(harness_error.stop, NativeXorpdReductionStop::CallbackError);
+        assert!(harness_error.reduced_fixture.is_none());
+
+        for malformed_xmm in ["00".to_string(), "0".repeat(33)] {
+            let malformed = reduce_native_xorpd_fixture(&fixture, 4, |input| {
+                let mut result = synthetic_xmm15_bug(input);
+                let Observation::Available { value: snapshot } = &mut result.snapshot else {
+                    unreachable!()
+                };
+                snapshot.state.sse.as_mut().unwrap().xmm[0] = malformed_xmm.clone();
+                Ok(result)
+            })
+            .unwrap();
+            assert_eq!(malformed.stop, NativeXorpdReductionStop::CallbackError);
+            assert!(
+                malformed
+                    .stop_detail
+                    .unwrap()
+                    .contains("invalid initial callback result")
+            );
+        }
     }
 
     #[test]

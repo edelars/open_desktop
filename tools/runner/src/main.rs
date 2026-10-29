@@ -33,6 +33,9 @@ fn main() -> ExitCode {
         Some("--verify-native-xorpd-corpus") => {
             return test_cli::verify_native_xorpd_corpus(&args[1..]);
         }
+        Some("--reduce-native-xorpd") => {
+            return test_cli::reduce_native_xorpd(&args[1..]);
+        }
         Some("--convert-fixture-v1") => return test_cli::convert_fixture_v1(&args[1..]),
         Some("--minimize") => return test_cli::minimize_fixture(&args[1..]),
         Some("--fixture") => return test_cli::run_fixture(&args[1..]),

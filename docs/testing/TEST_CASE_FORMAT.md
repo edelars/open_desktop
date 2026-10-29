@@ -1007,3 +1007,47 @@ mandatory interpreter execution or any mismatch is a nonzero failure. A single
 case can be replayed with the ordinary `od-runner --fixture CASE.json --engine
 interpreter --json` command. Native execution is `not_run` for this local
 acceptance; it remains scheduled for the combined final hardware batch.
+
+## S2-42b bounded native XORPD XMM-input reducer
+
+This reducer consumes one existing, strict schema-v2 fixture for
+`s2-long-native-xorpd-xmm0-xmm1-v1`. It does not add fixture fields or mutate
+the source file. Each candidate is serialized and parsed again; only
+`initial_state.sse.xmm[0..15]` may differ from the original. The full profile,
+instruction bytes and mapping, GPR/RFLAGS/RIP, MXCSR, x87 absence, budget and
+stop boundary remain schema-validated. Initial callback results use the exact
+raw input digest, including accepted whitespace and object-key order; generated
+candidates use their own canonical serialized digest.
+
+`od-runner --reduce-native-xorpd CASE.json [--limit N]
+[--output-dir work/stage2/s2-42b-xorpd/NAME]` runs one deterministic pass in
+register order XMM0–XMM15. For each register it proposes zeroing the complete
+register, then aligned 8-, 4-, 2- and 1-byte blocks, then each set bit in
+byte0..15/bit7..0 order. A proposal is skipped if it is a no-op or does not
+lower the total set-bit count across all 256 XMM bytes. It is accepted only
+after two semantically identical callback results preserve the original
+fingerprint. The fingerprint contains the exact XMM register/byte positions
+that differ from the bytewise-XOR oracle; it deliberately omits wrong values.
+All non-XMM state, defined flags, retirement, successful stop exit, no exception
+and unchanged code mapping must match the oracle. Build/machine metadata and
+timestamps/durations do not decide semantic repeatability.
+
+The callback budget counts actual runs, defaults to 5120, permits 4 through
+5120, and reserves two initial plus two final confirmations. Each candidate
+uses two actual runs. The reducer makes one pass and makes no global-minimum
+claim. If there is no initial XMM mismatch it writes the original, two results,
+expected oracle result and report, returns `no_initial_mismatch`, and writes no
+reduced fixture. Fault, Unsupported, invalid input and timeout outcomes do not
+preserve a mismatch; callback infrastructure errors stop with an incomplete
+report. A reduced fixture is written only after final repeated confirmation.
+
+Output is exclusive under ignored `work/stage2/s2-42b-xorpd/` and includes the
+original and SHA-256, two initial results, two final results when applicable,
+expected oracle results, fingerprint, proposal/run/accept counts, initial/final
+Hamming weights, source provenance, revision, toolchain, exact replay commands,
+and `native=not_run`. Synthetic callbacks in tests validate the algorithm only;
+they are not real CPU bug or hardware evidence. The generic S2-42 instruction
+deletion, branches, memory/REP, FP faults and physical comparison requirements
+remain open. See [plan](../plans/STAGE_2.md#s2-42b-bounded-xmm-input-reducer),
+[report](../reports/STAGE_2_REPORT.md#s2-42b--bounded-native-xorpd-xmm-input-reducer),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42b-native-xorpd-xmm-input-reducer).

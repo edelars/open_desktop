@@ -6653,6 +6653,43 @@ mini исполнение не запускалось; оно остаётся �
 проверки. S2-42 в целом остаётся открытой: reducer и прочие группы инструкций
 не входят в этот срез.
 
+### S2-42b. Bounded XMM-input reducer для native XORPD
+
+**Статус:** реализован локальный profile-only reducer; запуск на текущем
+interpreter возвращает `no_initial_mismatch`. Native/hardware и Mac mini
+остаются `not_run`; S2-42 в целом остаётся открытым.
+
+Reducer принимает ровно один строго валидный fixture профиля
+`s2-long-native-xorpd-xmm0-xmm1-v1` и изменяет только входные байты XMM0–15.
+Он делает один детерминированный проход: регистры XMM0–15, обнуление полного
+регистра и 8/4/2/1-byte blocks, затем установленных битов в порядке byte0..15,
+bit7..0. Кандидат принимается только при снижении общей XMM Hamming weight,
+двух одинаковых semantic outcomes и сохранении fingerprint — точного набора
+неверных XMM register/byte positions против независимого raw-byte XOR oracle.
+Wrong byte values и изменяемые build/machine metadata в fingerprint не входят.
+Остальные state поля, RIP, определённые flags, retirement, exception absence и
+code mapping должны совпадать с oracle; Fault/Unsupported/timeout/invalid input
+не сохраняют mismatch. Это один проход, не глобальный минимум.
+
+Вызов `od-runner --reduce-native-xorpd CASE.json [--limit N]
+[--output-dir work/stage2/s2-42b-xorpd/NAME]` использует только существующий
+local interpreter callback; каждый candidate заново валидируется и получает
+собственный ожидаемый результат XOR. Default/max budget — 5120 actual callback
+runs, minimum 4. Начальные и финальные пары резервируются; кандидаты расходуют
+ровно два runs каждый. Выход создаётся эксклюзивно под ignored
+`work/stage2/s2-42b-xorpd/` и содержит копию original с SHA-256, 2 initial
+results, final pair при mismatch, expected oracle result(s), fingerprint,
+счётчики, bit costs, provenance, revision/toolchain и replay command. При
+`no_initial_mismatch` reduced fixture не создаётся. `native=not_run`; synthetic
+callbacks существуют только в unit tests и не являются evidence реального
+CPU-дефекта.
+
+S2-42b не закрывает общий corpus/reducer/harness requirement: instruction
+deletion, branches, memory/REP, FP faults и physical comparison остаются
+открытыми. См. [формат и replay](../testing/TEST_CASE_FORMAT.md#s2-42b-bounded-native-xorpd-xmm-input-reducer),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42b-native-xorpd-xmm-input-reducer)
+и [отчёт](../reports/STAGE_2_REPORT.md#s2-42b--bounded-native-xorpd-xmm-input-reducer).
+
 ### S2-43. Диагностический interpreter и граница JIT
 
 1. Предоставить CLI single-step/trace/replay с ограниченным объёмом и архитектурным state до/после, faulting RIP и memory effects. Не превращать trace в обязательный production overhead.

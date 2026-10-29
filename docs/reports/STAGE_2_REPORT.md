@@ -16410,3 +16410,50 @@ interpreter runs, `native=not_run`; replay доступен обычной ко�
 [план S2-42a](../plans/STAGE_2.md#s2-42a-deterministic-corpus-для-native-xorpd),
 [формат fixtures](../testing/TEST_CASE_FORMAT.md#s2-42a-native-xorpd-generated-corpus)
 и [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42a-native-xorpd-generated-corpus).
+
+## S2-42b — bounded native XORPD XMM-input reducer
+
+Added a one-fixture reducer restricted to the existing
+`s2-long-native-xorpd-xmm0-xmm1-v1` profile. `od-testkit` proposes changes only
+to initial XMM0–XMM15, in a fixed single pass over whole registers, 8/4/2/1-byte
+blocks, then set bits ordered byte0..15 and bit7..0. It skips no-ops and accepts
+only lower total XMM Hamming weight plus two equal semantic callback results
+whose XMM mismatch-position fingerprint matches the initial fingerprint.
+Fingerprints use the independent bytewise-XOR oracle and exact mismatching
+register/byte positions; incorrect byte values do not define the class. All
+other state, retirement, successful stop, exception absence and code mapping
+must match the oracle. The reducer makes no global-minimum claim.
+
+`od-runner --reduce-native-xorpd CASE.json [--limit N] [--output-dir DIR]`
+loads one strict fixture and uses the local interpreter callback. Every
+candidate is serialized/revalidated and its oracle is recomputed from its own
+XMM0/XMM1 input. The 5120 maximum actual-run budget includes two initial and two
+reserved final confirmations; every candidate costs two calls. Output is
+exclusive under ignored `work/stage2/s2-42b-xorpd/` and records fixture/result
+hashes, initial/final interpreter results, expected oracle result(s),
+fingerprints, counters, Hamming weights, provenance, revision/toolchain, replay
+commands and `native=not_run`. A correct initial interpreter result is reported
+as `no_initial_mismatch`, with no reduced fixture. Callback failures stop with
+an incomplete report. Synthetic test callbacks are algorithm-only and are not
+CPU/hardware evidence. The existing generated corpus was not modified.
+
+**Checks:** `cargo test -p od-testkit --offline native_xorpd -- --nocapture`
+(10 passed) covers deterministic reduction, XMM2–XMM15 dependencies, fingerprint
+position/value behavior, no-op/refusal, budget 4/5/6, initial/candidate/final
+flakiness, callback errors (including malformed short and odd-length XMM hex)
+and no initial mismatch. The runner-specific
+`cargo test -p od-runner --bin od-runner --offline native_xorpd_corpus_tests`
+(5 passed) includes output integrity, raw-input digest binding for canonical,
+whitespace and reordered-key fixtures, sidecar SHA-256 values and no-mismatch
+reporting. `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `git diff --check` and
+`graphify update .` passed. `python3 tools/check_layout.py` reports the linked
+worktree `.git` pointer and two unavailable old work-manifest links; these are
+the existing layout/report conditions, not introduced by S2-42b. No physical
+CPU, Mac mini or hardware callback ran (`native=not_run`).
+
+The general S2-42 acceptance remains open, including instruction deletion,
+branch target preservation, memory/REP and FP-fault groups, and physical
+comparison. See [plan](../plans/STAGE_2.md#s2-42b-bounded-xmm-input-reducer),
+[format/replay](../testing/TEST_CASE_FORMAT.md#s2-42b-bounded-native-xorpd-xmm-input-reducer),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42b-native-xorpd-xmm-input-reducer).

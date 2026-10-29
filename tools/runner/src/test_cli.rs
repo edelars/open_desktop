@@ -11,8 +11,10 @@ use od_testkit::compare::{
 use od_testkit::generate::generate_fixture;
 use od_testkit::minimize::{MinimizeError, minimize_fixture as minimize_fixture_value};
 use od_testkit::native_xorpd::{
-    NATIVE_XORPD_CASES_PER_SEED, NATIVE_XORPD_FIXED_SEEDS, NativeXorpdCorpusManifest,
+    NATIVE_XORPD_CASES_PER_SEED, NATIVE_XORPD_FIXED_SEEDS, NATIVE_XORPD_REDUCER_DEFAULT_BUDGET,
+    NATIVE_XORPD_REDUCER_MAX_BUDGET, NativeXorpdCorpusManifest, NativeXorpdReductionStop,
     generate_native_xorpd_fixture, native_xorpd_case_id,
+    reduce_native_xorpd_fixture_with_input_digest,
 };
 use od_testkit::result::{
     Backend, BuildMetadata, CompletionStatus, CpuSnapshot, ExitReason, GprSnapshot,
@@ -26,6 +28,7 @@ const EXIT_UNSUPPORTED: u8 = 4;
 const EXIT_HARNESS_FAILURE: u8 = 5;
 
 const NATIVE_XORPD_WORK_DIR: &str = "work/stage2/s2-42a-xorpd";
+const NATIVE_XORPD_REDUCE_WORK_DIR: &str = "work/stage2/s2-42b-xorpd";
 
 pub fn generate_native_xorpd_corpus(args: &[String]) -> ExitCode {
     if !args.is_empty() {
@@ -189,6 +192,326 @@ fn verify_native_xorpd_corpus_inner() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     println!("verified {expected_count} fixtures in {ran_twice} interpreter runs; native=not_run");
     Ok(())
+}
+
+pub fn reduce_native_xorpd(args: &[String]) -> ExitCode {
+    match reduce_native_xorpd_inner(args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => invalid_input(&error),
+    }
+}
+
+fn reduce_native_xorpd_inner(args: &[String]) -> Result<(), String> {
+    use od_testkit::v2::{self, Profile};
+
+    let mut input_path = None;
+    let mut output_dir = None;
+    let mut call_budget = NATIVE_XORPD_REDUCER_DEFAULT_BUDGET;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--limit" => {
+                index += 1;
+                let value = args.get(index).ok_or("--limit requires an integer")?;
+                call_budget = value.parse().map_err(|_| "--limit must be an integer")?;
+            }
+            "--output-dir" => {
+                index += 1;
+                output_dir = Some(
+                    args.get(index)
+                        .ok_or("--output-dir requires a path")?
+                        .clone(),
+                );
+            }
+            value if value.starts_with('-') => {
+                return Err(format!("unknown reducer option: {value}"));
+            }
+            value if input_path.is_none() => input_path = Some(value.to_string()),
+            value => return Err(format!("unexpected reducer argument: {value}")),
+        }
+        index += 1;
+    }
+    let input_path = input_path
+        .ok_or("usage: od-runner --reduce-native-xorpd <fixture> [--limit N] [--output-dir DIR]")?;
+    if !(4..=NATIVE_XORPD_REDUCER_MAX_BUDGET).contains(&call_budget) {
+        return Err(format!(
+            "--limit must be 4..={NATIVE_XORPD_REDUCER_MAX_BUDGET}"
+        ));
+    }
+    let output_dir = output_dir.unwrap_or_else(|| {
+        format!(
+            "{NATIVE_XORPD_REDUCE_WORK_DIR}/{}",
+            std::path::Path::new(&input_path)
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+        )
+    });
+    let output_relative = std::path::Path::new(&output_dir);
+    validate_native_xorpd_output_dir(output_relative)?;
+    let output_path = workspace_root().join(output_relative);
+
+    let original_bytes =
+        fs::read(&input_path).map_err(|error| format!("could not read fixture: {error}"))?;
+    let loaded = v2::Fixture::from_json(&original_bytes)
+        .map_err(|error| format!("invalid strict-schema fixture: {error}"))?;
+    if loaded.fixture.profile != Profile::LongNativeXorpdXmm0Xmm1V1 {
+        return Err("reducer accepts only s2-long-native-xorpd-xmm0-xmm1-v1".into());
+    }
+    let reduction = reduce_native_xorpd_fixture_with_input_digest(
+        &loaded.fixture,
+        &loaded.input_sha256,
+        call_budget,
+        |candidate| {
+            if candidate == &loaded.fixture {
+                return run_native_xorpd_interpreter(&loaded);
+            }
+            let candidate_bytes = candidate.to_json().map_err(|error| error.to_string())?;
+            let candidate_loaded = v2::Fixture::from_json(&candidate_bytes)
+                .map_err(|error| format!("candidate fixture failed strict validation: {error}"))?;
+            run_native_xorpd_interpreter(&candidate_loaded)
+        },
+    )?;
+
+    fs::create_dir_all(
+        output_path
+            .parent()
+            .ok_or("output directory has no parent")?,
+    )
+    .map_err(|error| format!("could not create output parent: {error}"))?;
+    fs::create_dir(&output_path)
+        .map_err(|error| format!("could not create fresh output directory: {error}"))?;
+    write_new(output_path.join("original.case.json"), &original_bytes)?;
+    let mut initial_result_sha256 = Vec::with_capacity(reduction.initial_results.len());
+    for (index, result) in reduction.initial_results.iter().enumerate() {
+        let result_bytes = result.to_json().map_err(|error| error.to_string())?;
+        initial_result_sha256.push(sha256_hex(&result_bytes));
+        write_new(
+            output_path.join(format!("initial-{}.result.json", index + 1)),
+            &result_bytes,
+        )?;
+    }
+    let mut final_result_sha256 = Vec::with_capacity(reduction.final_results.len());
+    for (index, result) in reduction.final_results.iter().enumerate() {
+        let result_bytes = result.to_json().map_err(|error| error.to_string())?;
+        final_result_sha256.push(sha256_hex(&result_bytes));
+        write_new(
+            output_path.join(format!("final-{}.result.json", index + 1)),
+            &result_bytes,
+        )?;
+    }
+    let expected_original = reduction
+        .initial_results
+        .first()
+        .map(|reference| expected_native_xorpd_oracle(&loaded, reference))
+        .transpose()?;
+    let expected_original_sha256 = if let Some(expected) = &expected_original {
+        let expected_bytes = expected.to_json().map_err(|error| error.to_string())?;
+        write_new(
+            output_path.join("expected-original.result.json"),
+            &expected_bytes,
+        )?;
+        Some(sha256_hex(&expected_bytes))
+    } else {
+        None
+    };
+    let reduced_bytes = reduction
+        .reduced_fixture
+        .as_ref()
+        .map(|fixture| fixture.to_json().map_err(|error| error.to_string()))
+        .transpose()?;
+    let mut expected_reduced_sha256 = None;
+    if let Some(reduced_bytes) = &reduced_bytes {
+        write_new(output_path.join("reduced.case.json"), &reduced_bytes)?;
+        let reduced_loaded =
+            v2::Fixture::from_json(&reduced_bytes).map_err(|error| error.to_string())?;
+        if let Some(reference) = reduction.final_results.first() {
+            let expected = expected_native_xorpd_oracle(&reduced_loaded, reference)?;
+            let expected_bytes = expected.to_json().map_err(|error| error.to_string())?;
+            write_new(
+                output_path.join("expected-reduced.result.json"),
+                &expected_bytes,
+            )?;
+            expected_reduced_sha256 = Some(sha256_hex(&expected_bytes));
+        }
+    }
+
+    let replay_original = format!(
+        "od-runner --fixture {} --engine interpreter --json",
+        output_path.join("original.case.json").display()
+    );
+    let replay_reduced = reduction.reduced_fixture.as_ref().map(|_| {
+        format!(
+            "od-runner --fixture {} --engine interpreter --json",
+            output_path.join("reduced.case.json").display()
+        )
+    });
+    let report = serde_json::json!({
+        "report_version": 1,
+        "profile": "s2-long-native-xorpd-xmm0-xmm1-v1",
+        "stop_reason": reduction.stop,
+        "stop_detail": reduction.stop_detail,
+        "source_fixture": input_path,
+        "original_sha256": sha256_hex(&original_bytes),
+        "reduced_sha256": reduced_bytes.as_ref().map(|bytes| sha256_hex(bytes)),
+        "result_sha256": {
+            "initial": initial_result_sha256,
+            "final": final_result_sha256,
+            "expected_original": expected_original_sha256,
+            "expected_reduced": expected_reduced_sha256
+        },
+        "initial_fingerprint": reduction.initial_fingerprint,
+        "final_fingerprint": reduction.final_fingerprint,
+        "reducer": "od-testkit-native-xorpd-xmm-input-v1",
+        "call_budget": call_budget,
+        "actual_callbacks": reduction.actual_callbacks,
+        "candidate_proposals": reduction.candidate_proposals,
+        "candidate_runs": reduction.candidate_runs,
+        "accepted_candidates": reduction.accepted_candidates,
+        "initial_hamming_weight": reduction.initial_hamming_weight,
+        "final_hamming_weight": reduction.final_hamming_weight,
+        "revision": local_revision(),
+        "toolchain": local_rustc_version(),
+        "provenance": loaded.fixture.provenance,
+        "replay_original": replay_original,
+        "replay_reduced": replay_reduced,
+        "native": "not_run",
+        "physical_mac_mini": "not_run; reserved for combined final hardware batch",
+        "synthetic_callbacks": "unit tests only; no real CPU bug or hardware evidence",
+        "corpus_modified": false,
+        "output_files": {
+            "original_fixture": "original.case.json",
+            "initial_results": reduction.initial_results.len(),
+            "final_results": reduction.final_results.len(),
+            "expected_original": expected_original.is_some(),
+            "reduced_fixture": reduction.reduced_fixture.is_some()
+        }
+    });
+    write_new(
+        output_path.join("report.json"),
+        &serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?,
+    )?;
+    if reduction.stop != NativeXorpdReductionStop::NoInitialMismatch {
+        println!(
+            "native XORPD reducer: {:?}; callbacks={}; output={}",
+            reduction.stop,
+            reduction.actual_callbacks,
+            output_path.display()
+        );
+    } else {
+        println!(
+            "native XORPD reducer: no_initial_mismatch; no reduced fixture; output={}",
+            output_path.display()
+        );
+    }
+    Ok(())
+}
+
+fn validate_native_xorpd_output_dir(path: &std::path::Path) -> Result<(), String> {
+    use std::path::Component;
+    let parts = path.components().collect::<Vec<_>>();
+    let allowed = ["work", "stage2", "s2-42b-xorpd"];
+    if parts.len() <= allowed.len()
+        || parts
+            .iter()
+            .any(|part| !matches!(part, Component::Normal(_)))
+        || parts
+            .iter()
+            .take(allowed.len())
+            .zip(allowed)
+            .any(|(part, expected)| *part != Component::Normal(std::ffi::OsStr::new(expected)))
+    {
+        return Err(format!(
+            "--output-dir must be a new child directory under {NATIVE_XORPD_REDUCE_WORK_DIR}"
+        ));
+    }
+    let mut prefix = workspace_root();
+    for component in parts {
+        prefix.push(component.as_os_str());
+        match fs::symlink_metadata(&prefix) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!(
+                    "--output-dir path contains a symlink: {}",
+                    prefix.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => break,
+            Err(error) => return Err(format!("could not inspect output path: {error}")),
+        }
+    }
+    Ok(())
+}
+
+fn workspace_root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+fn write_new(path: std::path::PathBuf, bytes: &[u8]) -> Result<(), String> {
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| format!("could not create {}: {error}", path.display()))?;
+    output
+        .write_all(bytes)
+        .map_err(|error| format!("could not write {}: {error}", path.display()))
+}
+
+fn expected_native_xorpd_oracle(
+    loaded: &od_testkit::v2::LoadedFixture,
+    reference: &od_testkit::v2::RunResult,
+) -> Result<od_testkit::v2::RunResult, String> {
+    use od_testkit::result::MemoryRegionSnapshot;
+    use od_testkit::v2::{Outcome, Snapshot};
+    let fixture = &loaded.fixture;
+    let sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or("missing SSE state")?;
+    let mut state = fixture.initial_state.clone();
+    let mut xmm0 = decode_hex_bytes(&sse.xmm[0])?;
+    let xmm1 = decode_hex_bytes(&sse.xmm[1])?;
+    if xmm0.len() != 16 || xmm1.len() != 16 {
+        return Err("invalid XORPD operand width".into());
+    }
+    for (left, right) in xmm0.iter_mut().zip(xmm1) {
+        *left ^= right;
+    }
+    state.sse.as_mut().ok_or("missing SSE state")?.xmm[0] = encode_hex_bytes(&xmm0);
+    state.rip = fixture.stop_rip.ok_or("missing stop RIP")?;
+    Ok(od_testkit::v2::RunResult {
+        schema_version: od_testkit::v2::SCHEMA_VERSION,
+        case_id: fixture.case_id.clone(),
+        input_sha256: loaded.input_sha256.clone(),
+        profile: fixture.profile,
+        backend: reference.backend,
+        outcome: Outcome::StopAddress {},
+        instructions_executed: Observation::Available { value: HexU64(1) },
+        snapshot: Observation::Available {
+            value: Snapshot {
+                state,
+                rflags_defined: fixture.rflags_mask,
+                memory: fixture
+                    .memory
+                    .iter()
+                    .map(|region| MemoryRegionSnapshot {
+                        region_id: region.region_id.clone(),
+                        guest_address: region.guest_address,
+                        bytes_hex: region.initial_bytes_hex.clone(),
+                    })
+                    .collect(),
+                xorpd_prerequisites: None,
+                minss_invalid_controls: None,
+                fxsave64_cr0_controls: None,
+                fxrstor64_cr0_controls: None,
+                exception: Observation::Available { value: None },
+            },
+        },
+        build: reference.build.clone(),
+        machine: reference.machine.clone(),
+    })
 }
 
 fn validate_native_xorpd_result(
@@ -1286,7 +1609,9 @@ fn invalid_input(message: &str) -> ExitCode {
 #[cfg(test)]
 mod native_xorpd_corpus_tests {
     use super::*;
+    use od_testkit::v2;
     use od_testkit::v2::{Fixture, Outcome};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn loaded_case() -> od_testkit::v2::LoadedFixture {
         let fixture = generate_native_xorpd_fixture(NATIVE_XORPD_FIXED_SEEDS[0], 0);
@@ -1359,6 +1684,78 @@ mod native_xorpd_corpus_tests {
                 .unwrap_err()
                 .contains("digest mismatch")
         );
+    }
+
+    #[test]
+    fn per_fixture_reducer_writes_verified_no_mismatch_report_without_touching_corpus() {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let loaded = loaded_case();
+        let original_bytes = loaded.fixture.to_json().unwrap();
+        let reordered_value: serde_json::Value = serde_json::from_slice(&original_bytes).unwrap();
+        let reordered_bytes = serde_json::to_vec(&reordered_value).unwrap();
+        assert_ne!(reordered_bytes, original_bytes);
+        let whitespace_bytes = [b" \n".as_slice(), &original_bytes, b" \n".as_slice()].concat();
+        let unique = NEXT.fetch_add(1, Ordering::Relaxed);
+        for (suffix, input_bytes) in [
+            ("canonical", original_bytes.as_slice()),
+            ("whitespace", whitespace_bytes.as_slice()),
+            ("reordered", reordered_bytes.as_slice()),
+        ] {
+            let input = std::env::temp_dir().join(format!(
+                "s2-42b-input-{}-{unique}-{suffix}.json",
+                std::process::id()
+            ));
+            let output = format!(
+                "{NATIVE_XORPD_REDUCE_WORK_DIR}/test-{}-{unique}-{suffix}",
+                std::process::id()
+            );
+            fs::write(&input, input_bytes).unwrap();
+            let args = vec![
+                input.to_string_lossy().into_owned(),
+                "--limit".into(),
+                "4".into(),
+                "--output-dir".into(),
+                output.clone(),
+            ];
+            reduce_native_xorpd_inner(&args).unwrap();
+            let output_path = workspace_root().join(&output);
+            assert_eq!(
+                fs::read(output_path.join("original.case.json")).unwrap(),
+                input_bytes
+            );
+            for index in 1..=2 {
+                let result = v2::RunResult::from_json(
+                    &fs::read(output_path.join(format!("initial-{index}.result.json"))).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(result.input_sha256, sha256_hex(input_bytes));
+            }
+            let expected = v2::RunResult::from_json(
+                &fs::read(output_path.join("expected-original.result.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(expected.input_sha256, sha256_hex(input_bytes));
+            assert!(!output_path.join("reduced.case.json").exists());
+            let report: serde_json::Value =
+                serde_json::from_slice(&fs::read(output_path.join("report.json")).unwrap())
+                    .unwrap();
+            assert_eq!(report["stop_reason"], "no_initial_mismatch");
+            assert_eq!(report["native"], "not_run");
+            assert_eq!(report["corpus_modified"], false);
+            assert_eq!(report["output_files"]["reduced_fixture"], false);
+            assert_eq!(
+                report["result_sha256"]["initial"][0],
+                sha256_hex(&fs::read(output_path.join("initial-1.result.json")).unwrap())
+            );
+            assert_eq!(
+                report["result_sha256"]["expected_original"],
+                sha256_hex(&fs::read(output_path.join("expected-original.result.json")).unwrap())
+            );
+            assert!(output_path.starts_with(workspace_root().join(NATIVE_XORPD_REDUCE_WORK_DIR)));
+            assert!(!output_path.starts_with(workspace_root().join(NATIVE_XORPD_WORK_DIR)));
+            fs::remove_dir_all(output_path).unwrap();
+            fs::remove_file(input).unwrap();
+        }
     }
 }
 

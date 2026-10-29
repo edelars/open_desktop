@@ -5831,3 +5831,20 @@ local interpreter checks; native/hardware output remains `not_run` until the
 combined final hardware batch. See the [S2-42a plan](../../../../docs/plans/STAGE_2.md#s2-42a-deterministic-corpus-для-native-xorpd),
 [test format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-42a-native-xorpd-generated-corpus),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-42a--generated-corpus-для-native-xorpd).
+
+### S2-42b native XORPD XMM-input reducer
+
+`od-runner --reduce-native-xorpd CASE.json [--limit N] [--output-dir
+work/stage2/s2-42b-xorpd/NAME]` accepts one fixture from the existing
+`s2-long-native-xorpd-xmm0-xmm1-v1` profile. It preserves the source and writes
+an isolated, exclusive result folder under ignored `work/stage2/`. The report
+contains original/reduced hashes, repeated interpreter results, expected
+bytewise-XOR oracle results, mismatch byte-position fingerprint, run counts,
+bit costs, provenance, revision/toolchain and replay commands. If the local
+interpreter initially matches its independent oracle, the report says
+`no_initial_mismatch` and no reduced fixture is written. `native=not_run`; the
+synthetic callbacks used by unit tests are algorithm checks only, not evidence
+of a physical CPU bug. The one-pass reducer is not globally minimal. See the
+[S2-42b plan](../../../../docs/plans/STAGE_2.md#s2-42b-bounded-xmm-input-reducer),
+[format and replay instructions](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-42b-bounded-native-xorpd-xmm-input-reducer),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-42b--bounded-native-xorpd-xmm-input-reducer).

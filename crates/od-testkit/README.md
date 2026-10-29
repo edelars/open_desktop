@@ -8,6 +8,15 @@ The v1 format uses strict JSON parsing, fixed-width hexadecimal strings for 64-b
 
 `generate::generate_fixture(seed, sequence)` emits deterministic, versioned S0-09 cases. `minimize::minimize_fixture` reduces a fixture using `od-isa` instruction boundaries and a caller supplied mismatch-class callback; callers keep process and hardware execution outside testkit. Attempts count actual callback calls and require a limit of at least two. The initial mismatch and every accepted candidate must reproduce twice. Branch targets and the entry RIP are remapped when instructions are removed, and every candidate is validated again.
 
+`native_xorpd::reduce_native_xorpd_fixture` is a separate profile-only reducer
+for the exact S2-40b native XORPD fixture. It edits only initial XMM0–XMM15,
+uses one deterministic register/byte/bit pass, and accepts a candidate only
+when its total XMM Hamming weight decreases and two supplied callback results
+preserve the same XMM mismatch-position fingerprint. It reserves two final
+confirmation calls within a 4..=5120 actual-run budget. The callback remains
+caller-owned; the testkit never starts native hardware or a process. It makes
+no global-minimum claim. See [S2-42b format and replay](../../docs/testing/TEST_CASE_FORMAT.md#s2-42b-bounded-native-xorpd-xmm-input-reducer).
+
 See [TEST_CASE_FORMAT.md](../../docs/testing/TEST_CASE_FORMAT.md) for fields, limits, dependency versions, provenance and sample files.
 
 Schema v2 (`s2-long-integer-v1`) provides full 16-GPR/RIP/RFLAGS state,
