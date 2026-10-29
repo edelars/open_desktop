@@ -6,7 +6,7 @@ address-size-32 формы; общий REP/JIT/native profile
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
 устанавливается.
 
-**Дата:** 28 октября 2026 года. **Статус:** выполняется; S2-00–14 приняты в указанных границах. Baseline integer forms строки S2-15 в CPU contract локально покрыты срезами S2-15a–h и register-register XCHG из S2-10. S2-16a–e локально покрывают direct relative Jcc/JMP, SETcc, CMOVcc и ограниченные register/memory-target near indirect JMP; S2-17a–t покрывают ограниченные GPR и memory PUSH/POP, near CALL/RET, а также выбранные PUSHF/POPF forms — см. [отчёт](../reports/STAGE_2_REPORT.md). S2-15 onward through S2-21g remains open until the shared physical Mac mini acceptance substage. S2-22a–k add local-only FS/GS-base, selector, descriptor-load, VERW/GDT, exact FS/GS.base composition and null DS/ES selector cases; S2-22 itself remains open. Existing deferred-pool accounting remains 614 physically selected fixtures; the 11 S2-22h load fixtures, two S2-22i/j composition fixtures and four S2-22k null DS/ES fixtures are local-only and are not native-eligible. Across the string-operation slices, native admission includes 21 mapped cases and rejects 10 local-only fault cases; all S2-20a/S2-20c divide-error fixtures and the S2-20b/S2-20d UD2 fixtures are excluded from native acceptance selection and execution. Detailed accounting of the initial 558 and subsequent additions is retained in the Stage 2 report. S2-17c/d/e combined-fault priority for a noncanonical CALL target with invalid stack remains unresolved in ISSUE-013; no dual-fault fixture is included. Combined RSP commit policy for memory-destination POP store fault remains open in ISSUE-014. FS/GS forms outside the exact local-only profiles remain unsupported. S2-21a–g cover the documented bounded forms; other widths, LOCK forms and fences remain open in S2-21. F3-prefixed LZCNT/TZCNT remain outside baseline. Ubuntu Generic `amd64` now has a selected synthetic reference target `od-x86-64-v1-neutral-v0.1` in the [CPU contract](../specs/CPU_CONTRACT.md); implementation, complete MSR/entry manifest, and observed guest boot remain open. Stage 2 remains open under broader roadmap criteria. ISSUE-011/012/013/014/015/016/017/018 remain open; acceptance criteria are unchanged.
+**Дата:** 28 октября 2026 года. **Статус:** выполняется; S2-00–14 приняты в указанных границах. Baseline integer forms строки S2-15 в CPU contract локально покрыты срезами S2-15a–h и register-register XCHG из S2-10. S2-16a–e локально покрывают direct relative Jcc/JMP, SETcc, CMOVcc и ограниченные register/memory-target near indirect JMP; S2-17a–t покрывают ограниченные GPR и memory PUSH/POP, near CALL/RET, а также выбранные PUSHF/POPF forms — см. [отчёт](../reports/STAGE_2_REPORT.md). S2-15 onward through S2-21g remains open until the shared physical Mac mini acceptance substage. S2-22a–k add local-only FS/GS-base, selector, descriptor-load, VERW/GDT, exact FS/GS.base composition and null DS/ES selector cases; S2-22 itself remains open. Existing deferred-pool accounting remains 614 physically selected fixtures; the 11 S2-22h load fixtures, two S2-22i/j composition fixtures and four S2-22k null DS/ES fixtures are local-only and are not native-eligible. Across the string-operation slices, native admission includes 21 mapped cases and rejects 10 local-only fault cases; all S2-20a/S2-20c divide-error fixtures and the S2-20b/S2-20d UD2 fixtures are excluded from native acceptance selection and execution. Detailed accounting of the initial 558 and subsequent additions is retained in the Stage 2 report. S2-17c/d/e combined-fault priority for a noncanonical CALL target with invalid stack remains unresolved in ISSUE-013; no dual-fault fixture is included. Combined RSP commit policy for memory-destination POP store fault remains open in ISSUE-014. FS/GS forms outside the exact local-only profiles remain unsupported. S2-21a–g cover the documented bounded forms; other widths, LOCK forms and fences remain open in S2-21. F3-prefixed LZCNT/TZCNT remain outside baseline. Ubuntu Generic `amd64` now has a selected synthetic reference target `od-x86-64-v1-neutral-v0.1` in the [CPU contract](../specs/CPU_CONTRACT.md); implementation, complete MSR/entry manifest, and observed guest boot remain open. S2-40a documentation matrix records the Generic amd64 x86-64-v1 floor and evidence boundaries; S2-26/39/40/41/42 remain open. Stage 2 remains open under broader roadmap criteria. ISSUE-011/012/013/014/015/016/017/018 remain open; acceptance criteria are unchanged.
 
 План рассчитан на модель, которой нужны небольшие последовательные задания, явные ограничения и проверяемый результат. Выполнять одну задачу `S2-NN` за раз. Большую группу внутри задачи делить на перечисленные подшаги; не реализовывать весь этап одним изменением.
 
@@ -6379,6 +6379,38 @@ Mac mini/SSH остаются в едином финальном hardware substa
 3. Если Mac mini не исполняет требуемую форму, оставить hardware coverage непроверенным и определить независимый способ проверки. Не удалять требование профиля и не выдавать software self-comparison за физическое доказательство.
 
 **Готово:** для каждого обязательного расширения есть реализация и доказательства нужного уровня либо явно незакрытый блокер. Наличие блокера не позволяет принять соответствующий полный профиль.
+
+#### S2-40a. Матрица Generic amd64 evidence и oracle boundaries
+
+**Статус:** документационный срез завершён; родительские S2-26, S2-39,
+S2-40, S2-41 и S2-42 остаются открытыми.
+
+Решение пользователя — Generic `amd64` для Ubuntu 26.04.1 с floor x86-64-v1,
+а не профиль, ограниченный Mac mini. Матрица requirement → source/image evidence
+→ local implementation → missing semantics → independent oracle → owner
+находится в [S2-00/S2-40a Linux profile report](../reports/STAGE_2_LINUX_PROFILE.md#s2-40a--матрица-требований-ubuntu-generic-amd64).
+Она отделяет статическую config/source/image reachability от runtime
+observation и не расширяет CPUID policy. На текущих данных не доказана
+необходимость extension beyond v1, но неполный C/D inventory не позволяет
+глобально объявить такие расширения ненужными или профиль завершённым.
+
+В report отдельно разделены CPU-only fixtures, Linux user-mode physical oracle,
+privileged/system validation и Stage 4 machine integration. S2-41 не готов к
+приёмке без реального machine backend. Все отложенные Mac mini checks собраны
+в одном списке и помечены `not_run`; выполнять их следует единым hardware
+substage.
+
+До следующего программного slice необходимо определить отдельный architecture
+contract для SSE-capable native oracle: target MXCSR mask, FXSAVE pointer
+layout и selector differences. Простого native запуска текущих x87/SIMD
+fixtures недостаточно.
+
+**Критерии этого среза:** (1) указан Generic amd64/x86-64-v1 scope; (2) для
+каждой requirement group перечислены source/image evidence, локальная
+реализация, пробелы семантики, независимый oracle и владелец; (3) static
+reachability отделена от observed execution; (4) физические проверки собраны
+в едином списке `not_run`; (5) родительские задачи остаются открытыми. Это
+documentation-only result; CPU tests и hardware checks не выполнялись.
 
 ## 10. Системная проверка и приёмка
 

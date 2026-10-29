@@ -16047,3 +16047,31 @@ See the [CPU contract](../specs/CPU_CONTRACT.md#s2-39e--exact-long64-fxrstor64-r
 [plan](../plans/STAGE_2.md#s2-39e-exact-long64-fxrstor64-rbx0x40),
 [Linux mapping](STAGE_2_LINUX_PROFILE.md#s2-39e--exact-fxrstor64-evidence-only-mapping-plus-local-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39e-long64-fxrstor64-rbx0x40).
+
+## S2-40a — Ubuntu Generic amd64 requirement/evidence matrix
+
+This documentation-only slice records the user's choice of Generic `amd64`
+for Ubuntu 26.04.1 with an x86-64-v1 ABI/ISA floor. The requirement-to-owner
+matrix, evidence limits, validation tiers, and single deferred Mac mini batch
+are in the [Linux profile report](STAGE_2_LINUX_PROFILE.md#s2-40a--матрица-требований-ubuntu-generic-amd64).
+It distinguishes static config/source/exact-image reachability from observed
+runtime execution and explicitly avoids treating x86-64-v1 as the complete
+kernel/userspace contract. No extension beyond v1 is proven necessary yet, but
+the C/D inventory is incomplete, so this does not establish that all extensions
+are globally unnecessary. No CPUID bits were added and no profile-complete
+claim is made.
+
+**Result and check criteria:** the matrix maps requirement groups to source and
+image evidence, bounded local slices, missing semantics, an independent oracle
+category, and an owning task/stage. CPU-only fixtures, Linux user-mode physical
+oracle, privileged/system validation, and Stage 4 machine integration are
+separated. All deferred Mac mini hardware checks appear once as `not_run` in the
+Linux profile report and remain batched into one final hardware substage.
+S2-41 is not ready for acceptance without a real machine backend. The next
+programming slice needs a separate architecture contract for an SSE-capable
+native oracle, including target MXCSR mask, FXSAVE pointer layout, and selector
+differences; enabling current x87/SIMD fixtures alone is insufficient.
+
+The documentation and its Markdown links are the only checks for this slice;
+CPU tests, physical checks, and guest boot were not run. S2-26, S2-39, S2-40,
+S2-41, and S2-42 remain open.

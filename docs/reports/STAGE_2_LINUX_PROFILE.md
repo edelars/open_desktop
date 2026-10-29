@@ -163,6 +163,71 @@ boundary behaviors, но не является реализацией. S2-00 п�
 A, x86-64-v1 ABI/ISA floor и выбора synthetic target; реализация/проверка target,
 profile C/D и observed boot остаются открытыми.
 
+## S2-40a — матрица требований Ubuntu Generic amd64
+
+**Решение владельца:** для Ubuntu 26.04.1 используется кандидат Generic
+`amd64`, с нормативным floor x86-64-v1. Это ABI/ISA floor, а не полный контракт
+kernel, initramfs или userspace. В имеющемся evidence пока не доказана
+необходимость расширений сверх v1. При этом inventory условных путей и
+расширений C/D не завершён, поэтому отсутствие доказанной необходимости не
+равно выводу «не требуется» для всей системы или полного профиля Ubuntu.
+Не добавлять CPUID bits и не объявлять профиль завершённым на основании этой
+матрицы.
+
+В столбце source/image указана статическая reachability (config, source и
+точные байты выбранного образа), если отдельно не сказано об observed runtime.
+Статическая достижимость не доказывает, что ветка или инструкция исполнялась.
+Локальная реализация означает ограниченный interpreter/testkit slice; она не
+является доказательством поведения физического CPU или загрузки Linux.
+
+| Требование / сценарий | Source и image evidence | Локальная реализация | Недостающая семантика / граница | Независимый oracle и тип проверки | Владелец покрытия |
+|---|---|---|---|---|---|
+| Generic `amd64` ABI/ISA floor: x86-64-v1, без выбранного v2/v3/v4 | Публичное Ubuntu baseline и psABI; exact package/config metadata идентифицирует `amd64`. Это не исчерпывающий inventory исполняемых kernel/userspace путей. См. [решение baseline](#решение-по-generic-amd64-baseline) | Synthetic target `od-x86-64-v1-neutral-v0.1` описан в CPU contract; это пока спецификация, не готовая capability | Полный feature policy, extension inventory, userspace/compat requirements и доказательство runtime branch selection | CPU-only literal/architectural oracle может проверять отдельные ISA semantics, но не достаточность профиля ОС; user-mode physical oracle — отдельный Mac mini batch | S2-00, S2-40; общий corpus по S2-42 |
+| Baseline integer/control/memory and atomic semantics (including configured NOPL, CX8 and CMOV capabilities) | Exact config lists NOPL/CX8/CMOV/CPUID and other required capabilities; config is a lower bound, not an executed-instruction inventory | Bounded local forms are tracked in [S2-15](../plans/STAGE_2.md#s2-15-остальные-integer-формы-профиля), [S2-16](../plans/STAGE_2.md#s2-16-условия-и-переходы), [S2-17](../plans/STAGE_2.md#s2-17-стек-callret-и-косвенное-управление), [S2-20](../plans/STAGE_2.md#s2-20-точность-исключений-и-exit-state), and [S2-21](../plans/STAGE_2.md#s2-21-однопроцессорные-atomicfence-формы); parent requirements remain open pending broader acceptance | Exact required instruction forms and memory/fault/ordering cases must be enumerated from the selected kernel, initramfs and userspace; bounded slices do not imply full v1 or full Linux coverage | CPU-only literal fixtures for each admitted form; Linux user-mode physical comparison for safe CPL3 cases only; privileged/system cases need another oracle | S2-15–21, S2-40, S2-42; S2-41 for privileged/system cases |
+| Early direct64 entry, CPU identity/CPUID, MSR и initial state | Exact Ubuntu 7.0.0-38.38 package/buildinfo, config, source delta и ELF/source mapping подтверждены статически; direct64 prefix и `verify_cpu` reachability известны. Kernel boot не наблюдался. Config `CONFIG_X86_REQUIRED_FEATURE_*` задаёт нижнюю границу, не точный CPUID mask | Ограниченные CPUID/MSR slices есть по S2-26; отдельные setup/descriptor forms покрыты S2-27. Target implementation и системная последовательность не завершены | CPUID leaves/subleaves и masks для target, полный MSR allowlist, CR/EFER/segment/table/FP entry state, mode/exception semantics и выбранные alternatives | CPU-only contract tests для определённых форм; Linux user-mode physical execution не проверяет CPL0 handoff; privileged/system oracle требует пригодного независимого harness/backend | S2-26, S2-27, S2-41; Stage 4 для полной system integration |
+| x87/SSE/SSE2 arithmetic, conversions and observable FP/SIMD state | Exact config lists FPU/FXSR/XMM/XMM2; config and source/image evidence identify baseline availability and conditional save/restore routes, not all executed forms | Bounded execution slices are covered across [S2-30–38](../plans/STAGE_2.md#s2-30-основные-x87-операции); forms, state and exception behavior remain exact-profile slices | Complete required arithmetic/conversion inventory, MXCSR/x87 exception semantics and OS-managed context paths are not globally closed by the current bounded instruction set | CPU-only literal fixtures with independent expected bit patterns; native physical oracle can compare only safe user-mode-supported forms after the SSE-capable oracle contract is frozen | S2-30–38, S2-40, S2-42 |
+| FXSAVE/FXRSTOR context image and kernel FP initialization/save/restore | Exact config lists FPU/FXSR/XMM/XMM2; source/image mapping confirms `FNINIT`, MXCSR-mask `FXSAVE`, `FXSAVE64` and `FXRSTOR64` forms. This is compile/source evidence, not runtime observation | Bounded S2-39a–e contracts/fixtures cover selected FXSAVE/FXRSTOR forms; JIT/native execution is denied and physical validation is `not_run` | Target MXCSR capability/policy, all required formats/branches, exception delivery and broader OS-managed context behavior remain. The selected synthetic mask does not establish a hardware target | CPU-only literal fixtures are independent of the production executor, but not of physical ISA behavior. Linux user-mode physical oracle may compare safe CPL3 forms with a ready SSE-capable harness; privileged FPU/system paths need separate validation | S2-39; S2-40 for extension necessity; S2-41 system oracle; S2-42 corpus |
+| Conditional kernel paths / extensions beyond v1 (XSAVE/AVX, LA57, FRED, CET, etc.) | Config/source содержит условные сборки и alternatives; `CONFIG_*=y` и compiled bytes не доказывают требование CPUID bit или исполнение при выбранной policy | Для части соседних точных форм могут быть локальные interpreter slices; это не основание объявлять весь extension group закрытым | Полный source-to-binary reachability/branch audit, selected CPUID policy, per-group semantics and save/restore coverage. Пока ни необходимость сверх v1 не доказана, ни глобальное отсутствие необходимости не установлено | CPU-only suite по exact required forms; user-mode native hardware comparison только для доступных CPL3 cases; system paths остаются privileged/system validation | S2-40, S2-41, S2-42; расширения получают отдельные задачи после evidence |
+| Linux boot protocol, privileged startup, paging, events and devices | Linux v7.0 protocol and exact image/header/source are defined; the selected kernel package, extracted `vmlinuz`/config and manifests are staged and statically examined. Guest-memory loading/boot execution, initramfs, command line and runtime logs remain absent | CPU instruction slices exist, but a verified guest boot path/board backend is not implemented | Boot handoff, paging/mode transitions, GDT/IDT/event delivery, memory/device/interrupt manifest and measurable success milestone | Privileged/system validation requires a suitable independent method; full machine integration and guest boot belong to Stage 4. A root Linux process is not a CPL0/real-mode oracle | S2-41 for oracle separation; Stage 4 for machine integration; S2-42 for harness |
+
+### Уровни проверки и отложенный hardware batch
+
+- **CPU-only:** локальные interpreter/fixture checks устанавливают поведение
+  ограниченного кода на заданном состоянии и backend; сами по себе они не
+  являются независимым physical CPU oracle.
+- **Linux user-mode physical oracle:** будущий native comparison безопасных
+  CPL3 cases на Mac mini. Это не проверяет privileged startup или full-system
+  boot и ещё не запускалось.
+- **Privileged/system validation:** отдельные mode/privilege сценарии с
+  независимым наблюдаемым результатом; Linux user-mode harness/root process не
+  заменяет требуемые привилегии.
+- **Stage 4 machine integration:** реальный machine backend, guest handoff,
+  paging/event/device integration и Linux diagnostic boot. Mock callbacks не
+  закрывают эти требования.
+
+В системе пока нет реального machine backend, поэтому S2-41 не готов к
+приёмке. Все Mac mini проверки выполняются одним общим hardware substage;
+до него ни одна из строк ниже не запускалась:
+
+| Mac mini hardware check | Статус | Граница |
+|---|---|---|
+| Снять текущие host CPU/OS/toolchain capabilities и зафиксировать revision перед прогоном | `not_run` | Инвентаризация стенда; не выбирает CPUID target автоматически |
+| Native comparison доступных обязательных x86-64-v1 и SSE-capable CPL3 cases против независимых literal expected results | `not_run` | Linux user-mode physical oracle; native/backend harness и oracle contract ещё не определены |
+| Проверить target MXCSR mask, FXSAVE pointer layout и selector behavior на подходящем SSE-capable oracle | `not_run` | Требует отдельного architecture contract для native oracle; текущие x87/SIMD fixtures сами по себе его не задают |
+| Независимые privileged/mode-transition/event checks | `not_run` | Не подменять root user-mode запуском; способ проверки должен быть определён в S2-41 |
+
+Ubuntu guest boot и system-level serial success milestone: `not_run`; это
+отдельная Stage 4 machine-integration проверка, а не Mac mini physical-oracle
+check. Она требует реального machine backend, замороженных initramfs/command
+line и board manifest.
+
+Следующая программная задача после S2-40a должна сначала определить
+architecture contract для SSE-capable native oracle, включая target MXCSR
+mask, 32/64-bit FXSAVE pointer layout и selector differences. Простого
+включения существующих x87/SIMD fixtures для native сравнения недостаточно.
+Результат этого S2-40a среза не закрывает S2-26, S2-39, S2-40, S2-41 или
+S2-42.
+
 ## Что остаётся для C/D
 
 1. Реализовать и независимо проверить выбранный reference target
