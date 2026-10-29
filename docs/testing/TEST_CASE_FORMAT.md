@@ -1125,3 +1125,25 @@ definedness, CS selector/cache, unchanged SS and all other modeled fields, plus
 unchanged frame/GDT. CS/SS transport is opt-in for this and the IRETQ profiles;
 legacy serialized state remains unchanged. Four literal cases cross IF=0/1 ×
 IOPL=0/3. JIT, native and C/fragment execution are not authorized.
+
+## S2-39h FP-init plus FXSAVE64 profile
+
+The strict `s2-long-cr0-cr4-fp-init-fxsave64-v1` fixture admits the exact
+33-byte S2-25c program plus final `48 0F AE 40 40`, budget 9, and a stop RIP
+after the save. Initial CR0.EM/TS and CR4.OSFXSR/OSXMMEXCPT values are encoded
+in the architectural state and all 16 combinations are accepted. The guest
+code sets OSFXSR before FXSAVE, so OSFXSR-clear at the save instruction is not
+part of this profile. RAX is fixed at `0x620`; fixture RAM contains one
+execute-only code region and one private aligned writable 512-byte save region
+at `0x660..0x85f`, initialized with `0xa5` sentinels. Result validation checks
+the final CR0/CR4, x87 and SSE state, nine retirements, defined save image
+fields, and preservation of bytes 464–511. Reserved and undefined save ranges
+are deliberately not asserted. The literal image is in
+`tests/fixtures/x86/stage2/s2_39h_fxsave64_expected_image.hex`.
+
+The profile is interpreter-only. Stop/budget/truncated fetch and serializer
+callback failure semantics are covered at the execution layer; the callback
+failure case makes no whole-memory rollback claim. JIT/native/C/fragment
+admission and physical execution remain closed. See the [fixture note](../../tests/fixtures/x86/stage2/README.md#s2-39h-fp-init-plus-fxsave64-composition),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-39h--exact-fp-init-plus-fxsave64-composition),
+and [plan](../plans/STAGE_2.md#s2-39h-exact-fp-initialization-composition-followed-by-fxsave64).

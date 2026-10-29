@@ -536,6 +536,34 @@ checks do not establish physical execution or broader S2-39 acceptance. See the
 [report](../reports/STAGE_2_REPORT.md#s2-39g--bounded-fxrstor64-cr0-em-and-ts-nm-gates),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39g-long64-fxrstor64-cr0-em-and-ts-gates).
 
+### S2-39h — Exact FP-init plus FXSAVE64 composition
+
+The local-only `s2-long-cr0-cr4-fp-init-fxsave64-v1` schema-v2 profile admits
+exactly the S2-25c 28-byte sequence followed by `48 0F AE 40 40`
+(`FXSAVE64 [RAX+0x40]`), for 33 bytes and nine retirements. Initial CR0.EM/TS
+and CR4.OSFXSR/OSXMMEXCPT may independently take all 16 combinations. The
+existing sequence clears CR0.EM/TS and sets both CR4 bits before the save, so
+an initially clear OSFXSR does not cause a synthetic fault; no OSFXSR-clear
+behavior at the FXSAVE instruction is admitted or inferred. The profile reuses
+the live CR0/CR4 path, S2-39d serializer, immutable target MXCSR mask, and its
+defined-field write policy.
+
+The strict fixture fixes CPL0, RAX `0x620`, an aligned private 512-byte save
+region at `0x660..0x85f`, budget 9, and STOP at the byte immediately after the
+program. It checks a separately authored literal image for defined fields;
+bytes 464–511 are preserved, while undefined/reserved ranges are not asserted.
+Earlier operations retire independently. STOP, zero budget, and truncated
+final fetch preserve earlier effects. A serializer callback failure leaves
+the final instruction unretired and does not commit that instruction's CPU
+state; earlier private RAM writes are not rolled back as a whole-memory
+transaction. The result is interpreter-only local evidence. JIT, native,
+C/fragment adapters, other layouts, and physical execution remain closed.
+
+See the [S2-39h plan](../plans/STAGE_2.md#s2-39h-exact-fp-initialization-composition-followed-by-fxsave64),
+[report](../reports/STAGE_2_REPORT.md#s2-39h--exact-fp-init-plus-fxsave64-composition),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39h-fp-init-plus-fxsave64-composition),
+and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-39h-fp-init-plus-fxsave64-profile).
+
 ## Предлагаемый профиль тестового прототипа S0-09
 
 Прототип — изолированный пользовательский fragment runner с единым vCPU, только immutable code buffer и register-only вычислениями. Это набор для сравнения decoder → interpreter/JIT, а не профиль x86-64 машины.

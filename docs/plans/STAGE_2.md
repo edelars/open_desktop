@@ -508,6 +508,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-39e | Один strict interpreter-only FXRSTOR64 `[RBX+0x40]` profile | S2-39a–d; other forms and physical acceptance remain open |
 | [x] | S2-39f | Exact FXSAVE64 `[RAX+0x40]` CR0.EM/TS `#NM` gates | S2-39d; other forms and physical acceptance remain open |
 | [x] | S2-39g | Exact FXRSTOR64 `[RBX+0x40]` CR0.EM/TS `#NM` gates | S2-39e/f; other forms and physical acceptance remain open |
+| [x] | S2-39h | Exact 33-byte S2-25c + FXSAVE64 composition, nine retirements, strict synthetic save image | S2-25c, S2-39d/f; interpreter only; hardware remains not_run |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
 | [ ] | S2-41 | Независимо проверить системный профиль | S2-27; machine backend по сценариям |
 | [ ] | S2-42 | Расширить corpus/reducer/harness | S2-21, S2-39, S2-40 |
@@ -6850,6 +6851,39 @@ Exceptions, pp. 3-409–3-411; Vol. 3A Event 7 `#NM`, pp. 7-33–7-34:
 [report](../reports/STAGE_2_REPORT.md#s2-39g--bounded-fxrstor64-cr0-em-and-ts-nm-gates),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39g-long64-fxrstor64-cr0-em-and-ts-gates)
 и [fixture format](../testing/TEST_CASE_FORMAT.md#s2-39g-fxrstor64-cr0-gate-profile).
+
+#### S2-39h. Exact FP initialization composition followed by FXSAVE64
+
+**Статус:** локальный interpreter profile завершён для точной 33-byte
+программы S2-25c с добавленным `48 0F AE 40 40` в конце. Новое имя
+`s2-long-cr0-cr4-fp-init-fxsave64-v1` оставляет прежние profiles неизменными.
+Используется существующий CR0/CR4 initialization path, live control-register
+values и S2-39d serializer; при достижении последней инструкции CR0.EM/TS уже
+очищены, а CR4.OSFXSR и OSXMMEXCPT установлены. Начальные 16 сочетаний CR0.EM/TS
+и CR4.OSFXSR/OSXMMEXCPT проходят полную последовательность: OSFXSR clear в
+начальном состоянии не объявляется fault, потому что предшествующая точная
+последовательность включает его до FXSAVE.
+
+Fixture фиксирует `RAX=0x620`, aligned private writable RAM `0x660..0x85f`,
+CPL0, бюджет 9 и STOP после 33 bytes. Literal expected image проверяет только
+defined FXSAVE fields независимо от executor; bytes `464..511` должны
+сохраниться, а reserved/undefined gaps не проверяются. Target MXCSR mask и
+defined-field write policy остаются прежними. Каждая инструкция сохраняет
+собственный retirement boundary: STOP, zero budget и truncated final fetch
+оставляют первые восемь retired effects. Ошибка любого serializer callback не
+retire-ит финальную FXSAVE и не меняет состояние CPU для этой инструкции;
+записи более ранних callbacks могут остаться в private RAM, whole-memory
+rollback не заявляется.
+
+Strict fixture/result tampering и JIT denial покрыты runner tests. Результат
+является только локальным interpreter evidence: Ubuntu static source mapping
+не превращается в runtime observation, physical x86/Mac mini не выполнялись.
+Другие FXSAVE layouts, OSFXSR-clear на самой FXSAVE, FXRSTOR composition,
+JIT/native/C/fragment admission и общий CR model остаются вне профиля. См.
+[CPU contract](../specs/CPU_CONTRACT.md#s2-39h--exact-fp-init-plus-fxsave64-composition),
+[report](../reports/STAGE_2_REPORT.md#s2-39h--exact-fp-init-plus-fxsave64-composition),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39h-fp-init-plus-fxsave64-composition),
+и [fixture format](../testing/TEST_CASE_FORMAT.md#s2-39h-fp-init-plus-fxsave64-profile).
 
 ### S2-40. Дополнительные обязательные расширения
 

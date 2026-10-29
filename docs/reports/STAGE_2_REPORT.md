@@ -16906,3 +16906,42 @@ from the CR0/CR4 fail-closed adapters. Verification passed:
 --all-targets --offline`, Linux x86_64 runner `cargo check`, and
 `git diff --check`. Graphify update passed. This local evidence does not claim
 hardware behavior or guest exception delivery.
+
+## S2-39h — exact FP-init plus FXSAVE64 composition
+
+Added strict interpreter profile `s2-long-cr0-cr4-fp-init-fxsave64-v1` for
+exact S2-25c bytes followed by `48 0F AE 40 40`: 33 bytes and nine retired
+instructions. It reuses the live CR0/CR4 initialization path and the selected
+S2-39d FXSAVE64 serializer, including the immutable target MXCSR mask and
+defined-field callback policy. The handwritten fixture fixes RAX=`0x620` and
+an aligned private save region `0x660..0x85f`; the expected image is separately
+authored from fixture state. Tests compare FXSAVE-defined fields and require
+bytes 464–511 to remain unchanged while skipping reserved/undefined ranges.
+
+The runner matrix executes all 16 initial CR0.EM/TS × CR4.OSFXSR/OSXMMEXCPT
+combinations. In particular, initial OSFXSR clear is accepted because the
+exact CR4 OR instruction sets it before FXSAVE; no OSFXSR-clear-at-save fault
+is fabricated. Direct save-entry tests cover CR0.EM/TS `#NM` before callbacks;
+OSFXSR-clear at save is refused as unsupported without assigning a CPU fault.
+STOP before fetch, zero budget, STOP after the
+first eight instructions, budget 8, and a truncated final fetch retain earlier
+retirement effects. Injected failures at each of the serializer's 13 write
+callbacks leave the ninth instruction unretired and preserve the prior eight
+instructions' CPU state. Earlier private RAM slices may remain written; no
+whole-memory rollback is claimed. Fixture/code/address/budget tampering,
+result image tampering including short result buffers and preserved-tail
+mutation, valid alternate raw MXCSR, self-comparison, JIT denial, and native
+local-only admission are covered.
+
+**Checks:** `cargo test --offline -p od-isa` passed (1,457 tests); the focused
+`od-testkit` suite passed (407 tests). The focused `od-runner` fixture test
+passed (16 interpreter cases, JIT denial, literal defined-field/tail checks,
+and schema/result tampering rejection). The native local-only predicate test
+passed. `cargo check --workspace --all-targets --offline`, Linux x86_64
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
+--offline`, formatting, `git diff --check`, and `graphify update .` passed.
+The Linux target check is compile-only on this Apple ARM host. No Ubuntu
+runtime bytes, physical x86, Mac mini, or hardware result is claimed. See the [S2-39h CPU
+contract](../specs/CPU_CONTRACT.md#s2-39h--exact-fp-init-plus-fxsave64-composition),
+[plan](../plans/STAGE_2.md#s2-39h-exact-fp-initialization-composition-followed-by-fxsave64),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39h-fp-init-plus-fxsave64-composition).

@@ -136,6 +136,7 @@ impl Cr0Profile {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Cr4Profile {
     FpInitLong64V1,
+    FpInitThenFxsave64Long64V1,
 }
 
 impl Cr4Profile {
@@ -2201,6 +2202,21 @@ fn step_configured(
                     && instruction.prefixes.operand_override
                     && instruction.prefixes.rex.is_none()
             }
+            Operation::Fxsave64RaxDisp8(area) => {
+                cr4_profile == Some(Cr4Profile::FpInitThenFxsave64Long64V1)
+                    && area.base == long_decode::AddressBase::Register(Register::Rax)
+                    && area.index.is_none()
+                    && area.displacement == 0x40
+                    && area.size == OperandSize::Qword
+                    && instruction.length == 5
+                    && instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0xae
+                    && instruction.prefixes
+                        == (Prefixes {
+                            rex: Some(0x48),
+                            ..Prefixes::default()
+                        })
+            }
             _ => false,
         };
         if !allowed {
@@ -2231,6 +2247,26 @@ fn step_configured(
         if let Some(vector) = fault_vector {
             return Ok(StepOutcome::Fault(ArchitecturalFault {
                 vector,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+    }
+    if cr4_profile == Some(Cr4Profile::FpInitThenFxsave64Long64V1)
+        && matches!(instruction.operation, Operation::Fxsave64RaxDisp8(_))
+    {
+        let cr0 = state
+            .cr0
+            .expect("CR0/CR4 FP-init profile requires CR0 state");
+        let cr4 = state
+            .cr4
+            .expect("CR0/CR4 FP-init profile requires CR4 state");
+        if cr4 & (1 << 9) == 0 {
+            return Ok(StepOutcome::Unsupported { opcode: 0xae });
+        }
+        if cr0 & 0xcu64 != 0 {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 7,
                 error_code: None,
                 linear_address: None,
             }));
@@ -93449,7 +93485,8 @@ mod fxsave_rip_tests {
 
     struct TraceMemory {
         area: Vec<u8>,
-        code: [u8; 7],
+        area_address: u64,
+        code: Vec<u8>,
         writes: Vec<(u64, usize, bool)>,
         reads: usize,
         fail_write: Option<usize>,
@@ -93459,7 +93496,8 @@ mod fxsave_rip_tests {
         fn new(fail_write: Option<usize>) -> Self {
             Self {
                 area: vec![0xa5; 512],
-                code: CODE,
+                area_address: AREA,
+                code: CODE.to_vec(),
                 writes: Vec::new(),
                 reads: 0,
                 fail_write,
@@ -93469,7 +93507,23 @@ mod fxsave_rip_tests {
         fn fxsave64(fail_write: Option<usize>) -> Self {
             Self {
                 area: vec![0xa5; 512],
-                code: [0x48, 0x0f, 0xae, 0x40, 0x40, 0, 0],
+                area_address: AREA,
+                code: vec![0x48, 0x0f, 0xae, 0x40, 0x40, 0, 0],
+                writes: Vec::new(),
+                reads: 0,
+                fail_write,
+            }
+        }
+
+        fn cr0_cr4_fxsave64(fail_write: Option<usize>) -> Self {
+            Self {
+                area: vec![0xa5; 512],
+                area_address: 0x660,
+                code: vec![
+                    0x0f, 0x20, 0xc0, 0x48, 0x83, 0xe0, 0xf3, 0x0f, 0x22, 0xc0, 0xdb, 0xe3, 0x0f,
+                    0x20, 0xe0, 0x48, 0x0d, 0x00, 0x06, 0x00, 0x00, 0x0f, 0x22, 0xe0, 0x66, 0x0f,
+                    0x57, 0xc1, 0x48, 0x0f, 0xae, 0x40, 0x40,
+                ],
                 writes: Vec::new(),
                 reads: 0,
                 fail_write,
@@ -93498,10 +93552,12 @@ mod fxsave_rip_tests {
             source: &[u8],
         ) -> Result<(), MemoryError> {
             let call = self.writes.len() + 1;
-            let offset = address.checked_sub(AREA).ok_or(MemoryError::Unmapped {
-                address,
-                access: AccessKind::Write,
-            })? as usize;
+            let offset = address
+                .checked_sub(self.area_address)
+                .ok_or(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })? as usize;
             let end = offset
                 .checked_add(source.len())
                 .ok_or(MemoryError::AddressOverflow {
@@ -93601,7 +93657,7 @@ mod fxsave_rip_tests {
             }
         }
         image[4] = tag;
-        image[6..8].copy_from_slice(&0x07ffu16.to_le_bytes());
+        image[6..8].copy_from_slice(&(x87.last_opcode & 0x07ff).to_le_bytes());
         image[8..12].copy_from_slice(&(x87.instruction_pointer as u32).to_le_bytes());
         image[12..14].copy_from_slice(&x87.instruction_selector.unwrap().to_le_bytes());
         image[16..20].copy_from_slice(&(x87.data_pointer as u32).to_le_bytes());
@@ -93631,7 +93687,7 @@ mod fxsave_rip_tests {
             }
         }
         image[4] = tag;
-        image[6..8].copy_from_slice(&0x07ffu16.to_le_bytes());
+        image[6..8].copy_from_slice(&(x87.last_opcode & 0x07ff).to_le_bytes());
         image[8..16].copy_from_slice(&x87.instruction_pointer.to_le_bytes());
         image[16..24].copy_from_slice(&x87.data_pointer.to_le_bytes());
         image[24..28].copy_from_slice(&sse.mxcsr.to_le_bytes());
@@ -95193,6 +95249,186 @@ mod fxsave_rip_tests {
             assert_eq!(state, before);
             assert!(memory.fetches.is_empty());
             assert!(memory.data_accesses == 0);
+        }
+    }
+    #[test]
+    fn s2_39h_cr0_cr4_fxsave64_composition_gates_progress_and_callback_failures() {
+        let context = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        };
+        let state_for = |cr0_bits: u64, cr4_bits: u64| {
+            let mut state = fixture_state(0, 0, 0);
+            let x87 = state.x87.as_mut().unwrap();
+            x87.instruction_selector = None;
+            x87.data_selector = None;
+            state.cr0 = Some(Cr0Profile::BASE | cr0_bits);
+            state.cr4 = Some(Cr4Profile::BASE | cr4_bits);
+            state.activity = Some(crate::CpuActivity::Running);
+            state.sti_shadow = Some(crate::StiShadow::Clear);
+            state.rip = RIP;
+            state.gpr[Register::Rax as usize] = 0x620;
+            state
+        };
+
+        for cr0_bits in [0, 4, 8, 12] {
+            for cr4_bits in [0, 1 << 9, 1 << 10, (1 << 9) | (1 << 10)] {
+                let mut state = state_for(cr0_bits, cr4_bits);
+                let mut memory = TraceMemory::cr0_cr4_fxsave64(None);
+                let result = run_with_cr4_profile(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 9,
+                        stop_rip: Some(RIP + 33),
+                        context,
+                    },
+                    Cr4Profile::FpInitThenFxsave64Long64V1,
+                    || false,
+                );
+                assert_eq!(result.exit, RunExit::StopAddress);
+                assert_eq!(result.instructions_executed, 9);
+                assert_eq!(state.rip, RIP + 33);
+                assert_eq!(state.cr0, Some(Cr0Profile::BASE));
+                assert_eq!(state.cr4, Some(Cr4Profile::BASE | 0x600));
+                assert_eq!(memory.writes.len(), 13);
+                let expected = expected_fxsave64_image(&state);
+                for (start, end) in [(0, 5), (6, 8), (8, 24), (24, 32), (160, 416)] {
+                    assert_eq!(&memory.area[start..end], &expected[start..end]);
+                }
+                for slot in 0..8 {
+                    let start = 32 + slot * 16;
+                    assert_eq!(
+                        &memory.area[start..start + 10],
+                        &expected[start..start + 10]
+                    );
+                }
+                assert_eq!(&memory.area[464..512], &[0xa5; 48]);
+            }
+        }
+
+        for (cr0_bits, cr4_bits, expected) in [
+            (
+                4,
+                1 << 9,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 7,
+                    error_code: None,
+                    linear_address: None,
+                }),
+            ),
+            (
+                8,
+                1 << 9,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 7,
+                    error_code: None,
+                    linear_address: None,
+                }),
+            ),
+            (0, 0, RunExit::Unsupported { opcode: 0xae }),
+            (4, 0, RunExit::Unsupported { opcode: 0xae }),
+        ] {
+            let mut state = state_for(cr0_bits, cr4_bits);
+            state.rip = RIP + 28;
+            let before = state.clone();
+            let mut memory = TraceMemory::cr0_cr4_fxsave64(None);
+            let result = run_with_cr4_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(RIP + 33),
+                    context,
+                },
+                Cr4Profile::FpInitThenFxsave64Long64V1,
+                || false,
+            );
+            assert_eq!(result.exit, expected);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.writes.is_empty());
+        }
+
+        for (budget, stop_rip, exit, retired) in [
+            (9, Some(RIP), RunExit::StopAddress, 0),
+            (0, None, RunExit::InstructionBudgetExhausted, 0),
+            (9, Some(RIP + 28), RunExit::StopAddress, 8),
+            (8, None, RunExit::InstructionBudgetExhausted, 8),
+        ] {
+            let mut state = state_for(12, 0);
+            let before = state.clone();
+            let mut memory = TraceMemory::cr0_cr4_fxsave64(None);
+            let result = run_with_cr4_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context,
+                },
+                Cr4Profile::FpInitThenFxsave64Long64V1,
+                || false,
+            );
+            assert_eq!(result.exit, exit);
+            assert_eq!(result.instructions_executed, retired);
+            assert_eq!(memory.writes.len(), 0);
+            if retired == 0 {
+                assert_eq!(state, before);
+            } else {
+                assert_eq!(state.rip, RIP + 28);
+                assert_eq!(state.cr0, Some(Cr0Profile::BASE));
+                assert_eq!(state.cr4, Some(Cr4Profile::BASE | 0x600));
+            }
+        }
+
+        let mut state = state_for(12, 0);
+        let mut truncated = TraceMemory::cr0_cr4_fxsave64(None);
+        truncated.code.truncate(32);
+        let result = run_with_cr4_profile(
+            &mut state,
+            &mut truncated,
+            RunConfig {
+                instruction_budget: 9,
+                stop_rip: Some(RIP + 33),
+                context,
+            },
+            Cr4Profile::FpInitThenFxsave64Long64V1,
+            || false,
+        );
+        assert_eq!(result.instructions_executed, 8);
+        assert_eq!(state.rip, RIP + 28);
+        assert!(truncated.writes.is_empty());
+
+        for failed_callback in 1..=13 {
+            let mut state = state_for(12, 0);
+            let mut memory = TraceMemory::cr0_cr4_fxsave64(Some(failed_callback));
+            let result = run_with_cr4_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 9,
+                    stop_rip: Some(RIP + 33),
+                    context,
+                },
+                Cr4Profile::FpInitThenFxsave64Long64V1,
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::MemoryError(MemoryError::Backend("injected callback failure".into()))
+            );
+            assert_eq!(result.instructions_executed, 8);
+            assert_eq!(state.rip, RIP + 28);
+            assert_eq!(state.cr0, Some(Cr0Profile::BASE));
+            assert_eq!(state.cr4, Some(Cr4Profile::BASE | 0x600));
+            assert_eq!(memory.writes.len(), failed_callback);
+            assert!(memory.writes.last().unwrap().2);
+            assert_eq!(memory.reads, 0);
+            assert_eq!(
+                memory.area.iter().any(|byte| *byte != 0xa5),
+                failed_callback > 1
+            );
         }
     }
 }

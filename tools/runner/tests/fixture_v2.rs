@@ -1642,6 +1642,8 @@ const CR0_CR4_FP_INIT_FIXTURES: [&[u8]; 16] = [
         "../../../tests/fixtures/x86/stage2/s2_25c_clear_emts_set_cr4_emts_3_cr4_3.case.json"
     ),
 ];
+const CR0_CR4_FXSAVE64_COMPOSITION: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_39h_cr0_cr4_fxsave64.case.json");
 
 trait ResetFpInitSnapshot {
     fn reset_for_fp_init(&mut self);
@@ -1900,6 +1902,154 @@ fn cr0_cr4_fp_init_composition_covers_all_initial_control_combinations_and_denie
     let (loaded, result) = run(&bytes, "interpreter", 0);
     assert_eq!(snapshot(&result).state.rflags, HexU64(2));
     od_testkit::v2::compare(&loaded, &result, &result).unwrap_or_else(|error| panic!("{error:?}"));
+}
+
+#[test]
+fn s2_39h_cr0_cr4_fxsave64_composition_is_strict_and_saves_literal_defined_fields() {
+    use od_testkit::v2::Profile;
+
+    let base = Fixture::from_json(CR0_CR4_FXSAVE64_COMPOSITION)
+        .unwrap()
+        .fixture;
+    assert_eq!(base.profile, Profile::LongCr0Cr4FpInitFxsave64V1);
+    let literal = od_testkit::v2::decode_bytes(
+        include_str!("../../../tests/fixtures/x86/stage2/s2_39h_fxsave64_expected_image.hex")
+            .trim()
+            .replace('\n', "")
+            .as_str(),
+    )
+    .unwrap();
+    assert_eq!(literal.len(), 512);
+
+    for cr0_pair in 0..4 {
+        for cr4_pair in 0..4 {
+            let mut input = base.clone();
+            input.case_id = format!("s2_39h_cr0_{cr0_pair}_cr4_{cr4_pair}");
+            input.initial_state.cr0 = Some(HexU64(
+                od_isa::execute::Cr0Profile::BASE
+                    | (((cr0_pair & 1) as u64) << 2)
+                    | (((cr0_pair >> 1) as u64) << 3),
+            ));
+            input.initial_state.cr4 = Some(HexU64(
+                od_isa::execute::Cr4Profile::BASE
+                    | (((cr4_pair & 1) as u64) << 9)
+                    | (((cr4_pair >> 1) as u64) << 10),
+            ));
+            let bytes = input.to_json().unwrap();
+            let (loaded, result) = run(&bytes, "interpreter", 0);
+            assert_eq!(count(&result), 9);
+            let snapshot = snapshot(&result);
+            assert_eq!(
+                snapshot.state.cr0,
+                Some(HexU64(od_isa::execute::Cr0Profile::BASE))
+            );
+            assert_eq!(snapshot.state.cr4, Some(HexU64(0x620)));
+            assert_eq!(
+                snapshot.state.rip,
+                HexU64(loaded.fixture.initial_state.rip.get() + 33)
+            );
+            let save = snapshot
+                .memory
+                .iter()
+                .find(|region| region.region_id == "save")
+                .unwrap();
+            let actual = od_testkit::v2::decode_bytes(&save.bytes_hex).unwrap();
+            for (start, end) in [(0, 5), (6, 8), (8, 24), (24, 32), (160, 416)] {
+                assert_eq!(
+                    &actual[start..end],
+                    &literal[start..end],
+                    "save bytes {start}..{end}"
+                );
+            }
+            for index in 0..8 {
+                let start = 32 + index * 16;
+                assert_eq!(&actual[start..start + 10], &literal[start..start + 10]);
+            }
+            let initial = od_testkit::v2::decode_bytes(
+                &loaded
+                    .fixture
+                    .memory
+                    .iter()
+                    .find(|region| region.region_id == "save")
+                    .unwrap()
+                    .initial_bytes_hex,
+            )
+            .unwrap();
+            assert_eq!(&actual[464..512], &initial[464..512]);
+            result.validate_for(&loaded).unwrap();
+            od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+
+            let (_, jit) = run(&bytes, "jit", 4);
+            assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+            assert!(matches!(jit.snapshot, Observation::Unavailable { .. }));
+
+            let mut changed_memory = result.clone();
+            if let Observation::Available { value } = &mut changed_memory.snapshot {
+                value
+                    .memory
+                    .iter_mut()
+                    .find(|region| region.region_id == "save")
+                    .unwrap()
+                    .bytes_hex
+                    .replace_range(48..50, "ff");
+            }
+            assert!(changed_memory.validate_for(&loaded).is_err());
+            assert!(od_testkit::v2::compare(&loaded, &changed_memory, &result).is_err());
+
+            let mut changed_tail = result.clone();
+            if let Observation::Available { value } = &mut changed_tail.snapshot {
+                let save = value
+                    .memory
+                    .iter_mut()
+                    .find(|region| region.region_id == "save")
+                    .unwrap();
+                save.bytes_hex.replace_range(928..930, "00");
+            }
+            assert!(changed_tail.validate_for(&loaded).is_err());
+
+            let mut changed_short = result.clone();
+            if let Observation::Available { value } = &mut changed_short.snapshot {
+                value
+                    .memory
+                    .iter_mut()
+                    .find(|region| region.region_id == "save")
+                    .unwrap()
+                    .bytes_hex = "00".into();
+            }
+            assert!(changed_short.validate_for(&loaded).is_err());
+        }
+    }
+
+    let mut alternate_mxcsr: serde_json::Value =
+        serde_json::from_slice(CR0_CR4_FXSAVE64_COMPOSITION).unwrap();
+    alternate_mxcsr["case_id"] = serde_json::json!("s2_39h_raw_mxcsr_1f80");
+    alternate_mxcsr["initial_state"]["sse"]["mxcsr"] = serde_json::json!("0x0000000000001f80");
+    let bytes = serde_json::to_vec(&alternate_mxcsr).unwrap();
+    let (loaded, result) = run(&bytes, "interpreter", 0);
+    result.validate_for(&loaded).unwrap();
+
+    for mutate in [
+        ("memory.code.initial_bytes_hex", serde_json::json!("90")),
+        (
+            "memory.save.guest_address",
+            serde_json::json!("0x0000000000000670"),
+        ),
+        ("memory.save.permissions.execute", serde_json::json!(true)),
+        ("instruction_budget", serde_json::json!(8)),
+    ] {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(CR0_CR4_FXSAVE64_COMPOSITION).unwrap();
+        match mutate.0 {
+            "memory.code.initial_bytes_hex" => value["memory"][0]["initial_bytes_hex"] = mutate.1,
+            "memory.save.guest_address" => value["memory"][1]["guest_address"] = mutate.1,
+            "memory.save.permissions.execute" => {
+                value["memory"][1]["permissions"]["execute"] = mutate.1
+            }
+            "instruction_budget" => value["instruction_budget"] = mutate.1,
+            _ => unreachable!(),
+        }
+        assert!(Fixture::from_json(&serde_json::to_vec(&value).unwrap()).is_err());
+    }
 }
 
 #[test]

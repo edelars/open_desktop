@@ -751,6 +751,27 @@ combined final hardware substage. Details are in the [CPU contract](../specs/CPU
 [report](STAGE_2_REPORT.md#s2-39e--exact-long64-fxrstor64-rbx0x40), and
 [fixture note](../../tests/fixtures/x86/stage2/README.md#s2-39e-long64-fxrstor64-rbx0x40).
 
+## S2-39h — local FP-init plus FXSAVE64 composition
+
+The new local-only `s2-long-cr0-cr4-fp-init-fxsave64-v1` fixture composes the
+already bounded S2-25c initialization bytes with the statically mapped final
+`48 0F AE 40 40` form. This is a synthetic exact fixture and local interpreter
+result; it does not show that Ubuntu executed the 33-byte composition or that
+these bytes were observed at runtime. The sequence sets CR4.OSFXSR before the
+save, so its initial OSFXSR-clear cases do not claim FXSAVE behavior with that
+bit clear. The test image uses the existing synthetic target MXCSR mask and
+independent literal fields; it is not a hardware image or an Ubuntu capture.
+
+All 16 initial CR0.EM/TS × CR4.OSFXSR/OSXMMEXCPT combinations, nine retirements,
+defined image fields, tail preservation, partial stop/budget/truncated-fetch
+progress, all 13 callback failures, schema/result tampering, and JIT/native
+denials are covered locally. The profile does not extend the Linux source
+inventory, CPUID policy, or FXSAVE layout support. Hardware and physical
+validation remain `not_run`. See the [S2-39h CPU contract](../specs/CPU_CONTRACT.md#s2-39h--exact-fp-init-plus-fxsave64-composition),
+[plan](../plans/STAGE_2.md#s2-39h-exact-fp-initialization-composition-followed-by-fxsave64),
+[report](STAGE_2_REPORT.md#s2-39h--exact-fp-init-plus-fxsave64-composition), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39h-fp-init-plus-fxsave64-composition).
+
 ## S2-40b — ограниченный SSE-only native XORPD oracle
 
 Выполнен программный срез с точным профилем

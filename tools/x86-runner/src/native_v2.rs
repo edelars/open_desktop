@@ -6764,6 +6764,25 @@ mod tests {
     }
 
     #[test]
+    fn s2_39h_fp_init_fxsave64_fixture_is_rejected_before_native_trace() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/x86/stage2/s2_39h_cr0_cr4_fxsave64.case.json");
+        let loaded = Fixture::from_json(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            loaded.fixture.profile,
+            v2::Profile::LongCr0Cr4FpInitFxsave64V1
+        );
+        assert!(crate::native_fp::native_profile_local_only(
+            loaded.fixture.profile
+        ));
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { ref reason }
+                if reason == "this profile is local-only; native state does not observe every profile field"
+        ));
+    }
+
+    #[test]
     fn hlt_fixture_is_rejected_by_preflight_before_trace() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/x86/stage2/s2_27j_hlt_cpl0_iopl0_if0.case.json");

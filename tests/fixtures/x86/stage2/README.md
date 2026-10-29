@@ -5750,6 +5750,29 @@ See the [S2-39g plan](../../../../docs/plans/STAGE_2.md#s2-39g-bounded-fxrstor64
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-39g--bounded-fxrstor64-cr0-em-and-ts-nm-gates),
 and [fixture format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-39g-fxrstor64-cr0-gate-profile).
 
+### S2-39h FP-init plus FXSAVE64 composition
+
+`s2_39h_cr0_cr4_fxsave64.case.json` is a handwritten schema-v2 fixture for
+`s2-long-cr0-cr4-fp-init-fxsave64-v1`. It admits exactly the S2-25c 28-byte
+CR0/FNINIT/CR4/XORPD program followed by `48 0F AE 40 40`, for nine total
+retirements. The initial state fixes RAX to `0x620`; aligned private writable
+RAM at `0x660..0x85f` starts with `0xa5` sentinels. The runner test exercises
+all 16 initial CR0.EM/TS × CR4.OSFXSR/OSXMMEXCPT values. OSFXSR clear is
+accepted initially because the exact earlier sequence sets it before FXSAVE;
+the profile says nothing about OSFXSR clear at the FXSAVE itself.
+
+`s2_39h_fxsave64_expected_image.hex` is independently authored from the
+fixture's expected post-FNINIT/XORPD state. Tests compare defined image fields
+and verify bytes 464–511 are unchanged, while skipping reserved/undefined
+ranges. Execution tests cover STOP, zero budget, partial retirement before a
+truncated final instruction, and injected failure at each of the serializer's
+13 callbacks. Earlier private RAM writes can remain after callback failure;
+this does not claim whole-memory rollback. Interpreter only; JIT/native/C/
+fragment and physical execution are not claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-39h--exact-fp-init-plus-fxsave64-composition),
+[plan](../../../../docs/plans/STAGE_2.md#s2-39h-exact-fp-initialization-composition-followed-by-fxsave64),
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-39h--exact-fp-init-plus-fxsave64-composition),
+and [fixture format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-39h-fp-init-plus-fxsave64-profile).
+
 ### S2-40b native XORPD XMM0 XMM1
 
 `s2_40b_xorpd_xmm0_xmm1_asymmetric_a.case.json` and

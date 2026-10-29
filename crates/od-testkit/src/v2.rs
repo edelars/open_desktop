@@ -191,6 +191,8 @@ pub enum Profile {
     LongCr4FpInitV1,
     #[serde(rename = "s2-long-cr0-cr4-fp-init-v1")]
     LongCr0Cr4FpInitV1,
+    #[serde(rename = "s2-long-cr0-cr4-fp-init-fxsave64-v1")]
+    LongCr0Cr4FpInitFxsave64V1,
     #[serde(rename = "s2-long-movups-reg-v1")]
     LongMovupsRegV1,
     #[serde(rename = "s2-long-movaps-reg-v1")]
@@ -1041,6 +1043,7 @@ impl IntegerState {
                 (
                     Profile::LongCr0FpInitV1
                     | Profile::LongCr4FpInitV1
+                    | Profile::LongCr0Cr4FpInitFxsave64V1
                     | Profile::LongCr0Cr4FpInitV1,
                     Some(x87),
                 ) => Some(x87.to_cpu()?),
@@ -1167,6 +1170,7 @@ impl IntegerState {
                     Profile::LongX87SseStateV1
                     | Profile::LongCr0FpInitV1
                     | Profile::LongCr4FpInitV1
+                    | Profile::LongCr0Cr4FpInitFxsave64V1
                     | Profile::LongCr0Cr4FpInitV1
                     | Profile::LongX87SelectorsStateV1
                     | Profile::LongFxsaveRipV1
@@ -1340,6 +1344,7 @@ impl IntegerState {
                 | Profile::LongX87SelectorsStateV1
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
@@ -1463,6 +1468,7 @@ impl IntegerState {
                 | Profile::LongX87SelectorsStateV1
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
@@ -1659,6 +1665,7 @@ impl IntegerState {
                 | Profile::LongLretqCpl0ValidV1
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitV1,
                 Some(_),
             ) => {}
@@ -1669,6 +1676,7 @@ impl IntegerState {
                 | Profile::LongLretqCpl0ValidV1
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitV1,
                 None,
             ) => {
@@ -1687,6 +1695,7 @@ impl IntegerState {
                 | Profile::LongLretqCpl0ValidV1
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitV1,
                 Some(_),
             ) => {}
@@ -1696,6 +1705,7 @@ impl IntegerState {
                 | Profile::LongLretqCpl0ValidV1
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitV1,
                 None,
             ) => {
@@ -1706,7 +1716,10 @@ impl IntegerState {
         }
         if matches!(
             profile,
-            Profile::LongCr0FpInitV1 | Profile::LongCr4FpInitV1 | Profile::LongCr0Cr4FpInitV1,
+            Profile::LongCr0FpInitV1
+                | Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitV1,
         ) && (self.activity != Some(CpuActivitySnapshot::Running)
             || self.sti_shadow != Some(StiShadowSnapshot::Clear))
         {
@@ -1888,6 +1901,7 @@ impl IntegerState {
                 | Profile::LongX87SelectorsStateV1
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
@@ -2028,6 +2042,7 @@ impl IntegerState {
                 | Profile::LongX87SelectorsStateV1
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
@@ -2177,6 +2192,7 @@ impl IntegerState {
                 | Profile::LongX87SelectorsStateV1
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
@@ -2333,6 +2349,7 @@ impl IntegerState {
                 | Profile::LongX87SelectorsStateV1
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
@@ -2704,6 +2721,7 @@ impl IntegerState {
                 | Profile::LongLretqCpl0ValidV1
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitV1,
         ) {
             (1 << 9) | (3 << 12)
@@ -2718,16 +2736,23 @@ impl IntegerState {
         }
         match (profile, self.cr0) {
             (Profile::LongCr0FpInitV1, Some(value))
-            | (Profile::LongCr4FpInitV1 | Profile::LongCr0Cr4FpInitV1, Some(value))
-                if [
-                    od_isa::execute::Cr0Profile::BASE,
-                    od_isa::execute::Cr0Profile::BASE | (1 << 2),
-                    od_isa::execute::Cr0Profile::BASE | (1 << 3),
-                    od_isa::execute::Cr0Profile::BASE | (1 << 2) | (1 << 3),
-                ]
-                .contains(&value.get()) => {}
+            | (
+                Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitV1,
+                Some(value),
+            ) if [
+                od_isa::execute::Cr0Profile::BASE,
+                od_isa::execute::Cr0Profile::BASE | (1 << 2),
+                od_isa::execute::Cr0Profile::BASE | (1 << 3),
+                od_isa::execute::Cr0Profile::BASE | (1 << 2) | (1 << 3),
+            ]
+            .contains(&value.get()) => {}
             (
-                Profile::LongCr0FpInitV1 | Profile::LongCr4FpInitV1 | Profile::LongCr0Cr4FpInitV1,
+                Profile::LongCr0FpInitV1
+                | Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitV1,
                 Some(_),
             ) => {
                 return Err(invalid(
@@ -2736,7 +2761,10 @@ impl IntegerState {
                 ));
             }
             (
-                Profile::LongCr0FpInitV1 | Profile::LongCr4FpInitV1 | Profile::LongCr0Cr4FpInitV1,
+                Profile::LongCr0FpInitV1
+                | Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitV1,
                 None,
             ) => {
                 return Err(invalid("state.cr0", "required by this profile"));
@@ -2745,21 +2773,35 @@ impl IntegerState {
             (_, None) => {}
         }
         match (profile, self.cr4) {
-            (Profile::LongCr4FpInitV1 | Profile::LongCr0Cr4FpInitV1, Some(value))
-                if [
-                    od_isa::execute::Cr4Profile::BASE,
-                    od_isa::execute::Cr4Profile::BASE | (1 << 9),
-                    od_isa::execute::Cr4Profile::BASE | (1 << 10),
-                    od_isa::execute::Cr4Profile::BASE | (1 << 9) | (1 << 10),
-                ]
-                .contains(&value.get()) => {}
-            (Profile::LongCr4FpInitV1 | Profile::LongCr0Cr4FpInitV1, Some(_)) => {
+            (
+                Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitV1,
+                Some(value),
+            ) if [
+                od_isa::execute::Cr4Profile::BASE,
+                od_isa::execute::Cr4Profile::BASE | (1 << 9),
+                od_isa::execute::Cr4Profile::BASE | (1 << 10),
+                od_isa::execute::Cr4Profile::BASE | (1 << 9) | (1 << 10),
+            ]
+            .contains(&value.get()) => {}
+            (
+                Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitV1,
+                Some(_),
+            ) => {
                 return Err(invalid(
                     "state.cr4",
                     "must equal the fixed PAE base with only OSFXSR and OSXMMEXCPT varying",
                 ));
             }
-            (Profile::LongCr4FpInitV1 | Profile::LongCr0Cr4FpInitV1, None) => {
+            (
+                Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitV1,
+                None,
+            ) => {
                 return Err(invalid("state.cr4", "required by this profile"));
             }
             (_, Some(_)) => return Err(invalid("state.cr4", "not part of this profile")),
@@ -2768,7 +2810,10 @@ impl IntegerState {
         match (profile, &self.x87) {
             (Profile::LongX87StateV1, Some(x87)) => x87.validate()?,
             (
-                Profile::LongCr0FpInitV1 | Profile::LongCr4FpInitV1 | Profile::LongCr0Cr4FpInitV1,
+                Profile::LongCr0FpInitV1
+                | Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitV1,
                 Some(x87),
             ) => {
                 x87.validate()?;
@@ -2899,6 +2944,7 @@ impl IntegerState {
                 Profile::LongX87StateV1
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitV1,
                 None,
             ) => {
@@ -3053,6 +3099,7 @@ impl IntegerState {
                 Profile::LongX87SseStateV1
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitV1
                 | Profile::LongX87SelectorsStateV1
                 | Profile::LongFxsaveRipV1
@@ -3511,6 +3558,7 @@ impl Fixture {
                 | Profile::LongLretqCpl0ValidV1
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitV1,
         ) {
             if self.rflags_mask.get() != cli_flags_mask {
@@ -3531,6 +3579,7 @@ impl Fixture {
                 | Profile::LongLretqCpl0ValidV1
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitV1,
                 Some(_),
             ) => {}
@@ -3542,6 +3591,7 @@ impl Fixture {
                 | Profile::LongLretqCpl0ValidV1
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
+                | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitV1,
                 None,
             ) => {
@@ -3737,6 +3787,56 @@ impl Fixture {
                 return Err(invalid(
                     "memory.code",
                     "CR0/CR4 FP-init requires the exact 28-byte eight-instruction sequence, CPL0, one executable mapping, fixed budget/STOP, and complete state masks",
+                ));
+            }
+        }
+        if self.profile == Profile::LongCr0Cr4FpInitFxsave64V1 {
+            let code = self.memory.iter().find(|region| region.region_id == "code");
+            let save = self.memory.iter().find(|region| region.region_id == "save");
+            let expected_program =
+                "0f20c04883e0f30f22c0dbe30f20e0480d000600000f22e0660f57c1480fae4040";
+            let exact_code = code.is_some_and(|region| {
+                region.guest_address == self.initial_state.rip
+                    && region.length == 33
+                    && region.permissions
+                        == crate::case::MemoryPermissions {
+                            read: false,
+                            write: false,
+                            execute: true,
+                        }
+                    && region
+                        .initial_bytes_hex
+                        .eq_ignore_ascii_case(expected_program)
+                    && region
+                        .comparison_mask_hex
+                        .eq_ignore_ascii_case(&"ff".repeat(33))
+            });
+            let exact_save = save.is_some_and(|region| {
+                region.guest_address.get() == 0x660
+                    && region.length == 512
+                    && region.permissions
+                        == crate::case::MemoryPermissions {
+                            read: true,
+                            write: true,
+                            execute: false,
+                        }
+                    && region
+                        .initial_bytes_hex
+                        .eq_ignore_ascii_case(&"a5".repeat(512))
+            });
+            if !exact_code
+                || !exact_save
+                || self.cli_cpl != Some(CliCpl::Cpl0)
+                || self.initial_state.gpr[0].get() != 0x620
+                || self.memory.len() != 2
+                || self.instruction_budget != 9
+                || self.stop_rip.map(HexU64::get) != self.initial_state.rip.get().checked_add(33)
+                || self.expected_exit != ExpectedExit::StopAddress
+                || self.rflags_mask.get() != (INTEGER_FLAGS | (1 << 9) | (3 << 12))
+            {
+                return Err(invalid(
+                    "memory.code/memory.save",
+                    "S2-39h requires the exact 33-byte composition, RAX=0x620, a private aligned 512-byte save area at 0x660, CPL0, budget 9, and terminal STOP",
                 ));
             }
         }
@@ -7328,7 +7428,11 @@ impl RunResult {
                     }
                 }
             }
-            if loaded.fixture.profile == Profile::LongCr0Cr4FpInitV1 {
+            if matches!(
+                loaded.fixture.profile,
+                Profile::LongCr0Cr4FpInitV1 | Profile::LongCr0Cr4FpInitFxsave64V1
+            ) {
+                let with_fxsave64 = loaded.fixture.profile == Profile::LongCr0Cr4FpInitFxsave64V1;
                 let initial = &loaded.fixture.initial_state;
                 let initial_cr4 = initial.cr4.ok_or(FormatError::CaseMismatch("state.cr4"))?;
                 let expected_cr4 = HexU64(initial_cr4.get() | (1 << 9) | (1 << 10));
@@ -7358,7 +7462,8 @@ impl RunResult {
                 if value.state.cr0 != Some(HexU64(od_isa::execute::Cr0Profile::BASE))
                     || value.state.cr4 != Some(expected_cr4)
                     || value.state.gpr[0] != expected_cr4
-                    || value.state.rip != HexU64(initial.rip.get() + 28)
+                    || value.state.rip
+                        != HexU64(initial.rip.get() + if with_fxsave64 { 33 } else { 28 })
                     || value.state.rflags != HexU64(initial.rflags.get() & !0x8c5)
                     || value.state.x87 != expected_x87
                     || value.state.sse != expected_sse
@@ -7372,7 +7477,10 @@ impl RunResult {
                                     | (1 << 7)
                                     | (1 << 11)),
                         )
-                    || self.instructions_executed != (Observation::Available { value: HexU64(8) })
+                    || self.instructions_executed
+                        != (Observation::Available {
+                            value: HexU64(if with_fxsave64 { 9 } else { 8 }),
+                        })
                     || self.outcome != (Outcome::StopAddress {})
                     || value
                         .state
@@ -7382,6 +7490,62 @@ impl RunResult {
                         .any(|(i, reg)| i != 0 && *reg != initial.gpr[i])
                 {
                     return Err(FormatError::CaseMismatch("state.cr0_cr4_fp_init"));
+                }
+                if with_fxsave64 {
+                    let save = value
+                        .memory
+                        .iter()
+                        .find(|region| region.region_id == "save")
+                        .ok_or(FormatError::CaseMismatch("memory.save"))?;
+                    let bytes = decode_bytes(&save.bytes_hex)?;
+                    let initial_save = loaded
+                        .fixture
+                        .memory
+                        .iter()
+                        .find(|region| region.region_id == "save")
+                        .ok_or(FormatError::CaseMismatch("memory.save"))?;
+                    let initial_bytes = decode_bytes(&initial_save.initial_bytes_hex)?;
+                    let sse = expected_sse
+                        .as_ref()
+                        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+                    let x87 = expected_x87
+                        .as_ref()
+                        .ok_or(FormatError::CaseMismatch("state.x87"))?;
+                    let xmm = sse
+                        .xmm
+                        .iter()
+                        .flat_map(|register| decode_bytes(register).unwrap_or_default())
+                        .collect::<Vec<_>>();
+                    let expected_fields = [
+                        (0usize, vec![0x7f, 0x03, 0x00, 0x00, 0x00]),
+                        (6, vec![0x00, 0x00]),
+                        (8, vec![0; 16]),
+                        (
+                            24,
+                            [
+                                (sse.mxcsr.get() as u32).to_le_bytes().as_slice(),
+                                &0x0000_ffbfu32.to_le_bytes(),
+                            ]
+                            .concat(),
+                        ),
+                        (160, xmm),
+                    ];
+                    if bytes.len() != 512 {
+                        return Err(FormatError::CaseMismatch("memory.save.length"));
+                    }
+                    let stack_matches =
+                        x87.registers.iter().enumerate().all(|(index, register)| {
+                            decode_bytes(register).is_ok_and(|slot| {
+                                bytes.get(32 + index * 16..42 + index * 16) == Some(slot.as_slice())
+                            })
+                        });
+                    if expected_fields.iter().any(|(offset, expected)| {
+                        bytes[*offset..*offset + expected.len()] != *expected
+                    }) || !stack_matches
+                        || bytes[464..512] != initial_bytes[464..512]
+                    {
+                        return Err(FormatError::CaseMismatch("memory.save.defined_fields"));
+                    }
                 }
             }
             if value.memory.len() != loaded.fixture.memory.len() {
@@ -7449,7 +7613,10 @@ pub fn compare(
             } else {
                 u64::MAX
             }
-    } else if loaded.fixture.profile == Profile::LongCr0Cr4FpInitV1 {
+    } else if matches!(
+        loaded.fixture.profile,
+        Profile::LongCr0Cr4FpInitV1 | Profile::LongCr0Cr4FpInitFxsave64V1
+    ) {
         mask & INTEGER_FLAGS & !arithmetic_flags
     } else if matches!(
         loaded.fixture.profile,
@@ -7734,6 +7901,7 @@ fn rflags_differ(profile: Profile, mask: u64, left: u64, right: u64) -> bool {
             | Profile::LongLretqCpl0ValidV1
             | Profile::LongCr0FpInitV1
             | Profile::LongCr4FpInitV1
+            | Profile::LongCr0Cr4FpInitFxsave64V1
             | Profile::LongCr0Cr4FpInitV1,
     ) {
         INTEGER_FLAGS | (1 << 9) | (3 << 12)
