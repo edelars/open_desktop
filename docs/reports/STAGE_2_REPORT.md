@@ -17071,7 +17071,7 @@ IA-32e paging ([official Vol. 2B PDF](https://cdrdv2-public.intel.com/929354/253
 ## S2-38f — exact Long64 MAXSS with bounded unmasked IM/DM exits
 
 **Status:** local implementation and focused validation complete; independent
-Sol review and combined physical/Mac mini acceptance remain pending.
+Sol review is clean. Combined physical/Mac mini acceptance remains pending.
 
 Added a separate schema-v2 MAXSS profile for only `F3 0F 5F C1`, with its own
 immutable SSE/CR0/CR4 control echo. The interpreter preserves the existing
@@ -17090,7 +17090,7 @@ physical hardware behavior is claimed. See the [plan](../plans/STAGE_2.md#s2-38f
 [contract](../specs/CPU_CONTRACT.md#s2-38f--exact-maxss-unmasked-invalid-and-denormal-exit),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38f-local-maxss-unmasked-invalid-and-denormal).
 
-Focused local checks passed: seven `od-isa` MAXSS tests and the S2-38f runner
+Focused local checks passed: eight `od-isa` MAXSS tests and the S2-38f runner
 fixture integration test (including JIT/native denial, input validation and
 result tampering). `cargo fmt --all -- --check`, offline workspace check,
 `git diff --check`, and Graphify update passed. `tools/check_layout.py` continues
