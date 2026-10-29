@@ -167,3 +167,9 @@ S2-37f adds `s2-long-maxss-reg-masked-v1` under the same supported MXCSR
 preconditions. MAXSS’s literal result is paired with independently accumulated
 masked IE/DE sticky bits; unsupported MXCSR values are rejected during fixture
 validation. The fixture schema remains unchanged and JIT/native remain closed.
+
+S2-37g adds `s2-long-minps-reg-masked-v1` for one bare or REX.R/B-extended
+register `0F 5D /r` form. Fixture admission requires the supported masked
+MXCSR subset and rejects scalar MINSS and other prefix/operand forms. Four
+literal binary32 lanes check output order and IE/DE sticky aggregation; JIT and
+native admission remain closed.

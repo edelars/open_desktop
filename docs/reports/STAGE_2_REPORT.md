@@ -15545,3 +15545,49 @@ the MAXSS runner fixture/JIT-denial test passed (1 test). The formatting check
 passed. The Linux-only native-denial path was compile-checked, not executed on
 hardware. Independent Sol medium code and documentation reviews found no
 actionable findings; the docs reviewer verified all eight added links/anchors.
+
+## S2-37g / bounded S2-38a — local MINPS masked IE/DE status
+
+Added schema-v2 profile `s2-long-minps-reg-masked-v1` for exactly one Long64
+legacy `NP [optional adjacent REX.R/B] 0F 5D /r` register form, ModR/M.mod=3,
+XMM0–15. F3 continues to select the existing MINSS operation outside this
+profile; the MINPS profile rejects F3 and other prefixes/forms. Preconditions
+match the bounded S2-38a subset: SSE state present, every MXCSR exception mask
+set, DAZ/FTZ clear and reserved bits clear. Any rounding control and prior
+sticky bits are accepted.
+
+Execution snapshots the complete source and destination XMM registers before
+computing four raw Binary32 MINPS lanes. It selects raw operand-2 bits for NaNs
+(including SNaNs), selects operand 2 for signed-zero ties, and ORs IE if any
+lane has a NaN and DE if any input lane is subnormal. It commits the complete
+destination and accumulated MXCSR IE/DE bits once after all lanes are computed.
+All other state is preserved; no data-memory callback is used. Unsupported
+preconditions refuse atomically. JIT/native/CPUID admission remains closed, and
+this does not claim unmasked #XM delivery or hardware acceptance.
+
+The handwritten fixture runs MINPS XMM8,XMM9 with literal mixed values covering
+finite values, a signed-zero tie, a subnormal and SNaN; expected XMM bytes and
+MXCSR `0x1f83` are explicit. Unit coverage includes all 256 register pairs,
+lane order, aliasing, IE/DE in different and shared lanes, every RC and sticky
+subset, state preservation, no memory callbacks, all six mask refusals,
+DAZ/FTZ/reserved/Missing-SSE atomic refusal, malformed encodings, schema/JIT/
+native denial, and MINSS/MAXSS regressions.
+
+Normative source: Intel SDM Rev. 093 Vol. 1 Appendix D Tables D-9/D-15 and
+Vol. 2B `MINPS`. The Linux native-denial path is compile-checked only. The
+remaining unmasked exception delivery, #XM, control-state gating, fault
+priority/order and other S2-38 behavior remain open. Mac mini and physical
+validation are deferred to the combined final hardware substage.
+
+**Checks:** `cargo test -p od-isa --offline minps_register_masked` passed
+(4 tests); `cargo test -p od-testkit --offline` passed (369 tests); the MINPS
+runner fixture passed (1 test); the MINSS and MAXSS runner regressions each
+passed (1 test). `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`,
+`git diff --check`, and `graphify update .` passed. Independent `gpt-6.1-sol`
+medium-effort code and documentation reviews found no remaining actionable
+findings; both caught the signed-zero expectation typo, corrected before the
+runner fixture passed. Linux native denial was compile-checked only. Mac mini
+and physical validation remain deferred to the combined final hardware
+substage.

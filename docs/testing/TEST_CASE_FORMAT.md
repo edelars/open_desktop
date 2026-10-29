@@ -707,3 +707,17 @@ exception masks set, DAZ/FTZ clear and reserved bits 16–31 clear; any RC and
 prior sticky flags are permitted. Fixture expectations are literal; JIT and
 native admission remain denied. See [the S2-37f fixture](../../tests/fixtures/x86/stage2/s2_37f_maxss_masked_register.case.json)
 and [the bounded plan](../plans/STAGE_2.md#s2-37f--local-long64-register-only-legacy-maxss-with-masked-status).
+
+## Local MINPS masked-status profile — S2-37g
+
+The schema-v2 profile `s2-long-minps-reg-masked-v1` requires exactly one bare
+or one-adjacent-REX Long64 `0F 5D /r` instruction, ModR/M.mod=3, no memory
+operand or trailing bytes. Destination/source extension uses REX.R/B; F3
+MINSS is a separate instruction and is rejected by the MINPS profile. The
+profile requires the full Long64 snapshot, all six MXCSR exception masks set,
+DAZ/FTZ clear and reserved bits 16–31 clear. Any RC and old sticky flags are
+allowed. Literal fixture values check the four-lane result, sticky IE/DE
+aggregation and full state. JIT/native remain denied; unmasked exception
+delivery and fault ordering are outside this profile. See [the S2-37g
+fixture](../../tests/fixtures/x86/stage2/s2_37g_minps_masked_register.case.json)
+and [the bounded plan](../plans/STAGE_2.md#s2-37g--local-long64-register-only-legacy-minps-with-masked-status).

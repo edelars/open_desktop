@@ -10850,3 +10850,30 @@ D-13 and D-15, plus Vol. 2B `MAXSS`. This extends only the masked IE/DE subset
 of S2-38a. Unmasked exception delivery, #XM, CR0/CR4/OSXMMEXCPT, memory and
 alignment fault ordering, and the rest of S2-38 remain open. Physical
 validation is deferred to the combined final Mac mini substage.
+
+## Local S2-37g register-only MINPS with masked status
+
+The schema-v2 profile `s2-long-minps-reg-masked-v1` admits exactly one Long64
+legacy `[optional adjacent REX.R/B] 0F 5D /r` register instruction,
+ModR/M.mod=3 and XMM0–15. The F3-prefixed `MINSS` form remains a separate
+instruction/profile. The local profile requires SSE state, all six MXCSR
+exception masks set, DAZ/FTZ clear and reserved MXCSR bits 16–31 zero. Any RC
+and existing sticky flags are permitted. Unsupported profile state is refused
+without an architectural #GP/#XM/#UD claim.
+
+Execution snapshots both full XMM operands before computing four independent
+little-endian binary32 lanes. Each lane uses the existing raw MINPS selector:
+either QNaN or SNaN selects raw operand 2 and contributes IE; a subnormal input
+contributes DE while DAZ is clear. IE and DE aggregate independently across
+all lanes, including when set by different lanes. The full destination and
+sticky MXCSR IE/DE bits commit together after preflight. Raw RHS NaN payloads
+and signalling bits are preserved; equal values and signed-zero ties select
+operand 2. Aliasing is supported, other CPU state and MXCSR bits are preserved,
+and there are no data-memory accesses.
+
+Normative sources: Intel SDM Rev. 093 Vol. 1 §11.5 and Appendix D Tables D-9,
+D-13/D-15, plus Vol. 2B `MINPS`. This expands only the masked IE/DE subset of
+S2-38a; unmasked exceptions, #XM delivery/suppression, CR0/CR4/OSXMMEXCPT,
+memory and fault ordering, and remaining S2-38 behavior remain open. JIT,
+native and CPUID admission remain closed. Physical validation is deferred to
+the combined final Mac mini substage.

@@ -2258,3 +2258,21 @@ Normative source: Intel SDM Rev. 093 Vol. 1 §11.5, Appendix D Tables D-9/D-13/
 D-15, and Vol. 2B `MAXSS`. See the [plan](../plans/STAGE_2.md#s2-37f--local-long64-register-only-legacy-maxss-with-masked-status),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37f-register-only-maxss-with-masked-status),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37f-local-masked-status-maxss-register-profile).
+
+## Local packed MINPS register profile — S2-37g
+
+`s2-long-minps-reg-masked-v1` admits only a bare or one-adjacent-REX Long64
+register `0F 5D /r` form with ModR/M.mod=3, XMM0–15. The distinct F3-prefixed
+MINSS operation remains available in its scalar profile. The profile requires
+SSE state, all six MXCSR exception masks set, DAZ/FTZ clear and reserved MXCSR
+bits clear; RC and pre-existing sticky bits are accepted.
+
+MINPS snapshots both full XMM inputs, selects four raw binary32 lanes using
+`Binary32::min_sse_raw_result`, and commits a full destination XMM. Any QNaN or
+SNaN lane selects raw operand 2 and sets sticky IE; any subnormal input lane
+sets sticky DE. These flags are ORed across lanes, and prior sticky bits are
+preserved. Unsupported state refuses before mutation; no data-memory callback
+occurs. JIT/native admission remains closed. Unmasked exception delivery and
+broader S2-38 fault ordering are not implemented. See the [plan](../plans/STAGE_2.md#s2-37g--local-long64-register-only-legacy-minps-with-masked-status),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-37g-register-only-minps-with-masked-status),
+and [literal fixture](../../tests/fixtures/x86/stage2/s2_37g_minps_masked_register.case.json).

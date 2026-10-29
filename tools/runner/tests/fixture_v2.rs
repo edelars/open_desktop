@@ -5334,6 +5334,73 @@ fn local_maxss_masked_register_selects_rhs_and_denies_other_forms() {
 }
 
 #[test]
+fn local_minps_masked_register_aggregates_ie_de_across_lanes() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_37g_minps_masked_register.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMinpsMaskedRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8] = "0000803f00000000010000004523a17f".to_owned();
+    expected.sse.as_mut().unwrap().mxcsr = HexU64(0x0000_1f83);
+    assert_eq!(snapshot(&result).state, expected);
+
+    for bytes_hex in [
+        "450f5d01",   // memory operand
+        "450f5dc190", // trailing byte
+        "f3450f5dc1", // MINSS neighbor
+        "f3450f5fc1", // MAXSS neighbor
+        "450f5fc1",   // MAXPS neighbor
+        "450f53c1",   // RCPPS neighbor
+        "66450f5dc1", // operand-size prefix
+        "f2450f5dc1", // invalid mandatory prefix
+        "48 0f5dc1",  // REX.W
+        "420f5dc1",   // REX.X
+        "40450f5dc1", // repeated REX
+        "450f5d",     // truncated ModR/M
+    ] {
+        let mut invalid = input.fixture.clone();
+        let code = invalid
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = bytes_hex.replace(' ', "");
+        code.length = (code.initial_bytes_hex.len() / 2) as u32;
+        code.comparison_mask_hex = "ff".repeat(code.length as usize);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + u64::from(code.length),
+        ));
+        assert!(invalid.to_json().is_err(), "accepted {bytes_hex}");
+    }
+
+    for mxcsr in [
+        0x0000_1f00, // an exception mask is clear
+        0x0000_1fc0, // DAZ set
+        0x0000_9f80, // FTZ set
+        0x0001_1f80, // reserved bit set
+    ] {
+        let mut invalid = input.fixture.clone();
+        invalid.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(invalid.to_json().is_err(), "accepted MXCSR={mxcsr:08x}");
+    }
+    let mut missing_sse = input.fixture.clone();
+    missing_sse.initial_state.sse = None;
+    assert!(missing_sse.to_json().is_err());
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
 fn local_movsd_register_copies_only_scalar_low_qword_and_keeps_native_closed() {
     let bytes =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_9a_movsd_register.case.json");

@@ -498,3 +498,11 @@ follow `Binary32::max_sse_raw_result`; unmasked exceptions, fault ordering,
 JIT/native and physical admission remain open. Normative source: Intel SDM
 Rev. 093 Vol. 1 §11.5, Appendix D Tables D-9/D-13/D-15 and Vol. 2B MAXSS.
 See [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-37f-register-only-maxss-with-masked-status).
+
+S2-37g adds local-only packed register MINPS profile
+`s2-long-minps-reg-masked-v1` for bare or optional-REX `0F 5D /r` in register
+form. It snapshots both XMM operands and updates four little-endian binary32
+lanes; masked IE/DE conditions are ORed across lanes before the full destination
+and sticky-status commit. It uses the same all-masks-set, DAZ/FTZ-clear,
+reserved-bits-clear preconditions as MINSS/MAXSS. Unmasked exceptions, memory,
+JIT/native and physical execution remain closed. See [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-37g-register-only-minps-with-masked-status).

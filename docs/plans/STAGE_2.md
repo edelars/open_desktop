@@ -490,7 +490,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37d | Local-only Long64 legacy register RCPPS profile `s2-long-rcpps-reg-v1`, using S2-36ab per lane; JIT/native closed | S2-34.1, S2-36ab; ISSUE-025; independent review |
 | [x] | S2-37e | Local-only Long64 legacy register MINSS profile `s2-long-minss-reg-masked-v1`; bounded masked IE/DE status only; JIT/native closed | S2-36z; independent review |
 | [x] | S2-37f | Local-only Long64 legacy register MAXSS profile `s2-long-maxss-reg-masked-v1`; reuses bounded masked IE/DE status; JIT/native closed | S2-37e, S2-38a; independent review |
-| [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f: masked MINSS/MAXSS invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f; independent review |
+| [x] | S2-37g | Local-only Long64 legacy register MINPS profile `s2-long-minps-reg-masked-v1`; aggregates masked IE/DE sticky status across four lanes; JIT/native closed | S2-37e/f, S2-38a; independent review |
+| [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g: masked MINSS/MAXSS/MINPS invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g; independent review |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
@@ -5998,13 +5999,41 @@ Intel SDM Rev. 093 Vol. 1 §11.5 and Appendix D Tables D-9/D-13/D-15 group
 MAXSS with MINSS for masked NaN and denormal exceptions; Vol. 2B `MAXSS`
 defines operand selection. Full unmasked fault processing remains open.
 
-#### S2-38a — consumed masked MINSS/MAXSS status subset
+#### S2-37g — local Long64 register-only legacy MINPS with masked status
 
-Only masked IE/DE sticky-status updates used by S2-37e/f are implemented. Full
-S2-38 remains open: unmasked exception delivery, #XM behavior, CR0/CR4 and
-OSXMMEXCPT gating, memory/alignment/FP fault priority, precise fault ordering,
-and the remaining MXCSR/SSE exception surface are not implemented or claimed.
-Final physical checks stay in the combined Mac mini substage.
+Add schema-v2 diagnostic profile `s2-long-minps-reg-masked-v1` for exactly
+`[optional one adjacent REX.R/B] 0F 5D /r`, ModR/M.mod=3, XMM0–15 in Long64.
+Bare `0F 5D /r` remains packed MINPS, while the separate F3-prefixed form is
+MINSS. The packed profile rejects prefixes, memory operands, VEX/EVEX and
+truncation. Require SSE state, all six MXCSR exception masks set, DAZ/FTZ clear,
+and reserved bits 16–31 clear; any RC and pre-existing sticky flags are
+accepted.
+
+Snapshot the full source and destination XMM registers before computation.
+Apply `Binary32::min_sse_raw_result` independently to four little-endian lanes,
+OR IE when any lane has a QNaN/SNaN operand, and OR DE when any operand lane is
+subnormal. Accumulate both flags across lanes, including when they occur in
+different lanes, and commit the full destination plus the two sticky bits only
+after preflight. Preserve raw operand-2 NaN bits (including SNaN), equal-value
+and signed-zero operand-2 selection, and all unrelated state. Aliasing is
+supported; no data-memory callbacks occur.
+
+Missing SSE or unsupported MXCSR is a local profile refusal without commit,
+not an architectural #XM/#UD claim. JIT/native/CPUID admission, unmasked
+exceptions, destination suppression, DAZ/FTZ, memory forms and fault ordering
+remain out of scope. The literal mixed-lane fixture uses XMM8/XMM9 and checks
+IE|DE aggregation; it is a local semantic oracle, not physical hardware
+acceptance.
+
+#### S2-38a — consumed masked MINSS/MAXSS/MINPS status subset
+
+Only masked IE/DE sticky-status updates used by S2-37e/f/g are implemented.
+MINPS ORs lane-level IE/DE conditions before its single atomic destination and
+MXCSR commit. Full S2-38 remains open: unmasked exception delivery, #XM
+behavior, CR0/CR4 and OSXMMEXCPT gating, memory/alignment/FP fault priority,
+precise fault ordering, and the remaining MXCSR/SSE exception surface are not
+implemented or claimed. Final physical checks stay in the combined Mac mini
+substage.
 
 ### S2-38. MXCSR и FP fault ordering
 
