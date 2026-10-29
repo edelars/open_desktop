@@ -1545,11 +1545,19 @@ The public `run_bounded_arithmetic_load` entry composes the register compiler,
 V2 checked-load dispatcher, and existing executor contracts for the exact
 arithmetic/load/Jcc/fallthrough slice described in S3-29e above. It checks the
 whole plan before execution, forwards remaining budget and controls, and
-accepts only full-entry/load/suffix/code-end entry RIPs. The check is uncached
-and borrowed. Mapping release is sequential: register publication ends before
-the memory callback starts, and memory publication ends before suffix native
-compilation. The API does not prove private RAM ownership, code-fetch fault
-delivery, alias invalidation, or VMHost/MMU integration.
+accepts restart at each decoded arithmetic boundary, the load RIP, the Jcc
+instruction RIP (the suffix start, for example after an event yield), its
+decoded fallthrough, or code end. These points are derived from the exact
+validated plan; this does not admit arbitrary branch targets. Native and
+memory phase outcomes are checked against their exact decoded boundaries
+before terminal exits or handoffs are accepted. Valid native control exits
+honor stop-RIP, STOP, global code end, budget, then event priority; guest
+faults and host errors retain their original outcome.
+The check is uncached and borrowed. Mapping release is sequential: register
+publication ends before the memory callback starts, and memory publication
+ends before suffix native compilation. The API does not prove private RAM
+ownership, code-fetch fault delivery, alias invalidation, or VMHost/MMU
+integration.
 
 #### Production memory-owner integration prerequisites (S3-15n)
 

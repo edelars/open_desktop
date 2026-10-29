@@ -65656,6 +65656,20 @@ mod tests {
                         retired_instructions: 0,
                     })
                 }
+
+                fn execute_one_block_controlled_with_event(
+                    &mut self,
+                    _block: &od_jit::block_compile::CompiledBlock,
+                    _state: &mut od_isa::LongModeState,
+                    _: u64,
+                    control: od_jit::dispatch::DispatchControl<'_>,
+                ) -> Result<od_jit::dispatch::ControlledBlockExecution, Self::Error>
+                {
+                    control.stop_requested.store(1, Ordering::Release);
+                    Ok(od_jit::dispatch::ControlledBlockExecution::Yield(
+                        od_jit::dispatch::DispatchExit::Runtime(RuntimeExitTag::StopRequested),
+                    ))
+                }
             }
             let code = [
                 0x48, 0x03, 0xc3, 0x48, 0x8b, 0x03, 0x74, 0x03, 0x48, 0x03, 0xc3,
@@ -65675,6 +65689,7 @@ mod tests {
             };
             let mut native = StopAtEntry;
             let mut memory = PublishedMemoryBlockExecutor;
+            let stop = AtomicU8::new(0);
             let result = unsafe {
                 od_jit::memory_dispatch::run_bounded_arithmetic_load(
                     full,
@@ -65683,7 +65698,7 @@ mod tests {
                     AccessContext::default(),
                     4,
                     None,
-                    &AtomicU8::new(0),
+                    &stop,
                     None,
                     od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager,
                     &mut native,
@@ -65702,8 +65717,472 @@ mod tests {
                     result.remaining_budget,
                     state.rip
                 ),
-                (0, 1, 4, BASE)
+                (0, 0, 4, BASE)
             );
+            assert_eq!(stop.load(Ordering::Acquire), 1);
+        }
+
+        // Terminal executor outcomes cannot claim global code end at the
+        // prefix entry or move state into the middle of an instruction.
+        {
+            enum InvalidNativeOutcome {
+                FalseCodeEnd,
+                InteriorStopReport,
+                RetiredStopWithoutRipAdvance,
+                UnsupportedRuntimeYield,
+                EventAndStopYield,
+            }
+            impl od_jit::dispatch::ControlledBlockExecutor for InvalidNativeOutcome {
+                type Error = ();
+                fn execute_one_block_controlled(
+                    &mut self,
+                    _: &od_jit::block_compile::CompiledBlock,
+                    state: &mut od_isa::LongModeState,
+                    incoming_budget: u64,
+                    control: od_jit::dispatch::DispatchControl<'_>,
+                ) -> Result<od_jit::dispatch::BlockExecutionReport, Self::Error> {
+                    if matches!(self, Self::InteriorStopReport) {
+                        state.rip += 1;
+                        Ok(od_jit::dispatch::BlockExecutionReport {
+                            exit: RuntimeExitTag::StopRequested,
+                            remaining_budget: incoming_budget,
+                            retired_instructions: 0,
+                        })
+                    } else if matches!(self, Self::RetiredStopWithoutRipAdvance) {
+                        control.stop_requested.store(1, Ordering::Release);
+                        Ok(od_jit::dispatch::BlockExecutionReport {
+                            exit: RuntimeExitTag::StopRequested,
+                            remaining_budget: incoming_budget - 1,
+                            retired_instructions: 1,
+                        })
+                    } else {
+                        Err(())
+                    }
+                }
+                fn execute_one_block_controlled_with_event(
+                    &mut self,
+                    block: &od_jit::block_compile::CompiledBlock,
+                    state: &mut od_isa::LongModeState,
+                    incoming_budget: u64,
+                    control: od_jit::dispatch::DispatchControl<'_>,
+                ) -> Result<od_jit::dispatch::ControlledBlockExecution, Self::Error>
+                {
+                    if matches!(self, Self::FalseCodeEnd) {
+                        Ok(od_jit::dispatch::ControlledBlockExecution::Yield(
+                            od_jit::dispatch::DispatchExit::CodeEnd,
+                        ))
+                    } else if matches!(self, Self::UnsupportedRuntimeYield) {
+                        Ok(od_jit::dispatch::ControlledBlockExecution::Yield(
+                            od_jit::dispatch::DispatchExit::Runtime(RuntimeExitTag::BlockComplete),
+                        ))
+                    } else if matches!(self, Self::EventAndStopYield) {
+                        control.stop_requested.store(1, Ordering::Release);
+                        control
+                            .event_requested
+                            .expect("event-enabled test executor")
+                            .store(true, Ordering::Release);
+                        Ok(od_jit::dispatch::ControlledBlockExecution::Yield(
+                            od_jit::dispatch::DispatchExit::EventPending,
+                        ))
+                    } else {
+                        self.execute_one_block_controlled(block, state, incoming_budget, control)
+                            .map(od_jit::dispatch::ControlledBlockExecution::Executed)
+                    }
+                }
+            }
+            let code = [
+                0x48, 0x03, 0xc3, 0x48, 0x8b, 0x03, 0x74, 0x03, 0x48, 0x03, 0xc3,
+            ];
+            let full = CodeView::new(BASE, &code).unwrap();
+            for expect_yield in [true, false] {
+                let mut state = od_isa::LongModeState {
+                    rip: BASE,
+                    ..Default::default()
+                };
+                let mut ram = Ram {
+                    code: code.to_vec(),
+                    data: BTreeMap::new(),
+                    reads: 0,
+                    last_read: None,
+                    backend_error: false,
+                    event_on_callback: None,
+                };
+                let mut native = if expect_yield {
+                    InvalidNativeOutcome::FalseCodeEnd
+                } else {
+                    InvalidNativeOutcome::InteriorStopReport
+                };
+                let mut memory = PublishedMemoryBlockExecutor;
+                let result = unsafe {
+                    od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                        full,
+                        &mut state,
+                        &mut ram,
+                        AccessContext::default(),
+                        4,
+                        None,
+                        &AtomicU8::new(0),
+                        None,
+                        od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager,
+                        &mut native,
+                        &mut memory,
+                    )
+                };
+                if expect_yield {
+                    assert!(matches!(
+                        result,
+                        Err(od_jit::memory_dispatch::BoundedArithmeticLoadError::InvalidNativeYield { .. })
+                    ));
+                    assert_eq!(state.rip, BASE);
+                } else {
+                    assert!(
+                        matches!(
+                            result,
+                            Err(od_jit::memory_dispatch::BoundedArithmeticLoadError::InvalidPhaseRip { actual, .. }) if actual == BASE + 1
+                        ),
+                        "unexpected malformed native result: {result:?}"
+                    );
+                    assert_eq!(state.rip, BASE + 1);
+                }
+                assert_eq!(ram.reads, 0);
+            }
+            let mut state = od_isa::LongModeState {
+                rip: BASE,
+                ..Default::default()
+            };
+            let mut ram = Ram {
+                code: code.to_vec(),
+                data: BTreeMap::new(),
+                reads: 0,
+                last_read: None,
+                backend_error: false,
+                event_on_callback: None,
+            };
+            let stop = AtomicU8::new(0);
+            let mut native = InvalidNativeOutcome::RetiredStopWithoutRipAdvance;
+            let mut memory = PublishedMemoryBlockExecutor;
+            let result = unsafe {
+                od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                    full,
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    4,
+                    None,
+                    &stop,
+                    None,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager,
+                    &mut native,
+                    &mut memory,
+                )
+            };
+            assert!(matches!(
+                result,
+                Err(
+                    od_jit::memory_dispatch::BoundedArithmeticLoadError::InvalidPhaseRip {
+                        actual: BASE,
+                        ..
+                    }
+                )
+            ));
+            assert_eq!(state.rip, BASE);
+            assert_eq!(stop.load(Ordering::Acquire), 1);
+
+            // Runtime-tag yields are not a generic successful exit channel.
+            let mut state = od_isa::LongModeState {
+                rip: BASE,
+                ..Default::default()
+            };
+            let mut ram = Ram {
+                code: code.to_vec(),
+                data: BTreeMap::new(),
+                reads: 0,
+                last_read: None,
+                backend_error: false,
+                event_on_callback: None,
+            };
+            let mut native = InvalidNativeOutcome::UnsupportedRuntimeYield;
+            let mut memory = PublishedMemoryBlockExecutor;
+            let result = unsafe {
+                od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                    full,
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    4,
+                    None,
+                    &AtomicU8::new(0),
+                    None,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager,
+                    &mut native,
+                    &mut memory,
+                )
+            };
+            assert!(matches!(
+                result,
+                Err(od_jit::memory_dispatch::BoundedArithmeticLoadError::InvalidNativeYield { .. })
+            ));
+
+            // A valid event yield cannot hide a higher-priority STOP.
+            let mut state = od_isa::LongModeState {
+                rip: BASE,
+                ..Default::default()
+            };
+            let mut ram = Ram {
+                code: code.to_vec(),
+                data: BTreeMap::new(),
+                reads: 0,
+                last_read: None,
+                backend_error: false,
+                event_on_callback: None,
+            };
+            let stop = AtomicU8::new(0);
+            let event = AtomicBool::new(false);
+            let mut native = InvalidNativeOutcome::EventAndStopYield;
+            let mut memory = PublishedMemoryBlockExecutor;
+            let result = unsafe {
+                od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                    full,
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    4,
+                    None,
+                    &stop,
+                    Some(&event),
+                    od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager,
+                    &mut native,
+                    &mut memory,
+                )
+            }
+            .unwrap();
+            assert_eq!(
+                result.exit,
+                od_jit::memory_dispatch::BoundedArithmeticLoadExit::StopRequested
+            );
+
+            struct BudgetAtCodeEnd;
+            impl od_jit::dispatch::ControlledBlockExecutor for BudgetAtCodeEnd {
+                type Error = ();
+                fn execute_one_block_controlled(
+                    &mut self,
+                    _: &od_jit::block_compile::CompiledBlock,
+                    state: &mut od_isa::LongModeState,
+                    _: u64,
+                    _: od_jit::dispatch::DispatchControl<'_>,
+                ) -> Result<od_jit::dispatch::BlockExecutionReport, Self::Error> {
+                    state.rip = BASE + 11;
+                    Ok(od_jit::dispatch::BlockExecutionReport {
+                        exit: RuntimeExitTag::BudgetExhausted,
+                        remaining_budget: 0,
+                        retired_instructions: 1,
+                    })
+                }
+            }
+            let mut state = od_isa::LongModeState {
+                rip: BASE + 8,
+                ..Default::default()
+            };
+            let mut ram = Ram {
+                code: code.to_vec(),
+                data: BTreeMap::new(),
+                reads: 0,
+                last_read: None,
+                backend_error: false,
+                event_on_callback: None,
+            };
+            let mut native = BudgetAtCodeEnd;
+            let mut memory = PublishedMemoryBlockExecutor;
+            let result = unsafe {
+                od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                    full,
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &AtomicU8::new(0),
+                    None,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager,
+                    &mut native,
+                    &mut memory,
+                )
+            }
+            .unwrap();
+            assert_eq!(state.rip, BASE + 11);
+            assert_eq!(
+                result.exit,
+                od_jit::memory_dispatch::BoundedArithmeticLoadExit::Complete
+            );
+        }
+
+        // Malformed memory executor outcomes that advance into the middle of
+        // the exact load are rejected before becoming a guest fault/exit.
+        {
+            struct InteriorMemoryReport {
+                exit: od_jit::memory_dispatch::MemoryBlockExit,
+                retired: u64,
+            }
+            unsafe impl od_jit::memory_dispatch::MemoryBlockExecutor for InteriorMemoryReport {
+                type Error = ();
+                unsafe fn execute_one_memory_block(
+                    &mut self,
+                    _: &od_jit::memory_dispatch::BoundedMemoryArtifact,
+                    state: &mut od_isa::LongModeState,
+                    _: &mut dyn GuestMemory,
+                    _: AccessContext,
+                    incoming_budget: u64,
+                    _: Option<u64>,
+                    _: &AtomicU8,
+                ) -> Result<od_jit::memory_dispatch::MemoryBlockReport, Self::Error>
+                {
+                    state.rip += 1;
+                    Ok(od_jit::memory_dispatch::MemoryBlockReport {
+                        exit: self.exit.clone(),
+                        remaining_budget: incoming_budget - self.retired,
+                        retired_instructions: self.retired,
+                    })
+                }
+            }
+            let code = [
+                0x48, 0x03, 0xc3, 0x48, 0x8b, 0x03, 0x74, 0x03, 0x48, 0x03, 0xc3,
+            ];
+            let full = CodeView::new(BASE, &code).unwrap();
+            for (exit, retired) in [
+                (
+                    od_jit::memory_dispatch::MemoryBlockExit::GuestFault(
+                        od_isa::memory::ArchitecturalFault {
+                            vector: 14,
+                            error_code: Some(0),
+                            linear_address: Some(0x100),
+                        },
+                    ),
+                    0,
+                ),
+                (od_jit::memory_dispatch::MemoryBlockExit::Complete, 1),
+            ] {
+                let mut state = od_isa::LongModeState {
+                    rip: BASE,
+                    ..Default::default()
+                };
+                state.gpr[3] = 0x100;
+                let mut ram = Ram {
+                    code: code.to_vec(),
+                    data: BTreeMap::new(),
+                    reads: 0,
+                    last_read: None,
+                    backend_error: false,
+                    event_on_callback: None,
+                };
+                let mut native = PublishedBlockExecutor;
+                let mut memory = InteriorMemoryReport { exit, retired };
+                let result = unsafe {
+                    od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                        full,
+                        &mut state,
+                        &mut ram,
+                        AccessContext::default(),
+                        4,
+                        None,
+                        &AtomicU8::new(0),
+                        None,
+                        od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager,
+                        &mut native,
+                        &mut memory,
+                    )
+                };
+                assert!(
+                    matches!(
+                        result,
+                        Err(od_jit::memory_dispatch::BoundedArithmeticLoadError::InvalidPhaseRip { actual, .. }) if actual == LOAD_RIP + 1
+                    ),
+                    "unexpected malformed memory result: {result:?}"
+                );
+                assert_eq!(state.rip, LOAD_RIP + 1);
+                assert_eq!(ram.reads, 0);
+            }
+
+            struct BoundaryMemoryReport {
+                exit: od_jit::memory_dispatch::MemoryBlockExit,
+                retired: u64,
+                rip: u64,
+            }
+            unsafe impl od_jit::memory_dispatch::MemoryBlockExecutor for BoundaryMemoryReport {
+                type Error = ();
+                unsafe fn execute_one_memory_block(
+                    &mut self,
+                    _: &od_jit::memory_dispatch::BoundedMemoryArtifact,
+                    state: &mut od_isa::LongModeState,
+                    _: &mut dyn GuestMemory,
+                    _: AccessContext,
+                    incoming_budget: u64,
+                    _: Option<u64>,
+                    _: &AtomicU8,
+                ) -> Result<od_jit::memory_dispatch::MemoryBlockReport, Self::Error>
+                {
+                    state.rip = self.rip;
+                    Ok(od_jit::memory_dispatch::MemoryBlockReport {
+                        exit: self.exit.clone(),
+                        remaining_budget: incoming_budget - self.retired,
+                        retired_instructions: self.retired,
+                    })
+                }
+            }
+            for (exit, retired, rip) in [
+                (
+                    od_jit::memory_dispatch::MemoryBlockExit::GuestFault(
+                        od_isa::memory::ArchitecturalFault {
+                            vector: 14,
+                            error_code: Some(0),
+                            linear_address: Some(0x100),
+                        },
+                    ),
+                    0,
+                    LOAD_RIP + 3,
+                ),
+                (
+                    od_jit::memory_dispatch::MemoryBlockExit::CodeInvalidated,
+                    1,
+                    LOAD_RIP,
+                ),
+            ] {
+                let mut state = od_isa::LongModeState {
+                    rip: BASE,
+                    ..Default::default()
+                };
+                state.gpr[3] = 0x100;
+                let mut ram = Ram {
+                    code: code.to_vec(),
+                    data: BTreeMap::new(),
+                    reads: 0,
+                    last_read: None,
+                    backend_error: false,
+                    event_on_callback: None,
+                };
+                let mut native = PublishedBlockExecutor;
+                let mut memory = BoundaryMemoryReport { exit, retired, rip };
+                let result = unsafe {
+                    od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                        full,
+                        &mut state,
+                        &mut ram,
+                        AccessContext::default(),
+                        4,
+                        None,
+                        &AtomicU8::new(0),
+                        None,
+                        od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager,
+                        &mut native,
+                        &mut memory,
+                    )
+                };
+                assert!(matches!(
+                    result,
+                    Err(
+                        od_jit::memory_dispatch::BoundedArithmeticLoadError::InvalidMemoryReport { .. }
+                    )
+                ));
+            }
         }
 
         // Coordinator accounting rejects corrupted executor reports instead

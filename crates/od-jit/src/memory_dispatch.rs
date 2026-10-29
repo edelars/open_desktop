@@ -83,6 +83,17 @@ pub enum BoundedArithmeticLoadError<NE, ME> {
     NativeProgress {
         rip: u64,
     },
+    InvalidMemoryReport {
+        report: BoundedMemoryResult,
+    },
+    InvalidNativeYield {
+        rip: u64,
+        exit: crate::dispatch::DispatchExit,
+    },
+    InvalidNativeControl {
+        rip: u64,
+        exit: crate::runtime::RuntimeExitTag,
+    },
     Memory(BoundedMemoryError<ME>),
     InvalidPhaseRip {
         expected: u64,
@@ -184,6 +195,7 @@ where
     if state.rip < plan.load_rip {
         match bounded_native_phase(
             code,
+            plan,
             state,
             remaining,
             plan.load_rip,
@@ -264,8 +276,64 @@ where
                 event_requested,
                 memory_executor,
             )
+        };
+        let report = match report {
+            Ok(report) => report,
+            Err(error) => {
+                if state.rip != plan.load_rip {
+                    return Err(BoundedArithmeticLoadError::InvalidPhaseRip {
+                        expected: plan.load_rip,
+                        actual: state.rip,
+                    });
+                }
+                return Err(BoundedArithmeticLoadError::Memory(error));
+            }
+        };
+        let expected_rip = match report.retired_instructions {
+            0 if report.remaining_budget == remaining => Some(plan.load_rip),
+            1 if remaining.checked_sub(1) == Some(report.remaining_budget) => Some(plan.suffix_rip),
+            _ => None,
+        };
+        let exit_matches_retirement = match report.exit {
+            BoundedMemoryExit::GuestFault(_) => report.retired_instructions == 0,
+            BoundedMemoryExit::BoundaryReached { rip } => {
+                report.retired_instructions == 1 && rip == plan.suffix_rip
+            }
+            BoundedMemoryExit::Unsupported { rip } | BoundedMemoryExit::Invalid { rip } => {
+                report.retired_instructions == 0 && rip == plan.load_rip
+            }
+            BoundedMemoryExit::CodeInvalidated
+            | BoundedMemoryExit::BudgetExhausted
+            | BoundedMemoryExit::StopRequested
+            | BoundedMemoryExit::StopAddress
+            | BoundedMemoryExit::EventPending => true,
+        };
+        let blocks_match_exit = match report.exit {
+            BoundedMemoryExit::GuestFault(_)
+            | BoundedMemoryExit::BoundaryReached { .. }
+            | BoundedMemoryExit::CodeInvalidated => report.blocks_executed == 1,
+            BoundedMemoryExit::Unsupported { .. } | BoundedMemoryExit::Invalid { .. } => {
+                report.blocks_executed == 0
+            }
+            BoundedMemoryExit::EventPending => {
+                report.blocks_executed == report.retired_instructions
+            }
+            BoundedMemoryExit::BudgetExhausted
+            | BoundedMemoryExit::StopRequested
+            | BoundedMemoryExit::StopAddress => {
+                report.blocks_executed <= 1
+                    && (report.retired_instructions == 0 || report.blocks_executed == 1)
+            }
+        };
+        if state.rip != plan.load_rip && state.rip != plan.suffix_rip {
+            return Err(BoundedArithmeticLoadError::InvalidPhaseRip {
+                expected: expected_rip.unwrap_or(plan.load_rip),
+                actual: state.rip,
+            });
         }
-        .map_err(BoundedArithmeticLoadError::Memory)?;
+        if expected_rip != Some(state.rip) || !exit_matches_retirement || !blocks_match_exit {
+            return Err(BoundedArithmeticLoadError::InvalidMemoryReport { report });
+        }
         if report.exit
             == (BoundedMemoryExit::BoundaryReached {
                 rip: plan.suffix_rip,
@@ -296,6 +364,7 @@ where
         while state.rip != plan.code_end {
             match bounded_native_phase(
                 code,
+                plan,
                 state,
                 remaining,
                 plan.code_end,
@@ -387,6 +456,22 @@ impl BoundedArithmeticLoadPlan {
             || rip == self.suffix_rip
             || rip == self.branch_fallthrough
             || rip == self.code_end
+    }
+
+    fn admits_native_phase_rip(
+        self,
+        phase_start: u64,
+        phase_end: u64,
+        continuation_rip: Option<u64>,
+        rip: u64,
+    ) -> bool {
+        if phase_end == self.load_rip && phase_start < self.load_rip {
+            return (phase_start..=self.load_rip).contains(&rip)
+                && (rip - self.entry_rip).is_multiple_of(3);
+        }
+        phase_end == self.code_end
+            && (phase_start == self.suffix_rip || phase_start == self.branch_fallthrough)
+            && (rip == phase_start || continuation_rip == Some(rip) || rip == self.code_end)
     }
 }
 
@@ -494,8 +579,59 @@ fn pending_control(
     }
 }
 
+fn prioritized_native_control(
+    plan: BoundedArithmeticLoadPlan,
+    rip: u64,
+    remaining: u64,
+    stop_rip: Option<u64>,
+    stop: &AtomicU8,
+    event: Option<&AtomicBool>,
+) -> Option<BoundedArithmeticLoadExit> {
+    if stop_rip == Some(rip) {
+        Some(BoundedArithmeticLoadExit::StopAddress)
+    } else if stop.load(Ordering::Acquire) != 0 {
+        Some(BoundedArithmeticLoadExit::StopRequested)
+    } else if rip == plan.code_end {
+        Some(BoundedArithmeticLoadExit::Complete)
+    } else if remaining == 0 {
+        Some(BoundedArithmeticLoadExit::BudgetExhausted)
+    } else if event.is_some_and(|request| request.load(Ordering::Acquire)) {
+        Some(BoundedArithmeticLoadExit::EventPending)
+    } else {
+        None
+    }
+}
+
+fn native_retirement_matches_phase(
+    plan: BoundedArithmeticLoadPlan,
+    start: u64,
+    retired: u64,
+    actual: u64,
+) -> bool {
+    if retired == 0 {
+        return actual == start;
+    }
+    if start < plan.load_rip {
+        let Some(delta) = retired.checked_mul(3) else {
+            return false;
+        };
+        return start
+            .checked_add(delta)
+            .is_some_and(|expected| expected == actual && expected <= plan.load_rip);
+    }
+    if start == plan.suffix_rip {
+        return match retired {
+            1 => actual == plan.branch_fallthrough || actual == plan.code_end,
+            2 => actual == plan.code_end,
+            _ => false,
+        };
+    }
+    start == plan.branch_fallthrough && retired == 1 && actual == plan.code_end
+}
+
 fn bounded_native_phase<E: ControlledBlockExecutor, ME>(
     code: CodeView<'_>,
+    plan: BoundedArithmeticLoadPlan,
     state: &mut LongModeState,
     budget: u64,
     end_rip: u64,
@@ -537,6 +673,38 @@ fn bounded_native_phase<E: ControlledBlockExecutor, ME>(
         .map_err(BoundedArithmeticLoadError::NativeExecutor)?;
     let report = match execution {
         ControlledBlockExecution::Yield(exit) => {
+            if state.rip != rip {
+                return Err(BoundedArithmeticLoadError::InvalidPhaseRip {
+                    expected: rip,
+                    actual: state.rip,
+                });
+            }
+            if !plan.admits_native_phase_rip(rip, end_rip, continuation_rip, state.rip) {
+                return Err(BoundedArithmeticLoadError::InvalidPhaseRip {
+                    expected: end_rip,
+                    actual: state.rip,
+                });
+            }
+            let control_is_pending = match exit {
+                crate::dispatch::DispatchExit::CodeEnd => state.rip == plan.code_end,
+                crate::dispatch::DispatchExit::BudgetExhausted => budget == 0,
+                crate::dispatch::DispatchExit::EventPending => {
+                    event.is_some_and(|request| request.load(Ordering::Acquire))
+                }
+                crate::dispatch::DispatchExit::Runtime(
+                    crate::runtime::RuntimeExitTag::StopAddress,
+                ) => stop_rip == Some(state.rip),
+                crate::dispatch::DispatchExit::Runtime(
+                    crate::runtime::RuntimeExitTag::StopRequested,
+                ) => stop.load(Ordering::Acquire) != 0,
+                crate::dispatch::DispatchExit::Runtime(_) => false,
+            };
+            if !control_is_pending {
+                return Err(BoundedArithmeticLoadError::InvalidNativeYield {
+                    rip: state.rip,
+                    exit,
+                });
+            }
             let exit = match exit {
                 crate::dispatch::DispatchExit::BudgetExhausted => {
                     BoundedArithmeticLoadExit::BudgetExhausted
@@ -555,6 +723,8 @@ fn bounded_native_phase<E: ControlledBlockExecutor, ME>(
                 }
                 crate::dispatch::DispatchExit::CodeEnd => BoundedArithmeticLoadExit::Complete,
             };
+            let exit = prioritized_native_control(plan, state.rip, budget, stop_rip, stop, event)
+                .unwrap_or(exit);
             return Ok(Phase::Exit { exit, report: None });
         }
         ControlledBlockExecution::Executed(report) => report,
@@ -568,8 +738,20 @@ fn bounded_native_phase<E: ControlledBlockExecutor, ME>(
             report,
         });
     }
+    if !plan.admits_native_phase_rip(rip, end_rip, continuation_rip, state.rip) {
+        return Err(BoundedArithmeticLoadError::InvalidPhaseRip {
+            expected: end_rip,
+            actual: state.rip,
+        });
+    }
+    if !native_retirement_matches_phase(plan, rip, report.retired_instructions, state.rip) {
+        return Err(BoundedArithmeticLoadError::InvalidPhaseRip {
+            expected: rip,
+            actual: state.rip,
+        });
+    }
     if report.exit == crate::runtime::RuntimeExitTag::BudgetExhausted
-        && report.remaining_budget != 0
+        && (report.remaining_budget != 0 || report.retired_instructions == 0)
     {
         return Err(BoundedArithmeticLoadError::InvalidBudgetExit {
             remaining: report.remaining_budget,
@@ -587,6 +769,27 @@ fn bounded_native_phase<E: ControlledBlockExecutor, ME>(
         _ => None,
     };
     if let Some(exit) = terminal_exit {
+        let control_is_pending = match report.exit {
+            crate::runtime::RuntimeExitTag::StopRequested => stop.load(Ordering::Acquire) != 0,
+            crate::runtime::RuntimeExitTag::StopAddress => stop_rip == Some(state.rip),
+            crate::runtime::RuntimeExitTag::BudgetExhausted => true,
+            _ => true,
+        };
+        if !control_is_pending {
+            return Err(BoundedArithmeticLoadError::InvalidNativeControl {
+                rip: state.rip,
+                exit: report.exit,
+            });
+        }
+        let exit = prioritized_native_control(
+            plan,
+            state.rip,
+            report.remaining_budget,
+            stop_rip,
+            stop,
+            event,
+        )
+        .unwrap_or(exit);
         return Ok(Phase::Exit {
             exit,
             report: Some(report),
