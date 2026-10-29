@@ -5907,6 +5907,31 @@ observation was made. See the
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-38e--exact-fp-init-fxrstor64-and-image-controlled-minss-composition),
 and [format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-38e-s2-long-cr0-cr4-fp-init-fxrstor64-minss-v1).
 
+### S2-38f local MAXSS unmasked invalid and denormal
+
+The separate profile `s2-long-maxss-unmasked-denormal-v1` admits only exact
+Long64 `F3 0F 5F C1` and uses its own five-field immutable
+`maxss_unmasked_controls` object. Three fault fixtures cover qNaN plus positive
+minimum subnormal in both operand positions and #UD/#XM selection; they expect
+IE|DE (`MXCSR 0x1e83`) and preserve complete XMM0/RIP with zero retirement. A
+fourth literal fixture masks IM and DM: MAXSS completes, returns raw operand 2
+(the subnormal), sets IE only (`MXCSR 0x1f81`) and preserves XMM0 upper 96 bits.
+
+The review is specific to MAXSS. Intel SDM Rev. 093 Vol. 2B pp.4-13–4-14
+explicitly lists invalid including QNaN and denormal, and describes operand-2
+selection for NaNs, equal values and signed-zero ties, including raw SNaN
+return. Vol.1 §§4.9.2 and 11.5.3.2–3 give invalid priority and mixed-mask
+sticky behavior: both masks set on NaN+subnormal completes with IE only; any
+open mask commits IE|DE and exits once. Unit tests cross QNaN/SNaN, both operand
+positions, IM×DM×OSXMMEXCPT, prerequisite gates, CPL0–3, fetch/STOP/budget,
+truncation, exact-form rejection, full preservation and raw MAX completion
+values. JIT/native/C adapters remain denied; physical/Mac mini validation is
+deferred to the combined final hardware substage. See the [plan](../../../../docs/plans/STAGE_2.md#s2-38f-exact-long64-maxss-xmm0xmm1-unmasked-invalid-and-denormal-exit),
+[contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38f--exact-maxss-unmasked-invalid-and-denormal-exit),
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-38f--exact-long64-maxss-with-bounded-unmasked-imdm-exits),
+and [format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-38f-exact-maxss-unmasked-imdm-profile).
+
+
 ### S2-42a native XORPD generated corpus
 
 The existing `s2-long-native-xorpd-xmm0-xmm1-v1` profile now has a local,

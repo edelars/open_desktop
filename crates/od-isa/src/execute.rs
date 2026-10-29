@@ -96,6 +96,16 @@ pub struct MinssInvalidControls {
     pub cr4_osxmmexcpt: bool,
 }
 
+/// Explicit SSE and exception-delivery controls for exact S2-38f MAXSS.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MaxssUnmaskedControls {
+    pub sse_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
 /// Explicit CR0.EM/TS inputs for the exact local FXSAVE64 form.
 /// FXSR and CR4.OSFXSR remain fixed prerequisites of this bounded profile.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -164,6 +174,7 @@ struct ExecutionProfiles<'a> {
     sep: Option<&'a SepProfile>,
     xorpd: Option<XorpdPrerequisiteState>,
     minss_invalid: Option<MinssInvalidControls>,
+    maxss_unmasked: Option<MaxssUnmaskedControls>,
     fx_cr0: Option<FxCr0GateControls>,
     unmasked_minss_denormal: bool,
     rdtsc: Option<RdtscControls>,
@@ -937,6 +948,45 @@ pub fn run_with_minss_unmasked_denormal_controls(
     )
 }
 
+/// Execute exact `F3 0F 5F C1` MAXSS with bounded unmasked IM/DM delivery.
+pub fn run_with_maxss_unmasked_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: MaxssUnmaskedControls,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_configured(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        ExecutionProfiles {
+            cpuid: None,
+            msr: None,
+            sep: None,
+            xorpd: None,
+            minss_invalid: None,
+            maxss_unmasked: Some(controls),
+            fx_cr0: None,
+            unmasked_minss_denormal: false,
+            rdtsc: None,
+            swapgs: None,
+            cli: None,
+            sti: None,
+            halt: None,
+            cr0: None,
+            cr4: None,
+        },
+        StepRuntime {
+            rdtsc_source: None,
+            sti_sequence: None,
+            exact_hlt_only: false,
+            stop_requested: &mut stop_requested,
+        },
+    )
+}
+
 /// Execute the exact S2-38e FP-init/FXRSTOR64/MINSS composition. MINSS
 /// prerequisite controls are read from the live CR0/CR4 state after restore.
 pub fn run_with_cr4_fxrstor64_minss_profile(
@@ -956,6 +1006,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             sep: None,
             xorpd: None,
             minss_invalid: None,
+            maxss_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: true,
             rdtsc: None,
@@ -1047,6 +1098,7 @@ pub fn run_with_efer_rdmsr_profile(
             sep: None,
             xorpd: None,
             minss_invalid: None,
+            maxss_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -1294,6 +1346,7 @@ pub fn run_with_cr0_profile(
             sep: None,
             xorpd: None,
             minss_invalid: None,
+            maxss_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -1333,6 +1386,7 @@ pub fn run_with_cr4_profile(
             sep: None,
             xorpd: None,
             minss_invalid: None,
+            maxss_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: profile == Cr4Profile::FpInitThenFxrstor64MinssLong64V1,
             rdtsc: None,
@@ -1606,6 +1660,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             sep: sep_profile,
             xorpd: xorpd_prerequisites,
             minss_invalid: minss_invalid_controls,
+            maxss_unmasked: None,
             fx_cr0: fx_cr0_gate_controls,
             unmasked_minss_denormal,
             rdtsc: rdtsc_controls,
@@ -1829,6 +1884,7 @@ pub fn step_with_cr0_profile(
             sep: None,
             xorpd: None,
             minss_invalid: None,
+            maxss_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2110,6 +2166,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             sep: sep_profile,
             xorpd: xorpd_prerequisites,
             minss_invalid: minss_invalid_controls,
+            maxss_unmasked: None,
             fx_cr0: fx_cr0_gate_controls,
             unmasked_minss_denormal,
             rdtsc: rdtsc_controls,
@@ -2143,6 +2200,7 @@ fn step_configured(
         sep: sep_profile,
         xorpd: xorpd_prerequisites,
         minss_invalid: configured_minss_controls,
+        maxss_unmasked: configured_maxss_controls,
         fx_cr0: fx_cr0_gate_controls,
         unmasked_minss_denormal,
         rdtsc: rdtsc_controls,
@@ -2557,6 +2615,37 @@ fn step_configured(
             && instruction.prefixes.group1 == Some(0xf3)
             && instruction.prefixes.rex.is_none();
         if !exact_minss {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        let fault_vector = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+            Some(6)
+        } else if controls.cr0_ts {
+            Some(7)
+        } else {
+            None
+        };
+        if let Some(vector) = fault_vector {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+    }
+    if let Some(controls) = configured_maxss_controls {
+        let exact_maxss = instruction.operation
+            == (Operation::MaxssRegisterMasked {
+                destination: 0,
+                source: 1,
+            })
+            && instruction.length == 4
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x5f
+            && instruction.prefixes.group1 == Some(0xf3)
+            && instruction.prefixes.rex.is_none();
+        if !exact_maxss {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -3072,6 +3161,14 @@ fn step_configured(
             } else {
                 minss_invalid_mxcsr_supported(sse.mxcsr)
             }
+        } else if configured_maxss_controls.is_some()
+            && instruction.operation
+                == (Operation::MaxssRegisterMasked {
+                    destination: 0,
+                    source: 1,
+                })
+        {
+            minss_unmasked_denormal_mxcsr_supported(sse.mxcsr)
         } else {
             min_max_mxcsr_supported(sse.mxcsr)
         }
@@ -6713,8 +6810,15 @@ fn step_configured(
                 .sse
                 .as_mut()
                 .expect("MINSS/MAXSS local profile state was prevalidated");
-            let unmasked_invalid = minss_invalid_controls.is_some()
-                && !maximum
+            let maxss_unmasked_profile = maximum
+                && configured_maxss_controls.is_some()
+                && instruction.operation
+                    == (Operation::MaxssRegisterMasked {
+                        destination: 0,
+                        source: 1,
+                    });
+            let minss_unmasked_profile = !maximum && minss_invalid_controls.is_some();
+            let unmasked_invalid = (minss_unmasked_profile || maxss_unmasked_profile)
                 && invalid_operation
                 && old_mxcsr & (1 << 7) == 0;
             // MINSS gives invalid/NaN handling precedence over denormal. An
@@ -6724,25 +6828,26 @@ fn step_configured(
             // masked, MINSS priority reports invalid only.
             let reported_denormal_operand = denormal_operand
                 && (!invalid_operation
-                    || (unmasked_minss_denormal
+                    || ((unmasked_minss_denormal || maxss_unmasked_profile)
                         && (old_mxcsr & (1 << 7) == 0 || old_mxcsr & (1 << 8) == 0)));
-            let unmasked_denormal = minss_invalid_controls.is_some()
-                && unmasked_minss_denormal
-                && !maximum
+            let unmasked_denormal = (minss_unmasked_profile && unmasked_minss_denormal
+                || maxss_unmasked_profile)
                 && reported_denormal_operand
                 && old_mxcsr & (1 << 8) == 0;
             if unmasked_invalid || unmasked_denormal {
                 sse.mxcsr = old_mxcsr
                     | u32::from(invalid_operation)
                     | (u32::from(reported_denormal_operand) << 1);
-                let vector = if minss_invalid_controls
-                    .expect("MINSS controls were selected for this instruction")
-                    .cr4_osxmmexcpt
-                {
-                    19
+                let osxmmexcpt = if maxss_unmasked_profile {
+                    configured_maxss_controls
+                        .expect("MAXSS controls selected")
+                        .cr4_osxmmexcpt
                 } else {
-                    6
+                    minss_invalid_controls
+                        .expect("MINSS controls selected")
+                        .cr4_osxmmexcpt
                 };
+                let vector = if osxmmexcpt { 19 } else { 6 };
                 return Ok(StepOutcome::Fault(ArchitecturalFault {
                     vector,
                     error_code: None,
@@ -82234,6 +82339,317 @@ mod tests {
     }
 
     #[test]
+    fn maxss_unmasked_obeys_invalid_priority_and_mixed_masks() {
+        for nan in [0x7fc1_2345u32, 0xff81_2345] {
+            for (lhs, rhs) in [(nan, 0x0000_0001), (0x8000_0001, nan)] {
+                for im in [false, true] {
+                    for dm in [false, true] {
+                        for osxmmexcpt in [false, true] {
+                            for privilege in [
+                                crate::memory::PrivilegeLevel::Ring0,
+                                crate::memory::PrivilegeLevel::Ring1,
+                                crate::memory::PrivilegeLevel::Ring2,
+                                crate::memory::PrivilegeLevel::Ring3,
+                            ] {
+                                let code = [0xf3, 0x0f, 0x5f, 0xc1];
+                                let mut memory = Memory::at(&code, 0x6200);
+                                let mut state = LongModeState::default();
+                                state.rip = 0x6200;
+                                state.x87 = Some(X87State::fixture_seed());
+                                let mut xmm = [[0x5a; 16]; 16];
+                                xmm[0][..4].copy_from_slice(&lhs.to_le_bytes());
+                                xmm[1][..4].copy_from_slice(&rhs.to_le_bytes());
+                                let mxcsr = 0x1e00
+                                    | (u32::from(im) << 7)
+                                    | (u32::from(dm) << 8)
+                                    | (2 << 13)
+                                    | 0x10;
+                                state.sse = Some(SseState { xmm, mxcsr });
+                                let before = state.clone();
+                                let result = run_with_maxss_unmasked_controls(
+                                    &mut state,
+                                    &mut memory,
+                                    RunConfig {
+                                        instruction_budget: 1,
+                                        stop_rip: Some(0x6204),
+                                        context: AccessContext {
+                                            privilege,
+                                            ..AccessContext::default()
+                                        },
+                                    },
+                                    MaxssUnmaskedControls {
+                                        sse_available: true,
+                                        cr0_em: false,
+                                        cr0_ts: false,
+                                        cr4_osfxsr: true,
+                                        cr4_osxmmexcpt: osxmmexcpt,
+                                    },
+                                    || false,
+                                );
+                                let should_fault = !im || !dm;
+                                if should_fault {
+                                    assert_eq!(
+                                        result.exit,
+                                        RunExit::Fault(ArchitecturalFault {
+                                            vector: if osxmmexcpt { 19 } else { 6 },
+                                            error_code: None,
+                                            linear_address: None,
+                                        })
+                                    );
+                                    assert_eq!(result.instructions_executed, 0);
+                                    assert_eq!(state.rip, before.rip);
+                                    assert_eq!(
+                                        state.sse.as_ref().unwrap().xmm,
+                                        before.sse.as_ref().unwrap().xmm
+                                    );
+                                    let flags = 0x3;
+                                    assert_eq!(state.sse.as_ref().unwrap().mxcsr, mxcsr | flags);
+                                } else {
+                                    assert_eq!(result.exit, RunExit::StopAddress);
+                                    assert_eq!(result.instructions_executed, 1);
+                                    assert_eq!(state.rip, 0x6204);
+                                    assert_eq!(state.sse.as_ref().unwrap().mxcsr, mxcsr | 1);
+                                    assert_eq!(
+                                        state.sse.as_ref().unwrap().xmm[0][..4],
+                                        rhs.to_le_bytes()
+                                    );
+                                }
+                                assert_eq!(state.x87, before.x87);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (lhs, rhs) in [(0x0000_0001u32, 0x3f80_0000u32), (0x3f80_0000, 0x0000_0001)] {
+            for im in [false, true] {
+                for dm in [false, true] {
+                    for osxmmexcpt in [false, true] {
+                        let code = [0xf3, 0x0f, 0x5f, 0xc1];
+                        let mut memory = Memory::at(&code, 0x6250);
+                        let mut state = LongModeState::default();
+                        state.rip = 0x6250;
+                        state.x87 = Some(X87State::fixture_seed());
+                        let mut xmm = [[0x5a; 16]; 16];
+                        xmm[0][..4].copy_from_slice(&lhs.to_le_bytes());
+                        xmm[1][..4].copy_from_slice(&rhs.to_le_bytes());
+                        let mxcsr = 0x1e00 | (u32::from(im) << 7) | (u32::from(dm) << 8);
+                        state.sse = Some(SseState { xmm, mxcsr });
+                        let before = state.clone();
+                        let result = run_with_maxss_unmasked_controls(
+                            &mut state,
+                            &mut memory,
+                            RunConfig {
+                                instruction_budget: 1,
+                                stop_rip: Some(0x6254),
+                                context: AccessContext::default(),
+                            },
+                            MaxssUnmaskedControls {
+                                sse_available: true,
+                                cr0_em: false,
+                                cr0_ts: false,
+                                cr4_osfxsr: true,
+                                cr4_osxmmexcpt: osxmmexcpt,
+                            },
+                            || false,
+                        );
+                        if dm {
+                            assert_eq!(result.exit, RunExit::StopAddress);
+                            assert_eq!(result.instructions_executed, 1);
+                            assert_eq!(state.sse.as_ref().unwrap().mxcsr, mxcsr | 2);
+                            assert_eq!(
+                                &state.sse.as_ref().unwrap().xmm[0][..4],
+                                &0x3f80_0000u32.to_le_bytes()
+                            );
+                        } else {
+                            assert_eq!(
+                                result.exit,
+                                RunExit::Fault(ArchitecturalFault {
+                                    vector: if osxmmexcpt { 19 } else { 6 },
+                                    error_code: None,
+                                    linear_address: None,
+                                })
+                            );
+                            assert_eq!(result.instructions_executed, 0);
+                            assert_eq!(state.sse.as_ref().unwrap().mxcsr, mxcsr | 2);
+                            assert_eq!(
+                                state.sse.as_ref().unwrap().xmm,
+                                before.sse.as_ref().unwrap().xmm
+                            );
+                        }
+                        assert_eq!(state.x87, before.x87);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn maxss_completion_uses_raw_operand_two_and_preserves_non_scalar_state() {
+        let cases: [(u32, u32, u32, u32); 10] = [
+            (0x3f80_0000, 0x4000_0000, 0x4000_0000, 0x1f80), // operand 2 wins
+            (0x4040_0000, 0x4000_0000, 0x4040_0000, 0x1f80), // operand 1 wins
+            (0x4000_0000, 0x4000_0000, 0x4000_0000, 0x1f80), // equality selects source 2
+            (0x8000_0000, 0x0000_0000, 0x0000_0000, 0x1f80), // -0,+0
+            (0x0000_0000, 0x8000_0000, 0x8000_0000, 0x1f80), // +0,-0
+            (0x7f80_0000, 0xff80_0000, 0x7f80_0000, 0x1f80), // +inf,-inf
+            (0xff80_0000, 0x7f80_0000, 0x7f80_0000, 0x1f80), // -inf,+inf
+            (0x3f80_0000, 0x7f81_2345, 0x7f81_2345, 0x1f81), // raw source-2 SNaN
+            (0x7fc5_4321, 0x4000_0000, 0x4000_0000, 0x1f81), // NaN in source 1
+            (0x3f80_0000, 0xffc6_789a, 0xffc6_789a, 0x1f81), // raw source-2 QNaN
+        ];
+        for (lhs, rhs, expected, expected_mxcsr) in cases {
+            let code = [0xf3, 0x0f, 0x5f, 0xc1];
+            let mut memory = Memory::at(&code, 0x6180);
+            let mut state = LongModeState::default();
+            state.rip = 0x6180;
+            state.x87 = Some(X87State::fixture_seed());
+            let mut xmm = std::array::from_fn(|index| {
+                std::array::from_fn(|byte| (index as u8).wrapping_mul(17).wrapping_add(byte as u8))
+            });
+            xmm[0][..4].copy_from_slice(&lhs.to_le_bytes());
+            xmm[1][..4].copy_from_slice(&rhs.to_le_bytes());
+            let before = state.clone();
+            state.sse = Some(SseState { xmm, mxcsr: 0x1f80 });
+            let original = state.sse.as_ref().unwrap().xmm;
+            let result = run_with_maxss_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x6184),
+                    context: AccessContext::default(),
+                },
+                MaxssUnmaskedControls {
+                    sse_available: true,
+                    cr0_em: false,
+                    cr0_ts: false,
+                    cr4_osfxsr: true,
+                    cr4_osxmmexcpt: true,
+                },
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::StopAddress);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(state.rip, 0x6184);
+            let sse = state.sse.as_ref().unwrap();
+            assert_eq!(
+                u32::from_le_bytes(sse.xmm[0][..4].try_into().unwrap()),
+                expected
+            );
+            assert_eq!(&sse.xmm[0][4..], &original[0][4..]);
+            assert_eq!(&sse.xmm[1..], &original[1..]);
+            assert_eq!(sse.mxcsr, expected_mxcsr);
+            assert_eq!(state.x87, before.x87);
+            assert!(memory.accesses.is_empty());
+        }
+
+        // Old IE/DE sticky bits do not create a new exception by themselves.
+        let code = [0xf3, 0x0f, 0x5f, 0xc1];
+        let mut memory = Memory::at(&code, 0x6190);
+        let mut state = LongModeState::default();
+        state.rip = 0x6190;
+        state.x87 = Some(X87State::fixture_seed());
+        let mut xmm = [[0x5a; 16]; 16];
+        xmm[0][..4].copy_from_slice(&1.0f32.to_bits().to_le_bytes());
+        xmm[1][..4].copy_from_slice(&2.0f32.to_bits().to_le_bytes());
+        state.sse = Some(SseState { xmm, mxcsr: 0x1e83 });
+        let result = run_with_maxss_unmasked_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x6194),
+                context: AccessContext::default(),
+            },
+            MaxssUnmaskedControls {
+                sse_available: true,
+                cr0_em: false,
+                cr0_ts: false,
+                cr4_osfxsr: true,
+                cr4_osxmmexcpt: true,
+            },
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.sse.as_ref().unwrap().mxcsr, 0x1e83);
+        assert_eq!(
+            &state.sse.as_ref().unwrap().xmm[0][..4],
+            &2.0f32.to_bits().to_le_bytes()
+        );
+    }
+
+    #[test]
+    fn maxss_invalid_only_obeys_im_and_ignores_dm_with_nan_in_either_operand() {
+        for nan in [0x7fc1_2345u32, 0xff81_2345] {
+            for (lhs, rhs) in [(nan, 0x3f80_0000), (0x3f80_0000, nan)] {
+                for im in [false, true] {
+                    for dm in [false, true] {
+                        for osxmmexcpt in [false, true] {
+                            let code = [0xf3, 0x0f, 0x5f, 0xc1];
+                            let mut memory = Memory::at(&code, 0x61a0);
+                            let mut state = LongModeState::default();
+                            state.rip = 0x61a0;
+                            state.x87 = Some(X87State::fixture_seed());
+                            let mut xmm = [[0x6b; 16]; 16];
+                            xmm[0][..4].copy_from_slice(&lhs.to_le_bytes());
+                            xmm[1][..4].copy_from_slice(&rhs.to_le_bytes());
+                            let mxcsr = 0x1e10 | (u32::from(im) << 7) | (u32::from(dm) << 8);
+                            state.sse = Some(SseState { xmm, mxcsr });
+                            let before = state.clone();
+                            let result = run_with_maxss_unmasked_controls(
+                                &mut state,
+                                &mut memory,
+                                RunConfig {
+                                    instruction_budget: 1,
+                                    stop_rip: Some(0x61a4),
+                                    context: AccessContext::default(),
+                                },
+                                MaxssUnmaskedControls {
+                                    sse_available: true,
+                                    cr0_em: false,
+                                    cr0_ts: false,
+                                    cr4_osfxsr: true,
+                                    cr4_osxmmexcpt: osxmmexcpt,
+                                },
+                                || false,
+                            );
+                            if im {
+                                assert_eq!(result.exit, RunExit::StopAddress);
+                                assert_eq!(result.instructions_executed, 1);
+                                assert_eq!(state.rip, 0x61a4);
+                                assert_eq!(state.sse.as_ref().unwrap().mxcsr, mxcsr | 1);
+                                assert_eq!(
+                                    &state.sse.as_ref().unwrap().xmm[0][..4],
+                                    &rhs.to_le_bytes()
+                                );
+                            } else {
+                                assert_eq!(
+                                    result.exit,
+                                    RunExit::Fault(ArchitecturalFault {
+                                        vector: if osxmmexcpt { 19 } else { 6 },
+                                        error_code: None,
+                                        linear_address: None,
+                                    })
+                                );
+                                assert_eq!(result.instructions_executed, 0);
+                                assert_eq!(state.rip, before.rip);
+                                assert_eq!(state.sse.as_ref().unwrap().mxcsr, mxcsr | 1);
+                                assert_eq!(
+                                    state.sse.as_ref().unwrap().xmm,
+                                    before.sse.as_ref().unwrap().xmm
+                                );
+                            }
+                            assert_eq!(state.x87, before.x87);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn minss_unmasked_denormal_entry_controls_and_harness_boundaries_precede_operands() {
         for bits in 0..32u8 {
             let controls = MinssInvalidControls {
@@ -82347,6 +82763,213 @@ mod tests {
                 || false,
             );
             assert_eq!(result.exit, expected);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn maxss_unmasked_entry_controls_and_harness_boundaries_precede_operands() {
+        for privilege in [
+            crate::memory::PrivilegeLevel::Ring0,
+            crate::memory::PrivilegeLevel::Ring1,
+            crate::memory::PrivilegeLevel::Ring2,
+            crate::memory::PrivilegeLevel::Ring3,
+        ] {
+            for bits in 0..32u8 {
+                let controls = MaxssUnmaskedControls {
+                    sse_available: bits & 1 != 0,
+                    cr0_em: bits & 2 != 0,
+                    cr0_ts: bits & 4 != 0,
+                    cr4_osfxsr: bits & 8 != 0,
+                    cr4_osxmmexcpt: bits & 16 != 0,
+                };
+                let code = [0xf3, 0x0f, 0x5f, 0xc1];
+                let mut memory = Memory::at(&code, 0x6300);
+                let mut state = LongModeState::default();
+                state.rip = 0x6300;
+                state.x87 = Some(X87State::fixture_seed());
+                let mut xmm = [[0x5a; 16]; 16];
+                xmm[1][..4].copy_from_slice(&0x0000_0001u32.to_le_bytes());
+                state.sse = Some(SseState { xmm, mxcsr: 0x1e00 });
+                let before = state.clone();
+                let result = run_with_maxss_unmasked_controls(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(0x6304),
+                        context: AccessContext {
+                            privilege,
+                            ..AccessContext::default()
+                        },
+                    },
+                    controls,
+                    || false,
+                );
+                let expected_vector =
+                    if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+                        Some(6)
+                    } else if controls.cr0_ts {
+                        Some(7)
+                    } else if !controls.cr4_osxmmexcpt {
+                        Some(6)
+                    } else {
+                        Some(19)
+                    };
+                assert_eq!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector: expected_vector.unwrap(),
+                        error_code: None,
+                        linear_address: None,
+                    })
+                );
+                assert_eq!(result.instructions_executed, 0);
+                assert_eq!(state.rip, before.rip);
+                let gate_fault = !controls.sse_available
+                    || controls.cr0_em
+                    || !controls.cr4_osfxsr
+                    || controls.cr0_ts;
+                assert_eq!(
+                    state.sse.as_ref().unwrap().mxcsr,
+                    if gate_fault { 0x1e00 } else { 0x1e02 }
+                );
+                assert_eq!(
+                    state.sse.as_ref().unwrap().xmm,
+                    before.sse.as_ref().unwrap().xmm
+                );
+            }
+        }
+
+        for (budget, stop, code, expected) in [
+            (
+                1,
+                Some(0x6400),
+                &[0xf3, 0x0f, 0x5f, 0xc1][..],
+                RunExit::StopAddress,
+            ),
+            (
+                0,
+                None,
+                &[0xf3, 0x0f, 0x5f, 0xc1][..],
+                RunExit::InstructionBudgetExhausted,
+            ),
+            (
+                1,
+                None,
+                &[0xf3, 0x0f, 0x5f][..],
+                RunExit::MemoryError(MemoryError::Unmapped {
+                    address: 0x6403,
+                    access: AccessKind::Fetch,
+                }),
+            ),
+        ] {
+            let mut memory = Memory::at(code, 0x6400);
+            let mut state = LongModeState::default();
+            state.rip = 0x6400;
+            state.x87 = Some(X87State::fixture_seed());
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1e00,
+            });
+            let before = state.clone();
+            let result = run_with_maxss_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip: stop,
+                    context: AccessContext::default(),
+                },
+                MaxssUnmaskedControls {
+                    sse_available: false,
+                    cr0_em: true,
+                    cr0_ts: true,
+                    cr4_osfxsr: false,
+                    cr4_osxmmexcpt: false,
+                },
+                || false,
+            );
+            assert_eq!(result.exit, expected);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        for length in 0..4usize {
+            let bytes = &[0xf3, 0x0f, 0x5f, 0xc1][..length];
+            let mut memory = Memory::at(bytes, 0x6500);
+            let mut state = LongModeState::default();
+            state.rip = 0x6500;
+            state.x87 = Some(X87State::fixture_seed());
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1e00,
+            });
+            let before = state.clone();
+            let result = run_with_maxss_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                MaxssUnmaskedControls {
+                    sse_available: false,
+                    cr0_em: true,
+                    cr0_ts: true,
+                    cr4_osfxsr: false,
+                    cr4_osxmmexcpt: false,
+                },
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::MemoryError(MemoryError::Unmapped {
+                    address: 0x6500 + length as u64,
+                    access: AccessKind::Fetch,
+                })
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        for bytes in [
+            &[0xf3, 0x0f, 0x5f, 0xc2][..],
+            &[0xf2, 0x0f, 0x5f, 0xc1][..],
+            &[0x66, 0x0f, 0x5f, 0xc1][..],
+            &[0xf3, 0x48, 0x0f, 0x5f, 0xc1][..],
+            &[0xf3, 0x0f, 0x5f, 0x01][..],
+        ] {
+            let mut memory = Memory::at(bytes, 0x6600);
+            let mut state = LongModeState::default();
+            state.rip = 0x6600;
+            state.x87 = Some(X87State::fixture_seed());
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run_with_maxss_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                MaxssUnmaskedControls {
+                    sse_available: true,
+                    cr0_em: false,
+                    cr0_ts: false,
+                    cr4_osfxsr: true,
+                    cr4_osxmmexcpt: true,
+                },
+                || false,
+            );
+            assert!(matches!(
+                result.exit,
+                RunExit::Unsupported { .. } | RunExit::Fault(ArchitecturalFault { vector: 6, .. })
+            ));
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());
         }

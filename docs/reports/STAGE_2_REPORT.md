@@ -17068,3 +17068,32 @@ first-access order remain open under [ISSUE-027](../KNOWN_ISSUES.md#issue-027--f
 
 Normative source: Intel SDM Rev. 093 Vol. 2B RDMSR and Vol. 3A IA32_EFER /
 IA-32e paging ([official Vol. 2B PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf), [official SDM index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)). See the [CPU contract](../specs/CPU_CONTRACT.md#s2-25e--exact-read-only-long64-rdmsr-ia32_efer), [plan](../plans/STAGE_2.md#s2-25e--exact-read-only-long64-rdmsr-ia32_efer), [Linux profile](STAGE_2_LINUX_PROFILE.md#s2-25e-local-read-only-ia32_efer-rdmsr), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-25e-ia32_efer-rdmsr).
+## S2-38f — exact Long64 MAXSS with bounded unmasked IM/DM exits
+
+**Status:** local implementation and focused validation complete; independent
+Sol review and combined physical/Mac mini acceptance remain pending.
+
+Added a separate schema-v2 MAXSS profile for only `F3 0F 5F C1`, with its own
+immutable SSE/CR0/CR4 control echo. The interpreter preserves the existing
+MAXSS decoder and raw MAX selector contract, checks fetch before prerequisite
+gates, and commits IE/DE sticky flags on the modeled unmasked pre-computation
+exit without changing XMM0 or retiring. MAXSS-specific input validation permits
+IM/DM variation and strict reserved/other-mask/DAZ/FTZ constraints. JIT and
+native paths reject the new profile.
+
+The source review used Intel SDM Rev. 093 Vol. 2B MAXSS pp.4-13–4-14 and Vol.1
+§§4.9.2, 11.5.2.1–2, 11.5.3.2–3; the operation reference explicitly names
+QNaN invalid and denormal exceptions, operand-2 selection for NaNs/zero ties,
+and raw source-2 SNaN return. Local tests and literal fixtures cover the
+mixed-condition masks and output preservation. No handler continuation or
+physical hardware behavior is claimed. See the [plan](../plans/STAGE_2.md#s2-38f-exact-long64-maxss-xmm0xmm1-unmasked-invalid-and-denormal-exit),
+[contract](../specs/CPU_CONTRACT.md#s2-38f--exact-maxss-unmasked-invalid-and-denormal-exit),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38f-local-maxss-unmasked-invalid-and-denormal).
+
+Focused local checks passed: seven `od-isa` MAXSS tests and the S2-38f runner
+fixture integration test (including JIT/native denial, input validation and
+result tampering). `cargo fmt --all -- --check`, offline workspace check,
+`git diff --check`, and Graphify update passed. `tools/check_layout.py` continues
+to report the existing ISSUE-023 worktree `.git` pointer and two missing
+historical oracle manifest links; none are caused by S2-38f. Physical hardware
+checks were not run by design.

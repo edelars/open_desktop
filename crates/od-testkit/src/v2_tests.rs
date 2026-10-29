@@ -283,6 +283,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                     .collect(),
                 xorpd_prerequisites: input.fixture.xorpd_prerequisites,
                 minss_invalid_controls: input.fixture.minss_invalid_controls,
+                maxss_unmasked_controls: input.fixture.maxss_unmasked_controls,
                 fxsave64_cr0_controls: input.fixture.fxsave64_cr0_controls,
                 fxrstor64_cr0_controls: input.fixture.fxrstor64_cr0_controls,
                 rdtsc_source_calls: None,

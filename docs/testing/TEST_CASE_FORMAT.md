@@ -1194,3 +1194,23 @@ matrices. This is synthetic local composition evidence; it contains no
 Linux/Ubuntu or physical-hardware observation. See the [fixture note](../../tests/fixtures/x86/stage2/README.md#s2-38e-fp-init-fxrstor64-and-minss),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38e--exact-fp-init-fxrstor64-minss-composition),
 and [plan](../plans/STAGE_2.md#s2-38e-exact-fp-init-fxrstor64-and-image-controlled-minss-composition).
+
+## S2-38f exact MAXSS unmasked IM/DM profile
+
+The distinct profile `s2-long-maxss-unmasked-denormal-v1` admits only the
+Long64 bytes `f30f5fc1`. It requires the MAXSS-specific `maxss_unmasked_controls`
+object with five immutable booleans (`sse_available`, `cr0_em`, `cr0_ts`,
+`cr4_osfxsr`, `cr4_osxmmexcpt`); the result repeats this object in
+`snapshot.maxss_unmasked_controls`. Unknown/missing inputs, profile-field
+cross-use, result omission or tampering fail validation/comparison. MXCSR
+reserved bits must be clear; ZE/OE/UE/PE masks set; DAZ/FTZ clear; IM, DM, RC
+and previous sticky bits are allowed. The exact fixture has one executable
+code mapping, budget one and stop RIP `entry+4`.
+
+The MAXSS selector returns raw operand 2 for either NaN, equal values and
+signed-zero ties. QNaN/SNaN and denormal exceptions are explicitly listed for
+MAXSS in Intel SDM Rev. 093 Vol. 2B. Local tests cover invalid priority and
+mixed masks separately using Vol. 1 §§4.9.2 and 11.5.3.2–3: both masks set on
+NaN+subnormal completes with IE only; if either is open, IE|DE is committed and
+the instruction faults once without destination/RIP retirement. JIT/native
+reject this profile; physical execution is deferred.

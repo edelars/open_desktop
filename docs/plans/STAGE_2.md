@@ -500,6 +500,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
 | [x] | S2-38e | Exact S2-39i FP-init/FXRSTOR64 followed by MINSS; image-controlled IM/DM completion and #XM policy; interpreter-only | S2-38d, S2-39i; independent review complete |
+| [ ] | S2-38f | Exact Long64 `MAXSS XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, literal fixtures, complete local control/fault/result matrix; interpreter-only | S2-38d policy source after MAXSS-specific SDM review; independent review |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
@@ -6637,6 +6638,43 @@ physical x86 observation, or Mac mini execution is claimed. See the
 and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38e-s2-long-cr0-cr4-fp-init-fxrstor64-minss-v1).
 
 ### S2-39. Сохранение и восстановление FP/SIMD
+
+#### S2-38f. Exact Long64 MAXSS XMM0,XMM1 unmasked invalid and denormal exit
+
+New interpreter-only schema-v2 profile `s2-long-maxss-unmasked-denormal-v1`
+admits only `F3 0F 5F C1`, one executable code mapping, budget 1 and stop RIP
+`entry+4`. It has a distinct immutable five-control object and result echo;
+S2-38c/d MINSS fixtures and controls remain unchanged. Complete fetch precedes
+SSE availability, CR0.EM, CR4.OSFXSR and then CR0.TS gates; these are CPL
+independent. Only the exact XMM0/XMM1 form is admitted.
+
+The MXCSR input has reserved bits clear, ZE/OE/UE/PE masks set, DAZ/FTZ clear,
+and permits IM/DM, any RC and prior sticky flags. For MAXSS QNaN or SNaN in
+either operand raises invalid; a subnormal in either operand raises denormal.
+Intel Rev.093 Vol.2B MAXSS (pp.4-13–4-14) explicitly defines NaN/operand-2
+selection, signed-zero/equal selection, raw second-source SNaN return and both
+exceptions. Vol.1 §4.9.2 gives invalid priority; §§11.5.3.2–3 require detected
+pre-computation flags to be ORed on an unmasked exit and retain both flags for
+mixed masked/unmasked conditions. Therefore IM=DM=1 reports IE only and
+completes, while any open mask on a NaN+subnormal pair records IE|DE and exits
+without changing XMM0/RIP or retiring. DE-only unmasked exits record DE. The
+exit is #UD when OSXMMEXCPT=0, #XM otherwise. A prior sticky flag alone does
+not exit. This models one bounded exception delivery and does not model a
+handler repairing operands and resuming the instruction.
+
+Local coverage crosses qNaN/sNaN/subnormal positions with IM×DM×OSXMMEXCPT,
+checks gate and fetch order, preservation, MAXSS normal/equal/signed-zero/
+infinity/NaN-payload completion, strict form/tamper rejection and JIT/native
+denial. Handwritten fixtures use independent literal inputs and expected
+outcomes. Physical/Mac mini acceptance remains deferred to the combined final
+hardware substage. Sources: Intel SDM Rev. 093 Vol.1 §§4.9.2, 11.5.2.1–2,
+11.5.3.2–3, Vol.3A Tables 7-8 and 16-1, Vol.2B MAXSS
+([Vol.1](https://cdrdv2.intel.com/v1/dl/getContent/671436),
+[Vol.2B](https://cdrdv2.intel.com/v1/dl/getContent/671241),
+[Vol.3A](https://cdrdv2.intel.com/v1/dl/getContent/671190),
+[official SDM index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)).
+The printed selector and exception list do not describe handler continuation
+microsteps; those are explicitly outside this local profile.
 
 #### S2-39a. Нормативное evidence legacy FXSAVE/FXRSTOR (evidence only)
 

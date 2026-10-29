@@ -504,6 +504,7 @@ fn expected_native_xorpd_oracle(
                     .collect(),
                 xorpd_prerequisites: None,
                 minss_invalid_controls: None,
+                maxss_unmasked_controls: None,
                 fxsave64_cr0_controls: None,
                 fxrstor64_cr0_controls: None,
                 rdtsc_source_calls: None,
@@ -986,10 +987,11 @@ fn execute_fixture_v2(
     memory: &mut od_testkit::memory::FlatMemory,
 ) -> od_testkit::v2::RunResult {
     use od_isa::execute::{
-        Cr0Profile, Cr4Profile, Fxrstor64Cr0Controls, Fxsave64Cr0Controls, MinssInvalidControls,
-        RdtscControls, RunConfig, RunExit, XorpdPrerequisiteState, run, run_with_cli_profile,
-        run_with_cr0_profile, run_with_efer_rdmsr_profile, run_with_fxrstor64_cr0_controls,
-        run_with_fxsave64_cr0_controls, run_with_halt_profile, run_with_kernel_gs_base_profile,
+        Cr0Profile, Cr4Profile, Fxrstor64Cr0Controls, Fxsave64Cr0Controls, MaxssUnmaskedControls,
+        MinssInvalidControls, RdtscControls, RunConfig, RunExit, XorpdPrerequisiteState, run,
+        run_with_cli_profile, run_with_cr0_profile, run_with_efer_rdmsr_profile,
+        run_with_fxrstor64_cr0_controls, run_with_fxsave64_cr0_controls, run_with_halt_profile,
+        run_with_kernel_gs_base_profile, run_with_maxss_unmasked_controls,
         run_with_minss_invalid_controls, run_with_minss_unmasked_denormal_controls,
         run_with_msr_profile, run_with_rdtsc_source, run_with_rep_continuation,
         run_with_sep_profile, run_with_sti_profile, run_with_swapgs_profile,
@@ -1348,6 +1350,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongMaxssUnmaskedDenormalV1 {
+        let controls = loaded
+            .fixture
+            .maxss_unmasked_controls
+            .expect("validated MAXSS profile has explicit controls");
+        run_with_maxss_unmasked_controls(
+            &mut state,
+            memory,
+            config,
+            MaxssUnmaskedControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else {
         run(&mut state, memory, config, timeout)
     };
@@ -1401,6 +1421,7 @@ fn execute_fixture_v2(
                 memory: memory.snapshot(),
                 xorpd_prerequisites: loaded.fixture.xorpd_prerequisites,
                 minss_invalid_controls: loaded.fixture.minss_invalid_controls,
+                maxss_unmasked_controls: loaded.fixture.maxss_unmasked_controls,
                 fxsave64_cr0_controls: loaded.fixture.fxsave64_cr0_controls,
                 fxrstor64_cr0_controls: loaded.fixture.fxrstor64_cr0_controls,
                 rdtsc_source_calls,
@@ -2556,6 +2577,7 @@ mod tests {
                         .snapshot(),
                     xorpd_prerequisites: input.fixture.xorpd_prerequisites,
                     minss_invalid_controls: input.fixture.minss_invalid_controls,
+                    maxss_unmasked_controls: input.fixture.maxss_unmasked_controls,
                     fxsave64_cr0_controls: input.fixture.fxsave64_cr0_controls,
                     fxrstor64_cr0_controls: input.fixture.fxrstor64_cr0_controls,
                     rdtsc_source_calls: None,

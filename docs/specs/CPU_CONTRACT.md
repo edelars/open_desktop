@@ -12021,3 +12021,49 @@ entry snapshot/absolute-first-access limitation remain under
 [ISSUE-027](../KNOWN_ISSUES.md#issue-027--first-efer-access-and-startup-control-snapshot-are-unproven).
 
 Normative semantics: Intel SDM Rev. 093 Vol. 2B RDMSR ([official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf)) and Vol. 3A IA32_EFER / IA-32e paging ([official SDM index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)).
+## S2-38f — exact MAXSS unmasked invalid and denormal exit
+
+The interpreter-only profile `s2-long-maxss-unmasked-denormal-v1` accepts
+only Long64 `F3 0F 5F C1` (`MAXSS XMM0,XMM1`), a single executable code region,
+budget 1 and stop RIP `entry+4`. It uses a MAXSS-specific immutable five-boolean
+control object (`sse_available`, CR0.EM/TS, CR4.OSFXSR and CR4.OSXMMEXCPT) and
+echoes it in the result. The input MXCSR must have reserved bits clear,
+ZE/OE/UE/PE masks set and DAZ/FTZ clear; IM and DM vary independently, RC and
+old sticky bits are unrestricted. Existing S2-38c/d MINSS fields and profile
+contracts are unchanged.
+
+Complete fetch and bounded stop/budget checks precede SSE/EM/OSFXSR #UD gates;
+TS #NM follows only if those pass. Gates are independent of CPL. Operand
+classification happens after gates. MAXSS invalid conditions include QNaN and
+SNaN in either operand; denormal applies to either subnormal operand. The
+MAXSS-specific result selector returns raw operand 2 for either NaN, equal
+values and either signed-zero tie, preserving an operand-2 SNaN payload/sign bit.
+For newly detected conditions, a clear IM commits IE and a clear DM commits DE.
+If either event is unmasked, the entire destination XMM0 and RIP remain
+unchanged and the instruction does not retire; OSXMMEXCPT chooses #UD or #XM.
+When NaN and subnormal coincide and both masks are set, invalid priority reports
+IE only and MAXSS completes with its masked raw operand-2 result. If at least
+one mask is clear, both pre-computation flags are committed on the single
+faulting exit. Prior IE/DE flags alone do not fault. This bounded profile does
+not model a handler and resumed re-execution.
+
+The local tests cover the IM×DM×OSXMMEXCPT matrix for QNaN/SNaN/subnormal in
+both operand positions, SSE/EM/OSFXSR versus TS precedence, CPL0–3, fetch
+truncation, STOP/zero budget, exact form rejection, complete state preservation,
+MAXSS normal/equal/signed-zero/infinity/NaN payload behavior, schema/result
+tampering and comparator control echoes. JIT, native, C adapter, other registers,
+memory operands, other prefixes, generic control-register state and physical
+execution are excluded. Physical/Mac mini verification remains for the
+combined final hardware substage.
+
+Sources: Intel SDM Rev. 093, Vol. 2B MAXSS pp.4-13–4-14; Vol.1 §§4.9.2,
+11.5.2.1–2, 11.5.3.2–3; Vol.3A Tables 7-8 and 16-1. Vol.2B explicitly lists
+MAXSS invalid (including QNaN) and denormal conditions, its operand-2 selector,
+and preservation of source-2 SNaN bits. Vol.1 provides exception priority,
+MXCSR flag/mask behavior and combined masked/unmasked handling. These references
+specify architectural conditions and flags, not the behavior of a local
+single-exit test harness after a software handler changes machine state.
+([Vol. 1](https://cdrdv2.intel.com/v1/dl/getContent/671436),
+[Vol. 2B](https://cdrdv2.intel.com/v1/dl/getContent/671241),
+[Vol. 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
+See [S2-38f plan](../plans/STAGE_2.md#s2-38f-exact-long64-maxss-xmm0xmm1-unmasked-invalid-and-denormal-exit).
