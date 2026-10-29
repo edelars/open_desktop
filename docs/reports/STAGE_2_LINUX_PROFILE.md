@@ -791,6 +791,17 @@ the Vol. 2B CR4.FRED restriction is excluded by the local assumption. See
 the [CPU contract](../specs/CPU_CONTRACT.md#s2-27g--exact-long64-swapgs) and
 [Stage 2 plan](../plans/STAGE_2.md#s2-27g--exact-long64-swapgs).
 
+### S2-27h local CLI matrix entry
+
+The interpreter-only `s2-long-cli-v1` fixture profile covers exact bare Long64
+`FA` under CR0.PE=1, VM=0, CR4.PVI=0 and no VMX/SMM. Its 32 cases cross IF,
+CPL and IOPL, with 20 local successful clears and 12 CPU-side #GP(0) results.
+The coverage verifies the local CPL/IOPL eligibility boundary and subsequent
+caller-supplied maskable-request API behavior; it does not observe Ubuntu
+kernel execution, exception delivery, boot, or native/physical behavior. JIT,
+native and C/fragment execution remain denied. The normative source is Intel
+SDM Rev. 093 Vol. 2A, CLI pp. 3-148–3-149, Table 3-7. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27h--exact-long64-cli) and [Stage 2 plan](../plans/STAGE_2.md#s2-27h--exact-long64-cli).
+
 ### S2-26g local `IA32_KERNEL_GS_BASE`/SWAPGS matrix entry
 
 The local interpreter profile admits only the exact MSR, SWAPGS, and GS-load

@@ -41,6 +41,10 @@ const KERNEL_GS_BASE_WRMSR_SWAPGS_RDMSR: &[u8] = include_bytes!(
 const KERNEL_GS_BASE_WRMSR_SWAPGS_GS_LOAD: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_26g_kernel_gs_base_wrmsr_swapgs_gs_load.case.json"
 );
+const CLI_SUCCESS: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27h_cli_cpl0_iopl0_if1.case.json");
+const CLI_FAULT: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27h_cli_cpl3_iopl0_if1.case.json");
 const FSTP_INVALID_SOURCE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30w_fstp_invalid_source.case.json");
 const FST_INVALID_SOURCE: &[u8] =
@@ -1801,6 +1805,57 @@ fn kernel_gs_base_msr_swapgs_and_gs_load_fixtures_keep_the_profiles_isolated() {
 #[test]
 fn kernel_gs_base_fixture_is_denied_by_jit() {
     let (_, result) = run(KERNEL_GS_BASE_WRMSR_SWAPGS_GS_LOAD, "jit", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+    assert!(matches!(
+        result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn cli_fixture_expected_states_and_flag_comparison_are_exact() {
+    let (input, result) = run(CLI_SUCCESS, "interpreter", 0);
+    assert_eq!(input.fixture.profile, od_testkit::v2::Profile::LongCliV1);
+    assert_eq!(count(&result), 1);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.rip, HexU64(0x0010_0001));
+    assert_eq!(observed.state.rflags.get() & (1 << 9), 0);
+    assert_eq!(
+        observed.rflags_defined,
+        HexU64(od_testkit::v2::INTEGER_FLAGS)
+    );
+    assert_eq!(
+        od_testkit::v2::compare(&input, &result, &result).unwrap(),
+        Vec::<String>::new()
+    );
+
+    for bit in [9, 12] {
+        let mut tampered = result.clone();
+        if let Observation::Available { value } = &mut tampered.snapshot {
+            value.state.rflags = HexU64(value.state.rflags.get() ^ (1 << bit));
+        }
+        assert!(
+            od_testkit::v2::compare(&input, &result, &tampered)
+                .unwrap()
+                .contains(&"rflags".to_owned()),
+            "bit {bit}"
+        );
+    }
+
+    let (input, result) = run(CLI_FAULT, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::Exception {}));
+    assert_eq!(count(&result), 0);
+    assert_eq!(snapshot(&result).state.rip, input.fixture.initial_state.rip);
+    assert_eq!(
+        snapshot(&result).state.rflags,
+        input.fixture.initial_state.rflags
+    );
+}
+
+#[test]
+fn cli_profile_is_denied_by_jit() {
+    let (_, result) = run(CLI_SUCCESS, "jit", 4);
     assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
     assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
     assert!(matches!(

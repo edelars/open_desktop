@@ -852,6 +852,7 @@ pub fn run_with_kernel_gs_base_profile(
         None,
         None,
         Some(&SwapgsProfile::SwapgsV1),
+        None,
         &mut stop_requested,
     )
 }
@@ -905,6 +906,35 @@ pub fn run_with_swapgs_profile(
         None,
         None,
         Some(profile),
+        None,
+        &mut stop_requested,
+    )
+}
+
+/// Execute the exact bare CLI form under its explicit non-PVI Long64 profile.
+pub fn run_with_cli_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    profile: &crate::CliProfile,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_execution_loop_with_profiles_and_rdtsc(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        Some(profile),
         &mut stop_requested,
     )
 }
@@ -932,6 +962,7 @@ pub fn run_with_rdtsc_source(
         false,
         Some(controls),
         Some(source),
+        None,
         None,
         &mut stop_requested,
     )
@@ -1105,6 +1136,7 @@ fn run_execution_loop_with_profiles(
         None,
         None,
         None,
+        None,
         stop_requested,
     )
 }
@@ -1124,6 +1156,7 @@ fn run_execution_loop_with_profiles_and_rdtsc(
     rdtsc_controls: Option<RdtscControls>,
     mut rdtsc_source: Option<&mut dyn FnMut() -> u64>,
     swapgs_profile: Option<&SwapgsProfile>,
+    cli_profile: Option<&crate::CliProfile>,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> RunResult {
     let mut retired = 0;
@@ -1153,6 +1186,7 @@ fn run_execution_loop_with_profiles_and_rdtsc(
                     rdtsc_controls,
                     Some(&mut *source),
                     swapgs_profile,
+                    cli_profile,
                     stop_requested,
                 );
                 rdtsc_source = Some(source);
@@ -1173,6 +1207,7 @@ fn run_execution_loop_with_profiles_and_rdtsc(
                     rdtsc_controls,
                     None,
                     swapgs_profile,
+                    cli_profile,
                     stop_requested,
                 )
             };
@@ -1301,6 +1336,7 @@ pub fn step_with_swapgs_profile(
         None,
         None,
         Some(profile),
+        None,
         &mut || false,
     )
 }
@@ -1390,6 +1426,7 @@ fn step_tracked_with_profiles(
         None,
         None,
         None,
+        None,
         stop_requested,
     )
 }
@@ -1409,6 +1446,7 @@ fn step_tracked_with_profiles_and_rdtsc(
     rdtsc_controls: Option<RdtscControls>,
     rdtsc_source: Option<&mut dyn FnMut() -> u64>,
     swapgs_profile: Option<&SwapgsProfile>,
+    cli_profile: Option<&crate::CliProfile>,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> Result<StepOutcome, MemoryError> {
     let instruction = match long_decode::decode(memory, state.rip, context) {
@@ -1556,6 +1594,38 @@ fn step_tracked_with_profiles_and_rdtsc(
         });
     }
     let next_rip = state.rip.wrapping_add(u64::from(instruction.length));
+    if instruction.operation == Operation::Cli {
+        let Some(_profile) = cli_profile else {
+            return Ok(StepOutcome::Unsupported { opcode: 0xfa });
+        };
+        if instruction.prefixes.group1 == Some(0xf0) && instruction.length == 2 {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+        if instruction.prefixes != Prefixes::default() || instruction.length != 1 {
+            return Ok(StepOutcome::Unsupported { opcode: 0xfa });
+        }
+        let cpl: u8 = match context.privilege {
+            PrivilegeLevel::Ring0 => 0,
+            PrivilegeLevel::Ring1 => 1,
+            PrivilegeLevel::Ring2 => 2,
+            PrivilegeLevel::Ring3 => 3,
+        };
+        let iopl = (state.rflags >> 12) & 3;
+        if u64::from(cpl) > iopl {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }));
+        }
+        state.rflags &= !(1 << 9);
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
     if instruction.operation == Operation::Rdtsc {
         let (Some(controls), Some(source)) = (rdtsc_controls, rdtsc_source) else {
             return Ok(StepOutcome::Unsupported {
@@ -2257,7 +2327,7 @@ fn step_tracked_with_profiles_and_rdtsc(
     // Direct control flow uses the decoded condition/displacement; integer
     // operations below use normalized operands at each accepted width.
     let executable = match instruction.operation {
-        Operation::Cpuid | Operation::Rdtsc => false,
+        Operation::Cpuid | Operation::Rdtsc | Operation::Cli => false,
         Operation::Swapgs => true,
         Operation::ReadMsr | Operation::WriteMsr => false,
         Operation::Sysenter | Operation::Sysexit => false,
@@ -3888,6 +3958,7 @@ fn step_tracked_with_profiles_and_rdtsc(
     match instruction.operation {
         Operation::Cpuid => unreachable!("CPUID is executed before transfer dispatch"),
         Operation::Rdtsc => unreachable!("RDTSC is handled by its explicit source profile"),
+        Operation::Cli => unreachable!("CLI commits in its profile-gated state path"),
         Operation::Swapgs => unreachable!("SWAPGS commits in its profile-gated state path"),
         Operation::FxsaveRipRelative(_) => {
             unreachable!("FXSAVE commits in its prevalidated field-store path")

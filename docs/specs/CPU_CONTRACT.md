@@ -11577,3 +11577,35 @@ the swap automatically; this profile therefore assumes FRED disabled. See the
 [official Vol. 2B PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241). This local
 interpreter profile does not claim JIT, native, physical, or unconditional
 Long64 support.
+
+### S2-27h — exact Long64 `CLI`
+
+`CliProfile::NonPviLong64V1` admits only bare `FA` in Long64. It fixes
+CR0.PE=1, RFLAGS.VM=0, CR4.PVI=0, and VMX/SMM disabled. CPL is supplied by
+`AccessContext`; IOPL is read from RFLAGS[13:12]. When CPL<=IOPL, the
+instruction clears IF only, advances RIP by one and retires exactly once,
+including when IF was already clear. When CPL>IOPL it raises #GP(0) after
+complete fetch with no mutation, retirement or data-memory callback, including
+when IF was clear. The operation preserves IOPL, all unrelated RFLAGS bits,
+and the existing arithmetic-definedness mask; IF and IOPL are concrete system
+bits rather than arithmetic-defined flags.
+
+Exact LOCK `F0 FA` raises #UD after both bytes have been fetched. Other
+prefixes and neighboring instructions remain unsupported. Stop, budget and
+fetch precedence follows the existing interpreter boundary. The legacy
+execution APIs remain unsupported for CLI; JIT, native and C/fragment adapters
+do not admit this profile. CPUID identity and masks are unchanged.
+
+The fixture profile `s2-long-cli-v1` carries a typed CPL input only for this
+profile, admits exactly bare `FA` with budget 1, and compares
+`INTEGER_FLAGS|IF|IOPL`; only arithmetic `INTEGER_FLAGS` bits are required in
+`rflags_defined`. Thirty-two fixtures cover IF=0/1 × CPL0–3 × IOPL0–3. A
+separate composition test executes CLI then submits a new caller-owned
+maskable request at the next fresh boundary: IF=0 runs the next NOP without
+eligibility notification or event/data access, while IF=1 returns
+`InterruptEligible` before fetch. It does not query after a CLI fault.
+
+The selected interpretation follows Intel SDM Rev. 093, Vol. 2A,
+`CLI` pp. 3-148–3-149, Table 3-7; [official Intel SDM](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+The profile is a CPU-side decision only and does not implement #GP/#UD delivery
+or claim physical, Linux, JIT, native or C execution.

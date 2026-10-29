@@ -117,6 +117,7 @@ pub const PROFILE_MOVUPD_MEMORY_SIB: &str = "s2-long-movupd-mem-sib-v1";
 pub const PROFILE_MOVUPS_MEMORY_STORE: &str = "s2-long-movups-mem-store-v1";
 pub const PROFILE_MOVUPS_MEMORY_BASE: &str = "s2-long-movups-mem-base-v1";
 pub const PROFILE_SWAPGS: &str = "s2-long-swapgs-v1";
+pub const PROFILE_CLI: &str = "s2-long-cli-v1";
 pub const PROFILE_KERNEL_GS_BASE: &str = "s2-long-msr-kernel-gs-base-v1";
 /// Diagnostic mask for this bounded local fixture profile only. It is not a
 /// universal hardware CPUID mask and does not model guest #GP behavior.
@@ -138,6 +139,8 @@ pub enum Profile {
     LongGsBaseV1,
     #[serde(rename = "s2-long-swapgs-v1")]
     LongSwapgsV1,
+    #[serde(rename = "s2-long-cli-v1")]
+    LongCliV1,
     #[serde(rename = "s2-long-msr-kernel-gs-base-v1")]
     LongKernelGsBaseV1,
     #[serde(rename = "s2-long-fs-base-msr-v1")]
@@ -1564,12 +1567,14 @@ impl IntegerState {
             | Profile::LongMovupdMemRipV1
             | Profile::LongMovupdMemSibV1
             | Profile::LongSepDisabledV1
-            | Profile::LongRdtscV1 => Profile::LongIntegerV1,
+            | Profile::LongRdtscV1
+            | Profile::LongCliV1 => Profile::LongIntegerV1,
             other => other,
         };
         match (state_profile, self.fs_base) {
             (
                 Profile::LongIntegerV1
+                | Profile::LongCliV1
                 | Profile::LongSepDisabledV1
                 | Profile::LongRdtscV1
                 | Profile::LongX87StateV1
@@ -1704,6 +1709,7 @@ impl IntegerState {
             }
             (
                 Profile::LongIntegerV1
+                | Profile::LongCliV1
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
@@ -1843,6 +1849,7 @@ impl IntegerState {
         match (state_profile, self.gs_base) {
             (
                 Profile::LongIntegerV1
+                | Profile::LongCliV1
                 | Profile::LongSepDisabledV1
                 | Profile::LongRdtscV1
                 | Profile::LongX87StateV1
@@ -1991,6 +1998,7 @@ impl IntegerState {
         match (state_profile, self.fs_selector) {
             (
                 Profile::LongIntegerV1
+                | Profile::LongCliV1
                 | Profile::LongSepDisabledV1
                 | Profile::LongRdtscV1
                 | Profile::LongX87StateV1
@@ -2288,10 +2296,15 @@ impl IntegerState {
             (_, None, None, None) => {}
             _ => return Err(invalid("state.gs_cache", "not part of this profile")),
         }
-        if self.rflags.get() & !INTEGER_FLAGS != 0 || self.rflags.get() & 2 == 0 {
+        let system_flags = if profile == Profile::LongCliV1 {
+            (1 << 9) | (3 << 12)
+        } else {
+            0
+        };
+        if self.rflags.get() & !(INTEGER_FLAGS | system_flags) != 0 || self.rflags.get() & 2 == 0 {
             return Err(invalid(
                 "state.rflags",
-                "outside the integer profile or missing reserved bit 1",
+                "outside the profile's admitted RFLAGS bits or missing reserved bit 1",
             ));
         }
         match (profile, &self.x87) {
@@ -2840,12 +2853,50 @@ pub enum ExpectedExit {
     HarnessError,
 }
 
+/// CPL input is present only for the S2-27h CLI profile.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "u8", into = "u8")]
+pub enum CliCpl {
+    Cpl0,
+    Cpl1,
+    Cpl2,
+    Cpl3,
+}
+
+impl TryFrom<u8> for CliCpl {
+    type Error = &'static str;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Cpl0),
+            1 => Ok(Self::Cpl1),
+            2 => Ok(Self::Cpl2),
+            3 => Ok(Self::Cpl3),
+            _ => Err("CPL must be between 0 and 3"),
+        }
+    }
+}
+
+impl From<CliCpl> for u8 {
+    fn from(value: CliCpl) -> Self {
+        match value {
+            CliCpl::Cpl0 => 0,
+            CliCpl::Cpl1 => 1,
+            CliCpl::Cpl2 => 2,
+            CliCpl::Cpl3 => 3,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fixture {
     pub schema_version: u32,
     pub case_id: String,
     pub profile: Profile,
+    /// Narrow CPL input used only by the exact CLI profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli_cpl: Option<CliCpl>,
     pub provenance: Provenance,
     pub seed: Option<HexU64>,
     /// Set only by explicit conversion; never reuse the old input digest as this fixture's digest.
@@ -2969,8 +3020,25 @@ impl Fixture {
         if !(1..=MAX_WALL_TIMEOUT_MS).contains(&self.wall_timeout_ms) {
             return Err(invalid("wall_timeout_ms", "must be between 1 and 30000"));
         }
-        if self.rflags_mask.get() & !INTEGER_FLAGS != 0 {
+        const IF_IOPL: u64 = (1 << 9) | (3 << 12);
+        let cli_flags_mask = INTEGER_FLAGS | IF_IOPL;
+        if self.profile == Profile::LongCliV1 {
+            if self.rflags_mask.get() != cli_flags_mask {
+                return Err(invalid(
+                    "rflags_mask",
+                    "CLI fixtures must compare INTEGER_FLAGS, IF, and IOPL",
+                ));
+            }
+        } else if self.rflags_mask.get() & !INTEGER_FLAGS != 0 {
             return Err(invalid("rflags_mask", "outside the integer profile"));
+        }
+        match (self.profile, self.cli_cpl) {
+            (Profile::LongCliV1, Some(_)) => {}
+            (Profile::LongCliV1, None) => {
+                return Err(invalid("cli_cpl", "required by the CLI profile"));
+            }
+            (_, Some(_)) => return Err(invalid("cli_cpl", "not part of this profile")),
+            (_, None) => {}
         }
         if self.expected_exit == ExpectedExit::StopAddress && self.stop_rip.is_none() {
             return Err(invalid("stop_rip", "required for stop_address"));
@@ -3026,6 +3094,35 @@ impl Fixture {
                 return Err(invalid(
                     "memory.code",
                     "SWAPGS fixtures require the exact profile program, instruction budget, entry address, and terminal expectation",
+                ));
+            }
+        }
+        if self.profile == Profile::LongCliV1 {
+            let Some(code) = self.memory.iter().find(|region| region.region_id == "code") else {
+                return Err(invalid("memory.code", "required by the CLI profile"));
+            };
+            let cpl: u8 = self.cli_cpl.expect("validated CLI CPL").into();
+            let iopl = ((self.initial_state.rflags.get() >> 12) & 3) as u8;
+            let success = cpl <= iopl;
+            let expected = if success {
+                ExpectedExit::StopAddress
+            } else {
+                ExpectedExit::Exception
+            };
+            if code.initial_bytes_hex.to_ascii_lowercase() != "fa"
+                || code.guest_address.get() != self.initial_state.rip.get()
+                || code.length != 1
+                || !code.permissions.execute
+                || self.instruction_budget != 1
+                || self.expected_exit != expected
+                || self.stop_rip.map(HexU64::get)
+                    != success
+                        .then(|| self.initial_state.rip.get().checked_add(1))
+                        .flatten()
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "CLI fixtures require one bare FA, budget one, and outcome/stop matching CPL versus IOPL",
                 ));
             }
         }
@@ -5395,6 +5492,7 @@ impl Fixture {
             schema_version: SCHEMA_VERSION,
             case_id: source.case_id.clone(),
             profile: Profile::LongIntegerV1,
+            cli_cpl: None,
             provenance: source.provenance.clone(),
             seed: source.seed.map(HexU64),
             converted_from_v1_sha256: Some(old.input_sha256.clone()),
@@ -5909,7 +6007,14 @@ pub fn compare(
         return Err(invalid("snapshot", "unavailable"));
     };
     let mask = loaded.fixture.rflags_mask.get();
-    if a.rflags_defined.get() & mask != mask || b.rflags_defined.get() & mask != mask {
+    let defined_mask = if loaded.fixture.profile == Profile::LongCliV1 {
+        mask & INTEGER_FLAGS
+    } else {
+        mask
+    };
+    if a.rflags_defined.get() & defined_mask != defined_mask
+        || b.rflags_defined.get() & defined_mask != defined_mask
+    {
         return Err(invalid("rflags_defined", "requested flags are not defined"));
     }
     let mut differences = Vec::new();
@@ -6047,7 +6152,12 @@ pub fn compare(
     if b.minss_invalid_controls != loaded.fixture.minss_invalid_controls {
         differences.push("right.minss_invalid_controls".into());
     }
-    if (a.state.rflags.get() ^ b.state.rflags.get()) & mask != 0 {
+    if rflags_differ(
+        loaded.fixture.profile,
+        mask,
+        a.state.rflags.get(),
+        b.state.rflags.get(),
+    ) {
         differences.push("rflags".into());
     }
     if a.rflags_defined != b.rflags_defined {
@@ -6103,6 +6213,16 @@ pub fn compare(
         }
     }
     Ok(differences)
+}
+
+fn rflags_differ(profile: Profile, mask: u64, left: u64, right: u64) -> bool {
+    let allowed = if profile == Profile::LongCliV1 {
+        INTEGER_FLAGS | (1 << 9) | (3 << 12)
+    } else {
+        INTEGER_FLAGS
+    };
+    debug_assert_eq!(mask & !allowed, 0, "fixture validation gates RFLAGS masks");
+    (left ^ right) & mask != 0
 }
 
 pub fn decode_bytes(hex: &str) -> Result<Vec<u8>, FormatError> {

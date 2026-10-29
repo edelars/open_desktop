@@ -12,6 +12,7 @@ pub(crate) fn native_profile_local_only(profile: od_testkit::v2::Profile) -> boo
         od_testkit::v2::Profile::LongFsBaseV1
             | od_testkit::v2::Profile::LongFsBaseMsrV1
             | od_testkit::v2::Profile::LongKernelGsBaseV1
+            | od_testkit::v2::Profile::LongCliV1
             | od_testkit::v2::Profile::LongGsBaseV1
             | od_testkit::v2::Profile::LongFsSelectorV1
             | od_testkit::v2::Profile::LongGsSelectorV1
@@ -242,6 +243,7 @@ mod tests {
         ));
         for denied in [
             Profile::LongKernelGsBaseV1,
+            Profile::LongCliV1,
             Profile::LongXorpdRegV1,
             Profile::LongXorpdPrerequisitesV1,
             Profile::LongMinssInvalidControlsV1,

@@ -616,4 +616,17 @@ mod tests {
             assert!(raw_handle.is_null());
         }
     }
+
+    #[test]
+    fn c_abi_rejects_cli_without_its_local_long64_profile() {
+        use std::ffi::c_void;
+
+        let code = [0xfa];
+        let mut raw_handle: *mut c_void = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { od_fragment_create(code.as_ptr(), code.len(), &mut raw_handle) },
+            STATUS_INVALID_CODE
+        );
+        assert!(raw_handle.is_null());
+    }
 }

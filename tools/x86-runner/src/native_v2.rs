@@ -1522,6 +1522,7 @@ mod tests {
             schema_version: 2,
             case_id: "native-v2-unit".into(),
             profile: v2::Profile::LongIntegerV1,
+            cli_cpl: None,
             provenance: Provenance {
                 kind: "manual".into(),
                 source: "handwritten test bytes".into(),
@@ -4091,6 +4092,23 @@ mod tests {
     fn swapgs_profile_is_denied_before_native_trace() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/x86/stage2/s2_27g_swapgs_once.case.json");
+        let loaded = Fixture::from_json(&std::fs::read(path).unwrap()).unwrap();
+        let result = execute(&loaded);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
+    }
+
+    #[test]
+    fn cli_profile_is_denied_before_native_trace() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/x86/stage2/s2_27h_cli_cpl0_iopl0_if1.case.json");
         let loaded = Fixture::from_json(&std::fs::read(path).unwrap()).unwrap();
         let result = execute(&loaded);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));

@@ -16612,3 +16612,46 @@ Sources: Intel SDM Rev. 093 `RDMSR`/`WRMSR`, Vol. 3A §§2.8.10/4.5.3, and
 [fixture format](../testing/TEST_CASE_FORMAT.md),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), and
 [Linux matrix](STAGE_2_LINUX_PROFILE.md#s2-26g-local-ia32_kernel_gs_baseswapgs-matrix-entry).
+
+## S2-27h — exact Long64 `CLI`
+
+Added `CliProfile::NonPviLong64V1` and the independent schema profile
+`s2-long-cli-v1`. It admits bare `FA` under fixed Long64, CR0.PE=1, VM=0,
+CR4.PVI=0, no VMX/SMM assumptions. CPL comes from the access context and IOPL
+from RFLAGS[13:12]. CPL<=IOPL clears only IF, advances RIP one byte and
+retires once even when IF was already clear. CPL>IOPL reports #GP(0) with no
+state change, retirement or data callback regardless of IF. The arithmetic
+`rflags_defined` mask remains unchanged; only this fixture profile admits and
+compares concrete IF/IOPL alongside `INTEGER_FLAGS`.
+
+The 32 handwritten fixture cases cover IF=0/1 × CPL0–3 × IOPL0–3 and produce
+20 successful executions plus 12 #GP(0) results. Focused tests cover bare
+profile admission, legacy denial, exact `F0 FA` #UD and fetch priority, other
+prefix/neighbor denial, STOP and budget-before-fetch, plus a fresh-boundary
+composition where a caller resubmits a new maskable request after CLI. The
+IF=0 continuation executes NOP to RIP+2 without eligibility notification;
+the IF=1 control reports `InterruptEligible` before fetch. Comparison tests
+show either IF or IOPL tampering is detected. CPUID profile code and masks are
+unchanged. JIT, native x86 and C/fragment APIs deny this profile.
+
+Checks on 2026-10-29: focused CLI tests passed for the 32-case interpreter
+matrix (20 successes/12 faults), fetch/STOP/budget/prefix boundaries, the
+post-CLI interrupt-request composition, typed CPL/schema isolation, IF/IOPL
+tampering, native local-only preflight, JIT and C denial. `cargo test -p od-testkit -p od-runner -p od-host
+--offline` passed after the final edits (404 testkit, 112 runner unit, 361
+runner fixture integration, 9 host tests; 0 failures). `cargo check --workspace
+--all-targets --offline`, `cargo fmt --all -- --check`, Linux-target
+`cargo check -p od-x86-runner --target x86_64-unknown-linux-gnu --all-targets
+--offline`, `git diff --check`, and `graphify update .` passed. The Linux-gated
+native local-only helper test passed, and the Linux-gated native integration
+preflight test compiles but could not run on this macOS host; a
+Linux-target test-binary link attempt failed because Darwin `ld` does not accept
+GNU Linux linker options. `tools/check_layout.py` still reports the existing
+linked-worktree `.git` pointer and two absent local oracle manifests under
+`work/`; these are pre-existing checkout/report conditions recorded by prior
+Stage 2 reports, not introduced here. Linux runtime, physical, SSH and Mac mini
+checks were not run; this local CPU profile does not model #GP/#UD delivery or
+Linux execution. Independent Sol-medium review found the missing native
+local-only preflight; the profile and helper test were corrected, and re-review
+found no remaining findings. Source: Intel SDM Rev. 093, Vol. 2A CLI pp. 3-148–3-149,
+Table 3-7. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27h--exact-long64-cli), [plan](../plans/STAGE_2.md#s2-27h--exact-long64-cli), [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-27h-exact-long64-cli-fixture-profile), and [Linux matrix](STAGE_2_LINUX_PROFILE.md#s2-27h-local-cli-matrix-entry).

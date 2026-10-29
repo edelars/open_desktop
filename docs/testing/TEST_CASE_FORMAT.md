@@ -14,6 +14,15 @@ V1 readers, bytes and historical digests remain unchanged. Segment profiles are
 profile-specific state extensions;
 it does not reinterpret or rewrite existing integer-profile fixtures.
 
+The local-only `s2-long-cli-v1` profile adds one optional typed numeric
+`cli_cpl` input, restricted to values 0–3 and forbidden on all other profiles.
+Its fixtures admit only exact bare `FA`, budget 1, and a success stop at
+entry+1; #GP cases have no stop address. The top-level `rflags_mask` may
+include `INTEGER_FLAGS|IF|IOPL` only for this profile. Comparison treats IF
+and IOPL as concrete system state, while `rflags_defined` remains limited to
+arithmetic `INTEGER_FLAGS`. This addition is omitted when serializing every
+older profile, preserving prior fixture wire shapes and digests.
+
 The local-only `s2-long-sep-disabled-v1` fixtures describe one exact bare
 Long64 instruction: the handwritten cases each use one code mapping at the
 initial RIP containing exactly `0F 34` or `0F 35`, with

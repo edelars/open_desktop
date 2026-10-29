@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 pub mod binary_float;
+pub mod cli;
 pub mod cpuid;
 pub mod execute;
 pub mod interrupt;
@@ -17,6 +18,7 @@ pub mod sep;
 pub mod state;
 pub mod swapgs;
 pub mod x87;
+pub use cli::CliProfile;
 pub use interrupt::{
     InterruptDeliveryPhase, InterruptDeliveryResult, InterruptFrameSlot, InterruptOutsideProfile,
     deliver_maskable_interrupt,

@@ -5918,3 +5918,21 @@ priority. JIT, native runner, and fragment/C adapters deny SWAPGS. This fixture
 profile does not establish unconditional Long64 support or physical/Linux
 runtime behavior. Source: Intel SDM Rev. 093 Vol. 2B, SWAPGS pp. 4-697–4-698,
 including CR4.FRED behavior. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-27g--exact-long64-swapgs).
+
+## S2-27h exact Long64 CLI fixture profile
+
+The 32 handwritten `s2_27h_cli_cpl*_iopl*_if*.case.json` cases use the
+`s2-long-cli-v1` profile and exact bare `FA`, with instruction budget 1.
+Each carries a numeric CPL input restricted to 0–3; other profiles cannot
+carry that field. The fixed profile assumes Long64, CR0.PE=1, VM=0, CR4.PVI=0,
+and no VMX/SMM. It reads IOPL from initial RFLAGS and compares the concrete
+`INTEGER_FLAGS|IF|IOPL` mask. The arithmetic `rflags_defined` mask remains
+`INTEGER_FLAGS`; IF and IOPL do not become arithmetic-defined flags.
+
+Across IF=0/1 × CPL0–3 × IOPL0–3, 20 cases clear only IF, advance RIP and
+retire; 12 cases produce #GP(0) with unchanged state and no retirement. Tests
+also cover exact LOCK #UD after full fetch, unsupported prefixes/neighbors,
+fetch/STOP/budget order, legacy/JIT/native/C denial, concrete IF/IOPL comparison,
+and the caller-resubmitted maskable-request boundary after CLI. Intel SDM
+Rev. 093 Vol. 2A, CLI pp. 3-148–3-149, Table 3-7 is the source. This is local
+interpreter coverage, not event delivery or physical/Linux validation.

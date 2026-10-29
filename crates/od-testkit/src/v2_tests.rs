@@ -1,6 +1,63 @@
 use super::*;
 
 #[test]
+fn cli_rflags_comparison_includes_if_and_iopl_without_expanding_definedness() {
+    let mask = INTEGER_FLAGS | (1 << 9) | (3 << 12);
+    let initial = INTEGER_FLAGS | (2 << 12);
+    assert!(rflags_differ(
+        Profile::LongCliV1,
+        mask,
+        initial,
+        initial ^ (1 << 9)
+    ));
+    assert!(rflags_differ(
+        Profile::LongCliV1,
+        mask,
+        initial,
+        initial ^ (1 << 12)
+    ));
+    assert!(!rflags_differ(
+        Profile::LongCliV1,
+        mask,
+        initial,
+        initial ^ (1 << 18)
+    ));
+    assert_eq!(INTEGER_FLAGS & ((1 << 9) | (3 << 12)), 0);
+    assert!(!rflags_differ(
+        Profile::LongIntegerV1,
+        INTEGER_FLAGS,
+        initial,
+        initial ^ (1 << 9)
+    ));
+}
+
+#[test]
+fn cli_fixture_cpl_and_system_flag_mask_are_profile_local() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_27h_cli_cpl0_iopl0_if0.case.json");
+    let loaded = Fixture::from_json(bytes).unwrap();
+    assert_eq!(loaded.fixture.cli_cpl, Some(CliCpl::Cpl0));
+    assert_eq!(serde_json::to_value(&loaded.fixture).unwrap()["cli_cpl"], 0);
+
+    let mut bad_cpl = serde_json::to_value(&loaded.fixture).unwrap();
+    bad_cpl["cli_cpl"] = serde_json::json!(4);
+    assert!(Fixture::from_json(&serde_json::to_vec(&bad_cpl).unwrap()).is_err());
+
+    let mut old = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_27g_swapgs_once.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    old.cli_cpl = Some(CliCpl::Cpl3);
+    assert!(old.validate().is_err());
+    old.cli_cpl = None;
+    let old_json = serde_json::to_value(&old).unwrap();
+    assert!(old_json.get("cli_cpl").is_none());
+    old.rflags_mask = HexU64(old.rflags_mask.get() | (1 << 9));
+    assert!(old.validate().is_err());
+}
+
+#[test]
 fn swapgs_kernel_gs_base_preserves_some_zero_and_old_wire_shape() {
     let mut cpu = od_isa::LongModeState::default();
     cpu.kernel_gs_base = Some(0);

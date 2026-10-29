@@ -12520,6 +12520,285 @@ fn s2_27g_swapgs_literals_exchange_state_and_preserve_second_fault_commit() {
 }
 
 #[test]
+fn s2_27h_cli_fixture_matrix_clears_if_only_when_cpl_allows() {
+    use od_isa::execute::{RunConfig, RunExit, run_with_cli_profile};
+    use od_isa::memory::PrivilegeLevel;
+    use od_isa::{CliProfile, INTEGER_FLAGS};
+
+    let mut successes = 0;
+    let mut faults = 0;
+    for if_set in 0..=1 {
+        for cpl in 0..=3 {
+            for iopl in 0..=3 {
+                let case_id = format!("s2_27h_cli_cpl{cpl}_iopl{iopl}_if{if_set}");
+                let path = arithmetic_fixture_directory().join(format!("{case_id}.case.json"));
+                let fixture = Fixture::from_json(&std::fs::read(path).unwrap())
+                    .unwrap()
+                    .fixture;
+                assert_eq!(fixture.profile, crate::v2::Profile::LongCliV1);
+                let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+                let before = state.clone();
+                let mut memory = AccessTraceMemory {
+                    inner: FlatMemory::from_fixture(&fixture).unwrap(),
+                    accesses: Vec::new(),
+                    fetch_limit: None,
+                };
+                let privilege = match cpl {
+                    0 => PrivilegeLevel::Ring0,
+                    1 => PrivilegeLevel::Ring1,
+                    2 => PrivilegeLevel::Ring2,
+                    _ => PrivilegeLevel::Ring3,
+                };
+                let result = run_with_cli_profile(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: fixture.instruction_budget,
+                        stop_rip: fixture.stop_rip.map(HexU64::get),
+                        context: AccessContext {
+                            privilege,
+                            ..AccessContext::default()
+                        },
+                    },
+                    &CliProfile::NonPviLong64V1,
+                    || false,
+                );
+                if cpl <= iopl {
+                    successes += 1;
+                    assert_eq!(result.exit, RunExit::StopAddress, "{case_id}");
+                    assert_eq!(result.instructions_executed, 1, "{case_id}");
+                    assert_eq!(state.rip, before.rip + 1, "{case_id}");
+                    assert_eq!(state.rflags, before.rflags & !(1 << 9), "{case_id}");
+                    let mut expected = before.clone();
+                    expected.rip += 1;
+                    expected.rflags &= !(1 << 9);
+                    assert_eq!(state, expected, "{case_id}");
+                } else {
+                    faults += 1;
+                    assert_eq!(
+                        result.exit,
+                        RunExit::Fault(ArchitecturalFault {
+                            vector: 13,
+                            error_code: Some(0),
+                            linear_address: None
+                        }),
+                        "{case_id}"
+                    );
+                    assert_eq!(result.instructions_executed, 0, "{case_id}");
+                    assert_eq!(state, before, "{case_id}");
+                }
+                assert_eq!(result.rflags_defined, INTEGER_FLAGS, "{case_id}");
+                assert_eq!(memory.accesses.len(), 1, "{case_id}");
+                assert_eq!(memory.accesses[0].0, AccessKind::Fetch, "{case_id}");
+                assert_eq!(memory.accesses[0].1, before.rip, "{case_id}");
+            }
+        }
+    }
+    assert_eq!((successes, faults), (20, 12));
+}
+
+#[test]
+fn s2_27h_cli_encoding_boundary_and_interrupt_eligibility_composition() {
+    use od_isa::execute::{
+        MaskableRequestRunResult, RunConfig, RunExit, RunResult, run, run_with_cli_profile,
+        run_with_maskable_request,
+    };
+    use od_isa::memory::{AccessContext, PrivilegeLevel};
+    use od_isa::{CliProfile, INTEGER_FLAGS};
+
+    let profile = CliProfile::NonPviLong64V1;
+    let context = AccessContext {
+        privilege: PrivilegeLevel::Ring0,
+        ..AccessContext::default()
+    };
+    for (bytes, expected) in [
+        (
+            &[0xf3, 0xfa][..],
+            Some(RunExit::Unsupported { opcode: 0xfa }),
+        ),
+        (
+            &[0x66, 0xfa][..],
+            Some(RunExit::Unsupported { opcode: 0xfa }),
+        ),
+        (&[0xfb][..], Some(RunExit::Unsupported { opcode: 0xfb })),
+        (
+            &[0xf0, 0xfa][..],
+            Some(RunExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            })),
+        ),
+    ] {
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        let before = state.clone();
+        let mut guest = memory(bytes, state.rip);
+        let result = run_with_cli_profile(
+            &mut state,
+            &mut guest,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context,
+            },
+            &profile,
+            || false,
+        );
+        assert_eq!(result.exit, expected.unwrap(), "bytes={bytes:02x?}");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+
+    let mut state = LongModeState::default();
+    state.rip = 0x1000;
+    let mut guest = memory(&[0xfa], state.rip);
+    let legacy = run(
+        &mut state,
+        &mut guest,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context,
+        },
+        || false,
+    );
+    assert_eq!(legacy.exit, RunExit::Unsupported { opcode: 0xfa });
+
+    let mut state = LongModeState::default();
+    state.rip = 0x1000;
+    let mut guest = memory(&[0xf0, 0xfa], state.rip);
+    let stopped = run_with_cli_profile(
+        &mut state,
+        &mut guest,
+        RunConfig {
+            instruction_budget: 0,
+            stop_rip: Some(0x1000),
+            context,
+        },
+        &profile,
+        || false,
+    );
+    assert_eq!(stopped.exit, RunExit::StopAddress);
+    assert_eq!(state.rip, 0x1000);
+    let budgeted = run_with_cli_profile(
+        &mut state,
+        &mut guest,
+        RunConfig {
+            instruction_budget: 0,
+            stop_rip: None,
+            context,
+        },
+        &profile,
+        || false,
+    );
+    assert_eq!(budgeted.exit, RunExit::InstructionBudgetExhausted);
+    assert_eq!(state.rip, 0x1000);
+
+    let mut state = LongModeState::default();
+    state.rip = 0x1000;
+    let mut guest = memory(&[0xf0, 0xfa], state.rip);
+    guest.inject_once(
+        0x1001,
+        AccessKind::Fetch,
+        MemoryError::Architectural(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(0x1001),
+        }),
+    );
+    let fetch_fault = run_with_cli_profile(
+        &mut state,
+        &mut guest,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context,
+        },
+        &profile,
+        || false,
+    );
+    assert_eq!(
+        fetch_fault.exit,
+        RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(0x1001)
+        })
+    );
+    assert_eq!(state.rip, 0x1000);
+
+    // CLI retires at the first fresh boundary; caller then resubmits its request.
+    let mut state = LongModeState::default();
+    state.rip = 0x2000;
+    state.rflags |= 1 << 9;
+    let mut guest = memory(&[0xfa, 0x90], state.rip);
+    let cli = run_with_cli_profile(
+        &mut state,
+        &mut guest,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: Some(0x2001),
+            context,
+        },
+        &profile,
+        || false,
+    );
+    assert_eq!(cli.exit, RunExit::StopAddress);
+    assert_eq!(cli.instructions_executed, 1);
+    assert_eq!(state.rip, 0x2001);
+    assert_eq!(state.rflags & (1 << 9), 0);
+    let caller_request = Some(0x42);
+    let after_cli = run_with_maskable_request(
+        &mut state,
+        &mut guest,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: None,
+            context,
+        },
+        INTEGER_FLAGS,
+        caller_request,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(caller_request, Some(0x42));
+    assert!(matches!(
+        after_cli,
+        MaskableRequestRunResult::Run(RunResult {
+            exit: RunExit::InstructionBudgetExhausted,
+            instructions_executed: 1,
+            ..
+        })
+    ));
+    assert_eq!(state.rip, 0x2002);
+
+    let mut if_set = state.clone();
+    if_set.rip = 0x2001;
+    if_set.rflags |= 1 << 9;
+    let mut eligible_guest = memory(&[0x90], if_set.rip);
+    assert_eq!(
+        run_with_maskable_request(
+            &mut if_set,
+            &mut eligible_guest,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context
+            },
+            INTEGER_FLAGS,
+            caller_request,
+            || false
+        )
+        .unwrap(),
+        MaskableRequestRunResult::InterruptEligible {
+            vector: 0x42,
+            rip: 0x2001
+        },
+    );
+}
+
+#[test]
 fn backwards_branches_budget_and_stop_have_precise_boundaries() {
     let code = [0x48, 0x2b, 0xc1, 0x75, 0xfb];
     let mut mem = memory(&code, 0);

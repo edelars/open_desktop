@@ -2506,6 +2506,33 @@ and README, and Linux validation matrix. Architecture source: Intel SDM Rev.
 093 Vol. 2B SWAPGS pp. 4-697–4-698, including the CR4.FRED caveat; do not claim
 unconditional Long64 support. No physical, SSH, or Mac mini checks.
 
+#### S2-27h — exact Long64 `CLI`
+
+Implemented `CliProfile::NonPviLong64V1` and fixture profile
+`s2-long-cli-v1` for exact bare `FA`. The fixed assumptions are Long64,
+CR0.PE=1, RFLAGS.VM=0, CR4.PVI=0, and no VMX/SMM. CPL comes from
+`AccessContext`; IOPL comes from RFLAGS[13:12]. At CPL<=IOPL, CLI clears only
+IF, advances RIP by one and retires once even when IF was already clear. At
+CPL>IOPL it raises #GP(0) without state mutation, retirement, or data-memory
+callback, regardless of IF. Definedness remains the arithmetic `INTEGER_FLAGS`
+mask; IF/IOPL are compared as concrete system bits only in this profile.
+
+Exact `F0 FA` raises #UD after complete fetch. Other prefixes and neighbors
+remain unsupported; fetch/STOP/budget ordering is preserved. Legacy APIs,
+JIT, native execution and C/fragment APIs remain denied; CPUID identity and
+masks are unchanged. Thirty-two literal cases cover IF=0/1 × CPL0–3 × IOPL0–3
+(20 success, 12 #GP). Composition checks submit a new caller-owned maskable
+request after CLI: IF=0 executes the following NOP without notification,
+delivery, acknowledgement or IDT/data access; IF=1 reports entry eligibility.
+The same composition is not queried after a CLI fault.
+
+Architecture source: Intel SDM Rev. 093, Vol. 2A, CLI pp. 3-148–3-149,
+Table 3-7. Independent Sol-medium review found and verified a missing native
+local-only preflight fix; no findings remain. Local checks do not establish
+exception delivery, JIT/native/C execution, Linux behavior or physical
+execution. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27h--exact-long64-cli)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-27h-exact-long64-cli-fixture-profile).
+
 ## 9. x87, MMX и SSE/SSE2
 
 Здесь особенно запрещены shortcuts: host `double` вместо extended precision, сравнение только обычных конечных значений, потеря NaN payload/classification или blanket masking всех FP differences. Если нужны библиотеки для общей инфраструктуры, они не должны реализовывать за проект x86/FP semantics.

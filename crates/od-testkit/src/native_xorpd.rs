@@ -591,6 +591,7 @@ pub fn generate_native_xorpd_fixture(seed: u64, sequence: u32) -> Fixture {
         schema_version: SCHEMA_VERSION,
         case_id: format!("s2_42a_xorpd_{seed:016x}_{sequence:04x}"),
         profile: Profile::LongNativeXorpdXmm0Xmm1V1,
+        cli_cpl: None,
         provenance: Provenance {
             kind: "deterministic_generator".into(),
             source: format!(
