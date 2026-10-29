@@ -564,6 +564,27 @@ cooperative STOP before entry/inside both pairs/after the final callback with
 resume from actual RIP, unsupported tail и host error после первого committed
 block. См. [memory-dispatch report](../reports/STAGE_3_S3-15_2026-10-27.md#bounded-checked-memory-dispatcher-partial).
 
+#### S3-15p. Bounded arithmetic/checked-load production coordinator
+
+`od_jit::memory_dispatch::run_bounded_arithmetic_load` is the public runtime
+entry for the exact one/two arithmetic → `48 8B 03` → JZ/JNZ → existing ADD
+fallthrough slice. It derives the complete plan from one immutable full
+`CodeView`, keeps original guest RIPs, and treats prefix end only as an internal
+handoff. Eager is the default strategy; demand-flags remains explicit and
+uncached. One remaining budget and STOP/stop-RIP/event flow across native,
+memory and suffix work. Restart accepts each decoded arithmetic boundary and
+the Jcc/fallthrough boundaries, so a mid-prefix or post-Jcc yield can resume
+without replay. Terminal native reports retain their actual retirement and
+remaining budget. Typed errors cover plan/entry admission, compilation,
+malformed counters, invalid budget exits, no progress, executor errors and phase RIPs. The
+`ControlledBlockExecutor` publication hook lets host adapters resample control
+after publication and before native entry; the published register mapping is
+released before memory publication, and the checked-memory mapping before
+suffix compilation. Host evidence and limitations are recorded in the
+[S3-29e report](../reports/STAGE_3_S3-29e_2026-10-29.md). This remains a
+borrowed fixture/API slice; owner-backed code fetch and MMU/RAM integration,
+full S3-15 corpus/oracle gates and Mini/performance remain open.
+
 #### S3-15n. Production memory-owner integration prerequisites
 
 The borrowed dispatcher remains a bounded fixture/API slice. Production
@@ -2181,6 +2202,16 @@ repair and retry, callback event/fault priority, and STOP/budget guards. It adds
 no default, cache, owner/MMU, or general dispatcher route. Full S3-29 remains
 open; Mini and performance checks stay deferred until the end of Stage 3. See
 the [S3-29d report](../reports/STAGE_3_S3-29d_2026-10-29.md).
+
+S3-29e promotes this bounded handoff to one public uncached `od-jit`
+coordinator over the exact same admitted forms. Eager remains the default;
+demand-flags is explicit. The coordinator validates the full immutable view,
+shares one budget/control context, preserves original guest RIPs, and validates
+executor counters and each phase boundary. The host differential test invokes
+the coordinator for complete candidate/eager/interpreter runs and fault retry.
+It does not add owner/MMU integration, cache admission, ISA forms or a
+performance claim; Mini and performance remain deferred to the end of Stage 3.
+See the [S3-29e report](../reports/STAGE_3_S3-29e_2026-10-29.md).
 
 ### S3-30. Выбрать register allocator
 

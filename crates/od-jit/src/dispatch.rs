@@ -115,6 +115,49 @@ pub trait ControlledBlockExecutor {
         incoming_budget: u64,
         control: DispatchControl<'_>,
     ) -> Result<BlockExecutionReport, Self::Error>;
+
+    /// Event-aware publication hook. Executors that publish before entering
+    /// native code should override this method and sample `event_requested`
+    /// after publication, dropping the mapping before native entry when an
+    /// event is pending. The default preserves compatibility for executors
+    /// whose publication and entry are inseparable.
+    fn execute_one_block_controlled_with_event(
+        &mut self,
+        block: &crate::block_compile::CompiledBlock,
+        state: &mut LongModeState,
+        incoming_budget: u64,
+        control: DispatchControl<'_>,
+    ) -> Result<ControlledBlockExecution, Self::Error> {
+        if control.stop_rip == Some(state.rip) {
+            return Ok(ControlledBlockExecution::Yield(DispatchExit::Runtime(
+                RuntimeExitTag::StopAddress,
+            )));
+        }
+        if control.stop_requested.load(Ordering::Acquire) != 0 {
+            return Ok(ControlledBlockExecution::Yield(DispatchExit::Runtime(
+                RuntimeExitTag::StopRequested,
+            )));
+        }
+        if incoming_budget == 0 {
+            return Ok(ControlledBlockExecution::Yield(
+                DispatchExit::BudgetExhausted,
+            ));
+        }
+        if control
+            .event_requested
+            .is_some_and(|event| event.load(Ordering::Acquire))
+        {
+            return Ok(ControlledBlockExecution::Yield(DispatchExit::EventPending));
+        }
+        self.execute_one_block_controlled(block, state, incoming_budget, control)
+            .map(ControlledBlockExecution::Executed)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ControlledBlockExecution {
+    Executed(BlockExecutionReport),
+    Yield(DispatchExit),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

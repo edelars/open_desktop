@@ -1413,6 +1413,31 @@ memory dispatcher tests retain invalid-accounting and zero-progress coverage.
 S3-29 remains open; eager stays the default, candidate remains uncached, and
 Mini/performance comparison remains deferred until the end of Stage 3.
 
+### S3-29e / S3-15p: bounded production coordinator
+
+`od_jit::memory_dispatch::run_bounded_arithmetic_load` replaces fixture-side
+phase orchestration for this exact slice. It accepts one or two exact W64
+writers (`48 03 C3`, `48 2B C3`, `48 3B C3`), the exact checked `48 8B 03`
+load, JZ/JNZ with a target at the full-view code end, and the existing
+fallthrough `ADD RAX,RBX`. It validates the complete byte sequence and decoder
+boundaries against one immutable full `CodeView`; phase views never rebase
+guest RIPs, and the prefix end is not treated as the global code end. A caller
+may restart at the load RIP after a fault or at any other decoded instruction
+boundary after a budget/STOP handoff without replaying completed work.
+
+The API carries one budget and STOP, stop-RIP, and event controls across
+phases. Eager compilation is the default; demand-driven flags are explicit and
+uncached. The existing `ControlledBlockExecutor` hook resamples control after
+publication and before native entry for adapters that separate those steps.
+Native reports and phase RIPs are validated, including budget-exit
+consistency and retirement returned by terminal exits; the exact V2 load is dispatched
+through `MemoryBlockExecutor`, whose mapping is released before native suffix
+compilation. Typed failures preserve compile, host-executor, memory-dispatch,
+accounting, progress, and admission distinctions. This does not add a cache,
+new ISA form, `od-machine` owner/MMU path, full S3-15 corpus acceptance, or
+performance result. Mini and performance checks remain deferred until Stage 3
+ends; eager remains the default and S3-29 stays open.
+
 ### S3-13: opt-in one-block fixture CLI
 
 Fixture schema v1 accepts `--engine jit-block`, producing the distinct result
@@ -1513,6 +1538,18 @@ fetch remain open. This does not cover a guest fault on the next code fetch,
 general S3-15, interpreter fallback,
 physical x86 comparison, cache/invalidation, or performance acceptance. See
 the [bounded memory dispatcher report](../reports/STAGE_3_S3-15_2026-10-27.md#bounded-checked-memory-dispatcher-partial).
+
+#### Bounded arithmetic/checked-load coordinator (S3-15p)
+
+The public `run_bounded_arithmetic_load` entry composes the register compiler,
+V2 checked-load dispatcher, and existing executor contracts for the exact
+arithmetic/load/Jcc/fallthrough slice described in S3-29e above. It checks the
+whole plan before execution, forwards remaining budget and controls, and
+accepts only full-entry/load/suffix/code-end entry RIPs. The check is uncached
+and borrowed. Mapping release is sequential: register publication ends before
+the memory callback starts, and memory publication ends before suffix native
+compilation. The API does not prove private RAM ownership, code-fetch fault
+delivery, alias invalidation, or VMHost/MMU integration.
 
 #### Production memory-owner integration prerequisites (S3-15n)
 

@@ -1697,6 +1697,63 @@ impl od_jit::dispatch::ControlledBlockExecutor for PublishedBlockExecutor {
             retired_instructions: result.retired_instructions,
         })
     }
+
+    fn execute_one_block_controlled_with_event(
+        &mut self,
+        block: &od_jit::block_compile::CompiledBlock,
+        state: &mut od_isa::LongModeState,
+        incoming_budget: u64,
+        control: od_jit::dispatch::DispatchControl<'_>,
+    ) -> Result<od_jit::dispatch::ControlledBlockExecution, Self::Error> {
+        let published = PublishedCode::publish_block(block.emitted())
+            .map_err(PublishedBlockExecutionError::Publish)?;
+        if control.stop_rip == Some(state.rip) {
+            drop(published);
+            return Ok(od_jit::dispatch::ControlledBlockExecution::Yield(
+                od_jit::dispatch::DispatchExit::Runtime(
+                    od_jit::runtime::RuntimeExitTag::StopAddress,
+                ),
+            ));
+        }
+        if control.stop_requested.load(Ordering::Acquire) != 0 {
+            drop(published);
+            return Ok(od_jit::dispatch::ControlledBlockExecution::Yield(
+                od_jit::dispatch::DispatchExit::Runtime(
+                    od_jit::runtime::RuntimeExitTag::StopRequested,
+                ),
+            ));
+        }
+        if incoming_budget == 0 {
+            drop(published);
+            return Ok(od_jit::dispatch::ControlledBlockExecution::Yield(
+                od_jit::dispatch::DispatchExit::BudgetExhausted,
+            ));
+        }
+        if control
+            .event_requested
+            .is_some_and(|event| event.load(Ordering::Acquire))
+        {
+            drop(published);
+            return Ok(od_jit::dispatch::ControlledBlockExecution::Yield(
+                od_jit::dispatch::DispatchExit::EventPending,
+            ));
+        }
+        let result = published.execute_block(
+            state,
+            incoming_budget,
+            control.stop_rip,
+            control.stop_requested,
+        );
+        drop(published);
+        let result = result.map_err(PublishedBlockExecutionError::Execute)?;
+        Ok(od_jit::dispatch::ControlledBlockExecution::Executed(
+            od_jit::dispatch::BlockExecutionReport {
+                exit: result.exit,
+                remaining_budget: result.remaining_budget,
+                retired_instructions: result.retired_instructions,
+            },
+        ))
+    }
 }
 
 /// Cache-aware counterpart to `ControlledBlockExecutor`. The cache owns the
@@ -64390,7 +64447,7 @@ mod tests {
     }
 
     #[test]
-    fn s3_29d_native_flags_checked_load_native_branch_handoff() {
+    fn s3_29e_bounded_arithmetic_load_coordinator() {
         let _guard = jit_test_lock();
         use od_isa::memory::{AccessKind, GuestMemory, MemoryError};
         use od_jit::block::CodeView;
@@ -64743,98 +64800,91 @@ mod tests {
             };
             let full = CodeView::new(BASE, &code).unwrap();
             let code_end = full.code_end();
-            let prefix_result = native_phase(full, load_rip, &mut state, 12, candidate);
-            assert_eq!(state.rip, load_rip);
-            let mut interpreted_prefix = od_isa::LongModeState {
-                rip: BASE,
-                ..Default::default()
-            };
-            interpreted_prefix.gpr[0] = initial_rax;
-            interpreted_prefix.gpr[3] = 0x100;
-            let mut prefix_ram = ram.clone();
-            while interpreted_prefix.rip < load_rip {
-                assert!(matches!(
-                    od_isa::execute::step(
-                        &mut interpreted_prefix,
-                        &mut prefix_ram,
-                        AccessContext::default(),
-                    )
-                    .unwrap(),
-                    od_isa::execute::StepOutcome::Advanced
-                ));
-            }
-            assert_eq!(
-                state, interpreted_prefix,
-                "canonical state at memory handoff"
-            );
-            assert_eq!(prefix_ram.reads, 0);
-            let boundary = FixtureExecutionBoundary::new(full, full.code_end()).unwrap();
             let stop = AtomicU8::new(0);
+            let mut native_executor = PublishedBlockExecutor;
             let mut memory_executor = PublishedMemoryBlockExecutor;
-            let memory_result = unsafe {
-                run_controlled(
+            let result = unsafe {
+                od_jit::memory_dispatch::run_bounded_arithmetic_load(
                     full,
-                    boundary,
                     &mut state,
                     &mut ram,
                     AccessContext::default(),
-                    prefix_result.remaining_budget,
+                    12,
                     None,
                     &stop,
                     Some(&event),
+                    if candidate {
+                        od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::DemandFlagsCandidate
+                    } else {
+                        od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager
+                    },
+                    &mut native_executor,
                     &mut memory_executor,
                 )
             }
             .unwrap();
             assert_eq!(
-                memory_result.exit,
+                result.exit,
                 if trigger_event {
-                    BoundedMemoryExit::EventPending
+                    od_jit::memory_dispatch::BoundedArithmeticLoadExit::EventPending
                 } else {
-                    BoundedMemoryExit::Unsupported { rip: suffix_rip }
-                }
+                    od_jit::memory_dispatch::BoundedArithmeticLoadExit::Complete
+                },
+                "coordinator result {result:?}, RIP {:#x}",
+                state.rip
             );
-            assert_eq!(memory_result.retired_instructions, 1);
-            assert_eq!(state.rip, suffix_rip);
+            assert_eq!(result.retired_memory, 1);
             if trigger_event {
                 assert!(event.load(Ordering::Acquire));
+                assert_eq!(state.rip, suffix_rip);
                 assert_eq!(
                     state.gpr[0], 0x100,
                     "successful load commits before event yield"
                 );
-                let before_suffix = state.clone();
-                let stop = AtomicU8::new(0);
-                let blocked = native_phase_controlled(
-                    full,
-                    code_end,
-                    &mut state,
-                    memory_result.remaining_budget,
-                    candidate,
-                    None,
-                    &stop,
-                    Some(&event),
-                );
-                assert_eq!(blocked.exit, od_jit::dispatch::DispatchExit::EventPending);
-                assert_eq!(
-                    state, before_suffix,
-                    "pending event must guard native suffix entry"
-                );
                 event.store(false, Ordering::Release);
                 ram.event_on_callback = None;
+                let resumed = unsafe {
+                    od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                    full,
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    result.remaining_budget,
+                    None,
+                    &stop,
+                    None,
+                    if candidate {
+                        od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::DemandFlagsCandidate
+                    } else {
+                        od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager
+                    },
+                    &mut native_executor,
+                    &mut memory_executor,
+                    )
+                }.unwrap();
+                assert_eq!(
+                    resumed.exit,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadExit::Complete
+                );
+                assert_eq!(
+                    resumed.retired_memory, 0,
+                    "retry at suffix must not replay the load"
+                );
+                assert_eq!(state.rip, code_end);
+                return (
+                    state,
+                    result.retired_native + resumed.retired_native,
+                    result.retired_memory,
+                    ram.reads,
+                    ram.data,
+                );
             }
             assert_eq!(ram.reads, 1);
             assert_eq!(ram.last_read, Some((0x100, 8)));
-            let suffix_result = native_phase(
-                full,
-                code_end,
-                &mut state,
-                memory_result.remaining_budget,
-                candidate,
-            );
             (
                 state,
-                prefix_result.retired_native + suffix_result.retired_native,
-                memory_result.retired_instructions,
+                result.retired_native,
+                result.retired_memory,
                 ram.reads,
                 ram.data,
             )
@@ -64932,6 +64982,854 @@ mod tests {
                     assert_eq!(ram.data, candidate_ram);
                 }
             }
+        }
+
+        // The production coordinator yields a restartable checked-load fault:
+        // the arithmetic prefix and canonical flags stay committed, while the
+        // load, destination register, and suffix remain untouched.
+        {
+            let code = [
+                0x48, 0x03, 0xc3, 0x48, 0x8b, 0x03, 0x74, 0x03, 0x48, 0x03, 0xc3,
+            ];
+            let full = CodeView::new(BASE, &code).unwrap();
+            for strategy in [
+                od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager,
+                od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::DemandFlagsCandidate,
+            ] {
+                let mut state = od_isa::LongModeState {
+                    rip: BASE,
+                    ..Default::default()
+                };
+                state.gpr[0] = u64::MAX - 0xff;
+                state.gpr[3] = 0x100;
+                let mut ram = Ram {
+                    code: code.to_vec(),
+                    data: BTreeMap::new(),
+                    reads: 0,
+                    last_read: None,
+                    backend_error: false,
+                    event_on_callback: None,
+                };
+                let mut interpreted_prefix = state.clone();
+                let mut prefix_ram = ram.clone();
+                assert!(matches!(
+                    od_isa::execute::step(
+                        &mut interpreted_prefix,
+                        &mut prefix_ram,
+                        AccessContext::default(),
+                    )
+                    .unwrap(),
+                    od_isa::execute::StepOutcome::Advanced
+                ));
+                let stop = AtomicU8::new(0);
+                let mut native_executor = PublishedBlockExecutor;
+                let mut memory_executor = PublishedMemoryBlockExecutor;
+                let fault = unsafe {
+                    od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                        full,
+                        &mut state,
+                        &mut ram,
+                        AccessContext::default(),
+                        8,
+                        None,
+                        &stop,
+                        None,
+                        strategy,
+                        &mut native_executor,
+                        &mut memory_executor,
+                    )
+                }
+                .unwrap();
+                assert!(matches!(
+                    fault.exit,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadExit::GuestFault(
+                        od_isa::memory::ArchitecturalFault { vector: 14, .. }
+                    )
+                ));
+                assert_eq!(
+                    (fault.retired_native, fault.retired_memory, state.rip),
+                    (1, 0, LOAD_RIP)
+                );
+                assert_eq!(
+                    state, interpreted_prefix,
+                    "faulting prefix must match interpreter full state"
+                );
+                assert_eq!(state.gpr[0], 0, "ADD prefix result is retained");
+                assert_eq!(ram.reads, 1);
+                ram.data.extend(
+                    0_u64
+                        .to_le_bytes()
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, byte)| (0x100 + i as u64, byte)),
+                );
+                let retry = unsafe {
+                    od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                        full,
+                        &mut state,
+                        &mut ram,
+                        AccessContext::default(),
+                        fault.remaining_budget,
+                        None,
+                        &stop,
+                        None,
+                        strategy,
+                        &mut native_executor,
+                        &mut memory_executor,
+                    )
+                }
+                .unwrap();
+                assert_eq!(
+                    retry.exit,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadExit::Complete
+                );
+                assert_eq!(
+                    (retry.retired_native, retry.retired_memory, state.rip),
+                    (1, 1, full.code_end())
+                );
+                assert_eq!(ram.reads, 2);
+            }
+        }
+
+        // A budget stop inside the two-writer prefix returns exact counters
+        // and admits retry at the second arithmetic RIP without replaying the
+        // first writer.
+        {
+            let code = [
+                0x48, 0x03, 0xc3, 0x48, 0x2b, 0xc3, 0x48, 0x8b, 0x03, 0x74, 0x03, 0x48, 0x03, 0xc3,
+            ];
+            let full = CodeView::new(BASE, &code).unwrap();
+            let mut state = od_isa::LongModeState {
+                rip: BASE,
+                ..Default::default()
+            };
+            state.gpr[0] = 1;
+            state.gpr[3] = 0x100;
+            let mut data = BTreeMap::new();
+            data.extend(
+                0x100_u64
+                    .to_le_bytes()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, byte)| (0x100 + i as u64, byte)),
+            );
+            let mut ram = Ram {
+                code: code.to_vec(),
+                data,
+                reads: 0,
+                last_read: None,
+                backend_error: false,
+                event_on_callback: None,
+            };
+            let mut expected_prefix = state.clone();
+            let mut expected_ram = ram.clone();
+            assert!(matches!(
+                od_isa::execute::step(
+                    &mut expected_prefix,
+                    &mut expected_ram,
+                    AccessContext::default(),
+                )
+                .unwrap(),
+                od_isa::execute::StepOutcome::Advanced
+            ));
+            let mut native = PublishedBlockExecutor;
+            let mut memory = PublishedMemoryBlockExecutor;
+            let stop = AtomicU8::new(0);
+            let first = unsafe {
+                od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                    full,
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &stop,
+                    None,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager,
+                    &mut native,
+                    &mut memory,
+                )
+            }
+            .unwrap();
+            assert_eq!(
+                first.exit,
+                od_jit::memory_dispatch::BoundedArithmeticLoadExit::BudgetExhausted
+            );
+            assert_eq!(
+                (
+                    first.retired_native,
+                    first.retired_memory,
+                    first.remaining_budget
+                ),
+                (1, 0, 0)
+            );
+            assert_eq!(state.rip, BASE + 3);
+            assert_eq!(state, expected_prefix);
+            let resumed = unsafe {
+                od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                    full,
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    8,
+                    None,
+                    &stop,
+                    None,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager,
+                    &mut native,
+                    &mut memory,
+                )
+            }
+            .unwrap();
+            assert_eq!(
+                resumed.exit,
+                od_jit::memory_dispatch::BoundedArithmeticLoadExit::Complete
+            );
+            assert_eq!((resumed.retired_native, resumed.retired_memory), (3, 1));
+            assert_eq!(ram.reads, 1);
+            assert_eq!(state.rip, full.code_end());
+        }
+
+        // The coordinator preserves #GP and host backend errors as distinct
+        // outcomes for both compilation strategies, with restart at load RIP.
+        {
+            let code = [
+                0x48, 0x03, 0xc3, 0x48, 0x8b, 0x03, 0x74, 0x03, 0x48, 0x03, 0xc3,
+            ];
+            let full = CodeView::new(BASE, &code).unwrap();
+            for strategy in [
+                od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager,
+                od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::DemandFlagsCandidate,
+            ] {
+                let mut state = od_isa::LongModeState {
+                    rip: BASE,
+                    ..Default::default()
+                };
+                state.gpr[0] = 7;
+                state.gpr[3] = 0x0000_8000_0000_0000;
+                let mut ram = Ram {
+                    code: code.to_vec(),
+                    data: BTreeMap::new(),
+                    reads: 0,
+                    last_read: None,
+                    backend_error: false,
+                    event_on_callback: None,
+                };
+                let mut native = PublishedBlockExecutor;
+                let mut memory = PublishedMemoryBlockExecutor;
+                let fault = unsafe {
+                    od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                        full,
+                        &mut state,
+                        &mut ram,
+                        AccessContext::default(),
+                        8,
+                        None,
+                        &AtomicU8::new(0),
+                        None,
+                        strategy,
+                        &mut native,
+                        &mut memory,
+                    )
+                }
+                .unwrap();
+                assert!(matches!(
+                    fault.exit,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadExit::GuestFault(
+                        od_isa::memory::ArchitecturalFault { vector: 13, .. }
+                    )
+                ));
+                assert_eq!(
+                    (fault.retired_memory, state.rip, ram.reads),
+                    (0, LOAD_RIP, 0)
+                );
+
+                let mut state = od_isa::LongModeState {
+                    rip: BASE,
+                    ..Default::default()
+                };
+                state.gpr[0] = 3;
+                state.gpr[3] = 0x100;
+                let mut data = BTreeMap::new();
+                data.extend(
+                    0x100_u64
+                        .to_le_bytes()
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, byte)| (0x100 + i as u64, byte)),
+                );
+                let mut ram = Ram {
+                    code: code.to_vec(),
+                    data,
+                    reads: 0,
+                    last_read: None,
+                    backend_error: true,
+                    event_on_callback: None,
+                };
+                let failed = unsafe {
+                    od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                        full,
+                        &mut state,
+                        &mut ram,
+                        AccessContext::default(),
+                        8,
+                        None,
+                        &AtomicU8::new(0),
+                        None,
+                        strategy,
+                        &mut native,
+                        &mut memory,
+                    )
+                };
+                assert!(matches!(
+                    failed,
+                    Err(od_jit::memory_dispatch::BoundedArithmeticLoadError::Memory(
+                        od_jit::memory_dispatch::BoundedMemoryError::Executor(_)
+                    ))
+                ));
+                assert_eq!((state.rip, ram.reads), (LOAD_RIP, 1));
+                ram.backend_error = false;
+                let retry = unsafe {
+                    od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                        full,
+                        &mut state,
+                        &mut ram,
+                        AccessContext::default(),
+                        7,
+                        None,
+                        &AtomicU8::new(0),
+                        None,
+                        strategy,
+                        &mut native,
+                        &mut memory,
+                    )
+                }
+                .unwrap();
+                assert_eq!(
+                    retry.exit,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadExit::Complete
+                );
+                assert_eq!(
+                    (retry.retired_native, retry.retired_memory, ram.reads),
+                    (2, 1, 2)
+                );
+            }
+        }
+
+        // Invalid plans, including a Jcc target into the internal load site,
+        // fail before either executor or memory callback is entered.
+        {
+            let code = [
+                0x48, 0x03, 0xc3, 0x48, 0x8b, 0x03, 0x74, 0x01, 0x48, 0x03, 0xc3,
+            ];
+            let full = CodeView::new(BASE, &code).unwrap();
+            let mut state = od_isa::LongModeState {
+                rip: BASE,
+                ..Default::default()
+            };
+            let mut ram = Ram {
+                code: code.to_vec(),
+                data: BTreeMap::new(),
+                reads: 0,
+                last_read: None,
+                backend_error: false,
+                event_on_callback: None,
+            };
+            let stop = AtomicU8::new(0);
+            let mut native_executor = PublishedBlockExecutor;
+            let mut memory_executor = PublishedMemoryBlockExecutor;
+            let invalid = unsafe {
+                od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                    full,
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    8,
+                    None,
+                    &stop,
+                    None,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager,
+                    &mut native_executor,
+                    &mut memory_executor,
+                )
+            };
+            assert!(matches!(
+                invalid,
+                Err(od_jit::memory_dispatch::BoundedArithmeticLoadError::InvalidPlan { .. })
+            ));
+            assert_eq!(ram.reads, 0);
+            assert_eq!(state.rip, BASE);
+        }
+
+        // Entry guards apply at every coordinator phase boundary in the same
+        // priority order: stop-RIP, STOP, boundary/budget, then event.
+        {
+            let code = [
+                0x48, 0x03, 0xc3, 0x48, 0x8b, 0x03, 0x74, 0x03, 0x48, 0x03, 0xc3,
+            ];
+            let full = CodeView::new(BASE, &code).unwrap();
+            let event = AtomicBool::new(true);
+            for (rip, stop_rip, stop, budget, expected) in [
+                (
+                    BASE,
+                    Some(BASE),
+                    1,
+                    0,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadExit::StopAddress,
+                ),
+                (
+                    BASE,
+                    None,
+                    1,
+                    0,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadExit::StopRequested,
+                ),
+                (
+                    LOAD_RIP,
+                    None,
+                    0,
+                    0,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadExit::BudgetExhausted,
+                ),
+                (
+                    LOAD_RIP,
+                    Some(LOAD_RIP),
+                    1,
+                    4,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadExit::StopAddress,
+                ),
+                (
+                    SUFFIX_RIP,
+                    None,
+                    1,
+                    4,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadExit::StopRequested,
+                ),
+                (
+                    SUFFIX_RIP,
+                    None,
+                    0,
+                    0,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadExit::BudgetExhausted,
+                ),
+                (
+                    BASE,
+                    None,
+                    0,
+                    4,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadExit::EventPending,
+                ),
+            ] {
+                let mut state = od_isa::LongModeState {
+                    rip,
+                    ..Default::default()
+                };
+                let mut ram = Ram {
+                    code: code.to_vec(),
+                    data: BTreeMap::new(),
+                    reads: 0,
+                    last_read: None,
+                    backend_error: false,
+                    event_on_callback: None,
+                };
+                let mut native = PublishedBlockExecutor;
+                let mut memory = PublishedMemoryBlockExecutor;
+                let result = unsafe {
+                    od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                        full,
+                        &mut state,
+                        &mut ram,
+                        AccessContext::default(),
+                        budget,
+                        stop_rip,
+                        &AtomicU8::new(stop),
+                        Some(&event),
+                        od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager,
+                        &mut native,
+                        &mut memory,
+                    )
+                }
+                .unwrap();
+                assert_eq!(result.exit, expected, "RIP {rip:#x}, budget {budget}");
+                assert_eq!(ram.reads, 0);
+            }
+        }
+
+        // The non-taken Jcc commits once, yields at its fallthrough on an
+        // exact budget, then resumes at the ADD without repeating branch or
+        // checked-load work.
+        {
+            let code = [
+                0x48, 0x03, 0xc3, 0x48, 0x8b, 0x03, 0x74, 0x03, 0x48, 0x03, 0xc3,
+            ];
+            let full = CodeView::new(BASE, &code).unwrap();
+            let mut state = od_isa::LongModeState {
+                rip: BASE,
+                ..Default::default()
+            };
+            state.gpr[0] = 5;
+            state.gpr[3] = 0x100;
+            let mut data = BTreeMap::new();
+            data.extend(
+                0x100_u64
+                    .to_le_bytes()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, byte)| (0x100 + i as u64, byte)),
+            );
+            let mut ram = Ram {
+                code: code.to_vec(),
+                data,
+                reads: 0,
+                last_read: None,
+                backend_error: false,
+                event_on_callback: None,
+            };
+            let mut native = PublishedBlockExecutor;
+            let mut memory = PublishedMemoryBlockExecutor;
+            let stop = AtomicU8::new(0);
+            let first = unsafe {
+                od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                    full,
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    3,
+                    None,
+                    &stop,
+                    None,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager,
+                    &mut native,
+                    &mut memory,
+                )
+            }
+            .unwrap();
+            assert_eq!(
+                first.exit,
+                od_jit::memory_dispatch::BoundedArithmeticLoadExit::BudgetExhausted
+            );
+            assert_eq!(
+                (
+                    state.rip,
+                    first.retired_native,
+                    first.retired_memory,
+                    first.remaining_budget
+                ),
+                (SUFFIX_RIP + 2, 2, 1, 0)
+            );
+            assert_eq!(ram.reads, 1);
+            let resumed = unsafe {
+                od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                    full,
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &stop,
+                    None,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager,
+                    &mut native,
+                    &mut memory,
+                )
+            }
+            .unwrap();
+            assert_eq!(
+                resumed.exit,
+                od_jit::memory_dispatch::BoundedArithmeticLoadExit::Complete
+            );
+            assert_eq!(
+                (resumed.retired_native, resumed.retired_memory, ram.reads),
+                (1, 0, 1)
+            );
+            assert_eq!(state.rip, full.code_end());
+        }
+
+        // Global code-end control has the same priority as the ordinary
+        // dispatcher: stop-RIP/STOP precede CodeEnd, which precedes budget.
+        {
+            let code = [
+                0x48, 0x03, 0xc3, 0x48, 0x8b, 0x03, 0x74, 0x03, 0x48, 0x03, 0xc3,
+            ];
+            let full = CodeView::new(BASE, &code).unwrap();
+            let make_state = || {
+                let mut state = od_isa::LongModeState {
+                    rip: BASE,
+                    ..Default::default()
+                };
+                state.gpr[0] = u64::MAX - 0xff;
+                state.gpr[3] = 0x100;
+                state
+            };
+            let make_ram = || Ram {
+                code: code.to_vec(),
+                data: 0x100_u64
+                    .to_le_bytes()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, byte)| (0x100 + i as u64, byte))
+                    .collect(),
+                reads: 0,
+                last_read: None,
+                backend_error: false,
+                event_on_callback: None,
+            };
+            let mut native = PublishedBlockExecutor;
+            let mut memory = PublishedMemoryBlockExecutor;
+            let result = unsafe {
+                od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                    full,
+                    &mut make_state(),
+                    &mut make_ram(),
+                    AccessContext::default(),
+                    3,
+                    Some(full.code_end()),
+                    &AtomicU8::new(0),
+                    None,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager,
+                    &mut native,
+                    &mut memory,
+                )
+            }
+            .unwrap();
+            assert_eq!(
+                result.exit,
+                od_jit::memory_dispatch::BoundedArithmeticLoadExit::StopAddress
+            );
+            assert_eq!(
+                (
+                    result.retired_native,
+                    result.retired_memory,
+                    result.remaining_budget
+                ),
+                (2, 1, 0)
+            );
+
+            let mut state = make_state();
+            let mut ram = make_ram();
+            let complete = unsafe {
+                od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                    full,
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    3,
+                    None,
+                    &AtomicU8::new(0),
+                    None,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager,
+                    &mut native,
+                    &mut memory,
+                )
+            }
+            .unwrap();
+            assert_eq!(
+                complete.exit,
+                od_jit::memory_dispatch::BoundedArithmeticLoadExit::Complete
+            );
+            assert_eq!(
+                (
+                    complete.retired_native,
+                    complete.retired_memory,
+                    complete.remaining_budget
+                ),
+                (2, 1, 0)
+            );
+        }
+
+        // A stop raised at the first native safepoint after publication is a
+        // valid zero-retirement yield, not a zero-progress compiler failure.
+        {
+            struct StopAtEntry;
+            impl od_jit::dispatch::ControlledBlockExecutor for StopAtEntry {
+                type Error = ();
+                fn execute_one_block_controlled(
+                    &mut self,
+                    _: &od_jit::block_compile::CompiledBlock,
+                    _: &mut od_isa::LongModeState,
+                    budget: u64,
+                    _: od_jit::dispatch::DispatchControl<'_>,
+                ) -> Result<od_jit::dispatch::BlockExecutionReport, Self::Error> {
+                    Ok(od_jit::dispatch::BlockExecutionReport {
+                        exit: RuntimeExitTag::StopRequested,
+                        remaining_budget: budget,
+                        retired_instructions: 0,
+                    })
+                }
+            }
+            let code = [
+                0x48, 0x03, 0xc3, 0x48, 0x8b, 0x03, 0x74, 0x03, 0x48, 0x03, 0xc3,
+            ];
+            let full = CodeView::new(BASE, &code).unwrap();
+            let mut state = od_isa::LongModeState {
+                rip: BASE,
+                ..Default::default()
+            };
+            let mut ram = Ram {
+                code: code.to_vec(),
+                data: BTreeMap::new(),
+                reads: 0,
+                last_read: None,
+                backend_error: false,
+                event_on_callback: None,
+            };
+            let mut native = StopAtEntry;
+            let mut memory = PublishedMemoryBlockExecutor;
+            let result = unsafe {
+                od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                    full,
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    4,
+                    None,
+                    &AtomicU8::new(0),
+                    None,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager,
+                    &mut native,
+                    &mut memory,
+                )
+            }
+            .unwrap();
+            assert_eq!(
+                result.exit,
+                od_jit::memory_dispatch::BoundedArithmeticLoadExit::StopRequested
+            );
+            assert_eq!(
+                (
+                    result.retired_native,
+                    result.native_blocks,
+                    result.remaining_budget,
+                    state.rip
+                ),
+                (0, 1, 4, BASE)
+            );
+        }
+
+        // Coordinator accounting rejects corrupted executor reports instead
+        // of trusting callbacks or looping at a non-progressing guest RIP.
+        {
+            struct BadNative;
+            impl od_jit::dispatch::ControlledBlockExecutor for BadNative {
+                type Error = ();
+                fn execute_one_block_controlled(
+                    &mut self,
+                    _: &od_jit::block_compile::CompiledBlock,
+                    _: &mut od_isa::LongModeState,
+                    incoming_budget: u64,
+                    _: od_jit::dispatch::DispatchControl<'_>,
+                ) -> Result<od_jit::dispatch::BlockExecutionReport, Self::Error> {
+                    Ok(od_jit::dispatch::BlockExecutionReport {
+                        exit: RuntimeExitTag::BlockComplete,
+                        remaining_budget: incoming_budget,
+                        retired_instructions: incoming_budget + 1,
+                    })
+                }
+            }
+            let code = [
+                0x48, 0x03, 0xc3, 0x48, 0x8b, 0x03, 0x74, 0x03, 0x48, 0x03, 0xc3,
+            ];
+            let full = CodeView::new(BASE, &code).unwrap();
+            let mut state = od_isa::LongModeState {
+                rip: BASE,
+                ..Default::default()
+            };
+            let mut ram = Ram {
+                code: code.to_vec(),
+                data: BTreeMap::new(),
+                reads: 0,
+                last_read: None,
+                backend_error: false,
+                event_on_callback: None,
+            };
+            let mut native = BadNative;
+            let mut memory = PublishedMemoryBlockExecutor;
+            let error = unsafe {
+                od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                    full,
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    4,
+                    None,
+                    &AtomicU8::new(0),
+                    None,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager,
+                    &mut native,
+                    &mut memory,
+                )
+            };
+            assert!(matches!(
+                error,
+                Err(od_jit::memory_dispatch::BoundedArithmeticLoadError::NativeAccounting { .. })
+            ));
+            assert_eq!(state.rip, BASE);
+            assert_eq!(ram.reads, 0);
+        }
+        {
+            struct BadMemory;
+            unsafe impl od_jit::memory_dispatch::MemoryBlockExecutor for BadMemory {
+                type Error = ();
+                unsafe fn execute_one_memory_block(
+                    &mut self,
+                    _: &od_jit::memory_dispatch::BoundedMemoryArtifact,
+                    _: &mut od_isa::LongModeState,
+                    _: &mut dyn GuestMemory,
+                    _: AccessContext,
+                    incoming_budget: u64,
+                    _: Option<u64>,
+                    _: &AtomicU8,
+                ) -> Result<od_jit::memory_dispatch::MemoryBlockReport, Self::Error>
+                {
+                    Ok(od_jit::memory_dispatch::MemoryBlockReport {
+                        exit: od_jit::memory_dispatch::MemoryBlockExit::Complete,
+                        remaining_budget: incoming_budget,
+                        retired_instructions: 1,
+                    })
+                }
+            }
+            let code = [
+                0x48, 0x03, 0xc3, 0x48, 0x8b, 0x03, 0x74, 0x03, 0x48, 0x03, 0xc3,
+            ];
+            let full = CodeView::new(BASE, &code).unwrap();
+            let mut state = od_isa::LongModeState {
+                rip: BASE,
+                ..Default::default()
+            };
+            state.gpr[3] = 0x100;
+            let mut ram = Ram {
+                code: code.to_vec(),
+                data: BTreeMap::new(),
+                reads: 0,
+                last_read: None,
+                backend_error: false,
+                event_on_callback: None,
+            };
+            let mut native = PublishedBlockExecutor;
+            let mut memory = BadMemory;
+            let error = unsafe {
+                od_jit::memory_dispatch::run_bounded_arithmetic_load(
+                    full,
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    4,
+                    None,
+                    &AtomicU8::new(0),
+                    None,
+                    od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::Eager,
+                    &mut native,
+                    &mut memory,
+                )
+            };
+            assert!(matches!(
+                error,
+                Err(od_jit::memory_dispatch::BoundedArithmeticLoadError::Memory(
+                    od_jit::memory_dispatch::BoundedMemoryError::InvalidAccounting { .. }
+                ))
+            ));
+            assert_eq!(state.rip, LOAD_RIP);
+            assert_eq!(ram.reads, 0);
         }
         assert_eq!(
             run_case(&[[0x48, 0x03, 0xc3]], 0x74, 0, true, true),

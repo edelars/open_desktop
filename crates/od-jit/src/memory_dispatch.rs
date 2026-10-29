@@ -14,12 +14,661 @@ use od_isa::{
 
 use crate::{
     block::{CodeMemory, CodeView},
+    block_compile::{
+        BlockCompileError, BlockCompileOutcome, compile_block, compile_block_demand_flags_candidate,
+    },
+    dispatch::{
+        BlockExecutionReport, ControlledBlockExecution, ControlledBlockExecutor, DispatchControl,
+    },
     memory_load_v2::{
         IrMemoryLoadBlockV2, IrMemoryStoreBlockV2, IrMemoryTwoSiteBlockV2,
         compile_ir_memory_load_block_v2, compile_ir_memory_store_block_v2,
         compile_ir_memory_two_site_block_v2,
     },
 };
+
+/// Compiler strategy for the bounded arithmetic/load/Jcc handoff. The
+/// demand-driven candidate is deliberately explicit and uncached; eager stays
+/// the stable default.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoundedArithmeticLoadStrategy {
+    Eager,
+    DemandFlagsCandidate,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BoundedArithmeticLoadExit {
+    Complete,
+    CodeInvalidated,
+    BudgetExhausted,
+    StopRequested,
+    StopAddress,
+    EventPending,
+    GuestFault(ArchitecturalFault),
+    Unsupported { rip: u64 },
+    Invalid { rip: u64 },
+    Runtime(crate::runtime::RuntimeExitTag),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundedArithmeticLoadResult {
+    pub exit: BoundedArithmeticLoadExit,
+    pub remaining_budget: u64,
+    pub retired_native: u64,
+    pub retired_memory: u64,
+    pub native_blocks: u64,
+    pub memory_blocks: u64,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum BoundedArithmeticLoadError<NE, ME> {
+    InvalidPlan {
+        rip: u64,
+    },
+    InvalidEntryRip {
+        rip: u64,
+    },
+    Compile(BlockCompileError),
+    NoNativePrefix {
+        rip: u64,
+    },
+    NativeExecutor(NE),
+    NativeAccounting {
+        incoming: u64,
+        report: BlockExecutionReport,
+    },
+    InvalidBudgetExit {
+        remaining: u64,
+    },
+    NativeProgress {
+        rip: u64,
+    },
+    Memory(BoundedMemoryError<ME>),
+    InvalidPhaseRip {
+        expected: u64,
+        actual: u64,
+    },
+    CounterOverflow,
+}
+
+/// Executes the exact bounded S3 arithmetic -> checked-load -> JZ/JNZ profile
+/// over one immutable full `CodeView`. The same view (and therefore original
+/// guest RIPs) is retained for every phase. Calls beginning at any decoded
+/// instruction boundary in the arithmetic prefix, at the load, Jcc, its
+/// fallthrough suffix, or the global code end are accepted. This permits
+/// exact retry after a budget/STOP handoff without replaying committed work.
+///
+/// # Safety
+/// The memory executor must satisfy the ordinary synchronous private-RAM
+/// preconditions required by [`MemoryBlockExecutor`].
+pub unsafe fn run_bounded_arithmetic_load<E, M>(
+    code: CodeView<'_>,
+    state: &mut LongModeState,
+    memory: &mut dyn GuestMemory,
+    access_context: AccessContext,
+    total_budget: u64,
+    stop_rip: Option<u64>,
+    stop_requested: &AtomicU8,
+    event_requested: Option<&AtomicBool>,
+    strategy: BoundedArithmeticLoadStrategy,
+    native_executor: &mut E,
+    memory_executor: &mut M,
+) -> Result<BoundedArithmeticLoadResult, BoundedArithmeticLoadError<E::Error, M::Error>>
+where
+    E: ControlledBlockExecutor,
+    M: MemoryBlockExecutor,
+{
+    let plan = bounded_arithmetic_load_plan(code)
+        .ok_or(BoundedArithmeticLoadError::InvalidPlan { rip: state.rip })?;
+    if !plan.admits_entry(state.rip) {
+        return Err(BoundedArithmeticLoadError::InvalidEntryRip { rip: state.rip });
+    }
+
+    if stop_rip == Some(state.rip) {
+        return Ok(handoff_result(
+            BoundedArithmeticLoadExit::StopAddress,
+            total_budget,
+            0,
+            0,
+            0,
+            0,
+        ));
+    }
+    if stop_requested.load(Ordering::Acquire) != 0 {
+        return Ok(handoff_result(
+            BoundedArithmeticLoadExit::StopRequested,
+            total_budget,
+            0,
+            0,
+            0,
+            0,
+        ));
+    }
+    if state.rip == plan.code_end {
+        return Ok(handoff_result(
+            BoundedArithmeticLoadExit::Complete,
+            total_budget,
+            0,
+            0,
+            0,
+            0,
+        ));
+    }
+    if total_budget == 0 {
+        return Ok(handoff_result(
+            BoundedArithmeticLoadExit::BudgetExhausted,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ));
+    }
+    if event_requested.is_some_and(|event| event.load(Ordering::Acquire)) {
+        return Ok(handoff_result(
+            BoundedArithmeticLoadExit::EventPending,
+            total_budget,
+            0,
+            0,
+            0,
+            0,
+        ));
+    }
+
+    let mut remaining = total_budget;
+    let mut retired_native = 0_u64;
+    let mut retired_memory = 0_u64;
+    let mut native_blocks = 0_u64;
+    let mut memory_blocks = 0_u64;
+
+    if state.rip < plan.load_rip {
+        match bounded_native_phase(
+            code,
+            state,
+            remaining,
+            plan.load_rip,
+            stop_rip,
+            stop_requested,
+            event_requested,
+            None,
+            strategy,
+            native_executor,
+        )? {
+            Phase::Continue(report) => {
+                remaining = report.remaining_budget;
+                retired_native = retired_native
+                    .checked_add(report.retired_instructions)
+                    .ok_or(BoundedArithmeticLoadError::CounterOverflow)?;
+                native_blocks = native_blocks
+                    .checked_add(1)
+                    .ok_or(BoundedArithmeticLoadError::CounterOverflow)?;
+            }
+            Phase::Exit { exit, report } => {
+                if let Some(report) = report {
+                    record_native_report(
+                        report,
+                        &mut remaining,
+                        &mut retired_native,
+                        &mut native_blocks,
+                    )?;
+                }
+                return Ok(handoff_result(
+                    exit,
+                    remaining,
+                    retired_native,
+                    retired_memory,
+                    native_blocks,
+                    memory_blocks,
+                ));
+            }
+        }
+        if state.rip != plan.load_rip {
+            return Err(BoundedArithmeticLoadError::InvalidPhaseRip {
+                expected: plan.load_rip,
+                actual: state.rip,
+            });
+        }
+    }
+
+    if state.rip == plan.load_rip {
+        if let Some(exit) = pending_control(
+            state.rip,
+            plan.load_rip,
+            remaining,
+            stop_rip,
+            stop_requested,
+            event_requested,
+        ) {
+            return Ok(handoff_result(
+                exit,
+                remaining,
+                retired_native,
+                retired_memory,
+                native_blocks,
+                memory_blocks,
+            ));
+        }
+        let boundary = FixtureExecutionBoundary::new(code, plan.suffix_rip)
+            .map_err(|_| BoundedArithmeticLoadError::InvalidPlan { rip: state.rip })?;
+        // SAFETY: forwarded from this function's caller contract.
+        let report = unsafe {
+            run_controlled(
+                code,
+                boundary,
+                state,
+                memory,
+                access_context,
+                remaining,
+                stop_rip,
+                stop_requested,
+                event_requested,
+                memory_executor,
+            )
+        }
+        .map_err(BoundedArithmeticLoadError::Memory)?;
+        if report.exit
+            == (BoundedMemoryExit::BoundaryReached {
+                rip: plan.suffix_rip,
+            })
+        {
+            if state.rip != plan.suffix_rip || report.retired_instructions != 1 {
+                return Err(BoundedArithmeticLoadError::InvalidPhaseRip {
+                    expected: plan.suffix_rip,
+                    actual: state.rip,
+                });
+            }
+            remaining = report.remaining_budget;
+            retired_memory = report.retired_instructions;
+            memory_blocks = report.blocks_executed;
+        } else {
+            return Ok(handoff_memory_exit(
+                report,
+                retired_native,
+                retired_memory,
+                native_blocks,
+                memory_blocks,
+            ));
+        }
+    }
+
+    let branch_fallthrough = plan.branch_fallthrough;
+    if state.rip == plan.suffix_rip || state.rip == branch_fallthrough {
+        while state.rip != plan.code_end {
+            match bounded_native_phase(
+                code,
+                state,
+                remaining,
+                plan.code_end,
+                stop_rip,
+                stop_requested,
+                event_requested,
+                Some(branch_fallthrough),
+                strategy,
+                native_executor,
+            )? {
+                Phase::Continue(report) => {
+                    remaining = report.remaining_budget;
+                    retired_native = retired_native
+                        .checked_add(report.retired_instructions)
+                        .ok_or(BoundedArithmeticLoadError::CounterOverflow)?;
+                    native_blocks = native_blocks
+                        .checked_add(1)
+                        .ok_or(BoundedArithmeticLoadError::CounterOverflow)?;
+                }
+                Phase::Exit { exit, report } => {
+                    if let Some(report) = report {
+                        record_native_report(
+                            report,
+                            &mut remaining,
+                            &mut retired_native,
+                            &mut native_blocks,
+                        )?;
+                    }
+                    return Ok(handoff_result(
+                        exit,
+                        remaining,
+                        retired_native,
+                        retired_memory,
+                        native_blocks,
+                        memory_blocks,
+                    ));
+                }
+            }
+            if state.rip != plan.code_end && state.rip != branch_fallthrough {
+                return Err(BoundedArithmeticLoadError::InvalidPhaseRip {
+                    expected: plan.code_end,
+                    actual: state.rip,
+                });
+            }
+        }
+    }
+
+    if let Some(exit) = pending_control(
+        state.rip,
+        plan.code_end,
+        remaining,
+        stop_rip,
+        stop_requested,
+        event_requested,
+    ) {
+        return Ok(handoff_result(
+            exit,
+            remaining,
+            retired_native,
+            retired_memory,
+            native_blocks,
+            memory_blocks,
+        ));
+    }
+
+    Ok(BoundedArithmeticLoadResult {
+        exit: BoundedArithmeticLoadExit::Complete,
+        remaining_budget: remaining,
+        retired_native,
+        retired_memory,
+        native_blocks,
+        memory_blocks,
+    })
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BoundedArithmeticLoadPlan {
+    entry_rip: u64,
+    load_rip: u64,
+    suffix_rip: u64,
+    branch_fallthrough: u64,
+    code_end: u64,
+}
+
+impl BoundedArithmeticLoadPlan {
+    fn admits_entry(self, rip: u64) -> bool {
+        ((self.entry_rip..=self.load_rip).contains(&rip)
+            && (rip - self.entry_rip).is_multiple_of(3))
+            || rip == self.suffix_rip
+            || rip == self.branch_fallthrough
+            || rip == self.code_end
+    }
+}
+
+fn bounded_arithmetic_load_plan(code: CodeView<'_>) -> Option<BoundedArithmeticLoadPlan> {
+    let bytes = code.bytes();
+    if !(11..=14).contains(&bytes.len()) {
+        return None;
+    }
+    let arithmetic_count = match bytes.len() {
+        11 => 1,
+        14 => 2,
+        _ => return None,
+    };
+    for chunk in bytes[..arithmetic_count * 3].chunks_exact(3) {
+        if !matches!(
+            chunk,
+            [0x48, 0x03, 0xc3] | [0x48, 0x2b, 0xc3] | [0x48, 0x3b, 0xc3]
+        ) {
+            return None;
+        }
+    }
+    let load_offset = arithmetic_count * 3;
+    if bytes.get(load_offset..load_offset + 3)? != [0x48, 0x8b, 0x03] {
+        return None;
+    }
+    let branch_offset = load_offset + 3;
+    if !matches!(
+        bytes.get(branch_offset..branch_offset + 2)?,
+        [0x74, 0x03] | [0x75, 0x03]
+    ) {
+        return None;
+    }
+    if bytes.get(branch_offset + 2..)? != [0x48, 0x03, 0xc3] {
+        return None;
+    }
+    let mut source = CodeMemory::full_code(code);
+    let mut rip = code.base_rip();
+    while rip < code.code_end() {
+        let instruction = long_decode::decode(&mut source, rip, AccessContext::default()).ok()?;
+        if instruction.length == 0 {
+            return None;
+        }
+        rip = rip.checked_add(u64::from(instruction.length))?;
+    }
+    if rip != code.code_end() {
+        return None;
+    }
+    let entry_rip = code.base_rip();
+    let load_rip = entry_rip.checked_add(load_offset as u64)?;
+    let suffix_rip = load_rip.checked_add(3)?;
+    let branch_fallthrough = suffix_rip.checked_add(2)?;
+    Some(BoundedArithmeticLoadPlan {
+        entry_rip,
+        load_rip,
+        suffix_rip,
+        branch_fallthrough,
+        code_end: code.code_end(),
+    })
+}
+
+enum Phase {
+    Continue(BlockExecutionReport),
+    Exit {
+        exit: BoundedArithmeticLoadExit,
+        report: Option<BlockExecutionReport>,
+    },
+}
+
+fn record_native_report<NE, ME>(
+    report: BlockExecutionReport,
+    remaining: &mut u64,
+    retired_native: &mut u64,
+    native_blocks: &mut u64,
+) -> Result<(), BoundedArithmeticLoadError<NE, ME>> {
+    *remaining = report.remaining_budget;
+    *retired_native = retired_native
+        .checked_add(report.retired_instructions)
+        .ok_or(BoundedArithmeticLoadError::CounterOverflow)?;
+    *native_blocks = native_blocks
+        .checked_add(1)
+        .ok_or(BoundedArithmeticLoadError::CounterOverflow)?;
+    Ok(())
+}
+
+fn pending_control(
+    rip: u64,
+    end_rip: u64,
+    remaining: u64,
+    stop_rip: Option<u64>,
+    stop: &AtomicU8,
+    event: Option<&AtomicBool>,
+) -> Option<BoundedArithmeticLoadExit> {
+    if stop_rip == Some(rip) {
+        Some(BoundedArithmeticLoadExit::StopAddress)
+    } else if stop.load(Ordering::Acquire) != 0 {
+        Some(BoundedArithmeticLoadExit::StopRequested)
+    } else if rip == end_rip {
+        None
+    } else if remaining == 0 {
+        Some(BoundedArithmeticLoadExit::BudgetExhausted)
+    } else if event.is_some_and(|event| event.load(Ordering::Acquire)) {
+        Some(BoundedArithmeticLoadExit::EventPending)
+    } else {
+        None
+    }
+}
+
+fn bounded_native_phase<E: ControlledBlockExecutor, ME>(
+    code: CodeView<'_>,
+    state: &mut LongModeState,
+    budget: u64,
+    end_rip: u64,
+    stop_rip: Option<u64>,
+    stop: &AtomicU8,
+    event: Option<&AtomicBool>,
+    continuation_rip: Option<u64>,
+    strategy: BoundedArithmeticLoadStrategy,
+    executor: &mut E,
+) -> Result<Phase, BoundedArithmeticLoadError<E::Error, ME>> {
+    let rip = state.rip;
+    if let Some(exit) = pending_control(rip, end_rip, budget, stop_rip, stop, event) {
+        return Ok(Phase::Exit { exit, report: None });
+    }
+    let compiled = match strategy {
+        BoundedArithmeticLoadStrategy::Eager => compile_block(code, rip),
+        BoundedArithmeticLoadStrategy::DemandFlagsCandidate => {
+            compile_block_demand_flags_candidate(code, rip)
+        }
+    }
+    .map_err(BoundedArithmeticLoadError::Compile)?;
+    let BlockCompileOutcome::Compiled(block) = compiled else {
+        return Err(BoundedArithmeticLoadError::NoNativePrefix { rip });
+    };
+    if let Some(exit) = pending_control(rip, end_rip, budget, stop_rip, stop, event) {
+        return Ok(Phase::Exit { exit, report: None });
+    }
+    let execution = executor
+        .execute_one_block_controlled_with_event(
+            &block,
+            state,
+            budget,
+            DispatchControl {
+                stop_rip,
+                stop_requested: stop,
+                event_requested: event,
+            },
+        )
+        .map_err(BoundedArithmeticLoadError::NativeExecutor)?;
+    let report = match execution {
+        ControlledBlockExecution::Yield(exit) => {
+            let exit = match exit {
+                crate::dispatch::DispatchExit::BudgetExhausted => {
+                    BoundedArithmeticLoadExit::BudgetExhausted
+                }
+                crate::dispatch::DispatchExit::EventPending => {
+                    BoundedArithmeticLoadExit::EventPending
+                }
+                crate::dispatch::DispatchExit::Runtime(
+                    crate::runtime::RuntimeExitTag::StopAddress,
+                ) => BoundedArithmeticLoadExit::StopAddress,
+                crate::dispatch::DispatchExit::Runtime(
+                    crate::runtime::RuntimeExitTag::StopRequested,
+                ) => BoundedArithmeticLoadExit::StopRequested,
+                crate::dispatch::DispatchExit::Runtime(other) => {
+                    BoundedArithmeticLoadExit::Runtime(other)
+                }
+                crate::dispatch::DispatchExit::CodeEnd => BoundedArithmeticLoadExit::Complete,
+            };
+            return Ok(Phase::Exit { exit, report: None });
+        }
+        ControlledBlockExecution::Executed(report) => report,
+    };
+    if report.retired_instructions > budget
+        || report.retired_instructions > u64::from(block.emitted().pc_map().instruction_count())
+        || budget - report.retired_instructions != report.remaining_budget
+    {
+        return Err(BoundedArithmeticLoadError::NativeAccounting {
+            incoming: budget,
+            report,
+        });
+    }
+    if report.exit == crate::runtime::RuntimeExitTag::BudgetExhausted
+        && report.remaining_budget != 0
+    {
+        return Err(BoundedArithmeticLoadError::InvalidBudgetExit {
+            remaining: report.remaining_budget,
+        });
+    }
+    let at_expected_boundary = state.rip == end_rip || continuation_rip == Some(state.rip);
+    let terminal_exit = match report.exit {
+        crate::runtime::RuntimeExitTag::BudgetExhausted => {
+            Some(BoundedArithmeticLoadExit::BudgetExhausted)
+        }
+        crate::runtime::RuntimeExitTag::StopRequested => {
+            Some(BoundedArithmeticLoadExit::StopRequested)
+        }
+        crate::runtime::RuntimeExitTag::StopAddress => Some(BoundedArithmeticLoadExit::StopAddress),
+        _ => None,
+    };
+    if let Some(exit) = terminal_exit {
+        return Ok(Phase::Exit {
+            exit,
+            report: Some(report),
+        });
+    }
+    if report.retired_instructions == 0 || state.rip == rip {
+        return Err(BoundedArithmeticLoadError::NativeProgress { rip });
+    }
+    if at_expected_boundary
+        && matches!(
+            report.exit,
+            crate::runtime::RuntimeExitTag::NeedInterpreter
+                | crate::runtime::RuntimeExitTag::Unsupported
+                | crate::runtime::RuntimeExitTag::DispatchCandidate
+        )
+    {
+        return Ok(Phase::Continue(report));
+    }
+    if !matches!(
+        report.exit,
+        crate::runtime::RuntimeExitTag::BlockComplete
+            | crate::runtime::RuntimeExitTag::DispatchCandidate
+    ) {
+        return Ok(Phase::Exit {
+            exit: BoundedArithmeticLoadExit::Runtime(report.exit),
+            report: Some(report),
+        });
+    }
+    if !at_expected_boundary {
+        return Err(BoundedArithmeticLoadError::InvalidPhaseRip {
+            expected: end_rip,
+            actual: state.rip,
+        });
+    }
+    Ok(Phase::Continue(report))
+}
+
+fn handoff_result(
+    exit: BoundedArithmeticLoadExit,
+    remaining_budget: u64,
+    retired_native: u64,
+    retired_memory: u64,
+    native_blocks: u64,
+    memory_blocks: u64,
+) -> BoundedArithmeticLoadResult {
+    BoundedArithmeticLoadResult {
+        exit,
+        remaining_budget,
+        retired_native,
+        retired_memory,
+        native_blocks,
+        memory_blocks,
+    }
+}
+
+fn handoff_memory_exit(
+    report: BoundedMemoryResult,
+    retired_native: u64,
+    retired_memory: u64,
+    native_blocks: u64,
+    memory_blocks: u64,
+) -> BoundedArithmeticLoadResult {
+    let exit = match report.exit {
+        BoundedMemoryExit::CodeInvalidated => BoundedArithmeticLoadExit::CodeInvalidated,
+        BoundedMemoryExit::BudgetExhausted => BoundedArithmeticLoadExit::BudgetExhausted,
+        BoundedMemoryExit::StopRequested => BoundedArithmeticLoadExit::StopRequested,
+        BoundedMemoryExit::StopAddress => BoundedArithmeticLoadExit::StopAddress,
+        BoundedMemoryExit::EventPending => BoundedArithmeticLoadExit::EventPending,
+        BoundedMemoryExit::GuestFault(fault) => BoundedArithmeticLoadExit::GuestFault(fault),
+        BoundedMemoryExit::BoundaryReached { .. } => BoundedArithmeticLoadExit::Complete,
+        BoundedMemoryExit::Unsupported { rip } => BoundedArithmeticLoadExit::Unsupported { rip },
+        BoundedMemoryExit::Invalid { rip } => BoundedArithmeticLoadExit::Invalid { rip },
+    };
+    BoundedArithmeticLoadResult {
+        exit,
+        remaining_budget: report.remaining_budget,
+        retired_native,
+        retired_memory: retired_memory + report.retired_instructions,
+        native_blocks,
+        memory_blocks: memory_blocks + report.blocks_executed,
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BoundedMemoryArtifact {
@@ -854,6 +1503,14 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
     let Ok(view) = CodeView::new(rip, instruction) else {
         return CompileAt::Unsupported;
     };
+    // The bounded S3-29 profile admits this exact register-indirect qword
+    // load. Keep the form exact; the generic memory profile stays unchanged.
+    if instruction == [0x48, 0x8b, 0x03] {
+        return compile_ir_memory_load_block_v2(view, rip)
+            .map(BoundedMemoryArtifact::Load)
+            .map(CompileAt::Block)
+            .unwrap_or(CompileAt::Unsupported);
+    }
     if instruction_len == 7
         && instruction[0] == 0x48
         && matches!(instruction[1], 0x8b | 0x89)
