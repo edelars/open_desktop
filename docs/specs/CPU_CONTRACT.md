@@ -10813,16 +10813,17 @@ pre-existing sticky bits are permitted. An unsupported profile precondition
 returns a local refusal; it does not assert architectural #GP/#XM/#UD delivery.
 
 MINSS selects operand 2 if either operand is QNaN or SNaN and sets IE sticky.
-With DAZ clear, either subnormal input sets DE sticky. IE and DE are ORed
-independently. For non-NaNs, value selection uses the existing raw MINSS helper,
+With DAZ clear, a subnormal input sets DE only when this operation does not
+also raise invalid; invalid has higher priority than denormal for the same
+operation. A pre-existing DE remains sticky. For non-NaNs, value selection uses the existing raw MINSS helper,
 including operand-2 selection for equal values/signed zeros. The executor
 snapshots both operands before writing, supports aliasing, updates only the
 destination low dword and MXCSR IE/DE bits, and preserves the destination upper
 96 bits, all other CPU state, and all other MXCSR bits. It performs no data
 memory access. JIT, native and CPUID admission remain closed.
 
-Normative source: Intel SDM Rev. 093 Vol. 1 §11.5 and Appendix D Tables D-9 and
-D-15, plus Vol. 2B `MINSS`. This is only the masked IE/DE subset consumed by
+Normative source: Intel SDM Rev. 093 Vol. 1 §§4.9.2, 11.5 and Appendix D Tables D-9
+and D-15, plus Vol. 2B `MINSS`. This is only the masked IE/DE subset consumed by
 S2-37e. Unmasked exception delivery, #XM, CR0/CR4/OSXMMEXCPT, memory and
 alignment fault ordering, and the rest of S2-38 remain open. Physical
 validation is deferred to the combined final Mac mini substage.
@@ -10837,16 +10838,17 @@ status bits are accepted; unsupported state is refused without asserting
 architectural fault delivery.
 
 MAXSS selects operand 2 if either operand is QNaN or SNaN and sets IE sticky.
-With DAZ clear, a subnormal in either operand sets DE sticky. These bits are
-accumulated independently. Otherwise value selection uses the existing raw
+With DAZ clear, a subnormal input sets DE only when this operation does not
+also raise invalid; invalid has higher priority than denormal for the same
+operation. A pre-existing DE remains sticky. Otherwise value selection uses the existing raw
 MAXSS helper, including operand-2 selection for equal values and signed zeros.
 The executor snapshots both low dwords before writing and updates only the
 destination low dword and IE/DE bits, preserving the upper 96 destination bits,
 other state, and every other MXCSR bit. Aliasing is supported. No data-memory
 access occurs; JIT/native remain closed.
 
-Normative source: Intel SDM Rev. 093 Vol. 1 §11.5 and Appendix D Tables D-9,
-D-13 and D-15, plus Vol. 2B `MAXSS`. This extends only the masked IE/DE subset
+Normative source: Intel SDM Rev. 093 Vol. 1 §§4.9.2, 11.5 and Appendix D Tables
+D-9/D-13/D-15, plus Vol. 2B `MAXSS`. This extends only the masked IE/DE subset
 of S2-38a. Unmasked exception delivery, #XM, CR0/CR4/OSXMMEXCPT, memory and
 alignment fault ordering, and the rest of S2-38 remain open. Physical
 validation is deferred to the combined final Mac mini substage.
@@ -10864,15 +10866,16 @@ without an architectural #GP/#XM/#UD claim.
 Execution snapshots both full XMM operands before computing four independent
 little-endian binary32 lanes. Each lane uses the existing raw MINPS selector:
 either QNaN or SNaN selects raw operand 2 and contributes IE; a subnormal input
-contributes DE while DAZ is clear. IE and DE aggregate independently across
-all lanes, including when set by different lanes. The full destination and
+contributes DE while DAZ is clear only if that lane does not also raise invalid.
+The effective IE and DE flags aggregate across all lanes, so different lanes
+can set both. A pre-existing DE remains sticky. The full destination and
 sticky MXCSR IE/DE bits commit together after preflight. Raw RHS NaN payloads
 and signalling bits are preserved; equal values and signed-zero ties select
 operand 2. Aliasing is supported, other CPU state and MXCSR bits are preserved,
 and there are no data-memory accesses.
 
-Normative sources: Intel SDM Rev. 093 Vol. 1 §11.5 and Appendix D Tables D-9,
-D-13/D-15, plus Vol. 2B `MINPS`. This expands only the masked IE/DE subset of
+Normative sources: Intel SDM Rev. 093 Vol. 1 §§4.9.2, 11.5.2, 11.5.3.1
+and Appendix D Tables D-9/D-13/D-15, plus Vol. 2B `MINPS`. This expands only the masked IE/DE subset of
 S2-38a; unmasked exceptions, #XM delivery/suppression, CR0/CR4/OSXMMEXCPT,
 memory and fault ordering, and remaining S2-38 behavior remain open. JIT,
 native and CPUID admission remain closed. Physical validation is deferred to
@@ -10890,14 +10893,16 @@ Unsupported profile state is refused without claiming architectural
 
 Execution snapshots both full XMM operands and evaluates four independent
 little-endian binary32 lanes with the existing raw MAXPS selector. Either
-QNaN or SNaN selects raw operand 2 and contributes IE; any subnormal input
-contributes DE while DAZ is clear. IE and DE aggregate independently across
-all lanes and commit with the full destination after preflight. Raw operand-2
+QNaN or SNaN selects raw operand 2 and contributes IE; a subnormal input
+contributes DE while DAZ is clear only if that lane does not also raise invalid.
+Effective IE and DE aggregate across all lanes, so different lanes can set both;
+a pre-existing DE remains sticky. Flags commit with the full destination after preflight. Raw operand-2
 NaN payloads and signalling bits are preserved; equal values and signed-zero
 ties select operand 2. Aliasing is supported; unrelated CPU state and MXCSR
 bits are preserved; no data-memory access occurs.
 
-Intel SDM Rev. 093 Vol. 1 §11.5 and Appendix D Tables D-9/D-13/D-15 group
+Intel SDM Rev. 093 Vol. 1 §§4.9.2, 11.5.2, 11.5.3.1 and Appendix D
+Tables D-9/D-13/D-15 group
 MAXPS with the MINSS/MAXSS/MINPS masked IE/DE behavior; Vol. 2B specifies the
 MAXPS selector. This only extends the bounded S2-38a status subset. Unmasked
 exceptions, #XM delivery/suppression, CR0/CR4/OSXMMEXCPT, memory and fault
@@ -10920,13 +10925,14 @@ Execution snapshots the source and destination low qwords, uses the existing
 raw Binary64 MIN selector, and commits only the destination low qword plus
 MXCSR IE/DE sticky bits after preflight. Either QNaN or SNaN in either low
 qword selects raw operand 2 and contributes IE; a low-qword subnormal in either
-operand contributes DE. Equal values and signed-zero ties select operand 2.
+operand contributes DE only if this operation does not also raise invalid; a
+pre-existing DE remains sticky. Equal values and signed-zero ties select operand 2.
 The destination upper qword, all unrelated state and other MXCSR bits are
 preserved. Upper-qword NaN/subnormal values do not affect the result or flags;
 aliasing is supported and no data-memory access occurs.
 
-Intel SDM Rev. 093 Vol. 1 §11.5 and Appendix D Tables D-9/D-15 cover masked
-invalid and denormal status; Vol. 2B specifies MINSD selection. This extends
+Intel SDM Rev. 093 Vol. 1 §§4.9.2, 11.5 and Appendix D Tables D-9/D-15
+cover masked invalid and denormal status; Vol. 2B specifies MINSD selection. This extends
 only the bounded S2-38a subset. Unmasked exceptions, #XM delivery/suppression,
 control-state gating, memory/fault ordering and the rest of S2-38 remain open.
 JIT/native/CPUID admission remain closed. Physical validation is deferred to

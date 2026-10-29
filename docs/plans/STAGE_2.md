@@ -5966,11 +5966,12 @@ preserved. Unsupported state is a profile refusal, not an architectural fault
 claim.
 
 Snapshot both low dwords before writes to allow aliasing. For a NaN in either
-operand, select operand 2 and set IE sticky; for a subnormal in either operand
-with DAZ clear, set DE sticky. These status bits are ORed independently, so
-NaN plus subnormal sets both. Otherwise use existing
+operand, select operand 2 and set IE sticky. For a subnormal with DAZ clear,
+set DE only if this operation does not also raise invalid; invalid has higher
+priority than denormal for the same operation. A pre-existing DE remains
+sticky. Otherwise use existing
 `Binary32::min_sse_raw_result` value selection, including RHS selection for
-equal signed zeros. Write only the destination low dword and IE/DE sticky bits;
+equal signed zeros. Write only the destination low dword and effective IE/DE bits;
 preserve destination upper 96 bits, all other CPU state and every other MXCSR
 bit. No data memory, callback, JIT, native or CPUID admission is added.
 
@@ -5989,9 +5990,10 @@ flags accepted and preserved. Unsupported state is a local profile refusal,
 not an architectural fault claim.
 
 Snapshot both low dwords before writing. A QNaN/SNaN in either operand selects
-operand 2 unchanged and sets IE sticky. A subnormal in either operand sets DE
-sticky when DAZ is clear; IE and DE accumulate independently, including
-NaN-plus-subnormal inputs. Otherwise use `Binary32::max_sse_raw_result`,
+operand 2 unchanged and sets IE sticky. A subnormal sets DE when DAZ is clear
+only if this operation does not also raise invalid; invalid has higher priority
+than denormal for the same operation. A pre-existing DE remains sticky.
+Otherwise use `Binary32::max_sse_raw_result`,
 including operand-2 selection for equal values and signed zeros. Update only
 the destination low dword and IE/DE sticky bits; preserve destination upper
 96 bits and all other state. Aliasing is supported; no data-memory callbacks,
@@ -6013,9 +6015,10 @@ accepted.
 
 Snapshot the full source and destination XMM registers before computation.
 Apply `Binary32::min_sse_raw_result` independently to four little-endian lanes,
-OR IE when any lane has a QNaN/SNaN operand, and OR DE when any operand lane is
-subnormal. Accumulate both flags across lanes, including when they occur in
-different lanes, and commit the full destination plus the two sticky bits only
+OR IE for lanes with QNaN/SNaN, and OR DE for subnormal lanes that do not also
+raise invalid. Invalid has higher priority than denormal within a lane, while
+effective flags OR across lanes, so distinct lanes can set both. Preserve any
+pre-existing sticky DE and commit the full destination plus the two sticky bits only
 after preflight. Preserve raw operand-2 NaN bits (including SNaN), equal-value
 and signed-zero operand-2 selection, and all unrelated state. Aliasing is
 supported; no data-memory callbacks occur.
@@ -6038,9 +6041,10 @@ reserved bits 16–31 clear; any RC and pre-existing sticky flags are accepted.
 
 Snapshot the full source and destination XMM registers before computation.
 Apply `Binary32::max_sse_raw_result` independently to four little-endian lanes,
-OR IE when any lane has a QNaN/SNaN operand, and OR DE when any operand lane is
-subnormal. Accumulate both flags across lanes, including when they occur in
-different lanes, and commit the full destination plus the two sticky bits only
+OR IE for lanes with QNaN/SNaN, and OR DE for subnormal lanes that do not also
+raise invalid. Invalid has higher priority than denormal within a lane, while
+effective flags OR across lanes, so distinct lanes can set both. Preserve any
+pre-existing sticky DE and commit the full destination plus the two sticky bits only
 after preflight. Preserve raw operand-2 NaN bits (including SNaN), equal-value
 and signed-zero operand-2 selection, and all unrelated state. Aliasing is
 supported; no data-memory callbacks occur.
@@ -6066,8 +6070,9 @@ and reserved bits 16–31 clear; any RC and existing sticky bits are accepted.
 Snapshot only each operand's low qword. Use the existing raw Binary64 MIN
 selector: either QNaN or SNaN selects raw operand 2 and contributes IE; equal
 values and signed-zero ties also select operand 2. A low-qword subnormal in
-either operand contributes DE. Commit only the destination low qword and OR the
-IE/DE sticky bits after preflight. Preserve destination upper qword, all other
+either operand contributes DE only if this operation does not also raise invalid; a
+pre-existing DE remains sticky. Commit only the destination low qword and OR
+effective IE/DE after preflight. Preserve destination upper qword, all other
 state and unrelated MXCSR bits. Upper-qword NaN/subnormal sentinels must not
 affect result or flags. Aliasing is supported; no data-memory access occurs.
 
@@ -6080,8 +6085,10 @@ physical acceptance remains in the combined final Mac mini substage.
 #### S2-38a — consumed masked MINSS/MAXSS/MINPS/MAXPS/MINSD status subset
 
 Only masked IE/DE sticky-status updates used by S2-37e/f/g/h/i are implemented.
-MINPS/MAXPS OR lane-level IE/DE conditions before their single atomic
-destination and MXCSR commit. Full S2-38 remains open: unmasked exception delivery, #XM
+MINSS/MAXSS/MINSD apply invalid-over-denormal priority within their scalar
+operation. MINPS/MAXPS first apply that priority per lane, then OR effective
+IE/DE across lanes before the single atomic destination and MXCSR commit;
+pre-existing sticky status is preserved. Full S2-38 remains open: unmasked exception delivery, #XM
 behavior, CR0/CR4 and OSXMMEXCPT gating, memory/alignment/FP fault priority,
 precise fault ordering, and the remaining MXCSR/SSE exception surface are not
 implemented or claimed. Final physical checks stay in the combined Mac mini

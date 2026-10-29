@@ -4690,16 +4690,18 @@ fn step_tracked_with_profiles(
                 );
                 let lhs = Binary32::from_bits(lhs_bits);
                 let rhs = Binary32::from_bits(rhs_bits);
-                let denormal_operand =
-                    lhs.class() == BinaryClass::Subnormal || rhs.class() == BinaryClass::Subnormal;
                 let result = if maximum {
                     Binary32::max_sse_raw_result(lhs, rhs)
                 } else {
                     Binary32::min_sse_raw_result(lhs, rhs)
                 };
+                let invalid_operation = result.invalid_operation();
+                let denormal_operand = !invalid_operation
+                    && (lhs.class() == BinaryClass::Subnormal
+                        || rhs.class() == BinaryClass::Subnormal);
                 (
                     result.value().to_bits(),
-                    result.invalid_operation(),
+                    invalid_operation,
                     denormal_operand,
                     sse.mxcsr,
                 )
@@ -4733,12 +4735,14 @@ fn step_tracked_with_profiles(
                 );
                 let lhs = Binary64::from_bits(lhs_bits);
                 let rhs = Binary64::from_bits(rhs_bits);
-                let denormal_operand =
-                    lhs.class() == BinaryClass::Subnormal || rhs.class() == BinaryClass::Subnormal;
                 let result = Binary64::min_sse_raw_result(lhs, rhs);
+                let invalid_operation = result.invalid_operation();
+                let denormal_operand = !invalid_operation
+                    && (lhs.class() == BinaryClass::Subnormal
+                        || rhs.class() == BinaryClass::Subnormal);
                 (
                     result.value().to_bits(),
-                    result.invalid_operation(),
+                    invalid_operation,
                     denormal_operand,
                     sse.mxcsr,
                 )
@@ -4794,9 +4798,11 @@ fn step_tracked_with_profiles(
                 };
                 result_xmm[offset..offset + 4]
                     .copy_from_slice(&result.value().to_bits().to_le_bytes());
-                invalid_operation |= result.invalid_operation();
-                denormal_operand |=
-                    lhs.class() == BinaryClass::Subnormal || rhs.class() == BinaryClass::Subnormal;
+                let lane_invalid_operation = result.invalid_operation();
+                invalid_operation |= lane_invalid_operation;
+                denormal_operand |= !lane_invalid_operation
+                    && (lhs.class() == BinaryClass::Subnormal
+                        || rhs.class() == BinaryClass::Subnormal);
             }
             let sse = state
                 .sse
@@ -76622,10 +76628,12 @@ mod tests {
                 let lhs = Binary32::from_bits(values[usize::from(destination)]);
                 let rhs = Binary32::from_bits(values[usize::from(source)]);
                 let selection = Binary32::min_sse_raw_result(lhs, rhs);
-                let denormal =
-                    lhs.class() == BinaryClass::Subnormal || rhs.class() == BinaryClass::Subnormal;
+                let invalid_operation = selection.invalid_operation();
+                let denormal = !invalid_operation
+                    && (lhs.class() == BinaryClass::Subnormal
+                        || rhs.class() == BinaryClass::Subnormal);
                 let expected_mxcsr =
-                    mxcsr | u32::from(selection.invalid_operation()) | (u32::from(denormal) << 1);
+                    mxcsr | u32::from(invalid_operation) | (u32::from(denormal) << 1);
 
                 assert_eq!(
                     step(&mut state, &mut memory, AccessContext::default()).unwrap(),
@@ -76660,8 +76668,8 @@ mod tests {
             (0x3f80_0000, 0xff81_2345, 0xff81_2345, 0x01), // SNaN rhs, IE, raw RHS
             (0x0000_0001, 0x3f80_0000, 0x0000_0001, 0x02), // subnormal wins; DE from lhs
             (0x3f80_0000, 0x8000_0001, 0x8000_0001, 0x02), // DE from rhs
-            (0x7fc1_2345, 0x8000_0001, 0x8000_0001, 0x03), // QNaN + denormal => IE | DE
-            (0xff81_2345, 0x0000_0001, 0x0000_0001, 0x03), // SNaN + denormal => IE | DE
+            (0x7fc1_2345, 0x8000_0001, 0x8000_0001, 0x01), // QNaN priority suppresses same-operation DE
+            (0xff81_2345, 0x0000_0001, 0x0000_0001, 0x01), // SNaN priority suppresses same-operation DE
         ];
         for (lhs_bits, rhs_bits, expected_bits, new_flags) in vectors {
             let mut memory = Memory::at(&code, 0x2000);
@@ -76703,7 +76711,7 @@ mod tests {
                 step(&mut state, &mut memory, AccessContext::default()).unwrap(),
                 StepOutcome::Advanced
             );
-            assert_eq!(state.sse.as_ref().unwrap().mxcsr, mxcsr | 3, "RC={rc}");
+            assert_eq!(state.sse.as_ref().unwrap().mxcsr, mxcsr | 1, "RC={rc}");
         }
     }
 
@@ -76745,6 +76753,54 @@ mod tests {
         );
         assert_eq!(state, before);
         assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn scalar_minmax_prioritizes_new_flags_and_preserves_old_sticky_status() {
+        for (code, width, subnormal, normal, qnan) in [
+            (
+                [0xf3, 0x0f, 0x5d, 0xc1],
+                4usize,
+                1u64,
+                0x3f80_0000u64,
+                0x7fc1_2345u64,
+            ), // MINSS
+            (
+                [0xf3, 0x0f, 0x5f, 0xc1],
+                4usize,
+                1u64,
+                0x3f80_0000u64,
+                0x7fc1_2345u64,
+            ), // MAXSS
+            (
+                [0xf2, 0x0f, 0x5d, 0xc1],
+                8usize,
+                1u64,
+                0x3ff0_0000_0000_0000u64,
+                0x7ff8_0000_0000_0000u64,
+            ), // MINSD
+        ] {
+            for (lhs_bits, rhs_bits, mxcsr) in [
+                (subnormal, normal, 0x1f81), // old IE must not suppress new DE
+                (qnan, subnormal, 0x1f82),   // old DE remains when IE wins this operation
+            ] {
+                let mut memory = Memory::at(&code, 0x5000);
+                let mut state = LongModeState::default();
+                state.rip = 0x5000;
+                state.x87 = Some(X87State::fixture_seed());
+                let mut xmm = [[0x5a; 16]; 16];
+                xmm[0][..width].copy_from_slice(&lhs_bits.to_le_bytes()[..width]);
+                xmm[1][..width].copy_from_slice(&rhs_bits.to_le_bytes()[..width]);
+                state.sse = Some(SseState { xmm, mxcsr });
+
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                    StepOutcome::Advanced
+                );
+                assert_eq!(state.sse.as_ref().unwrap().mxcsr, 0x1f83);
+                assert!(memory.accesses.is_empty());
+            }
+        }
     }
 
     #[test]
@@ -76800,10 +76856,12 @@ mod tests {
                 let lhs = Binary64::from_bits(values[usize::from(destination)]);
                 let rhs = Binary64::from_bits(values[usize::from(source)]);
                 let selection = Binary64::min_sse_raw_result(lhs, rhs);
-                let denormal =
-                    lhs.class() == BinaryClass::Subnormal || rhs.class() == BinaryClass::Subnormal;
+                let invalid_operation = selection.invalid_operation();
+                let denormal = !invalid_operation
+                    && (lhs.class() == BinaryClass::Subnormal
+                        || rhs.class() == BinaryClass::Subnormal);
                 let expected_mxcsr =
-                    mxcsr | u32::from(selection.invalid_operation()) | (u32::from(denormal) << 1);
+                    mxcsr | u32::from(invalid_operation) | (u32::from(denormal) << 1);
 
                 assert_eq!(
                     step(&mut state, &mut memory, AccessContext::default()).unwrap(),
@@ -76862,9 +76920,9 @@ mod tests {
                 0x7ff8_1234_5678_9abc,
                 0x8000_0000_0000_0001,
                 0x8000_0000_0000_0001,
-                3,
+                1,
             ),
-            (0xfff0_1234_5678_9abc, 1, 1, 3),
+            (0xfff0_1234_5678_9abc, 1, 1, 1),
         ];
         for (lhs_bits, rhs_bits, expected_bits, new_flags) in vectors {
             for rc in 0..4u32 {
@@ -77011,9 +77069,11 @@ mod tests {
                     let selection = Binary32::min_sse_raw_result(lhs, rhs);
                     result_xmm[offset..offset + 4]
                         .copy_from_slice(&selection.value().to_bits().to_le_bytes());
-                    invalid_operation |= selection.invalid_operation();
-                    denormal_operand |= lhs.class() == BinaryClass::Subnormal
-                        || rhs.class() == BinaryClass::Subnormal;
+                    let lane_invalid_operation = selection.invalid_operation();
+                    invalid_operation |= lane_invalid_operation;
+                    denormal_operand |= !lane_invalid_operation
+                        && (lhs.class() == BinaryClass::Subnormal
+                            || rhs.class() == BinaryClass::Subnormal);
                 }
 
                 assert_eq!(
@@ -77046,11 +77106,11 @@ mod tests {
         let code = [0x0f, 0x5d, 0xc1]; // MINPS XMM0, XMM1
         let vectors: [([u32; 4], [u32; 4], [u32; 4], u32); 3] = [
             (
-                [0x3f80_0000, 0x8000_0000, 0x7fc1_2345, 0x7f80_0000],
+                [0x3f80_0000, 0x0000_0001, 0x7fc1_2345, 0x7f80_0000],
                 [0x4000_0000, 0x0000_0000, 0x0000_0001, 0x7fa1_2345],
                 [0x3f80_0000, 0x0000_0000, 0x0000_0001, 0x7fa1_2345],
                 0x03,
-            ), // IE and DE together in lane 2; lane 3 preserves raw RHS SNaN.
+            ), // lane 1 adds DE; NaN/subnormal lane 2 adds IE only; lane 3 preserves raw RHS SNaN.
             (
                 [0x7fc1_2345, 0x3f80_0000, 0x3f80_0000, 0x0000_0001],
                 [0x3f80_0000, 0x4000_0000, 0x0000_0002, 0x3f80_0000],
@@ -77114,7 +77174,7 @@ mod tests {
                 );
                 assert_eq!(
                     state.sse.as_ref().unwrap().mxcsr,
-                    mxcsr | 0x03,
+                    mxcsr | 0x01,
                     "RC={rc} old sticky={old_sticky:02x}"
                 );
             }
@@ -77232,9 +77292,11 @@ mod tests {
                     let selection = Binary32::max_sse_raw_result(lhs, rhs);
                     result_xmm[offset..offset + 4]
                         .copy_from_slice(&selection.value().to_bits().to_le_bytes());
-                    invalid_operation |= selection.invalid_operation();
-                    denormal_operand |= lhs.class() == BinaryClass::Subnormal
-                        || rhs.class() == BinaryClass::Subnormal;
+                    let lane_invalid_operation = selection.invalid_operation();
+                    invalid_operation |= lane_invalid_operation;
+                    denormal_operand |= !lane_invalid_operation
+                        && (lhs.class() == BinaryClass::Subnormal
+                            || rhs.class() == BinaryClass::Subnormal);
                 }
                 assert_eq!(
                     step(&mut state, &mut memory, AccessContext::default()).unwrap(),
@@ -77259,9 +77321,9 @@ mod tests {
     #[test]
     fn maxps_register_masked_matches_literal_lanes_and_aggregates_status() {
         let code = [0x0f, 0x5f, 0xc1]; // MAXPS XMM0, XMM1
-        let lhs_lanes: [u32; 4] = [0x3f80_0000, 0x8000_0000, 0x7fc1_2345, 0x7f80_0000];
+        let lhs_lanes: [u32; 4] = [0x3f80_0000, 0x0000_0001, 0x7fc1_2345, 0x7f80_0000];
         let rhs_lanes: [u32; 4] = [0x4000_0000, 0x0000_0000, 0x0000_0001, 0x7fa1_2345];
-        let expected_lanes: [u32; 4] = [0x4000_0000, 0x0000_0000, 0x0000_0001, 0x7fa1_2345];
+        let expected_lanes: [u32; 4] = [0x4000_0000, 0x0000_0001, 0x0000_0001, 0x7fa1_2345];
         let mut memory = Memory::at(&code, 0x6000);
         let mut state = LongModeState::default();
         state.rip = 0x6000;
@@ -77290,6 +77352,28 @@ mod tests {
         expected.sse.as_mut().unwrap().mxcsr |= 0x03; // IE from NaN, DE from subnormal.
         assert_eq!(state, expected);
         assert!(memory.accesses.is_empty());
+
+        for old_sticky in 0..64u32 {
+            let mut memory = Memory::at(&code, 0x6100);
+            let mut state = LongModeState::default();
+            state.rip = 0x6100;
+            state.x87 = Some(X87State::fixture_seed());
+            let mut xmm = [[0x33; 16]; 16];
+            xmm[0][..4].copy_from_slice(&0x7fc1_2345u32.to_le_bytes());
+            xmm[1][..4].copy_from_slice(&0x0000_0001u32.to_le_bytes());
+            let mxcsr = 0x0000_1f80 | old_sticky;
+            state.sse = Some(SseState { xmm, mxcsr });
+
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                StepOutcome::Advanced
+            );
+            assert_eq!(
+                state.sse.as_ref().unwrap().mxcsr,
+                mxcsr | 0x01,
+                "old sticky={old_sticky:02x}"
+            );
+        }
     }
 
     #[test]
@@ -77375,10 +77459,12 @@ mod tests {
                 let lhs = Binary32::from_bits(values[usize::from(destination)]);
                 let rhs = Binary32::from_bits(values[usize::from(source)]);
                 let selection = Binary32::max_sse_raw_result(lhs, rhs);
-                let denormal =
-                    lhs.class() == BinaryClass::Subnormal || rhs.class() == BinaryClass::Subnormal;
+                let invalid_operation = selection.invalid_operation();
+                let denormal = !invalid_operation
+                    && (lhs.class() == BinaryClass::Subnormal
+                        || rhs.class() == BinaryClass::Subnormal);
                 let expected_mxcsr =
-                    mxcsr | u32::from(selection.invalid_operation()) | (u32::from(denormal) << 1);
+                    mxcsr | u32::from(invalid_operation) | (u32::from(denormal) << 1);
 
                 assert_eq!(
                     step(&mut state, &mut memory, AccessContext::default()).unwrap(),
@@ -77414,8 +77500,8 @@ mod tests {
             (0x3f80_0000, 0xff81_2345, 0xff81_2345, 0x01), // SNaN rhs selected raw, IE
             (0x0000_0001, 0x3f80_0000, 0x3f80_0000, 0x02), // positive subnormal lhs, DE
             (0x3f80_0000, 0x8000_0001, 0x3f80_0000, 0x02), // negative subnormal rhs, DE
-            (0x7fc1_2345, 0x8000_0001, 0x8000_0001, 0x03), // QNaN + denormal => IE | DE
-            (0xff81_2345, 0x0000_0001, 0x0000_0001, 0x03), // SNaN + denormal => IE | DE
+            (0x7fc1_2345, 0x8000_0001, 0x8000_0001, 0x01), // QNaN priority suppresses same-operation DE
+            (0xff81_2345, 0x0000_0001, 0x0000_0001, 0x01), // SNaN priority suppresses same-operation DE
             (0x3f80_0000, 0xffc2_3456, 0xffc2_3456, 0x01), // QNaN rhs selected raw, IE
         ];
         for (lhs_bits, rhs_bits, expected_bits, new_flags) in vectors {
@@ -77458,7 +77544,7 @@ mod tests {
                 step(&mut state, &mut memory, AccessContext::default()).unwrap(),
                 StepOutcome::Advanced
             );
-            assert_eq!(state.sse.as_ref().unwrap().mxcsr, mxcsr | 3, "RC={rc}");
+            assert_eq!(state.sse.as_ref().unwrap().mxcsr, mxcsr | 1, "RC={rc}");
         }
     }
 

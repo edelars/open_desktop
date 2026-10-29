@@ -15470,9 +15470,8 @@ flags are permitted. Unsupported state is refused locally and does not claim
 architectural #GP/#XM/#UD delivery.
 
 The executor snapshots both low dwords before mutation. Either QNaN or SNaN
-selects operand 2 and sets IE sticky; a subnormal in either source sets DE
-sticky with DAZ clear. IE/DE accumulate independently, including NaN plus
-subnormal. Non-NaN values use the existing `Binary32::min_sse_raw_result`
+selects operand 2 and sets IE sticky. With DAZ clear, a subnormal in the same
+operation adds DE only when invalid is not raised; prior DE remains sticky. Non-NaN values use the existing `Binary32::min_sse_raw_result`
 selection semantics, including operand-2 selection for equal values and signed
 zeros. Only the destination low dword and MXCSR IE/DE bits change; the upper
 destination 96 bits and every other state bit are preserved. Aliasing is
@@ -15481,7 +15480,8 @@ remain closed.
 
 The handwritten fixture `s2_37e_minss_masked_register.case.json` exercises
 XMM8←XMM9 QNaN plus smallest positive subnormal, selecting RHS and producing
-MXCSR `0x1f83`. Tests cover all 256 register pairs, QNaN/SNaN in either
+MXCSR `0x1f81` because invalid has priority over same-operation denormal.
+Tests cover all 256 register pairs, QNaN/SNaN in either
 position, signed-zero orderings, subnormal/NaN combinations, all RC encodings,
 sticky preservation, invalid-MXCSR and missing-SSE atomic refusals, exact
 decoder negatives/truncation/no-memory behavior, fixture literals, and explicit
@@ -15516,8 +15516,8 @@ sticky flags are accepted. The existing pure
 helper or global SSE snapshot contract changed.
 
 Either QNaN or SNaN operand selects the raw RHS and sets IE sticky. A
-subnormal input sets DE with DAZ clear. IE and DE accumulate independently,
-including NaN plus subnormal. Execution snapshots operands before mutation,
+a subnormal input sets DE with DAZ clear only if this operation does not also
+raise invalid. Prior DE remains sticky. Execution snapshots operands before mutation,
 updates only the destination low dword and IE/DE status bits, preserves upper
 destination bits and all unrelated state, supports aliasing, and has no data
 memory callback. Missing SSE or unsupported MXCSR refuses before commit. JIT,
@@ -15558,17 +15558,19 @@ sticky bits are accepted.
 
 Execution snapshots the complete source and destination XMM registers before
 computing four raw Binary32 MINPS lanes. It selects raw operand-2 bits for NaNs
-(including SNaNs), selects operand 2 for signed-zero ties, and ORs IE if any
-lane has a NaN and DE if any input lane is subnormal. It commits the complete
+(including SNaNs), selects operand 2 for signed-zero ties, and ORs IE for NaN
+lanes and DE for subnormal lanes without invalid. Invalid has priority within a
+lane; effective status ORs across lanes. It commits the complete
 destination and accumulated MXCSR IE/DE bits once after all lanes are computed.
 All other state is preserved; no data-memory callback is used. Unsupported
 preconditions refuse atomically. JIT/native/CPUID admission remains closed, and
 this does not claim unmasked #XM delivery or hardware acceptance.
 
 The handwritten fixture runs MINPS XMM8,XMM9 with literal mixed values covering
-finite values, a signed-zero tie, a subnormal and SNaN; expected XMM bytes and
-MXCSR `0x1f83` are explicit. Unit coverage includes all 256 register pairs,
-lane order, aliasing, IE/DE in different and shared lanes, every RC and sticky
+finite values, a subnormal-only lane, a QNaN/subnormal lane and SNaN; expected
+XMM bytes and MXCSR `0x1f83` are explicit from DE in one lane plus IE in another.
+Focused unit coverage checks same-lane suppression and cross-lane aggregation,
+as well as all 256 register pairs, lane order, aliasing, every RC and sticky
 subset, state preservation, no memory callbacks, all six mask refusals,
 DAZ/FTZ/reserved/Missing-SSE atomic refusal, malformed encodings, schema/JIT/
 native denial, and MINSS/MAXSS regressions.
@@ -15602,12 +15604,14 @@ match bounded S2-38a: SSE state present, all MXCSR exception masks set, DAZ/FTZ
 clear, reserved bits clear; any RC and prior sticky flags are accepted.
 
 Execution snapshots both full XMM operands, applies the existing raw Binary32
-MAX selector to four little-endian lanes, aggregates IE for any QNaN/SNaN and
-DE for any subnormal input, then commits the entire destination XMM and sticky
-MXCSR bits after preflight. Operand-2 NaN bits including signalling payload,
+MAX selector to four little-endian lanes, contributes IE for NaN lanes and DE
+for subnormal lanes without invalid, then commits the full destination and
+aggregate sticky MXCSR bits after preflight. Invalid has priority within a lane;
+effective flags OR across lanes. Operand-2 NaN bits including signalling payload,
 signed-zero/equal-value operand-2 selection and unrelated state are preserved.
-The literal XMM8←XMM9 fixture checks a mixed lane result with IE|DE (`0x1f80` to
-`0x1f83`). JIT/native/CPUID admission remains closed; unmasked exception
+The literal XMM8←XMM9 fixture checks a mixed-lane result and IE|DE aggregation
+from separate lanes (`0x1f80` to `0x1f83`). Focused unit coverage separately
+checks same-lane suppression. JIT/native/CPUID admission remains closed; unmasked exception
 delivery, #XM, memory forms and fault ordering are not implemented.
 
 Normative source: Intel SDM Rev. 093 Vol. 1 §11.5 and Appendix D Tables D-9,
@@ -15637,8 +15641,9 @@ or misplaced prefixes, truncation, VEX and EVEX.
 
 The executor snapshots only the source and destination low qwords and calls
 existing `Binary64::min_sse_raw_result`. A NaN in either low qword selects raw
-operand 2 and sets sticky IE; a subnormal in either low qword sets sticky DE.
-Equal values and signed-zero ties select operand 2. It commits only the
+operand 2 and sets sticky IE. A low-qword subnormal adds DE only when that
+operation does not also raise invalid; prior DE remains sticky. Equal values
+and signed-zero ties select operand 2. It commits only the
 low-qword destination and ORs IE/DE into MXCSR, preserving the destination upper
 qword and all unrelated state. Upper-qword NaN/subnormal sentinels do not affect
 the result or flags. Aliasing is supported, no data-memory callback occurs,
@@ -15648,7 +15653,8 @@ unmasked exception delivery remain closed.
 The handwritten `s2_37i_minsd_masked_register.case.json` executes XMM8←XMM9
 with low-qword QNaN and minimum positive subnormal, plus upper-qword destination
 SNaN and source subnormal sentinels. It expects the raw RHS low qword, preserved
-destination upper qword and MXCSR `0x1f83`. The runner validator tests reject
+destination upper qword and MXCSR `0x1f81`, as invalid has priority over
+same-operation denormal. The runner validator tests reject
 17 malformed or wrong-profile byte streams; MINSS and MINPS profile regressions
 explicitly reject the F2 MINSD form. Unit tests cover every one of the 256 XMM
 pairs, raw NaN/zero/subnormal behavior, all rounding-control values, upper
@@ -15672,3 +15678,45 @@ regressions); `cargo test -p od-testkit --offline` passed (369 tests);
 code review found no remaining correctness findings after correcting the
 fixture's upper-qword SNaN literal. Independent documentation review found no
 content or link findings.
+
+
+## S2-38a follow-up — masked MIN/MAX same-operation exception priority
+
+A correctness review of the committed S2-37e/f/g/h/i masked-status profiles
+found that the first implementation added DE for a subnormal even when the
+same scalar operation/lane also raised higher-priority IE for a NaN. Intel SDM
+Rev. 093 Vol. 1 §4.9.2 ranks invalid/QNaN handling above denormal and permits a
+masked lower-priority exception to be ignored; §11.5.2 applies this precedence
+to SIMD operations. Appendix D Tables D-9/D-13 specify raw-RHS NaN selection
+and invalid status for MIN/MAX. For packed operations, §11.5.3.1 ORs the
+per-operation status, so distinct lanes can still contribute IE and DE.
+
+The executor now computes `lane_ie = result.invalid_operation()` and adds DE
+for that lane only when `lane_ie` is false and either input is subnormal. Scalar
+MINSS/MAXSS/MINSD use the same priority. This suppresses only new DE for a
+same-operation NaN lane; prior IE does not suppress DE, prior DE remains sticky,
+and separate packed lanes can set both IE and DE.
+
+Updated the MINSS and MINSD literal expectations from MXCSR `0x1f83` to
+`0x1f81`. MINPS/MAXPS fixtures now put a subnormal without NaN in one lane and
+QNaN plus subnormal in another, exercising IE|DE aggregation across lanes.
+Focused packed unit tests with no independent subnormal lane verify same-lane
+suppression. Scalar literal vectors, all-register-pair oracles, packed lane
+aggregation and sticky-bit tests cover the corrected rule.
+The fixture provenance, fixture README, test format, interpreter guide, CPU
+contract and S2-38a plan description were corrected. No new known issue remains
+from this repaired finding.
+
+**Repair checks:** `cargo test -p od-isa --offline register_masked` passed
+(20 tests), `cargo test -p od-isa --offline scalar_minmax_prioritizes_new_flags_and_preserves_old_sticky_status`
+passed (1 test), `cargo test -p od-testkit --offline` passed (369 tests), the
+masked runner fixtures passed (5 tests), and the unrelated MOVSD fixture
+regression passed (1 test). `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, the Linux
+`od-x86-runner --all-targets` cross-check, `git diff --check`, and `graphify
+update .` passed. Independent Sol medium code review found no remaining
+findings after removing an accidental expected-MXCSR write from the unrelated
+MOVSD test. Documentation review found and corrected fixture-coverage overclaims and the
+stale signed-zero description; independent follow-up review is clean.
+No physical Mac mini result is claimed; those checks remain grouped in the final
+hardware substage. The work is not committed in this handoff.

@@ -2224,13 +2224,14 @@ DAZ/FTZ clear; and reserved bits 16–31 clear. Any RC and pre-existing sticky
 flags are accepted. Unsupported state is a local profile refusal, with no
 architectural fault claim.
 
-For either QNaN or SNaN, MINSS selects operand 2 and sets IE sticky. A
-subnormal in either input sets DE sticky; these bits accumulate independently.
-Non-NaN value selection uses `Binary32::min_sse_raw_result`, including operand
+For either QNaN or SNaN, MINSS selects operand 2 and sets IE sticky. The
+higher-priority invalid condition suppresses a new DE from a subnormal in that
+same scalar operation; pre-existing DE remains sticky. With no invalid
+condition, a subnormal input sets DE. Non-NaN value selection uses `Binary32::min_sse_raw_result`, including operand
 2 for equality and signed-zero ties. Both low operands are captured before
 write for aliasing. Only destination low 32 bits and MXCSR IE/DE can change;
 destination upper 96 bits and all remaining state are preserved. There is no
-data-memory access, JIT or native execution. Intel SDM Rev. 093 Vol. 1 §11.5,
+data-memory access, JIT or native execution. Intel SDM Rev. 093 Vol. 1 §§4.9.2, 11.5,
 Appendix D Tables D-9/D-15 and Vol. 2B `MINSS` are the normative sources. Full
 unmasked exception delivery and the remaining S2-38 fault ordering are open.
 See [the plan](../plans/STAGE_2.md#s2-37e--local-long64-register-only-legacy-minss-with-masked-status),
@@ -2244,8 +2245,10 @@ and [literal fixture](../../tests/fixtures/x86/stage2/s2_37e_minss_masked_regist
 profile requires SSE state, all six MXCSR exception masks set, DAZ/FTZ clear
 and MXCSR reserved bits clear. Any RC and existing sticky flags are allowed.
 
-Either QNaN or SNaN selects the raw second operand and sets IE sticky; a
-subnormal input sets DE sticky, independently of IE. For non-NaNs, the
+Either QNaN or SNaN selects the raw second operand and sets IE sticky. The
+higher-priority invalid condition suppresses a new DE from a subnormal in that
+same scalar operation; pre-existing DE remains sticky. A subnormal input sets
+DE when that operation has no invalid condition. For non-NaNs, the
 existing `Binary32::max_sse_raw_result` helper selects the greater value and
 uses operand 2 for equal values and signed-zero ties. Only the destination low
 dword and IE/DE status bits are updated; all other state is preserved. Missing
@@ -2254,8 +2257,8 @@ profile makes no data-memory access and remains unavailable to JIT/native.
 These are masked-status semantics only; unmasked #XM and wider S2-38 fault
 handling remain open.
 
-Normative source: Intel SDM Rev. 093 Vol. 1 §11.5, Appendix D Tables D-9/D-13/
-D-15, and Vol. 2B `MAXSS`. See the [plan](../plans/STAGE_2.md#s2-37f--local-long64-register-only-legacy-maxss-with-masked-status),
+Normative source: Intel SDM Rev. 093 Vol. 1 §§4.9.2, 11.5, Appendix D Tables
+D-9/D-13/D-15, and Vol. 2B `MAXSS`. See the [plan](../plans/STAGE_2.md#s2-37f--local-long64-register-only-legacy-maxss-with-masked-status),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37f-register-only-maxss-with-masked-status),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37f-local-masked-status-maxss-register-profile).
 
@@ -2269,9 +2272,10 @@ bits clear; RC and pre-existing sticky bits are accepted.
 
 MINPS snapshots both full XMM inputs, selects four raw binary32 lanes using
 `Binary32::min_sse_raw_result`, and commits a full destination XMM. Any QNaN or
-SNaN lane selects raw operand 2 and sets sticky IE; any subnormal input lane
-sets sticky DE. These flags are ORed across lanes, and prior sticky bits are
-preserved. Unsupported state refuses before mutation; no data-memory callback
+SNaN lane selects raw operand 2 and sets sticky IE. For each lane, invalid
+status suppresses a new DE from a subnormal in that lane; otherwise a subnormal
+input sets DE. Effective lane IE/DE flags are ORed across lanes, so distinct
+lanes can add both bits. Prior sticky bits are preserved. Unsupported state refuses before mutation; no data-memory callback
 occurs. JIT/native admission remains closed. Unmasked exception delivery and
 broader S2-38 fault ordering are not implemented. See the [plan](../plans/STAGE_2.md#s2-37g--local-long64-register-only-legacy-minps-with-masked-status),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37g-register-only-minps-with-masked-status),
@@ -2287,9 +2291,10 @@ pre-existing sticky bits are accepted.
 
 MAXPS snapshots both full XMM operands, selects four raw binary32 lanes using
 `Binary32::max_sse_raw_result`, and commits a full destination XMM. Any QNaN or
-SNaN lane selects raw operand 2 and sets sticky IE; any subnormal input lane
-sets sticky DE. These flags are ORed across lanes, and prior sticky bits are
-preserved. Unsupported state refuses before mutation; no data-memory callback
+SNaN lane selects raw operand 2 and sets sticky IE. For each lane, invalid
+status suppresses a new DE from a subnormal in that lane; otherwise a subnormal
+input sets DE. Effective lane IE/DE flags are ORed across lanes, so distinct
+lanes can add both bits. Prior sticky bits are preserved. Unsupported state refuses before mutation; no data-memory callback
 occurs. JIT/native admission remains closed. Unmasked exception delivery and
 broader S2-38 fault ordering are not implemented. See the [plan](../plans/STAGE_2.md#s2-37h--local-long64-register-only-legacy-maxps-with-masked-status),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37h-register-only-maxps-with-masked-status),
@@ -2305,9 +2310,11 @@ requires SSE state, all six MXCSR exception masks, DAZ/FTZ clear and reserved
 bits 16–31 clear; any RC and prior sticky bits are accepted.
 
 The operation snapshots only the two low qwords. Either QNaN or SNaN input
-selects raw RHS and sets IE; a subnormal low qword sets DE. Equal values and
+selects raw RHS and sets IE. Invalid status suppresses a new DE from a
+subnormal in that same scalar operation; pre-existing DE remains sticky. With
+no invalid condition, a subnormal low qword sets DE. Equal values and
 signed-zero ties select RHS. It commits only the destination low qword and ORs
-sticky IE/DE, preserving the destination upper qword and all unrelated state.
+effective IE/DE, preserving the destination upper qword and all unrelated state.
 Upper-qword NaN/subnormal sentinels do not affect result or flags. The literal
 fixture includes those sentinels; tests cover all 256 XMM pairs, raw NaN/zero
 semantics, all RC values, preflight atomicity and JIT/native denial. Full

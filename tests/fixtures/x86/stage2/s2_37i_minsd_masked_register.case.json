@@ -4,8 +4,8 @@
   "profile": "s2-long-minsd-reg-masked-v1",
   "provenance": {
     "kind": "project_fixture",
-    "source": "Handwritten literal legacy MINSD XMM8,XMM9 masked-status case. The low qword destination is QNaN and the low qword source is the minimum positive subnormal. The upper qword sentinels are an SNaN in the destination and a subnormal in the source; they must be preserved/ignored. The result selects the raw low qword operand 2 and sets sticky IE and DE.",
-    "specification": "Intel 64 and IA-32 Architectures Software Developer\u2019s Manual, Vol. 2B, MINSD; Vol. 1 Appendix D Tables D-9 and D-15; bounded local S2-37i/S2-38a masked profile.",
+    "source": "Handwritten literal legacy MINSD XMM8,XMM9 masked-status case. The low qword destination is QNaN and the low qword source is the minimum positive subnormal. The upper qword sentinels are an SNaN in the destination and a subnormal in the source; they must be preserved/ignored. The result selects raw operand 2 and sets sticky IE; invalid has priority over denormal for this operation.",
+    "specification": "Intel 64 and IA-32 Architectures Software Developer’s Manual, Vol. 2B, MINSD; Vol. 1 §4.9.2, §11.5 and Appendix D Tables D-9 and D-15; bounded local S2-37i/S2-38a masked profile.",
     "specification_version": "Intel SDM revision 093; project S2-37i/S2-38a."
   },
   "seed": null,

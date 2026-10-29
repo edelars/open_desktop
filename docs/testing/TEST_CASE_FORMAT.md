@@ -691,8 +691,11 @@ destination and r/m is the source. Unsupported mandatory/legacy prefixes,
 REX.W/X, repeated/nonadjacent REX, truncation, VEX/EVEX and neighboring forms
 are rejected by the profile. MXCSR must have all six exception masks set,
 DAZ/FTZ clear and reserved bits 16–31 clear; RC and pre-set sticky bits are
-allowed. No fixture fields are added. The expected low dword and IE/DE sticky
-bits are literal; the profile is local-only and JIT/native remain denied. See
+allowed. No fixture fields are added. The expected low dword and sticky bits
+are literal. Invalid status has priority over denormal for the same operation:
+a same-operation NaN/subnormal case adds
+IE but not new DE, while prior sticky DE is preserved. The profile is local-only
+and JIT/native remain denied. See
 [the S2-37e fixture](../../tests/fixtures/x86/stage2/s2_37e_minss_masked_register.case.json)
 and [the bounded plan](../plans/STAGE_2.md#s2-37e--local-long64-register-only-legacy-minss-with-masked-status).
 
@@ -716,9 +719,10 @@ operand or trailing bytes. Destination/source extension uses REX.R/B; F3
 MINSS is a separate instruction and is rejected by the MINPS profile. The
 profile requires the full Long64 snapshot, all six MXCSR exception masks set,
 DAZ/FTZ clear and reserved bits 16–31 clear. Any RC and old sticky flags are
-allowed. Literal fixture values check the four-lane result, sticky IE/DE
-aggregation and full state. JIT/native remain denied; unmasked exception
-delivery and fault ordering are outside this profile. See [the S2-37g
+allowed. Literal fixture values check the four-lane result and IE/DE
+aggregation from distinct lanes. Focused unit tests check per-lane exception
+priority without another subnormal lane that could set DE. JIT/native remain
+denied; unmasked exception delivery and fault ordering are outside this profile. See [the S2-37g
 fixture](../../tests/fixtures/x86/stage2/s2_37g_minps_masked_register.case.json)
 and [the bounded plan](../plans/STAGE_2.md#s2-37g--local-long64-register-only-legacy-minps-with-masked-status).
 
@@ -730,9 +734,10 @@ operand or trailing bytes. Destination/source extension uses REX.R/B; F3
 MAXSS is a separate instruction and is rejected by the MAXPS profile. The
 profile requires the full Long64 snapshot, all six MXCSR exception masks set,
 DAZ/FTZ clear and reserved bits 16–31 clear. Any RC and old sticky flags are
-allowed. The literal fixture checks the four-lane result, sticky IE/DE
-aggregation and full state. JIT/native remain denied; unmasked exception
-delivery and fault ordering are outside this profile. See [the S2-37h
+allowed. The literal fixture checks the four-lane result and IE/DE
+aggregation from distinct lanes. Focused unit tests check per-lane exception
+priority without another subnormal lane that could set DE. JIT/native remain
+denied; unmasked exception delivery and fault ordering are outside this profile. See [the S2-37h
 fixture](../../tests/fixtures/x86/stage2/s2_37h_maxps_masked_register.case.json)
 and [the bounded plan](../plans/STAGE_2.md#s2-37h--local-long64-register-only-legacy-maxps-with-masked-status).
 
@@ -744,7 +749,7 @@ Long64 `F2 [optional adjacent REX.R/B] 0F 5D /r` instruction with ModR/M.mod=3.
 F3 MINSS and bare MINPS remain distinct decoder operations and are rejected by
 this profile. The existing state schema is unchanged; MXCSR admission requires
 all exception masks, DAZ/FTZ clear and reserved bits 16–31 clear. A literal
-fixture checks low-qword RHS selection and masked IE/DE with upper-qword
-SNaN/subnormal sentinels. The profile is local-only, with JIT/native denied.
-See [the S2-37i fixture](../../tests/fixtures/x86/stage2/s2_37i_minsd_masked_register.case.json)
+fixture checks low-qword RHS selection and masked IE priority over
+same-operation DE, with upper-qword SNaN/subnormal sentinels. The profile is
+local-only, with JIT/native denied. See [the S2-37i fixture](../../tests/fixtures/x86/stage2/s2_37i_minsd_masked_register.case.json)
 and [the bounded plan](../plans/STAGE_2.md#s2-37i--local-long64-register-only-legacy-minsd-with-masked-status).

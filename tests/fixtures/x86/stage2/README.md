@@ -5496,11 +5496,11 @@ JIT/native admission is denied; physical status remains `not_run`.
 
 `s2_37e_minss_masked_register.case.json` is a handwritten schema-v2 XMM8←XMM9
 fixture for `F3 45 0F 5D C1`. The source low lanes are QNaN and the smallest
-positive subnormal. MINSS selects operand 2 and the profile sets both masked IE
-and DE sticky flags, producing MXCSR `0x1f83`. The upper destination bits and
+positive subnormal. MINSS selects operand 2 and sets IE; invalid has priority
+over denormal in this scalar operation, so MXCSR becomes `0x1f81`. The upper destination bits and
 other state are preserved. The local contract requires all six exception masks,
 DAZ/FTZ clear and reserved MXCSR bits clear. Normative references are Intel SDM
-Rev. 093 Vol. 1 §11.5, Appendix D Tables D-9/D-15 and Vol. 2B MINSS. This fixture
+Rev. 093 Vol. 1 §§4.9.2, 11.5, Appendix D Tables D-9/D-15 and Vol. 2B MINSS. This fixture
 does not claim unmasked exception or fault-ordering behavior; JIT/native remain
 closed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37e--local-long64-register-only-legacy-minss-with-masked-status).
 
@@ -5518,26 +5518,30 @@ See the [plan](../../../../docs/plans/STAGE_2.md#s2-37f--local-long64-register-o
 ### S2-37g local masked-status MINPS register profile
 
 `s2_37g_minps_masked_register.case.json` is a handwritten schema-v2 XMM8←XMM9
-fixture for `45 0F 5D C1`. It mixes finite, signed-zero, QNaN/subnormal and
-infinity/SNaN lanes. Expected result bytes preserve raw RHS NaN bits, and the
-fixture requires MXCSR IE|DE sticky bits (`0x1f80` to `0x1f83`). The interpreter
+fixture for `45 0F 5D C1`. It mixes finite, subnormal-without-NaN,
+QNaN/subnormal and infinity/SNaN lanes. Invalid suppresses new DE within its
+lane; the separate subnormal lane contributes DE, so the fixture expects MXCSR
+IE|DE (`0x1f80` to `0x1f83`). Dedicated unit tests verify the same-lane
+priority directly. Expected result bytes preserve raw RHS NaN bits. The interpreter
 test also checks full state preservation and the profile remains JIT/native
 closed. MXCSR preconditions are all exception masks set, DAZ/FTZ clear and
-reserved bits clear. Normative references are Intel SDM Rev. 093 Vol. 1 §11.5,
-Appendix D Tables D-9/D-13/D-15, and Vol. 2B MINPS. This is masked-status local
+reserved bits clear. Normative references are Intel SDM Rev. 093 Vol. 1 §§4.9.2, 11.5.2,
+11.5.3.1, Appendix D Tables D-9/D-13/D-15, and Vol. 2B MINPS. This is masked-status local
 coverage only; unmasked #XM delivery and fault ordering are not claimed. See
 the [plan](../../../../docs/plans/STAGE_2.md#s2-37g--local-long64-register-only-legacy-minps-with-masked-status).
 
 ### S2-37h local masked-status MAXPS register profile
 
 `s2_37h_maxps_masked_register.case.json` is a handwritten schema-v2 XMM8←XMM9
-fixture for `45 0F 5F C1`. It mixes finite, signed-zero, QNaN/subnormal and
-infinity/SNaN lanes. Expected result bytes preserve raw RHS NaN bits, and the
-fixture requires MXCSR IE|DE sticky bits (`0x1f80` to `0x1f83`). The interpreter
+fixture for `45 0F 5F C1`. It mixes finite, subnormal-without-NaN,
+QNaN/subnormal and infinity/SNaN lanes. Invalid suppresses new DE within its
+lane; the separate subnormal lane contributes DE, so the fixture expects MXCSR
+IE|DE (`0x1f80` to `0x1f83`). Dedicated unit tests verify the same-lane
+priority directly. Expected result bytes preserve raw RHS NaN bits. The interpreter
 test also checks full state preservation and the profile remains JIT/native
 closed. MXCSR preconditions are all exception masks set, DAZ/FTZ clear and
-reserved bits clear. Normative references are Intel SDM Rev. 093 Vol. 1 §11.5,
-Appendix D Tables D-9/D-13/D-15, and Vol. 2B MAXPS. This is masked-status local
+reserved bits clear. Normative references are Intel SDM Rev. 093 Vol. 1 §§4.9.2, 11.5.2,
+11.5.3.1, Appendix D Tables D-9/D-13/D-15, and Vol. 2B MAXPS. This is masked-status local
 coverage only; unmasked #XM delivery and fault ordering are not claimed. See
 the [plan](../../../../docs/plans/STAGE_2.md#s2-37h--local-long64-register-only-legacy-maxps-with-masked-status).
 
@@ -5548,10 +5552,11 @@ the [plan](../../../../docs/plans/STAGE_2.md#s2-37h--local-long64-register-only-
 fixture for `F2 45 0F 5D C1`. The low qword destination is QNaN and the low
 qword source is the minimum positive subnormal; the fixture expects raw RHS in
 the low qword, preserves destination upper-qword SNaN sentinel, and checks
-MXCSR IE|DE (`0x1f80` to `0x1f83`). A source upper-qword subnormal sentinel
+MXCSR IE only (`0x1f80` to `0x1f81`) because same-operation invalid has
+priority over denormal. A source upper-qword subnormal sentinel
 must not affect the result or flags. The local profile requires all MXCSR
 exception masks set, DAZ/FTZ clear and reserved bits clear. It is not a claim
 about unmasked exception delivery, memory forms, JIT/native or physical CPU
-acceptance. Normative references are Intel SDM Rev. 093 Vol. 1 §11.5, Appendix
+acceptance. Normative references are Intel SDM Rev. 093 Vol. 1 §§4.9.2, 11.5, Appendix
 D Tables D-9/D-15, and Vol. 2B MINSD. See the
 [plan](../../../../docs/plans/STAGE_2.md#s2-37i--local-long64-register-only-legacy-minsd-with-masked-status).

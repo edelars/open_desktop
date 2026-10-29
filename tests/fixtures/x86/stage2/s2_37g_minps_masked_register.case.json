@@ -4,8 +4,8 @@
   "profile": "s2-long-minps-reg-masked-v1",
   "provenance": {
     "kind": "project_fixture",
-    "source": "Handwritten literal legacy MINPS XMM8,XMM9 mixed-lane masked-status case. A QNaN/subnormal lane raises both sticky IE and DE; an SNaN lane preserves the raw RHS payload.",
-    "specification": "Intel 64 and IA-32 Architectures Software Developer\u2019s Manual, Vol. 2B, MINPS; Vol. 1 Appendix D Tables D-9 and D-15; bounded local S2-37g/S2-38a masked profile.",
+    "source": "Handwritten literal legacy MINPS XMM8,XMM9 mixed-lane masked-status case. Lane 1 has a subnormal without NaN and independently contributes DE; lane 2 combines QNaN with a subnormal; lane 3 preserves the raw RHS SNaN payload. The packed unit tests separately verify same-lane invalid priority.",
+    "specification": "Intel 64 and IA-32 Architectures Software Developer’s Manual, Vol. 2B, MINPS; Vol. 1 §§4.9.2, 11.5.2, 11.5.3.1 and Appendix D Tables D-9, D-13 and D-15; bounded local S2-37g/S2-38a masked profile.",
     "specification_version": "Intel SDM revision 093; project S2-37g/S2-38a."
   },
   "seed": null,
@@ -60,7 +60,7 @@
         "505152535455565758595a5b5c5d5e5f",
         "606162636465666768696a6b6c6d6e6f",
         "707172737475767778797a7b7c7d7e7f",
-        "0000803f000000804523c17f0000807f",
+        "0000803f010000004523c17f0000807f",
         "0000004000000000010000004523a17f",
         "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
         "b0b1b2b3b4b5b6b7b8b9babbbcbdbebf",

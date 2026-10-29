@@ -5217,7 +5217,7 @@ fn local_rcpps_register_transforms_all_destination_lanes_and_keeps_jit_closed() 
 }
 
 #[test]
-fn local_minss_masked_register_selects_rhs_and_sets_sticky_ie_de() {
+fn local_minss_masked_register_selects_rhs_and_sets_sticky_ie() {
     let bytes =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_37e_minss_masked_register.case.json");
     let (input, result) = run(bytes, "interpreter", 0);
@@ -5229,7 +5229,7 @@ fn local_minss_masked_register_selects_rhs_and_sets_sticky_ie_de() {
     let mut expected = input.fixture.initial_state.clone();
     expected.rip = input.fixture.stop_rip.unwrap();
     expected.sse.as_mut().unwrap().xmm[8].replace_range(..8, "01000000");
-    expected.sse.as_mut().unwrap().mxcsr = HexU64(0x0000_1f83);
+    expected.sse.as_mut().unwrap().mxcsr = HexU64(0x0000_1f81);
     assert_eq!(snapshot(&result).state, expected);
 
     for bytes_hex in [
@@ -5414,7 +5414,7 @@ fn local_minsd_masked_register_updates_only_low_qword_and_keeps_jit_closed() {
     let mut expected = input.fixture.initial_state.clone();
     expected.rip = input.fixture.stop_rip.unwrap();
     expected.sse.as_mut().unwrap().xmm[8] = "0100000000000000010000000000f07f".to_owned();
-    expected.sse.as_mut().unwrap().mxcsr = HexU64(0x0000_1f83);
+    expected.sse.as_mut().unwrap().mxcsr = HexU64(0x0000_1f81);
     assert_eq!(snapshot(&result).state, expected);
 
     for bytes_hex in [
@@ -5478,7 +5478,7 @@ fn local_maxps_masked_register_aggregates_ie_de_across_lanes() {
     assert_eq!(count(&result), 1);
     let mut expected = input.fixture.initial_state.clone();
     expected.rip = input.fixture.stop_rip.unwrap();
-    expected.sse.as_mut().unwrap().xmm[8] = "0000004000000000010000004523a17f".to_owned();
+    expected.sse.as_mut().unwrap().xmm[8] = "0000004001000000010000004523a17f".to_owned();
     expected.sse.as_mut().unwrap().mxcsr = HexU64(0x0000_1f83);
     assert_eq!(snapshot(&result).state, expected);
 
