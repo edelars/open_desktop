@@ -2186,8 +2186,9 @@ is pending; native runtime and physical acceptance remain unverified.
 
 **Статус:** interpreter/schema/runner implementation complete; local focused
 tests, workspace/Linux-target compile checks, formatting and Graphify passed.
-Independent Sol-medium review pending. Linux runtime, physical, SSH and Mac mini
-checks remain deferred to the combined final hardware batch.
+Independent Sol-medium review completed with no findings. Linux runtime,
+physical, SSH and Mac mini checks remain deferred to the combined final hardware
+batch.
 
 Implement an independent `MsrProfile::KernelGsBaseV1` for only
 `IA32_KERNEL_GS_BASE` (`0xC0000102`) and exact bare Long64 `0F 32`/`0F 30`.
