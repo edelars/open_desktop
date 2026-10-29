@@ -2165,6 +2165,8 @@ fn local_x87_state_profile_runs_fninit_with_full_environment_reset() {
         tag_word: HexU64(0xffff),
         instruction_pointer: HexU64(0),
         data_pointer: HexU64(0),
+        instruction_selector: None,
+        data_selector: None,
         last_opcode: HexU64(0),
     };
     assert_eq!(observed.state.x87.as_ref(), Some(&expected));
@@ -4498,6 +4500,29 @@ fn local_x87_sse_snapshot_fixture_preserves_all_raw_state_through_nop() {
     let mut expected = input.fixture.initial_state.clone();
     expected.rip = input.fixture.stop_rip.unwrap();
     assert_eq!(snapshot(&result).state, expected);
+}
+
+#[test]
+fn local_x87_selector_snapshot_fixture_preserves_selectors_pointers_and_sse() {
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_39b_x87_selector_state_snapshot.case.json"
+    );
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongX87SelectorsStateV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    assert_eq!(snapshot(&result).state, expected);
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
 }
 
 #[test]

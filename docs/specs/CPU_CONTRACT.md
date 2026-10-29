@@ -172,10 +172,10 @@ FDP at bytes 16–19 as 32-bit offsets. Because this selected target's unlisted
 CPUID leaf 7 returns zero, bytes 12–13 and 20–21 hold FCS and FDS; bytes 14–15
 and 22–23 are unused. `FXSAVE64/FXRSTOR64` with REX.W=1 instead stores complete
 64-bit FIP and FDP at bytes 8–15 and 16–23, with no selectors in those ranges.
-The remaining fields and XMM offsets are shared. The current `X87State` has
-64-bit pointer fields but no FCS/FDS, so it is insufficient to model the
-plain Long64 form losslessly. `X87State`/`SseState` and `SseSnapshot` are
-component snapshots, not interchangeable with this 512-byte wire image.
+The remaining fields and XMM offsets are shared. S2-39b adds independently
+optional FCS/FDS representation to `X87State` and schema-v2 snapshots, but
+those component snapshots are still not interchangeable with this 512-byte
+wire image or sufficient to implement its memory effects.
 
 The selected target advertises FXSR separately from SSE/SSE2; Vol. 1 notes that
 FXSAVE/FXRSTOR have their own CPUID feature bit. Execution preconditions for a
@@ -201,10 +201,42 @@ all-area atomic write or a general rollback guarantee for external memory
 backends; the interpreter must not claim either. The Linux exact forms and
 recommended order are recorded in [S2-39a plan](../plans/STAGE_2.md#s2-39a-нормативное-evidence-legacy-fxsavefxrstor-evidence-only).
 S2-39a is evidence-only. The first implementation candidate is the plain
-Long64 RIP-relative FXSAVE mask-init probe, but only after FCS/FDS and the
-defined field writes are supported. It stores architectural state beyond
+Long64 RIP-relative FXSAVE mask-init probe, now that FCS/FDS are representable,
+but only after its defined field writes are implemented. It stores architectural state beyond
 MXCSR_MASK, while preserving bytes 464–511; it is not a mask-only store. The
-open selector representation gap is tracked in [ISSUE-026](../KNOWN_ISSUES.md#issue-026--plain-long64-fxsavefxrstor-target-lacks-selector-state).
+selector representation was resolved by [S2-39b](#s2-39b--selector-state-representation-only); plain FXSAVE/FXRSTOR execution remains unsupported.
+
+### S2-39b — Selector state representation only
+
+`X87State` carries independently optional 16-bit `instruction_selector` and
+`data_selector` values, and schema-v2 `X87Snapshot` carries matching optional
+hex values. `None` means the selector is unavailable or unrepresented;
+`Some(0)` is a known zero value. FIP and FDP remain full-width `u64` offsets.
+The older x87 and x87/SSE profiles serialize these fields absent and reject
+present selector fields. Fixture seed data also leaves them absent; selectors
+are not inferred from current CS or DS.
+
+The isolated `s2-long-x87-selectors-state-v1` profile requires x87, SSE, and
+both selectors. It admits only one NOP byte (`90`), budget 1, with stop RIP
+immediately following it. A handwritten fixture uses distinct nonzero
+selectors and 64-bit pointer sentinels. NOP preserves full raw x87 and SSE
+state; result comparison includes both selector presence and value. The C
+fragment adapter rejects the containing x87 state, and JIT/native admission
+remain explicitly unsupported.
+
+Because existing x87 instruction semantics update FIP/FDP but do not model FCS
+or FDS transitions, the interpreter fails closed before state mutation or data
+memory access for any supported x87 primary-opcode instruction whenever either
+selector is present. STOP-address and zero-budget checks retain their existing
+ordering. No selector is fabricated from CS/DS.
+
+This closes [ISSUE-026](../KNOWN_ISSUES.md#issue-026--plain-long64-fxsavefxrstor-target-lacks-selector-state)
+for state representation only. It does not add FNINIT execution or an
+FXSAVE/FXRSTOR memory image, instruction, alignment/fault behavior, or native
+observation. Plain Long64 REX.W=0 FXSAVE/FXRSTOR remain unsupported and S2-39
+remains open. Hardware/Mac mini checks are deferred to the combined final
+hardware substage. See the [S2-39b plan](../plans/STAGE_2.md#s2-39b-lossless-selector-state-representation-no-fxsave-execution)
+and [implementation report](../reports/STAGE_2_REPORT.md#s2-39b--selector-state-representation-only).
 
 ## Предлагаемый профиль тестового прототипа S0-09
 

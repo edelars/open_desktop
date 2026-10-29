@@ -5,7 +5,8 @@
 `od_testkit::v2` implements schema `2` with profiles `s2-long-integer-v1` and
 `s2-long-fs-base-v1`, `s2-long-gs-base-v1`, `s2-long-fs-selector-v1` and
 `s2-long-gs-selector-v1`, `s2-long-verw-gdt-v1`, and local-only
-`s2-long-fs-load-v1`.
+`s2-long-fs-load-v1`, `s2-long-x87-state-v1`, `s2-long-x87-sse-state-v1`, and
+`s2-long-x87-selectors-state-v1`.
 V1 readers, bytes and historical digests remain unchanged. Segment profiles are
 profile-specific state extensions;
 it does not reinterpret or rewrite existing integer-profile fixtures.
@@ -788,3 +789,25 @@ SSE and unsupported MXCSR refuse atomically; memory and unmasked-delivery paths
 remain closed. See [fixture](../../tests/fixtures/x86/stage2/s2_37l_maxpd_masked_register.case.json),
 [plan](../plans/STAGE_2.md#s2-37l--local-long64-register-only-legacy-maxpd-with-masked-status),
 and [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37l-register-only-maxpd-with-masked-status).
+
+## S2-39b selector-state snapshot profile
+
+Schema-v2 `X87Snapshot` may contain `instruction_selector` and
+`data_selector` as 16-bit HexU64 values. Each field is independently optional:
+absence (`None`) means unavailable/unrepresented, while `0x0000000000000000`
+is a known zero selector. Values above `0xffff`, `null`, malformed HexU64
+values, and unknown fields are rejected. FIP/FDP remain full-width 64-bit HexU64
+values.
+
+The existing x87 state, x87/SSE snapshot, and SSE instruction profiles omit
+selector fields when serializing and reject them when present. The new
+`s2-long-x87-selectors-state-v1` profile requires x87 state, SSE state, and both
+selectors. It admits only the exact one-byte NOP `90`, instruction budget 1,
+and stop RIP immediately after the NOP. The handwritten selector fixture uses
+distinct nonzero selectors and high-width FIP/FDP sentinels; its mixed physical
+tag-word and raw register payloads are compared in full. This profile verifies
+local state transfer only. It does not execute FXSAVE/FXRSTOR, and the C
+fragment adapter, JIT, and native runner remain closed to it. See the
+[fixture note](../../tests/fixtures/x86/stage2/README.md#s2-39b-selector-state-snapshot),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-39b--selector-state-representation-only),
+and [plan](../plans/STAGE_2.md#s2-39b-lossless-selector-state-representation-no-fxsave-execution).

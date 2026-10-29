@@ -587,12 +587,24 @@ instruction operand can fault on address/alignment/page conditions; neither
 this static evidence nor the cited instruction summary supports claiming a
 whole-area atomic commit or arbitrary memory-backend rollback.
 
-S2-39a closes only the normative evidence/contract subtask. The current
-S2-34.1 snapshot is not an FXSAVE image; specifically, `X87State` lacks FCS/FDS
-for the exact plain FXSAVE form. This confirmed state-representation gap is
-tracked in [ISSUE-026](../KNOWN_ISSUES.md#issue-026--plain-long64-fxsavefxrstor-target-lacks-selector-state).
-Recommended first implementation is the plain Long64 RIP-relative FXSAVE
-mask-probe form only after its architectural state fields and memory behavior
-are representable; it must leave bytes 464–511 unchanged. No implementation,
-tests, native oracle, C/D coverage, runtime boot, or physical/Mac mini check
-was performed; the latter remains in the combined final hardware substage.
+S2-39a closes only the normative evidence/contract subtask. S2-39b has since
+resolved the selector state representation gap as a local state/snapshot change
+only; this does not make the S2-34.1 snapshot an FXSAVE memory image and does
+not implement the plain Long64 form. The exact RIP-relative FXSAVE mask-probe
+remains the recommended first execution candidate after defined-field memory
+behavior is implemented, including preservation of bytes 464–511. See the
+[S2-39b implementation report](STAGE_2_REPORT.md#s2-39b--selector-state-representation-only).
+No runtime boot, native oracle execution, C/D acceptance, or physical/Mac mini
+result is claimed; physical checks remain in the combined final hardware
+substage.
+
+
+## S2-39b — selector state representation only
+
+The missing FCS/FDS representation has been added as independent optional
+16-bit values in core and strict schema-v2 snapshots; the older profiles omit
+and explicitly reject these values. This is a lossless state-model update, not
+an FXSAVE/FXRSTOR implementation or observation. Plain REX.W=0 forms remain
+unsupported, while S2-39 remains open. The bounded fixture and local verification
+are recorded in the [Stage 2 report](STAGE_2_REPORT.md#s2-39b--selector-state-representation-only)
+and [S2-39b plan](../plans/STAGE_2.md#s2-39b-lossless-selector-state-representation-no-fxsave-execution).

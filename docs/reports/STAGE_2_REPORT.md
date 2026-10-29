@@ -15818,12 +15818,63 @@ the [Linux profile report](STAGE_2_LINUX_PROFILE.md#s2-39a--fxsave-evidence-only
 This documentation-only slice adds no implementation or executable checks and
 does not claim a boot, C/D acceptance, physical execution, or whole-area
 atomicity. The chosen generic `amd64` target is selected, but target
-implementation, runtime manifest and boot remain open. Current `X87State`
-does not store FCS/FDS selectors required by the plain Long64 FXSAVE image;
-this confirmed representation gap is tracked in [ISSUE-026](../KNOWN_ISSUES.md#issue-026--plain-long64-fxsavefxrstor-target-lacks-selector-state). The recommended initial
+implementation, runtime manifest and boot remain open. S2-39b has resolved
+the selector representation gap in `X87State`, but the component snapshots
+are still not the FXSAVE memory image. The recommended initial
 implementation is the exact RIP-relative mask-probe FXSAVE form once the
-required architectural state fields are representable. FXSAVE writes defined
+required architectural state fields are represented and its memory effects
+are implemented. FXSAVE writes defined
 state in the 512-byte area, while preserving software-available bytes 464–511;
 reserved bytes 416–463 are not treated as meaningful state or given write
 semantics here. Mac mini/SSH checks stay in the combined final hardware
 substage.
+
+## S2-39b — selector state representation only
+
+Added independently optional `instruction_selector: Option<u16>` and
+`data_selector: Option<u16>` to `X87State`, plus matching optional hexadecimal
+fields in strict schema-v2 `X87Snapshot`. Missing values serialize absent;
+`Some(0)` remains distinct from unavailable. The existing 64-bit FIP/FDP
+fields are unchanged. Fixture seeds and all prior profiles leave selectors
+absent; profile validation rejects supplied selectors outside the new profile.
+The whole `X87Snapshot` comparison already compares both presence and value.
+
+Added `s2-long-x87-selectors-state-v1`, requiring x87, SSE and both selectors.
+It admits exactly the one-byte NOP with instruction budget 1 and stop RIP after
+that byte. The handwritten fixture uses distinct nonzero selectors, high-width
+pointer sentinels, mixed raw x87 registers, physical tag word `0xe4e4`, TOP=3,
+opcode, and all XMM/MXCSR state.
+Interpreter NOP preserves all represented x87 and SSE fields. The C fragment
+adapter rejects the containing x87 state; JIT and native execution remain
+unsupported. Existing supported x87 instructions fail closed before their
+semantic state mutation or data-memory access whenever either selector is
+present, because their FCS/FDS transitions are not modeled. No selector is
+inferred from CS/DS. Existing STOP-address and zero-budget ordering is
+unchanged.
+
+This closes ISSUE-026 for representation only. It does not implement FNINIT,
+FXSAVE/FXRSTOR, a 512-byte memory image, guest exception delivery, native
+observation, boot, or physical behavior. Plain Long64 REX.W=0 forms remain
+unsupported; S2-39 remains open. Physical/Mac mini work remains in the combined
+final hardware substage.
+
+**Checks:** the focused core fail-closed test passed (register and memory x87
+forms, single-selector availability, full state unchanged and no data access);
+the C fragment adapter rejection test passed; both testkit selector
+roundtrip/profile tests passed, including null/encoding rejection, width limits,
+missing x87/SSE, absent legacy serialization, and comparator presence/value
+changes. The runner NOP preservation fixture test passed, including JIT
+rejection. `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`,
+`git diff --check`, and `graphify update .` passed. The Linux-target command
+compiled native-denial tests only; no Linux execution, Mac mini/SSH, or hardware
+checks were run. Graphify reported its existing unsupported-header warning for
+`include/open_desktop/host_abi.h` and no symbols for data/other unsupported
+files; it still completed the code graph update.
+
+**Review:** independent gpt-6.1-sol medium implementation review found no
+remaining findings after fixing the native early-denial list and strict null
+handling. The independent documentation review verified the added
+[TEST_CASE_FORMAT](../testing/TEST_CASE_FORMAT.md) wire-format rules, mixed-tag
+fixture evidence, and all new links; no findings remain.

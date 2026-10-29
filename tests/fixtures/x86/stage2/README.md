@@ -5603,3 +5603,17 @@ execution are not claimed; physical acceptance is deferred to the combined
 final Mac mini substage. Normative references: Intel SDM Rev. 093 Vol. 1
 Appendix D Tables D-9/D-13/D-15 and Vol. 2B MAXPD. See the
 [plan](../../../../docs/plans/STAGE_2.md#s2-37l--local-long64-register-only-legacy-maxpd-with-masked-status).
+
+
+### S2-39b selector state snapshot
+
+`s2_39b_x87_selector_state_snapshot.case.json` is a handwritten schema-v2
+fixture for `s2-long-x87-selectors-state-v1`. It transfers one NOP while
+retaining distinct nonzero instruction/data selectors, full-width FIP/FDP
+sentinels, raw x87 registers/tags/opcode, and all XMM/MXCSR state. It proves
+local representation and snapshot preservation only; no FXSAVE/FXRSTOR
+execution, native observation, or physical/Mac mini behavior is claimed. The
+older profiles continue to omit selector fields and reject them if supplied.
+See the [S2-39b plan](../../../../docs/plans/STAGE_2.md#s2-39b-lossless-selector-state-representation-no-fxsave-execution),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-39b--selector-state-representation-only),
+and [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-39b--selector-state-representation-only).

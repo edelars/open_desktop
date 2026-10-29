@@ -146,6 +146,113 @@ fn x87_sse_state_profile_roundtrips_raw_state_and_compares_every_xmm_and_mxcsr()
 }
 
 #[test]
+fn x87_selector_snapshot_preserves_availability_width_and_high_pointer_values() {
+    let mut state = od_isa::state::X87State::fixture_seed();
+    state.instruction_pointer = 0xfedc_ba98_7654_3210;
+    state.data_pointer = 0x8765_4321_fedc_ba98;
+    for instruction_selector in [None, Some(0), Some(1), Some(0x8000), Some(0xffff)] {
+        for data_selector in [None, Some(0), Some(1), Some(0x8000), Some(0xffff)] {
+            state.instruction_selector = instruction_selector;
+            state.data_selector = data_selector;
+            let snapshot = X87Snapshot::from(&state);
+            let json = serde_json::to_vec(&snapshot).unwrap();
+            let decoded: X87Snapshot = serde_json::from_slice(&json).unwrap();
+            assert_eq!(decoded, snapshot);
+            assert_eq!(decoded.to_cpu().unwrap(), state);
+        }
+    }
+    let mut too_wide = X87Snapshot::from(&state);
+    too_wide.instruction_selector = Some(HexU64(0x1_0000));
+    assert!(too_wide.to_cpu().is_err());
+    let mut data_too_wide = X87Snapshot::from(&state);
+    data_too_wide.data_selector = Some(HexU64(0x1_0000));
+    assert!(data_too_wide.to_cpu().is_err());
+}
+
+#[test]
+fn x87_selector_profile_requires_both_selectors_and_rejects_them_in_old_profiles() {
+    let mut fixture = x87_sse_fixture().fixture;
+    fixture.case_id = "local_x87_selector_snapshot_nop".into();
+    fixture.profile = Profile::LongX87SelectorsStateV1;
+    let x87 = fixture.initial_state.x87.as_mut().unwrap();
+    x87.instruction_selector = Some(HexU64(0x2b));
+    x87.data_selector = Some(HexU64(0x53));
+    assert!(Fixture::from_json(&fixture.to_json().unwrap()).is_ok());
+    let selector_cpu = fixture
+        .initial_state
+        .to_cpu_for(Profile::LongX87SelectorsStateV1)
+        .unwrap();
+    assert!(IntegerState::from_cpu_for(&selector_cpu, Profile::LongX87SseStateV1).is_err());
+
+    for (instruction_selector, data_selector) in
+        [(None, Some(HexU64(0x53))), (Some(HexU64(0x2b)), None)]
+    {
+        let mut missing = fixture.clone();
+        let x87 = missing.initial_state.x87.as_mut().unwrap();
+        x87.instruction_selector = instruction_selector;
+        x87.data_selector = data_selector;
+        assert!(missing.validate().is_err());
+    }
+
+    let mut missing_x87 = fixture.clone();
+    missing_x87.initial_state.x87 = None;
+    assert!(missing_x87.validate().is_err());
+    let mut missing_sse = fixture.clone();
+    missing_sse.initial_state.sse = None;
+    assert!(missing_sse.validate().is_err());
+    let mut too_wide = fixture.clone();
+    too_wide
+        .initial_state
+        .x87
+        .as_mut()
+        .unwrap()
+        .instruction_selector = Some(HexU64(0x1_0000));
+    assert!(too_wide.validate().is_err());
+    let mut malformed = serde_json::to_value(&fixture).unwrap();
+    malformed["initial_state"]["x87"]["instruction_selector"] =
+        serde_json::json!("not-a-hex-value");
+    assert!(Fixture::from_json(&serde_json::to_vec(&malformed).unwrap()).is_err());
+    for field in ["instruction_selector", "data_selector"] {
+        let mut null_selector = serde_json::to_value(&fixture).unwrap();
+        null_selector["initial_state"]["x87"][field] = serde_json::Value::Null;
+        assert!(Fixture::from_json(&serde_json::to_vec(&null_selector).unwrap()).is_err());
+    }
+
+    let mut old = x87_sse_fixture().fixture;
+    old.initial_state.x87.as_mut().unwrap().instruction_selector = Some(HexU64(0x2b));
+    assert!(old.validate().is_err());
+    let old_with_null = x87_sse_fixture().fixture.to_json().unwrap();
+    let mut old_with_null: serde_json::Value = serde_json::from_slice(&old_with_null).unwrap();
+    old_with_null["initial_state"]["x87"]["instruction_selector"] = serde_json::Value::Null;
+    assert!(Fixture::from_json(&serde_json::to_vec(&old_with_null).unwrap()).is_err());
+
+    let mut unknown = serde_json::to_value(&fixture).unwrap();
+    unknown["initial_state"]["x87"]["unrecognized"] = serde_json::json!("0x0");
+    assert!(Fixture::from_json(&serde_json::to_vec(&unknown).unwrap()).is_err());
+
+    let left = result(&Fixture::from_json(&fixture.to_json().unwrap()).unwrap());
+    let mut right = left.clone();
+    if let Observation::Available { value } = &mut right.snapshot {
+        value.state.x87.as_mut().unwrap().data_selector = Some(HexU64(0x54));
+    }
+    let loaded = Fixture::from_json(&fixture.to_json().unwrap()).unwrap();
+    let difference = compare(&loaded, &left, &right).unwrap();
+    assert!(difference.iter().any(|difference| difference == "x87"));
+
+    let before = left.snapshot.clone();
+    let mut no_instruction_selector = left.clone();
+    if let Observation::Available { value } = &mut no_instruction_selector.snapshot {
+        value.state.x87.as_mut().unwrap().instruction_selector = None;
+    }
+    let (Observation::Available { value: before }, Observation::Available { value: after }) =
+        (before, no_instruction_selector.snapshot)
+    else {
+        panic!("selector-profile snapshots must be available")
+    };
+    assert_ne!(before.state.x87, after.state.x87);
+}
+
+#[test]
 fn integer_snapshot_export_rejects_ds_hidden_cache() {
     let mut state = od_isa::LongModeState::default();
     state.ds_cache = Some(od_isa::state::DsDescriptorCache {
@@ -3887,6 +3994,9 @@ fn x87_state_profile_roundtrips_raw_empty_register_payloads_and_compares_mutatio
     let input = x87_fixture();
     assert_eq!(input.fixture.profile, Profile::LongX87StateV1);
     let x87 = input.fixture.initial_state.x87.as_ref().unwrap();
+    let old_snapshot_json = serde_json::to_value(x87).unwrap();
+    assert!(old_snapshot_json.get("instruction_selector").is_none());
+    assert!(old_snapshot_json.get("data_selector").is_none());
     let decoded = x87.to_cpu().unwrap();
     assert_eq!(X87Snapshot::from(&decoded), *x87);
     assert_eq!(

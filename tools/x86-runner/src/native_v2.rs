@@ -1408,6 +1408,7 @@ fn execute(loaded: &LoadedFixture) -> RunResult {
             | v2::Profile::LongNullDsEsV1
             | v2::Profile::LongX87StateV1
             | v2::Profile::LongX87SseStateV1
+            | v2::Profile::LongX87SelectorsStateV1
             | v2::Profile::LongMovupsRegV1
             | v2::Profile::LongMovapsRegV1
             | v2::Profile::LongMovapsReverseRegV1
@@ -4271,6 +4272,20 @@ mod tests {
         .unwrap();
         let result = execute(&loaded);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+
+        let selector_loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_39b_x87_selector_state_snapshot.case.json"
+        ))
+        .unwrap();
+        let selector_result = execute(&selector_loaded);
+        assert!(matches!(
+            selector_result.outcome,
+            Outcome::Unsupported { .. }
+        ));
+        assert!(matches!(
+            selector_result.snapshot,
+            Observation::Unavailable { .. }
+        ));
     }
 
     #[test]

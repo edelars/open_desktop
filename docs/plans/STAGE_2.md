@@ -500,6 +500,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
+| [x] | S2-39b | Представление FCS/FDS в X87State/schema-v2; точечный selector profile; x87 transition fail-closed | S2-39a; FXSAVE/FXRSTOR execution remains open |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
 | [ ] | S2-41 | Независимо проверить системный профиль | S2-27; machine backend по сценариям |
 | [ ] | S2-42 | Расширить corpus/reducer/harness | S2-21, S2-39, S2-40 |
@@ -6206,10 +6207,9 @@ Vol. 1 §§10.5.1–10.5.3, 11.6.5–11.6.6. Сопоставление точн
 FIP/FDP и при выбранном CPUID leaf-7 result (EBX[13]=0) CS/DS selectors; с
 REX.W `FXSAVE64/FXRSTOR64` сохраняют полные 64-bit FIP/FDP без selector
 полей. Остальная карта, включая abridged physical FTW и XMM0–15, общая.
-Existing S2-34.1 snapshots не являются такой memory image. Текущий `X87State`
-содержит raw registers, TOP/tag, opcode и 64-bit pointers, но не FCS/FDS; его
-нельзя считать достаточной моделью plain `FXSAVE` до разрешения этого
-расхождения.
+Existing S2-34.1 snapshots не являются такой memory image. S2-39b добавляет
+FCS/FDS representation в `X87State`, но память и execution semantics этого
+image остаются нереализованными.
 
 | Observed form | Long64 layout | Main relevance | Local gate/evidence |
 |---|---|---|---|
@@ -6219,9 +6219,9 @@ Existing S2-34.1 snapshots не являются такой memory image. Тек
 
 Prerequisites include CPUID.01H:EDX.FXSR[24], CR0.EM=0 and CR0.TS=0; CR4.OSFXSR=1 is needed for defined SSE-state behavior. Target CPUID also advertises SSE/SSE2, while OSXSAVE/XSAVE remain disabled. The selected MXCSR policy must use the FXSAVE mask, with Intel's specified `0x0000ffbf` fallback only when the saved `MXCSR_MASK` field is zero. That policy is distinct from testkit's existing `diagnostic_mxcsr_mask` metadata, even though its current numeric value is also `0x0000ffbf`.
 
-Fault handling must account for 16-byte alignment, noncanonical addresses, page faults, and #NM/#UD gates. The memory area is 512 bytes, but this does not mean every byte is written: FXSAVE preserves software-available bytes 464–511, while bytes 416–463 are reserved and their write behavior is not asserted here. No whole-area atomic commit or backend rollback guarantee is asserted. Physical x86/Mac mini validation belongs to the combined final substage; no boot, runtime execution, C/D coverage or physical result is claimed. Next code step: close the FCS/FDS and definedness contract, then implement one exact form end-to-end; the Linux RIP-relative `FXSAVE` mask probe is the recommended first candidate if all required architectural state writes are supported.
+Fault handling must account for 16-byte alignment, noncanonical addresses, page faults, and #NM/#UD gates. The memory area is 512 bytes, but this does not mean every byte is written: FXSAVE preserves software-available bytes 464–511, while bytes 416–463 are reserved and their write behavior is not asserted here. No whole-area atomic commit or backend rollback guarantee is asserted. Physical x86/Mac mini validation belongs to the combined final substage; no boot, runtime execution, C/D coverage or physical result is claimed. S2-39b closes selector representation; next implementation work is the defined memory writes and one exact end-to-end form, with the Linux RIP-relative `FXSAVE` mask probe as the recommended first candidate.
 
-The confirmed selector-state representation gap is tracked in [ISSUE-026](../KNOWN_ISSUES.md#issue-026--plain-long64-fxsavefxrstor-target-lacks-selector-state).
+ISSUE-026 закрыта для representation-only; сам plain FXSAVE/FXRSTOR остаётся unsupported.
 
 S2-39 overall remains open until implementation covers the selected forms and
 tests save → modify → restore with raw mixed x87/MMX/XMM state and invalid-image
@@ -6232,6 +6232,34 @@ fault behavior.
 3. XSAVE/XRSTOR/XGETBV и расширенное состояние добавлять только при требовании профиля S2-40; не объявлять OSXSAVE/AVX заранее.
 
 **Готово:** snapshot → save → modify → restore восстанавливает заданное архитектурой состояние, invalid image даёт нужный fault. Маскирование undefined/reserved fields обосновано отдельно.
+
+#### S2-39b. Lossless selector state representation (no FXSAVE execution)
+
+**Статус:** representation-only реализация завершена; независимый кодовый и
+документационный review и проверки записываются в отчёте. Добавлены
+независимо optional `instruction_selector` / `data_selector` поля `Option<u16>`
+в `X87State` и optional hex-поля в strict schema-v2 `X87Snapshot`. `None`
+означает unavailable/unrepresented, а `Some(0)` — известный нулевой selector.
+Оба 64-bit pointer остаются без изменений; fixture seeds и все старые профили
+оставляют selectors absent, а old profile validation явно отклоняет selector
+values.
+
+Добавлен профиль `s2-long-x87-selectors-state-v1`: он требует x87, SSE и оба
+selector values, допускает только один byte `90`, budget=1 и stop RIP сразу
+после NOP. Handwritten fixture использует разные ненулевые selectors и
+high-width FIP/FDP sentinels. NOP сохраняет весь x87/SSE state. Интерпретатор
+отклоняет поддерживаемые x87 instructions до state mutation и data-memory
+access, если любой selector представлен; selectors не выводятся из CS/DS.
+C fragment adapter, JIT и native path остаются закрыты для selector state.
+
+Это не реализует FNINIT, FXSAVE/FXRSTOR, wire image, guest exception delivery
+или hardware observation. ISSUE-026 закрыта только для state representation;
+S2-39 остаётся открытой, plain Long64 REX.W=0 FXSAVE/FXRSTOR остаются
+unsupported, а физические/Mac mini проверки относятся к combined final
+hardware substage. См. [CPU contract](../specs/CPU_CONTRACT.md#s2-39b--selector-state-representation-only),
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-39b--selector-state-representation-only),
+[Linux evidence](../reports/STAGE_2_LINUX_PROFILE.md#s2-39b--selector-state-representation-only)
+и [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39b-selector-state-snapshot).
 
 ### S2-40. Дополнительные обязательные расширения
 

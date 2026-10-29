@@ -944,6 +944,17 @@ fn step_tracked_with_profiles(
         }
         Err(DecodeError::Memory(error)) => return Err(error),
     };
+    if instruction.opcode.map == long_decode::OpcodeMap::Primary
+        && (0xd8..=0xdf).contains(&instruction.opcode.byte)
+        && state
+            .x87
+            .as_ref()
+            .is_some_and(|x87| x87.instruction_selector.is_some() || x87.data_selector.is_some())
+    {
+        return Ok(StepOutcome::Unsupported {
+            opcode: instruction.opcode.byte,
+        });
+    }
     let next_rip = state.rip.wrapping_add(u64::from(instruction.length));
     if instruction.operation == Operation::Cpuid {
         let Some(profile) = cpuid_profile else {
@@ -89216,5 +89227,58 @@ mod tests {
                 ..
             }))
         ));
+    }
+
+    #[test]
+    fn x87_selector_state_rejects_register_and_memory_operations_before_data_access() {
+        for (code, selector_state) in [
+            (&[0xd9, 0xc0][..], (Some(0x2b), None)),
+            (&[0xd9, 0x00][..], (None, Some(0x53))),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.gpr[Register::Rax as usize] = 0x1000;
+            let mut x87 = X87State::fixture_seed();
+            x87.instruction_selector = selector_state.0;
+            x87.data_selector = selector_state.1;
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(code, 0x2000);
+
+            assert!(matches!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Unsupported { .. })
+            ));
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        let mut x87 = X87State::fixture_seed();
+        x87.instruction_selector = Some(0x2b);
+        x87.data_selector = Some(0x53);
+        state.x87 = Some(x87);
+        let before = state.clone();
+        for (budget, stop_rip, expected_exit) in [
+            (0, None, RunExit::InstructionBudgetExhausted),
+            (1, Some(0x2000), RunExit::StopAddress),
+        ] {
+            let mut memory = Memory::at(&[0x90], 0x2000);
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(state, before);
+            assert!(memory.fetches.is_empty());
+            assert!(memory.accesses.is_empty());
+        }
     }
 }

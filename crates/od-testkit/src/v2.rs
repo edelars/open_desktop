@@ -28,6 +28,7 @@ pub const PROFILE_GS_LOAD: &str = "s2-long-gs-load-v1";
 pub const PROFILE_NULL_DS_ES: &str = "s2-long-null-ds-es-v1";
 pub const PROFILE_X87_STATE: &str = "s2-long-x87-state-v1";
 pub const PROFILE_X87_SSE_STATE: &str = "s2-long-x87-sse-state-v1";
+pub const PROFILE_X87_SELECTORS_STATE: &str = "s2-long-x87-selectors-state-v1";
 pub const PROFILE_MOVUPS_REGISTER: &str = "s2-long-movups-reg-v1";
 pub const PROFILE_MOVAPS_REGISTER: &str = "s2-long-movaps-reg-v1";
 pub const PROFILE_MOVAPS_REVERSE_REGISTER: &str = "s2-long-movaps-reg-reverse-v1";
@@ -135,6 +136,8 @@ pub enum Profile {
     LongX87StateV1,
     #[serde(rename = "s2-long-x87-sse-state-v1")]
     LongX87SseStateV1,
+    #[serde(rename = "s2-long-x87-selectors-state-v1")]
+    LongX87SelectorsStateV1,
     #[serde(rename = "s2-long-movups-reg-v1")]
     LongMovupsRegV1,
     #[serde(rename = "s2-long-movaps-reg-v1")]
@@ -487,6 +490,18 @@ pub struct X87Snapshot {
     pub tag_word: HexU64,
     pub instruction_pointer: HexU64,
     pub data_pointer: HexU64,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_hex_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub instruction_selector: Option<HexU64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_hex_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub data_selector: Option<HexU64>,
     pub last_opcode: HexU64,
 }
 
@@ -501,6 +516,10 @@ impl From<&od_isa::state::X87State> for X87Snapshot {
             tag_word: HexU64(u64::from(state.tag_word)),
             instruction_pointer: HexU64(state.instruction_pointer),
             data_pointer: HexU64(state.data_pointer),
+            instruction_selector: state
+                .instruction_selector
+                .map(|value| HexU64(u64::from(value))),
+            data_selector: state.data_selector.map(|value| HexU64(u64::from(value))),
             last_opcode: HexU64(u64::from(state.last_opcode)),
         }
     }
@@ -524,6 +543,8 @@ impl X87Snapshot {
             tag_word: self.tag_word.get() as u16,
             instruction_pointer: self.instruction_pointer.get(),
             data_pointer: self.data_pointer.get(),
+            instruction_selector: self.instruction_selector.map(|value| value.get() as u16),
+            data_selector: self.data_selector.map(|value| value.get() as u16),
             last_opcode: self.last_opcode.get() as u16,
         })
     }
@@ -547,6 +568,14 @@ impl X87Snapshot {
             ("state.x87.tag_word", self.tag_word),
         ] {
             if value.get() > u16::MAX as u64 {
+                return Err(invalid(field, "must fit in 16 bits"));
+            }
+        }
+        for (field, selector) in [
+            ("state.x87.instruction_selector", self.instruction_selector),
+            ("state.x87.data_selector", self.data_selector),
+        ] {
+            if selector.is_some_and(|value| value.get() > u16::MAX as u64) {
                 return Err(invalid(field, "must fit in 16 bits"));
             }
         }
@@ -773,6 +802,7 @@ impl IntegerState {
                 (Profile::LongX87StateV1, Some(x87)) => Some(x87.to_cpu()?),
                 (
                     Profile::LongX87SseStateV1
+                    | Profile::LongX87SelectorsStateV1
                     | Profile::LongMovupsRegV1
                     | Profile::LongMovapsRegV1
                     | Profile::LongMovapsReverseRegV1
@@ -883,6 +913,7 @@ impl IntegerState {
             sse: match (profile, &self.sse) {
                 (
                     Profile::LongX87SseStateV1
+                    | Profile::LongX87SelectorsStateV1
                     | Profile::LongMovupsRegV1
                     | Profile::LongMovapsRegV1
                     | Profile::LongMovapsReverseRegV1
@@ -994,12 +1025,23 @@ impl IntegerState {
     }
 
     pub fn from_cpu_for(state: &LongModeState, profile: Profile) -> Result<Self, FormatError> {
+        if profile != Profile::LongX87SelectorsStateV1
+            && state.x87.as_ref().is_some_and(|x87| {
+                x87.instruction_selector.is_some() || x87.data_selector.is_some()
+            })
+        {
+            return Err(invalid(
+                "state.x87.selectors",
+                "selectors are not part of this profile",
+            ));
+        }
         let mut result = Self::try_from(state)?;
         result.x87 = if profile == Profile::LongX87StateV1 {
             state.x87.as_ref().map(X87Snapshot::from)
         } else if matches!(
             profile,
             Profile::LongX87SseStateV1
+                | Profile::LongX87SelectorsStateV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
@@ -1111,6 +1153,7 @@ impl IntegerState {
         result.sse = if matches!(
             profile,
             Profile::LongX87SseStateV1
+                | Profile::LongX87SelectorsStateV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
@@ -1271,6 +1314,7 @@ impl IntegerState {
         let state_profile = match profile {
             Profile::LongX87StateV1
             | Profile::LongX87SseStateV1
+            | Profile::LongX87SelectorsStateV1
             | Profile::LongMovupsRegV1
             | Profile::LongMovapsRegV1
             | Profile::LongMovapsReverseRegV1
@@ -1381,6 +1425,7 @@ impl IntegerState {
                 Profile::LongIntegerV1
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
+                | Profile::LongX87SelectorsStateV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
@@ -1497,6 +1542,7 @@ impl IntegerState {
                 Profile::LongIntegerV1
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
+                | Profile::LongX87SelectorsStateV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
@@ -1618,6 +1664,7 @@ impl IntegerState {
                 Profile::LongIntegerV1
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
+                | Profile::LongX87SelectorsStateV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
@@ -1742,6 +1789,7 @@ impl IntegerState {
                 Profile::LongIntegerV1
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
+                | Profile::LongX87SelectorsStateV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
@@ -2017,6 +2065,7 @@ impl IntegerState {
             (Profile::LongX87StateV1, Some(x87)) => x87.validate()?,
             (
                 Profile::LongX87SseStateV1
+                | Profile::LongX87SelectorsStateV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
@@ -2127,6 +2176,7 @@ impl IntegerState {
             }
             (
                 Profile::LongX87SseStateV1
+                | Profile::LongX87SelectorsStateV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
@@ -2237,9 +2287,25 @@ impl IntegerState {
             (_, None) => {}
             (_, Some(_)) => return Err(invalid("state.x87", "not part of this profile")),
         }
+        if let Some(x87) = &self.x87 {
+            if profile == Profile::LongX87SelectorsStateV1 {
+                if x87.instruction_selector.is_none() || x87.data_selector.is_none() {
+                    return Err(invalid(
+                        "state.x87.selectors",
+                        "both selectors are required by this profile",
+                    ));
+                }
+            } else if x87.instruction_selector.is_some() || x87.data_selector.is_some() {
+                return Err(invalid(
+                    "state.x87.selectors",
+                    "selectors are not part of this profile",
+                ));
+            }
+        }
         match (profile, &self.sse) {
             (
                 Profile::LongX87SseStateV1
+                | Profile::LongX87SelectorsStateV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
@@ -2347,6 +2413,7 @@ impl IntegerState {
             ) => sse.validate()?,
             (
                 Profile::LongX87SseStateV1
+                | Profile::LongX87SelectorsStateV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
@@ -3313,13 +3380,20 @@ impl Fixture {
                 ));
             }
         }
-        if self.profile == Profile::LongX87StateV1 || self.profile == Profile::LongX87SseStateV1 {
+        if matches!(
+            self.profile,
+            Profile::LongX87StateV1 | Profile::LongX87SseStateV1 | Profile::LongX87SelectorsStateV1
+        ) {
             let code = self.memory.iter().find(|region| region.region_id == "code");
             let Some(code) = code else {
                 return Err(invalid("memory.code", "required by this profile"));
             };
             let code_bytes = code.initial_bytes_hex.to_ascii_lowercase();
-            if self.profile == Profile::LongX87SseStateV1 && code_bytes != "90" {
+            if matches!(
+                self.profile,
+                Profile::LongX87SseStateV1 | Profile::LongX87SelectorsStateV1
+            ) && code_bytes != "90"
+            {
                 return Err(invalid(
                     "memory.code",
                     "the local x87/SSE snapshot profile admits exactly one NOP",

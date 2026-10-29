@@ -1566,6 +1566,8 @@ mod tests {
             tag_word: 0xfff1,
             instruction_pointer: 0x0123_4567_89ab_cdef,
             data_pointer: 0xfedc_ba98_7654_3210,
+            instruction_selector: None,
+            data_selector: None,
             last_opcode: 0x05aa,
         };
         let before = state.clone();

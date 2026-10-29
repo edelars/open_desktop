@@ -14,6 +14,10 @@ pub struct X87State {
     pub tag_word: u16,
     pub instruction_pointer: u64,
     pub data_pointer: u64,
+    /// FCS is independently unavailable when no selector value is represented.
+    pub instruction_selector: Option<u16>,
+    /// FDS is independently unavailable when no selector value is represented.
+    pub data_selector: Option<u16>,
     /// The architectural opcode register is 11 bits wide.
     pub last_opcode: u16,
 }
@@ -54,6 +58,8 @@ impl X87State {
             tag_word: 0x1be4,
             instruction_pointer: 0x0123_4567_89ab_cdef,
             data_pointer: 0xfedc_ba98_7654_3210,
+            instruction_selector: None,
+            data_selector: None,
             last_opcode: 0x05aa,
         }
     }
@@ -519,6 +525,8 @@ mod tests {
     fn fragment_adapter_rejects_x87_even_when_integer_state_fits() {
         let mut state = LongModeState::default();
         state.x87 = Some(X87State::fixture_seed());
+        state.x87.as_mut().unwrap().instruction_selector = Some(0x2b);
+        state.x87.as_mut().unwrap().data_selector = Some(0x53);
         assert!(matches!(
             FragmentState::try_from(&state),
             Err(FragmentAdapterError::UnsupportedX87)
