@@ -500,7 +500,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
 | [x] | S2-38e | Exact S2-39i FP-init/FXRSTOR64 followed by MINSS; image-controlled IM/DM completion and #XM policy; interpreter-only | S2-38d, S2-39i; independent review complete |
-| [ ] | S2-38f | Exact Long64 `MAXSS XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, literal fixtures, complete local control/fault/result matrix; interpreter-only | S2-38d policy source after MAXSS-specific SDM review; independent review |
+| [x] | S2-38f | Exact Long64 `MAXSS XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, literal fixtures, complete local control/fault/result matrix; interpreter-only | S2-38d policy source after MAXSS-specific SDM review; independent review clean |
+| [ ] | S2-38g | Exact Long64 `MINSD XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, raw denormal classification, literal fixtures and complete local control/fault/result matrix; interpreter-only | S2-37i, S2-38f policy after MINSD-specific SDM review; independent review |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
@@ -6675,6 +6676,40 @@ hardware substage. Sources: Intel SDM Rev. 093 Vol.1 §§4.9.2, 11.5.2.1–2,
 [official SDM index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)).
 The printed selector and exception list do not describe handler continuation
 microsteps; those are explicitly outside this local profile.
+
+#### S2-38g. Exact Long64 MINSD XMM0,XMM1 unmasked invalid and denormal exit
+
+New interpreter-only schema-v2 profile `s2-long-minsd-unmasked-denormal-v1`
+admits only `F2 0F 5D C1`, one executable code mapping, budget 1 and stop RIP
+`entry+4`. It has a separate immutable five-control object and result echo;
+the existing masked MINSD/MAXSD contracts remain unchanged. Complete instruction
+fetch precedes SSE2 availability, CR0.EM, CR4.OSFXSR, and then CR0.TS gates;
+these gates are independent of CPL. Only exact XMM0/XMM1 is admitted.
+
+The MXCSR input requires reserved bits clear, ZE/OE/UE/PE masks set and
+DAZ/FTZ clear; IM/DM vary independently, RC and prior sticky flags are allowed.
+MINSD requires SSE2. Its Rev.093 Vol.2B operation selects raw source 2 for
+NaN, equal values and signed-zero ties, preserves source-2 SNaN bits and lists
+invalid and denormal exceptions. The new profile keeps raw denormal
+classification separate from the older masked MINSD sticky calculation. Vol.1
+§4.9.2 invalid priority means a NaN+subnormal pair with both masks set reports
+IE only and completes; when either exception is unmasked, IE|DE are reported
+on the single unmasked exit. A DE-only unmasked input reports DE. The exit is
+#UD when OSXMMEXCPT=0, #XM otherwise. Fault exits preserve full XMM0 and RIP
+and retire zero; successful completion changes only XMM0 low qword and RIP.
+This profile does not model handler repair and instruction re-execution.
+
+Local coverage crosses NaN-only, subnormal-only and mixed cases with both
+operand positions, IM×DM×OSXMMEXCPT, SSE2/EM/OSFXSR/TS combinations, CPL0–3,
+fetch truncation, STOP/zero budget, exact-form rejection, sentinels, result
+validation/tampering, comparator echoes and JIT/native denial. Literal fixtures
+record independent expected exit and MXCSR status for representative cases.
+Physical/Mac mini acceptance remains deferred to the combined final hardware
+substage. Normative sources: Intel SDM Rev. 093 Vol. 2B MINSD pp.4-22–4-23
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241)); Vol. 1
+§§4.9.2, 11.5.2, 11.5.3.2–3 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+The local single-exit harness does not claim physical exception delivery,
+handler continuation or hardware acceptance. See [CPU contract](../specs/CPU_CONTRACT.md#s2-38g--exact-minsd-unmasked-invalid-and-denormal-exit), [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38g-exact-minsd-unmasked-imdm-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38g-local-minsd-unmasked-invalid-and-denormal).
 
 #### S2-39a. Нормативное evidence legacy FXSAVE/FXRSTOR (evidence only)
 

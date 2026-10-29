@@ -17097,3 +17097,47 @@ result tampering). `cargo fmt --all -- --check`, offline workspace check,
 to report the existing ISSUE-023 worktree `.git` pointer and two missing
 historical oracle manifest links; none are caused by S2-38f. Physical hardware
 checks were not run by design.
+
+## S2-38g — exact Long64 MINSD with bounded unmasked IM/DM exits
+
+**Status:** local interpreter/schema-v2 implementation and focused validation
+complete; independent review pending. Combined physical/Mac mini acceptance
+remains deferred to the final hardware substage.
+
+Added the separate `s2-long-minsd-unmasked-denormal-v1` profile for only
+`F2 0F 5D C1`. It carries independent immutable controls with
+`sse2_available`, CR0.EM/TS, CR4.OSFXSR and CR4.OSXMMEXCPT; complete fetch,
+SSE2/EM/OSFXSR #UD and TS #NM ordering precedes operand classification. The
+existing masked MINSD/MAXSD path and contracts were left unchanged. The new
+path keeps raw DE classification and applies invalid priority only when both
+IM and DM are masked: mixed NaN+subnormal then completes with IE only; when
+either event is unmasked it records IE|DE and faults once. Fault exits preserve
+full XMM0/RIP with zero retirement. Completion changes only XMM0 low qword.
+
+Eight handwritten fixtures include NaN-only, subnormal-only, mixed, #UD/#XM,
+masked mixed completion, and masked QNaN/SNaN source-2 payload/sign preservation.
+The mixed completion records IE only and writes the source-2 minimum subnormal
+literal; QNaN/SNaN completion fixtures verify their exact raw payload bytes.
+The independent result validator uses a separate host binary64 ordering rule,
+not the production MINSD selector. Local tests cross QNaN/SNaN and subnormal
+classification in both operand positions with IM×DM×OSXMMEXCPT and CPL0–3, and
+cover prerequisite/fetch/budget/form boundaries, upper-qword sentinels, strict
+schema/result tampering, comparator controls, and JIT/native denial.
+
+Focused verification passed: two `od-isa` MINSD profile tests and the S2-38g
+runner fixture integration test. `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `git diff --check`, and
+`graphify update .` passed. `python3 tools/check_layout.py` reports the existing
+ISSUE-023 worktree `.git` pointer and two missing archived oracle manifests;
+no new layout finding is introduced. Independent `gpt-6.1-sol` review is pending.
+Hardware exception delivery and Mac mini physical execution were not run and
+remain out of scope for this local slice.
+
+Normative source: Intel SDM Rev. 093 Vol. 2B MINSD pp. 4-22–4-23
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241)); Vol. 1
+§§4.9.2, 11.5.2, 11.5.3.2–3
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38g--exact-minsd-unmasked-invalid-and-denormal-exit),
+[plan](../plans/STAGE_2.md#s2-38g-exact-long64-minsd-xmm0xmm1-unmasked-invalid-and-denormal-exit),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38g-local-minsd-unmasked-invalid-and-denormal),
+and [format](../testing/TEST_CASE_FORMAT.md#s2-38g-exact-minsd-unmasked-imdm-profile).

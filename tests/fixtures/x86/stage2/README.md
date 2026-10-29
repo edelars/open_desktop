@@ -6160,3 +6160,27 @@ behavior, NX enforcement, MMU/paging effects, or hardware execution. JIT,
 native x86, C and fragment execution remain denied. See the [S2-25e contract](../../../../docs/specs/CPU_CONTRACT.md#s2-25e--exact-read-only-long64-rdmsr-ia32_efer),
 [plan](../../../../docs/plans/STAGE_2.md#s2-25e--exact-read-only-long64-rdmsr-ia32_efer), and
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-25e--exact-read-only-long64-rdmsr-ia32_efer).
+
+### S2-38g local MINSD unmasked invalid and denormal
+
+The separate schema-v2 profile `s2-long-minsd-unmasked-denormal-v1` admits
+only Long64 `F2 0F 5D C1` and carries its own immutable SSE2/CR0/CR4 controls.
+Eight handwritten fixtures include NaN-only, subnormal-only, mixed NaN/subnormal,
+both operand positions, masked completion, and #UD/#XM selection. Mixed inputs
+with both masks closed expect IE only; a mixed input with IM masked and DM open
+expects IE|DE. The masked mixed completion selects the raw source-2 minimum
+subnormal (`0100000000000000` in little-endian bytes), preserves XMM0's upper
+qword, and records IE only. Separate masked QNaN/SNaN source-2 fixtures check the
+exact sign and payload bytes (`fecaefbeaddef8ff` and
+`fecaefbeaddef0ff`). Fault cases preserve full XMM0 and RIP with zero retirement.
+
+The independent result validator classifies raw operands and uses a separate
+binary64 ordering rule to check raw output bits, sticky status, full state,
+exception, retirement and immutable control echo. Unit tests cross the complete
+operand-position × IM × DM × OSXMMEXCPT matrix for NaN-only, subnormal-only and
+mixed conditions, plus prerequisite/fetch/budget/form boundaries. JIT and native
+execution deny the profile. Physical/Mac mini acceptance remains deferred. See
+the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38g--exact-minsd-unmasked-invalid-and-denormal-exit),
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-38g--exact-long64-minsd-with-bounded-unmasked-imdm-exits),
+[plan](../../../../docs/plans/STAGE_2.md#s2-38g-exact-long64-minsd-xmm0xmm1-unmasked-invalid-and-denormal-exit),
+and [format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-38g-exact-minsd-unmasked-imdm-profile). Normative sources: Intel SDM Rev. 093 Vol. 2B MINSD pp. 4-22–4-23 and Vol. 1 §§4.9.2, 11.5.2, 11.5.3.2–3.

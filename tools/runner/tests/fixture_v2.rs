@@ -8051,6 +8051,200 @@ fn maxss_unmasked_profiles_cover_mixed_faults_raw_completion_and_backend_denial(
 }
 
 #[test]
+fn minsd_unmasked_literal_fixtures_cover_exception_priority_and_backend_denial() {
+    let cases: [(&[u8], Option<u8>, u32); 6] = [
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38g_minsd_mixed_qnan_lhs_subnormal_rhs_xm.case.json"
+            ),
+            Some(19),
+            0x7e13,
+        ),
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38g_minsd_mixed_qnan_lhs_subnormal_rhs_ud.case.json"
+            ),
+            Some(6),
+            0x7e13,
+        ),
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38g_minsd_mixed_subnormal_lhs_snan_rhs_ud.case.json"
+            ),
+            Some(6),
+            0x7e93,
+        ),
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38g_minsd_mixed_qnan_lhs_subnormal_rhs_masked.case.json"
+            ),
+            None,
+            0x7f91,
+        ),
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38g_minsd_snan_rhs_only_xm.case.json"
+            ),
+            Some(19),
+            0x7f11,
+        ),
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38g_minsd_subnormal_lhs_only_ud.case.json"
+            ),
+            Some(6),
+            0x7e92,
+        ),
+    ];
+    for (source, vector, mxcsr) in cases {
+        let (input, result) = run(source, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongMinsdUnmaskedDenormalV1
+        );
+        assert_eq!(
+            od_testkit::v2::compare(&input, &result, &result).unwrap(),
+            Vec::<String>::new()
+        );
+        let Observation::Available { value } = &result.snapshot else {
+            panic!("snapshot unavailable")
+        };
+        assert_eq!(
+            value.state.sse.as_ref().unwrap().mxcsr.get(),
+            u64::from(mxcsr)
+        );
+        assert_eq!(
+            value.minsd_unmasked_controls,
+            input.fixture.minsd_unmasked_controls
+        );
+        if let Some(vector) = vector {
+            assert!(matches!(result.outcome, Outcome::Exception {}));
+            assert_eq!(count(&result), 0);
+            let Observation::Available {
+                value: Some(exception),
+            } = &value.exception
+            else {
+                panic!("missing exception")
+            };
+            assert_eq!(exception.vector, vector);
+            assert_eq!(value.state.rip, input.fixture.initial_state.rip);
+            assert_eq!(
+                value.state.sse.as_ref().unwrap().xmm,
+                input.fixture.initial_state.sse.as_ref().unwrap().xmm
+            );
+        } else {
+            assert!(matches!(result.outcome, Outcome::StopAddress {}));
+            assert_eq!(count(&result), 1);
+            let initial = input.fixture.initial_state.sse.as_ref().unwrap();
+            let final_sse = value.state.sse.as_ref().unwrap();
+            assert_eq!(&final_sse.xmm[0][..16], "0100000000000000");
+            assert_eq!(&final_sse.xmm[0][16..], &initial.xmm[0][16..]);
+        }
+        let (_, jit) = run(source, "jit", 4);
+        assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+        let (_, native) = run(source, "native", 4);
+        assert!(matches!(native.outcome, Outcome::Unsupported { .. }));
+    }
+    for (source, expected_low) in [
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38g_minsd_qnan_rhs_masked.case.json"
+            )
+            .as_slice(),
+            "fecaefbeaddef8ff",
+        ),
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38g_minsd_snan_rhs_masked.case.json"
+            )
+            .as_slice(),
+            "fecaefbeaddef0ff",
+        ),
+    ] {
+        let (input, result) = run(source, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), 1);
+        let Observation::Available { value } = &result.snapshot else {
+            panic!("snapshot unavailable")
+        };
+        let output = value.state.sse.as_ref().unwrap();
+        let initial = input.fixture.initial_state.sse.as_ref().unwrap();
+        assert_eq!(
+            &output.xmm[0][..16],
+            expected_low,
+            "{}",
+            input.fixture.case_id
+        );
+        assert_eq!(
+            &output.xmm[0][16..],
+            &initial.xmm[0][16..],
+            "upper-qword sentinel"
+        );
+        assert_eq!(
+            &output.xmm[1][..16],
+            &initial.xmm[1][..16],
+            "source payload preservation"
+        );
+        assert_eq!(output.mxcsr.get(), 0x7f91);
+    }
+    let source = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38g_minsd_mixed_qnan_lhs_subnormal_rhs_xm.case.json"
+    );
+    let (input, result) = run(source, "interpreter", 0);
+    let mut invalid = input.fixture.clone();
+    invalid.memory[0].initial_bytes_hex = "f20f5dc2".into();
+    assert!(invalid.validate().is_err());
+    let mut missing = input.fixture.clone();
+    missing.minsd_unmasked_controls = None;
+    assert!(missing.validate().is_err());
+    let mut tampered = result.clone();
+    let Observation::Available { value } = &mut tampered.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value
+        .minsd_unmasked_controls
+        .as_mut()
+        .unwrap()
+        .sse2_available = false;
+    assert!(od_testkit::v2::compare(&input, &result, &tampered).is_err());
+    let mut tampered_state = result.clone();
+    let Observation::Available { value } = &mut tampered_state.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    let changed_mxcsr = value.state.sse.as_ref().unwrap().mxcsr.get() ^ 2;
+    value.state.sse.as_mut().unwrap().mxcsr = HexU64(changed_mxcsr);
+    assert!(od_testkit::v2::compare(&input, &result, &tampered_state).is_err());
+
+    let mut tampered_error_code = result.clone();
+    let Observation::Available { value } = &mut tampered_error_code.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    let Observation::Available {
+        value: Some(exception),
+    } = &mut value.exception
+    else {
+        panic!("missing exception")
+    };
+    exception.error_code = Observation::Available { value: HexU64(123) };
+    assert!(od_testkit::v2::compare(&input, &result, &tampered_error_code).is_err());
+
+    let mut tampered_fault_address = result.clone();
+    let Observation::Available { value } = &mut tampered_fault_address.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    let Observation::Available {
+        value: Some(exception),
+    } = &mut value.exception
+    else {
+        panic!("missing exception")
+    };
+    exception.fault_address = Observation::Available {
+        value: HexU64(0x1234),
+    };
+    assert!(od_testkit::v2::compare(&input, &result, &tampered_fault_address).is_err());
+}
+
+#[test]
 fn local_andpd_register_fixture_ands_raw_xmm_and_jit_denies_profile() {
     let bytes =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_18_andpd_register.case.json");

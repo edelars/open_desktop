@@ -1214,3 +1214,25 @@ mixed masks separately using Vol. 1 §§4.9.2 and 11.5.3.2–3: both masks set o
 NaN+subnormal completes with IE only; if either is open, IE|DE is committed and
 the instruction faults once without destination/RIP retirement. JIT/native
 reject this profile; physical execution is deferred.
+
+
+## S2-38g exact MINSD unmasked IM/DM profile
+
+The strict schema-v2 profile `s2-long-minsd-unmasked-denormal-v1` accepts only
+Long64 bytes `f20f5dc1`. It requires `minsd_unmasked_controls` with five
+immutable booleans (`sse2_available`, `cr0_em`, `cr0_ts`, `cr4_osfxsr`,
+`cr4_osxmmexcpt`); results repeat the object in
+`snapshot.minsd_unmasked_controls`. Missing, unknown, cross-profile, omitted
+or tampered control fields are rejected. MXCSR reserved bits are zero,
+ZE/OE/UE/PE masks are set, DAZ/FTZ are clear, and IM/DM/RC/old sticky flags
+are independently allowed. One executable code mapping, budget one and stop RIP
+`entry+4` are required.
+
+Expected results are validated independently from the interpreter: the validator
+classifies raw binary64 operands, applies invalid priority for the both-masked
+mixed case, computes required IE/DE status and checks full architectural state,
+retirement count and exception observation. Fault metadata requires both error-code and fault-address observations to be unavailable for the modeled #UD/#NM/#XM outcomes; tampering either field is rejected. Representative handwritten literal
+fixtures include NaN-only, subnormal-only, mixed-mask and OSXMMEXCPT choices.
+The full local matrix is covered by unit tests. JIT/native reject this profile;
+physical execution is deferred. Semantics cite Intel SDM Rev. 093 Vol. 2B MINSD
+pp.4-22–4-23 and Vol. 1 §§4.9.2, 11.5.2, 11.5.3.2–3.

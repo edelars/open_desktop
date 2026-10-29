@@ -12067,3 +12067,34 @@ single-exit test harness after a software handler changes machine state.
 [Vol. 2B](https://cdrdv2.intel.com/v1/dl/getContent/671241),
 [Vol. 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
 See [S2-38f plan](../plans/STAGE_2.md#s2-38f-exact-long64-maxss-xmm0xmm1-unmasked-invalid-and-denormal-exit).
+
+
+## S2-38g — exact MINSD unmasked invalid and denormal exit
+
+The interpreter-only schema-v2 profile `s2-long-minsd-unmasked-denormal-v1`
+accepts only Long64 `F2 0F 5D C1` (`MINSD XMM0,XMM1`), one executable code
+region, budget 1 and stop RIP `entry+4`. A profile-specific immutable control
+object records `sse2_available`, CR0.EM/TS, CR4.OSFXSR and CR4.OSXMMEXCPT; the
+result must echo it unchanged. Full fetch happens before the SSE2/EM/OSFXSR
+#UD gates and TS #NM gate; operands are classified after these gates, at every
+CPL. Other registers, REX, prefixes, memory operands, packed forms and MAXSD
+are outside admission.
+
+Reserved MXCSR bits must be clear, ZE/OE/UE/PE masks set, DAZ/FTZ clear; IM/DM,
+RC and previous sticky bits are accepted. MINSD QNaN/SNaN in either operand
+raises IE; either subnormal operand is retained as a raw DE classification for
+this profile. If invalid and denormal coincide and both masks are set, invalid
+priority reports IE only and the operation completes. If either event is
+unmasked, IE|DE are committed and one bounded exit occurs. A DE-only unmasked
+event commits DE. OSXMMEXCPT selects #XM (vector 19) or #UD (vector 6). Faults
+preserve complete XMM0/RIP and retire zero; success writes only low qword XMM0,
+preserving its upper qword and all other state. This is a local one-exit model;
+handler continuation and physical hardware delivery are not claimed. The
+existing masked MINSD/MAXSD status contracts are unchanged.
+
+Local tests cover the full NaN/subnormal × operand-position × IM×DM×OSXMMEXCPT
+matrix, prerequisites and CPL, truncated fetch, STOP/zero budget, exact-form
+rejection, sentinels, schema/result tampering, comparator control echoes and
+JIT/native denial. Sources: Intel SDM Rev. 093 Vol. 2B MINSD pp.4-22–4-23
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241)); Vol. 1
+§§4.9.2, 11.5.2, 11.5.3.2–3 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)). See the [plan](../plans/STAGE_2.md#s2-38g-exact-long64-minsd-xmm0xmm1-unmasked-invalid-and-denormal-exit).
