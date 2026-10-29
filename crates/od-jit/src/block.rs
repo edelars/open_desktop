@@ -1685,6 +1685,8 @@ pub(crate) fn is_checked_qword_load_form(instruction: Instruction) -> bool {
                             _ => false,
                         })
             || matches!(destination.register() as u8, 6 | 7)
+                && is_rbp_direct_qword_memory_data_operand(instruction, operand)
+            || matches!(destination.register() as u8, 6 | 7)
                 && instruction.address_size == OperandSize::Qword
                 && instruction.length == 7
                 && operand.address_size == OperandSize::Qword
@@ -1744,6 +1746,8 @@ pub(crate) fn is_checked_qword_store_form(instruction: Instruction) -> bool {
                             _ => false,
                         })
                 && matches!(operand.base, od_isa::long_decode::AddressBase::Register(register) if (register as u8) < 4)
+            || matches!(source.register() as u8, 6 | 7)
+                && is_rbp_direct_qword_memory_data_operand(instruction, operand)
             || matches!(source.register() as u8, 6 | 7)
                 && instruction.address_size == OperandSize::Qword
                 && instruction.length == 7
@@ -2898,6 +2902,27 @@ fn is_rbp_memory_data_operand(
                 && matches!(operand.base, od_isa::long_decode::AddressBase::None)))
 }
 
+fn is_rbp_direct_qword_memory_data_operand(
+    instruction: Instruction,
+    operand: od_isa::long_decode::MemoryOperand,
+) -> bool {
+    instruction.address_size == OperandSize::Qword
+        && matches!(instruction.length, 4 | 7)
+        && operand.address_size == OperandSize::Qword
+        && operand.size == OperandSize::Qword
+        && matches!(
+            operand.base,
+            od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
+        )
+        && operand.index.is_none()
+        && operand.scale == 1
+        && match instruction.length {
+            4 => i8::try_from(operand.displacement).is_ok(),
+            7 => i32::try_from(operand.displacement).is_ok(),
+            _ => false,
+        }
+}
+
 fn is_checked_qword_memory_address(
     instruction: Instruction,
     operand: od_isa::long_decode::MemoryOperand,
@@ -3485,7 +3510,7 @@ pub(crate) fn exact_direct_qword_store_rsi_rdi_bytes(
             || length == 4 && bytes[2] >> 6 == 1
             || length == 7 && bytes[2] >> 6 == 2)
         && matches!((bytes[2] >> 3) & 7, 6 | 7)
-        && bytes[2] & 7 < 4
+        && (bytes[2] & 7 < 4 || matches!(length, 4 | 7) && bytes[2] & 7 == 5)
 }
 
 pub(crate) fn exact_direct_qword_load_rsi_rdi_bytes(
@@ -3512,7 +3537,7 @@ pub(crate) fn exact_direct_qword_load_rsi_rdi_bytes(
             || length == 4 && bytes[2] >> 6 == 1
             || length == 7 && bytes[2] >> 6 == 2)
         && matches!((bytes[2] >> 3) & 7, 6 | 7)
-        && bytes[2] & 7 < 4
+        && (bytes[2] & 7 < 4 || matches!(length, 4 | 7) && bytes[2] & 7 == 5)
 }
 
 pub(crate) fn exact_qword_address32_memory_bytes(

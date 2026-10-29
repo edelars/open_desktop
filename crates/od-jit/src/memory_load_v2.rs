@@ -2029,7 +2029,6 @@ mod tests {
 
         for source in [
             // Address32 RSI/RDI data has a separate exact profile.
-            vec![0x48, 0x89, 0x75, 0x00], // RSI source with RBP base
             vec![0x48, 0x89, 0x34, 0x20], // SIB
             vec![0x89, 0x30],             // non-qword width
             vec![0x49, 0x89, 0x30],       // REX.B
@@ -2084,7 +2083,7 @@ mod tests {
     }
 
     #[test]
-    fn rsi_rdi_data_direct_displacement_profile_is_exactly_32_encodings() {
+    fn rsi_rdi_data_direct_displacement_profile_is_exactly_40_encodings() {
         let displacements = [
             (1_u8, i8::MIN as i64),
             (1, -1),
@@ -2101,7 +2100,7 @@ mod tests {
             (0x89, MemorySiteOperationV2::Store),
         ] {
             for data in [6_u8, 7] {
-                for base in 0..4_u8 {
+                for base in [0_u8, 1, 2, 3, 5] {
                     for (modrm_mode, displacement) in displacements {
                         let mut bytes = vec![0x48, opcode, (modrm_mode << 6) | (data << 3) | base];
                         if modrm_mode == 1 {
@@ -2197,7 +2196,7 @@ mod tests {
             vec![0x48, 0x8b, 0x74, 0x20, 0],    // SIB
             vec![0x49, 0x8b, 0x70, 0],          // REX.B
             vec![0x4c, 0x8b, 0x30, 0],          // REX.R / R8 destination
-            vec![0x48, 0x8b, 0x75, 0],          // RBP base
+            vec![0x67, 0x48, 0x8b, 0x75, 0],    // address-size override
             vec![0x48, 0x8b, 0x34, 0x20],       // SIB base RAX, index RSP
             vec![0x66, 0x48, 0x8b, 0x30],       // operand override
         ] {
@@ -4156,7 +4155,7 @@ mod tests {
                     assert!(result.is_err(), "partial len={partial}");
                 }
                 let mut wrong_modrm = valid.clone();
-                wrong_modrm[2] = if length == 4 { 0x75 } else { 0xb5 };
+                wrong_modrm[2] = if length == 4 { 0x64 } else { 0xa4 };
                 let mut wrong_prefix = vec![0x64, 0x67];
                 wrong_prefix.extend_from_slice(&valid);
                 let mut reordered_prefix = vec![0x48, 0x67, opcode];
@@ -4274,8 +4273,8 @@ mod tests {
         for bytes in [
             vec![0x67, 0x48, 0x8b, 0x64, 0], // incomplete SIB
             vec![0x48, 0x67, 0x89, 0xa8, 0, 0, 0, 0],
-            vec![0x48, 0x8b, 0x7d, 0], // RDI destination with RBP base
-            vec![0x48, 0x89, 0x75, 0], // RSI source with RBP base
+            vec![0x49, 0x8b, 0x7d, 0], // extended base
+            vec![0x49, 0x89, 0x75, 0], // extended base
         ] {
             let code = CodeView::new(0x5750, &bytes).unwrap();
             let result = if bytes[1] == 0x8b || bytes[2] == 0x8b {
@@ -5385,7 +5384,7 @@ mod tests {
 
             for bytes in [
                 vec![0x48, opcode, 0x6d],          // missing displacement
-                vec![0x48, opcode, 0x75, 0],       // unsupported data register
+                vec![0x4c, opcode, 0x75, 0],       // extended data register
                 vec![0x48, opcode, 0x7c, 0x25, 0], // RSI data is outside this profile
                 vec![0x67, 0x48, opcode, 0x75, 0], // unsupported data register
                 vec![0x48, opcode, 0x6d, 0, 0x90], // trailing byte
@@ -7439,7 +7438,7 @@ mod tests {
             vec![0x40, 0x48, 0x89, 0x18],       // extra prefix
             vec![0x48, 0x89, 0x1c],             // SIB
             vec![0x48, 0x89, 0x58],             // displacement
-            vec![0x48, 0x89, 0xbd, 0, 0, 0, 0], // RDI source with RBP base
+            vec![0x49, 0x89, 0xbd, 0, 0, 0, 0], // extended base
         ] {
             let code = CodeView::new(0x5000, &bytes).unwrap();
             assert!(matches!(

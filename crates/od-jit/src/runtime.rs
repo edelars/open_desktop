@@ -545,6 +545,22 @@ impl MemorySiteV2 {
                 7 => i32::try_from(self.operand.displacement).is_ok(),
                 _ => false,
             };
+        let rbp_rsi_rdi_direct_data_profile = self.operand.address_size
+            == od_isa::OperandSize::Qword
+            && self.operand.size == od_isa::OperandSize::Qword
+            && matches!(length, 4 | 7)
+            && data_register.is_some_and(|register| matches!(register, 6 | 7))
+            && matches!(
+                self.operand.base,
+                od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
+            )
+            && self.operand.index.is_none()
+            && self.operand.scale == 1
+            && match length {
+                4 => i8::try_from(self.operand.displacement).is_ok(),
+                7 => i32::try_from(self.operand.displacement).is_ok(),
+                _ => false,
+            };
         let rsp_base_no_index_rsi_rdi_data_profile = self.operand.address_size
             == od_isa::OperandSize::Qword
             && self.operand.size == od_isa::OperandSize::Qword
@@ -938,6 +954,7 @@ impl MemorySiteV2 {
             || indexed_no_base_rbp_sib_disp32_data_profile
             || indexed_no_base_rsi_rdi_sib_disp32_data_profile
             || rsi_rdi_direct_data_profile
+            || rbp_rsi_rdi_direct_data_profile
             || low_base_no_index_sib_data_profile
             || rsi_rdi_base_no_index_sib_data_profile
             || rbp_base_no_index_sib_data_profile
@@ -1074,6 +1091,7 @@ impl MemorySiteV2 {
                     register <= 3
                         || (4..=5).contains(&register) && scoped_data_profile
                         || rsi_rdi_load_destination_profile
+                        || rbp_rsi_rdi_direct_data_profile
                         || rsp_base_no_index_rsi_rdi_data_profile
                         || rip_relative_rsi_rdi_load_destination_profile
                         || address32_low_base_rsi_rdi_data_profile
@@ -1084,6 +1102,7 @@ impl MemorySiteV2 {
                     register <= 3
                         || (4..=5).contains(&register) && scoped_data_profile
                         || rsi_rdi_store_source_profile
+                        || rbp_rsi_rdi_direct_data_profile
                         || rsp_base_no_index_rsi_rdi_data_profile
                         || rip_relative_rsi_rdi_store_source_profile
                         || address32_low_base_rsi_rdi_data_profile
@@ -1880,7 +1899,7 @@ impl MemorySiteV2 {
                 && self.operand.displacement == 0;
         }
         if matches!((source.len(), mode), (4, 1) | (7, 2))
-            && base < 4
+            && (base < 4 || base == 5)
             && matches!(data_register, 6 | 7)
         {
             let site_register = match expected_operation {

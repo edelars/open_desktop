@@ -361,6 +361,17 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                             7 => i32::try_from(operand.displacement).is_ok(),
                             _ => false,
                         };
+                    let rbp_addr64_profile = matches!(length, 4 | 7)
+                        && operand.address_size == od_isa::OperandSize::Qword
+                        && operand.size == od_isa::OperandSize::Qword
+                        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp))
+                        && operand.index.is_none()
+                        && operand.scale == 1
+                        && match length {
+                            4 => i8::try_from(operand.displacement).is_ok(),
+                            7 => i32::try_from(operand.displacement).is_ok(),
+                            _ => false,
+                        };
                     let addr32_profile = matches!(length, 4 | 5 | 8)
                         && operand.address_size == od_isa::OperandSize::Dword
                         && match length {
@@ -389,12 +400,17 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                         || operand.size != od_isa::OperandSize::Qword
                         || operand.index.is_some()
                         || operand.scale != 1
-                        || !(matches!(
-                            operand.base,
-                            od_isa::long_decode::AddressBase::Register(register)
-                                if (register as u8) < 4
-                        ) || rsp_sib_profile
-                            && matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
+                        || !(rbp_addr64_profile
+                            || matches!(
+                                operand.base,
+                                od_isa::long_decode::AddressBase::Register(register)
+                                    if (register as u8) < 4
+                            )
+                            || rsp_sib_profile
+                                && matches!(
+                                    operand.base,
+                                    AddressBase::Register(od_isa::Register::Rsp)
+                                )
                             || rip_relative_profile && matches!(operand.base, AddressBase::NextRip))
                     {
                         return Err(VerifyError::InvalidGpr {
@@ -490,6 +506,10 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                             instruction_length(program, active_instruction),
                             register.0,
                         ) || *loaded_value == *src && is_rip_relative_rsi_rdi_load_operand(
+                            *operand,
+                            instruction_length(program, active_instruction),
+                            register.0,
+                        ) || *loaded_value == *src && is_rbp_direct_rsi_rdi_load_operand(
                             *operand,
                             instruction_length(program, active_instruction),
                             register.0,
@@ -1071,6 +1091,25 @@ fn is_direct_low_base_rsi_rdi_load_operand(
             (od_isa::OperandSize::Dword, 4) => operand.displacement == 0,
             (od_isa::OperandSize::Dword, 5) => i8::try_from(operand.displacement).is_ok(),
             (od_isa::OperandSize::Dword, 8) => i32::try_from(operand.displacement).is_ok(),
+            _ => false,
+        }
+}
+
+fn is_rbp_direct_rsi_rdi_load_operand(
+    operand: MemoryOperand,
+    instruction_length: u64,
+    data_register: u8,
+) -> bool {
+    matches!(data_register, 6 | 7)
+        && matches!(instruction_length, 4 | 7)
+        && operand.address_size == od_isa::OperandSize::Qword
+        && operand.size == od_isa::OperandSize::Qword
+        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp))
+        && operand.index.is_none()
+        && operand.scale == 1
+        && match instruction_length {
+            4 => i8::try_from(operand.displacement).is_ok(),
+            7 => i32::try_from(operand.displacement).is_ok(),
             _ => false,
         }
 }
