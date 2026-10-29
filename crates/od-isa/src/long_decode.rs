@@ -479,6 +479,8 @@ pub enum Operation {
     FxsaveRipRelative(MemoryOperand),
     /// Exact S2-39d Long64 `48 0F AE 40 40` FXSAVE64 `[RAX+0x40]` form.
     Fxsave64RaxDisp8(MemoryOperand),
+    /// Exact S2-39e Long64 `48 0F AE 4B 40` FXRSTOR64 `[RBX+0x40]` form.
+    Fxrstor64RbxDisp8(MemoryOperand),
     /// Local-only legacy `0F 10/11 /r` MOVUPS XMM-to-XMM register form.
     MovupsRegister {
         destination: u8,
@@ -4631,6 +4633,24 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         return Err(self.unsupported(opcode));
                     }
                     Operation::Fxsave64RaxDisp8(area)
+                } else if prefixes
+                    == (Prefixes {
+                        rex: Some(0x48),
+                        ..Prefixes::default()
+                    })
+                    && prefix_count == 1
+                    && prefix_bytes[0] == 0x48
+                    && modrm == 0x4b
+                {
+                    let Operand::Memory(area) =
+                        self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                    else {
+                        unreachable!("ModRM 4b is a memory operand");
+                    };
+                    if area.displacement != 0x40 {
+                        return Err(self.unsupported(opcode));
+                    }
+                    Operation::Fxrstor64RbxDisp8(area)
                 } else {
                     return Err(self.unsupported(opcode));
                 }
@@ -9765,6 +9785,17 @@ mod tests {
             assert_eq!(Memory::new(bytes).decode().unwrap().operation, expected);
         }
 
+        assert_eq!(
+            Memory::new(&[0x66, 0x0f, 0x5f, 0xc1])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::MaxpdRegisterMasked {
+                destination: 0,
+                source: 1,
+            }
+        );
+
         for bytes in [
             &[0x66, 0x0f, 0x5d, 0x01][..],             // memory operand
             &[0x66, 0x48, 0x0f, 0x5d, 0xc1][..],       // REX.W
@@ -9775,7 +9806,6 @@ mod tests {
             &[0x2e, 0x66, 0x0f, 0x5d, 0xc1][..],       // segment override
             &[0x67, 0x66, 0x0f, 0x5d, 0xc1][..],       // address-size override
             &[0xf0, 0x66, 0x0f, 0x5d, 0xc1][..],       // LOCK
-            &[0x66, 0x0f, 0x5f, 0xc1][..],             // MAXPD
             &[0x66, 0x0f, 0x5d][..],                   // truncated ModR/M
             &[0xc5, 0xfd, 0x5d, 0xc1][..],             // VEX
             &[0x62, 0xf1, 0xfd, 0x08, 0x5d, 0xc1][..], // EVEX
@@ -9824,13 +9854,21 @@ mod tests {
             }
         );
 
+        let mut maxpd = Memory::new(&[0x66, 0x0f, 0x5f, 0xc1]);
+        assert_eq!(
+            maxpd.decode().unwrap().operation,
+            Operation::MaxpdRegisterMasked {
+                destination: 0,
+                source: 1,
+            }
+        );
+
         for bytes in [
             &[0x0f, 0x5f, 0x01][..],                   // memory operand
             &[0x48, 0x0f, 0x5f, 0xc1][..],             // REX.W
             &[0x42, 0x0f, 0x5f, 0xc1][..],             // REX.X
             &[0x40, 0x41, 0x0f, 0x5f, 0xc1][..],       // multiple REX
             &[0x40, 0x66, 0x0f, 0x5f, 0xc1][..],       // nonadjacent REX
-            &[0x66, 0x0f, 0x5f, 0xc1][..],             // operand-size prefix
             &[0xf3, 0x0f, 0x5f, 0x01][..],             // scalar memory operand
             &[0x0f, 0x5f][..],                         // truncated ModR/M
             &[0x40, 0x0f, 0x5f][..],                   // truncated extended form
@@ -14321,6 +14359,49 @@ mod tests {
             &[0x67, 0x48, 0x0f, 0xae, 0x40, 0x40][..],
             &[0xf3, 0x48, 0x0f, 0xae, 0x40, 0x40][..],
             &[0x64, 0x48, 0x0f, 0xae, 0x40, 0x40][..],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(invalid).decode(),
+                    Err(DecodeError::Unsupported { .. }) | Err(DecodeError::Memory(_))
+                ),
+                "{invalid:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fxrstor64_profile_decodes_only_exact_rbx_disp8_form() {
+        let bytes = [0x48, 0x0f, 0xae, 0x4b, 0x40];
+        let instruction = Memory::new(&bytes).decode().unwrap();
+        assert_eq!(instruction.length, 5);
+        assert_eq!(
+            instruction.operation,
+            Operation::Fxrstor64RbxDisp8(MemoryOperand {
+                base: AddressBase::Register(Register::Rbx),
+                index: None,
+                scale: 1,
+                displacement: 0x40,
+                address_size: OperandSize::Qword,
+                size: OperandSize::Qword,
+            })
+        );
+        for invalid in [
+            &[0x48, 0x0f, 0xae, 0x4b][..],
+            &[0x48, 0x0f, 0xae, 0x4b, 0x41][..],
+            &[0x49, 0x0f, 0xae, 0x4b, 0x40][..],
+            &[0x4c, 0x0f, 0xae, 0x4b, 0x40][..],
+            &[0x48, 0x48, 0x0f, 0xae, 0x4b, 0x40][..],
+            &[0x49, 0x48, 0x0f, 0xae, 0x4b, 0x40][..],
+            &[0x48, 0x0f, 0xae, 0x48, 0x40][..],
+            &[0x48, 0x0f, 0xae, 0x53, 0x40][..],
+            &[0x48, 0x0f, 0xae, 0x5b, 0x40][..],
+            &[0x48, 0x0f, 0xae, 0x43, 0x40][..],
+            &[0x48, 0x0f, 0xae, 0x4a, 0x40][..],
+            &[0x66, 0x48, 0x0f, 0xae, 0x4b, 0x40][..],
+            &[0x67, 0x48, 0x0f, 0xae, 0x4b, 0x40][..],
+            &[0xf3, 0x48, 0x0f, 0xae, 0x4b, 0x40][..],
+            &[0x64, 0x48, 0x0f, 0xae, 0x4b, 0x40][..],
         ] {
             assert!(
                 matches!(

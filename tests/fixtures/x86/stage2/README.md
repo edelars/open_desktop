@@ -5648,3 +5648,19 @@ execution, native/JIT support, FXRSTOR, or round-trip behavior. See the
 [S2-39d plan](../../../../docs/plans/STAGE_2.md#s2-39d-exact-long64-fxsave64-rax0x40),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-39d--exact-long64-fxsave64-rax0x40),
 and [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-39d--exact-long64-fxsave64-rax0x40).
+
+### S2-39e Long64 FXRSTOR64 `[RBX+0x40]`
+
+`s2_39e_fxrstor64_rbx_disp8_literal.case.json` is a handwritten schema-v2
+fixture for `s2-long-fxrstor64-rbx-disp8-v1`. It carries the exact bytes
+`48 0F AE 4B 40`, a literal read-only 512-byte image, full 64-bit pointers,
+abridged physical FTW, TOP-ordered raw x87 slots, nonzero ignored/reserved
+bytes, and all sixteen XMM images. It does not derive the input from the local
+FXSAVE serializer. Local interpreter tests cover all TOP values, independent
+optional selectors, x87 tag classes and raw payloads, target MXCSR validation
+with forged-mask invariance, 13 ascending read-only callbacks, every callback
+failure, range preflight, wrapping RBX arithmetic, and save/mutate/restore for
+representable state. JIT/native and physical execution are not claimed. See
+[S2-39e plan](../../../../docs/plans/STAGE_2.md#s2-39e-exact-long64-fxrstor64-rbx0x40),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-39e--exact-long64-fxrstor64-rbx0x40),
+and [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-39e--exact-long64-fxrstor64-rbx0x40).

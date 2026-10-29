@@ -397,6 +397,65 @@ fn fxsave64_rax_profile_is_exact_and_selectors_are_independently_optional() {
 }
 
 #[test]
+fn fxrstor64_rbx_profile_is_exact_readable_and_preserves_optional_selectors() {
+    let raw = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_39e_fxrstor64_rbx_disp8_literal.case.json"
+    );
+    let base = Fixture::from_json(raw).unwrap().fixture;
+    assert_eq!(base.profile, Profile::LongFxrstor64RbxV1);
+    assert_eq!(
+        base.memory
+            .iter()
+            .find(|region| region.region_id == "data")
+            .unwrap()
+            .permissions
+            .read,
+        true
+    );
+    assert_eq!(
+        base.memory
+            .iter()
+            .find(|region| region.region_id == "data")
+            .unwrap()
+            .permissions
+            .write,
+        false
+    );
+    let state = base
+        .initial_state
+        .to_cpu_for(Profile::LongFxrstor64RbxV1)
+        .unwrap();
+    assert_eq!(state.x87.as_ref().unwrap().instruction_selector, None);
+    assert_eq!(state.x87.as_ref().unwrap().data_selector, None);
+
+    let mut present_selectors = base.clone();
+    let x87 = present_selectors.initial_state.x87.as_mut().unwrap();
+    x87.instruction_selector = Some(HexU64(0));
+    x87.data_selector = Some(HexU64(0x53));
+    assert!(present_selectors.validate().is_ok());
+
+    for invalid in ["480fae4b41", "480fae4340", "490fae4b40", "66480fae4b40"] {
+        let mut changed = base.clone();
+        changed
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap()
+            .initial_bytes_hex = invalid.to_string();
+        assert!(changed.validate().is_err(), "{invalid}");
+    }
+    let mut unreadable = base;
+    unreadable
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "data")
+        .unwrap()
+        .permissions
+        .read = false;
+    assert!(unreadable.validate().is_err());
+}
+
+#[test]
 fn integer_snapshot_export_rejects_ds_hidden_cache() {
     let mut state = od_isa::LongModeState::default();
     state.ds_cache = Some(od_isa::state::DsDescriptorCache {

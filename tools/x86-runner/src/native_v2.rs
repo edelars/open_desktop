@@ -1411,6 +1411,7 @@ fn execute(loaded: &LoadedFixture) -> RunResult {
             | v2::Profile::LongX87SelectorsStateV1
             | v2::Profile::LongFxsaveRipV1
             | v2::Profile::LongFxsave64RaxV1
+            | v2::Profile::LongFxrstor64RbxV1
             | v2::Profile::LongMovupsRegV1
             | v2::Profile::LongMovapsRegV1
             | v2::Profile::LongMovapsReverseRegV1
@@ -4311,6 +4312,20 @@ mod tests {
         ));
         assert!(matches!(
             fxsave64_result.snapshot,
+            Observation::Unavailable { .. }
+        ));
+
+        let fxrstor64_loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_39e_fxrstor64_rbx_disp8_literal.case.json"
+        ))
+        .unwrap();
+        let fxrstor64_result = execute(&fxrstor64_loaded);
+        assert!(matches!(
+            fxrstor64_result.outcome,
+            Outcome::Unsupported { .. }
+        ));
+        assert!(matches!(
+            fxrstor64_result.snapshot,
             Observation::Unavailable { .. }
         ));
     }

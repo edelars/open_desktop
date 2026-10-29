@@ -580,9 +580,10 @@ map and definedness policy are in the [CPU contract](../specs/CPU_CONTRACT.md#s2
 
 Intel defines the FXSR CPUID gate, CR0.EM/TS #NM gates, CR4.OSFXSR dependency
 for deterministic SSE state, 16-byte alignment, and the 32-bit-versus-64-bit
-pointer layouts. MXCSR_MASK is read from the area; Intel specifies
-`0x0000ffbf` only as the fallback when that field is zero. It is not testkit's
-diagnostic mask metadata, despite the current equal numeric value. A 512-byte
+pointer layouts. Intel specifies a fallback value when a saved MXCSR_MASK is
+zero. The local selected target uses immutable `TARGET_FXSAVE_MXCSR_MASK`
+policy `0x0000ffbf`; S2-39e ignores the incoming image field. This is not
+testkit's diagnostic mask metadata, despite the current equal numeric value. A 512-byte
 instruction operand can fault on address/alignment/page conditions; neither
 this static evidence nor the cited instruction summary supports claiming a
 whole-area atomic commit or arbitrary memory-backend rollback.
@@ -627,9 +628,9 @@ exercise another disp32, state serialization, sentinel preservation and the
 callback-failure matrix. No #NM/#UD/#GP delivery, whole-area atomicity, MMIO,
 shared-memory, DMA, SMP, hardware, boot, or physical result is asserted.
 
-S2-39 remains open for FXRSTOR, other FXSAVE forms, broader state validation,
-and save/restore round-trip requirements. Physical validation is deferred to
-the combined final Mac mini substage. Details are in the [S2-39c plan](../plans/STAGE_2.md#s2-39c-exact-plain-long64-rip-relative-fxsave),
+At the S2-39c reporting point, S2-39 remained open for FXRSTOR, other FXSAVE
+forms, broader state validation, and round-trip requirements. The exact local
+S2-39e restore is recorded below; broader and physical acceptance remain open. Details are in the [S2-39c plan](../plans/STAGE_2.md#s2-39c-exact-plain-long64-rip-relative-fxsave),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-39c--plain-long64-rip-relative-fxsave),
 [Stage 2 report](STAGE_2_REPORT.md#s2-39c--plain-long64-rip-relative-fxsave),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39c-plain-long64-rip-relative-fxsave).
@@ -655,3 +656,18 @@ See the [S2-39d implementation report](STAGE_2_REPORT.md#s2-39d--exact-long64-fx
 [CPU contract](../specs/CPU_CONTRACT.md#s2-39d--exact-long64-fxsave64-rax0x40),
 [plan](../plans/STAGE_2.md#s2-39d-exact-long64-fxsave64-rax0x40), and
 [fixture note](../../tests/fixtures/x86/stage2/README.md#s2-39d-long64-fxsave64-rax0x40).
+
+## S2-39e — exact FXRSTOR64 evidence-only mapping plus local profile
+
+The statically mapped Ubuntu bytes `48 0F AE 4B 40` correspond to the local
+interpreter-only `s2-long-fxrstor64-rbx-disp8-v1` profile. That profile admits
+only this exact form and reads a complete aligned canonical 512-byte image at
+wrapping `RBX+0x40`. Its 13 callbacks read defined field slices only. The
+image's `MXCSR_MASK` is ignored; loaded MXCSR is checked against the immutable
+target capability mask `0x0000ffbf`. The profile's local tests do not establish
+that the Ubuntu code executed, any exception delivery, Linux boot, physical
+x86 behavior, or Mac mini acceptance. Those machine checks remain in the
+combined final hardware substage. Details are in the [CPU contract](../specs/CPU_CONTRACT.md#s2-39e--exact-long64-fxrstor64-rbx0x40),
+[plan](../plans/STAGE_2.md#s2-39e-exact-long64-fxrstor64-rbx0x40),
+[report](STAGE_2_REPORT.md#s2-39e--exact-long64-fxrstor64-rbx0x40), and
+[fixture note](../../tests/fixtures/x86/stage2/README.md#s2-39e-long64-fxrstor64-rbx0x40).

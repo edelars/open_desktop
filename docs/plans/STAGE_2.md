@@ -500,9 +500,10 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
-| [x] | S2-39b | Представление FCS/FDS в X87State/schema-v2; точечный selector profile; x87 transition fail-closed | S2-39a; FXSAVE/FXRSTOR execution remains open |
+| [x] | S2-39b | Представление FCS/FDS в X87State/schema-v2; точечный selector profile; x87 transition fail-closed | S2-39a; FXSAVE/FXRSTOR execution remained open at this historical substage |
 | [x] | S2-39c | Один plain Long64 RIP-relative FXSAVE profile | S2-39a/b; broader save/restore remains open |
-| [x] | S2-39d | Один exact Long64 FXSAVE64 `[RAX+0x40]` profile с полными FIP/FDP | S2-39a–c; FXRSTOR and broader forms remain open |
+| [x] | S2-39d | Один exact Long64 FXSAVE64 `[RAX+0x40]` profile с полными FIP/FDP | S2-39a–c; FXRSTOR and broader forms remained open at this historical substage |
+| [x] | S2-39e | Один strict interpreter-only FXRSTOR64 `[RBX+0x40]` profile | S2-39a–d; other forms and physical acceptance remain open |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
 | [ ] | S2-41 | Независимо проверить системный профиль | S2-27; machine backend по сценариям |
 | [ ] | S2-42 | Расширить corpus/reducer/harness | S2-21, S2-39, S2-40 |
@@ -6209,25 +6210,28 @@ Vol. 1 §§10.5.1–10.5.3, 11.6.5–11.6.6. Сопоставление точн
 FIP/FDP и при выбранном CPUID leaf-7 result (EBX[13]=0) CS/DS selectors; с
 REX.W `FXSAVE64/FXRSTOR64` сохраняют полные 64-bit FIP/FDP без selector
 полей. Остальная карта, включая abridged physical FTW и XMM0–15, общая.
-Existing S2-34.1 snapshots не являются такой memory image. S2-39b добавляет
-FCS/FDS representation в `X87State`, но память и execution semantics этого
-image остаются нереализованными.
+Existing S2-34.1 snapshots не являются такой memory image. На момент S2-39a
+FCS/FDS representation появилось в S2-39b, а image execution ещё оставался
+нереализованным. Статус после этого evidence-only среза перечислен ниже:
+S2-39c/d покрывают две save-формы, S2-39e — одну строгую restore-форму.
 
 | Observed form | Long64 layout | Main relevance | Local gate/evidence |
 |---|---|---|---|
 | `0F AE 05 6B F9 17 00` | `FXSAVE`, REX.W=0; RIP+disp32; 32-bit pointer offsets plus selector fields | Exact Ubuntu MXCSR-mask initialization probe | Implemented as the local S2-39c profile; it stores architectural state beyond the mask and preserves bytes 464–511. This static Linux mapping is not observed runtime execution. |
 | `48 0F AE 40 40` | `FXSAVE64`, REX.W=1; `[RAX+0x40]`; 64-bit FIP/FDP | Exact Ubuntu legacy state-save path | Implemented only as the local S2-39d exact form; distinct image format. |
-| `48 0F AE 4B 40` | `FXRSTOR64`, REX.W=1; `[RBX+0x40]`; 64-bit FIP/FDP | Exact Ubuntu legacy state-restore path | Later restore form; requires full image validation and target MXCSR policy. |
+| `48 0F AE 4B 40` | `FXRSTOR64`, REX.W=1; `[RBX+0x40]`; 64-bit FIP/FDP | Exact Ubuntu legacy state-restore path | At the S2-39a–d evidence/status point this was a future restore form; the exact strict local implementation is now S2-39e. Static Linux mapping is not runtime execution evidence. |
 
-Prerequisites include CPUID.01H:EDX.FXSR[24], CR0.EM=0 and CR0.TS=0; CR4.OSFXSR=1 is needed for defined SSE-state behavior. Target CPUID also advertises SSE/SSE2, while OSXSAVE/XSAVE remain disabled. The selected MXCSR policy must use the FXSAVE mask, with Intel's specified `0x0000ffbf` fallback only when the saved `MXCSR_MASK` field is zero. That policy is distinct from testkit's existing `diagnostic_mxcsr_mask` metadata, even though its current numeric value is also `0x0000ffbf`.
+Prerequisites include CPUID.01H:EDX.FXSR[24], CR0.EM=0 and CR0.TS=0; CR4.OSFXSR=1 is needed for defined SSE-state behavior. Target CPUID also advertises SSE/SSE2, while OSXSAVE/XSAVE remain disabled. The selected synthetic target policy is the immutable `0x0000_ffbf` supported mask. S2-39e compares restored MXCSR against that target capability and ignores the incoming image `MXCSR_MASK`; this is distinct from testkit's diagnostic metadata even though its current number is equal.
 
-Fault handling must account for 16-byte alignment, noncanonical addresses, page faults, and #NM/#UD gates. The memory area is 512 bytes, but this does not mean every byte is written: FXSAVE preserves software-available bytes 464–511, while bytes 416–463 are reserved and their write behavior is not asserted here. No whole-area atomic commit or backend rollback guarantee is asserted. Physical x86/Mac mini validation belongs to the combined final substage; no boot, C/D coverage or physical result is claimed. S2-39b closed selector representation, and S2-39c implemented one local save form. Remaining S2-39 work includes restore semantics, other save forms and physical acceptance.
+Fault handling must account for 16-byte alignment, noncanonical addresses, page faults, and #NM/#UD gates. The memory area is 512 bytes, but this does not mean every byte is written: FXSAVE preserves software-available bytes 464–511, while bytes 416–463 are reserved and their write behavior is not asserted here. No whole-area atomic commit or backend rollback guarantee is asserted. Physical x86/Mac mini validation belongs to the combined final substage; no boot, C/D coverage or physical result is claimed. S2-39b closed selector representation, S2-39c/d implemented two local save forms, and S2-39e implemented one bounded restore form. Other save/restore forms and physical acceptance remain open.
 
-ISSUE-026 закрыта для selector representation и двух bounded save forms (plain S2-39c and FXSAVE64 S2-39d); FXRSTOR и остальные формы остаются unsupported.
+На историческом статусе S2-39a–d ISSUE-026 была закрыта для selector representation и двух bounded save forms; exact FXRSTOR64 оставался запланированным. Текущий bounded restore описан в S2-39e ниже; другие формы остаются unsupported.
 
-S2-39 overall remains open until implementation covers the selected forms and
-tests save → modify → restore with raw mixed x87/MMX/XMM state and invalid-image
-fault behavior.
+S2-39 overall remains open for other selected save/restore forms, broader
+state validation, guest exception behavior and physical acceptance. S2-39e
+adds one local save → modify → restore path with an independently authored
+image and bounded invalid-image checks; it does not close those broader
+requirements.
 
 1. Реализовать требуемые x87 environment save/restore и FXSAVE/FXRSTOR формы с нормативными layouts, modes, alignment и reserved-bit checks.
 2. Проверить mixed x87/MMX/XMM state, tag representation, instruction/data pointer rules и round-trip без потери bits.
@@ -6323,6 +6327,50 @@ save/restore round-trip не заявляются. Физические пров
 [Linux evidence](../reports/STAGE_2_LINUX_PROFILE.md#s2-39d--exact-long64-fxsave64-rax0x40),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39d-long64-fxsave64-rax0x40)
 и [fixture format](../testing/TEST_CASE_FORMAT.md#s2-39d-fxsave64-profile).
+
+#### S2-39e. Exact Long64 FXRSTOR64 `[RBX+0x40]`
+
+**Статус:** локальная реализация и focused checks завершены для отдельного
+strict profile `s2-long-fxrstor64-rbx-disp8-v1`. Он принимает ровно байты
+`48 0F AE 4B 40`, требует x87/SSE state и один instruction budget, и читает
+512-byte image по адресу architectural wrapping `RBX+0x40`. Полный образ
+должен до первого callback иметь 16-byte alignment и непереполняемую
+canonical48 геометрию. Общего base+disp8 декодирования нет.
+
+Выполняются ровно 13 возрастающих read-only callbacks: `[0,5)`, `[6,16)`,
+`[16,24)`, `[24,28)`, восемь `[32+16*i,42+16*i)` и `[160,416)`. Reserved,
+padding и software-available tail не читаются. Все значения сначала
+буферизуются; `MXCSR_MASK` из образа игнорируется, а загруженный MXCSR
+проверяется по immutable `TARGET_FXSAVE_MXCSR_MASK` (`0x0000_ffbf`). Любая
+ошибка чтения или #GP(0) validation оставляет CPU snapshot, RIP и retirement
+без изменений; дальнейшие callbacks после первой ошибки не выполняются.
+Ошибка backend сохраняет свою категорию, а предыдущие внешние read callbacks
+не объявляются rollback-нутыми.
+
+Восстанавливаются полные FIP/FDP, raw FCW/FSW, low 11-bit FOP, abridged
+physical FTW с классификацией nonempty raw 80-bit значений и XMM0–15. Слоты
+данных в образе идут как логические ST0–ST7 и отображаются через TOP на
+physical R0–R7; raw payload каждого слота сохраняется, включая empty tags.
+Selectors остаются независимо optional и сохраняют исходные значения.
+Входящий MXCSR_MASK, reserved/padding/tail не импортируются. Raw FSW
+сохраняется; restore не доставляет и не сигнализирует ожидающие арифметические
+x87 exceptions. FTW не содержит исходный Valid/Zero/Special tag класса,
+поэтому произвольная tag-word round-trip не заявлена.
+
+Handwritten fixture использует literal image и nonzero ignored bytes. Focused
+тесты покрывают все TOP, selectors, pointer widths, x87 tag classes, 16 XMM,
+mask invariance/invalid MXCSR, каждый callback fault, read-only traces,
+address wrapping, preflight failures, truncation/neighboring encodings и
+bounded save→mutate→restore. Runner CLI допускает только interpreter; JIT и
+native остаются denied. Это локальные тестовые результаты, не hardware,
+physical, guest #GP/#PF delivery или общая atomicity claim. Физические проверки
+Mac mini/SSH остаются в едином финальном hardware substage.
+
+См. [CPU contract](../specs/CPU_CONTRACT.md#s2-39e--exact-long64-fxrstor64-rbx0x40),
+[report](../reports/STAGE_2_REPORT.md#s2-39e--exact-long64-fxrstor64-rbx0x40),
+[Linux evidence](../reports/STAGE_2_LINUX_PROFILE.md#s2-39e--exact-fxrstor64-evidence-only-mapping-plus-local-profile),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39e-long64-fxrstor64-rbx0x40),
+и [fixture format](../testing/TEST_CASE_FORMAT.md#s2-39e-fxrstor64-profile).
 
 ### S2-40. Дополнительные обязательные расширения
 

@@ -4580,6 +4580,47 @@ fn local_fxsave64_rax_fixture_runs_only_in_the_interpreter() {
 }
 
 #[test]
+fn local_fxrstor64_rbx_fixture_runs_only_in_the_interpreter() {
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_39e_fxrstor64_rbx_disp8_literal.case.json"
+    );
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongFxrstor64RbxV1
+    );
+    assert_eq!(count(&result), 1);
+    assert_eq!(snapshot(&result).state.rip, input.fixture.stop_rip.unwrap());
+    assert_eq!(
+        snapshot(&result).memory,
+        input
+            .fixture
+            .memory
+            .iter()
+            .map(|region| MemoryRegionSnapshot {
+                region_id: region.region_id.clone(),
+                guest_address: region.guest_address,
+                bytes_hex: region.initial_bytes_hex.clone(),
+            })
+            .collect::<Vec<_>>()
+    );
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
+    let (_, native_result) = run(bytes, "native", 4);
+    assert_eq!(native_result.backend, Backend::NativeX86);
+    assert!(matches!(native_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        native_result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
 fn local_xorps_register_fixture_xors_raw_xmm_and_keeps_native_closed() {
     let bytes =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_7a_xorps_register.case.json");

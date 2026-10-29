@@ -844,3 +844,18 @@ offsets `[8,16)` and `[16,24)`. JIT, native execution, FXRSTOR and other
 addressing forms remain closed. See the [fixture note](../../tests/fixtures/x86/stage2/README.md#s2-39d-long64-fxsave64-rax0x40),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-39d--exact-long64-fxsave64-rax0x40),
 and [plan](../plans/STAGE_2.md#s2-39d-exact-long64-fxsave64-rax0x40).
+
+## S2-39e FXRSTOR64 profile
+
+The local-only `s2-long-fxrstor64-rbx-disp8-v1` profile admits exactly
+`48 0F AE 4B 40`, one instruction, budget 1, and stop RIP immediately after
+that instruction. It requires x87/SSE snapshots and a readable, non-executable
+512-byte image at the wrapping architectural address `RBX+0x40`; the entire
+range must be 16-byte aligned, canonical48 and non-overflowing. Selectors are
+independently optional and preserved by the restore. The handwritten input
+image uses nonzero bytes in ignored/reserved ranges and an arbitrary
+`MXCSR_MASK`; only the immutable target mask `0x0000_ffbf` validates loaded
+MXCSR. Image memory is read-only in the fixture. Interpreter execution is
+allowed; JIT/native are denied. See the [fixture note](../../tests/fixtures/x86/stage2/README.md#s2-39e-long64-fxrstor64-rbx0x40),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-39e--exact-long64-fxrstor64-rbx0x40),
+and [plan](../plans/STAGE_2.md#s2-39e-exact-long64-fxrstor64-rbx0x40).

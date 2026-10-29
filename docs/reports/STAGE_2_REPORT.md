@@ -15883,8 +15883,9 @@ fixture evidence, and all new links; no findings remain.
 
 Added the strict local profile `s2-long-fxsave-rip-v1` for exactly one
 unprefixed `0F AE 05 disp32` Long64 instruction. It requires x87/SSE state and
-both selectors, including explicit `Some(0)`. FXSAVE64, FXRSTOR, other ModRM or
-addressing forms, prefixes and REX remain unsupported. CPUID FXSR, CR0.EM/TS=0
+both selectors, including explicit `Some(0)`. Within this S2-39c profile,
+FXSAVE64, FXRSTOR, other ModRM or addressing forms, prefixes and REX remain
+unsupported; the exact S2-39e restore is documented separately below. CPUID FXSR, CR0.EM/TS=0
 and CR4.OSFXSR=1 are selected-target preconditions, not runtime gates in the
 current state model. CPUID execution, JIT and native admission remain closed.
 
@@ -15992,3 +15993,57 @@ See the [S2-39d CPU contract](../specs/CPU_CONTRACT.md#s2-39d--exact-long64-fxsa
 [plan](../plans/STAGE_2.md#s2-39d-exact-long64-fxsave64-rax0x40),
 [Linux evidence](STAGE_2_LINUX_PROFILE.md#s2-39d--exact-long64-fxsave64-rax0x40),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39d-long64-fxsave64-rax0x40).
+
+## S2-39e — exact Long64 FXRSTOR64 `[RBX+0x40]`
+
+Added the strict local interpreter profile `s2-long-fxrstor64-rbx-disp8-v1`
+for exactly `48 0F AE 4B 40`. The address is architectural wrapping
+`RBX+0x40`; before access the full 512-byte image must be 16-byte aligned,
+canonical48 and non-overflowing. x87/SSE snapshots are required, while
+instruction/data selectors remain independently optional and are preserved as
+provided.
+
+The executor issues 13 ascending read-only callbacks for `[0,5)`, `[6,16)`,
+`[16,24)`, `[24,28)`, eight 10-byte logical stack slots, and `[160,416)`. It
+does not read reserved, padding, incoming MXCSR_MASK, or software tail bytes.
+All fields are staged; loaded MXCSR is checked using the immutable target mask
+`TARGET_FXSAVE_MXCSR_MASK` (`0x0000ffbf`) before any x87/SSE or RIP commit.
+The image mask is ignored. A read or validation error leaves CPU state,
+definedness, RIP and retirement unchanged and stops callbacks at the first
+failure; backend categories are preserved and no external rollback is claimed.
+
+The restore copies raw FCW/FSW, full FIP/FDP, low 11 FOP bits, raw 80-bit
+payloads and XMM0–15. TOP maps logical image slots to physical registers;
+abridged FTW marks empty physical slots, while nonempty values are classified
+from exponent, full significand and J. Payload bits are unchanged, even for
+empty slots and signaling NaNs. Selectors retain their original Option values.
+The independent literal fixture has nonzero ignored/reserved bytes and a forged
+MXCSR_MASK; tests cover all TOP values, selector combinations, FTW tag classes,
+XMM payloads, forbidden MXCSR bits, callback failures, range preflight,
+wrapping arithmetic and bounded FXSAVE64→mutate→FXRSTOR64 round-trip for
+representable tag state. Abridged FTW does not preserve arbitrary nonempty tag
+classes, so no arbitrary tag-word round-trip is claimed.
+
+The strict decoder/profile regressions admit only this form. The CLI fixture
+passed with the interpreter and returned Unsupported for JIT and native-x86.
+**Verification:** `cargo test -p od-isa --lib --offline` passed (1,380/1,380);
+`cargo test -p od-testkit fxrstor64 --offline` passed (1/1);
+`cargo test -p od-runner --test fixture_v2 local_fxrstor64_rbx_fixture_runs_only_in_the_interpreter --offline`
+passed (1/1); `cargo fmt --all -- --check`, `cargo check --workspace
+--all-targets --offline`, `cargo check -p od-x86-runner --all-targets --target
+x86_64-unknown-linux-gnu --offline`, `git diff --check`, and `graphify update .`
+passed. The Linux-target command was compile-only on this Apple ARM host.
+
+Independent Sol-medium review identified two verification gaps, a stale plan
+status, broken links and wording mismatches. The author corrected the expected
+tag oracle, added architectural #PF, MXCSR bit-6 and incoming-mask invariance
+coverage, updated the MAXPS/MINPD neighbor cases, and corrected the documentation.
+Final independent Sol-medium code and documentation re-review completed with no
+remaining findings. No SSH, Mac mini, physical x86, Linux
+runtime, guest exception delivery, broader addressing forms, or general S2-39
+acceptance is claimed. Those hardware checks stay in the combined final substage.
+
+See the [CPU contract](../specs/CPU_CONTRACT.md#s2-39e--exact-long64-fxrstor64-rbx0x40),
+[plan](../plans/STAGE_2.md#s2-39e-exact-long64-fxrstor64-rbx0x40),
+[Linux mapping](STAGE_2_LINUX_PROFILE.md#s2-39e--exact-fxrstor64-evidence-only-mapping-plus-local-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39e-long64-fxrstor64-rbx0x40).

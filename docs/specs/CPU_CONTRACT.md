@@ -188,11 +188,13 @@ address #GP(0)/#SS(0), #PF, #NM for CR0.EM/TS, and #UD if FXSR is absent or
 LOCK is used. This evidence slice does not implement their guest delivery.
 
 MXCSR is an architectural 32-bit value and FXRSTOR faults if reserved MXCSR
-bits are set. The architectural supported mask comes from the FXSAVE image's
-MXCSR_MASK; when that field is zero, Intel Vol. 1 specifies fallback mask
-`0x0000ffbf`. This is distinct from testkit's `diagnostic_mxcsr_mask` snapshot
-metadata: numerical equality does not make that local diagnostic metadata the
-selected target's capability source.
+bits are set. Intel describes the saved MXCSR_MASK field and its zero-field
+fallback. The selected synthetic target's immutable supported mask is
+`0x0000ffbf`; the bounded S2-39e restore profile validates MXCSR against this
+target policy and ignores the incoming image's MXCSR_MASK field. This is
+distinct from testkit's `diagnostic_mxcsr_mask` snapshot metadata: numerical
+equality does not make that local diagnostic metadata the target capability
+source.
 
 Each instruction operates on a 512-byte memory area and can encounter
 alignment, address, or page faults. This describes the area, not a promise that
@@ -232,12 +234,13 @@ memory access for any supported x87 primary-opcode instruction whenever either
 selector is present. STOP-address and zero-budget checks retain their existing
 ordering. No selector is fabricated from CS/DS.
 
-This closes [ISSUE-026](../KNOWN_ISSUES.md#issue-026--plain-long64-fxsavefxrstor-target-lacks-selector-state)
-for state representation only. It does not add FNINIT execution or an
+At the S2-39b substage, this closed [ISSUE-026](../KNOWN_ISSUES.md#issue-026--plain-long64-fxsavefxrstor-target-lacks-selector-state)
+for state representation only. It did not add FNINIT execution or an
 FXSAVE/FXRSTOR memory image, instruction, alignment/fault behavior, or native
 observation. S2-39c later implements one exact plain FXSAVE save form and S2-39d
-one exact FXSAVE64 save form; FXRSTOR and broader forms remain unsupported and
-S2-39 remains open. Hardware/Mac mini checks are deferred to the combined final
+one exact FXSAVE64 save form. At the S2-39b status point, FXRSTOR and broader
+forms remained unsupported; the narrow S2-39e FXRSTOR64 profile is documented
+below. Broader S2-39 remains open. Hardware/Mac mini checks are deferred to the combined final
 hardware substage. See the [S2-39b plan](../plans/STAGE_2.md#s2-39b-lossless-selector-state-representation-no-fxsave-execution)
 and [implementation report](../reports/STAGE_2_REPORT.md#s2-39b--selector-state-representation-only).
 
@@ -288,8 +291,9 @@ tag routing, selectors, raw pointers/MXCSR, all XMM registers, sentinel holes,
 write order/count, callback fault matrix, preflight gates, strict decode and
 fetch truncation. They establish local interpreter/profile behavior only;
 they do not establish hardware behavior, guest exception delivery, boot, or
-physical execution. FXRSTOR, other FXSAVE addressing forms, and complete S2-39
-remain open. Physical validation is deferred to the combined final Mac mini
+physical execution. At the S2-39c status point FXRSTOR and other FXSAVE
+addressing forms remained open; S2-39e later implements one exact restore form.
+Other forms and complete S2-39 remain open. Physical validation is deferred to the combined final Mac mini
 substage. See the [S2-39c plan](../plans/STAGE_2.md#s2-39c-exact-plain-long64-rip-relative-fxsave)
 and [implementation report](../reports/STAGE_2_REPORT.md#s2-39c--plain-long64-rip-relative-fxsave).
 
@@ -298,7 +302,8 @@ and [implementation report](../reports/STAGE_2_REPORT.md#s2-39c--plain-long64-ri
 The local `s2-long-fxsave64-rax-disp8-v1` profile admits only the exact five
 bytes `48 0F AE 40 40`. This is REX.W=1 FXSAVE64 with base RAX and disp8
 `0x40`; other REX values, prefixes, registers, displacements, address forms,
-and FXRSTOR64 remain unsupported. The profile requires x87 and SSE state but
+and FXRSTOR64 are unsupported within this S2-39d save profile. S2-39e adds a
+separate exact FXRSTOR64 profile. The profile requires x87 and SSE state but
 accepts each optional FCS/FDS selector independently as present or absent,
 because the 64-bit image stores full FIP/FDP and no selector fields.
 
@@ -307,10 +312,52 @@ this layout, the environment slices are `[6,16)` (FOP and full 64-bit FIP) and
 `[16,24)` (full 64-bit FDP); the bytes formerly used for selectors in the plain
 layout are pointer bytes here. All other field layouts, MXCSR mask policy,
 preflight geometry, callback-failure behavior, and preserved ranges match the
-plain profile. This local profile does not admit JIT/native execution and does
-not implement FXRSTOR or save/restore round-trip semantics. Physical checks
+plain profile. This local save profile does not admit JIT/native execution and does not
+implement FXRSTOR within its own exact profile; S2-39e separately adds a
+narrow restore profile and representable-state round-trip. Physical checks
 remain in the combined final Mac mini substage. See the [S2-39d plan](../plans/STAGE_2.md#s2-39d-exact-long64-fxsave64-rax0x40) and
 [implementation report](../reports/STAGE_2_REPORT.md#s2-39d--exact-long64-fxsave64-rax0x40).
+
+### S2-39e — Exact Long64 FXRSTOR64 `[RBX+0x40]`
+
+The local `s2-long-fxrstor64-rbx-disp8-v1` profile admits exactly the five
+bytes `48 0F AE 4B 40`: REX.W=1 FXRSTOR64 with base RBX and disp8 `0x40`.
+It requires x87/SSE state, but accepts `instruction_selector` and
+`data_selector` independently absent or present and preserves their prior
+options. No general base-plus-displacement form, other address form, JIT, or
+native execution is admitted.
+
+The effective base is architectural wrapping `RBX+0x40`. Before memory access,
+the complete 512-byte image must be 16-byte aligned, canonical48 and
+non-overflowing. Execution performs exactly 13 ascending read-only callbacks:
+`[0,5)`, `[6,16)`, `[16,24)`, `[24,28)`, eight 10-byte slices at
+`[32+16*i,42+16*i)`, and `[160,416)`. Reserved, padding, MXCSR_MASK and tail
+bytes are not read. The loaded state is staged in temporary buffers. The image
+MXCSR_MASK is ignored; MXCSR must satisfy
+`loaded_mxcsr & !TARGET_FXSAVE_MXCSR_MASK == 0`, otherwise the interpreter
+returns #GP(0). Reads and validation complete before replacing x87/SSE state
+or advancing RIP/retirement. On a read or validation failure CPU state,
+definedness, RIP and retirement remain unchanged; callbacks stop at the first
+read failure. Backend error categories are preserved. No generic backend
+rollback is claimed for completed reads.
+
+The restore copies raw FCW/FSW, full 64-bit FIP/FDP, low 11 FOP bits and every
+80-bit payload without normalization or quieting. FTW bits are physical R0–R7;
+slots are logical ST0–ST7, so the restore applies TOP rotation. Empty FTW bits
+produce Empty; nonempty raw values classify as Zero only for exponent zero and
+zero full significand, Valid only for exponent 1..0x7ffe and J=1, and Special
+otherwise. XMM0–15 are copied byte-for-byte. Restoring does not deliver pending
+x87 arithmetic exceptions. Since abridged FTW cannot encode the original
+nonempty tag class, arbitrary tag-word round-trip is not asserted.
+
+The handwritten literal fixture and local tests document all TOP values,
+selector option preservation, raw pointer and XMM state, ignored mask/padding,
+reserved-MXCSR rejection, per-callback failure, wrapped base arithmetic and
+range preflight. This is local interpreter evidence only; hardware, physical
+x86, SSH/Mac mini, exception delivery and broader S2-39 acceptance remain open.
+See the [S2-39e plan](../plans/STAGE_2.md#s2-39e-exact-long64-fxrstor64-rbx0x40),
+[implementation report](../reports/STAGE_2_REPORT.md#s2-39e--exact-long64-fxrstor64-rbx0x40),
+and [fixture](../../tests/fixtures/x86/stage2/README.md#s2-39e-long64-fxrstor64-rbx0x40).
 
 ## Предлагаемый профиль тестового прототипа S0-09
 
