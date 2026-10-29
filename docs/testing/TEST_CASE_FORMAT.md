@@ -54,6 +54,14 @@ the older profile's result/digest shape is unchanged. RFLAGS allow integer
 arithmetic flags, DF and required reserved bit 1.
 `s2-long-gs-base-v1` similarly requires canonical48 HexU64 `gs_base` and exposes
 it in result snapshots; comparison requires it to match the initial value. The
+`s2-long-msr-kernel-gs-base-v1` profile requires canonical48 `gs_base` and
+`kernel_gs_base` in the initial and observed state, preserving `Some(0)` as a
+present value. Its exact program allowlist is `0F 32` or `0F 30` (budget 1),
+`0F 30 0F 01 F8 0F 32` (budget 3), and
+`0F 30 0F 01 F8 65 48 8B 00` (budget 3). It combines the bounded MSR and
+SWAPGS interpreter selections only for these cases. The fixture schema rejects
+other programs, budgets and stop RIPs; JIT/native/C ABI remain denied. The local-only
+`s2-long-fs-selector-v1` profile requires canonical48 `fs_base` and
 local-only `s2-long-fs-selector-v1` profile requires canonical48 `fs_base` and
 16-bit HexU64 `fs_selector` in initial and result state; both are compared with
 their initial values. The local-only `s2-long-gs-selector-v1` profile likewise
@@ -101,7 +109,8 @@ codes and the page-fault address cannot be unavailable.
 Comparison checks exact case/digest/profile/memory layout, all GPR, RIP,
 definedness, requested defined flags, masked memory bytes, outcome/expected exit
 and exception metadata. Incomplete/unsupported results cannot compare equal.
-The FS-base and GS-base profiles additionally compare their observed base; the
+The FS-base, GS-base, SWAPGS and kernel-GS-base profiles additionally compare
+their observed base state; the
 selector profiles compare the matching segment base and selector. Profiles
 without those fields do not include or synthesize the observations. The VERW
 profile additionally compares GDTR base and limit as architectural state. The

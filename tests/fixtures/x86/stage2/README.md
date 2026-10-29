@@ -5880,6 +5880,24 @@ The schema admits only exact bare `0F 32` or `0F 30` at budget 1, or this exact
 write-then-load composition at budget 2. No native, JIT, C ABI, Linux runtime or
 physical execution is claimed.
 
+## S2-26g `KernelGsBaseV1` MSR/SWAPGS fixtures
+
+The four handwritten `s2_26g_kernel_gs_base_*.case.json` cases use the
+explicit `s2-long-msr-kernel-gs-base-v1` profile. It requires present
+canonical48 `gs_base` and `kernel_gs_base` values and admits only bare
+`0F 32`/`0F 30`, `0F 30 0F 01 F8 0F 32`, and
+`0F 30 0F 01 F8 65 48 8B 00`, with budgets 1/1/3/3. RDMSR proves low-half
+zero extension; WRMSR uses dirty upper GPR halves; the composition writes
+`0x1000` to kernel GS base and swaps it into active GS. The RDMSR case then
+reads former active GS base `0x3000`. The GS-load composition keeps distinct
+literal qwords at `0x2000` and `0x4000`, so the load at active base `0x1000`
+plus RAX `0x1000` identifies the exchanged base. CPL, canonical edges,
+noncanonical writes, absent state, bounded fetch/stop/fault behavior and
+late-fault commit are covered by local tests. JIT, native, and C/fragment
+admission remain closed; no physical/Linux runtime result is claimed. Sources:
+Intel SDM Rev. 093 `RDMSR`/`WRMSR`, Vol. 3A §§2.8.10/4.5.3, and `SWAPGS`,
+Vol. 2B pp. 4-697–4-698, including FRED restrictions. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#локальный-профиль-kernelgsbasev1-s2-26g).
+
 ## S2-27g exact Long64 SWAPGS fixture profile
 
 `s2-long-swapgs-v1` is an explicit bounded interpreter profile for bare

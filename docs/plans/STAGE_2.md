@@ -2182,6 +2182,39 @@ formatting, diff check and graph update. Layout validation reports the known
 worktree pointer and two old missing-oracle links. Independent Sol-medium review
 is pending; native runtime and physical acceptance remain unverified.
 
+#### S2-26g — bounded `KernelGsBaseV1` MSR and SWAPGS composition
+
+**Статус:** interpreter/schema/runner implementation complete; local focused
+tests, workspace/Linux-target compile checks, formatting and Graphify passed.
+Independent Sol-medium review pending. Linux runtime, physical, SSH and Mac mini
+checks remain deferred to the combined final hardware batch.
+
+Implement an independent `MsrProfile::KernelGsBaseV1` for only
+`IA32_KERNEL_GS_BASE` (`0xC0000102`) and exact bare Long64 `0F 32`/`0F 30`.
+Require explicit canonical48 `kernel_gs_base`; `None` is never zero or
+auto-created. CPL0 RDMSR zero-extends EDX:EAX; CPL0 WRMSR consumes low halves
+and changes only this state. CPL1–3 and noncanonical writes raise #GP(0) with
+no mutation, retirement or data callback. Success advances RIP by two and
+retires once. Unknown indices and legacy APIs remain Unsupported.
+
+The opt-in fixture profile `s2-long-msr-kernel-gs-base-v1` selects both MSR
+and SWAPGS semantics, with no auto-enable in `run_with_msr_profile`. Admit only
+`0F 32`, `0F 30`, `0F 30 0F 01 F8 0F 32`, and
+`0F 30 0F 01 F8 65 48 8B 00`, with budgets 1/1/3/3. Use `GS=0x3000`,
+`kernel GS=0x5000`, and WRMSR value `0x1000`; after WRMSR/SWAPGS the bases are
+`GS=0x1000` and `kernel GS=0x3000`. The next RDMSR returns former active GS
+base `0x3000`; the GS load at RAX `0x1000` reads the literal qword at `0x2000`.
+Compare both bases and preserve old SWAPGS profile bytes/digests. Test CPL0–3,
+canonical edges, noncanonical values, dirty upper halves, `Some(0)`/`None`, no
+callbacks, profile isolation, stop/budget/truncation, WRMSR fault and late
+load fault with two prior retirements and RIP `entry+5`. Deny JIT/native/C.
+Preserve existing LOCK/#UD, prefix and fetch rules.
+
+Document the CPU contract, TEST_CASE_FORMAT, fixture README, report, and Linux
+matrix. Source: Intel SDM Rev. 093 `RDMSR`/`WRMSR`, Vol. 3A §§2.8.10/4.5.3,
+and `SWAPGS`, Vol. 2B pp. 4-697–4-698, including the FRED restriction. Physical,
+SSH and Mac mini checks remain deferred to the final hardware batch.
+
 
 ### S2-27. Descriptors, события и системные переходы
 

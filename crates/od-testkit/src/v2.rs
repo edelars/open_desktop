@@ -117,6 +117,7 @@ pub const PROFILE_MOVUPD_MEMORY_SIB: &str = "s2-long-movupd-mem-sib-v1";
 pub const PROFILE_MOVUPS_MEMORY_STORE: &str = "s2-long-movups-mem-store-v1";
 pub const PROFILE_MOVUPS_MEMORY_BASE: &str = "s2-long-movups-mem-base-v1";
 pub const PROFILE_SWAPGS: &str = "s2-long-swapgs-v1";
+pub const PROFILE_KERNEL_GS_BASE: &str = "s2-long-msr-kernel-gs-base-v1";
 /// Diagnostic mask for this bounded local fixture profile only. It is not a
 /// universal hardware CPUID mask and does not model guest #GP behavior.
 pub const PROFILE_SSE_MXCSR_DIAGNOSTIC_MASK: u32 = 0x0000_ffbf;
@@ -137,6 +138,8 @@ pub enum Profile {
     LongGsBaseV1,
     #[serde(rename = "s2-long-swapgs-v1")]
     LongSwapgsV1,
+    #[serde(rename = "s2-long-msr-kernel-gs-base-v1")]
+    LongKernelGsBaseV1,
     #[serde(rename = "s2-long-fs-base-msr-v1")]
     LongFsBaseMsrV1,
     #[serde(rename = "s2-long-fs-selector-v1")]
@@ -1102,13 +1105,13 @@ impl IntegerState {
 
     pub fn from_cpu_for(state: &LongModeState, profile: Profile) -> Result<Self, FormatError> {
         match (profile, state.kernel_gs_base) {
-            (Profile::LongSwapgsV1, Some(base)) => {
+            (Profile::LongSwapgsV1 | Profile::LongKernelGsBaseV1, Some(base)) => {
                 let upper = base >> 47;
                 if upper != 0 && upper != 0x1ffff {
                     return Err(invalid("state.kernel_gs_base", "must be canonical48"));
                 }
             }
-            (Profile::LongSwapgsV1, None) => {
+            (Profile::LongSwapgsV1 | Profile::LongKernelGsBaseV1, None) => {
                 return Err(invalid("state.kernel_gs_base", "required by this profile"));
             }
             (_, Some(_)) => {
@@ -1379,7 +1382,7 @@ impl IntegerState {
             result.fs_base = Some(HexU64(state.fs_base));
         } else if profile == Profile::LongGsBaseV1 {
             result.gs_base = Some(HexU64(state.gs_base));
-        } else if profile == Profile::LongSwapgsV1 {
+        } else if profile == Profile::LongSwapgsV1 || profile == Profile::LongKernelGsBaseV1 {
             result.gs_base = Some(HexU64(state.gs_base));
             result.kernel_gs_base = state.kernel_gs_base.map(HexU64);
         } else if profile == Profile::LongFsSelectorV1 {
@@ -1689,7 +1692,8 @@ impl IntegerState {
                 | Profile::LongVerwGdtV1
                 | Profile::LongGsLoadV1
                 | Profile::LongNullDsEsV1
-                | Profile::LongSwapgsV1,
+                | Profile::LongSwapgsV1
+                | Profile::LongKernelGsBaseV1,
                 None,
             )
             | (Profile::LongFsBaseV1 | Profile::LongFsBaseMsrV1 | Profile::LongFsLoadV1, Some(_)) =>
@@ -1820,7 +1824,8 @@ impl IntegerState {
                 | Profile::LongVerwGdtV1
                 | Profile::LongGsLoadV1
                 | Profile::LongNullDsEsV1
-                | Profile::LongSwapgsV1,
+                | Profile::LongSwapgsV1
+                | Profile::LongKernelGsBaseV1,
                 Some(_),
             ) => {
                 return Err(invalid("state.fs_base", "not part of this profile"));
@@ -1967,7 +1972,8 @@ impl IntegerState {
                 Profile::LongGsBaseV1
                 | Profile::LongGsSelectorV1
                 | Profile::LongGsLoadV1
-                | Profile::LongSwapgsV1,
+                | Profile::LongSwapgsV1
+                | Profile::LongKernelGsBaseV1,
                 Some(_),
             ) => {}
             (_, Some(_)) => return Err(invalid("state.gs_base", "not part of this profile")),
@@ -1975,7 +1981,8 @@ impl IntegerState {
                 Profile::LongGsBaseV1
                 | Profile::LongGsSelectorV1
                 | Profile::LongGsLoadV1
-                | Profile::LongSwapgsV1,
+                | Profile::LongSwapgsV1
+                | Profile::LongKernelGsBaseV1,
                 None,
             ) => {
                 return Err(invalid("state.gs_base", "required by this profile"));
@@ -2107,7 +2114,8 @@ impl IntegerState {
                 | Profile::LongVerwGdtV1
                 | Profile::LongGsLoadV1
                 | Profile::LongNullDsEsV1
-                | Profile::LongSwapgsV1,
+                | Profile::LongSwapgsV1
+                | Profile::LongKernelGsBaseV1,
                 None,
             )
             | (Profile::LongFsSelectorV1 | Profile::LongFsLoadV1, Some(_)) => {}
@@ -2214,13 +2222,13 @@ impl IntegerState {
             }
         }
         match (state_profile, self.kernel_gs_base) {
-            (Profile::LongSwapgsV1, Some(base)) => {
+            (Profile::LongSwapgsV1 | Profile::LongKernelGsBaseV1, Some(base)) => {
                 let upper = base.get() >> 47;
                 if upper != 0 && upper != 0x1ffff {
                     return Err(invalid("state.kernel_gs_base", "must be canonical48"));
                 }
             }
-            (Profile::LongSwapgsV1, None) => {
+            (Profile::LongSwapgsV1 | Profile::LongKernelGsBaseV1, None) => {
                 return Err(invalid("state.kernel_gs_base", "required by this profile"));
             }
             (_, None) => {}
@@ -3018,6 +3026,38 @@ impl Fixture {
                 return Err(invalid(
                     "memory.code",
                     "SWAPGS fixtures require the exact profile program, instruction budget, entry address, and terminal expectation",
+                ));
+            }
+        }
+        if self.profile == Profile::LongKernelGsBaseV1 {
+            let Some(code) = self.memory.iter().find(|region| region.region_id == "code") else {
+                return Err(invalid(
+                    "memory.code",
+                    "required by the kernel-GS-base profile",
+                ));
+            };
+            let bytes = code.initial_bytes_hex.to_ascii_lowercase();
+            let (budget, stop_offset) = match bytes.as_str() {
+                "0f32" | "0f30" => (1, 2),
+                "0f300f01f80f32" => (3, 7),
+                "0f300f01f865488b00" => (3, 9),
+                _ => {
+                    return Err(invalid(
+                        "memory.code",
+                        "kernel-GS-base profile admits only the four exact MSR/SWAPGS/GS-load programs",
+                    ));
+                }
+            };
+            if code.guest_address.get() != self.initial_state.rip.get()
+                || !code.permissions.execute
+                || self.instruction_budget != budget
+                || self.expected_exit != ExpectedExit::StopAddress
+                || self.stop_rip.map(HexU64::get)
+                    != self.initial_state.rip.get().checked_add(stop_offset)
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "kernel-GS-base fixtures require the exact instruction budget and stop RIP",
                 ));
             }
         }
@@ -5720,8 +5760,27 @@ impl RunResult {
                     self.instructions_executed,
                     Observation::Available { value } if value.get() > 0
                 );
-            let swapgs_retired = loaded.fixture.profile == Profile::LongSwapgsV1
-                && matches!(self.instructions_executed, Observation::Available { value } if value.get() > 0);
+            let retired = match self.instructions_executed {
+                Observation::Available { value } => value.get(),
+                Observation::Unavailable { .. } => 0,
+            };
+            let kernel_gs_code = loaded
+                .fixture
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .map(|region| region.initial_bytes_hex.to_ascii_lowercase());
+            let kernel_gs_write_retired = loaded.fixture.profile == Profile::LongKernelGsBaseV1
+                && retired > 0
+                && kernel_gs_code
+                    .as_deref()
+                    .is_some_and(|code| code.starts_with("0f30"));
+            let swapgs_retired = (loaded.fixture.profile == Profile::LongSwapgsV1 && retired > 0)
+                || (loaded.fixture.profile == Profile::LongKernelGsBaseV1
+                    && retired >= 2
+                    && kernel_gs_code.as_deref().is_some_and(|code| {
+                        matches!(code, "0f300f01f80f32" | "0f300f01f865488b00")
+                    }));
             if !fs_load_retired
                 && !fs_base_msr_committed
                 && value.state.fs_base != loaded.fixture.initial_state.fs_base
@@ -5735,6 +5794,7 @@ impl RunResult {
                 return Err(FormatError::CaseMismatch("state.gs_base"));
             }
             if !swapgs_retired
+                && !kernel_gs_write_retired
                 && value.state.kernel_gs_base != loaded.fixture.initial_state.kernel_gs_base
             {
                 return Err(FormatError::CaseMismatch("state.kernel_gs_base"));

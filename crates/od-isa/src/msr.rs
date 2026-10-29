@@ -13,6 +13,8 @@ pub enum MsrProfile {
     GsBaseV1,
     /// CPL0-only access to IA32_FS_BASE (`0xc000_0100`).
     FsBaseV1,
+    /// CPL0-only access to IA32_KERNEL_GS_BASE (`0xc000_0102`).
+    KernelGsBaseV1,
 }
 
 impl MsrProfile {
@@ -22,6 +24,7 @@ impl MsrProfile {
             Self::SysenterProbeV1 => matches!(index, 0x174..=0x176),
             Self::GsBaseV1 => index == 0xc000_0101,
             Self::FsBaseV1 => index == 0xc000_0100,
+            Self::KernelGsBaseV1 => index == 0xc000_0102,
         }
     }
 }

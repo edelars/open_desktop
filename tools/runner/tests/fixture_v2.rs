@@ -31,6 +31,16 @@ const FS_BASE_WRMSR_FS_LOAD: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_26f_fs_base_wrmsr_fs_load.case.json");
 const FS_BASE_RDMSR: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_26f_fs_base_rdmsr.case.json");
+const KERNEL_GS_BASE_RDMSR: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_26g_kernel_gs_base_rdmsr.case.json");
+const KERNEL_GS_BASE_WRMSR: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_26g_kernel_gs_base_wrmsr.case.json");
+const KERNEL_GS_BASE_WRMSR_SWAPGS_RDMSR: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_26g_kernel_gs_base_wrmsr_swapgs_rdmsr.case.json"
+);
+const KERNEL_GS_BASE_WRMSR_SWAPGS_GS_LOAD: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_26g_kernel_gs_base_wrmsr_swapgs_gs_load.case.json"
+);
 const FSTP_INVALID_SOURCE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30w_fstp_invalid_source.case.json");
 const FST_INVALID_SOURCE: &[u8] =
@@ -1725,6 +1735,78 @@ fn fs_base_msr_fixture_bounds_forms_and_keeps_wrmsr_commit_on_later_fault() {
     assert_eq!(observed.state.rip, HexU64(0x0010_0002));
     assert_eq!(observed.memory[0].bytes_hex, "0f3064488b00");
     assert_eq!(result_input.fixture.expected_exit, ExpectedExit::Exception);
+}
+
+#[test]
+fn kernel_gs_base_msr_swapgs_and_gs_load_fixtures_keep_the_profiles_isolated() {
+    let (input, result) = run(KERNEL_GS_BASE_RDMSR, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongKernelGsBaseV1
+    );
+    assert_eq!(count(&result), 1);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.gpr[0], HexU64(0x5000));
+    assert_eq!(observed.state.gpr[2], HexU64(0));
+    assert_eq!(observed.state.gs_base, Some(HexU64(0x3000)));
+    assert_eq!(observed.state.kernel_gs_base, Some(HexU64(0x5000)));
+    assert_eq!(observed.state.rip, HexU64(0x0010_0002));
+    let mut changed_read_state = result.clone();
+    if let Observation::Available { value } = &mut changed_read_state.snapshot {
+        value.state.kernel_gs_base = Some(HexU64(0x6000));
+    }
+    assert!(changed_read_state.validate_for(&input).is_err());
+
+    let (input, result) = run(KERNEL_GS_BASE_WRMSR, "interpreter", 0);
+    assert_eq!(
+        input.fixture.initial_state.gpr[0],
+        HexU64(0xdead_beef_0000_1000)
+    );
+    assert_eq!(count(&result), 1);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.kernel_gs_base, Some(HexU64(0x1000)));
+    assert_eq!(observed.state.gs_base, Some(HexU64(0x3000)));
+    assert_eq!(observed.state.gpr[0], input.fixture.initial_state.gpr[0]);
+    let mut changed_write_state = result.clone();
+    if let Observation::Available { value } = &mut changed_write_state.snapshot {
+        value.state.gs_base = Some(HexU64(0x4000));
+    }
+    assert!(changed_write_state.validate_for(&input).is_err());
+
+    let (input, result) = run(KERNEL_GS_BASE_WRMSR_SWAPGS_RDMSR, "interpreter", 0);
+    assert_eq!(count(&result), 3);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.gpr[0], HexU64(0x3000));
+    assert_eq!(observed.state.gpr[2], HexU64(0));
+    assert_eq!(observed.state.gs_base, Some(HexU64(0x1000)));
+    assert_eq!(observed.state.kernel_gs_base, Some(HexU64(0x3000)));
+    assert_eq!(observed.state.rip, HexU64(0x0010_0007));
+    assert_eq!(input.fixture.memory[0].initial_bytes_hex, "0f300f01f80f32");
+
+    let (input, result) = run(KERNEL_GS_BASE_WRMSR_SWAPGS_GS_LOAD, "interpreter", 0);
+    assert_eq!(count(&result), 3);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.gpr[0], HexU64(0x1122_3344_5566_7788));
+    assert_eq!(observed.state.gs_base, Some(HexU64(0x1000)));
+    assert_eq!(observed.state.kernel_gs_base, Some(HexU64(0x3000)));
+    assert_eq!(observed.state.rip, HexU64(0x0010_0009));
+    assert_eq!(observed.memory[2].guest_address, HexU64(0x2000));
+    assert_eq!(observed.memory[2].bytes_hex, "8877665544332211");
+    assert_eq!(
+        input.fixture.memory[0].initial_bytes_hex,
+        "0f300f01f865488b00"
+    );
+}
+
+#[test]
+fn kernel_gs_base_fixture_is_denied_by_jit() {
+    let (_, result) = run(KERNEL_GS_BASE_WRMSR_SWAPGS_GS_LOAD, "jit", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+    assert!(matches!(
+        result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
 }
 
 #[test]

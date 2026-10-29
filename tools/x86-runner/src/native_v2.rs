@@ -582,7 +582,11 @@ fn admission_with_tracee_memory(
 ) -> Result<FlagEffects, String> {
     let instruction = long_decode::decode(decoder, actual.rip, AccessContext::default())
         .map_err(|e| format!("native instruction outside admitted decode slice: {e:?}"))?;
-    if fixture.profile == v2::Profile::LongSwapgsV1 || instruction.operation == Operation::Swapgs {
+    if matches!(
+        fixture.profile,
+        v2::Profile::LongSwapgsV1 | v2::Profile::LongKernelGsBaseV1
+    ) || instruction.operation == Operation::Swapgs
+    {
         return Err("SWAPGS is denied by the native runner profile".into());
     }
     if fixture.profile == v2::Profile::LongNativeXorpdXmm0Xmm1V1 {
@@ -4098,6 +4102,41 @@ mod tests {
             .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
+    }
+
+    #[test]
+    fn kernel_gs_base_profile_is_denied_before_native_trace() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../tests/fixtures/x86/stage2/s2_26g_kernel_gs_base_wrmsr_swapgs_gs_load.case.json",
+        );
+        let loaded = Fixture::from_json(&std::fs::read(path).unwrap()).unwrap();
+        let result = execute(&loaded);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn kernel_gs_base_rdmsr_is_rejected_by_preflight_before_trace() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_26g_kernel_gs_base_rdmsr.case.json"
+        ))
+        .unwrap();
+        let result = execute(&loaded);
+        assert!(matches!(result.outcome, Outcome::Unsupported { ref reason }
+            if reason == "this profile is local-only; native state does not observe every profile field"));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+        assert!(matches!(
+            result.instructions_executed,
+            Observation::Unavailable { .. }
+        ));
     }
 
     #[test]

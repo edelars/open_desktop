@@ -790,3 +790,15 @@ was checked. Intel SDM Rev. 093 Vol. 2B identifies the exact operation, and
 the Vol. 2B CR4.FRED restriction is excluded by the local assumption. See
 the [CPU contract](../specs/CPU_CONTRACT.md#s2-27g--exact-long64-swapgs) and
 [Stage 2 plan](../plans/STAGE_2.md#s2-27g--exact-long64-swapgs).
+
+### S2-26g local `IA32_KERNEL_GS_BASE`/SWAPGS matrix entry
+
+The local interpreter profile admits only the exact MSR, SWAPGS, and GS-load
+programs documented in the CPU contract. It verifies CPL0 access, CPL1–3
+#GP(0), canonical48 checks, the low-half EDX:EAX contract, and the base exchange
+observed by a following RDMSR or GS load. This is an isolated CPU interpreter
+check, not evidence that an Ubuntu kernel branch executed these sequences or
+that Linux boot/runtime behavior was observed. JIT/native/C execution is
+denied; physical and SSH execution remain deferred to the final batch. See the
+[CPU contract](../specs/CPU_CONTRACT.md#локальный-профиль-kernelgsbasev1-s2-26g)
+and [Stage 2 plan](../plans/STAGE_2.md#s2-26g--bounded-kernelgsbasev1-msr-and-swapgs-composition).

@@ -126,6 +126,34 @@ Rev. 093 правила MSR описаны в инструкциях `RDMSR`/`WR
 Указанный scope не утверждает Linux boot/runtime, exception delivery,
 JIT/native execution или физическую проверку.
 
+### Локальный профиль `KernelGsBaseV1` (S2-26g)
+
+`MsrProfile::KernelGsBaseV1` независимо принимает только `IA32_KERNEL_GS_BASE`
+(`ECX[31:0] == 0xC0000102`) и bare Long64 `0F 32`/`0F 30`. CPL0 `RDMSR`
+возвращает явное `kernel_gs_base` в `EDX:EAX` с zero-extension 32-bit частей;
+CPL0 `WRMSR` собирает значение только из низких EAX/EDX и изменяет только
+`kernel_gs_base`, если результат canonical48. Начальное состояние обязано
+содержать `Some(base)`, включая допустимое `Some(0)`; отсутствующее значение
+не подменяется нулём. CPL1–3 и noncanonical48 WRMSR дают CPU-side `#GP(0)` без
+изменения состояния, retirement или data-memory callbacks. Успешная операция
+продвигает RIP на 2 и retire-ится один раз. Неизвестный индекс и legacy API
+остаются Unsupported; этот профиль не расширяет другие MSR profiles.
+
+Fixture-профиль `s2-long-msr-kernel-gs-base-v1` отдельно выбирает MSR policy и
+SWAPGS policy только для четырёх точных программ: `0F 32`, `0F 30`,
+`0F 30 0F 01 F8 0F 32`, и `0F 30 0F 01 F8 65 48 8B 00`. Последние две
+проверяют, что SWAPGS видит значение, записанное в kernel GS base, а следующий
+RDMSR/GS-load использует бывшую активную GS base/новую активную GS base.
+Обычный `run_with_msr_profile` сам по себе не включает SWAPGS.
+
+Нормативные правила MSR и canonical checks основаны на Intel SDM Rev. 093,
+Vol. 2 `RDMSR`/`WRMSR` и Vol. 3A §§2.8.10, 4.5.3; обмен активного GS base с
+IA32_KERNEL_GS_BASE — на Vol. 2B `SWAPGS` pp. 4-697–4-698 и Vol. 3A FRED
+ограничении. Источники: [официальный Intel SDM](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html),
+[Vol. 2B Rev. 093 PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf).
+Профиль предполагает CS.L=1, FRED disabled, canonical48, no VMX/SMM и не
+утверждает JIT/native/C ABI, Linux runtime или физическую проверку.
+
 ### Локальная политика `SepDisabledV1` (S2-26d)
 
 `SepProfile::SepDisabledV1` — отдельная immutable CPU-side policy для выбранной

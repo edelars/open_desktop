@@ -55,6 +55,44 @@ fn swapgs_fixture_profile_accepts_exactly_the_three_program_shapes() {
     }
 }
 
+#[test]
+fn kernel_gs_base_fixture_profile_requires_both_bases_and_exact_programs() {
+    for case_id in [
+        "s2_26g_kernel_gs_base_rdmsr",
+        "s2_26g_kernel_gs_base_wrmsr",
+        "s2_26g_kernel_gs_base_wrmsr_swapgs_rdmsr",
+        "s2_26g_kernel_gs_base_wrmsr_swapgs_gs_load",
+    ] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "../../tests/fixtures/x86/stage2/{case_id}.case.json"
+        ));
+        let fixture = Fixture::from_json(&std::fs::read(path).unwrap())
+            .unwrap()
+            .fixture;
+        assert_eq!(fixture.profile, Profile::LongKernelGsBaseV1);
+        let mut missing = fixture.clone();
+        missing.initial_state.kernel_gs_base = None;
+        assert!(
+            missing.validate().is_err(),
+            "missing kernel GS base: {case_id}"
+        );
+        let mut prefix = fixture.clone();
+        prefix.memory[0].initial_bytes_hex.insert_str(0, "48");
+        prefix.memory[0].length += 1;
+        prefix.memory[0].comparison_mask_hex.insert_str(0, "ff");
+        assert!(prefix.validate().is_err(), "REX prefix: {case_id}");
+        let mut wrong_budget = fixture.clone();
+        wrong_budget.instruction_budget += 1;
+        assert!(wrong_budget.validate().is_err(), "budget: {case_id}");
+        let mut some_zero = fixture;
+        some_zero.initial_state.kernel_gs_base = Some(HexU64(0));
+        assert!(
+            some_zero.validate().is_ok(),
+            "Some(0) is present state: {case_id}"
+        );
+    }
+}
+
 fn loaded() -> LoadedFixture {
     let old = crate::case::Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/s0_09_mov_imm64.case.json"

@@ -828,6 +828,34 @@ pub fn run_with_msr_profile(
     )
 }
 
+/// Execute the explicit IA32_KERNEL_GS_BASE MSR and SWAPGS composition.
+/// The ordinary MSR and SWAPGS APIs remain independent and do not enable
+/// each other's instruction policy.
+pub fn run_with_kernel_gs_base_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_execution_loop_with_profiles_and_rdtsc(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        None,
+        Some(&MsrProfile::KernelGsBaseV1),
+        None,
+        None,
+        None,
+        None,
+        false,
+        None,
+        None,
+        Some(&SwapgsProfile::SwapgsV1),
+        &mut stop_requested,
+    )
+}
+
 /// Execute with an explicitly selected local SEP policy. The legacy `run`
 /// entry point remains closed to SYSENTER/SYSEXIT policy decisions.
 pub fn run_with_sep_profile(
@@ -1589,6 +1617,13 @@ fn step_tracked_with_profiles_and_rdtsc(
                 opcode: instruction.opcode.byte,
             });
         };
+        if *profile == MsrProfile::KernelGsBaseV1
+            && (instruction.length != 2 || instruction.prefixes != Prefixes::default())
+        {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
         let index = state.gpr[Register::Rcx as usize] as u32;
         if !profile.handles_index(index) {
             return Ok(StepOutcome::Unsupported {
@@ -1607,11 +1642,21 @@ fn step_tracked_with_profiles_and_rdtsc(
             // GS_BASE are accessible only at CPL0 in their bounded profiles.
             return Ok(gp0());
         }
+        if *profile == MsrProfile::KernelGsBaseV1
+            && state.kernel_gs_base.is_none_or(|base| !canonical(base))
+        {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
         match instruction.operation {
             Operation::ReadMsr => {
                 let value = match profile {
                     MsrProfile::FsBaseV1 => state.fs_base,
                     MsrProfile::GsBaseV1 => state.gs_base,
+                    MsrProfile::KernelGsBaseV1 => state
+                        .kernel_gs_base
+                        .expect("kernel-GS state validated above"),
                     MsrProfile::SysenterProbeV1 => unreachable!("faulted above"),
                 };
                 state.gpr[Register::Rax as usize] = u64::from(value as u32);
@@ -1626,6 +1671,7 @@ fn step_tracked_with_profiles_and_rdtsc(
                 match profile {
                     MsrProfile::FsBaseV1 => state.fs_base = value,
                     MsrProfile::GsBaseV1 => state.gs_base = value,
+                    MsrProfile::KernelGsBaseV1 => state.kernel_gs_base = Some(value),
                     MsrProfile::SysenterProbeV1 => unreachable!("faulted above"),
                 }
             }
@@ -90283,6 +90329,362 @@ mod tests {
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());
         }
+    }
+
+    #[test]
+    fn kernel_gs_base_msr_is_explicit_cpl0_only_and_preserves_optional_state() {
+        let profile = MsrProfile::KernelGsBaseV1;
+        for kernel_base in [0x0000_7fff_ffff_ffffu64, 0xffff_8000_0000_0000] {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.kernel_gs_base = Some(kernel_base);
+            state.gs_base = 0x3000;
+            state.gpr[Register::Rcx as usize] = 0xfeed_beef_c000_0102;
+            state.gpr[Register::Rax as usize] = u64::MAX;
+            state.gpr[Register::Rdx as usize] = u64::MAX;
+            let mut expected = state.clone();
+            expected.gpr[Register::Rax as usize] = u64::from(kernel_base as u32);
+            expected.gpr[Register::Rdx as usize] = u64::from((kernel_base >> 32) as u32);
+            expected.rip += 2;
+            let mut memory = Memory::at(&[0x0f, 0x32], 0x1000);
+            assert_eq!(
+                step_with_msr_profile(
+                    &mut state,
+                    &mut memory,
+                    AccessContext {
+                        privilege: PrivilegeLevel::Ring0,
+                        ..AccessContext::default()
+                    },
+                    &profile,
+                ),
+                Ok(StepOutcome::Advanced)
+            );
+            assert_eq!(state, expected);
+            assert!(memory.accesses.is_empty());
+        }
+
+        for value in [0x0000_7fff_ffff_ffffu64, 0xffff_8000_0000_0000] {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.gs_base = 0x3000;
+            state.kernel_gs_base = Some(0x5000);
+            state.gpr[Register::Rcx as usize] = 0xc000_0102;
+            state.gpr[Register::Rax as usize] = 0xabcd_ef01_0000_0000 | u64::from(value as u32);
+            state.gpr[Register::Rdx as usize] =
+                0x8765_4321_0000_0000 | u64::from((value >> 32) as u32);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0x0f, 0x30], 0x1000);
+            assert_eq!(
+                step_with_msr_profile(
+                    &mut state,
+                    &mut memory,
+                    AccessContext {
+                        privilege: PrivilegeLevel::Ring0,
+                        ..AccessContext::default()
+                    },
+                    &profile,
+                ),
+                Ok(StepOutcome::Advanced)
+            );
+            let mut expected = before;
+            expected.kernel_gs_base = Some(value);
+            expected.rip += 2;
+            assert_eq!(state, expected);
+            assert!(memory.accesses.is_empty());
+        }
+
+        for code in [&[0x0f, 0x32][..], &[0x0f, 0x30][..]] {
+            for privilege in [
+                PrivilegeLevel::Ring1,
+                PrivilegeLevel::Ring2,
+                PrivilegeLevel::Ring3,
+            ] {
+                let mut state = LongModeState::default();
+                state.rip = 0x1000;
+                state.kernel_gs_base = Some(0x5000);
+                state.gpr[Register::Rcx as usize] = 0xc000_0102;
+                state.gpr[Register::Rax as usize] = 0x1234;
+                let before = state.clone();
+                let mut memory = Memory::at(code, 0x1000);
+                assert_eq!(
+                    step_with_msr_profile(
+                        &mut state,
+                        &mut memory,
+                        AccessContext {
+                            privilege,
+                            ..AccessContext::default()
+                        },
+                        &profile,
+                    ),
+                    Ok(StepOutcome::Fault(ArchitecturalFault {
+                        vector: 13,
+                        error_code: Some(0),
+                        linear_address: None
+                    }))
+                );
+                assert_eq!(state, before);
+                assert!(memory.accesses.is_empty());
+            }
+        }
+
+        for value in [0x0000_8000_0000_0000u64, 0xffff_7fff_ffff_ffff] {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.kernel_gs_base = Some(0x5000);
+            state.gpr[Register::Rcx as usize] = 0xc000_0102;
+            state.gpr[Register::Rax as usize] = value as u32 as u64;
+            state.gpr[Register::Rdx as usize] = (value >> 32) as u32 as u64;
+            let before = state.clone();
+            let mut memory = Memory::at(&[0x0f, 0x30], 0x1000);
+            assert!(matches!(
+                step_with_msr_profile(
+                    &mut state,
+                    &mut memory,
+                    AccessContext {
+                        privilege: PrivilegeLevel::Ring0,
+                        ..AccessContext::default()
+                    },
+                    &profile,
+                ),
+                Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    ..
+                }))
+            ));
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        for (code, opcode) in [(&[0x0f, 0x32][..], 0x32), (&[0x0f, 0x30][..], 0x30)] {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.gpr[Register::Rcx as usize] = 0xc000_0102;
+            state.gpr[Register::Rax as usize] = 0x1234;
+            let before = state.clone();
+            let mut memory = Memory::at(code, 0x1000);
+            assert_eq!(
+                step_with_msr_profile(
+                    &mut state,
+                    &mut memory,
+                    AccessContext {
+                        privilege: PrivilegeLevel::Ring0,
+                        ..AccessContext::default()
+                    },
+                    &profile,
+                ),
+                Ok(StepOutcome::Unsupported { opcode })
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut noncanonical_state = LongModeState::default();
+        noncanonical_state.rip = 0x1000;
+        noncanonical_state.kernel_gs_base = Some(0x0000_8000_0000_0000);
+        noncanonical_state.gpr[Register::Rcx as usize] = 0xc000_0102;
+        let before = noncanonical_state.clone();
+        let mut memory = Memory::at(&[0x0f, 0x32], 0x1000);
+        assert_eq!(
+            step_with_msr_profile(
+                &mut noncanonical_state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                &profile,
+            ),
+            Ok(StepOutcome::Unsupported { opcode: 0x32 })
+        );
+        assert_eq!(noncanonical_state, before);
+        assert!(memory.accesses.is_empty());
+
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        state.kernel_gs_base = Some(0x5000);
+        state.gpr[Register::Rcx as usize] = 0x1_c000_0101;
+        let mut memory = Memory::at(&[0x0f, 0x32], 0x1000);
+        assert_eq!(
+            step_with_msr_profile(&mut state, &mut memory, AccessContext::default(), &profile),
+            Ok(StepOutcome::Unsupported { opcode: 0x32 })
+        );
+
+        state.gpr[Register::Rcx as usize] = 0xc000_0102;
+        state.rip = 0x2000;
+        let mut memory = Memory::at(&[0x48, 0x0f, 0x32], 0x2000);
+        assert_eq!(
+            step_with_msr_profile(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                &profile,
+            ),
+            Ok(StepOutcome::Unsupported { opcode: 0x32 })
+        );
+    }
+
+    #[test]
+    fn kernel_gs_base_profile_does_not_auto_enable_swapgs_or_prefix_forms() {
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        state.kernel_gs_base = Some(0x5000);
+        let mut memory = Memory::at(&[0x0f, 0x01, 0xf8], 0x1000);
+        let result = run_with_msr_profile(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            &MsrProfile::KernelGsBaseV1,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x01 }));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state.gs_base, 0);
+        assert_eq!(state.kernel_gs_base, Some(0x5000));
+    }
+
+    #[test]
+    fn kernel_gs_base_combined_profile_commits_before_late_gs_load_fault() {
+        let code = [0x0f, 0x30, 0x0f, 0x01, 0xf8, 0x65, 0x48, 0x8b, 0x00];
+        for fault_late_load in [false, true] {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.gs_base = 0x3000;
+            state.kernel_gs_base = Some(0x5000);
+            state.gpr[Register::Rcx as usize] = 0xc000_0102;
+            state.gpr[Register::Rax as usize] = 0x1000;
+            state.gpr[Register::Rdx as usize] = 0;
+            let mut memory = Memory::at(&code, 0x1000);
+            memory.data_base = 0;
+            memory.bytes.resize(0x3000, 0);
+            memory.bytes[0x2000..0x2008].copy_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes());
+            if fault_late_load {
+                memory.error = Some(MemoryError::Architectural(ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(0),
+                    linear_address: Some(0x2000),
+                }));
+                memory.error_kind = Some(AccessKind::Read);
+            }
+            let result = run_with_kernel_gs_base_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 3,
+                    stop_rip: Some(0x1009),
+                    context: AccessContext {
+                        privilege: PrivilegeLevel::Ring0,
+                        ..AccessContext::default()
+                    },
+                },
+                || false,
+            );
+            assert_eq!(state.kernel_gs_base, Some(0x3000));
+            assert_eq!(state.gs_base, 0x1000);
+            if fault_late_load {
+                assert!(matches!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault { vector: 14, .. })
+                ));
+                assert_eq!(result.instructions_executed, 2);
+                assert_eq!(state.rip, 0x1005);
+                assert_eq!(state.gpr[Register::Rax as usize], 0x1000);
+                assert_eq!(memory.accesses, [(AccessKind::Read, 0x2000, 8)]);
+            } else {
+                assert!(matches!(result.exit, RunExit::StopAddress));
+                assert_eq!(result.instructions_executed, 3);
+                assert_eq!(state.rip, 0x1009);
+                assert_eq!(state.gpr[Register::Rax as usize], 0x1122_3344_5566_7788);
+                assert_eq!(memory.accesses, [(AccessKind::Read, 0x2000, 8)]);
+            }
+        }
+    }
+
+    #[test]
+    fn kernel_gs_base_wrmsr_fault_budget_stop_and_truncation_preserve_commit_order() {
+        let context = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        };
+        let mut state = LongModeState {
+            rip: 0x1000,
+            gs_base: 0x3000,
+            kernel_gs_base: Some(0x5000),
+            ..LongModeState::default()
+        };
+        state.gpr[Register::Rcx as usize] = 0xc000_0102;
+        state.gpr[Register::Rax as usize] = 0;
+        state.gpr[Register::Rdx as usize] = 0x8000;
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x0f, 0x30, 0x0f, 0x01, 0xf8], 0x1000);
+        let result = run_with_kernel_gs_base_profile(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 2,
+                stop_rip: None,
+                context,
+            },
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+        assert_eq!(memory.fetches, [0x1000, 0x1001]);
+
+        for (instruction_budget, stop_rip, expected_exit) in [
+            (0, None, RunExit::InstructionBudgetExhausted),
+            (1, Some(0x1000), RunExit::StopAddress),
+        ] {
+            let mut state = before.clone();
+            let mut memory = Memory::at(&[0x0f, 0x30], 0x1000);
+            let result = run_with_kernel_gs_base_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget,
+                    stop_rip,
+                    context,
+                },
+                || false,
+            );
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.fetches.is_empty());
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut truncated = before.clone();
+        let mut memory = Memory::at(&[0x0f], 0x1000);
+        let result = run_with_kernel_gs_base_profile(
+            &mut truncated,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context,
+            },
+            || false,
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(truncated, before);
+        assert!(memory.accesses.is_empty());
     }
 
     #[test]

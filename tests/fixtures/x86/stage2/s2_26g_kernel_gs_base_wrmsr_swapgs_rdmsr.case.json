@@ -1,0 +1,57 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_26g_kernel_gs_base_wrmsr_swapgs_rdmsr",
+  "profile": "s2-long-msr-kernel-gs-base-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten IA32_KERNEL_GS_BASE, SWAPGS and GS-load bytes with distinct GS/kernel bases and literal qwords.",
+    "specification": "Intel SDM revision 093 (253667-093US), Vol.2B RDMSR/WRMSR and SWAPGS entries; Vol.3A \u00a7\u00a72.8.10, 4.5.3.",
+    "specification_version": "Intel SDM Rev. 093; canonical48; CS.L=1; FRED disabled; no VMX/SMM; project S2-26g."
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0000000000001000",
+      "0x00000000c0000102",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000cd7",
+    "gs_base": "0x0000000000003000",
+    "kernel_gs_base": "0x0000000000005000"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 7,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "0f300f01f80f32",
+      "comparison_mask_hex": "ffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100007",
+  "instruction_budget": 3,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

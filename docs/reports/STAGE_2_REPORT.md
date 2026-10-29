@@ -16560,3 +16560,55 @@ Vol. 2B SWAPGS pp. 4-697–4-698, including its CR4.FRED restriction; FRED is
 assumed disabled, and this is not unconditional Long64 support. See the [CPU
 contract](../specs/CPU_CONTRACT.md#s2-27g--exact-long64-swapgs) and
 [plan](../plans/STAGE_2.md#s2-27g--exact-long64-swapgs).
+
+## S2-26g — bounded `KernelGsBaseV1` MSR and SWAPGS composition
+
+Added independent `MsrProfile::KernelGsBaseV1` for `IA32_KERNEL_GS_BASE`
+(`0xC0000102`), limited to bare Long64 RDMSR/WRMSR. CPL0 reads return
+zero-extended EDX:EAX; writes use low EDX:EAX, require canonical48, and mutate
+only explicit `kernel_gs_base`. Missing state remains Unsupported. CPL1–3 and
+noncanonical writes #GP(0) without commit or retirement. The existing
+`run_with_msr_profile` does not enable SWAPGS; only the new combined interpreter
+entry point selects both policies.
+
+The v2 fixture profile requires canonical48 GS and kernel-GS state and admits
+only the four requested exact programs and budgets. Literal cases demonstrate
+RDMSR zero-extension, dirty upper WRMSR source halves, WRMSR→SWAPGS→RDMSR
+reading the former active GS base, and WRMSR→SWAPGS→GS-load reading the distinct
+qword at `0x2000`. The late injected load fault preserves both earlier commits,
+reports two retirements and RIP at entry+5. Legacy SWAPGS fixture bytes and
+digests were not changed. JIT and native runner profiles deny the new profile;
+existing C/fragment adapters reject present kernel-GS state, including zero.
+
+Focused author checks passed: `cargo test -p od-isa kernel_gs_base --offline`
+(5), `cargo test -p od-testkit kernel_gs_base_fixture_profile --offline` (1),
+`cargo test -p od-runner --test fixture_v2 kernel_gs_base --offline` (2),
+`cargo test -p od-testkit swapgs --offline` (3), and the existing C ABI MSR
+denial test (1). After review caught an altered neighboring FS-base test
+expectation, its original literal was restored and
+`cargo test -p od-runner --test fixture_v2
+fs_base_wrmsr_is_observed_by_following_fs_load --offline` passed (1). The native
+profile is rejected by the local-only preflight before trace creation; the
+Linux-only test uses the single-RDMSR fixture to cover that path. Linux
+`cargo check -p od-x86-runner --all-targets --target
+x86_64-unknown-linux-gnu --offline` passed, compiling its test targets. The
+attempted Linux `cargo test
+--no-run` could not link because the macOS host linker received Linux ELF
+linker flags; the host-target test filter matched no Linux-specific tests.
+`cargo check --workspace --all-targets --offline`,
+`cargo fmt --all -- --check`, `git diff --check`, and `graphify update .` passed.
+`python3 tools/check_layout.py` reports only the linked-worktree `.git` pointer
+and two pre-existing missing oracle manifests under `work/`. Independent
+Sol-medium review found and corrected an adjacent FS-base expectation, a
+retirement-stage result-validation gap, a native preflight denial gap, and
+three broken documentation anchors; focused reruns and final re-review found no
+remaining issues. The runner validator constrains which bases may change at
+each retirement point, while literal fixture comparison checks their exact
+values. No Linux runtime, SSH, physical or Mac mini check was run.
+Sources: Intel SDM Rev. 093 `RDMSR`/`WRMSR`, Vol. 3A §§2.8.10/4.5.3, and
+`SWAPGS`, Vol. 2B pp. 4-697–4-698, including the FRED restriction. See the
+[CPU contract](../specs/CPU_CONTRACT.md#локальный-профиль-kernelgsbasev1-s2-26g),
+[plan](../plans/STAGE_2.md#s2-26g--bounded-kernelgsbasev1-msr-and-swapgs-composition),
+[fixture format](../testing/TEST_CASE_FORMAT.md),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md), and
+[Linux matrix](STAGE_2_LINUX_PROFILE.md#s2-26g-local-ia32_kernel_gs_baseswapgs-matrix-entry).
