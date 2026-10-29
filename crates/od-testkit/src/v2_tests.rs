@@ -782,6 +782,79 @@ fn minss_invalid_controls_fixture_and_result_are_strict_and_backward_compatible(
 }
 
 #[test]
+fn minss_unmasked_denormal_profile_has_versioned_mxcsr_and_snapshot_contract() {
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38d_minss_masked_invalid_unmasked_denormal.case.json"
+    );
+    let input = Fixture::from_json(bytes).unwrap();
+    assert_eq!(input.fixture.profile, Profile::LongMinssUnmaskedDenormalV1);
+    assert_eq!(
+        input.fixture.minss_invalid_controls.unwrap().cr4_osxmmexcpt,
+        true
+    );
+
+    let template: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    for im in [false, true] {
+        for dm in [false, true] {
+            for rc in 0..4u32 {
+                let mut candidate = template.clone();
+                let base = 0x1e00 | (u32::from(im) << 7) | (u32::from(dm) << 8) | (rc << 13) | 0x35;
+                candidate["initial_state"]["sse"]["mxcsr"] =
+                    serde_json::Value::String(format!("0x{base:016x}"));
+                assert!(
+                    Fixture::from_json(&serde_json::to_vec(&candidate).unwrap()).is_ok(),
+                    "IM={im}, DM={dm}, RC={rc}"
+                );
+            }
+        }
+    }
+    for mxcsr in [
+        "0x0000000100001e00", // reserved bit
+        "0x0000000000001e40", // DAZ
+        "0x0000000000001c00", // missing ZE mask
+    ] {
+        let mut invalid: serde_json::Value = template.clone();
+        invalid["initial_state"]["sse"]["mxcsr"] = serde_json::Value::String(mxcsr.into());
+        assert!(Fixture::from_json(&serde_json::to_vec(&invalid).unwrap()).is_err());
+    }
+
+    let mut missing_control: serde_json::Value = template.clone();
+    missing_control
+        .as_object_mut()
+        .unwrap()
+        .remove("minss_invalid_controls");
+    assert!(Fixture::from_json(&serde_json::to_vec(&missing_control).unwrap()).is_err());
+    let mut wrong_instruction: serde_json::Value = template;
+    wrong_instruction["memory"][0]["initial_bytes_hex"] =
+        serde_json::Value::String("f30f5dc0".into());
+    assert!(Fixture::from_json(&serde_json::to_vec(&wrong_instruction).unwrap()).is_err());
+
+    let mut left = result(&input);
+    snapshot(&mut left).state.sse.as_mut().unwrap().mxcsr = HexU64(0x1e83);
+    let wire = left.to_json().unwrap();
+    assert_eq!(RunResult::from_json(&wire).unwrap(), left);
+    let mut missing_snapshot_control = left.clone();
+    snapshot(&mut missing_snapshot_control).minss_invalid_controls = None;
+    assert!(missing_snapshot_control.to_json().is_err());
+    let mut right = left.clone();
+    snapshot(&mut right)
+        .minss_invalid_controls
+        .as_mut()
+        .unwrap()
+        .cr4_osxmmexcpt = false;
+    let differences = compare(&input, &left, &right).unwrap();
+    assert!(differences.contains(&"minss_invalid_controls".to_owned()));
+
+    // The S2-38c profile name and stricter DM-mask contract remain unchanged.
+    let old = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38c_minss_unmasked_invalid.case.json"
+    ))
+    .unwrap();
+    assert_eq!(old.fixture.profile, Profile::LongMinssInvalidControlsV1);
+    assert!(old.fixture.initial_state.sse.as_ref().unwrap().mxcsr.get() & 0x100 != 0);
+}
+
+#[test]
 fn orpd_profile_is_exact_and_rejects_neighbors() {
     let fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_34_19_orpd_register.case.json"

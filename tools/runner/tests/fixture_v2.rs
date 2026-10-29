@@ -6311,6 +6311,83 @@ fn minss_unmasked_invalid_commits_ie_without_retiring_and_jit_native_deny_profil
 }
 
 #[test]
+fn minss_unmasked_denormal_profiles_commit_flags_and_fault_without_retirement() {
+    let cases: [(&[u8], u8, u32); 3] = [
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38d_minss_denormal_unmasked_ud.case.json"
+            ),
+            6,
+            0x1e07,
+        ),
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38d_minss_denormal_unmasked_xm.case.json"
+            ),
+            19,
+            0x1e1a,
+        ),
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38d_minss_masked_invalid_unmasked_denormal.case.json"
+            ),
+            19,
+            0x1e83,
+        ),
+    ];
+    for (source, vector, mxcsr) in cases {
+        let (input, result) = run(source, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongMinssUnmaskedDenormalV1
+        );
+        assert!(matches!(result.outcome, Outcome::Exception {}));
+        assert_eq!(count(&result), 0);
+        let Observation::Available { value } = result.snapshot else {
+            panic!("snapshot unavailable")
+        };
+        let Observation::Available {
+            value: Some(exception),
+        } = value.exception
+        else {
+            panic!("missing exception")
+        };
+        assert_eq!(exception.vector, vector);
+        assert_eq!(value.state.rip, input.fixture.initial_state.rip);
+        assert_eq!(
+            value.state.sse.as_ref().unwrap().mxcsr.get(),
+            u64::from(mxcsr)
+        );
+        assert_eq!(
+            value.state.sse.as_ref().unwrap().xmm,
+            input.fixture.initial_state.sse.as_ref().unwrap().xmm
+        );
+        assert_eq!(
+            value.minss_invalid_controls,
+            input.fixture.minss_invalid_controls
+        );
+    }
+
+    let source = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38d_minss_exception_free_result.case.json"
+    );
+    let (input, result) = run(source, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+    let Observation::Available { value } = result.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    assert_eq!(value.state.rip.get(), input.fixture.stop_rip.unwrap().get());
+    assert_eq!(&value.state.sse.as_ref().unwrap().xmm[0][..8], "0000803f");
+    assert_eq!(value.state.sse.as_ref().unwrap().mxcsr.get(), 0x1f80);
+
+    let (_, jit) = run(source, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    let (_, native) = run(source, "native", 4);
+    assert!(matches!(native.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
 fn local_andpd_register_fixture_ands_raw_xmm_and_jit_denies_profile() {
     let bytes =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_18_andpd_register.case.json");

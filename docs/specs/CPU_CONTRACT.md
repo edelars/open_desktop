@@ -11342,6 +11342,43 @@ and Table 11-1; Vol. 3A Table 16-1; Vol. 2B MINSS:
 [Vol. 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190),
 [Vol. 2B MINSS](https://cdrdv2.intel.com/929354/253667-sdm-vol-2b.pdf).
 
+## S2-38d — exact MINSS unmasked denormal-operand exit
+
+The local interpreter profile `s2-long-minss-unmasked-denormal-v1` admits only
+the exact Long64 bytes `F3 0F 5D C1` (`MINSS XMM0,XMM1`), one executable code
+mapping, budget 1, and stop RIP `entry+4`. It requires the same complete x87/SSE
+state and five explicit immutable controls as S2-38c, with CR0.MP=1 fixed.
+S2-38c's profile, literal fixture and stricter DM-mask policy are unchanged.
+
+The new MXCSR policy clears reserved bits 16–31 and DAZ/FTZ, requires ZM/OM/UM/PM
+set, allows IM and DM independently, permits any RC and preserves arbitrary
+prior sticky bits. Complete fetch still precedes the SSE/EM/TS/OSFXSR gates;
+those gates precede operand classification. A prior DE flag alone does not
+fault.
+
+For a newly detected MINSS denormal condition with no higher-priority invalid
+condition, DM=0 commits `old_mxcsr | 0x2`, leaves the complete XMM0, RIP and
+retirement unchanged, and selects arithmetic #UD when OSXMMEXCPT=0 or #XM when
+it is 1. With DM=1 the instruction completes and accumulates DE. For a NaN and
+subnormal in the same scalar operation, the new profile preserves the Rev. 093
+priority/mask rules: when both IM and DM are set, only higher-priority IE is
+reported and the masked MINSS result completes; when either exception is
+unmasked, IE|DE status is committed and the single pre-computation #UD/#XM
+exit is reported. In the all-unmasked case Vol. 1 §11.5.3.2 ORs the detected
+pre-computation flags; with mixed masks §11.5.3.3 requires both flags. Local
+tests cover QNaN and SNaN in both operand positions for every IM×DM×OSXMMEXCPT
+combination and verify full destination/RIP/retirement behavior.
+
+This does not broaden decoder admission beyond XMM0/XMM1 or add MAXSS, packed
+operations, DAZ/FTZ, memory, additional CR state, JIT/native or C-adapter
+admission. It remains local/interpreter-only; physical/Mac mini acceptance is
+`not_run` until the combined final hardware substage. Normative references:
+Intel SDM Rev. 093, Vol. 1 §§4.9.2, 11.5.2.1–2, 11.5.3.2–3; Vol. 3A Table 7-8
+and Table 16-1; Vol. 2B MINSS:
+[Vol. 1](https://cdrdv2.intel.com/v1/dl/getContent/671436),
+[Vol. 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190),
+[Vol. 2B MINSS](https://cdrdv2.intel.com/929354/253667-sdm-vol-2b.pdf).
+
 ## S2-40b — bounded SSE-only native XORPD oracle
 
 The native-only schema-v2 profile `s2-long-native-xorpd-xmm0-xmm1-v1` admits

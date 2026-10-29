@@ -891,8 +891,9 @@ The schema-v2 profile `s2-long-minss-invalid-controls-v1` requires all five
 explicit booleans in `minss_invalid_controls`: `sse_available`, `cr0_em`,
 `cr0_ts`, `cr4_osfxsr`, and `cr4_osxmmexcpt`. They are immutable inputs and
 are repeated in `snapshot.minss_invalid_controls`; validation requires the
-result field for this profile, and comparison checks both outputs against each
-other and the bound input fixture. Older profiles omit this optional field.
+result field for both versioned MINSS control profiles, and comparison checks
+both outputs against each other and the bound input fixture. Older profiles
+omit this optional field.
 Unknown or missing controls fail closed.
 
 Only exact bytes `f30f5dc1`, one executable code mapping, budget 1, and
@@ -902,6 +903,29 @@ DAZ/FTZ clear; IM may be set or clear and any RC is accepted. Expected exit is
 `exception` for an entry gate or arithmetic invalid exit, or `stop_address`
 for completion. This fixture profile does not broaden the decoder's other
 forms or permit memory access. JIT and native execution are denied.
+
+## S2-38d exact MINSS unmasked-denormal profile
+
+The schema-v2 profile `s2-long-minss-unmasked-denormal-v1` reuses the strict
+one-instruction `F3 0F 5D C1` shape, full x87/SSE state and the same five
+explicit immutable controls as S2-38c. It is separately versioned so the
+S2-38c `s2-long-minss-invalid-controls-v1` fixture and MXCSR mask policy remain
+unchanged. The new profile requires reserved bits zero, ZE/OE/UE/PE masks set,
+and DAZ/FTZ clear; it allows IM and DM independently, any RC, and arbitrary old
+sticky flags. The existing control object is echoed in the result and remains
+strict against missing, extra or changed values.
+
+New effective DE with DM=0 commits DE, suppresses XMM0, RIP and retirement, and
+returns `exception` with #UD/#XM selected by OSXMMEXCPT. A prior DE bit alone is
+not a new event. For NaN+subnormal operand combinations, the unit coverage
+checks the Rev. 093 priority/mask matrix: both masks set reports IE only and
+completes the masked result; any open mask records IE|DE and faults once.
+QNaN/SNaN and operand order are crossed with IM×DM×OSXMMEXCPT. Four handwritten
+fixtures record unmasked DE #UD, unmasked DE #XM, masked invalid with unmasked
+DE, and an exception-free result. No JSON fields are added. JIT/native/C-adapter
+remain denied; physical acceptance is not claimed. See the [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38d-local-minss-unmasked-denormal-operand),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38d--exact-minss-unmasked-denormal-operand-exit),
+and [plan](../plans/STAGE_2.md#s2-38d-exact-long64-minss-xmm0xmm1-unmasked-denormal-operand-exit).
 
 ## S2-38b exact XORPD prerequisite profile
 

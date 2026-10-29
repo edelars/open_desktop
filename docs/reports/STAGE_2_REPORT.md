@@ -16229,3 +16229,49 @@ sources: [official SDM index (version 093)](https://www.intel.com/content/www/us
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38c--exact-minss-unmasked-invalid-operation-exit),
 [plan](../plans/STAGE_2.md#s2-38c-exact-long64-minss-xmm0xmm1-unmasked-invalid-operation-exit),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38c-local-minss-unmasked-invalid-operation).
+
+## S2-38d — exact MINSS unmasked denormal-operand handling
+
+Added `s2-long-minss-unmasked-denormal-v1` for only the existing exact Long64
+`F3 0F 5D C1` (`MINSS XMM0,XMM1`) profile. The S2-38c
+`s2-long-minss-invalid-controls-v1` contract remains unchanged. The new profile
+reuses its five immutable controls and permits IM and DM independently while
+requiring ZM/OM/UM/PM set, DAZ/FTZ clear and reserved MXCSR bits zero. Existing
+entry gates still run before operand classification. With an effective
+subnormal and DM=0, DE is committed before #UD/#XM, and XMM0, RIP and retirement
+are suppressed; pre-existing DE alone does not fault. New fixtures cover
+arithmetic #UD, #XM, an exception-free result and a mixed masked-invalid /
+unmasked-denormal case. JIT, native and C-adapter admission remain unavailable.
+
+For MINSS NaN plus subnormal, the tested mask matrix follows Rev. 093:
+both-unmasked and mixed masked/unmasked pairs set IE|DE and deliver one fault;
+both-masked sets only IE and completes the masked invalid result. In the mixed
+and both-unmasked fault cases, OSXMMEXCPT selects vector 6 or 19. This reflects
+Vol. 1 §11.5.3.2–3 flag commitment and §4.9.2 both-masked priority, with MINSS
+exception classes from Vol. 2B. Tests cover QNaN and SNaN in both operand
+orders for IM×DM×OSXMMEXCPT, exact flags/vector/destination/RIP/retirement, and
+preservation of unrelated MXCSR sticky bits and rounding control. This claim
+is limited to this exact instruction/profile and validated combinations.
+
+**Проверки:** `cargo test -p od-isa --offline minss_unmasked_denormal --
+--nocapture` прошёл (3); `cargo test -p od-isa --offline minss_ -- --nocapture`
+(10); S2-38b `xorpd_prerequisite_profile_is_strict_and_honors_boundary_order`
+(1) прошёл. `cargo test -p od-testkit --offline minss_ -- --nocapture` прошёл
+(2), `xorpd_prerequisite_` (2). Runner: новый S2-38d fixture suite (1),
+masked MINSS regression (1), S2-38c fixture (1), S2-38b fixture (1), S2-40b
+interpreter fixture (1). S2-40b `native_fp::tests` прошёл (3; state transport
+and admission helpers, без physical execution). Всего перечисленные
+регрессионных запусков: 26 passed, 0 failed; это сумма результатов
+указанных команд, включая повторное исполнение тестов, совпавших в нескольких
+фильтрах. `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline` (19.77 s), `git diff --check`
+и `graphify update .` прошли. Физическое/Mac mini исполнение и аппаратные acceptance
+проверки не запускались (`not_run`, только заключительный объединённый batch).
+
+Источники Intel SDM Rev. 093: [Vol. 2B MINSS](https://cdrdv2.intel.com/929354/253667-sdm-vol-2b.pdf),
+[Vol. 1 §§11.5.2.2, 11.5.3.2–3, 4.9.2](https://cdrdv2.intel.com/v1/dl/getContent/671436),
+[Vol. 3A Tables 7-8 and 16-1](https://cdrdv2.intel.com/v1/dl/getContent/671190).
+See [CPU contract](../specs/CPU_CONTRACT.md#s2-38d--exact-minss-unmasked-denormal-operand-exit),
+[plan](../plans/STAGE_2.md#s2-38d-exact-long64-minss-xmm0xmm1-unmasked-denormal-operand-exit),
+[test format](../testing/TEST_CASE_FORMAT.md#s2-38d-exact-minss-unmasked-denormal-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38d-local-minss-unmasked-denormal-operand).

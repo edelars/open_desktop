@@ -497,6 +497,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37k | Local-only Long64 legacy register MINPD profile `s2-long-minpd-reg-masked-v1`; aggregates masked IE/DE sticky status across two lanes; JIT/native closed | S2-36z, S2-38a; independent review |
 | [x] | S2-37l | Local-only Long64 legacy register MAXPD profile `s2-long-maxpd-reg-masked-v1`; aggregates masked IE/DE sticky status across two lanes; JIT/native closed | S2-36z, S2-37j/k, bounded S2-38a; independent review |
 | [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j/k/l: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j/k/l; independent review |
+| [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
+| [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
@@ -6269,6 +6271,42 @@ remains `not_run` until the combined final hardware substage. See the
 [S2-38c CPU contract](../specs/CPU_CONTRACT.md#s2-38c--exact-minss-unmasked-invalid-operation-exit),
 [report](../reports/STAGE_2_REPORT.md#s2-38c--exact-minss-unmasked-invalid-operation-exit),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38c-local-minss-unmasked-invalid-operation).
+
+#### S2-38d. Exact Long64 MINSS XMM0,XMM1 unmasked denormal-operand exit
+
+The new schema-v2 profile `s2-long-minss-unmasked-denormal-v1` admits only
+`F3 0F 5D C1`, with the same immutable five controls and fixed CR0.MP=1 as
+S2-38c. S2-38c's `s2-long-minss-invalid-controls-v1` bytes and mask policy stay
+unchanged. The new profile permits IM and DM independently, while requiring
+ZE/OE/UE/PE masks set, DAZ/FTZ clear, reserved bits zero, and accepts any RC or
+prior sticky flags.
+
+Entry SSE/EM/TS/OSFXSR checks still happen after complete fetch and before
+operand classification. With no higher-priority invalid condition, DM=0 sets
+only new DE, suppresses the full XMM0 update, leaves RIP and retirement
+unchanged, and selects arithmetic #UD/#XM through OSXMMEXCPT. A prior DE flag
+alone does not fault. For NaN plus subnormal, Rev. 093 §4.9.2 and Vol. 3A
+Table 7-8 preserve MINSS invalid priority when both exceptions are masked
+(IE only, masked result); Vol. 1 §§11.5.3.2–3 require the appropriate sticky
+flags when one or both pre-computation conditions are unmasked. Local tests
+cover the IM×DM×OSXMMEXCPT matrix for QNaN/SNaN in either operand position,
+including IE|DE on arithmetic exits where either mask is clear. The selected
+unmasked exception produces the single #UD/#XM delivery; no second delivery is
+modeled.
+
+Only the one exact Long64 register instruction is admitted. The new policy
+does not extend the decoder to other pairs, MAXSS, packed forms, DAZ/FTZ,
+memory operands, new CR operations, or JIT/native/C-adapter execution. The
+profile is local/interpreter-only; physical acceptance remains `not_run` until
+the combined final hardware substage. Normative references: Intel SDM Rev. 093
+Vol. 1 §§4.9.2, 11.5.2.1–2, 11.5.3.2–3; Vol. 3A Table 7-8 and Table 16-1;
+Vol. 2B MINSS:
+[Vol. 1](https://cdrdv2.intel.com/v1/dl/getContent/671436),
+[Vol. 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190),
+[Vol. 2B MINSS](https://cdrdv2.intel.com/929354/253667-sdm-vol-2b.pdf).
+See [S2-38d CPU contract](../specs/CPU_CONTRACT.md#s2-38d--exact-minss-unmasked-denormal-operand-exit),
+[report](../reports/STAGE_2_REPORT.md#s2-38d--exact-minss-unmasked-denormal-operand-handling),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38d-local-minss-unmasked-denormal-operand).
 
 ### S2-39. Сохранение и восстановление FP/SIMD
 

@@ -97,6 +97,7 @@ pub const PROFILE_RSQRTPS_REGISTER: &str = "s2-long-rsqrtps-reg-v1";
 pub const PROFILE_RCPPS_REGISTER: &str = "s2-long-rcpps-reg-v1";
 pub const PROFILE_MINSS_MASKED_REGISTER: &str = "s2-long-minss-reg-masked-v1";
 pub const PROFILE_MINSS_INVALID_CONTROLS: &str = "s2-long-minss-invalid-controls-v1";
+pub const PROFILE_MINSS_UNMASKED_DENORMAL: &str = "s2-long-minss-unmasked-denormal-v1";
 pub const PROFILE_MINSD_MASKED_REGISTER: &str = "s2-long-minsd-reg-masked-v1";
 pub const PROFILE_MAXSD_MASKED_REGISTER: &str = "s2-long-maxsd-reg-masked-v1";
 pub const PROFILE_MINPD_MASKED_REGISTER: &str = "s2-long-minpd-reg-masked-v1";
@@ -175,6 +176,8 @@ pub enum Profile {
     LongXorpdPrerequisitesV1,
     #[serde(rename = "s2-long-minss-invalid-controls-v1")]
     LongMinssInvalidControlsV1,
+    #[serde(rename = "s2-long-minss-unmasked-denormal-v1")]
+    LongMinssUnmaskedDenormalV1,
     #[serde(rename = "s2-long-native-xorpd-xmm0-xmm1-v1")]
     LongNativeXorpdXmm0Xmm1V1,
     #[serde(rename = "s2-long-andpd-reg-v1")]
@@ -851,6 +854,7 @@ impl IntegerState {
                     | Profile::LongXorpdRegV1
                     | Profile::LongXorpdPrerequisitesV1
                     | Profile::LongMinssInvalidControlsV1
+                    | Profile::LongMinssUnmaskedDenormalV1
                     | Profile::LongAndpdRegV1
                     | Profile::LongOrpdRegV1
                     | Profile::LongAndnpdRegV1
@@ -967,6 +971,7 @@ impl IntegerState {
                     | Profile::LongXorpdRegV1
                     | Profile::LongXorpdPrerequisitesV1
                     | Profile::LongMinssInvalidControlsV1
+                    | Profile::LongMinssUnmaskedDenormalV1
                     | Profile::LongNativeXorpdXmm0Xmm1V1
                     | Profile::LongAndpdRegV1
                     | Profile::LongOrpdRegV1
@@ -1104,6 +1109,7 @@ impl IntegerState {
                 | Profile::LongXorpdRegV1
                 | Profile::LongXorpdPrerequisitesV1
                 | Profile::LongMinssInvalidControlsV1
+                | Profile::LongMinssUnmaskedDenormalV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
                 | Profile::LongAndnpdRegV1
@@ -1221,6 +1227,7 @@ impl IntegerState {
                 | Profile::LongXorpdRegV1
                 | Profile::LongXorpdPrerequisitesV1
                 | Profile::LongMinssInvalidControlsV1
+                | Profile::LongMinssUnmaskedDenormalV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -1405,6 +1412,7 @@ impl IntegerState {
             | Profile::LongXorpdRegV1
             | Profile::LongXorpdPrerequisitesV1
             | Profile::LongMinssInvalidControlsV1
+            | Profile::LongMinssUnmaskedDenormalV1
             | Profile::LongNativeXorpdXmm0Xmm1V1
             | Profile::LongAndpdRegV1
             | Profile::LongOrpdRegV1
@@ -1524,6 +1532,7 @@ impl IntegerState {
                 | Profile::LongXorpdRegV1
                 | Profile::LongXorpdPrerequisitesV1
                 | Profile::LongMinssInvalidControlsV1
+                | Profile::LongMinssUnmaskedDenormalV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -1650,6 +1659,7 @@ impl IntegerState {
                 | Profile::LongXorpdRegV1
                 | Profile::LongXorpdPrerequisitesV1
                 | Profile::LongMinssInvalidControlsV1
+                | Profile::LongMinssUnmaskedDenormalV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -1779,6 +1789,7 @@ impl IntegerState {
                 | Profile::LongXorpdRegV1
                 | Profile::LongXorpdPrerequisitesV1
                 | Profile::LongMinssInvalidControlsV1
+                | Profile::LongMinssUnmaskedDenormalV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -1911,6 +1922,7 @@ impl IntegerState {
                 | Profile::LongXorpdRegV1
                 | Profile::LongXorpdPrerequisitesV1
                 | Profile::LongMinssInvalidControlsV1
+                | Profile::LongMinssUnmaskedDenormalV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -2193,6 +2205,7 @@ impl IntegerState {
                 | Profile::LongXorpdRegV1
                 | Profile::LongXorpdPrerequisitesV1
                 | Profile::LongMinssInvalidControlsV1
+                | Profile::LongMinssUnmaskedDenormalV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
                 | Profile::LongAndnpdRegV1
@@ -2309,6 +2322,7 @@ impl IntegerState {
                 | Profile::LongXorpdRegV1
                 | Profile::LongXorpdPrerequisitesV1
                 | Profile::LongMinssInvalidControlsV1
+                | Profile::LongMinssUnmaskedDenormalV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
                 | Profile::LongAndnpdRegV1
@@ -2449,6 +2463,7 @@ impl IntegerState {
                 | Profile::LongXorpdRegV1
                 | Profile::LongXorpdPrerequisitesV1
                 | Profile::LongMinssInvalidControlsV1
+                | Profile::LongMinssUnmaskedDenormalV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -2563,6 +2578,7 @@ impl IntegerState {
                 | Profile::LongXorpdRegV1
                 | Profile::LongXorpdPrerequisitesV1
                 | Profile::LongMinssInvalidControlsV1
+                | Profile::LongMinssUnmaskedDenormalV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -2936,7 +2952,10 @@ impl Fixture {
                 "only valid for the XORPD prerequisite profile",
             ));
         }
-        if self.profile == Profile::LongMinssInvalidControlsV1 {
+        if matches!(
+            self.profile,
+            Profile::LongMinssInvalidControlsV1 | Profile::LongMinssUnmaskedDenormalV1
+        ) {
             let controls = self.minss_invalid_controls.ok_or_else(|| {
                 invalid(
                     "minss_invalid_controls",
@@ -2979,11 +2998,15 @@ impl Fixture {
                 .expect("MINSS SSE state required above")
                 .mxcsr
                 .get();
-            let masks = 0x0000_1f00;
+            let masks = if self.profile == Profile::LongMinssInvalidControlsV1 {
+                0x0000_1f00
+            } else {
+                0x0000_1e00
+            };
             if mxcsr & 0xffff_0000 != 0 || mxcsr & masks != masks || mxcsr & 0x0000_8040 != 0 {
                 return Err(invalid(
                     "state.sse.mxcsr",
-                    "MINSS invalid-controls requires reserved bits clear, DE/ZE/OE/UE/PE masks set, DAZ/FTZ clear, and permits either IM value and any RC",
+                    "MINSS fault-control profiles require reserved bits clear, ZE/OE/UE/PE masks set, DAZ/FTZ clear, and allow IM, DM, RC and old sticky bits according to profile",
                 ));
             }
         } else if self.minss_invalid_controls.is_some() {
@@ -3160,9 +3183,9 @@ impl Fixture {
                 Profile::LongRcpssRegV1 => rcpss_register_length(&code_bytes),
                 Profile::LongRsqrtpsRegV1 => rsqrtps_register_length(&code_bytes),
                 Profile::LongRcppsRegV1 => rcpps_register_length(&code_bytes),
-                Profile::LongMinssMaskedRegV1 | Profile::LongMinssInvalidControlsV1 => {
-                    minss_register_masked_length(&code_bytes)
-                }
+                Profile::LongMinssMaskedRegV1
+                | Profile::LongMinssInvalidControlsV1
+                | Profile::LongMinssUnmaskedDenormalV1 => minss_register_masked_length(&code_bytes),
                 Profile::LongMinsdMaskedRegV1 => minsd_register_masked_length(&code_bytes),
                 Profile::LongMaxsdMaskedRegV1 => maxsd_register_masked_length(&code_bytes),
                 Profile::LongMinpdMaskedRegV1 => minpd_register_masked_length(&code_bytes),
@@ -5200,7 +5223,10 @@ impl RunResult {
             }
             (_, None) => {}
         }
-        if self.profile == Profile::LongMinssInvalidControlsV1 {
+        if matches!(
+            self.profile,
+            Profile::LongMinssInvalidControlsV1 | Profile::LongMinssUnmaskedDenormalV1
+        ) {
             if snapshot.minss_invalid_controls.is_none() {
                 return Err(invalid(
                     "snapshot.minss_invalid_controls",

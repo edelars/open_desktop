@@ -347,8 +347,8 @@ fn execute_fixture_v2(
 ) -> od_testkit::v2::RunResult {
     use od_isa::execute::{
         MinssInvalidControls, RunConfig, RunExit, XorpdPrerequisiteState, run,
-        run_with_minss_invalid_controls, run_with_rep_continuation, run_with_sep_profile,
-        run_with_xorpd_prerequisites,
+        run_with_minss_invalid_controls, run_with_minss_unmasked_denormal_controls,
+        run_with_rep_continuation, run_with_sep_profile, run_with_xorpd_prerequisites,
     };
     use od_testkit::v2;
     use std::time::{Duration, Instant};
@@ -447,6 +447,24 @@ fn execute_fixture_v2(
             .minss_invalid_controls
             .expect("validated MINSS profile has explicit controls");
         run_with_minss_invalid_controls(
+            &mut state,
+            memory,
+            config,
+            MinssInvalidControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
+    } else if loaded.fixture.profile == v2::Profile::LongMinssUnmaskedDenormalV1 {
+        let controls = loaded
+            .fixture
+            .minss_invalid_controls
+            .expect("validated MINSS profile has explicit controls");
+        run_with_minss_unmasked_denormal_controls(
             &mut state,
             memory,
             config,

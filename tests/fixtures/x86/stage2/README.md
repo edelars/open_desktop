@@ -5734,3 +5734,31 @@ Physical/Mac mini remains `not_run` until the combined final hardware stage.
 See the [S2-38c plan](../../../../docs/plans/STAGE_2.md#s2-38c-exact-long64-minss-xmm0xmm1-unmasked-invalid-operation-exit),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38c--exact-minss-unmasked-invalid-operation-exit),
 and [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-38c--exact-minss-unmasked-invalid-operation-exit).
+
+### S2-38d local MINSS unmasked denormal operand
+
+The new versioned profile `s2-long-minss-unmasked-denormal-v1` adds only
+unmasked denormal handling for exact Long64 bytes `F3 0F 5D C1` and XMM0/XMM1.
+Its explicit controls and fixed CR0.MP=1 are the same as S2-38c, while
+S2-38c's fixture bytes and MXCSR policy are unchanged. The profile permits IM
+and DM independently, any RC and prior sticky bits, but requires ZE/OE/UE/PE
+masks set, DAZ/FTZ clear and reserved bits zero.
+
+Four handwritten cases cover unmasked DE through #UD with preserved old IE/ZE
+flags (`s2_38d_minss_denormal_unmasked_ud`, final MXCSR `0x1e07`), unmasked DE
+through #XM with prior OE/UE (`s2_38d_minss_denormal_unmasked_xm`, final MXCSR
+`0x1e1a`), masked QNaN-invalid followed by unmasked DE (`s2_38d_minss_masked_invalid_unmasked_denormal`,
+final MXCSR `0x1e83`), and an exception-free finite result. Arithmetic faults
+preserve the entire XMM0 state, RIP and zero retirement. Local unit coverage
+crosses QNaN/SNaN, operand order, IM, DM and OSXMMEXCPT. It records IE|DE when
+either mask is open and only IE when both are masked, following Intel SDM
+Rev. 093 Vol. 1 §§4.9.2, 11.5.3.2–3 and Vol. 3A Table 7-8. The selected
+unmasked pre-computation exception produces one #UD/#XM exit; no second
+delivery is modeled.
+
+The profile remains interpreter-only. JIT, native, C adapter, MAXSS, packed
+forms, memory operands, DAZ/FTZ and other register pairs remain closed.
+Physical/Mac mini status is `not_run` until the combined final hardware stage.
+See the [S2-38d plan](../../../../docs/plans/STAGE_2.md#s2-38d-exact-long64-minss-xmm0xmm1-unmasked-denormal-operand-exit),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38d--exact-minss-unmasked-denormal-operand-exit),
+and [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-38d--exact-minss-unmasked-denormal-operand-handling).
