@@ -6731,6 +6731,25 @@ mod tests {
     }
 
     #[test]
+    fn s2_38e_composition_fixture_is_denied_before_native_trace() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/x86/stage2/s2_38e_fp_init_fxrstor64_minss.case.json");
+        let loaded = Fixture::from_json(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            loaded.fixture.profile,
+            v2::Profile::LongCr0Cr4FpInitFxrstor64MinssV1
+        );
+        assert!(crate::native_fp::native_profile_local_only(
+            loaded.fixture.profile
+        ));
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { ref reason }
+                if reason == "this profile is local-only; native state does not observe every profile field"
+        ));
+    }
+
+    #[test]
     fn cr4_fp_init_fixture_is_rejected_before_native_trace() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/x86/stage2/s2_25b_fninit_cr4_xorpd_composition.case.json");

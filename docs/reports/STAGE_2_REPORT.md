@@ -16976,3 +16976,47 @@ The Linux target check is compile-only on this Apple ARM host. See [CPU contract
 [plan](../plans/STAGE_2.md#s2-39i-exact-fp-initialization-composition-followed-by-fxrstor64),
 [Linux profile report](STAGE_2_LINUX_PROFILE.md#s2-39i--local-fp-init-plus-fxrstor64-composition),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39i-fp-init-plus-fxrstor64-composition).
+
+## S2-38e — exact FP-init, FXRSTOR64, and image-controlled MINSS composition
+
+Added the distinct interpreter-only profile
+`s2-long-cr0-cr4-fp-init-fxrstor64-minss-v1`, admitting the exact 33-byte
+S2-39i composition plus `F3 0F 5D C1` (`MINSS XMM0,XMM1`): 37 bytes total,
+ten retirements on completion. It reuses the live CR0/CR4 initialization path,
+staged FXRSTOR64 restore, and S2-38d invalid/denormal MXCSR policy. The literal
+restore image supplies MXCSR and XMM operands that differ from pre-restore
+state. The profile keeps IM/DM independent, other masks set, DAZ/FTZ and
+reserved bits clear, with arbitrary RC and prior sticky flags.
+
+Coverage includes paired image mutations that toggle only IM (masked NaN
+completion versus #XM) or only DM (masked subnormal versus #XM), prior sticky
+status combinations, and all 16 initial CR0.EM/TS × CR4.OSFXSR/OSXMMEXCPT
+combinations on representative completed and faulting cases. Completion
+changes only XMM0's low dword and effective MXCSR status; #XM preserves the
+restored full XMM0 and commits only permitted IE/DE sticky flags. The image is
+unchanged. STOP/budget after restore, final fetch truncation and all staged
+restore read errors leave MINSS unexecuted. Fixture schema/result tampering is
+rejected and native execution is denied. MINSS prerequisite gates use live
+post-init CR0/CR4 state without redundant explicit gate fields.
+
+**Checks:** `cargo test -q -p od-isa -p od-testkit -p od-x86-runner -p od-runner --offline`
+passed (1,459 ISA, 408 testkit, 8 x86-runner library, 4 x86-runner binary,
+112 runner binary, and 377 fixture integration tests); focused S2-38e ISA and
+runner tests also passed, including the generic CR4 wrapper's restored-DM
+regression and interpreter success/#XM plus JIT denial. `cargo check --workspace --all-targets
+--offline`, Linux x86_64 `cargo check -p od-x86-runner --all-targets --target
+x86_64-unknown-linux-gnu --offline`, `cargo fmt --all -- --check`,
+`git diff --check`, and `graphify update .` passed. The portable native
+local-only predicate test passed as part of the runner suite; platform-specific
+Linux execution tests were compile-only on this Apple ARM host. Independent
+Sol review found and prompted fixes for runner dispatch/context and generic
+CR4-wrapper denormal policy; the reviewer then confirmed both fixes and found
+no remaining code issues. The reviewer also verified literal images match
+their JSON fixtures and that paired images differ only in IM or DM as intended.
+This is a synthetic local composition of S2-39i and
+S2-38d; no Linux/Ubuntu runtime or physical x86 observation was performed.
+Mac mini hardware status remains `not_run`. See [CPU contract](../specs/CPU_CONTRACT.md#s2-38e--exact-fp-init-fxrstor64-minss-composition),
+[plan](../plans/STAGE_2.md#s2-38e-exact-fp-init-fxrstor64-and-image-controlled-minss-composition),
+[Linux profile report](STAGE_2_LINUX_PROFILE.md#s2-38e--local-fp-init-fxrstor64-and-minss-composition),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38e-fp-init-fxrstor64-and-minss),
+and [format](../testing/TEST_CASE_FORMAT.md#s2-38e-s2-long-cr0-cr4-fp-init-fxrstor64-minss-v1).

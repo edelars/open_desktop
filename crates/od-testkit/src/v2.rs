@@ -10,6 +10,7 @@ use crate::result::{
 use crate::{FormatError, HexU64, MAX_RESULT_JSON_BYTES, sha256_hex};
 use od_isa::LongModeState;
 use od_isa::OperandSize;
+use od_isa::binary_float::{Binary32, BinaryClass};
 use od_isa::long_decode::Operation;
 use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -36,6 +37,8 @@ pub const PROFILE_FXSAVE64_RAX: &str = "s2-long-fxsave64-rax-disp8-v1";
 pub const PROFILE_FXRSTOR64_RBX: &str = "s2-long-fxrstor64-rbx-disp8-v1";
 pub const PROFILE_FXRSTOR64_CR0_GATES: &str = "s2-long-fxrstor64-cr0-gates-v1";
 pub const PROFILE_CR0_CR4_FP_INIT_FXRSTOR64: &str = "s2-long-cr0-cr4-fp-init-fxrstor64-v1";
+pub const PROFILE_CR0_CR4_FP_INIT_FXRSTOR64_MINSS: &str =
+    "s2-long-cr0-cr4-fp-init-fxrstor64-minss-v1";
 pub const PROFILE_MOVUPS_REGISTER: &str = "s2-long-movups-reg-v1";
 pub const PROFILE_MOVAPS_REGISTER: &str = "s2-long-movaps-reg-v1";
 pub const PROFILE_MOVAPS_REVERSE_REGISTER: &str = "s2-long-movaps-reg-reverse-v1";
@@ -196,6 +199,8 @@ pub enum Profile {
     LongCr0Cr4FpInitFxsave64V1,
     #[serde(rename = "s2-long-cr0-cr4-fp-init-fxrstor64-v1")]
     LongCr0Cr4FpInitFxrstor64V1,
+    #[serde(rename = "s2-long-cr0-cr4-fp-init-fxrstor64-minss-v1")]
+    LongCr0Cr4FpInitFxrstor64MinssV1,
     #[serde(rename = "s2-long-movups-reg-v1")]
     LongMovupsRegV1,
     #[serde(rename = "s2-long-movaps-reg-v1")]
@@ -1048,6 +1053,7 @@ impl IntegerState {
                     | Profile::LongCr4FpInitV1
                     | Profile::LongCr0Cr4FpInitFxsave64V1
                     | Profile::LongCr0Cr4FpInitFxrstor64V1
+                    | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                     | Profile::LongCr0Cr4FpInitV1,
                     Some(x87),
                 ) => Some(x87.to_cpu()?),
@@ -1176,6 +1182,7 @@ impl IntegerState {
                     | Profile::LongCr4FpInitV1
                     | Profile::LongCr0Cr4FpInitFxsave64V1
                     | Profile::LongCr0Cr4FpInitFxrstor64V1
+                    | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                     | Profile::LongCr0Cr4FpInitV1
                     | Profile::LongX87SelectorsStateV1
                     | Profile::LongFxsaveRipV1
@@ -1351,6 +1358,7 @@ impl IntegerState {
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
@@ -1476,6 +1484,7 @@ impl IntegerState {
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
@@ -1674,6 +1683,7 @@ impl IntegerState {
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1,
                 Some(_),
             ) => {}
@@ -1686,6 +1696,7 @@ impl IntegerState {
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1,
                 None,
             ) => {
@@ -1706,6 +1717,7 @@ impl IntegerState {
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1,
                 Some(_),
             ) => {}
@@ -1717,6 +1729,7 @@ impl IntegerState {
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1,
                 None,
             ) => {
@@ -1731,6 +1744,7 @@ impl IntegerState {
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1,
         ) && (self.activity != Some(CpuActivitySnapshot::Running)
             || self.sti_shadow != Some(StiShadowSnapshot::Clear))
@@ -1915,6 +1929,7 @@ impl IntegerState {
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
@@ -2057,6 +2072,7 @@ impl IntegerState {
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
@@ -2208,6 +2224,7 @@ impl IntegerState {
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
@@ -2366,6 +2383,7 @@ impl IntegerState {
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
@@ -2739,6 +2757,7 @@ impl IntegerState {
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1,
         ) {
             (1 << 9) | (3 << 12)
@@ -2757,6 +2776,7 @@ impl IntegerState {
                 Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1,
                 Some(value),
             ) if [
@@ -2771,6 +2791,7 @@ impl IntegerState {
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1,
                 Some(_),
             ) => {
@@ -2784,6 +2805,7 @@ impl IntegerState {
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1,
                 None,
             ) => {
@@ -2797,6 +2819,7 @@ impl IntegerState {
                 Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1,
                 Some(value),
             ) if [
@@ -2810,6 +2833,7 @@ impl IntegerState {
                 Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1,
                 Some(_),
             ) => {
@@ -2822,6 +2846,7 @@ impl IntegerState {
                 Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1,
                 None,
             ) => {
@@ -2837,6 +2862,7 @@ impl IntegerState {
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1,
                 Some(x87),
             ) => {
@@ -2970,6 +2996,7 @@ impl IntegerState {
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1,
                 None,
             ) => {
@@ -3126,6 +3153,7 @@ impl IntegerState {
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1
                 | Profile::LongX87SelectorsStateV1
                 | Profile::LongFxsaveRipV1
@@ -3586,6 +3614,7 @@ impl Fixture {
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1,
         ) {
             if self.rflags_mask.get() != cli_flags_mask {
@@ -3608,6 +3637,7 @@ impl Fixture {
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1,
                 Some(_),
             ) => {}
@@ -3621,6 +3651,7 @@ impl Fixture {
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
                 | Profile::LongCr0Cr4FpInitV1,
                 None,
             ) => {
@@ -4576,6 +4607,103 @@ impl Fixture {
                 "minss_invalid_controls",
                 "only valid for the MINSS invalid-controls profile",
             ));
+        }
+        if self.profile == Profile::LongCr0Cr4FpInitFxrstor64MinssV1 {
+            let code = self.memory.iter().find(|region| region.region_id == "code");
+            let image = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "image");
+            let expected_program =
+                "0f20c04883e0f30f22c0dbe30f20e0480d000600000f22e0660f57c1480fae4b40f30f5dc1";
+            let exact_code = code.is_some_and(|region| {
+                region.guest_address == self.initial_state.rip
+                    && region.length == 37
+                    && region.permissions
+                        == MemoryPermissions {
+                            read: false,
+                            write: false,
+                            execute: true,
+                        }
+                    && region
+                        .initial_bytes_hex
+                        .eq_ignore_ascii_case(expected_program)
+                    && region
+                        .comparison_mask_hex
+                        .eq_ignore_ascii_case(&"ff".repeat(37))
+            });
+            let exact_image = image.is_some_and(|region| {
+                region.guest_address.get() == 0x660
+                    && region.length == 512
+                    && region.permissions
+                        == MemoryPermissions {
+                            read: true,
+                            write: false,
+                            execute: false,
+                        }
+                    && region
+                        .comparison_mask_hex
+                        .eq_ignore_ascii_case(&"ff".repeat(512))
+            });
+            let image_bytes = image.and_then(|region| decode_bytes(&region.initial_bytes_hex).ok());
+            let valid_mxcsr = image_bytes.as_ref().is_some_and(|bytes| {
+                bytes.get(24..28).is_some_and(|value| {
+                    let mxcsr = u32::from_le_bytes(value.try_into().unwrap());
+                    mxcsr & !od_isa::TARGET_FXSAVE_MXCSR_MASK == 0
+                        && mxcsr & 0xffff_0000 == 0
+                        && mxcsr & 0x0000_1e00 == 0x0000_1e00
+                        && mxcsr & 0x0000_8040 == 0
+                })
+            });
+            let valid_operands = image_bytes.as_ref().is_some_and(|bytes| {
+                let Some(initial_sse) = self.initial_state.sse.as_ref() else {
+                    return false;
+                };
+                let initial_xmm0 = decode_bytes(&initial_sse.xmm[0]).ok();
+                let initial_xmm1 = decode_bytes(&initial_sse.xmm[1]).ok();
+                bytes.get(160..176) != initial_xmm0.as_deref()
+                    && bytes.get(176..192) != initial_xmm1.as_deref()
+            });
+            let expected_outcome = image_bytes.as_ref().and_then(|bytes| {
+                let mxcsr = u32::from_le_bytes(bytes.get(24..28)?.try_into().ok()?);
+                let lhs =
+                    Binary32::from_bits(u32::from_le_bytes(bytes.get(160..164)?.try_into().ok()?));
+                let rhs =
+                    Binary32::from_bits(u32::from_le_bytes(bytes.get(176..180)?.try_into().ok()?));
+                let invalid = matches!(
+                    lhs.class(),
+                    BinaryClass::QuietNaN | BinaryClass::SignalingNaN
+                ) || matches!(
+                    rhs.class(),
+                    BinaryClass::QuietNaN | BinaryClass::SignalingNaN
+                );
+                let denormal =
+                    lhs.class() == BinaryClass::Subnormal || rhs.class() == BinaryClass::Subnormal;
+                Some(
+                    if (invalid && mxcsr & (1 << 7) == 0) || (denormal && mxcsr & (1 << 8) == 0) {
+                        ExpectedExit::Exception
+                    } else {
+                        ExpectedExit::StopAddress
+                    },
+                )
+            });
+            if !exact_code
+                || !exact_image
+                || !valid_mxcsr
+                || !valid_operands
+                || self.memory.len() != 2
+                || self.cli_cpl != Some(CliCpl::Cpl0)
+                || self.initial_state.gpr[3].get() != 0x620
+                || self.instruction_budget != 10
+                || self.stop_rip.map(HexU64::get) != self.initial_state.rip.get().checked_add(37)
+                || expected_outcome != Some(self.expected_exit)
+                || self.rflags_mask.get() != (INTEGER_FLAGS | (1 << 9) | (3 << 12))
+            {
+                return Err(invalid(
+                    "memory.code/memory.image",
+                    "S2-38e requires the exact 37-byte composition, RBX=0x620, private 512-byte image at 0x660, CPL0, budget 10, terminal STOP or #XM, and the S2-38d MXCSR domain",
+                ));
+            }
         }
         if matches!(
             self.profile,
@@ -7638,7 +7766,12 @@ impl RunResult {
                     }
                 }
             }
-            if loaded.fixture.profile == Profile::LongCr0Cr4FpInitFxrstor64V1 {
+            if matches!(
+                loaded.fixture.profile,
+                Profile::LongCr0Cr4FpInitFxrstor64V1 | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
+            ) {
+                let follows_minss =
+                    loaded.fixture.profile == Profile::LongCr0Cr4FpInitFxrstor64MinssV1;
                 let initial = &loaded.fixture.initial_state;
                 let initial_cr4 = initial.cr4.ok_or(FormatError::CaseMismatch("state.cr4"))?;
                 let expected_cr4 = HexU64(initial_cr4.get() | 0x600);
@@ -7691,10 +7824,51 @@ impl RunResult {
                     expected_sse.xmm[register]
                         .copy_from_slice(&bytes[160 + register * 16..176 + register * 16]);
                 }
+                let (expected_retired, expected_rip, expected_outcome) = if follows_minss {
+                    let lhs = u32::from_le_bytes(expected_sse.xmm[0][..4].try_into().unwrap());
+                    let rhs = u32::from_le_bytes(expected_sse.xmm[1][..4].try_into().unwrap());
+                    let lhs_value = Binary32::from_bits(lhs);
+                    let rhs_value = Binary32::from_bits(rhs);
+                    let invalid = matches!(
+                        lhs_value.class(),
+                        BinaryClass::QuietNaN | BinaryClass::SignalingNaN
+                    ) || matches!(
+                        rhs_value.class(),
+                        BinaryClass::QuietNaN | BinaryClass::SignalingNaN
+                    );
+                    let denormal = lhs_value.class() == BinaryClass::Subnormal
+                        || rhs_value.class() == BinaryClass::Subnormal;
+                    let old_mxcsr = expected_sse.mxcsr;
+                    let unmasked = (invalid && old_mxcsr & (1 << 7) == 0)
+                        || (denormal && old_mxcsr & (1 << 8) == 0);
+                    let sticky = if invalid && denormal && old_mxcsr & 0x180 == 0x180 {
+                        1
+                    } else {
+                        u32::from(invalid) | (u32::from(denormal) << 1)
+                    };
+                    expected_sse.mxcsr |= sticky;
+                    if !unmasked {
+                        let result = Binary32::min_sse_raw_result(lhs_value, rhs_value)
+                            .value()
+                            .to_bits();
+                        expected_sse.xmm[0][..4].copy_from_slice(&result.to_le_bytes());
+                    }
+                    (
+                        if unmasked { 9 } else { 10 },
+                        HexU64(initial.rip.get() + if unmasked { 33 } else { 37 }),
+                        if unmasked {
+                            Outcome::Exception {}
+                        } else {
+                            Outcome::StopAddress {}
+                        },
+                    )
+                } else {
+                    (9, HexU64(initial.rip.get() + 33), Outcome::StopAddress {})
+                };
                 if value.state.cr0 != Some(HexU64(od_isa::execute::Cr0Profile::BASE))
                     || value.state.cr4 != Some(expected_cr4)
                     || value.state.gpr[0] != expected_cr4
-                    || value.state.rip != HexU64(initial.rip.get() + 33)
+                    || value.state.rip != expected_rip
                     || value.state.rflags != HexU64(initial.rflags.get() & !0x8c5)
                     || value.state.x87 != Some(X87Snapshot::from(&expected_x87))
                     || value.state.sse != Some(SseSnapshot::from(&expected_sse))
@@ -7708,8 +7882,11 @@ impl RunResult {
                                     | (1 << 7)
                                     | (1 << 11)),
                         )
-                    || self.instructions_executed != (Observation::Available { value: HexU64(9) })
-                    || self.outcome != (Outcome::StopAddress {})
+                    || self.instructions_executed
+                        != (Observation::Available {
+                            value: HexU64(expected_retired),
+                        })
+                    || self.outcome != expected_outcome
                     || value
                         .state
                         .gpr
@@ -7726,6 +7903,17 @@ impl RunResult {
                     .ok_or(FormatError::CaseMismatch("memory.image"))?;
                 if found.bytes_hex != image.initial_bytes_hex {
                     return Err(FormatError::CaseMismatch("memory.image.unchanged"));
+                }
+                if follows_minss && matches!(self.outcome, Outcome::Exception {}) {
+                    let Observation::Available { value: Some(fault) } = &value.exception else {
+                        return Err(FormatError::CaseMismatch("snapshot.exception"));
+                    };
+                    if fault.faulting_rip != HexU64(initial.rip.get() + 33)
+                        || fault.vector != 19
+                        || fault.error_code.is_available()
+                    {
+                        return Err(FormatError::CaseMismatch("snapshot.exception"));
+                    }
                 }
             }
             if value.memory.len() != loaded.fixture.memory.len() {
@@ -7798,6 +7986,7 @@ pub fn compare(
         Profile::LongCr0Cr4FpInitV1
             | Profile::LongCr0Cr4FpInitFxsave64V1
             | Profile::LongCr0Cr4FpInitFxrstor64V1
+            | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
     ) {
         mask & INTEGER_FLAGS & !arithmetic_flags
     } else if matches!(
@@ -8085,6 +8274,7 @@ fn rflags_differ(profile: Profile, mask: u64, left: u64, right: u64) -> bool {
             | Profile::LongCr4FpInitV1
             | Profile::LongCr0Cr4FpInitFxsave64V1
             | Profile::LongCr0Cr4FpInitFxrstor64V1
+            | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
             | Profile::LongCr0Cr4FpInitV1,
     ) {
         INTEGER_FLAGS | (1 << 9) | (3 << 12)

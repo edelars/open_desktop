@@ -2228,6 +2228,54 @@ fn s2_39i_cr0_cr4_fxrstor64_composition_is_strict_and_restores_literal_image() {
 }
 
 #[test]
+fn s2_38e_runner_dispatches_fxrstor_minss_profile_and_denies_jit() {
+    use od_testkit::v2::Profile;
+
+    let cases: [(&[u8], u64, bool); 4] = [
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38e_fp_init_fxrstor64_minss.case.json"
+            ),
+            9,
+            true,
+        ),
+        (
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_38e_minss_masked_qnan.case.json"),
+            10,
+            false,
+        ),
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38e_unmasked_subnormal.case.json"
+            ),
+            9,
+            true,
+        ),
+        (
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_38e_masked_subnormal.case.json"),
+            10,
+            false,
+        ),
+    ];
+
+    for (bytes, retired, faults) in cases {
+        let (loaded, result) = run(bytes, "interpreter", 0);
+        assert_eq!(
+            loaded.fixture.profile,
+            Profile::LongCr0Cr4FpInitFxrstor64MinssV1
+        );
+        assert_eq!(count(&result), retired);
+        assert_eq!(matches!(result.outcome, Outcome::Exception {}), faults);
+        result.validate_for(&loaded).unwrap();
+        od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+    }
+
+    let (_, jit) = run(cases[0].0, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(jit.snapshot, Observation::Unavailable { .. }));
+}
+
+#[test]
 fn operand_size_prefixed_near_ret_keeps_qword_stack_semantics() {
     for (bytes, expected_code, expected_rip) in [
         (RET66, "66c3", 0x0010_0002),

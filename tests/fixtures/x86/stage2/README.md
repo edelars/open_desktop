@@ -5876,6 +5876,37 @@ See the [S2-38d plan](../../../../docs/plans/STAGE_2.md#s2-38d-exact-long64-mins
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38d--exact-minss-unmasked-denormal-operand-exit),
 and [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-38d--exact-minss-unmasked-denormal-operand-handling).
 
+### S2-38e FP-init, FXRSTOR64, and MINSS
+
+The new exact local profile appends `F3 0F 5D C1` (`MINSS XMM0,XMM1`) to the
+S2-39i 33-byte FP-init plus FXRSTOR64 composition. The resulting program is 37
+bytes and completes with ten retirements. The handwritten image is preserved
+as [s2_38e_fp_init_fxrstor64_minss_image.hex](s2_38e_fp_init_fxrstor64_minss_image.hex);
+restored XMM0 and XMM1 operands differ from pre-restore state, and image MXCSR
+supplies IM/DM behavior.
+
+The schema admits the S2-38d MXCSR domain: IM/DM vary, other masks are set,
+DAZ/FTZ and reserved bits are clear, while RC and old sticky flags are
+arbitrary. Literal fixture pairs
+`s2_38e_fp_init_fxrstor64_minss`/`s2_38e_minss_masked_qnan` and
+`s2_38e_unmasked_subnormal`/`s2_38e_masked_subnormal` differ only in the
+corresponding image IM or DM bit; each pair represents masked completion and
+#XM. Coverage includes
+sticky-status combinations and all 16 starting CR0.EM/TS ×
+CR4.OSFXSR/OSXMMEXCPT combinations on representative success/exception cases.
+Completion preserves XMM0 upper 96 bits; #XM preserves the full restored XMM0
+and commits only applicable IE/DE. The complete literal image stays unchanged.
+Boundary STOP/budget after restore, final fetch failure and staged restore
+errors prevent MINSS from executing. Schema/result tampering is rejected and
+the native backend denies this profile. MINSS prerequisite gates use the live
+post-init CR0/CR4 state without redundant explicit gate fields. This is a
+synthetic local composition; no Linux/Ubuntu runtime or physical hardware
+observation was made. See the
+[plan](../../../../docs/plans/STAGE_2.md#s2-38e-exact-fp-init-fxrstor64-and-image-controlled-minss-composition),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38e--exact-fp-init-fxrstor64-minss-composition),
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-38e--exact-fp-init-fxrstor64-and-image-controlled-minss-composition),
+and [format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-38e-s2-long-cr0-cr4-fp-init-fxrstor64-minss-v1).
+
 ### S2-42a native XORPD generated corpus
 
 The existing `s2-long-native-xorpd-xmm0-xmm1-v1` profile now has a local,

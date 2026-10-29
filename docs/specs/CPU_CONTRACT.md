@@ -11584,6 +11584,41 @@ and Table 16-1; Vol. 2B MINSS:
 [Vol. 3A](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html),
 [Vol. 2B MINSS](https://cdrdv2.intel.com/929354/253667-sdm-vol-2b.pdf).
 
+## S2-38e — exact FP-init, FXRSTOR64, MINSS composition
+
+The interpreter-only schema-v2 profile `s2-long-cr0-cr4-fp-init-fxrstor64-minss-v1`
+admits the exact 33-byte S2-39i prefix followed by `F3 0F 5D C1`
+(`MINSS XMM0,XMM1`), 37 bytes total. Successful completion retires ten
+instructions. The first nine instructions retain the exact live CR0/CR4 initialization and staged
+FXRSTOR64 behavior described by S2-39i. MINSS then reads the XMM0, XMM1, and
+MXCSR values restored from the literal image; no pre-restore operand is used.
+
+The image MXCSR domain is the S2-38d domain: reserved bits zero, ZE/OE/UE/PE
+masks set, DAZ/FTZ clear, and arbitrary IM, DM, RC, and prior sticky bits.
+New MINSS IE/DE status and arithmetic #XM behavior follow S2-38d, including its
+priority when both invalid and denormal conditions are present. Successful
+MINSS updates only XMM0's low dword and effective sticky MXCSR bits. An #XM
+leaves the restored full XMM0 and RIP unchanged, does not retire MINSS, and
+commits only the applicable IE/DE sticky bits. Pre-existing sticky bits remain
+set and do not trigger a new fault by themselves.
+
+The exact fixture image is authored independently and its XMM0/XMM1 operands
+differ from pre-restore state. Paired variants toggle only image IM or DM for
+masked completion versus #XM; result validation recomputes the required state
+from the image. Tests cover status combinations and all 16 initial
+CR0.EM/TS × CR4.OSFXSR/OSXMMEXCPT combinations for representative completed
+and faulting executions. STOP/budget after FXRSTOR64, final-instruction fetch
+failure, and all restore callback errors prevent MINSS execution; image bytes
+remain unchanged. The native backend denies this profile.
+
+This profile is a synthetic local composition based only on existing S2-39i
+and S2-38d components. It records no Linux/Ubuntu or physical-hardware
+observation. Mac mini status remains `not_run` until the combined final
+hardware substage. See [plan](../plans/STAGE_2.md#s2-38e-exact-fp-init-fxrstor64-and-image-controlled-minss-composition),
+[report](../reports/STAGE_2_REPORT.md#s2-38e--exact-fp-init-fxrstor64-and-image-controlled-minss-composition),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38e-fp-init-fxrstor64-and-minss),
+and [format](../testing/TEST_CASE_FORMAT.md#s2-38e-s2-long-cr0-cr4-fp-init-fxrstor64-minss-v1).
+
 ## S2-40b — bounded SSE-only native XORPD oracle
 
 The native-only schema-v2 profile `s2-long-native-xorpd-xmm0-xmm1-v1` admits

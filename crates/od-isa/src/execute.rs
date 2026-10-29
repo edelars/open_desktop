@@ -138,6 +138,7 @@ pub enum Cr4Profile {
     FpInitLong64V1,
     FpInitThenFxsave64Long64V1,
     FpInitThenFxrstor64Long64V1,
+    FpInitThenFxrstor64MinssLong64V1,
 }
 
 impl Cr4Profile {
@@ -934,6 +935,44 @@ pub fn run_with_minss_unmasked_denormal_controls(
     )
 }
 
+/// Execute the exact S2-38e FP-init/FXRSTOR64/MINSS composition. MINSS
+/// prerequisite controls are read from the live CR0/CR4 state after restore.
+pub fn run_with_cr4_fxrstor64_minss_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_configured(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        ExecutionProfiles {
+            cpuid: None,
+            msr: None,
+            sep: None,
+            xorpd: None,
+            minss_invalid: None,
+            fx_cr0: None,
+            unmasked_minss_denormal: true,
+            rdtsc: None,
+            swapgs: None,
+            cli: None,
+            sti: None,
+            halt: None,
+            cr0: Some(Cr0Profile::FpInitLong64V1),
+            cr4: Some(Cr4Profile::FpInitThenFxrstor64MinssLong64V1),
+        },
+        StepRuntime {
+            rdtsc_source: None,
+            sti_sequence: None,
+            exact_hlt_only: false,
+            stop_requested: &mut stop_requested,
+        },
+    )
+}
+
 /// Execute with an explicitly selected CPUID profile. The legacy [`run`]
 /// entry point remains closed to CPUID.
 pub fn run_with_cpuid_profile(
@@ -1246,7 +1285,7 @@ pub fn run_with_cr4_profile(
             xorpd: None,
             minss_invalid: None,
             fx_cr0: None,
-            unmasked_minss_denormal: false,
+            unmasked_minss_denormal: profile == Cr4Profile::FpInitThenFxrstor64MinssLong64V1,
             rdtsc: None,
             swapgs: None,
             cli: None,
@@ -2050,7 +2089,7 @@ fn step_configured(
         msr: msr_profile,
         sep: sep_profile,
         xorpd: xorpd_prerequisites,
-        minss_invalid: minss_invalid_controls,
+        minss_invalid: configured_minss_controls,
         fx_cr0: fx_cr0_gate_controls,
         unmasked_minss_denormal,
         rdtsc: rdtsc_controls,
@@ -2139,6 +2178,20 @@ fn step_configured(
         }
         Err(DecodeError::Memory(error)) => return Err(error),
     };
+    let minss_invalid_controls = if cr4_profile
+        == Some(Cr4Profile::FpInitThenFxrstor64MinssLong64V1)
+        && matches!(instruction.operation, Operation::MinssRegisterMasked { .. })
+    {
+        Some(MinssInvalidControls {
+            sse_available: true,
+            cr0_em: state.cr0.expect("composite FP-init profile has CR0") & (1 << 2) != 0,
+            cr0_ts: state.cr0.expect("composite FP-init profile has CR0") & (1 << 3) != 0,
+            cr4_osfxsr: state.cr4.expect("composite FP-init profile has CR4") & (1 << 9) != 0,
+            cr4_osxmmexcpt: state.cr4.expect("composite FP-init profile has CR4") & (1 << 10) != 0,
+        })
+    } else {
+        configured_minss_controls
+    };
     if ((cr0_profile.is_some()
         && matches!(
             instruction.operation,
@@ -2219,8 +2272,13 @@ fn step_configured(
                         })
             }
             Operation::Fxrstor64RbxDisp8(area) => {
-                cr4_profile == Some(Cr4Profile::FpInitThenFxrstor64Long64V1)
-                    && area.base == long_decode::AddressBase::Register(Register::Rbx)
+                matches!(
+                    cr4_profile,
+                    Some(
+                        Cr4Profile::FpInitThenFxrstor64Long64V1
+                            | Cr4Profile::FpInitThenFxrstor64MinssLong64V1
+                    )
+                ) && area.base == long_decode::AddressBase::Register(Register::Rbx)
                     && area.index.is_none()
                     && area.displacement == 0x40
                     && area.size == OperandSize::Qword
@@ -2232,6 +2290,17 @@ fn step_configured(
                             rex: Some(0x48),
                             ..Prefixes::default()
                         })
+            }
+            Operation::MinssRegisterMasked {
+                destination: 0,
+                source: 1,
+            } => {
+                cr4_profile == Some(Cr4Profile::FpInitThenFxrstor64MinssLong64V1)
+                    && instruction.length == 4
+                    && instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0x5d
+                    && instruction.prefixes.group1 == Some(0xf3)
+                    && instruction.prefixes.rex.is_none()
             }
             _ => false,
         };
@@ -2288,8 +2357,12 @@ fn step_configured(
             }));
         }
     }
-    if cr4_profile == Some(Cr4Profile::FpInitThenFxrstor64Long64V1)
-        && matches!(instruction.operation, Operation::Fxrstor64RbxDisp8(_))
+    if matches!(
+        cr4_profile,
+        Some(
+            Cr4Profile::FpInitThenFxrstor64Long64V1 | Cr4Profile::FpInitThenFxrstor64MinssLong64V1
+        )
+    ) && matches!(instruction.operation, Operation::Fxrstor64RbxDisp8(_))
     {
         let cr0 = state
             .cr0
@@ -93600,6 +93673,12 @@ mod fxsave_rip_tests {
                 fail_read,
             }
         }
+
+        fn cr0_cr4_fxrstor64_minss(fail_read: Option<usize>) -> Self {
+            let mut memory = Self::cr0_cr4_fxrstor64(fail_read);
+            memory.code.extend_from_slice(&[0xf3, 0x0f, 0x5d, 0xc1]);
+            memory
+        }
     }
 
     impl GuestMemory for TraceMemory {
@@ -95741,6 +95820,262 @@ mod fxsave_rip_tests {
         assert_eq!(result.instructions_executed, 8);
         assert_eq!(state.rip, RIP + 28);
         assert_eq!(memory.reads, 0);
+    }
+
+    #[test]
+    fn s2_38e_fxrstor_then_minss_uses_image_controls_and_live_gates() {
+        let context = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        };
+        let state_for = |cr0_bits: u64, cr4_bits: u64| {
+            let mut state = fixture_state(0, 0, 0);
+            state.x87.as_mut().unwrap().instruction_selector = None;
+            state.x87.as_mut().unwrap().data_selector = None;
+            state.cr0 = Some(Cr0Profile::BASE | cr0_bits);
+            state.cr4 = Some(Cr4Profile::BASE | cr4_bits);
+            state.activity = Some(crate::CpuActivity::Running);
+            state.sti_shadow = Some(crate::StiShadow::Clear);
+            state.rip = RIP;
+            state.gpr[Register::Rbx as usize] = 0x620;
+            state
+        };
+        let run_case = |cr0_bits, cr4_bits, left: u32, right: u32, mxcsr: u32| {
+            let mut state = state_for(cr0_bits, cr4_bits);
+            let before = state.clone();
+            let mut memory = TraceMemory::cr0_cr4_fxrstor64_minss(None);
+            memory.area[24..28].copy_from_slice(&mxcsr.to_le_bytes());
+            memory.area[160..164].copy_from_slice(&left.to_le_bytes());
+            memory.area[164..176].copy_from_slice(&[0x91; 12]);
+            memory.area[176..180].copy_from_slice(&right.to_le_bytes());
+            memory.area[180..192].copy_from_slice(&[0x37; 12]);
+            let image = memory.area.clone();
+            let mut restored_xmm0 = [0u8; 16];
+            restored_xmm0.copy_from_slice(&image[160..176]);
+            let result = run_with_cr4_fxrstor64_minss_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 10,
+                    stop_rip: Some(RIP + 37),
+                    context,
+                },
+                || false,
+            );
+            let invalid = matches!(
+                Binary32::from_bits(left).class(),
+                BinaryClass::QuietNaN | BinaryClass::SignalingNaN
+            ) || matches!(
+                Binary32::from_bits(right).class(),
+                BinaryClass::QuietNaN | BinaryClass::SignalingNaN
+            );
+            let denormal = Binary32::from_bits(left).class() == BinaryClass::Subnormal
+                || Binary32::from_bits(right).class() == BinaryClass::Subnormal;
+            let unmasked =
+                (invalid && mxcsr & (1 << 7) == 0) || (denormal && mxcsr & (1 << 8) == 0);
+            let new_flags = if invalid && denormal && mxcsr & 0x180 == 0x180 {
+                1
+            } else {
+                u32::from(invalid) | (u32::from(denormal) << 1)
+            };
+            assert_eq!(memory.reads, 13);
+            assert_eq!(memory.area, image);
+            assert_eq!(state.cr0, Some(Cr0Profile::BASE));
+            assert_eq!(state.cr4, Some(Cr4Profile::BASE | 0x600));
+            assert_eq!(state.sse.as_ref().unwrap().mxcsr, mxcsr | new_flags);
+            assert_eq!(&state.sse.as_ref().unwrap().xmm[1], &image[176..192]);
+            assert_eq!(
+                state.x87.as_ref().unwrap().instruction_pointer,
+                0x0123_4567_89ab_cdef
+            );
+            if unmasked {
+                assert_eq!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector: 19,
+                        error_code: None,
+                        linear_address: None,
+                    })
+                );
+                assert_eq!(result.instructions_executed, 9);
+                assert_eq!(state.rip, RIP + 33);
+                assert_eq!(state.sse.as_ref().unwrap().xmm[0], restored_xmm0);
+            } else {
+                assert_eq!(result.exit, RunExit::StopAddress);
+                assert_eq!(result.instructions_executed, 10);
+                assert_eq!(state.rip, RIP + 37);
+                let expected = Binary32::min_sse_raw_result(
+                    Binary32::from_bits(left),
+                    Binary32::from_bits(right),
+                )
+                .value()
+                .to_bits();
+                assert_eq!(
+                    &state.sse.as_ref().unwrap().xmm[0][..4],
+                    &expected.to_le_bytes()
+                );
+                assert_eq!(
+                    &state.sse.as_ref().unwrap().xmm[0][4..],
+                    &restored_xmm0[4..]
+                );
+            }
+            assert_ne!(
+                before.sse.unwrap().xmm[0],
+                state.sse.as_ref().unwrap().xmm[0]
+            );
+        };
+
+        // IM changes only masked-NaN completion versus #XM; exercise all 16
+        // initial EM/TS × OSFXSR/OSXMMEXCPT combinations on both outcomes.
+        for cr0_bits in [0, 4, 8, 12] {
+            for cr4_bits in [0, 1 << 9, 1 << 10, (1 << 9) | (1 << 10)] {
+                run_case(cr0_bits, cr4_bits, 0x7fc0_0001, 0x3f80_0000, 0x1e25 | 0x80);
+                run_case(cr0_bits, cr4_bits, 0x7fc0_0001, 0x3f80_0000, 0x1e25);
+                // DM changes only masked-subnormal completion versus #XM.
+                run_case(cr0_bits, cr4_bits, 0x0000_0001, 0x3f80_0000, 0x1e35 | 0x100);
+                run_case(cr0_bits, cr4_bits, 0x0000_0001, 0x3f80_0000, 0x1e35);
+            }
+        }
+        // MINSS invalid has priority only when both conditions are masked;
+        // otherwise both pre-computation sticky flags commit on #XM.
+        for im in [false, true] {
+            for dm in [false, true] {
+                run_case(
+                    12,
+                    0,
+                    0x7fc0_0001,
+                    1,
+                    0x1e00 | (u32::from(im) << 7) | (u32::from(dm) << 8),
+                );
+            }
+        }
+
+        // The public CR4-profile wrapper must carry the same established
+        // S2-38d denormal policy as the dedicated composition entry point.
+        let mut generic_state = state_for(12, 0);
+        let mut generic_memory = TraceMemory::cr0_cr4_fxrstor64_minss(None);
+        generic_memory.area[24..28].copy_from_slice(&0x1e35u32.to_le_bytes());
+        generic_memory.area[160..164].copy_from_slice(&1u32.to_le_bytes());
+        generic_memory.area[176..180].copy_from_slice(&0x3f80_0000u32.to_le_bytes());
+        let mut restored_xmm0 = [0u8; 16];
+        restored_xmm0.copy_from_slice(&generic_memory.area[160..176]);
+        let generic = run_with_cr4_profile(
+            &mut generic_state,
+            &mut generic_memory,
+            RunConfig {
+                instruction_budget: 10,
+                stop_rip: Some(RIP + 37),
+                context,
+            },
+            Cr4Profile::FpInitThenFxrstor64MinssLong64V1,
+            || false,
+        );
+        assert_eq!(
+            generic.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 19,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(generic.instructions_executed, 9);
+        assert_eq!(generic_state.sse.as_ref().unwrap().xmm[0], restored_xmm0);
+        assert_eq!(generic_state.sse.as_ref().unwrap().mxcsr, 0x1e37);
+
+        let mut state = state_for(12, 0);
+        let mut memory = TraceMemory::cr0_cr4_fxrstor64_minss(None);
+        let result = run_with_cr4_fxrstor64_minss_profile(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 10,
+                stop_rip: Some(RIP + 33),
+                context,
+            },
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 9);
+        assert_eq!(state.rip, RIP + 33);
+        assert_eq!(memory.reads, 13);
+        let restored = state.clone();
+
+        let mut budget_state = state_for(12, 0);
+        let mut budget_memory = TraceMemory::cr0_cr4_fxrstor64_minss(None);
+        let budget = run_with_cr4_fxrstor64_minss_profile(
+            &mut budget_state,
+            &mut budget_memory,
+            RunConfig {
+                instruction_budget: 9,
+                stop_rip: Some(RIP + 37),
+                context,
+            },
+            || false,
+        );
+        assert_eq!(budget.exit, RunExit::InstructionBudgetExhausted);
+        assert_eq!(budget.instructions_executed, 9);
+        assert_eq!(budget_state, restored);
+        assert_eq!(budget_memory.reads, 13);
+
+        let mut fetch_state = state_for(12, 0);
+        let mut fetch_memory = TraceMemory::cr0_cr4_fxrstor64_minss(None);
+        fetch_memory.code.truncate(33);
+        let fetch = run_with_cr4_fxrstor64_minss_profile(
+            &mut fetch_state,
+            &mut fetch_memory,
+            RunConfig {
+                instruction_budget: 10,
+                stop_rip: Some(RIP + 37),
+                context,
+            },
+            || false,
+        );
+        assert!(matches!(
+            fetch.exit,
+            RunExit::MemoryError(MemoryError::Unmapped {
+                access: AccessKind::Fetch,
+                ..
+            })
+        ));
+        assert_eq!(fetch.instructions_executed, 9);
+        assert_eq!(fetch_state, restored);
+        assert_eq!(fetch_memory.reads, 13);
+
+        let mut expected_eight = state_for(12, 0);
+        let mut expected_memory = TraceMemory::cr0_cr4_fxrstor64_minss(None);
+        let _ = run_with_cr4_fxrstor64_minss_profile(
+            &mut expected_eight,
+            &mut expected_memory,
+            RunConfig {
+                instruction_budget: 8,
+                stop_rip: None,
+                context,
+            },
+            || false,
+        );
+        for failed_callback in 1..=13 {
+            let mut failed_state = state_for(12, 0);
+            let mut failed_memory = TraceMemory::cr0_cr4_fxrstor64_minss(Some(failed_callback));
+            let failed = run_with_cr4_fxrstor64_minss_profile(
+                &mut failed_state,
+                &mut failed_memory,
+                RunConfig {
+                    instruction_budget: 10,
+                    stop_rip: Some(RIP + 37),
+                    context,
+                },
+                || false,
+            );
+            assert!(matches!(
+                failed.exit,
+                RunExit::MemoryError(MemoryError::Backend(_))
+            ));
+            assert_eq!(failed.instructions_executed, 8);
+            assert_eq!(failed_state.rip, RIP + 28);
+            assert_eq!(failed_state, expected_eight);
+            assert_eq!(failed_memory.reads, failed_callback);
+            assert_eq!(failed_memory.area, expected_memory.area);
+        }
     }
 }
 

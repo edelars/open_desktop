@@ -499,6 +499,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j/k/l: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j/k/l; independent review |
 | [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
+| [x] | S2-38e | Exact S2-39i FP-init/FXRSTOR64 followed by MINSS; image-controlled IM/DM completion and #XM policy; interpreter-only | S2-38d, S2-39i; independent review complete |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
@@ -6604,6 +6605,36 @@ Vol. 2B MINSS:
 See [S2-38d CPU contract](../specs/CPU_CONTRACT.md#s2-38d--exact-minss-unmasked-denormal-operand-exit),
 [report](../reports/STAGE_2_REPORT.md#s2-38d--exact-minss-unmasked-denormal-operand-handling),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38d-local-minss-unmasked-denormal-operand).
+
+#### S2-38e. Exact FP-init, FXRSTOR64, and image-controlled MINSS composition
+
+The distinct schema-v2 profile `s2-long-cr0-cr4-fp-init-fxrstor64-minss-v1`
+admits only the 33-byte S2-39i prefix plus `F3 0F 5D C1`
+(`MINSS XMM0,XMM1`), 37 bytes total. It retires ten instructions on
+completion. The first
+nine retain S2-39i's live CR0/CR4 transitions and staged 512-byte FXRSTOR64
+restore; MINSS consumes the restored XMM0/XMM1 and restored image MXCSR.
+S2-38d's exact IM/DM, sticky-status, and #XM policy is reused. The image's IM
+and DM vary independently; other exception masks are set, DAZ/FTZ and reserved
+bits are clear, and RC/prior sticky status are arbitrary.
+
+The handwritten literal image differs from the pre-restore XMM0/XMM1 state.
+Paired fixture variants differ only in image IM or DM (plus expected exit):
+masked QNaN completion versus #XM, and masked positive-subnormal completion
+versus #XM. Tests also cover sticky-status combinations, 16 initial CR0.EM/TS
+× CR4.OSFXSR/OSXMMEXCPT combinations on representative completed/faulting
+cases, and verify that completion changes only XMM0's low dword and effective
+MXCSR status. #XM preserves restored XMM0 and commits only permitted IE/DE
+sticky bits. STOP/budget at the post-restore boundary, final fetch failure and
+each restore read error do not execute MINSS. The image remains unchanged.
+
+Tampered schema bytes/results fail closed and the native backend denies the profile.
+This is an exact local synthetic composition only; no Linux/Ubuntu observation,
+physical x86 observation, or Mac mini execution is claimed. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38e--exact-fp-init-fxrstor64-minss-composition),
+[report](../reports/STAGE_2_REPORT.md#s2-38e--exact-fp-init-fxrstor64-and-image-controlled-minss-composition),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38e-fp-init-fxrstor64-and-minss),
+and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38e-s2-long-cr0-cr4-fp-init-fxrstor64-minss-v1).
 
 ### S2-39. Сохранение и восстановление FP/SIMD
 

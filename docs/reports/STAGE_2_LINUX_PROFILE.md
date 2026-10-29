@@ -772,6 +772,23 @@ validation remain `not_run`. See the [S2-39h CPU contract](../specs/CPU_CONTRACT
 [report](STAGE_2_REPORT.md#s2-39h--exact-fp-init-plus-fxsave64-composition), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39h-fp-init-plus-fxsave64-composition).
 
+## S2-38e — local FP-init, FXRSTOR64 and MINSS composition
+
+The `s2-long-cr0-cr4-fp-init-fxrstor64-minss-v1` profile is a synthetic
+37-byte composition: the exact 33-byte S2-39i FP-init plus FXRSTOR64 prefix,
+followed by `F3 0F 5D C1` (`MINSS XMM0,XMM1`). Local interpreter fixtures
+retire ten instructions on completion and nine before #XM on an unmasked
+invalid or denormal exception. Four independent literal images cover paired
+cases differing only in image IM or DM, with MXCSR loaded by FXRSTOR64
+controlling the existing S2-38d policy. Tests also cover sticky status,
+restored XMM state, live CR0/CR4 gates, fixture/result rejection and JIT/native
+denial. This is synthetic local evidence only: the composition was not
+observed in the Ubuntu image or in a running guest; Ubuntu boot and physical
+x86 validation remain `not_run`. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38e--exact-fp-init-fxrstor64-minss-composition),
+[plan](../plans/STAGE_2.md#s2-38e-exact-fp-init-fxrstor64-and-image-controlled-minss-composition),
+[implementation report](STAGE_2_REPORT.md#s2-38e--exact-fp-init-fxrstor64-and-image-controlled-minss-composition), and
+[fixture note](../../tests/fixtures/x86/stage2/README.md#s2-38e-fp-init-fxrstor64-and-minss).
+
 ## S2-40b — ограниченный SSE-only native XORPD oracle
 
 Выполнен программный срез с точным профилем

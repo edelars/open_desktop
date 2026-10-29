@@ -1,0 +1,112 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_38e_fp_init_fxrstor64_minss",
+  "profile": "s2-long-cr0-cr4-fp-init-fxrstor64-minss-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten exact 33-byte CR0 clear, FNINIT, CR4 enable, XORPD and FXRSTOR64 composition for bounded S2-39i.",
+    "specification": "Intel SDM Rev. 093 Vol. 2B MOV CR and XORPD; Vol. 2A FNINIT and FXRSTOR64; Vol. 3A \u00a75.10.4.1 and Table 16-1.",
+    "specification_version": "Intel SDM Rev. 093; local interpreter-only diagnostic profile."
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0000000000000620",
+      "0x0000000000000101",
+      "0x0000000000000102",
+      "0x0000000000000620",
+      "0x0000000000000104",
+      "0x0000000000000105",
+      "0x0000000000000106",
+      "0x0000000000000107",
+      "0x0000000000000108",
+      "0x0000000000000109",
+      "0x000000000000010a",
+      "0x000000000000010b",
+      "0x000000000000010c",
+      "0x000000000000010d",
+      "0x000000000000010e",
+      "0x000000000000010f"
+    ],
+    "rip": "0x000000000008068e",
+    "rflags": "0x0000000000000ed7",
+    "x87": {
+      "registers": [
+        "00070e151c232a31383f",
+        "11181f262d343b424950",
+        "222930373e454c535a61",
+        "333a41484f565d646b72",
+        "444b525960676e757c83",
+        "555c636a71787f868d94",
+        "666d747b828990979ea5",
+        "777e858c939aa1a8afb6"
+      ],
+      "control_word": "0x000000000000037e",
+      "status_word": "0x0000000000001881",
+      "tag_word": "0x000000000000e4e4",
+      "instruction_pointer": "0x0123456789abcdef",
+      "data_pointer": "0xfedcba9876543210",
+      "last_opcode": "0x00000000000005aa"
+    },
+    "sse": {
+      "xmm": [
+        "000102030405060708090a0b0c0d0e0f",
+        "101112131415161718191a1b1c1d1e1f",
+        "202122232425262728292a2b2c2d2e2f",
+        "303132333435363738393a3b3c3d3e3f",
+        "404142434445464748494a4b4c4d4e4f",
+        "505152535455565758595a5b5c5d5e5f",
+        "606162636465666768696a6b6c6d6e6f",
+        "707172737475767778797a7b7c7d7e7f",
+        "808182838485868788898a8b8c8d8e8f",
+        "909192939495969798999a9b9c9d9e9f",
+        "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+        "b0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+        "c0c1c2c3c4c5c6c7c8c9cacbcccdcecf",
+        "d0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
+        "e0e1e2e3e4e5e6e7e8e9eaebecedeeef",
+        "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+      ],
+      "mxcsr": "0x0000000000001f85",
+      "diagnostic_mxcsr_mask": "0x000000000000ffbf"
+    },
+    "cr0": "0x0000000080010033",
+    "activity": "running",
+    "sti_shadow": "clear",
+    "cr4": "0x0000000000000020"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x000000000008068e",
+      "length": 37,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "0f20c04883e0f30f22c0dbe30f20e0480d000600000f22e0660f57c1480fae4b40f30f5dc1",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    },
+    {
+      "region_id": "image",
+      "guest_address": "0x0000000000000660",
+      "length": 512,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "68244528ada555f91122334455667788f0debc9a78563412251e0000efbeadde00000000000000000000a5a5a5a5a5a500000000000000800100a5a5a5a5a5a500000000000000800000a5a5a5a5a5a50100000000000080ff7fa5a5a5a5a5a5ffffffffffffffffffffa5a5a5a5a5a534120000000000000080a5a5a5a5a5a50000000000000080ff3fa5a5a5a5a5a511223344556677880080a5a5a5a5a5a50100c07f9191919191919191919191910000803f373737373737373737373737262d343b424950575e656c737a81888f3940474e555c636a71787f868d949ba24c535a61686f767d848b9299a0a7aeb55f666d747b828990979ea5acb3bac1c8727980878e959ca3aab1b8bfc6cdd4db858c939aa1a8afb6bdc4cbd2d9e0e7ee989fa6adb4bbc2c9d0d7dee5ecf3fa01abb2b9c0c7ced5dce3eaf1f8ff060d14bec5ccd3dae1e8eff6fd040b12192027d1d8dfe6edf4fb020910171e252c333ae4ebf2f900070e151c232a31383f464df7fe050c131a21282f363d444b5259600a11181f262d343b424950575e656c731d242b323940474e555c636a71787f86a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x00000000000806b3",
+  "instruction_budget": 10,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000003ed7",
+  "expected_exit": "exception",
+  "cli_cpl": 0
+}

@@ -1183,6 +1183,211 @@ fn minss_unmasked_denormal_profile_has_versioned_mxcsr_and_snapshot_contract() {
 }
 
 #[test]
+fn s2_38e_fixture_is_exact_and_image_mxcsr_controls_minss_policy() {
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38e_fp_init_fxrstor64_minss.case.json"
+    );
+    let loaded = Fixture::from_json(bytes).unwrap();
+    assert_eq!(
+        loaded.fixture.profile,
+        Profile::LongCr0Cr4FpInitFxrstor64MinssV1
+    );
+    let mut baseline: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let base_hex = baseline["memory"][1]["initial_bytes_hex"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let base = decode_bytes(&base_hex).unwrap();
+
+    // Same independently-authored restore image and operands; changing only
+    // IM changes arithmetic #XM into masked completion.
+    let mut im_masked = base.clone();
+    let old_mxcsr = u32::from_le_bytes(im_masked[24..28].try_into().unwrap());
+    im_masked[24..28].copy_from_slice(&(old_mxcsr | (1 << 7)).to_le_bytes());
+    baseline["memory"][1]["initial_bytes_hex"] =
+        serde_json::Value::String(crate::memory::encode_bytes(&im_masked));
+    baseline["expected_exit"] = serde_json::Value::String("stop_address".into());
+    assert!(Fixture::from_json(&serde_json::to_vec(&baseline).unwrap()).is_ok());
+    assert_eq!(
+        u32::from_le_bytes(base[24..28].try_into().unwrap())
+            ^ u32::from_le_bytes(im_masked[24..28].try_into().unwrap()),
+        1 << 7
+    );
+
+    // Same operands with only DM toggled; a positive subnormal is masked or
+    // raises #XM according to the restored image's DM bit.
+    let mut dm_pair: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let mut subnormal_image = base.clone();
+    subnormal_image[160..164].copy_from_slice(&1u32.to_le_bytes());
+    subnormal_image[176..180].copy_from_slice(&0x3f80_0000u32.to_le_bytes());
+    let mxcsr = u32::from_le_bytes(subnormal_image[24..28].try_into().unwrap()) & !(1 << 7);
+    subnormal_image[24..28].copy_from_slice(&mxcsr.to_le_bytes());
+    dm_pair["memory"][1]["initial_bytes_hex"] =
+        serde_json::Value::String(crate::memory::encode_bytes(&subnormal_image));
+    dm_pair["expected_exit"] = serde_json::Value::String("exception".into());
+    assert!(Fixture::from_json(&serde_json::to_vec(&dm_pair).unwrap()).is_ok());
+    let mut dm_masked = subnormal_image.clone();
+    dm_masked[24..28].copy_from_slice(&(mxcsr | (1 << 8)).to_le_bytes());
+    dm_pair["memory"][1]["initial_bytes_hex"] =
+        serde_json::Value::String(crate::memory::encode_bytes(&dm_masked));
+    dm_pair["expected_exit"] = serde_json::Value::String("stop_address".into());
+    assert!(Fixture::from_json(&serde_json::to_vec(&dm_pair).unwrap()).is_ok());
+    assert_eq!(
+        u32::from_le_bytes(subnormal_image[24..28].try_into().unwrap())
+            ^ u32::from_le_bytes(dm_masked[24..28].try_into().unwrap()),
+        1 << 8
+    );
+
+    let qnan_fault = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38e_fp_init_fxrstor64_minss.case.json"
+    ))
+    .unwrap();
+    let qnan_masked = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38e_minss_masked_qnan.case.json"
+    ))
+    .unwrap();
+    let qnan_left = decode_bytes(&qnan_fault.fixture.memory[1].initial_bytes_hex).unwrap();
+    let qnan_right = decode_bytes(&qnan_masked.fixture.memory[1].initial_bytes_hex).unwrap();
+    assert!(
+        qnan_fault.fixture.memory[0].initial_bytes_hex
+            == qnan_masked.fixture.memory[0].initial_bytes_hex
+    );
+    assert!(
+        qnan_left
+            .iter()
+            .zip(&qnan_right)
+            .enumerate()
+            .all(|(index, (a, b))| {
+                if (24..28).contains(&index) {
+                    *a ^ *b == if index == 24 { 0x80 } else { 0 }
+                } else {
+                    a == b
+                }
+            })
+    );
+    let subnormal_fault = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38e_unmasked_subnormal.case.json"
+    ))
+    .unwrap();
+    let subnormal_masked_fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38e_masked_subnormal.case.json"
+    ))
+    .unwrap();
+    let subnormal_left =
+        decode_bytes(&subnormal_fault.fixture.memory[1].initial_bytes_hex).unwrap();
+    let subnormal_right =
+        decode_bytes(&subnormal_masked_fixture.fixture.memory[1].initial_bytes_hex).unwrap();
+    assert!(
+        subnormal_fault.fixture.memory[0].initial_bytes_hex
+            == subnormal_masked_fixture.fixture.memory[0].initial_bytes_hex
+    );
+    assert!(
+        subnormal_left
+            .iter()
+            .zip(&subnormal_right)
+            .enumerate()
+            .all(|(index, (a, b))| {
+                if (24..28).contains(&index) {
+                    *a ^ *b == if index == 25 { 1 } else { 0 }
+                } else {
+                    a == b
+                }
+            })
+    );
+
+    let mut unexpected_controls: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    unexpected_controls["minss_invalid_controls"] = serde_json::json!({
+        "sse_available": true,
+        "cr0_em": false,
+        "cr0_ts": false,
+        "cr4_osfxsr": true,
+        "cr4_osxmmexcpt": true
+    });
+    assert!(Fixture::from_json(&serde_json::to_vec(&unexpected_controls).unwrap()).is_err());
+    let mut wrong_tail: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    wrong_tail["memory"][0]["initial_bytes_hex"] = serde_json::Value::String(format!(
+        "{}f30f5dc0",
+        &wrong_tail["memory"][0]["initial_bytes_hex"]
+            .as_str()
+            .unwrap()[..66]
+    ));
+    assert!(Fixture::from_json(&serde_json::to_vec(&wrong_tail).unwrap()).is_err());
+    let make_result = |input: &LoadedFixture| {
+        let mut cpu = input
+            .fixture
+            .initial_state
+            .to_cpu_for(input.fixture.profile)
+            .unwrap();
+        let mut memory = crate::memory::FlatMemory::from_fixture(&input.fixture).unwrap();
+        let execution = od_isa::execute::run_with_cr4_fxrstor64_minss_profile(
+            &mut cpu,
+            &mut memory,
+            od_isa::execute::RunConfig {
+                instruction_budget: input.fixture.instruction_budget,
+                stop_rip: input.fixture.stop_rip.map(HexU64::get),
+                context: od_isa::memory::AccessContext {
+                    privilege: od_isa::memory::PrivilegeLevel::Ring0,
+                    ..od_isa::memory::AccessContext::default()
+                },
+            },
+            || false,
+        );
+        let mut output = result(input);
+        output.outcome = match execution.exit {
+            od_isa::execute::RunExit::StopAddress => Outcome::StopAddress {},
+            od_isa::execute::RunExit::Fault(_) => Outcome::Exception {},
+            other => panic!("unexpected local S2-38e result: {other:?}"),
+        };
+        output.instructions_executed = Observation::Available {
+            value: HexU64(execution.instructions_executed),
+        };
+        let is_exception = matches!(output.outcome, Outcome::Exception {});
+        let snap = snapshot(&mut output);
+        snap.state = IntegerState::from_cpu_for(&cpu, input.fixture.profile).unwrap();
+        snap.rflags_defined = HexU64(execution.rflags_defined);
+        snap.memory = memory.snapshot();
+        if is_exception {
+            snap.exception = Observation::Available {
+                value: Some(crate::result::ExceptionSnapshot {
+                    vector: 19,
+                    error_code: Observation::Unavailable {
+                        reason: "not modeled for #XM".into(),
+                    },
+                    faulting_rip: HexU64(input.fixture.initial_state.rip.get() + 33),
+                    fault_address: Observation::Unavailable {
+                        reason: "not applicable to #XM".into(),
+                    },
+                }),
+            };
+        }
+        output
+    };
+    let expected = make_result(&loaded);
+    let encoded = expected.to_json();
+    assert!(encoded.is_ok(), "S2-38e result validation: {encoded:?}");
+    assert!(compare(&loaded, &expected, &expected).unwrap().is_empty());
+
+    for success_input in [qnan_masked, subnormal_masked_fixture] {
+        let output = make_result(&success_input);
+        assert_eq!(output.outcome, Outcome::StopAddress {});
+        assert_eq!(
+            output.instructions_executed,
+            Observation::Available { value: HexU64(10) }
+        );
+        assert!(
+            compare(&success_input, &output, &output)
+                .unwrap()
+                .is_empty()
+        );
+    }
+    let mut wrong_status = expected.clone();
+    let state = snapshot(&mut wrong_status);
+    let old_mxcsr = state.state.sse.as_ref().unwrap().mxcsr.get();
+    state.state.sse.as_mut().unwrap().mxcsr = HexU64(old_mxcsr ^ 4);
+    assert!(compare(&loaded, &wrong_status, &wrong_status).is_err());
+}
+
+#[test]
 fn orpd_profile_is_exact_and_rejects_neighbors() {
     let fixture = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_34_19_orpd_register.case.json"

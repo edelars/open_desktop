@@ -1168,3 +1168,29 @@ truncated fetch issue no restore reads. The profile makes no combined-fault
 priority, physical, native or JIT claim. See the [fixture](../../tests/fixtures/x86/stage2/README.md#s2-39i-fp-init-plus-fxrstor64-composition),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-39i--exact-fp-init-plus-fxrstor64-composition),
 and [plan](../plans/STAGE_2.md#s2-39i-exact-fp-initialization-composition-followed-by-fxrstor64).
+
+## S2-38e `s2-long-cr0-cr4-fp-init-fxrstor64-minss-v1`
+
+This interpreter-only profile appends exactly `F3 0F 5D C1` (`MINSS XMM0,XMM1`)
+to the 33-byte S2-39i program, making a 37-byte program with ten retirements on
+completion. It uses the same CPL0, RBX, code, image mapping, and stop/budget
+shape as S2-39i, extended through the final instruction. The independent
+literal FXRSTOR64 image supplies the XMM operands and MXCSR controls; its XMM0
+and XMM1 values differ from pre-restore state.
+
+Image MXCSR permits IM and DM independently, any RC and old sticky bits, while
+requiring ZE/OE/UE/PE masks set and DAZ/FTZ/reserved bits clear. MINSS
+prerequisite gates are derived from the post-init live CR0/CR4 state. Result
+validation derives restored state and completion/#XM, status,
+retirement, and destination from the exact image. On completion only XMM0's
+low dword and effective status flags change; on #XM restored XMM0 remains
+whole and only permitted IE/DE sticky bits commit. The full image must remain
+unchanged. Unknown fields, wrong bytes, controls, image domain, result state,
+or result-state tampering are rejected. The native backend denies the profile.
+
+Tests use paired images toggling only IM and only DM, with corresponding
+masked-completion/#XM outcomes, plus sticky-flag and initial CR0/CR4 control
+matrices. This is synthetic local composition evidence; it contains no
+Linux/Ubuntu or physical-hardware observation. See the [fixture note](../../tests/fixtures/x86/stage2/README.md#s2-38e-fp-init-fxrstor64-and-minss),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38e--exact-fp-init-fxrstor64-minss-composition),
+and [plan](../plans/STAGE_2.md#s2-38e-exact-fp-init-fxrstor64-and-image-controlled-minss-composition).
