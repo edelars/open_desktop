@@ -173,3 +173,9 @@ register `0F 5D /r` form. Fixture admission requires the supported masked
 MXCSR subset and rejects scalar MINSS and other prefix/operand forms. Four
 literal binary32 lanes check output order and IE/DE sticky aggregation; JIT and
 native admission remain closed.
+
+S2-37h adds `s2-long-maxps-reg-masked-v1` for one bare or REX.R/B-extended
+register `0F 5F /r` form. Fixture admission requires the supported masked
+MXCSR subset and rejects scalar MAXSS and other prefix/operand forms. Four
+literal binary32 lanes check output order and IE/DE sticky aggregation; JIT and
+native admission remain closed.

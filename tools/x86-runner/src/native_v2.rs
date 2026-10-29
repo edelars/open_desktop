@@ -1476,6 +1476,7 @@ fn execute(loaded: &LoadedFixture) -> RunResult {
             | v2::Profile::LongMinssMaskedRegV1
             | v2::Profile::LongMaxssMaskedRegV1
             | v2::Profile::LongMinpsMaskedRegV1
+            | v2::Profile::LongMaxpsMaskedRegV1
             | v2::Profile::LongRcpssRegV1
             | v2::Profile::LongMovssRegV1
             | v2::Profile::LongMovsdRegV1
@@ -4319,6 +4320,9 @@ mod tests {
             )[..],
             &include_bytes!(
                 "../../../tests/fixtures/x86/stage2/s2_37g_minps_masked_register.case.json"
+            )[..],
+            &include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_37h_maxps_masked_register.case.json"
             )[..],
             &include_bytes!(
                 "../../../tests/fixtures/x86/stage2/s2_34_8b_movss_store_register.case.json"

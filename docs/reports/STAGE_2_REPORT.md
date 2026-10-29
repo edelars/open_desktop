@@ -15591,3 +15591,37 @@ findings; both caught the signed-zero expectation typo, corrected before the
 runner fixture passed. Linux native denial was compile-checked only. Mac mini
 and physical validation remain deferred to the combined final hardware
 substage.
+
+## S2-37h / bounded S2-38a — local MAXPS masked IE/DE status
+
+Added schema-v2 profile `s2-long-maxps-reg-masked-v1` for exactly one Long64
+legacy `NP [optional adjacent REX.R/B] 0F 5F /r` register form, ModR/M.mod=3,
+XMM0–15. F3 remains the separate MAXSS operation; the MAXPS profile rejects
+scalar, memory, other prefix, VEX/EVEX, and trailing-byte forms. Preconditions
+match bounded S2-38a: SSE state present, all MXCSR exception masks set, DAZ/FTZ
+clear, reserved bits clear; any RC and prior sticky flags are accepted.
+
+Execution snapshots both full XMM operands, applies the existing raw Binary32
+MAX selector to four little-endian lanes, aggregates IE for any QNaN/SNaN and
+DE for any subnormal input, then commits the entire destination XMM and sticky
+MXCSR bits after preflight. Operand-2 NaN bits including signalling payload,
+signed-zero/equal-value operand-2 selection and unrelated state are preserved.
+The literal XMM8←XMM9 fixture checks a mixed lane result with IE|DE (`0x1f80` to
+`0x1f83`). JIT/native/CPUID admission remains closed; unmasked exception
+delivery, #XM, memory forms and fault ordering are not implemented.
+
+Normative source: Intel SDM Rev. 093 Vol. 1 §11.5 and Appendix D Tables D-9,
+D-13, D-15, plus Vol. 2B MAXPS. Full S2-38 remains open. No hardware or Mac mini
+acceptance was performed; it stays in the combined final hardware substage.
+
+**Checks:** `cargo test -p od-isa --offline maxps_register_masked` passed (4);
+the MINPS, MINSS and MAXSS focused regression filters each passed (4);
+`cargo test -p od-testkit --offline` passed (369); the masked-register runner
+fixture group passed (4), including MAXPS and three scalar/packed regressions.
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`,
+`git diff --check` and `graphify update .` passed. The Linux native-denial path
+was compile-checked, not executed on this macOS host. Independent Sol medium
+code and documentation reviews completed with no remaining findings; the
+documentation reviewer checked all eight added links after the misplaced
+report subsection was moved and the adjacent S2-27b text restored.

@@ -2276,3 +2276,21 @@ occurs. JIT/native admission remains closed. Unmasked exception delivery and
 broader S2-38 fault ordering are not implemented. See the [plan](../plans/STAGE_2.md#s2-37g--local-long64-register-only-legacy-minps-with-masked-status),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37g-register-only-minps-with-masked-status),
 and [literal fixture](../../tests/fixtures/x86/stage2/s2_37g_minps_masked_register.case.json).
+
+## Local packed MAXPS register profile — S2-37h
+
+`s2-long-maxps-reg-masked-v1` admits only a bare or one-adjacent-REX Long64
+register `0F 5F /r` form with ModR/M.mod=3, XMM0–15. The F3-prefixed MAXSS
+operation remains separate. The profile requires SSE state, all six MXCSR
+exception masks set, DAZ/FTZ clear and reserved MXCSR bits clear; RC and
+pre-existing sticky bits are accepted.
+
+MAXPS snapshots both full XMM operands, selects four raw binary32 lanes using
+`Binary32::max_sse_raw_result`, and commits a full destination XMM. Any QNaN or
+SNaN lane selects raw operand 2 and sets sticky IE; any subnormal input lane
+sets sticky DE. These flags are ORed across lanes, and prior sticky bits are
+preserved. Unsupported state refuses before mutation; no data-memory callback
+occurs. JIT/native admission remains closed. Unmasked exception delivery and
+broader S2-38 fault ordering are not implemented. See the [plan](../plans/STAGE_2.md#s2-37h--local-long64-register-only-legacy-maxps-with-masked-status),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-37h-register-only-maxps-with-masked-status),
+and [literal fixture](../../tests/fixtures/x86/stage2/s2_37h_maxps_masked_register.case.json).

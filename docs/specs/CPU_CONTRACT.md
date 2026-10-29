@@ -10877,3 +10877,30 @@ S2-38a; unmasked exceptions, #XM delivery/suppression, CR0/CR4/OSXMMEXCPT,
 memory and fault ordering, and remaining S2-38 behavior remain open. JIT,
 native and CPUID admission remain closed. Physical validation is deferred to
 the combined final Mac mini substage.
+
+## Local S2-37h register-only MAXPS with masked status
+
+The schema-v2 profile `s2-long-maxps-reg-masked-v1` admits exactly one Long64
+legacy `[optional adjacent REX.R/B] 0F 5F /r` register instruction,
+ModR/M.mod=3 and XMM0–15. The F3-prefixed `MAXSS` form remains separate. It
+requires SSE state, all six MXCSR exception masks set, DAZ/FTZ clear and
+reserved MXCSR bits 16–31 zero. Any RC and existing sticky flags are permitted.
+Unsupported profile state is refused without claiming architectural
+#GP/#XM/#UD delivery.
+
+Execution snapshots both full XMM operands and evaluates four independent
+little-endian binary32 lanes with the existing raw MAXPS selector. Either
+QNaN or SNaN selects raw operand 2 and contributes IE; any subnormal input
+contributes DE while DAZ is clear. IE and DE aggregate independently across
+all lanes and commit with the full destination after preflight. Raw operand-2
+NaN payloads and signalling bits are preserved; equal values and signed-zero
+ties select operand 2. Aliasing is supported; unrelated CPU state and MXCSR
+bits are preserved; no data-memory access occurs.
+
+Intel SDM Rev. 093 Vol. 1 §11.5 and Appendix D Tables D-9/D-13/D-15 group
+MAXPS with the MINSS/MAXSS/MINPS masked IE/DE behavior; Vol. 2B specifies the
+MAXPS selector. This only extends the bounded S2-38a status subset. Unmasked
+exceptions, #XM delivery/suppression, CR0/CR4/OSXMMEXCPT, memory and fault
+ordering, and the rest of S2-38 remain open. JIT/native/CPUID admission remain
+closed. Physical validation is deferred to the combined final Mac mini
+substage.

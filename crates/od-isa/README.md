@@ -506,3 +506,11 @@ lanes; masked IE/DE conditions are ORed across lanes before the full destination
 and sticky-status commit. It uses the same all-masks-set, DAZ/FTZ-clear,
 reserved-bits-clear preconditions as MINSS/MAXSS. Unmasked exceptions, memory,
 JIT/native and physical execution remain closed. See [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-37g-register-only-minps-with-masked-status).
+
+S2-37h adds local-only packed register MAXPS profile
+`s2-long-maxps-reg-masked-v1` for bare or optional-REX `0F 5F /r` in register
+form. It snapshots both XMM operands and updates four little-endian binary32
+lanes; masked IE/DE conditions are ORed across lanes before the full destination
+and sticky-status commit. It uses the same all-masks-set, DAZ/FTZ-clear,
+reserved-bits-clear preconditions as MINPS. Unmasked exceptions, memory,
+JIT/native and physical execution remain closed. See [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-37h-register-only-maxps-with-masked-status).

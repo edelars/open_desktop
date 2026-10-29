@@ -5527,3 +5527,16 @@ reserved bits clear. Normative references are Intel SDM Rev. 093 Vol. 1 §11.5,
 Appendix D Tables D-9/D-13/D-15, and Vol. 2B MINPS. This is masked-status local
 coverage only; unmasked #XM delivery and fault ordering are not claimed. See
 the [plan](../../../../docs/plans/STAGE_2.md#s2-37g--local-long64-register-only-legacy-minps-with-masked-status).
+
+### S2-37h local masked-status MAXPS register profile
+
+`s2_37h_maxps_masked_register.case.json` is a handwritten schema-v2 XMM8←XMM9
+fixture for `45 0F 5F C1`. It mixes finite, signed-zero, QNaN/subnormal and
+infinity/SNaN lanes. Expected result bytes preserve raw RHS NaN bits, and the
+fixture requires MXCSR IE|DE sticky bits (`0x1f80` to `0x1f83`). The interpreter
+test also checks full state preservation and the profile remains JIT/native
+closed. MXCSR preconditions are all exception masks set, DAZ/FTZ clear and
+reserved bits clear. Normative references are Intel SDM Rev. 093 Vol. 1 §11.5,
+Appendix D Tables D-9/D-13/D-15, and Vol. 2B MAXPS. This is masked-status local
+coverage only; unmasked #XM delivery and fault ordering are not claimed. See
+the [plan](../../../../docs/plans/STAGE_2.md#s2-37h--local-long64-register-only-legacy-maxps-with-masked-status).

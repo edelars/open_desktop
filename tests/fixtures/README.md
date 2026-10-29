@@ -10,3 +10,6 @@ The local masked-status MAXSS fixture is documented in the
 
 The local masked-status MINPS fixture is documented in the
 [Stage 2 fixture index](x86/stage2/README.md#s2-37g-local-masked-status-minps-register-profile).
+
+The local masked-status MAXPS fixture is documented in the
+[Stage 2 fixture index](x86/stage2/README.md#s2-37h-local-masked-status-maxps-register-profile).
