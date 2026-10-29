@@ -10,6 +10,7 @@ pub(crate) fn native_profile_local_only(profile: od_testkit::v2::Profile) -> boo
     matches!(
         profile,
         od_testkit::v2::Profile::LongFsBaseV1
+            | od_testkit::v2::Profile::LongFsBaseMsrV1
             | od_testkit::v2::Profile::LongGsBaseV1
             | od_testkit::v2::Profile::LongFsSelectorV1
             | od_testkit::v2::Profile::LongGsSelectorV1

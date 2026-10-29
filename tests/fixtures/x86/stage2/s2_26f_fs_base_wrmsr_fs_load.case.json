@@ -1,0 +1,48 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_26f_fs_base_wrmsr_fs_load",
+  "profile": "s2-long-fs-base-msr-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten bytes, initial state, and memory answer; no assembler or emulator generated expected values.",
+    "specification": "Intel SDM revision 093 (253667-093US), RDMSR/WRMSR and MOV; Vol.3A canonical-address rules for IA32_FS_BASE.",
+    "specification_version": "Intel SDM revision 093; project S2-26f."
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0000000000500000", "0x00000000c0000100", "0x0000000000000000", "0x1122334455667788",
+      "0x0000000000200080", "0x0000000000200080", "0x0000000000200004", "0x0000000000200010",
+      "0x0123456789abcdef", "0xfedcba9876543210", "0x8877665544332211", "0xaabbccddeeff0011",
+      "0x1122112211221122", "0x3344334433443344", "0x778899aabbccddee", "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000cd7",
+    "fs_base": "0x0000000000100000"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 6,
+      "permissions": { "read": false, "write": false, "execute": true },
+      "initial_bytes_hex": "0f3064488b00",
+      "comparison_mask_hex": "ffffffffffff"
+    },
+    {
+      "region_id": "data",
+      "guest_address": "0x0000000000a00000",
+      "length": 8,
+      "permissions": { "read": true, "write": false, "execute": false },
+      "initial_bytes_hex": "8877665544332211",
+      "comparison_mask_hex": "ffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100006",
+  "instruction_budget": 2,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

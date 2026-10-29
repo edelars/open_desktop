@@ -602,4 +602,18 @@ mod tests {
         );
         assert!(raw_handle.is_null());
     }
+
+    #[test]
+    fn c_abi_rejects_rdmsr_and_wrmsr_without_an_explicit_msr_profile() {
+        use std::ffi::c_void;
+
+        for code in [&[0x0f, 0x32][..], &[0x0f, 0x30][..]] {
+            let mut raw_handle: *mut c_void = std::ptr::null_mut();
+            assert_eq!(
+                unsafe { od_fragment_create(code.as_ptr(), code.len(), &mut raw_handle) },
+                STATUS_INVALID_CODE
+            );
+            assert!(raw_handle.is_null());
+        }
+    }
 }

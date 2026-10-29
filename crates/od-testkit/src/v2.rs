@@ -20,6 +20,7 @@ pub const MAX_FIXTURE_JSON_BYTES: usize = 512 * 1024;
 pub const PROFILE: &str = "s2-long-integer-v1";
 pub const PROFILE_FS_BASE: &str = "s2-long-fs-base-v1";
 pub const PROFILE_GS_BASE: &str = "s2-long-gs-base-v1";
+pub const PROFILE_FS_BASE_MSR: &str = "s2-long-fs-base-msr-v1";
 pub const PROFILE_SEP_DISABLED: &str = "s2-long-sep-disabled-v1";
 pub const PROFILE_FS_SELECTOR: &str = "s2-long-fs-selector-v1";
 pub const PROFILE_GS_SELECTOR: &str = "s2-long-gs-selector-v1";
@@ -133,6 +134,8 @@ pub enum Profile {
     LongFsBaseV1,
     #[serde(rename = "s2-long-gs-base-v1")]
     LongGsBaseV1,
+    #[serde(rename = "s2-long-fs-base-msr-v1")]
+    LongFsBaseMsrV1,
     #[serde(rename = "s2-long-fs-selector-v1")]
     LongFsSelectorV1,
     #[serde(rename = "s2-long-gs-selector-v1")]
@@ -1345,7 +1348,7 @@ impl IntegerState {
         } else {
             None
         };
-        if profile == Profile::LongFsBaseV1 {
+        if profile == Profile::LongFsBaseV1 || profile == Profile::LongFsBaseMsrV1 {
             result.fs_base = Some(HexU64(state.fs_base));
         } else if profile == Profile::LongGsBaseV1 {
             result.gs_base = Some(HexU64(state.gs_base));
@@ -1658,7 +1661,8 @@ impl IntegerState {
                 | Profile::LongNullDsEsV1,
                 None,
             )
-            | (Profile::LongFsBaseV1 | Profile::LongFsLoadV1, Some(_)) => {}
+            | (Profile::LongFsBaseV1 | Profile::LongFsBaseMsrV1 | Profile::LongFsLoadV1, Some(_)) =>
+                {}
             (Profile::LongFsSelectorV1, Some(_)) => {}
             (Profile::LongSepDisabledV1 | Profile::LongRdtscV1, Some(_)) => {
                 return Err(invalid("state.fs_base", "not part of this profile"));
@@ -1789,7 +1793,13 @@ impl IntegerState {
             ) => {
                 return Err(invalid("state.fs_base", "not part of this profile"));
             }
-            (Profile::LongFsBaseV1 | Profile::LongFsSelectorV1 | Profile::LongFsLoadV1, None) => {
+            (
+                Profile::LongFsBaseV1
+                | Profile::LongFsBaseMsrV1
+                | Profile::LongFsSelectorV1
+                | Profile::LongFsLoadV1,
+                None,
+            ) => {
                 return Err(invalid("state.fs_base", "required by this profile"));
             }
         }
@@ -1914,6 +1924,7 @@ impl IntegerState {
                 | Profile::LongMovupdMemRipV1
                 | Profile::LongMovupdMemSibV1
                 | Profile::LongFsBaseV1
+                | Profile::LongFsBaseMsrV1
                 | Profile::LongFsSelectorV1
                 | Profile::LongVerwGdtV1
                 | Profile::LongFsLoadV1
@@ -2050,6 +2061,7 @@ impl IntegerState {
                 | Profile::LongMovupdMemRipV1
                 | Profile::LongMovupdMemSibV1
                 | Profile::LongFsBaseV1
+                | Profile::LongFsBaseMsrV1
                 | Profile::LongGsBaseV1
                 | Profile::LongVerwGdtV1
                 | Profile::LongGsLoadV1
@@ -2993,6 +3005,38 @@ impl Fixture {
                 return Err(invalid(
                     "memory.code",
                     "address, budget and stop_rip must match the exact admitted program",
+                ));
+            }
+        }
+        if self.profile == Profile::LongFsBaseMsrV1 {
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by the FS_BASE MSR profile"))?;
+            let bytes = code.initial_bytes_hex.to_ascii_lowercase();
+            let is_single = matches!(bytes.as_str(), "0f32" | "0f30");
+            let is_write_then_fs_load = bytes == "0f3064488b00";
+            let expected_budget = if is_write_then_fs_load { 2 } else { 1 };
+            let expected_length = if is_write_then_fs_load { 6 } else { 2 };
+            let valid_exit = self.expected_exit == ExpectedExit::StopAddress
+                || (is_write_then_fs_load && self.expected_exit == ExpectedExit::Exception);
+            if !(is_single || is_write_then_fs_load)
+                || code.guest_address != self.initial_state.rip
+                || code.length != expected_length
+                || !code.permissions.execute
+                || self.instruction_budget != expected_budget
+                || self.stop_rip.map(HexU64::get)
+                    != self
+                        .initial_state
+                        .rip
+                        .get()
+                        .checked_add(u64::from(expected_length))
+                || !valid_exit
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "FS_BASE MSR fixtures require exact bare 0F 32 or 0F 30 (budget 1), or 0F 30 64 48 8B 00 (budget 2), with stop RIP immediately after the sequence",
                 ));
             }
         }
@@ -5583,7 +5627,15 @@ impl RunResult {
                     self.instructions_executed,
                     Observation::Available { value } if value.get() > 0
                 );
-            if !fs_load_retired && value.state.fs_base != loaded.fixture.initial_state.fs_base {
+            let fs_base_msr_committed = loaded.fixture.profile == Profile::LongFsBaseMsrV1
+                && matches!(
+                    self.instructions_executed,
+                    Observation::Available { value } if value.get() > 0
+                );
+            if !fs_load_retired
+                && !fs_base_msr_committed
+                && value.state.fs_base != loaded.fixture.initial_state.fs_base
+            {
                 return Err(FormatError::CaseMismatch("state.fs_base"));
             }
             if !gs_load_retired && value.state.gs_base != loaded.fixture.initial_state.gs_base {

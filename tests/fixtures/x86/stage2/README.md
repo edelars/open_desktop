@@ -5866,3 +5866,16 @@ of a physical CPU bug. The one-pass reducer is not globally minimal. See the
 [S2-42b plan](../../../../docs/plans/STAGE_2.md#s2-42b-bounded-xmm-input-reducer),
 [format and replay instructions](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-42b-bounded-native-xorpd-xmm-input-reducer),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-42b--bounded-native-xorpd-xmm-input-reducer).
+
+## S2-26f `FsBaseV1` MSR fixture
+
+`s2_26f_fs_base_rdmsr.case.json` and
+`s2_26f_fs_base_wrmsr_fs_load.case.json` are handwritten schema-v2 fixtures.
+The first checks a canonical high-half RDMSR, zero-extension of EAX/EDX, and
+ignored high RCX bits in index selection. The second covers exact
+`0F 30 64 48 8B 00`, budget 2. Its first instruction writes
+`IA32_FS_BASE` from low EDX:EAX; the second reads the eight-byte value at
+`fs_base + RAX`. The literal expected value comes from the mapped data bytes.
+The schema admits only exact bare `0F 32` or `0F 30` at budget 1, or this exact
+write-then-load composition at budget 2. No native, JIT, C ABI, Linux runtime or
+physical execution is claimed.

@@ -1468,7 +1468,7 @@ execution и Linux boot не выполнялись и не заявляются
 Semantic references: Intel SDM Vol. 2A `LGDT/LIDT` entry (Order No.
 253666-093US, September 2026, [official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199));
 Vol. 3A §§2.4.1, 3.5.2, 4.5.1 and 4.5.3 (Order No. 253668-093US, September
-2026, [official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
+2026, [official Intel PDF](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)).
 
 ## S2-27b — exact Long64 `MOV DS, AX`
 
@@ -1524,7 +1524,7 @@ boot, physical/native execution, Mac mini и SSH проверки не выпо�
 Semantic references: Intel SDM Vol. 2B `MOV` entry (Order No. 253667-093US,
 September 2026, [official Intel PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf));
 Vol. 3A descriptor, privilege, and event references (Order No. 253668-093US,
-September 2026, [official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
+September 2026, [official Intel PDF](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)).
 
 ## S2-27c — exact Long64 `MOV ES, AX`
 
@@ -1647,7 +1647,7 @@ Sol review findings for IDT gate S=1 and current CS-cache validation were
 fixed; final Sol medium re-review completed clean, with no findings remaining. Architecture review is
 **approve/narrow** for this synchronous, explicit local API against Intel SDM
 Vol. 3A Rev. 093 (September 2026), §§7.12.1.2–3 and 7.14
-([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)). The
+([official Intel PDF](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)). The
 reviewed scope is one caller-selected external maskable vector delivered into
 a private Long64 CPL0 state; this is not automatic event integration with the
 run loop, an APIC, or a queue.
@@ -1732,10 +1732,44 @@ physical execution. Mac mini проверки отложены до общего
 Эти local checks не заменяют независимое code review или отложенные Mac/SSH
 проверки.
 
-Архитектурный источник: Intel SDM Vol. 3A §§2.8.7.1 и 4.5.3,
-[официальный PDF Intel](https://cdrdv2.intel.com/v1/dl/getContent/671190).
+Архитектурный источник: Intel SDM Rev. 093 Vol. 3A §§2.8.10 и 4.5.3,
+[официальный PDF Intel](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
 Контракт и матрица проверок: [CPU contract](../specs/CPU_CONTRACT.md#локальный-профиль-gsbasev1-s2-26c),
 [план](../plans/STAGE_2.md#s2-26c--локальный-gsbasev1-msr).
+
+## S2-26f — bounded `FsBaseV1` MSR and FS load
+
+Implemented an independent `MsrProfile::FsBaseV1` for only IA32_FS_BASE
+(`0xC0000100`). Bare Long64 RDMSR/WRMSR use ECX[31:0]; CPL0 RDMSR returns
+zero-extended EDX:EAX, and CPL0 WRMSR accepts only canonical48 low EDX:EAX.
+CPL1–3 and noncanonical writes fault CPU-side with #GP(0) without mutation.
+A successful WRMSR changes only fs_base, preserves FS selector/cache attributes
+and flags, advances RIP by two, and retires once. Unknown indexes and all other
+profiles remain fail closed. The new opt-in fixture exercises WRMSR followed
+by `MOV RAX, FS:[RAX]` and checks that the load uses the new base; a second
+instruction fault preserves the first commit and reports one retirement.
+
+The scope excludes Linux boot/runtime, guest exception delivery, JIT/native
+execution, and physical/Mac mini validation. The combined hardware batch remains
+reserved for final acceptance. Intel SDM Rev. 093 references are the Vol. 2 instruction entries
+RDMSR/WRMSR and Vol. 3A §§2.8.10/4.5.3; see the [CPU contract](../specs/CPU_CONTRACT.md#локальный-профиль-fsbasev1-s2-26f).
+
+**Локальные проверки автора:** `cargo test -p od-isa --offline fs_base_` (4
+passed); `cargo test -p od-runner --test fixture_v2 --offline fs_base` (5
+passed, including literal RDMSR and WRMSR→FS-load fixtures, JIT denial, and a
+second-instruction fault with one committed retirement);
+`cargo test -p od-host --offline c_abi_rejects_rdmsr_and_wrmsr_without_an_explicit_msr_profile`
+(1 passed); `cargo check --workspace --all-targets --offline`;
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`;
+`cargo fmt --all -- --check`; `git diff --check`; `graphify update .`.
+Independent Sol-medium review found no defects. The native denial unit test is present
+and type-checked for the Linux x86-64 target, but was not executed on this
+macOS arm64 host; cross-target `cargo test --no-run` reached linking and failed
+because the available macOS linker rejects Linux linker flags. Physical, SSH,
+and Mac mini checks were not run and remain reserved for the combined final
+hardware batch. `tools/check_layout.py` reports the worktree `.git` pointer and
+two pre-existing missing historical oracle manifests; it reports no new
+layout/link issue from this substage.
 
 ## S2-26d — local `SepDisabledV1` SYSENTER/SYSEXIT policy
 
@@ -16144,7 +16178,7 @@ Rev. 093 Vol. 2A FXSAVE 64-Bit Mode Exceptions pp. 3-418–3-419 lists `#NM`
 for CR0.TS and CR0.EM; Vol. 3A Event 7 pp. 7-33–7-34 states this is a fault,
 has no error code and does not execute the instruction:
 [Vol. 2A](https://cdrdv2.intel.com/v1/dl/getContent/671199),
-[Vol. 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190).
+[Vol. 3A](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
 
 **Focused checks:** `cargo test -p od-isa fxsave64_cr0 --offline` passed
 (2/2); `cargo test -p od-testkit s2_39f --offline` passed (2/2); and
@@ -16210,7 +16244,7 @@ claimed; hardware checks stay in the combined final substage. Intel SDM Rev.
 CR0.EM or CR0.TS. Vol. 3A Event 7 pp. 7-33–7-34 specifies fault classification,
 no error code and no program-state change because the instruction is not
 executed: [Vol. 2A](https://cdrdv2.intel.com/v1/dl/getContent/671199),
-[Vol. 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190).
+[Vol. 3A](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
 
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-39g--bounded-fxrstor64-cr0-em-and-ts-nm-gates),
 [plan](../plans/STAGE_2.md#s2-39g-bounded-fxrstor64-cr0-em-and-ts-nm-gates),
@@ -16356,7 +16390,7 @@ native XORPD regression passed (1). `cargo fmt --all -- --check`,
 delivery, or parent acceptance was run. Intel SDM Rev. 093
 sources: [official SDM index (version 093)](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html),
 [Vol. 1 §§11.5.3.2–3 and Table 11-1](https://cdrdv2.intel.com/v1/dl/getContent/671436),
-[Vol. 3A Table 16-1](https://cdrdv2.intel.com/v1/dl/getContent/671190),
+[Vol. 3A Table 16-1](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html),
 [Vol. 2B MINSS](https://cdrdv2.intel.com/929354/253667-sdm-vol-2b.pdf).
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38c--exact-minss-unmasked-invalid-operation-exit),
 [plan](../plans/STAGE_2.md#s2-38c-exact-long64-minss-xmm0xmm1-unmasked-invalid-operation-exit),
@@ -16402,7 +16436,7 @@ and admission helpers, без physical execution). Всего перечисле
 
 Источники Intel SDM Rev. 093: [Vol. 2B MINSS](https://cdrdv2.intel.com/929354/253667-sdm-vol-2b.pdf),
 [Vol. 1 §§11.5.2.2, 11.5.3.2–3, 4.9.2](https://cdrdv2.intel.com/v1/dl/getContent/671436),
-[Vol. 3A Tables 7-8 and 16-1](https://cdrdv2.intel.com/v1/dl/getContent/671190).
+[Vol. 3A Tables 7-8 and 16-1](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
 See [CPU contract](../specs/CPU_CONTRACT.md#s2-38d--exact-minss-unmasked-denormal-operand-exit),
 [plan](../plans/STAGE_2.md#s2-38d-exact-long64-minss-xmm0xmm1-unmasked-denormal-operand-exit),
 [test format](../testing/TEST_CASE_FORMAT.md#s2-38d-exact-minss-unmasked-denormal-profile),

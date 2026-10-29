@@ -530,6 +530,11 @@ fn capture(
             .map_err(|error| format!("cannot export native CPU state snapshot: {error}"))?,
         rflags_defined: HexU64(rflags_defined),
         memory,
+        xorpd_prerequisites: None,
+        minss_invalid_controls: None,
+        fxsave64_cr0_controls: None,
+        fxrstor64_cr0_controls: None,
+        rdtsc_source_calls: None,
         exception: if exception_known {
             Observation::Available { value: None }
         } else {
@@ -1519,6 +1524,11 @@ mod tests {
             converted_from_v1_sha256: None,
             initial_state: v2::IntegerState::try_from(&state)
                 .expect("test fixture integer state is representable in the snapshot schema"),
+            xorpd_prerequisites: None,
+            minss_invalid_controls: None,
+            fxsave64_cr0_controls: None,
+            fxrstor64_cr0_controls: None,
+            rdtsc_controls: None,
             memory: vec![
                 region("code", 0x100000, code, false, true),
                 region("data", 0x200000, &[0; 16], true, false),
@@ -4067,6 +4077,23 @@ mod tests {
         let actual = old_profile.fixture.initial_state.to_cpu().unwrap();
         let mut decoder = FlatMemory::from_fixture(&old_profile.fixture).unwrap();
         assert!(admission(&old_profile.fixture, &mut decoder, &actual).is_err());
+    }
+
+    #[test]
+    fn fs_base_msr_profile_fails_closed_before_native_trace() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/x86/stage2/s2_26f_fs_base_wrmsr_fs_load.case.json");
+        let loaded = Fixture::from_json(&std::fs::read(path).unwrap()).unwrap();
+        let result = execute(&loaded);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
 
     #[test]

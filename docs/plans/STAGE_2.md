@@ -2149,6 +2149,40 @@ it does not report a link introduced by S2-26e. No physical, SSH, Mac mini,
 or native checks were run; the C ABI test only verified create-time rejection.
 Independent Sol-medium review completed with no findings.
 
+#### S2-26f — bounded `FsBaseV1` MSR and FS load
+
+**Статус:** interpreter/schema/runner implementation and local checks complete;
+independent Sol-medium review complete with no findings. Native execution and physical/Mac mini
+checks remain deferred to the combined final hardware batch.
+
+Implement an independent immutable `MsrProfile::FsBaseV1` for only
+`IA32_FS_BASE` (`0xC0000100`). Admit exact bare Long64 `0F 32`/`0F 30`, select
+the index from `ECX[31:0]`, and fix the profile to 48-bit canonical addresses
+without LA57, LAM, or VMX. CPL0 RDMSR zero-extends EDX:EAX from `fs_base`; CPL0
+WRMSR consumes only low EDX:EAX and commits only canonical48 values. CPL1–3
+and noncanonical writes raise CPU-side `#GP(0)` without mutation, retirement,
+or a data callback. Successful writes mutate only `fs_base`, preserve segment
+selector/cache attributes and flags, advance RIP by two bytes, and retire once.
+Unknown indexes, legacy APIs, and absent/other profiles remain Unsupported.
+
+The opt-in v2 fixture admits only one bare RDMSR/WRMSR with budget 1 or exact
+`0F 30 64 48 8B 00` with budget 2. The latter proves that a following FS-based
+load observes the newly written base and that a second-instruction fault leaves
+the WRMSR committed with retirement 1. Schema, interpreter runner, native/JIT/
+C ABI denial and literal fixtures cover boundaries and access traces. Preserve
+existing LOCK/#UD, prefix and fetch-truncation precedence.
+
+Normative basis: Intel SDM Rev. 093 instruction reference entries `RDMSR`/`WRMSR` and Vol. 3A
+§2.8.10 plus §4.5.3 for canonical address checks; official source links are
+listed in the CPU contract. No Linux boot/runtime, SSH, Mac mini or physical
+checks belong to this substage; the combined hardware batch remains final-only.
+Author checks passed: ISA FS_BASE tests (4), fixture runner FS_BASE tests (5),
+C ABI denial (1), workspace check, Linux x86-64 native-target check,
+formatting, diff check and graph update. Layout validation reports the known
+worktree pointer and two old missing-oracle links. Independent Sol-medium review
+is pending; native runtime and physical acceptance remain unverified.
+
+
 ### S2-27. Descriptors, события и системные переходы
 
 The bounded CPL3 GDT-only `VERW AX` form is tracked in S2-22e and is excluded

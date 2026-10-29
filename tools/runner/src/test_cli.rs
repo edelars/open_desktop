@@ -989,7 +989,7 @@ fn execute_fixture_v2(
         Fxrstor64Cr0Controls, Fxsave64Cr0Controls, MinssInvalidControls, RdtscControls, RunConfig,
         RunExit, XorpdPrerequisiteState, run, run_with_fxrstor64_cr0_controls,
         run_with_fxsave64_cr0_controls, run_with_minss_invalid_controls,
-        run_with_minss_unmasked_denormal_controls, run_with_rdtsc_source,
+        run_with_minss_unmasked_denormal_controls, run_with_msr_profile, run_with_rdtsc_source,
         run_with_rep_continuation, run_with_sep_profile, run_with_xorpd_prerequisites,
     };
     use od_testkit::v2;
@@ -1005,7 +1005,10 @@ fn execute_fixture_v2(
     let mut timed_out = false;
     // A cooperative deadline is checked at the same instruction boundaries as
     // STOP, before budget/fetch. It cannot interrupt a stalled backend call.
-    let context = if loaded.fixture.profile == v2::Profile::LongNullDsEsV1 {
+    let context = if matches!(
+        loaded.fixture.profile,
+        v2::Profile::LongNullDsEsV1 | v2::Profile::LongFsBaseMsrV1
+    ) {
         od_isa::memory::AccessContext {
             privilege: od_isa::memory::PrivilegeLevel::Ring0,
             ..od_isa::memory::AccessContext::default()
@@ -1059,6 +1062,14 @@ fn execute_fixture_v2(
             timeout,
         )
         .expect("fixture supplies a valid fresh REP continuation boundary")
+    } else if loaded.fixture.profile == v2::Profile::LongFsBaseMsrV1 {
+        run_with_msr_profile(
+            &mut state,
+            memory,
+            config,
+            &od_isa::msr::MsrProfile::FsBaseV1,
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongSepDisabledV1 {
         run_with_sep_profile(
             &mut state,

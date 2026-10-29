@@ -1540,13 +1540,17 @@ fn step_tracked_with_profiles_and_rdtsc(
             })
         };
         if *profile == MsrProfile::SysenterProbeV1 || context.privilege != PrivilegeLevel::Ring0 {
-            // The SYSENTER probe policy faults at every CPL; GS_BASE is
-            // accessible only at CPL0 in this bounded profile.
+            // The SYSENTER probe policy faults at every CPL; FS_BASE and
+            // GS_BASE are accessible only at CPL0 in their bounded profiles.
             return Ok(gp0());
         }
         match instruction.operation {
             Operation::ReadMsr => {
-                let value = state.gs_base;
+                let value = match profile {
+                    MsrProfile::FsBaseV1 => state.fs_base,
+                    MsrProfile::GsBaseV1 => state.gs_base,
+                    MsrProfile::SysenterProbeV1 => unreachable!("faulted above"),
+                };
                 state.gpr[Register::Rax as usize] = u64::from(value as u32);
                 state.gpr[Register::Rdx as usize] = u64::from((value >> 32) as u32);
             }
@@ -1556,7 +1560,11 @@ fn step_tracked_with_profiles_and_rdtsc(
                 if !canonical(value) {
                     return Ok(gp0());
                 }
-                state.gs_base = value;
+                match profile {
+                    MsrProfile::FsBaseV1 => state.fs_base = value,
+                    MsrProfile::GsBaseV1 => state.gs_base = value,
+                    MsrProfile::SysenterProbeV1 => unreachable!("faulted above"),
+                }
             }
             _ => unreachable!("the MSR profile branch has an MSR operation"),
         }
@@ -89872,6 +89880,218 @@ mod tests {
             assert!(memory.atomic_exchanges.is_empty());
             assert!(memory.atomic_adds.is_empty());
             assert!(memory.atomic_compare_exchanges.is_empty());
+        }
+    }
+
+    #[test]
+    fn fs_base_rdmsr_and_wrmsr_are_isolated_and_use_low_gpr_halves() {
+        let profile = MsrProfile::FsBaseV1;
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        state.rflags = 0xad7;
+        state.fs_base = 0x0000_7fff_ffff_fff0;
+        state.gs_base = 0x0000_1234_5678_9000;
+        state.fs_selector = 0x28;
+        state.gs_selector = 0x30;
+        state.fs_cache = Some(crate::FsDescriptorCache {
+            limit: 0x1234,
+            access: 0x9b,
+            flags: 0x0a,
+        });
+        state.gs_cache = Some(crate::FsDescriptorCache {
+            limit: 0x5678,
+            access: 0xf3,
+            flags: 0x05,
+        });
+        for (register, value) in state.gpr.iter_mut().enumerate() {
+            *value = 0xfeed_0000_0000_0000 | register as u64;
+        }
+        state.gpr[Register::Rcx as usize] = 0xdead_beef_c000_0100;
+        let mut expected = state.clone();
+        expected.gpr[Register::Rax as usize] = 0xffff_fff0;
+        expected.gpr[Register::Rdx as usize] = 0x0000_7fff;
+        expected.rip += 2;
+        let mut memory = Memory::at(&[0x0f, 0x32], 0x1000);
+        assert_eq!(
+            step_with_msr_profile(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                &profile
+            ),
+            Ok(StepOutcome::Advanced)
+        );
+        assert_eq!(state, expected);
+        assert_eq!(memory.fetches, [0x1000, 0x1001]);
+        assert!(memory.accesses.is_empty());
+
+        state.rip = 0x2000;
+        state.gpr[Register::Rcx as usize] = 0x0123_4567_c000_0100;
+        let value = 0xffff_8000_1234_5678u64;
+        state.gpr[Register::Rax as usize] = 0xabcd_ef01_0000_0000 | u64::from(value as u32);
+        state.gpr[Register::Rdx as usize] = 0x8765_4321_0000_0000 | u64::from((value >> 32) as u32);
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x0f, 0x30], 0x2000);
+        assert_eq!(
+            step_with_msr_profile(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                &profile
+            ),
+            Ok(StepOutcome::Advanced)
+        );
+        let mut expected = before;
+        expected.fs_base = value;
+        expected.rip += 2;
+        assert_eq!(state, expected);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn fs_base_wrmsr_accepts_both_canonical48_edges() {
+        let profile = MsrProfile::FsBaseV1;
+        for value in [0x0000_7fff_ffff_ffffu64, 0xffff_8000_0000_0000] {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.fs_base = 0x1234;
+            state.fs_selector = 0x28;
+            state.fs_cache = Some(crate::FsDescriptorCache {
+                limit: 0x1234,
+                access: 0x9b,
+                flags: 0x0a,
+            });
+            state.rflags = 0xcd7;
+            state.gpr[Register::Rcx as usize] = 0xc000_0100;
+            state.gpr[Register::Rax as usize] = 0xfeed_0000_0000_0000 | u64::from(value as u32);
+            state.gpr[Register::Rdx as usize] =
+                0xbeef_0000_0000_0000 | u64::from((value >> 32) as u32);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0x0f, 0x30], 0x1000);
+            assert_eq!(
+                step_with_msr_profile(
+                    &mut state,
+                    &mut memory,
+                    AccessContext {
+                        privilege: PrivilegeLevel::Ring0,
+                        ..AccessContext::default()
+                    },
+                    &profile
+                ),
+                Ok(StepOutcome::Advanced)
+            );
+            let mut expected = before;
+            expected.fs_base = value;
+            expected.rip += 2;
+            assert_eq!(state, expected);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn fs_base_wrmsr_faults_are_atomic_and_unknown_indexes_stay_unsupported() {
+        let profile = MsrProfile::FsBaseV1;
+        for code in [&[0x0f, 0x32][..], &[0x0f, 0x30][..]] {
+            for privilege in [
+                PrivilegeLevel::Ring1,
+                PrivilegeLevel::Ring2,
+                PrivilegeLevel::Ring3,
+            ] {
+                let mut state = LongModeState::default();
+                state.rip = 0x1000;
+                state.fs_base = 0x1234;
+                state.gpr[Register::Rcx as usize] = 0xc000_0100;
+                state.gpr[Register::Rax as usize] = 0x5678;
+                state.gpr[Register::Rdx as usize] = 0x9abc;
+                let before = state.clone();
+                let mut memory = Memory::at(code, 0x1000);
+                assert_eq!(
+                    step_with_msr_profile(
+                        &mut state,
+                        &mut memory,
+                        AccessContext {
+                            privilege,
+                            ..AccessContext::default()
+                        },
+                        &profile,
+                    ),
+                    Ok(StepOutcome::Fault(ArchitecturalFault {
+                        vector: 13,
+                        error_code: Some(0),
+                        linear_address: None,
+                    }))
+                );
+                assert_eq!(state, before);
+                assert!(memory.accesses.is_empty());
+            }
+        }
+        for (index, value, privilege, expected) in [
+            (
+                0xc000_0100u32,
+                0x0000_8000_0000_0000u64,
+                PrivilegeLevel::Ring0,
+                StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }),
+            ),
+            (
+                0xc000_0100u32,
+                0xffff_7fff_ffff_ffffu64,
+                PrivilegeLevel::Ring0,
+                StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }),
+            ),
+            (
+                0xc000_0100u32,
+                0x0000_1234u64,
+                PrivilegeLevel::Ring3,
+                StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }),
+            ),
+            (
+                0xc000_0101u32,
+                0x0000_1234u64,
+                PrivilegeLevel::Ring0,
+                StepOutcome::Unsupported { opcode: 0x30 },
+            ),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.fs_base = 0x4321;
+            state.gs_base = 0x8765;
+            state.gpr[Register::Rcx as usize] = u64::from(index);
+            state.gpr[Register::Rax as usize] = u64::from(value as u32);
+            state.gpr[Register::Rdx as usize] = u64::from((value >> 32) as u32);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0x0f, 0x30], 0x1000);
+            assert_eq!(
+                step_with_msr_profile(
+                    &mut state,
+                    &mut memory,
+                    AccessContext {
+                        privilege,
+                        ..AccessContext::default()
+                    },
+                    &profile
+                ),
+                Ok(expected)
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
         }
     }
 

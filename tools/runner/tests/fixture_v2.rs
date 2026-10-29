@@ -27,6 +27,10 @@ const LOCK_XADD_QWORD_MEMORY_ALIAS_SPLIT: &[u8] = include_bytes!(
 );
 const MFENCE_STORE_FENCE_LOAD: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_21g_mfence_store_fence_load.case.json");
+const FS_BASE_WRMSR_FS_LOAD: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_26f_fs_base_wrmsr_fs_load.case.json");
+const FS_BASE_RDMSR: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_26f_fs_base_rdmsr.case.json");
 const FSTP_INVALID_SOURCE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30w_fstp_invalid_source.case.json");
 const FST_INVALID_SOURCE: &[u8] =
@@ -1642,6 +1646,85 @@ fn gs_base_qword_load_fixture_uses_base_and_rax_alias() {
     assert_eq!(observed.state.rip, HexU64(0x0010_0004));
     assert_eq!(observed.memory[0].bytes_hex, "65488b00");
     assert_eq!(observed.exception, Observation::Available { value: None });
+}
+
+#[test]
+fn fs_base_wrmsr_is_observed_by_following_fs_load() {
+    let (input, result) = run(FS_BASE_WRMSR_FS_LOAD, "interpreter", 0);
+    assert_eq!(input.fixture.case_id, "s2_26f_fs_base_wrmsr_fs_load");
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongFsBaseMsrV1
+    );
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 2);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.gpr[0], HexU64(0x1122_3344_5566_7788));
+    assert_eq!(observed.state.fs_base, Some(HexU64(0x0050_0000)));
+    assert_eq!(observed.state.rip, HexU64(0x0010_0006));
+    assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+    assert_eq!(observed.memory[0].bytes_hex, "0f3064488b00");
+    assert_eq!(observed.memory[1].bytes_hex, "8877665544332211");
+    assert_eq!(observed.exception, Observation::Available { value: None });
+}
+
+#[test]
+fn fs_base_rdmsr_fixture_zero_extends_results_and_preserves_other_state() {
+    let (input, result) = run(FS_BASE_RDMSR, "interpreter", 0);
+    assert_eq!(input.fixture.case_id, "s2_26f_fs_base_rdmsr_zero_extend");
+    assert_eq!(count(&result), 1);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.gpr[0], HexU64(0));
+    assert_eq!(observed.state.gpr[2], HexU64(0xffff_8000));
+    assert_eq!(observed.state.gpr[1], input.fixture.initial_state.gpr[1]);
+    assert_eq!(observed.state.fs_base, Some(HexU64(0xffff_8000_0000_0000)));
+    assert_eq!(observed.state.rip, HexU64(0x0010_0002));
+    assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+    assert_eq!(observed.memory[0].bytes_hex, "0f32");
+}
+
+#[test]
+fn fs_base_msr_fixture_is_denied_by_jit_engine() {
+    let (_, result) = run(FS_BASE_WRMSR_FS_LOAD, "jit", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+    assert!(matches!(
+        result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn fs_base_msr_fixture_bounds_forms_and_keeps_wrmsr_commit_on_later_fault() {
+    let loaded = Fixture::from_json(FS_BASE_WRMSR_FS_LOAD).unwrap();
+    let mut single = loaded.fixture.clone();
+    single.memory[0].initial_bytes_hex = "0f32".to_string();
+    single.memory[0].length = 2;
+    single.memory[0].comparison_mask_hex = "ffff".to_string();
+    single.instruction_budget = 1;
+    single.stop_rip = Some(HexU64(0x0010_0002));
+    assert!(single.validate().is_ok());
+    let mut prefixed = loaded.fixture.clone();
+    prefixed.memory[0].initial_bytes_hex = "480f30".to_string();
+    prefixed.memory[0].length = 3;
+    prefixed.memory[0].comparison_mask_hex = "ffffff".to_string();
+    prefixed.instruction_budget = 1;
+    prefixed.stop_rip = Some(HexU64(0x0010_0003));
+    assert!(prefixed.validate().is_err());
+
+    let mut faults_on_fs_load = loaded.fixture;
+    faults_on_fs_load.initial_state.gpr[0] = HexU64(0x0000_7fff_ffff_ffff);
+    faults_on_fs_load.initial_state.gpr[2] = HexU64(0x0000_0000_0000_7fff);
+    faults_on_fs_load.expected_exit = ExpectedExit::Exception;
+    let bytes = faults_on_fs_load.to_json().unwrap();
+    let (result_input, result) = run(&bytes, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::Exception {}));
+    assert_eq!(count(&result), 1);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.fs_base, Some(HexU64(0x0000_7fff_ffff_ffff)));
+    assert_eq!(observed.state.rip, HexU64(0x0010_0002));
+    assert_eq!(observed.memory[0].bytes_hex, "0f3064488b00");
+    assert_eq!(result_input.fixture.expected_exit, ExpectedExit::Exception);
 }
 
 #[test]

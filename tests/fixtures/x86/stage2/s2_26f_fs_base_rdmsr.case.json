@@ -1,0 +1,40 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_26f_fs_base_rdmsr_zero_extend",
+  "profile": "s2-long-fs-base-msr-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten bytes and state; expected outputs are literal consequences of the selected FS_BASE profile.",
+    "specification": "Intel SDM revision 093, RDMSR encoding and result semantics; project S2-26f.",
+    "specification_version": "Intel SDM revision 093; project S2-26f."
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0xfeedface12345678", "0xdeadbeefc0000100", "0xbeefdead87654321", "0x1122334455667788",
+      "0x0000000000200080", "0x0000000000200080", "0x0000000000200004", "0x0000000000200010",
+      "0x0123456789abcdef", "0xfedcba9876543210", "0x8877665544332211", "0xaabbccddeeff0011",
+      "0x1122112211221122", "0x3344334433443344", "0x778899aabbccddee", "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000cd7",
+    "fs_base": "0xffff800000000000"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 2,
+      "permissions": { "read": false, "write": false, "execute": true },
+      "initial_bytes_hex": "0f32",
+      "comparison_mask_hex": "ffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100002",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

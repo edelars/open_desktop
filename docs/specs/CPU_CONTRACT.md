@@ -93,9 +93,9 @@ GS selector или hidden GS descriptor cache и не изменяет `fs_base`
 
 Выбор canonical48 — фиксированная политика этого профиля, согласованная с
 выбранным 48-bit linear target; это не обобщение на процессоры с другой
-шириной linear address. В Intel SDM Vol. 3A §§2.8.7.1 и 4.5.3 описаны 32-bit
+шириной linear address. В Intel SDM Vol. 3A §§2.8.10 и 4.5.3 описаны 32-bit
 индекс RDMSR/WRMSR в 64-bit mode и проверки canonicality при WRMSR к
-IA32_GS_BASE: [официальный Intel SDM Vol. 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190).
+IA32_GS_BASE: [официальный Intel SDM Vol. 3A](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
 
 Профиль не меняет нулевые feature masks CPUID `DiagnosticV1` и не заявляет
 Linux boot, Linux fixup или guest `#GP` delivery. JIT/native/physical admission
@@ -104,6 +104,27 @@ Linux boot, Linux fixup или guest `#GP` delivery. JIT/native/physical admissi
 реализации и проверки указана в
 [плане](../plans/STAGE_2.md#s2-26c--локальный-gsbasev1-msr) и будет отражена в
 [отчёте этапа 2](../reports/STAGE_2_REPORT.md#s2-26c--локальный-gsbasev1-msr).
+
+### Локальный профиль `FsBaseV1` (S2-26f)
+
+`MsrProfile::FsBaseV1` независимо покрывает только `IA32_FS_BASE`
+(`0xC0000100`), не расширяя `GsBaseV1` или `SysenterProbeV1`. Допущены только
+bare Long64 `0F 32` и `0F 30`; индекс берётся из `ECX[31:0]`. Профиль фиксирует
+linear-address width 48 и не включает LA57, LAM или VMX. CPL0 `RDMSR` возвращает
+`fs_base` в `EDX:EAX` с zero-extension 32-bit результатов; CPL0 `WRMSR`
+собирает только низкие 32-bit половины `EDX:EAX` и принимает только
+canonical48 значение. CPL1–3 и noncanonical48 запись дают CPU-side `#GP(0)` без
+state mutation, retirement или data-memory callback. Успешная запись меняет
+только `fs_base`; FS selector/cache attributes и flags сохраняются. Успешная
+инструкция продвигает RIP на 2 и считается завершённой один раз.
+
+Неизвестный индекс, legacy API и отсутствие выбранного профиля остаются
+`Unsupported`. Профиль самостоятельный и не включает GS/SYSENTER policy. По
+Rev. 093 правила MSR описаны в инструкциях `RDMSR`/`WRMSR` Vol. 2, а проверки
+`IA32_FS_BASE` canonicality — Vol. 3A §2.8.10 и §4.5.3:
+[официальный Intel SDM](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+Указанный scope не утверждает Linux boot/runtime, exception delivery,
+JIT/native execution или физическую проверку.
 
 ### Локальная политика `SepDisabledV1` (S2-26d)
 
@@ -181,7 +202,7 @@ does not provide a machine-wide clock or alter CPUID advertisement.
 
 The CPUID.0 vendor bytes in architectural EBX/EDX/ECX order form `OpenDesktop ` (12 ASCII bytes). CPUID.1 EDX advertises FPU, PSE, TSC, MSR, PAE, CX8, APIC, PGE, CMOV, PAT, MMX, FXSR, SSE and SSE2; SEP is clear. CPUID.1 ECX is zero (including no XSAVE, OSXSAVE, AVX, or hypervisor-present bit). CPUID.80000001 EDX advertises SYSCALL, NX and long mode. CPUID.80000008 reports physical-address width 36 and linear-address width 48. Any unlisted EAX function returns four zero registers. This table is the selected project target, not a claim that these values came from an existing physical CPU.
 
-For CPUID, the input ECX is ignored for every listed function in this profile; unlisted EAX function numbers return four zero registers irrespective of ECX. XSAVE/XRSTOR and XGETBV/XSETBV are outside this target; CR4.OSXSAVE must remain clear. Legacy x87/MMX/XMM state and FXSAVE/FXRSTOR remain in scope as required by the selected Linux startup path. SEP=0; the explicit S2-26d `SepDisabledV1` local policy raises CPU-side `#UD` for exact bare SYSENTER/SYSEXIT after complete fetch. It does not model exception delivery or settle Linux behavior. Linux 7.0's `idt_syscall_init` calls `wrmsrq_safe` for IA32_SYSENTER_CS/ESP/EIP (`0x174..0x176`) in both `ia32_enabled()` branches, without guarding those writes on SEP; the calls are listed in authenticated Ubuntu `arch/x86/kernel/cpu/common.c:2265–2285` ([upstream v7.0 source](https://github.com/torvalds/linux/blob/v7.0/arch/x86/kernel/cpu/common.c#L2121-L2141)). The exact Ubuntu config has `CONFIG_PARAVIRT_XXL=y`: `arch/x86/include/asm/paravirt.h:159–161,186–188` routes the safe write through its MSR operation, and the default `pv_ops` table in `arch/x86/kernel/paravirt.c:116` binds that operation to `native_write_msr_safe` ([paravirt.h](https://github.com/torvalds/linux/blob/v7.0/arch/x86/include/asm/paravirt.h#L149-L176), [paravirt.c](https://github.com/torvalds/linux/blob/v7.0/arch/x86/kernel/paravirt.c#L98-L108)). The native wrapper installs `EX_TYPE_WRMSR_SAFE` in the exception table (`arch/x86/include/asm/msr.h:144–156`); `EX_TYPE_WRMSR_SAFE` identifies the `-EIO` failure result, and `arch/x86/mm/extable.c:188–191,346–347` sets that result and resumes at the fixup IP ([msr.h](https://github.com/torvalds/linux/blob/v7.0/arch/x86/include/asm/msr.h#L134-L146), [extable_fixup_types.h](https://github.com/torvalds/linux/blob/v7.0/arch/x86/include/asm/extable_fixup_types.h#L40), [extable.c](https://github.com/torvalds/linux/blob/v7.0/arch/x86/mm/extable.c#L154-L178)). For this synthetic target, the selected CPU-side policy for RDMSR/WRMSR to those indices is a `#GP(0)` decision without state change, as specified by the `SysenterProbeV1` profile above. This is not a statement about all x86 CPUs, guest `#GP` delivery, or execution of Linux safe-write fixup. Static source reachability does not show that the call or fixup was observed at runtime. The broader MSR set (including EFER, STAR/LSTAR/SFMASK, FS/GS bases, CSTAR and conditional startup probes), initial control/segment/table/FPU state, alternatives, initramfs and boot success milestone still require a versioned execution manifest and implementation checks.
+For CPUID, the input ECX is ignored for every listed function in this profile; unlisted EAX function numbers return four zero registers irrespective of ECX. XSAVE/XRSTOR and XGETBV/XSETBV are outside this target; CR4.OSXSAVE must remain clear. Legacy x87/MMX/XMM state and FXSAVE/FXRSTOR remain in scope as required by the selected Linux startup path. SEP=0; the explicit S2-26d `SepDisabledV1` local policy raises CPU-side `#UD` for exact bare SYSENTER/SYSEXIT after complete fetch. It does not model exception delivery or settle Linux behavior. Linux 7.0's `idt_syscall_init` calls `wrmsrq_safe` for IA32_SYSENTER_CS/ESP/EIP (`0x174..0x176`) in both `ia32_enabled()` branches, without guarding those writes on SEP; the calls are listed in authenticated Ubuntu `arch/x86/kernel/cpu/common.c:2265–2285` ([upstream v7.0 source](https://github.com/torvalds/linux/blob/v7.0/arch/x86/kernel/cpu/common.c#L2121-L2141)). The exact Ubuntu config has `CONFIG_PARAVIRT_XXL=y`: `arch/x86/include/asm/paravirt.h:159–161,186–188` routes the safe write through its MSR operation, and the default `pv_ops` table in `arch/x86/kernel/paravirt.c:116` binds that operation to `native_write_msr_safe` ([paravirt.h](https://github.com/torvalds/linux/blob/v7.0/arch/x86/include/asm/paravirt.h#L149-L176), [paravirt.c](https://github.com/torvalds/linux/blob/v7.0/arch/x86/kernel/paravirt.c#L98-L108)). The native wrapper installs `EX_TYPE_WRMSR_SAFE` in the exception table (`arch/x86/include/asm/msr.h:144–156`); `EX_TYPE_WRMSR_SAFE` identifies the `-EIO` failure result, and `arch/x86/mm/extable.c:188–191,346–347` sets that result and resumes at the fixup IP ([msr.h](https://github.com/torvalds/linux/blob/v7.0/arch/x86/include/asm/msr.h#L134-L146), [extable_fixup_types.h](https://github.com/torvalds/linux/blob/v7.0/arch/x86/include/asm/extable_fixup_types.h#L40), [extable.c](https://github.com/torvalds/linux/blob/v7.0/arch/x86/mm/extable.c#L154-L178)). For this synthetic target, the selected CPU-side policy for RDMSR/WRMSR to those indices is a `#GP(0)` decision without state change, as specified by the `SysenterProbeV1` profile above. This is not a statement about all x86 CPUs, guest `#GP` delivery, or execution of Linux safe-write fixup. Static source reachability does not show that the call or fixup was observed at runtime. The bounded S2-26c `GsBaseV1` and S2-26f `FsBaseV1` local profiles cover individual FS/GS-base operations only. The broader MSR set (including EFER, STAR/LSTAR/SFMASK, CSTAR and conditional startup probes), initial control/segment/table/FPU state, alternatives, initramfs and boot success milestone still require a versioned execution manifest and implementation checks.
 
 The choice uses the exact Ubuntu 7.0.0-38.38 source/binary mapping in [S2-00 Linux profile evidence](../reports/STAGE_2_LINUX_PROFILE.md#exact-source-to-binary-mapping--28-октября-2026); static evidence does not prove any runtime branch or guest boot. Windows CPU profile remains unselected. The x86-64-v1 baseline decision and its evidence are described in [GUEST_REQUIREMENTS.md](GUEST_REQUIREMENTS.md).
 
@@ -446,7 +467,7 @@ Mode Exceptions, pp. 3-418–3-419, lists `#NM` for either CR0 bit. Vol. 3A,
 Event 7, pp. 7-33–7-34, identifies `#NM` as a fault with no error code and no
 program-state change because the instruction is not executed:
 [Vol. 2A](https://cdrdv2.intel.com/v1/dl/getContent/671199),
-[Vol. 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190). Parent S2-39 and
+[Vol. 3A](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html). Parent S2-39 and
 the Generic amd64 target remain open; hardware checks stay in the combined
 final Mac mini batch. See the [S2-39f plan](../plans/STAGE_2.md#s2-39f-bounded-fxsave64-cr0-em-and-ts-nm-gates),
 [report](../reports/STAGE_2_REPORT.md#s2-39f--bounded-fxsave64-cr0-em-and-ts-nm-gates),
@@ -481,7 +502,7 @@ at CPL0–3 with zero callbacks on `#NM`. Intel SDM Rev. 093, Vol. 2A, FXRSTOR
 3A Event 7, pp. 7-33–7-34 specifies no error code and no program-state change
 because the faulting instruction is not executed:
 [Vol. 2A](https://cdrdv2.intel.com/v1/dl/getContent/671199),
-[Vol. 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190). Local software
+[Vol. 3A](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html). Local software
 checks do not establish physical execution or broader S2-39 acceptance. See the
 [S2-39g plan](../plans/STAGE_2.md#s2-39g-bounded-fxrstor64-cr0-em-and-ts-nm-gates),
 [report](../reports/STAGE_2_REPORT.md#s2-39g--bounded-fxrstor64-cr0-em-and-ts-nm-gates),
@@ -1284,7 +1305,7 @@ Semantic references are the
 Intel SDM Vol. 2A `LGDT/LIDT` entry (Order No. 253666-093US, September 2026,
 [official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)) and
 Vol. 3A §§2.4.1, 3.5.2, 4.5.1 and 4.5.3 (Order No. 253668-093US, September
-2026, [official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
+2026, [official Intel PDF](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)).
 See the [Linux profile evidence](../reports/STAGE_2_LINUX_PROFILE.md#s2-27a--exact-ubuntu-lgdt-candidate),
 [stage plan](../plans/STAGE_2.md#s2-27a--exact-long64-lgdt-rbp-10), and
 [stage report](../reports/STAGE_2_REPORT.md#s2-27a--exact-long64-lgdt-rbp-10).
@@ -1342,7 +1363,7 @@ Semantic references: Intel SDM Vol. 2B, `MOV` entry, pp. 4-28–4-31
 [official Intel PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf));
 Vol. 3A §§3.4.3–3.4.5.1, 3.5.1, 5.6.1, 5.7, 6.6–6.6.1, 6.11.5, and 7.13
 (Order No. 253668-093US, September 2026,
-[official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
+[official Intel PDF](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)).
 
 ### S2-27c — exact Long64 `MOV ES, AX`
 
@@ -1395,7 +1416,7 @@ Semantic references: Intel SDM Vol. 2B, `MOV` entry, pp. 4-28–4-31
 [official Intel PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf));
 Vol. 3A §§3.4.3–3.4.5.1, 3.5.1, 5.6.1, 5.7, 6.6–6.6.1, 6.11.5, and 7.13
 (Order No. 253668-093US, September 2026,
-[official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
+[official Intel PDF](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)).
 
 ### S2-27d — exact Long64 `LIDT [RSP+6]`
 
@@ -1439,7 +1460,7 @@ Semantic references: Intel SDM revision 093, Vol. 2A, `LGDT/LIDT` instruction
 entry (Order No. 253666-093US, September 2026,
 [official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 3A
 §§2.4.1, 3.5.2, 4.5.1, and 4.5.3 (Order No. 253668-093US, September 2026,
-[official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)). These
+[official PDF](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)). These
 references define architectural instruction behavior; the `Some(idtr)` gate
 is local profile policy.
 
@@ -1530,7 +1551,7 @@ Initial independent Sol review findings for gate S and current CS-cache
 validation were fixed; final independent Sol medium re-review completed clean,
 with no findings remaining. Architecture review
 approved/narrowed this local API against Intel SDM Vol. 3A Rev. 093 (September
-2026), §§7.12.1.2–3 and 7.14 ([official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)). See the
+2026), §§7.12.1.2–3 and 7.14 ([official Intel PDF](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)). See the
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-27f--bounded-caller-selected-long64-maskable-interrupt-delivery)
 and [plan](../plans/STAGE_2.md#s2-27f--bounded-caller-selected-long64-maskable-interrupt-delivery)
 for verified tests and remaining limits.
@@ -11391,7 +11412,7 @@ Schema-v2 profile `s2-long-xorpd-prerequisites-v1` принимает ровно
 Rev. 093 Vol. 3A Table 16-1: `!sse2_available || cr0_em || !cr4_osfxsr`
 возвращает CPU-side #UD; иначе `cr0_ts` возвращает CPU-side #NM; иначе
 исполняется существующий bytewise XORPD. Первая ветка имеет приоритет над TS.
-Источник: [Intel SDM Rev. 093, Vol. 3A, Table 16-1](https://cdrdv2.intel.com/v1/dl/getContent/671190).
+Источник: [Intel SDM Rev. 093, Vol. 3A, Table 16-1](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
 Правило одинаково для CPL0–3. Fault содержит вектор 6 или 7, не имеет error
 code и не retirement; RIP и полный `LongModeState` сохраняются. Нет data
 memory access. Входной STOP и нулевой budget завершают запуск до fetch; fetch
@@ -11437,7 +11458,7 @@ adapter remain denied; physical/Mac mini is `not_run` until the combined final
 hardware substage. Behavior follows Intel SDM Rev. 093, Vol. 1 §§11.5.3.2–3
 and Table 11-1; Vol. 3A Table 16-1; Vol. 2B MINSS:
 [Vol. 1](https://cdrdv2.intel.com/v1/dl/getContent/671436),
-[Vol. 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190),
+[Vol. 3A](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html),
 [Vol. 2B MINSS](https://cdrdv2.intel.com/929354/253667-sdm-vol-2b.pdf).
 
 ## S2-38d — exact MINSS unmasked denormal-operand exit
@@ -11474,7 +11495,7 @@ admission. It remains local/interpreter-only; physical/Mac mini acceptance is
 Intel SDM Rev. 093, Vol. 1 §§4.9.2, 11.5.2.1–2, 11.5.3.2–3; Vol. 3A Table 7-8
 and Table 16-1; Vol. 2B MINSS:
 [Vol. 1](https://cdrdv2.intel.com/v1/dl/getContent/671436),
-[Vol. 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190),
+[Vol. 3A](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html),
 [Vol. 2B MINSS](https://cdrdv2.intel.com/929354/253667-sdm-vol-2b.pdf).
 
 ## S2-40b — bounded SSE-only native XORPD oracle
