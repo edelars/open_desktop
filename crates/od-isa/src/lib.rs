@@ -23,6 +23,7 @@ pub mod sti;
 pub mod swapgs;
 pub mod x87;
 pub use cli::CliProfile;
+pub use execute::Cr0Profile;
 pub use hlt::HaltProfile;
 pub use interrupt::{
     InterruptDeliveryPhase, InterruptDeliveryResult, InterruptFrameSlot, InterruptOutsideProfile,

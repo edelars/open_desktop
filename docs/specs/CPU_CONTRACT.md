@@ -11761,3 +11761,40 @@ and STI shadow, and represents the terminal outcome as `Halted` without a
 `FA FB F4` compositions. JIT, native and C/fragment paths reject the new state
 or profile. Architecture source: Intel SDM Rev. 093, Vol. 2A, HLT p. 3-439;
 [official Intel SDM](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+
+## S2-25a — bounded Long64 CR0 EM/TS FP initialization
+
+`Cr0Profile::FpInitLong64V1` is an explicit local interpreter contract. Entry
+requires Long64, active IA-32e mode, CR4.PAE, EFER.LME/LMA, an available x87
+unit, `Running`, `Clear` STI shadow, an x87 state with FCS/FDS selectors
+unavailable, and CR0 equal to `0x80010033` with only EM (bit 2) and TS (bit 3)
+variable. This represents four CR0 values only; it is not a CR0 state machine or
+mode/paging transition model. `LongModeState::cr0=None` retains legacy behavior;
+legacy entry points reject `Some(cr0)` before fetch.
+
+The profile admits exact `0F 20 C0` (`MOV RAX,CR0`), `0F 22 C0` (`MOV CR0,RAX`),
+`48 83 E0 F3` (`AND RAX,-13`), and `DB E3` (`FNINIT`), alone or in the exact
+sequence `0F 20 C0 48 83 E0 F3 0F 22 C0 DB E3`. CR reads/writes require CPL0;
+CPL1–3 raise #GP(0) after complete instruction fetch. A CPL0 write succeeds only
+for one of the four allowed values; other values return local `Unsupported`
+without committing state. It does not model general CR0 reserved-bit faults or
+privileged control-register behavior. MOV CR preserves concrete RFLAGS while
+marking arithmetic RFLAGS definedness undefined; other RFLAGS bits are retained.
+
+FNINIT uses current mutable CR0: EM or TS raises #NM before x87 mutation, while
+clear EM/TS resets FCW to `037F`, FSW to zero, FTW to `FFFF`, and FIP/FDP/FOP to
+zero. The eight raw 80-bit register payloads and all SSE/XMM/MXCSR state survive.
+There is no pending-unmasked-exception wait. Exact LOCK-prefixed CR0 moves and
+FNINIT raise #UD before privilege/profile gates; other forms remain unsupported.
+
+The strict `s2-long-cr0-fp-init-v1` fixture admits one executable code mapping,
+one of five exact byte strings, matching instruction budget and stop RIP, and
+compares integer, IF/IOPL, CR0, x87, SSE, activity and shadow state. Thirty-two
+handwritten cases cover four full initial EM/TS states, the 16 FNINIT EM/TS × CPL
+gates, four read and four write CPL outcomes, and four write→FNINIT gates. These
+are local synthetic fixtures; they make no Ubuntu byte/runtime, native, SMP,
+MMU, hardware, or physical-execution claim. CPUID and native/JIT/C/fragment
+admission are unchanged.
+
+Sources: Intel SDM Rev. 093 Vol. 2B, MOV to/from control registers, pp. 4-32–4-34;
+Vol. 2A, FNINIT, pp. 3-345–3-346; Vol. 3A §5.10.4.1.

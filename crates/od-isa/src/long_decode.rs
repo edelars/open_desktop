@@ -986,6 +986,10 @@ pub enum Operation {
     },
     /// Bare `DB E3` FNINIT in the local profile with an existing x87 state.
     Fninit,
+    /// Exact `0F 20 C0` MOV RAX, CR0 for the bounded S2-25a profile.
+    ReadCr0,
+    /// Exact `0F 22 C0` MOV CR0, RAX for the bounded S2-25a profile.
+    WriteCr0,
     /// Bare `DB E2` FNCLEX in the local profile with an existing x87 state.
     Fnclex,
     /// Bare `DF E0` FNSTSW AX in the local profile with an existing x87 state.
@@ -1813,6 +1817,59 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && self.length == 3
                 && !matches!(operation, Operation::Sysenter | Operation::Sysexit)
             {
+                return Err(DecodeError::Invalid {
+                    opcode,
+                    length: self.length,
+                });
+            }
+            return Err(self.unsupported(opcode));
+        }
+        if opcode.map == OpcodeMap::Escape0f && matches!(opcode.byte, 0x20 | 0x22) {
+            if prefixes.group1 == Some(0xf0)
+                && prefixes.segment.is_none()
+                && !prefixes.operand_override
+                && !prefixes.address_override
+                && prefixes.rex.is_none()
+            {
+                let modrm = self.byte()?;
+                if modrm == 0xc0 {
+                    return Err(DecodeError::Invalid {
+                        opcode,
+                        length: self.length,
+                    });
+                }
+                return Err(self.unsupported(opcode));
+            }
+            if prefixes != Prefixes::default() {
+                return Err(self.unsupported(opcode));
+            }
+            let modrm = self.byte()?;
+            if modrm != 0xc0 {
+                return Err(self.unsupported(opcode));
+            }
+            return Ok(Instruction {
+                length: self.length,
+                opcode,
+                prefixes,
+                operand_size: OperandSize::Qword,
+                address_size: OperandSize::Qword,
+                operation: if opcode.byte == 0x20 {
+                    Operation::ReadCr0
+                } else {
+                    Operation::WriteCr0
+                },
+            });
+        }
+        if opcode.map == OpcodeMap::Primary
+            && opcode.byte == 0xdb
+            && prefixes.group1 == Some(0xf0)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && prefixes.rex.is_none()
+        {
+            let modrm = self.byte()?;
+            if modrm == 0xe3 {
                 return Err(DecodeError::Invalid {
                     opcode,
                     length: self.length,
@@ -11551,10 +11608,12 @@ mod tests {
         .chain(0x40..=0x4f)
         {
             for second in [0x00, 0x10, 0x18, 0x38, 0xd9, 0xe2, 0xe3, 0xe9, 0xf1] {
-                assert!(matches!(
-                    Memory::new(&[prefix, 0xdb, second]).decode(),
-                    Err(DecodeError::Unsupported { .. })
-                ));
+                let decoded = Memory::new(&[prefix, 0xdb, second]).decode();
+                if prefix == 0xf0 && second == 0xe3 {
+                    assert!(matches!(decoded, Err(DecodeError::Invalid { .. })));
+                } else {
+                    assert!(matches!(decoded, Err(DecodeError::Unsupported { .. })));
+                }
             }
         }
 
@@ -11575,13 +11634,18 @@ mod tests {
             &[0x48, 0xdb, 0xe3][..],
             &[0x9b, 0xdb, 0xe3][..],
         ] {
-            assert!(
-                matches!(
-                    Memory::new(bytes).decode(),
-                    Err(DecodeError::Unsupported { .. })
-                ),
-                "{bytes:02x?}"
-            );
+            let decoded = Memory::new(bytes).decode();
+            if bytes == [0xf0, 0xdb, 0xe3] {
+                assert!(
+                    matches!(decoded, Err(DecodeError::Invalid { .. })),
+                    "{bytes:02x?}"
+                );
+            } else {
+                assert!(
+                    matches!(decoded, Err(DecodeError::Unsupported { .. })),
+                    "{bytes:02x?}"
+                );
+            }
         }
         for prefix in [
             0xf0, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0x9b,
@@ -17165,6 +17229,7 @@ mod tests {
             let mut memory = Memory::new(&bytes);
             assert!(memory.decode().is_ok());
             let mut state = crate::LongModeState {
+                cr0: None,
                 sti_shadow: None,
                 rip: memory.base,
                 gpr: [u64::MAX; 16],
@@ -18411,6 +18476,57 @@ mod tests {
                 ),
                 "{bytes:02x?}"
             );
+        }
+    }
+
+    #[test]
+    fn cr0_moves_and_lock_ud_have_exact_register_forms_and_full_fetch() {
+        for (bytes, operation) in [
+            (&[0x0f, 0x20, 0xc0][..], Operation::ReadCr0),
+            (&[0x0f, 0x22, 0xc0][..], Operation::WriteCr0),
+        ] {
+            let mut memory = Memory::new(bytes);
+            let instruction = memory.decode().unwrap();
+            assert_eq!(instruction.operation, operation);
+            assert_eq!(instruction.length, 3);
+            assert_eq!(instruction.prefixes, Prefixes::default());
+            assert_eq!(memory.fetched, [0xfff, 0x1000, 0x1001]);
+        }
+
+        for bytes in [
+            &[0xf0, 0x0f, 0x20, 0xc0][..],
+            &[0xf0, 0x0f, 0x22, 0xc0][..],
+            &[0xf0, 0xdb, 0xe3][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(matches!(memory.decode(), Err(DecodeError::Invalid { .. })));
+            assert_eq!(memory.fetched.len(), bytes.len());
+        }
+
+        for bytes in [&[0x0f, 0x20, 0xc1][..], &[0x0f, 0x22, 0xc1][..]] {
+            let mut memory = Memory::new(bytes);
+            assert!(matches!(
+                memory.decode(),
+                Err(DecodeError::Unsupported { .. })
+            ));
+            assert_eq!(memory.fetched.len(), bytes.len());
+        }
+        for bytes in [&[0x48, 0x0f, 0x20, 0xc0][..], &[0x66, 0x0f, 0x22, 0xc0][..]] {
+            assert!(matches!(
+                Memory::new(bytes).decode(),
+                Err(DecodeError::Unsupported { .. })
+            ));
+        }
+
+        for bytes in [
+            &[0x0f][..],
+            &[0x0f, 0x20][..],
+            &[0xf0, 0x0f, 0x22][..],
+            &[0xf0, 0xdb][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err());
+            assert_eq!(memory.fetched.len(), bytes.len() + 1);
         }
     }
 }

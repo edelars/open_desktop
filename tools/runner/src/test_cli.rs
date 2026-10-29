@@ -986,10 +986,10 @@ fn execute_fixture_v2(
     memory: &mut od_testkit::memory::FlatMemory,
 ) -> od_testkit::v2::RunResult {
     use od_isa::execute::{
-        Fxrstor64Cr0Controls, Fxsave64Cr0Controls, MinssInvalidControls, RdtscControls, RunConfig,
-        RunExit, XorpdPrerequisiteState, run, run_with_cli_profile,
-        run_with_fxrstor64_cr0_controls, run_with_fxsave64_cr0_controls, run_with_halt_profile,
-        run_with_kernel_gs_base_profile, run_with_minss_invalid_controls,
+        Cr0Profile, Fxrstor64Cr0Controls, Fxsave64Cr0Controls, MinssInvalidControls, RdtscControls,
+        RunConfig, RunExit, XorpdPrerequisiteState, run, run_with_cli_profile,
+        run_with_cr0_profile, run_with_fxrstor64_cr0_controls, run_with_fxsave64_cr0_controls,
+        run_with_halt_profile, run_with_kernel_gs_base_profile, run_with_minss_invalid_controls,
         run_with_minss_unmasked_denormal_controls, run_with_msr_profile, run_with_rdtsc_source,
         run_with_rep_continuation, run_with_sep_profile, run_with_sti_profile,
         run_with_swapgs_profile, run_with_xorpd_prerequisites,
@@ -1014,6 +1014,7 @@ fn execute_fixture_v2(
             | v2::Profile::LongHltV1
             | v2::Profile::LongIretqCpl0ValidV1
             | v2::Profile::LongLretqCpl0ValidV1
+            | v2::Profile::LongCr0FpInitV1
     ) {
         let privilege = match loaded.fixture.cli_cpl.expect("validated CLI CPL") {
             v2::CliCpl::Cpl0 => od_isa::memory::PrivilegeLevel::Ring0,
@@ -1131,6 +1132,14 @@ fn execute_fixture_v2(
             memory,
             config,
             &od_isa::HaltProfile::Long64V1,
+            timeout,
+        )
+    } else if loaded.fixture.profile == v2::Profile::LongCr0FpInitV1 {
+        run_with_cr0_profile(
+            &mut state,
+            memory,
+            config,
+            Cr0Profile::FpInitLong64V1,
             timeout,
         )
     } else if loaded.fixture.profile == v2::Profile::LongIretqCpl0ValidV1 {

@@ -25,6 +25,7 @@ pub enum InterruptFrameSlot {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InterruptOutsideProfile {
+    UnsupportedCr0State,
     InvalidRflagsDefined(u64),
     NotRing0Long64,
     InterruptsMasked,
@@ -76,6 +77,9 @@ pub fn deliver_maskable_interrupt(
     context: AccessContext,
     rflags_defined: u64,
 ) -> InterruptDeliveryResult {
+    if state.cr0.is_some() {
+        return outside(InterruptOutsideProfile::UnsupportedCr0State);
+    }
     if state.sti_shadow == Some(crate::StiShadow::Blocking) {
         return outside(InterruptOutsideProfile::InterruptsInhibited);
     }
@@ -469,6 +473,21 @@ mod tests {
         assert_eq!(state, before);
         assert!(ram.reads.is_empty());
         assert!(ram.writes.is_empty());
+    }
+
+    #[test]
+    fn cr0_state_rejects_interrupt_delivery_before_any_memory_callback() {
+        let mut state = ready_state(0x8000);
+        state.cr0 = Some(crate::execute::Cr0Profile::BASE);
+        let before = state.clone();
+        let mut ram = Ram::new();
+        assert_eq!(
+            deliver(&mut state, &mut ram, 0x20),
+            InterruptDeliveryResult::OutsideProfile(InterruptOutsideProfile::UnsupportedCr0State)
+        );
+        assert_eq!(state, before);
+        assert_eq!(ram.fetches, 0);
+        assert!(ram.reads.is_empty() && ram.writes.is_empty());
     }
 
     #[test]

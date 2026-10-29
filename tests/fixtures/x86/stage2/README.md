@@ -6002,3 +6002,16 @@ literal fixtures cross IF=0/1 × IOPL=0/3 and runner checks preserve the frame
 and GDT. This local fixture evidence does not claim Linux runtime coverage.
 Ubuntu's selected kernel source names an
 `LRETQ` in `startup_64`, but these bytes have not been independently recovered.
+
+## S2-25a bounded CR0 EM/TS FP-init profile
+
+The 32 `s2_25a_*.case.json` cases use `s2-long-cr0-fp-init-v1` and a single
+read/execute code mapping. They cover all four fixed CR0 base+EM/TS values in
+the full read/AND/write/FNINIT sequence, the 16 FNINIT gate combinations over
+EM/TS and CPL0–3, separate CPL read and write cases, and four write→FNINIT
+cases. The strict profile permits only exact `0F20C0`, `0F22C0`, `DBE3`,
+`0F22C0DBE3`, and `0F20C04883E0F30F22C0DBE3` bytes with fixed budget and stop
+RIP. Results compare CR0, integer state, x87, SSE, activity, and STI shadow.
+The fixture source is handwritten and synthetic; it is not an Ubuntu byte or
+runtime claim. JIT/native/C/fragment execution remains denied. See the [CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#s2-25a--bounded-long64-cr0-emts-fp-initialization).

@@ -1,0 +1,99 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_25a_write_cpl0",
+  "profile": "s2-long-cr0-fp-init-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten exact bytes for bounded CR0 FP-init profile (write); fixed Long64 control-state assumptions and CPL 0.",
+    "specification": "Intel SDM Rev. 093 Vol. 2B MOV CR pp. 4-32..4-34; Vol. 2A FNINIT pp. 3-345..3-346; Vol. 3A \u00a75.10.4.1; local S2-25a profile.",
+    "specification_version": "Intel SDM Rev. 093; local diagnostic S2-25a only; no hardware or Ubuntu byte claim."
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0000000080010033",
+      "0x0000000000000101",
+      "0x0000000000000102",
+      "0x0000000000000103",
+      "0x0000000000000104",
+      "0x0000000000000105",
+      "0x0000000000000106",
+      "0x0000000000000107",
+      "0x0000000000000108",
+      "0x0000000000000109",
+      "0x000000000000010a",
+      "0x000000000000010b",
+      "0x000000000000010c",
+      "0x000000000000010d",
+      "0x000000000000010e",
+      "0x000000000000010f"
+    ],
+    "rip": "0x000000000008068e",
+    "rflags": "0x0000000000000ed7",
+    "x87": {
+      "registers": [
+        "00070e151c232a31383f",
+        "11181f262d343b424950",
+        "222930373e454c535a61",
+        "333a41484f565d646b72",
+        "444b525960676e757c83",
+        "555c636a71787f868d94",
+        "666d747b828990979ea5",
+        "777e858c939aa1a8afb6"
+      ],
+      "control_word": "0x000000000000037e",
+      "status_word": "0x0000000000001881",
+      "tag_word": "0x000000000000e4e4",
+      "instruction_pointer": "0x0123456789abcdef",
+      "data_pointer": "0xfedcba9876543210",
+      "last_opcode": "0x00000000000005aa"
+    },
+    "sse": {
+      "xmm": [
+        "000102030405060708090a0b0c0d0e0f",
+        "101112131415161718191a1b1c1d1e1f",
+        "202122232425262728292a2b2c2d2e2f",
+        "303132333435363738393a3b3c3d3e3f",
+        "404142434445464748494a4b4c4d4e4f",
+        "505152535455565758595a5b5c5d5e5f",
+        "606162636465666768696a6b6c6d6e6f",
+        "707172737475767778797a7b7c7d7e7f",
+        "808182838485868788898a8b8c8d8e8f",
+        "909192939495969798999a9b9c9d9e9f",
+        "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+        "b0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+        "c0c1c2c3c4c5c6c7c8c9cacbcccdcecf",
+        "d0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
+        "e0e1e2e3e4e5e6e7e8e9eaebecedeeef",
+        "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+      ],
+      "mxcsr": "0x0000000000001f85",
+      "diagnostic_mxcsr_mask": "0x000000000000ffbf"
+    },
+    "cr0": "0x0000000080010033",
+    "activity": "running",
+    "sti_shadow": "clear"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x000000000008068e",
+      "length": 3,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "0f22c0",
+      "comparison_mask_hex": "ffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000080691",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000003ed7",
+  "expected_exit": "stop_address",
+  "cli_cpl": 0
+}

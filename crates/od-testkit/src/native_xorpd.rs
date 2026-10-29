@@ -607,6 +607,7 @@ pub fn generate_native_xorpd_fixture(seed: u64, sequence: u32) -> Fixture {
             gpr: std::array::from_fn(|index| HexU64(0x1020_3040_5060_7080 ^ index as u64)),
             rip: HexU64(rip),
             rflags: HexU64(2),
+            cr0: None,
             fs_base: None,
             gs_base: None,
             kernel_gs_base: None,

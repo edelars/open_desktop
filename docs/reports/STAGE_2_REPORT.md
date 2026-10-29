@@ -16805,3 +16805,40 @@ See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27l--exact-long64-same-cpl0-l
 [plan](../plans/STAGE_2.md#s2-27l--exact-long64-same-cpl0-lretq),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-27l-exact-same-cpl0-lretq-profile),
 and [Linux evidence](STAGE_2_LINUX_PROFILE.md#s2-27l-lretq-evidence-and-local-profile).
+
+## S2-25a — bounded CR0 EM/TS FP initialization
+
+Implemented the explicit local `Cr0Profile::FpInitLong64V1` path over the shared
+configured execution loop. `LongModeState::cr0=None` keeps legacy state; legacy
+step/run and REP-continuation paths reject `Some(cr0)` before fetch. The profile
+admits four CR0 values (fixed `0x80010033` base with only EM/TS varying), exact
+`0F20C0`, `0F22C0`, `48 83 E0 F3`, `DB E3`, and their prescribed 12-byte
+sequence. CR moves require CPL0 and CPL1–3 #GP(0) after full fetch; CR0 writes
+outside the four profile values return `Unsupported` without commit. FNINIT
+checks current CR0 and reports #NM for EM/TS before state mutation; successful
+FNINIT resets the x87 environment and preserves raw80/SSE/MXCSR data. JIT,
+native and C/fragment state adaptation remain denied.
+
+Added 32 handwritten fixtures and strict schema admission for the exact code,
+state, budget and stop combinations. Coverage includes the four initial EM/TS
+states, 16 FNINIT EM/TS × CPL gates, separate CPL0–3 read/write cases and four
+write→FNINIT gates. Tests verify all 16 old→new EM/TS writes, non-committing
+invalid values, CPL precedence, full-state preservation, dynamic FNINIT #NM,
+LOCK #UD, exact decode/truncation behavior, data-callback absence, legacy
+fail-closed behavior, RFLAGS definedness after each sequence boundary,
+partial progress, STOP, budget and fetch-failure behavior.
+
+Verification: `cargo test -p od-isa cr0_ --offline` passed (9 tests),
+`cargo test -p od-runner --test fixture_v2 cr0_fp_init --offline` passed (2
+tests including all 32 interpreter fixtures and JIT denial), and the native
+profile deny-list predicate test passed on macOS; the Linux-only native
+preflight denial test was compile-checked but not run.
+`cargo check --workspace --all-targets --offline` and Linux x86_64
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`
+passed. `cargo fmt --all -- --check`, `git diff --check`, and Graphify update
+passed. `tools/check_layout.py` remains blocked by existing conditions: its
+root-file map does not include `.git`, and `STAGE_2_REPORT.md` links two missing
+historical oracle manifests under `work/stage1-oracle/` and `work/stage2-oracle/`.
+No Linux runtime, Ubuntu instruction-byte/runtime, hardware, SMP, MMU, native
+execution, SSH, or physical result is claimed. Intel SDM Rev. 093 sources and
+scope limits are recorded in the [CPU contract](../specs/CPU_CONTRACT.md#s2-25a--bounded-long64-cr0-emts-fp-initialization).

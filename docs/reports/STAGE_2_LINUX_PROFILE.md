@@ -863,3 +863,13 @@ opcode `48 CB` or runtime execution. The bounded local `48 CB` interpreter
 profile is specified in the [CPU contract](../specs/CPU_CONTRACT.md#s2-27l--exact-long64-same-cpl0-lretq); Linux runtime, native/physical execution,
 fixture runner integration and general far-return semantics remain
 unestablished.
+
+### S2-25a local CR0 EM/TS FP-init profile
+
+The local `s2-long-cr0-fp-init-v1` interpreter fixtures exercise only the four
+fixed CR0 base/EM/TS combinations and exact MOV-CR0/AND/FNINIT byte sequences.
+The 32 handwritten cases cover initial EM/TS states, CPL0–3 read/write
+privilege outcomes, FNINIT #NM gating, and write→FNINIT composition. This is
+synthetic local interpreter coverage, not observation of Ubuntu instruction
+bytes or execution. No Ubuntu/Linux runtime, native, hardware, SMP, MMU or
+physical result is claimed. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-25a--bounded-long64-cr0-emts-fp-initialization) and [plan](../plans/STAGE_2.md#s2-25a--bounded-long64-cr0emts-fp-initialization).

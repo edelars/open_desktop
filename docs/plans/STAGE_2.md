@@ -12076,3 +12076,15 @@ comparison и Linux x86_64 compile check. Ни один физический р�
 границы приведены в [CPU contract](../specs/CPU_CONTRACT.md#s2-40b--bounded-sse-only-native-xorpd-oracle),
 [Linux profile report](../reports/STAGE_2_LINUX_PROFILE.md#s2-40b--ограниченный-sse-only-native-xorpd-oracle)
 и [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-40b-native-xorpd-xmm0-xmm1).
+
+#### S2-25a — bounded Long64 CR0 EM/TS FP initialization
+
+Implement only `Cr0Profile::FpInitLong64V1`: exact `MOV RAX,CR0`,
+`AND RAX,-13`, `MOV CR0,RAX`, `FNINIT`, and the exact 12-byte sequence. Carry
+optional CR0 state with legacy `None` behavior and make legacy APIs fail closed
+when a CR0 value is present. Restrict CR0 to the fixed Long64 IA-32e/PAE/FPU
+available base plus EM/TS; add CPL and dynamic FNINIT #NM gates, atomic local
+write admission, x87 reset and full unrelated-state preservation. Add strict
+fixture admission and 32 handwritten cases. JIT/native/C/fragment remain closed;
+this is local evidence only and does not claim Ubuntu bytes/runtime, hardware,
+SMP, MMU, or general CR0 transition semantics.

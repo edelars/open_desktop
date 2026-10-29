@@ -211,6 +211,8 @@ pub struct LongModeState {
     pub gpr: [u64; 16],
     pub rip: u64,
     pub rflags: u64,
+    /// Optional CR0 value carried only by an explicit CR0 execution profile.
+    pub cr0: Option<u64>,
     /// FS base in the limited canonical48 data-address profile.
     pub fs_base: u64,
     /// GS base in the limited canonical48 data-address profile.
@@ -323,6 +325,7 @@ impl Default for LongModeState {
             gpr: [0; 16],
             rip: 0,
             rflags: 2,
+            cr0: None,
             fs_base: 0,
             gs_base: 0,
             kernel_gs_base: None,
@@ -370,6 +373,7 @@ impl LongModeState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FragmentAdapterError {
+    UnsupportedCr0(u64),
     ExtraRegister(Register),
     UnsupportedFsBase(u64),
     UnsupportedGsBase(u64),
@@ -409,6 +413,9 @@ impl TryFrom<&LongModeState> for FragmentState {
     type Error = FragmentAdapterError;
 
     fn try_from(state: &LongModeState) -> Result<Self, Self::Error> {
+        if let Some(cr0) = state.cr0 {
+            return Err(FragmentAdapterError::UnsupportedCr0(cr0));
+        }
         if state.x87.is_some() {
             return Err(FragmentAdapterError::UnsupportedX87);
         }
@@ -570,6 +577,16 @@ mod tests {
     }
 
     #[test]
+    fn fragment_adapter_rejects_cr0_state_instead_of_dropping_it() {
+        let mut state = LongModeState::default();
+        state.cr0 = Some(0x8001_0033);
+        assert_eq!(
+            FragmentState::try_from(&state),
+            Err(FragmentAdapterError::UnsupportedCr0(0x8001_0033))
+        );
+    }
+
+    #[test]
     fn fragment_adapter_rejects_sse_even_when_integer_state_fits() {
         let mut state = LongModeState::default();
         state.sse = Some(SseState {
@@ -660,6 +677,7 @@ mod tests {
                     OperandSize::Qword,
                 ] {
                     let mut state = LongModeState {
+                        cr0: None,
                         sti_shadow: None,
                         gpr: [0x1234_5678_9abc_def0; 16],
                         rip: u64::MAX,
@@ -770,6 +788,7 @@ mod tests {
             rflags: ARITHMETIC_FLAGS | 2,
         };
         let state = LongModeState::from(&fragment);
+        assert_eq!(state.cr0, None);
         assert_eq!(FragmentState::try_from(&state), Ok(fragment));
         let mut fs_state = state.clone();
         fs_state.fs_base = 0x1000;

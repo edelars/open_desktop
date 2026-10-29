@@ -66,6 +66,9 @@ pub fn run_with_lretq_profile(
         instructions_executed: retired,
         rflags_defined,
     };
+    if state.cr0.is_some() {
+        return finish(LretqRunExit::Unsupported, 0);
+    }
     if config.stop_rip == Some(state.rip) {
         return finish(LretqRunExit::StopAddress, 0);
     }
@@ -105,7 +108,8 @@ pub fn step_with_lretq_profile(
     rflags_defined: u64,
     _profile: LretqProfile,
 ) -> LretqResult {
-    if context.mode != crate::memory::InstructionMode::Long64
+    if state.cr0.is_some()
+        || context.mode != crate::memory::InstructionMode::Long64
         || context.privilege != PrivilegeLevel::Ring0
         || state.activity != Some(CpuActivity::Running)
         || state.sti_shadow != Some(StiShadow::Clear)
@@ -294,6 +298,46 @@ mod tests {
     const CODE: u64 = 0x100;
     const FRAME: u64 = 0x300;
     const GDT: u64 = 0x500;
+
+    #[test]
+    fn cr0_state_rejects_run_and_step_before_stop_or_memory_access() {
+        let mut cpu = LongModeState {
+            cr0: Some(crate::execute::Cr0Profile::BASE),
+            ..LongModeState::default()
+        };
+        let before = cpu.clone();
+        let stop_rip = cpu.rip;
+        let mut memory = Memory::setup();
+        assert_eq!(
+            run_with_lretq_profile(
+                &mut cpu,
+                &mut memory,
+                crate::execute::RunConfig {
+                    instruction_budget: 0,
+                    stop_rip: Some(stop_rip),
+                    context: AccessContext::default(),
+                },
+                INTEGER_FLAGS,
+                LretqProfile::SameCpl0ValidFrameV1,
+                || false,
+            )
+            .exit,
+            LretqRunExit::Unsupported
+        );
+        assert_eq!(cpu, before);
+        assert!(memory.fetches.is_empty() && memory.reads.is_empty());
+        assert_eq!(
+            step_with_lretq_profile(
+                &mut cpu,
+                &mut memory,
+                AccessContext::default(),
+                INTEGER_FLAGS,
+                LretqProfile::SameCpl0ValidFrameV1,
+            ),
+            LretqResult::Unsupported
+        );
+        assert!(memory.fetches.is_empty() && memory.reads.is_empty());
+    }
 
     struct Memory {
         bytes: Vec<u8>,

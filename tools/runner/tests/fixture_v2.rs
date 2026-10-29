@@ -1542,6 +1542,187 @@ fn count(result: &RunResult) -> u64 {
     }
 }
 
+const CR0_FP_INIT_FIXTURES: [&[u8]; 32] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_full_emts_0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_full_emts_1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_full_emts_2.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_full_emts_3.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_fninit_gate_emts_0_cpl0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_fninit_gate_emts_0_cpl1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_fninit_gate_emts_0_cpl2.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_fninit_gate_emts_0_cpl3.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_fninit_gate_emts_1_cpl0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_fninit_gate_emts_1_cpl1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_fninit_gate_emts_1_cpl2.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_fninit_gate_emts_1_cpl3.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_fninit_gate_emts_2_cpl0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_fninit_gate_emts_2_cpl1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_fninit_gate_emts_2_cpl2.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_fninit_gate_emts_2_cpl3.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_fninit_gate_emts_3_cpl0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_fninit_gate_emts_3_cpl1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_fninit_gate_emts_3_cpl2.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_fninit_gate_emts_3_cpl3.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_read_cpl0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_read_cpl1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_read_cpl2.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_read_cpl3.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_write_cpl0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_write_cpl1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_write_cpl2.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_write_cpl3.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_write_fninit_emts_0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_write_fninit_emts_1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_write_fninit_emts_2.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_write_fninit_emts_3.case.json"),
+];
+
+trait ResetFpInitSnapshot {
+    fn reset_for_fp_init(&mut self);
+}
+impl ResetFpInitSnapshot for od_testkit::v2::X87Snapshot {
+    fn reset_for_fp_init(&mut self) {
+        self.control_word = HexU64(0x037f);
+        self.status_word = HexU64(0);
+        self.tag_word = HexU64(0xffff);
+        self.instruction_pointer = HexU64(0);
+        self.data_pointer = HexU64(0);
+        self.last_opcode = HexU64(0);
+    }
+}
+
+#[test]
+fn cr0_fp_init_fixtures_check_literal_state_transitions_and_denial() {
+    use od_testkit::v2::Profile;
+
+    assert_eq!(CR0_FP_INIT_FIXTURES.len(), 32);
+    for bytes in CR0_FP_INIT_FIXTURES {
+        let (input, result) = run(bytes, "interpreter", 0);
+        assert_eq!(input.fixture.profile, Profile::LongCr0FpInitV1);
+        let id = input.fixture.case_id.as_str();
+        let bits = id
+            .split("emts_")
+            .nth(1)
+            .and_then(|part| part.chars().next())
+            .and_then(|c| c.to_digit(10))
+            .unwrap_or(0) as u64;
+        let initial_cr0 = input.fixture.initial_state.cr0.unwrap().get();
+        let mut expected = input.fixture.initial_state.clone();
+        let (exit, retired) = if id.starts_with("s2_25a_full_") {
+            expected.cr0 = Some(HexU64(0x8001_0033));
+            expected.gpr[0] = HexU64(0x8001_0033);
+            expected.rflags = HexU64(0x0616);
+            expected.rip = input.fixture.stop_rip.unwrap();
+            expected.x87.as_mut().unwrap().reset_for_fp_init();
+            (Outcome::StopAddress {}, 4)
+        } else if id.starts_with("s2_25a_fninit_gate_") {
+            if bits == 0 {
+                expected.rip = input.fixture.stop_rip.unwrap();
+                expected.x87.as_mut().unwrap().reset_for_fp_init();
+                (Outcome::StopAddress {}, 1)
+            } else {
+                (Outcome::Exception {}, 0)
+            }
+        } else if id.starts_with("s2_25a_read_") {
+            let cpl: u8 = input.fixture.cli_cpl.unwrap().into();
+            if cpl == 0 {
+                expected.gpr[0] = HexU64(initial_cr0);
+                expected.rip = input.fixture.stop_rip.unwrap();
+                (Outcome::StopAddress {}, 1)
+            } else {
+                (Outcome::Exception {}, 0)
+            }
+        } else if id.starts_with("s2_25a_write_") && !id.starts_with("s2_25a_write_fninit_") {
+            let cpl: u8 = input.fixture.cli_cpl.unwrap().into();
+            if cpl == 0 {
+                expected.cr0 = Some(HexU64(0x8001_0033));
+                expected.rip = input.fixture.stop_rip.unwrap();
+                (Outcome::StopAddress {}, 1)
+            } else {
+                (Outcome::Exception {}, 0)
+            }
+        } else {
+            let target = input.fixture.initial_state.gpr[0].get();
+            expected.cr0 = Some(HexU64(target));
+            if bits == 0 {
+                expected.rip = input.fixture.stop_rip.unwrap();
+                expected.x87.as_mut().unwrap().reset_for_fp_init();
+                (Outcome::StopAddress {}, 2)
+            } else {
+                expected.rip = HexU64(input.fixture.initial_state.rip.get() + 3);
+                (Outcome::Exception {}, 1)
+            }
+        };
+        assert_eq!(result.outcome, exit, "{id}");
+        assert_eq!(count(&result), retired, "{id}");
+        assert_eq!(snapshot(&result).state, expected, "{id}");
+        let (_, jit) = run(bytes, "jit", 4);
+        assert!(matches!(jit.outcome, Outcome::Unsupported { .. }), "{id}");
+        assert!(
+            matches!(jit.snapshot, Observation::Unavailable { .. }),
+            "{id}"
+        );
+    }
+}
+
+#[test]
+fn cr0_fp_init_schema_rejects_neighbor_bytes_unfixed_cr0_and_selectors() {
+    let mut fixture = Fixture::from_json(CR0_FP_INIT_FIXTURES[0]).unwrap().fixture;
+    fixture.initial_state.cr0 = Some(HexU64(0x8001_0033 | (1 << 6)));
+    assert!(fixture.validate().is_err(), "invalid CR0 was accepted");
+
+    let mut fixture = Fixture::from_json(CR0_FP_INIT_FIXTURES[0]).unwrap().fixture;
+    fixture.initial_state.cr0 = Some(HexU64(0x8001_0033));
+    fixture.memory[0].initial_bytes_hex = "0f20c1".into();
+    assert!(fixture.validate().is_err());
+
+    let mut fixture = Fixture::from_json(CR0_FP_INIT_FIXTURES[0]).unwrap().fixture;
+    fixture
+        .initial_state
+        .x87
+        .as_mut()
+        .unwrap()
+        .instruction_selector = Some(HexU64(0x2b));
+    assert!(fixture.validate().is_err());
+
+    let mut fixture = Fixture::from_json(CR0_FP_INIT_FIXTURES[0]).unwrap().fixture;
+    fixture.memory[0].permissions.read = true;
+    assert!(fixture.validate().is_err());
+
+    let mut fixture = Fixture::from_json(CR0_FP_INIT_FIXTURES[0]).unwrap().fixture;
+    fixture.cli_cpl = Some(od_testkit::v2::CliCpl::Cpl3);
+    fixture.expected_exit = ExpectedExit::Exception;
+    assert!(
+        fixture.validate().is_err(),
+        "full sequence must require CPL0"
+    );
+}
+
+#[test]
+fn cr0_fp_init_result_validation_rejects_tampered_control_x87_and_definedness() {
+    let (loaded, result) = run(CR0_FP_INIT_FIXTURES[0], "interpreter", 0);
+    let mut changed_cr0 = result.clone();
+    if let Observation::Available { value } = &mut changed_cr0.snapshot {
+        value.state.cr0 = Some(HexU64(0x8001_0033 | 4));
+    }
+    assert!(changed_cr0.validate_for(&loaded).is_err());
+    assert!(od_testkit::v2::compare(&loaded, &changed_cr0, &result).is_err());
+
+    let mut changed_x87 = result.clone();
+    if let Observation::Available { value } = &mut changed_x87.snapshot {
+        value.state.x87.as_mut().unwrap().control_word = HexU64(0x027f);
+    }
+    assert!(changed_x87.validate_for(&loaded).is_err());
+    assert!(od_testkit::v2::compare(&loaded, &changed_x87, &result).is_err());
+
+    let mut changed_definedness = result;
+    if let Observation::Available { value } = &mut changed_definedness.snapshot {
+        value.rflags_defined = HexU64(od_isa::INTEGER_FLAGS);
+    }
+    assert!(changed_definedness.validate_for(&loaded).is_err());
+    assert!(od_testkit::v2::compare(&loaded, &changed_definedness, &changed_definedness).is_err());
+}
+
 #[test]
 fn operand_size_prefixed_near_ret_keeps_qword_stack_semantics() {
     for (bytes, expected_code, expected_rip) in [
