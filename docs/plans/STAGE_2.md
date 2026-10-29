@@ -12217,7 +12217,7 @@ This is local interpreter/profile evidence only; physical execution remains
 
 #### S2-25d — mapped main-kernel IA32 EFER access; read-only candidate
 
-**Статус:** documentary source/image mapping complete; no EFER runtime code.
+**Статус:** documentary source/image mapping complete. Runtime implementation is recorded separately as S2-25e.
 
 Map the `RDMSR IA32_EFER` site at `ffffffff8139c1b4` and conditional `WRMSR`
 at `ffffffff8139c1d5` in `common_startup_64`, including the SCE/NXE changes and
@@ -12241,4 +12241,26 @@ general MSR map.
 recorded; (2) observed bytes, architectural requirements and synthetic policy
 are separated; (3) LMA/paging effects and the CR0 AM discrepancy are explicit;
 (4) absolute first-access ordering and entry-state snapshot remain open in
-[ISSUE-027](../KNOWN_ISSUES.md#issue-027--first-efer-access-and-startup-control-snapshot-are-unproven); (5) no implementation or boot claim is made. See the [Linux profile mapping](../reports/STAGE_2_LINUX_PROFILE.md#ia32-efer-on-the-mapped-main-kernel-direct64-continuation).
+[ISSUE-027](../KNOWN_ISSUES.md#issue-027--first-efer-access-and-startup-control-snapshot-are-unproven). See the [Linux profile mapping](../reports/STAGE_2_LINUX_PROFILE.md#ia32-efer-on-the-mapped-main-kernel-direct64-continuation).
+
+#### S2-25e — exact read-only Long64 RDMSR IA32_EFER
+
+**Статус:** bounded local interpreter and schema-v2 fixtures implemented;
+physical/native/JIT execution remains `not_run` and denied.
+
+Admit only exact bare `0F 32`, ECX=`0xc0000080`, and one immutable caller or
+fixture-profile EFER value from `0x500`, `0x501`, `0xd00`, `0xd01`. LME/LMA
+are fixed set; SCE/NXE vary independently. Require explicit CR0 and CR4 values
+from the existing S2-25a/S2-25b bounded domains (therefore PG=1 and PAE=1).
+No EFER CPU-state field or general MSR map is added. CPL0 returns exact EDX:EAX;
+CPL1–3 raises #GP(0) after complete instruction fetch without retiring or
+changing state. Wrong index, invalid profile value, out-of-domain controls,
+non-bare encoding, WRMSR, and other forms fail locally as Unsupported.
+
+Strict fixture/result validation and the independent comparator cover all four
+values, privilege outcomes, output and state tampering, fetch/truncation,
+STOP/budget and unsupported forms. JIT, native x86, C and fragment paths remain
+closed. This does not claim Linux's observed entry value, WRMSR behavior, mode
+transitions, NX enforcement, guest exception delivery, MMU/paging effects, or
+hardware execution. Normative source: Intel SDM Rev. 093 Vol. 2B RDMSR and
+Vol. 3A IA32_EFER / IA-32e paging.

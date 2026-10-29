@@ -1537,6 +1537,8 @@ mod tests {
             case_id: "native-v2-unit".into(),
             profile: v2::Profile::LongIntegerV1,
             cli_cpl: None,
+            efer_cpl: None,
+            efer_value: None,
             provenance: Provenance {
                 kind: "manual".into(),
                 source: "handwritten test bytes".into(),
@@ -4152,6 +4154,21 @@ mod tests {
             .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
+    }
+
+    #[test]
+    fn efer_rdmsr_profile_is_denied_before_native_trace() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_25e_efer_rdmsr_0500.case.json"
+        ))
+        .unwrap();
+        let result = execute(&loaded);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+        assert!(matches!(
+            result.instructions_executed,
+            Observation::Unavailable { .. }
+        ));
     }
 
     #[cfg(target_os = "linux")]

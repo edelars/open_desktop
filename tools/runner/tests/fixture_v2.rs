@@ -1,7 +1,9 @@
 //! Real CLI/interpreter checks; expected values are hand-calculated from Intel SDM 093.
 use od_testkit::HexU64;
 use od_testkit::result::{Backend, MemoryRegionSnapshot, Observation};
-use od_testkit::v2::{ExpectedExit, Fixture, LoadedFixture, Outcome, RunResult, Snapshot};
+use od_testkit::v2::{
+    ExpectedExit, Fixture, LoadedFixture, Outcome, RunResult, Snapshot, StiShadowSnapshot,
+};
 use std::fs;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,6 +33,12 @@ const FS_BASE_WRMSR_FS_LOAD: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_26f_fs_base_wrmsr_fs_load.case.json");
 const FS_BASE_RDMSR: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_26f_fs_base_rdmsr.case.json");
+const EFER_RDMSR_FIXTURES: [&[u8]; 4] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25e_efer_rdmsr_0500.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25e_efer_rdmsr_0501.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25e_efer_rdmsr_0d00.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25e_efer_rdmsr_0d01.case.json"),
+];
 const KERNEL_GS_BASE_RDMSR: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_26g_kernel_gs_base_rdmsr.case.json");
 const KERNEL_GS_BASE_WRMSR: &[u8] =
@@ -2469,6 +2477,97 @@ fn fs_base_rdmsr_fixture_zero_extends_results_and_preserves_other_state() {
     assert_eq!(observed.state.rip, HexU64(0x0010_0002));
     assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
     assert_eq!(observed.memory[0].bytes_hex, "0f32");
+}
+
+#[test]
+fn s2_25e_efer_rdmsr_reads_all_four_values_and_checks_privilege_and_tampering() {
+    for bytes in EFER_RDMSR_FIXTURES {
+        let (input, result) = run(bytes, "interpreter", 0);
+        let value = input.fixture.efer_value.unwrap().get();
+        assert_eq!(count(&result), 1);
+        let observed = snapshot(&result);
+        assert_eq!(observed.state.gpr[0], HexU64(u64::from(value as u32)));
+        assert_eq!(
+            observed.state.gpr[2],
+            HexU64(u64::from((value >> 32) as u32))
+        );
+        assert_eq!(observed.state.rip, HexU64(0x0010_0002));
+        assert_eq!(
+            observed.state.cr0,
+            Some(HexU64(od_isa::execute::Cr0Profile::BASE))
+        );
+        assert_eq!(
+            observed.state.cr4,
+            Some(HexU64(od_isa::execute::Cr4Profile::BASE))
+        );
+        assert_eq!(observed.memory[0].bytes_hex, "0f32");
+
+        let mut bad_value = input.fixture.clone();
+        bad_value.efer_value = Some(HexU64(0xd02));
+        assert!(bad_value.validate().is_err());
+        let mut bad_index = input.fixture.clone();
+        bad_index.initial_state.gpr[1] = HexU64(0xdead_beef_c000_0100);
+        assert!(bad_index.validate().is_err());
+        let mut bad_cr0 = input.fixture.clone();
+        bad_cr0.initial_state.cr0 = Some(HexU64(0x8001_0073));
+        assert!(bad_cr0.validate().is_err());
+        let mut bad_cr4 = input.fixture.clone();
+        bad_cr4.initial_state.cr4 = Some(HexU64(0x1020));
+        assert!(bad_cr4.validate().is_err());
+        let mut bad_sti_shadow_input = input.fixture.clone();
+        bad_sti_shadow_input.initial_state.sti_shadow = Some(StiShadowSnapshot::Clear);
+        assert!(bad_sti_shadow_input.validate().is_err());
+        let mut changed = result.clone();
+        if let Observation::Available { value } = &mut changed.snapshot {
+            value.state.gpr[0] = HexU64(0);
+        }
+        assert!(changed.validate_for(&input).is_err());
+        assert!(od_testkit::v2::compare(&input, &changed, &result).is_err());
+        let mut changed_sti_shadow = result.clone();
+        if let Observation::Available { value } = &mut changed_sti_shadow.snapshot {
+            value.state.sti_shadow = Some(StiShadowSnapshot::Clear);
+        }
+        assert!(changed_sti_shadow.validate_for(&input).is_err());
+        assert!(od_testkit::v2::compare(&input, &changed_sti_shadow, &result).is_err());
+    }
+
+    let original = Fixture::from_json(EFER_RDMSR_FIXTURES[0]).unwrap();
+    for cpl in [
+        od_testkit::v2::CliCpl::Cpl1,
+        od_testkit::v2::CliCpl::Cpl2,
+        od_testkit::v2::CliCpl::Cpl3,
+    ] {
+        let mut fixture = original.fixture.clone();
+        fixture.efer_cpl = Some(cpl);
+        fixture.expected_exit = ExpectedExit::Exception;
+        let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::Exception {}));
+        assert_eq!(count(&result), 0);
+        assert_eq!(snapshot(&result).state.gpr, input.fixture.initial_state.gpr);
+        assert_eq!(snapshot(&result).state.rip, input.fixture.initial_state.rip);
+        for (vector, error_code) in [(6, 0), (13, 1)] {
+            let mut bad_fault = result.clone();
+            if let Observation::Available { value } = &mut bad_fault.snapshot {
+                if let Observation::Available {
+                    value: Some(exception),
+                } = &mut value.exception
+                {
+                    exception.vector = vector;
+                    exception.error_code = Observation::Available {
+                        value: HexU64(error_code),
+                    };
+                }
+            }
+            assert!(bad_fault.validate_for(&input).is_err());
+        }
+    }
+}
+
+#[test]
+fn s2_25e_efer_rdmsr_profile_is_denied_by_jit() {
+    let (_, result) = run(EFER_RDMSR_FIXTURES[0], "jit", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
 }
 
 #[test]

@@ -17034,13 +17034,37 @@ helper path accesses EFER, and not runtime observation. The 32-bit compressed
 entry's EFER access is bypassed by the selected direct64 prefix; transitive
 `__pi_*` and decompression-helper ordering remains unaudited.
 
-No runtime EFER field or MSR handler was added. The next candidate is only an
-explicit-profile read of IA32_EFER in Long64, CPL0-only, over synthetic values
-`0x500`, `0x501`, `0xd00`, `0xd01`; these are not asserted to be Ubuntu's entry
-value. WRMSR, LMA transitions, NX enforcement and paging/TLB effects remain
-outside CPU-only scope. The adjacent compiled CR0 load is `0x80050033`
+No runtime EFER field or general MSR map was added. The bounded read-only
+profile is implemented separately as S2-25e over synthetic values `0x500`,
+`0x501`, `0xd00`, `0xd01`; these are not asserted to be Ubuntu's entry value.
+WRMSR, LMA transitions, NX enforcement and paging/TLB effects remain outside
+CPU-only scope. The adjacent compiled CR0 load is `0x80050033`
 (including AM), unlike S2-25a's synthetic `0x80010033`; actual entry CR0 is
 unobserved. See the [source/image evidence](STAGE_2_LINUX_PROFILE.md#ia32-efer-on-the-mapped-main-kernel-direct64-continuation),
 [contract](../specs/CPU_CONTRACT.md#s2-25d--ia32-efer-evidence-and-read-only-candidate),
 [plan](../plans/STAGE_2.md#s2-25d--mapped-main-kernel-ia32-efer-access-read-only-candidate),
 and [open evidence limitation](../KNOWN_ISSUES.md#issue-027--first-efer-access-and-startup-control-snapshot-are-unproven).
+
+## S2-25e — exact read-only Long64 RDMSR IA32_EFER
+
+Implemented `run_with_efer_rdmsr_profile` for exact bare `0F 32`, ECX
+`0xc0000080`, and one immutable profile value from `0x500`, `0x501`, `0xd00`,
+`0xd01`. Current CR0 and CR4 are explicit and restricted to the S2-25a/S2-25b
+domains, preserving PG=1 and PAE=1 for fixed LMA=1. EFER remains outside CPU
+state; no arbitrary MSR map is present. CPL0 returns exact EDX:EAX and preserves
+unrelated state; CPL1–3 raises #GP(0) after full fetch without retiring.
+Wrong index, prefixes, WRMSR, CR/FNINIT neighbors, bad value and out-of-domain
+controls fail closed. Schema-v2 fixture/result checks cover all four values,
+privilege, output/state tampering and memory preservation. JIT, native, C and
+fragment paths remain denied.
+
+Focused verification passed: one od-isa test covers 64 EFER-value × CR0 × CR4
+success combinations, CPL1–3, wrong index, prefixes, WRMSR, CR/FNINIT neighbor
+instructions, truncation, invalid profile value, STOP and zero budget. Two
+runner integration tests cover four literal fixtures, privilege matrix,
+comparator tamper rejection and JIT denial. Local tests only; hardware and
+physical x86 remain `not_run`. Linux entry EFER/CR snapshot and the absolute
+first-access order remain open under [ISSUE-027](../KNOWN_ISSUES.md#issue-027--first-efer-access-and-startup-control-snapshot-are-unproven).
+
+Normative source: Intel SDM Rev. 093 Vol. 2B RDMSR and Vol. 3A IA32_EFER /
+IA-32e paging ([official Vol. 2B PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf), [official SDM index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)). See the [CPU contract](../specs/CPU_CONTRACT.md#s2-25e--exact-read-only-long64-rdmsr-ia32_efer), [plan](../plans/STAGE_2.md#s2-25e--exact-read-only-long64-rdmsr-ia32_efer), [Linux profile](STAGE_2_LINUX_PROFILE.md#s2-25e-local-read-only-ia32_efer-rdmsr), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-25e-ia32_efer-rdmsr).

@@ -6118,3 +6118,20 @@ result. The interpreter executes each instruction independently; interruption
 or failure after a retirement preserves that earlier state. JIT/native/C/
 fragment execution remains denied, and these handwritten synthetic fixtures
 make no hardware or Ubuntu byte claim. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-25c--exact-cr0-clear-fninit-cr4-enable-and-xorpd-composition).
+
+## S2-25e IA32_EFER RDMSR
+
+Four literal `s2_25e_efer_rdmsr_*.case.json` inputs use the strict
+`s2-long-efer-rdmsr-v1` profile and exact bare `0F 32`. They independently
+exercise synthetic EFER values `0x500`, `0x501`, `0xd00`, and `0xd01`; all
+require ECX=`0xc0000080`, the current S2-25a CR0 domain, and the current
+S2-25b CR4 domain. CPL0 results place the exact EFER value in EDX:EAX, with
+zero extension, and preserve other state. Runner integration also clones
+inputs for CPL1–3 and checks atomic #GP(0), then tampers with outputs and
+exception vector/error code to verify strict result validation and comparator
+rejection. Invalid EFER values and wrong ECX are rejected by schema validation.
+These synthetic fixtures do not claim Ubuntu entry state, WRMSR or transition
+behavior, NX enforcement, MMU/paging effects, or hardware execution. JIT,
+native x86, C and fragment execution remain denied. See the [S2-25e contract](../../../../docs/specs/CPU_CONTRACT.md#s2-25e--exact-read-only-long64-rdmsr-ia32_efer),
+[plan](../../../../docs/plans/STAGE_2.md#s2-25e--exact-read-only-long64-rdmsr-ia32_efer), and
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-25e--exact-read-only-long64-rdmsr-ia32_efer).

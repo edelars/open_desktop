@@ -11958,7 +11958,8 @@ execution claim is made. Normative instruction semantics use Intel SDM Rev.
 
 ## S2-25d — IA32 EFER evidence and read-only candidate
 
-This is an evidence/contract proposal, **not an implemented MSR profile**.
+This is the source/image evidence record; the bounded runtime profile is
+specified separately in S2-25e.
 The authenticated Ubuntu 7.0.0-38.38 main-kernel direct64 continuation maps
 `RDMSR IA32_EFER` (`0F 32`, ECX=`0xc0000080`) to
 `ffffffff8139c1b4` / `arch/x86/kernel/head_64.S:385`, and a conditional
@@ -11968,7 +11969,7 @@ bits already match. The mapping is a main-kernel success-path site, not proof
 of the absolute first EFER access or of the runtime value. See the [source/image
 mapping](../reports/STAGE_2_LINUX_PROFILE.md#ia32-efer-on-the-mapped-main-kernel-direct64-continuation).
 
-If a CPU implementation follows, begin with read-only exact Long64
+The evidence motivated a read-only exact Long64
 `RDMSR IA32_EFER` under a caller-selected immutable profile value; CPL0 returns
 the selected 64-bit value in EDX:EAX and CPL1–3 raises #GP(0). Candidate
 synthetic inputs are `0x500`, `0x501`, `0xd00`, and `0xd01`: LME/LMA are fixed
@@ -11988,3 +11989,35 @@ EFER/CR snapshot remain open under [ISSUE-027](../KNOWN_ISSUES.md#issue-027--fir
 Normative reference: Intel SDM Rev. 093 Vol. 2B, RDMSR/WRMSR; Vol. 3A,
 IA32_EFER layout and IA-32e paging requirements
 ([official SDM index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)).
+
+## S2-25e — exact read-only Long64 RDMSR IA32_EFER
+
+The interpreter exposes `run_with_efer_rdmsr_profile` with one immutable
+caller-selected synthetic value. The only accepted values are `0x500`,
+`0x501`, `0xd00`, and `0xd01`: LME and LMA are fixed to one; SCE and NXE vary
+independently. This is a bounded policy domain, not an observed Linux entry
+snapshot. EFER is not added to `LongModeState`, and no general MSR map is
+introduced.
+
+The profile executes only exact bare Long64 `0F 32` with ECX=`0xc0000080`.
+The caller must supply current CR0 from the existing S2-25a domain and CR4 from
+the S2-25b domain; both are mandatory, retaining PG=1 and PAE=1 for the fixed
+LMA bit. CPL0 copies the selected 64-bit value to EDX:EAX with each dword
+zero-extended, advances RIP by two, and preserves all other state. CPL1–3
+raises #GP(0) after complete fetch and commits no state. Wrong index, invalid
+selected value, invalid CR domains, prefixes, WRMSR and other forms are local
+Unsupported outcomes. Generic legacy execution continues to reject present
+optional CR0/CR4 values unless an explicit bounded API is selected.
+
+Schema-v2 fixtures carry `efer_value` and numeric `efer_cpl` profile inputs;
+CR0/CR4 remain explicit fields of the existing architectural snapshot. Strict
+fixture/result validation checks the exact encoding, complete state output,
+four permitted values, privilege result and memory preservation. The
+independent comparator rejects tampered results. JIT, native x86, C and
+fragment admission remain denied. This profile does not model WRMSR, EFER
+transitions, NX page enforcement, page-table/TLB effects, guest exception
+delivery or physical execution. The S2-25d startup evidence and the unproven
+entry snapshot/absolute-first-access limitation remain under
+[ISSUE-027](../KNOWN_ISSUES.md#issue-027--first-efer-access-and-startup-control-snapshot-are-unproven).
+
+Normative semantics: Intel SDM Rev. 093 Vol. 2B RDMSR ([official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf)) and Vol. 3A IA32_EFER / IA-32e paging ([official SDM index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)).

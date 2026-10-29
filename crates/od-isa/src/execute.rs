@@ -122,6 +122,7 @@ pub struct RdtscControls {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Cr0Profile {
     FpInitLong64V1,
+    EferReadOnlyLong64V1,
 }
 
 impl Cr0Profile {
@@ -136,6 +137,7 @@ impl Cr0Profile {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Cr4Profile {
     FpInitLong64V1,
+    EferReadOnlyLong64V1,
     FpInitThenFxsave64Long64V1,
     FpInitThenFxrstor64Long64V1,
     FpInitThenFxrstor64MinssLong64V1,
@@ -1017,6 +1019,53 @@ pub fn run_with_msr_profile(
     )
 }
 
+/// Execute only exact bare `RDMSR IA32_EFER` under an immutable synthetic value.
+/// The current bounded CR0/CR4 snapshots are required so the fixed LMA bit
+/// remains consistent with the admitted Long64 paging state.
+pub fn run_with_efer_rdmsr_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    efer_value: u64,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    if !crate::msr::MsrProfile::accepts_efer_value(efer_value) {
+        return RunResult {
+            exit: RunExit::Unsupported { opcode: 0x0f },
+            instructions_executed: 0,
+            rflags_defined: crate::INTEGER_FLAGS,
+        };
+    }
+    run_configured(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        ExecutionProfiles {
+            cpuid: None,
+            msr: Some(&MsrProfile::EferReadOnlyV1(efer_value)),
+            sep: None,
+            xorpd: None,
+            minss_invalid: None,
+            fx_cr0: None,
+            unmasked_minss_denormal: false,
+            rdtsc: None,
+            swapgs: None,
+            cli: None,
+            sti: None,
+            halt: None,
+            cr0: Some(Cr0Profile::EferReadOnlyLong64V1),
+            cr4: Some(Cr4Profile::EferReadOnlyLong64V1),
+        },
+        StepRuntime {
+            rdtsc_source: None,
+            sti_sequence: None,
+            exact_hlt_only: false,
+            stop_requested: &mut stop_requested,
+        },
+    )
+}
+
 /// Execute the explicit IA32_KERNEL_GS_BASE MSR and SWAPGS composition.
 /// The ordinary MSR and SWAPGS APIs remain independent and do not enable
 /// each other's instruction policy.
@@ -1600,11 +1649,13 @@ fn run_configured(
     if let Some(profile) = profiles.cr0
         && (config.context.mode != InstructionMode::Long64
             || !state.cr0.is_some_and(|value| profile.accepts(value))
-            || state.x87.as_ref().is_none_or(|x87| {
-                x87.instruction_selector.is_some() || x87.data_selector.is_some()
-            })
-            || state.activity != Some(crate::CpuActivity::Running)
-            || state.sti_shadow != Some(crate::StiShadow::Clear))
+            || (profile != Cr0Profile::EferReadOnlyLong64V1
+                && state.x87.as_ref().is_none_or(|x87| {
+                    x87.instruction_selector.is_some() || x87.data_selector.is_some()
+                }))
+            || (profile != Cr0Profile::EferReadOnlyLong64V1
+                && (state.activity != Some(crate::CpuActivity::Running)
+                    || state.sti_shadow != Some(crate::StiShadow::Clear))))
     {
         return RunResult {
             exit: RunExit::Unsupported { opcode: 0x0f },
@@ -1618,11 +1669,13 @@ fn run_configured(
             || !state
                 .cr0
                 .is_some_and(|value| Cr0Profile::FpInitLong64V1.accepts(value))
-            || state.x87.as_ref().is_none_or(|x87| {
-                x87.instruction_selector.is_some() || x87.data_selector.is_some()
-            })
-            || state.activity != Some(crate::CpuActivity::Running)
-            || state.sti_shadow != Some(crate::StiShadow::Clear))
+            || (profile != Cr4Profile::EferReadOnlyLong64V1
+                && state.x87.as_ref().is_none_or(|x87| {
+                    x87.instruction_selector.is_some() || x87.data_selector.is_some()
+                }))
+            || (profile != Cr4Profile::EferReadOnlyLong64V1
+                && (state.activity != Some(crate::CpuActivity::Running)
+                    || state.sti_shadow != Some(crate::StiShadow::Clear))))
     {
         return RunResult {
             exit: RunExit::Unsupported { opcode: 0x0f },
@@ -2114,11 +2167,13 @@ fn step_configured(
     if let Some(profile) = cr0_profile
         && (context.mode != InstructionMode::Long64
             || !state.cr0.is_some_and(|value| profile.accepts(value))
-            || state.x87.as_ref().is_none_or(|x87| {
-                x87.instruction_selector.is_some() || x87.data_selector.is_some()
-            })
-            || state.activity != Some(crate::CpuActivity::Running)
-            || state.sti_shadow != Some(crate::StiShadow::Clear))
+            || (profile != Cr0Profile::EferReadOnlyLong64V1
+                && state.x87.as_ref().is_none_or(|x87| {
+                    x87.instruction_selector.is_some() || x87.data_selector.is_some()
+                }))
+            || (profile != Cr0Profile::EferReadOnlyLong64V1
+                && (state.activity != Some(crate::CpuActivity::Running)
+                    || state.sti_shadow != Some(crate::StiShadow::Clear))))
     {
         return Ok(StepOutcome::Unsupported { opcode: 0x0f });
     }
@@ -2128,11 +2183,13 @@ fn step_configured(
             || !state
                 .cr0
                 .is_some_and(|value| Cr0Profile::FpInitLong64V1.accepts(value))
-            || state.x87.as_ref().is_none_or(|x87| {
-                x87.instruction_selector.is_some() || x87.data_selector.is_some()
-            })
-            || state.activity != Some(crate::CpuActivity::Running)
-            || state.sti_shadow != Some(crate::StiShadow::Clear))
+            || (profile != Cr4Profile::EferReadOnlyLong64V1
+                && state.x87.as_ref().is_none_or(|x87| {
+                    x87.instruction_selector.is_some() || x87.data_selector.is_some()
+                }))
+            || (profile != Cr4Profile::EferReadOnlyLong64V1
+                && (state.activity != Some(crate::CpuActivity::Running)
+                    || state.sti_shadow != Some(crate::StiShadow::Clear))))
     {
         return Ok(StepOutcome::Unsupported { opcode: 0x0f });
     }
@@ -2192,6 +2249,114 @@ fn step_configured(
     } else {
         configured_minss_controls
     };
+    if cr0_profile.is_some() {
+        let efer_only_profiles = cr0_profile == Some(Cr0Profile::EferReadOnlyLong64V1)
+            || cr4_profile == Some(Cr4Profile::EferReadOnlyLong64V1);
+        let allowed = if efer_only_profiles {
+            instruction.operation == Operation::ReadMsr
+                && cr0_profile == Some(Cr0Profile::EferReadOnlyLong64V1)
+                && cr4_profile == Some(Cr4Profile::EferReadOnlyLong64V1)
+        } else {
+            match instruction.operation {
+                Operation::ReadCr0 | Operation::WriteCr0 | Operation::Fninit => true,
+                Operation::ReadCr4 | Operation::WriteCr4 => cr4_profile.is_some(),
+                Operation::Logic {
+                    kind: LogicKind::And,
+                    dst: Operand::Register(dst),
+                    src: Operand::Immediate(0xffff_ffff_ffff_fff3),
+                } => {
+                    dst == RegisterView::low(Register::Rax, OperandSize::Qword)
+                        && instruction.opcode.map == OpcodeMap::Primary
+                        && instruction.opcode.byte == 0x83
+                        && instruction.length == 4
+                        && instruction.prefixes.rex == Some(0x48)
+                        && !instruction.prefixes.operand_override
+                        && !instruction.prefixes.address_override
+                        && instruction.prefixes.group1.is_none()
+                        && instruction.prefixes.segment.is_none()
+                }
+                Operation::Logic {
+                    kind: LogicKind::Or,
+                    dst: Operand::Register(dst),
+                    src: Operand::Immediate(0x600),
+                } => {
+                    cr4_profile.is_some()
+                        && dst == RegisterView::low(Register::Rax, OperandSize::Qword)
+                        && instruction.opcode.map == OpcodeMap::Primary
+                        && instruction.opcode.byte == 0x0d
+                        && instruction.length == 6
+                        && instruction.prefixes.rex == Some(0x48)
+                        && !instruction.prefixes.operand_override
+                        && !instruction.prefixes.address_override
+                        && instruction.prefixes.group1.is_none()
+                        && instruction.prefixes.segment.is_none()
+                }
+                Operation::XorpdRegister {
+                    destination: 0,
+                    source: 1,
+                } => {
+                    cr4_profile.is_some()
+                        && instruction.length == 4
+                        && instruction.opcode.map == OpcodeMap::Escape0f
+                        && instruction.opcode.byte == 0x57
+                        && instruction.prefixes.operand_override
+                        && instruction.prefixes.rex.is_none()
+                }
+                Operation::Fxsave64RaxDisp8(area) => {
+                    cr4_profile == Some(Cr4Profile::FpInitThenFxsave64Long64V1)
+                        && area.base == long_decode::AddressBase::Register(Register::Rax)
+                        && area.index.is_none()
+                        && area.displacement == 0x40
+                        && area.size == OperandSize::Qword
+                        && instruction.length == 5
+                        && instruction.opcode.map == OpcodeMap::Escape0f
+                        && instruction.opcode.byte == 0xae
+                        && instruction.prefixes
+                            == (Prefixes {
+                                rex: Some(0x48),
+                                ..Prefixes::default()
+                            })
+                }
+                Operation::Fxrstor64RbxDisp8(area) => {
+                    matches!(
+                        cr4_profile,
+                        Some(
+                            Cr4Profile::FpInitThenFxrstor64Long64V1
+                                | Cr4Profile::FpInitThenFxrstor64MinssLong64V1
+                        )
+                    ) && area.base == long_decode::AddressBase::Register(Register::Rbx)
+                        && area.index.is_none()
+                        && area.displacement == 0x40
+                        && area.size == OperandSize::Qword
+                        && instruction.length == 5
+                        && instruction.opcode.map == OpcodeMap::Escape0f
+                        && instruction.opcode.byte == 0xae
+                        && instruction.prefixes
+                            == (Prefixes {
+                                rex: Some(0x48),
+                                ..Prefixes::default()
+                            })
+                }
+                Operation::MinssRegisterMasked {
+                    destination: 0,
+                    source: 1,
+                } => {
+                    cr4_profile == Some(Cr4Profile::FpInitThenFxrstor64MinssLong64V1)
+                        && instruction.length == 4
+                        && instruction.opcode.map == OpcodeMap::Escape0f
+                        && instruction.opcode.byte == 0x5d
+                        && instruction.prefixes.group1 == Some(0xf3)
+                        && instruction.prefixes.rex.is_none()
+                }
+                _ => false,
+            }
+        };
+        if !allowed {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+    }
     if ((cr0_profile.is_some()
         && matches!(
             instruction.operation,
@@ -2211,104 +2376,6 @@ fn step_configured(
         }));
     }
     if cr0_profile.is_some() {
-        let allowed = match instruction.operation {
-            Operation::ReadCr0 | Operation::WriteCr0 | Operation::Fninit => true,
-            Operation::ReadCr4 | Operation::WriteCr4 => cr4_profile.is_some(),
-            Operation::Logic {
-                kind: LogicKind::And,
-                dst: Operand::Register(dst),
-                src: Operand::Immediate(0xffff_ffff_ffff_fff3),
-            } => {
-                dst == RegisterView::low(Register::Rax, OperandSize::Qword)
-                    && instruction.opcode.map == OpcodeMap::Primary
-                    && instruction.opcode.byte == 0x83
-                    && instruction.length == 4
-                    && instruction.prefixes.rex == Some(0x48)
-                    && !instruction.prefixes.operand_override
-                    && !instruction.prefixes.address_override
-                    && instruction.prefixes.group1.is_none()
-                    && instruction.prefixes.segment.is_none()
-            }
-            Operation::Logic {
-                kind: LogicKind::Or,
-                dst: Operand::Register(dst),
-                src: Operand::Immediate(0x600),
-            } => {
-                cr4_profile.is_some()
-                    && dst == RegisterView::low(Register::Rax, OperandSize::Qword)
-                    && instruction.opcode.map == OpcodeMap::Primary
-                    && instruction.opcode.byte == 0x0d
-                    && instruction.length == 6
-                    && instruction.prefixes.rex == Some(0x48)
-                    && !instruction.prefixes.operand_override
-                    && !instruction.prefixes.address_override
-                    && instruction.prefixes.group1.is_none()
-                    && instruction.prefixes.segment.is_none()
-            }
-            Operation::XorpdRegister {
-                destination: 0,
-                source: 1,
-            } => {
-                cr4_profile.is_some()
-                    && instruction.length == 4
-                    && instruction.opcode.map == OpcodeMap::Escape0f
-                    && instruction.opcode.byte == 0x57
-                    && instruction.prefixes.operand_override
-                    && instruction.prefixes.rex.is_none()
-            }
-            Operation::Fxsave64RaxDisp8(area) => {
-                cr4_profile == Some(Cr4Profile::FpInitThenFxsave64Long64V1)
-                    && area.base == long_decode::AddressBase::Register(Register::Rax)
-                    && area.index.is_none()
-                    && area.displacement == 0x40
-                    && area.size == OperandSize::Qword
-                    && instruction.length == 5
-                    && instruction.opcode.map == OpcodeMap::Escape0f
-                    && instruction.opcode.byte == 0xae
-                    && instruction.prefixes
-                        == (Prefixes {
-                            rex: Some(0x48),
-                            ..Prefixes::default()
-                        })
-            }
-            Operation::Fxrstor64RbxDisp8(area) => {
-                matches!(
-                    cr4_profile,
-                    Some(
-                        Cr4Profile::FpInitThenFxrstor64Long64V1
-                            | Cr4Profile::FpInitThenFxrstor64MinssLong64V1
-                    )
-                ) && area.base == long_decode::AddressBase::Register(Register::Rbx)
-                    && area.index.is_none()
-                    && area.displacement == 0x40
-                    && area.size == OperandSize::Qword
-                    && instruction.length == 5
-                    && instruction.opcode.map == OpcodeMap::Escape0f
-                    && instruction.opcode.byte == 0xae
-                    && instruction.prefixes
-                        == (Prefixes {
-                            rex: Some(0x48),
-                            ..Prefixes::default()
-                        })
-            }
-            Operation::MinssRegisterMasked {
-                destination: 0,
-                source: 1,
-            } => {
-                cr4_profile == Some(Cr4Profile::FpInitThenFxrstor64MinssLong64V1)
-                    && instruction.length == 4
-                    && instruction.opcode.map == OpcodeMap::Escape0f
-                    && instruction.opcode.byte == 0x5d
-                    && instruction.prefixes.group1 == Some(0xf3)
-                    && instruction.prefixes.rex.is_none()
-            }
-            _ => false,
-        };
-        if !allowed {
-            return Ok(StepOutcome::Unsupported {
-                opcode: instruction.opcode.byte,
-            });
-        }
         if instruction.operation == Operation::Fninit
             && state.cr0.is_some_and(|value| value & 0xcu64 != 0)
         {
@@ -2704,8 +2771,17 @@ fn step_configured(
                 opcode: instruction.opcode.byte,
             });
         };
-        if *profile == MsrProfile::KernelGsBaseV1
-            && (instruction.length != 2 || instruction.prefixes != Prefixes::default())
+        if matches!(
+            profile,
+            MsrProfile::KernelGsBaseV1 | MsrProfile::EferReadOnlyV1(_)
+        ) && (instruction.length != 2 || instruction.prefixes != Prefixes::default())
+        {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        if let MsrProfile::EferReadOnlyV1(value) = profile
+            && !MsrProfile::accepts_efer_value(*value)
         {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
@@ -2724,6 +2800,19 @@ fn step_configured(
                 linear_address: None,
             })
         };
+        if matches!(profile, MsrProfile::EferReadOnlyV1(_))
+            && (!context.mode.eq(&InstructionMode::Long64)
+                || !state
+                    .cr0
+                    .is_some_and(|value| Cr0Profile::FpInitLong64V1.accepts(value))
+                || !state
+                    .cr4
+                    .is_some_and(|value| Cr4Profile::FpInitLong64V1.accepts(value)))
+        {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
         if *profile == MsrProfile::SysenterProbeV1 || context.privilege != PrivilegeLevel::Ring0 {
             // The SYSENTER probe policy faults at every CPL; FS_BASE and
             // GS_BASE are accessible only at CPL0 in their bounded profiles.
@@ -2744,12 +2833,18 @@ fn step_configured(
                     MsrProfile::KernelGsBaseV1 => state
                         .kernel_gs_base
                         .expect("kernel-GS state validated above"),
+                    MsrProfile::EferReadOnlyV1(value) => *value,
                     MsrProfile::SysenterProbeV1 => unreachable!("faulted above"),
                 };
                 state.gpr[Register::Rax as usize] = u64::from(value as u32);
                 state.gpr[Register::Rdx as usize] = u64::from((value >> 32) as u32);
             }
             Operation::WriteMsr => {
+                if matches!(profile, MsrProfile::EferReadOnlyV1(_)) {
+                    return Ok(StepOutcome::Unsupported {
+                        opcode: instruction.opcode.byte,
+                    });
+                }
                 let value = (u64::from(state.gpr[Register::Rdx as usize] as u32) << 32)
                     | u64::from(state.gpr[Register::Rax as usize] as u32);
                 if !canonical(value) {
@@ -2759,6 +2854,9 @@ fn step_configured(
                     MsrProfile::FsBaseV1 => state.fs_base = value,
                     MsrProfile::GsBaseV1 => state.gs_base = value,
                     MsrProfile::KernelGsBaseV1 => state.kernel_gs_base = Some(value),
+                    MsrProfile::EferReadOnlyV1(_) => {
+                        unreachable!("read-only profile rejected WRMSR")
+                    }
                     MsrProfile::SysenterProbeV1 => unreachable!("faulted above"),
                 }
             }
@@ -91969,6 +92067,286 @@ mod tests {
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());
         }
+    }
+
+    #[test]
+    fn efer_rdmsr_requires_exact_form_bounded_state_and_cpl0_after_fetch() {
+        for value in [0x500, 0x501, 0xd00, 0xd01] {
+            for cr0 in [
+                Cr0Profile::BASE,
+                Cr0Profile::BASE | 4,
+                Cr0Profile::BASE | 8,
+                Cr0Profile::BASE | 12,
+            ] {
+                for cr4 in [
+                    Cr4Profile::BASE,
+                    Cr4Profile::BASE | (1 << 9),
+                    Cr4Profile::BASE | (1 << 10),
+                    Cr4Profile::BASE | (1 << 9) | (1 << 10),
+                ] {
+                    let mut state = LongModeState::default();
+                    state.rip = 0x1000;
+                    state.cr0 = Some(cr0);
+                    state.cr4 = Some(cr4);
+                    state.gpr[Register::Rcx as usize] = 0xfeed_beef_c000_0080;
+                    state.gpr[Register::Rax as usize] = u64::MAX;
+                    state.gpr[Register::Rdx as usize] = u64::MAX;
+                    let mut expected = state.clone();
+                    expected.gpr[Register::Rax as usize] = u64::from(value as u32);
+                    expected.gpr[Register::Rdx as usize] = u64::from((value >> 32) as u32);
+                    expected.rip += 2;
+                    let mut memory = Memory::at(&[0x0f, 0x32], 0x1000);
+                    let decoded = long_decode::decode(
+                        &mut memory,
+                        0x1000,
+                        AccessContext {
+                            privilege: PrivilegeLevel::Ring0,
+                            ..AccessContext::default()
+                        },
+                    )
+                    .unwrap();
+                    assert_eq!(decoded.length, 2);
+                    assert_eq!(decoded.prefixes, Prefixes::default());
+                    assert_eq!(decoded.operation, Operation::ReadMsr);
+                    assert!(Cr0Profile::EferReadOnlyLong64V1.accepts(cr0));
+                    assert!(Cr4Profile::EferReadOnlyLong64V1.accepts(cr4));
+                    let result = run_with_efer_rdmsr_profile(
+                        &mut state,
+                        &mut memory,
+                        RunConfig {
+                            instruction_budget: 1,
+                            stop_rip: Some(0x1002),
+                            context: AccessContext {
+                                privilege: PrivilegeLevel::Ring0,
+                                ..AccessContext::default()
+                            },
+                        },
+                        value,
+                        || false,
+                    );
+                    assert_eq!(result.exit, RunExit::StopAddress);
+                    assert_eq!(result.instructions_executed, 1);
+                    assert_eq!(state, expected);
+                }
+            }
+        }
+
+        for privilege in [
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.cr0 = Some(Cr0Profile::BASE);
+            state.cr4 = Some(Cr4Profile::BASE);
+            state.gpr[Register::Rcx as usize] = 0xc000_0080;
+            let before = state.clone();
+            let mut memory = Memory::at(&[0x0f, 0x32], 0x1000);
+            let result = run_with_efer_rdmsr_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x1002),
+                    context: AccessContext {
+                        privilege,
+                        ..AccessContext::default()
+                    },
+                },
+                0x500,
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                })
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+        }
+
+        for (code, index, value, expected_exit) in [
+            (
+                &[0x0f, 0x32][..],
+                0xc000_0100,
+                0x500,
+                RunExit::Unsupported { opcode: 0x32 },
+            ),
+            (
+                &[0x48, 0x0f, 0x32][..],
+                0xc000_0080,
+                0x500,
+                RunExit::Unsupported { opcode: 0x32 },
+            ),
+            (
+                &[0x0f, 0x30][..],
+                0xc000_0080,
+                0x500,
+                RunExit::Unsupported { opcode: 0x30 },
+            ),
+            (
+                &[0x0f][..],
+                0xc000_0080,
+                0x500,
+                RunExit::MemoryError(MemoryError::Unmapped {
+                    address: 0x1001,
+                    access: crate::memory::AccessKind::Fetch,
+                }),
+            ),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            state.cr0 = Some(Cr0Profile::BASE);
+            state.cr4 = Some(Cr4Profile::BASE);
+            state.gpr[Register::Rcx as usize] = index;
+            let before = state.clone();
+            let mut memory = Memory::at(code, 0x1000);
+            let result = run_with_efer_rdmsr_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x1008),
+                    context: AccessContext {
+                        privilege: PrivilegeLevel::Ring0,
+                        ..AccessContext::default()
+                    },
+                },
+                value,
+                || false,
+            );
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+        }
+
+        for privilege in [
+            PrivilegeLevel::Ring0,
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            for (code, expected_opcode) in [
+                (&[0x0f, 0x20, 0xc0][..], 0x20), // MOV from CR0
+                (&[0x0f, 0x22, 0xc0][..], 0x22), // MOV to CR0
+                (&[0x0f, 0x20, 0xe0][..], 0x20), // MOV from CR4
+                (&[0x0f, 0x22, 0xe0][..], 0x22), // MOV to CR4
+                (&[0xdb, 0xe3][..], 0xdb),       // FNINIT
+            ] {
+                let mut state = LongModeState::default();
+                state.rip = 0x1000;
+                state.cr0 = Some(Cr0Profile::BASE);
+                state.cr4 = Some(Cr4Profile::BASE);
+                state.gpr[Register::Rcx as usize] = 0xc000_0080;
+                let before = state.clone();
+                let mut memory = Memory::at(code, 0x1000);
+                let result = run_with_efer_rdmsr_profile(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(0x1008),
+                        context: AccessContext {
+                            privilege,
+                            ..AccessContext::default()
+                        },
+                    },
+                    0x500,
+                    || false,
+                );
+                assert_eq!(
+                    result.exit,
+                    RunExit::Unsupported {
+                        opcode: expected_opcode
+                    },
+                    "neighbor instruction must be Unsupported at {privilege:?}"
+                );
+                assert_eq!(result.instructions_executed, 0);
+                assert_eq!(state, before);
+            }
+        }
+
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        state.cr0 = Some(Cr0Profile::BASE);
+        state.cr4 = Some(Cr4Profile::BASE);
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x0f, 0x32], 0x1000);
+        let result = run_with_efer_rdmsr_profile(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 0,
+                stop_rip: None,
+                context: AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+            },
+            0x500,
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+        assert_eq!(state, before);
+        let result = run_with_efer_rdmsr_profile(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x1000),
+                context: AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+            },
+            0x500,
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+        let invalid = run_with_efer_rdmsr_profile(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+            },
+            0x502,
+            || false,
+        );
+        assert_eq!(invalid.exit, RunExit::Unsupported { opcode: 0x0f });
+        assert_eq!(state, before);
+
+        let mut invalid_generic_state = LongModeState::default();
+        invalid_generic_state.rip = 0x1000;
+        invalid_generic_state.gpr[Register::Rcx as usize] = 0xc000_0080;
+        let mut memory = Memory::at(&[0x0f, 0x32], 0x1000);
+        let generic = run_with_msr_profile(
+            &mut invalid_generic_state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x1002),
+                context: AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+            },
+            &MsrProfile::EferReadOnlyV1(0x502),
+            || false,
+        );
+        assert_eq!(generic.exit, RunExit::Unsupported { opcode: 0x32 });
+        assert_eq!(generic.instructions_executed, 0);
+        assert_eq!(invalid_generic_state.rip, 0x1000);
     }
 
     #[test]

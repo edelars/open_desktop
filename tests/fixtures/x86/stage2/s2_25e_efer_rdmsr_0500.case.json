@@ -1,0 +1,41 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_25e_efer_rdmsr_0500",
+  "profile": "s2-long-efer-rdmsr-v1",
+  "efer_cpl": 0,
+  "efer_value": "0x0000000000000500",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten exact RDMSR bytes; caller-selected synthetic EFER value from the four-value S2-25e domain.",
+    "specification": "Intel SDM revision 093, Vol. 2B RDMSR; Vol. 3A IA32_EFER and IA-32e paging.",
+    "specification_version": "Intel SDM revision 093; project S2-25e."
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0xfeedface12345678", "0xdeadbeefc0000080", "0xbeefdead87654321", "0x1122334455667788",
+      "0x0000000000200080", "0x0000000000200080", "0x0000000000200004", "0x0000000000200010",
+      "0x0123456789abcdef", "0xfedcba9876543210", "0x8877665544332211", "0xaabbccddeeff0011",
+      "0x1122112211221122", "0x3344334433443344", "0x778899aabbccddee", "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000cd7",
+    "cr0": "0x0000000080010033",
+    "cr4": "0x0000000000000020"
+  },
+  "memory": [{
+    "region_id": "code",
+    "guest_address": "0x0000000000100000",
+    "length": 2,
+    "permissions": { "read": false, "write": false, "execute": true },
+    "initial_bytes_hex": "0f32",
+    "comparison_mask_hex": "ffff"
+  }],
+  "stop_rip": "0x0000000000100002",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

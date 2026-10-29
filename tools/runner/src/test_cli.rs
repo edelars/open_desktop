@@ -988,11 +988,12 @@ fn execute_fixture_v2(
     use od_isa::execute::{
         Cr0Profile, Cr4Profile, Fxrstor64Cr0Controls, Fxsave64Cr0Controls, MinssInvalidControls,
         RdtscControls, RunConfig, RunExit, XorpdPrerequisiteState, run, run_with_cli_profile,
-        run_with_cr0_profile, run_with_fxrstor64_cr0_controls, run_with_fxsave64_cr0_controls,
-        run_with_halt_profile, run_with_kernel_gs_base_profile, run_with_minss_invalid_controls,
-        run_with_minss_unmasked_denormal_controls, run_with_msr_profile, run_with_rdtsc_source,
-        run_with_rep_continuation, run_with_sep_profile, run_with_sti_profile,
-        run_with_swapgs_profile, run_with_xorpd_prerequisites,
+        run_with_cr0_profile, run_with_efer_rdmsr_profile, run_with_fxrstor64_cr0_controls,
+        run_with_fxsave64_cr0_controls, run_with_halt_profile, run_with_kernel_gs_base_profile,
+        run_with_minss_invalid_controls, run_with_minss_unmasked_denormal_controls,
+        run_with_msr_profile, run_with_rdtsc_source, run_with_rep_continuation,
+        run_with_sep_profile, run_with_sti_profile, run_with_swapgs_profile,
+        run_with_xorpd_prerequisites,
     };
     use od_testkit::v2;
     use std::time::{Duration, Instant};
@@ -1020,8 +1021,14 @@ fn execute_fixture_v2(
             | v2::Profile::LongCr0Cr4FpInitFxsave64V1
             | v2::Profile::LongCr0Cr4FpInitFxrstor64V1
             | v2::Profile::LongCr0Cr4FpInitFxrstor64MinssV1
+            | v2::Profile::LongEferRdmsrV1
     ) {
-        let privilege = match loaded.fixture.cli_cpl.expect("validated CLI CPL") {
+        let cpl = if loaded.fixture.profile == v2::Profile::LongEferRdmsrV1 {
+            loaded.fixture.efer_cpl.expect("validated EFER CPL")
+        } else {
+            loaded.fixture.cli_cpl.expect("validated CLI CPL")
+        };
+        let privilege = match cpl {
             v2::CliCpl::Cpl0 => od_isa::memory::PrivilegeLevel::Ring0,
             v2::CliCpl::Cpl1 => od_isa::memory::PrivilegeLevel::Ring1,
             v2::CliCpl::Cpl2 => od_isa::memory::PrivilegeLevel::Ring2,
@@ -1091,6 +1098,18 @@ fn execute_fixture_v2(
             timeout,
         )
         .expect("fixture supplies a valid fresh REP continuation boundary")
+    } else if loaded.fixture.profile == v2::Profile::LongEferRdmsrV1 {
+        run_with_efer_rdmsr_profile(
+            &mut state,
+            memory,
+            config,
+            loaded
+                .fixture
+                .efer_value
+                .expect("validated EFER value")
+                .get(),
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongFsBaseMsrV1 {
         run_with_msr_profile(
             &mut state,

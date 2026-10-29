@@ -127,6 +127,7 @@ pub const PROFILE_HLT: &str = "s2-long-hlt-v1";
 pub const PROFILE_IRETQ_CPL0_VALID: &str = "s2-long-iretq-cpl0-valid-v1";
 pub const PROFILE_LRETQ_CPL0_VALID: &str = "s2-long-lretq-cpl0-valid-v1";
 pub const PROFILE_KERNEL_GS_BASE: &str = "s2-long-msr-kernel-gs-base-v1";
+pub const PROFILE_EFER_RDMSR: &str = "s2-long-efer-rdmsr-v1";
 /// Diagnostic mask for this bounded local fixture profile only. It is not a
 /// universal hardware CPUID mask and does not model guest #GP behavior.
 pub const PROFILE_SSE_MXCSR_DIAGNOSTIC_MASK: u32 = 0x0000_ffbf;
@@ -159,6 +160,8 @@ pub enum Profile {
     LongLretqCpl0ValidV1,
     #[serde(rename = "s2-long-msr-kernel-gs-base-v1")]
     LongKernelGsBaseV1,
+    #[serde(rename = "s2-long-efer-rdmsr-v1")]
+    LongEferRdmsrV1,
     #[serde(rename = "s2-long-fs-base-msr-v1")]
     LongFsBaseMsrV1,
     #[serde(rename = "s2-long-fs-selector-v1")]
@@ -1925,6 +1928,7 @@ impl IntegerState {
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
+                | Profile::LongEferRdmsrV1
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
@@ -2068,6 +2072,7 @@ impl IntegerState {
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
+                | Profile::LongEferRdmsrV1
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
@@ -2220,6 +2225,7 @@ impl IntegerState {
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
+                | Profile::LongEferRdmsrV1
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
@@ -2379,6 +2385,7 @@ impl IntegerState {
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
+                | Profile::LongEferRdmsrV1
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
@@ -2771,7 +2778,7 @@ impl IntegerState {
             ));
         }
         match (profile, self.cr0) {
-            (Profile::LongCr0FpInitV1, Some(value))
+            (Profile::LongEferRdmsrV1 | Profile::LongCr0FpInitV1, Some(value))
             | (
                 Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
@@ -2788,6 +2795,7 @@ impl IntegerState {
             .contains(&value.get()) => {}
             (
                 Profile::LongCr0FpInitV1
+                | Profile::LongEferRdmsrV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
@@ -2802,6 +2810,7 @@ impl IntegerState {
             }
             (
                 Profile::LongCr0FpInitV1
+                | Profile::LongEferRdmsrV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
@@ -2817,6 +2826,7 @@ impl IntegerState {
         match (profile, self.cr4) {
             (
                 Profile::LongCr4FpInitV1
+                | Profile::LongEferRdmsrV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
@@ -2831,6 +2841,7 @@ impl IntegerState {
             .contains(&value.get()) => {}
             (
                 Profile::LongCr4FpInitV1
+                | Profile::LongEferRdmsrV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
@@ -2844,6 +2855,7 @@ impl IntegerState {
             }
             (
                 Profile::LongCr4FpInitV1
+                | Profile::LongEferRdmsrV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitFxrstor64MinssV1
@@ -3478,6 +3490,16 @@ pub struct Fixture {
     /// Narrow CPL input used only by the exact CLI profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli_cpl: Option<CliCpl>,
+    /// CPL input required only by the bounded IA32_EFER RDMSR profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub efer_cpl: Option<CliCpl>,
+    /// Immutable caller-selected EFER value; never stored in CPU state.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_hex_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub efer_value: Option<HexU64>,
     pub provenance: Provenance,
     pub seed: Option<HexU64>,
     /// Set only by explicit conversion; never reuse the old input digest as this fixture's digest.
@@ -3574,6 +3596,25 @@ impl Fixture {
         version(self.schema_version)?;
         validate_case_id(&self.case_id)?;
         self.initial_state.validate_for(self.profile)?;
+        match (self.profile, self.efer_cpl, self.efer_value) {
+            (Profile::LongEferRdmsrV1, Some(_), Some(value))
+                if od_isa::msr::MsrProfile::accepts_efer_value(value.get()) => {}
+            (Profile::LongEferRdmsrV1, _, Some(_)) => {
+                return Err(invalid(
+                    "efer_value",
+                    "must be one of 0x500, 0x501, 0xd00, 0xd01",
+                ));
+            }
+            (Profile::LongEferRdmsrV1, _, None) => {
+                return Err(invalid("efer_value", "required by this profile"));
+            }
+            (_, Some(_), _) => return Err(invalid("efer_cpl", "not part of this profile")),
+            (_, _, Some(_)) => return Err(invalid("efer_value", "not part of this profile")),
+            (_, None, None) => {}
+        }
+        if self.profile != Profile::LongEferRdmsrV1 && self.efer_cpl.is_some() {
+            return Err(invalid("efer_cpl", "not part of this profile"));
+        }
         for value in [
             &self.provenance.kind,
             &self.provenance.source,
@@ -4337,6 +4378,38 @@ impl Fixture {
                 return Err(invalid(
                     "memory.code",
                     "kernel-GS-base fixtures require the exact instruction budget and stop RIP",
+                ));
+            }
+        }
+        if self.profile == Profile::LongEferRdmsrV1 {
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by the EFER RDMSR profile"))?;
+            let cpl: u8 = self.efer_cpl.expect("validated EFER CPL").into();
+            let expected_exit = if cpl == 0 {
+                ExpectedExit::StopAddress
+            } else {
+                ExpectedExit::Exception
+            };
+            if code.initial_bytes_hex.to_ascii_lowercase() != "0f32"
+                || code.guest_address != self.initial_state.rip
+                || code.length != 2
+                || code.permissions.read
+                || code.permissions.write
+                || !code.permissions.execute
+                || code.comparison_mask_hex.to_ascii_lowercase() != "ffff"
+                || self.memory.len() != 1
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != self.initial_state.rip.get().checked_add(2)
+                || self.expected_exit != expected_exit
+                || self.rflags_mask.get() != INTEGER_FLAGS
+                || self.initial_state.gpr[1].get() as u32 != 0xc000_0080
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "EFER RDMSR requires exact bare 0F 32, budget 1, stop RIP entry+2, and exit matching the CPL0 gate",
                 ));
             }
         }
@@ -6772,6 +6845,8 @@ impl Fixture {
             case_id: source.case_id.clone(),
             profile: Profile::LongIntegerV1,
             cli_cpl: None,
+            efer_cpl: None,
+            efer_value: None,
             provenance: source.provenance.clone(),
             seed: source.seed.map(HexU64),
             converted_from_v1_sha256: Some(old.input_sha256.clone()),
@@ -7110,6 +7185,65 @@ impl RunResult {
             return Err(FormatError::CaseMismatch("profile"));
         }
         if let Observation::Available { value } = &self.snapshot {
+            if loaded.fixture.profile == Profile::LongEferRdmsrV1 {
+                let initial = &loaded.fixture.initial_state;
+                let efer = loaded
+                    .fixture
+                    .efer_value
+                    .ok_or(FormatError::CaseMismatch("efer_value"))?;
+                let cpl = loaded
+                    .fixture
+                    .efer_cpl
+                    .ok_or(FormatError::CaseMismatch("efer_cpl"))?;
+                let success = cpl == CliCpl::Cpl0;
+                let mut expected_gpr = initial.gpr;
+                if success {
+                    expected_gpr[0] = HexU64(u64::from(efer.get() as u32));
+                    expected_gpr[2] = HexU64(u64::from((efer.get() >> 32) as u32));
+                }
+                let expected_rip = HexU64(initial.rip.get() + if success { 2 } else { 0 });
+                let expected_exit = if success {
+                    Outcome::StopAddress {}
+                } else {
+                    Outcome::Exception {}
+                };
+                let exception_matches = if success {
+                    value.exception == (Observation::Available { value: None })
+                } else {
+                    matches!(
+                        &value.exception,
+                        Observation::Available { value: Some(exception) }
+                            if exception.vector == 13
+                                && exception.error_code == (Observation::Available { value: HexU64(0) })
+                                && exception.faulting_rip == initial.rip
+                                && matches!(exception.fault_address, Observation::Unavailable { .. })
+                    )
+                };
+                if value.state.gpr != expected_gpr
+                    || value.state.rip != expected_rip
+                    || value.state.rflags != initial.rflags
+                    || value.state.cr0 != initial.cr0
+                    || value.state.cr4 != initial.cr4
+                    || value.state.sti_shadow != initial.sti_shadow
+                    || value.rflags_defined != HexU64(INTEGER_FLAGS)
+                    || self.instructions_executed
+                        != (Observation::Available {
+                            value: HexU64(u64::from(success)),
+                        })
+                    || self.outcome != expected_exit
+                    || !exception_matches
+                    || value.memory.len() != loaded.fixture.memory.len()
+                    || loaded.fixture.memory.iter().any(|input| {
+                        value
+                            .memory
+                            .iter()
+                            .find(|output| output.region_id == input.region_id)
+                            .is_none_or(|output| output.bytes_hex != input.initial_bytes_hex)
+                    })
+                {
+                    return Err(FormatError::CaseMismatch("state.efer_rdmsr"));
+                }
+            }
             if loaded.fixture.profile == Profile::LongRdtscV1
                 && value.rdtsc_source_calls
                     != loaded

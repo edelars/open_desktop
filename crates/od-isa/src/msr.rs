@@ -15,6 +15,8 @@ pub enum MsrProfile {
     FsBaseV1,
     /// CPL0-only access to IA32_KERNEL_GS_BASE (`0xc000_0102`).
     KernelGsBaseV1,
+    /// Read-only CPL0 access to a caller-selected synthetic IA32_EFER value.
+    EferReadOnlyV1(u64),
 }
 
 impl MsrProfile {
@@ -25,6 +27,12 @@ impl MsrProfile {
             Self::GsBaseV1 => index == 0xc000_0101,
             Self::FsBaseV1 => index == 0xc000_0100,
             Self::KernelGsBaseV1 => index == 0xc000_0102,
+            Self::EferReadOnlyV1(_) => index == 0xc000_0080,
         }
+    }
+
+    /// Whether this exact local EFER value belongs to the bounded S2-25e domain.
+    pub const fn accepts_efer_value(value: u64) -> bool {
+        matches!(value, 0x500 | 0x501 | 0xd00 | 0xd01)
     }
 }
