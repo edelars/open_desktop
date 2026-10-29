@@ -5936,3 +5936,18 @@ fetch/STOP/budget order, legacy/JIT/native/C denial, concrete IF/IOPL comparison
 and the caller-resubmitted maskable-request boundary after CLI. Intel SDM
 Rev. 093 Vol. 2A, CLI pp. 3-148–3-149, Table 3-7 is the source. This is local
 interpreter coverage, not event delivery or physical/Linux validation.
+
+## S2-27i exact Long64 STI fixture profile
+
+The `s2-long-sti-v1` profile carries the bounded `StiShadowSnapshot` value in
+each CPU snapshot (`clear` or `blocking`) and requires it to be present. It
+compares `INTEGER_FLAGS|IF|IOPL`; IF and IOPL remain concrete system bits and
+do not expand arithmetic `rflags_defined`. Numeric CPL remains restricted to
+0–3 through the profile-specific CPL field. Literal `s2_27i_sti_*.case.json`
+fixtures use bare `FB`, IF=0 and Clear shadow, with privilege/IOPL cases
+covering successful transitions and #GP(0) denial. Local API tests additionally
+cover `FB 90`, `FB FB`, `FB FA`, and `FA FB 90`, plus continuation, faults,
+STOP/budget, request eligibility and shadow preservation. JIT/native/C/fragment
+paths remain closed. The source is Intel SDM Rev. 093, Vol. 2B, STI
+pp. 4-674–4-675, Table 4-22. NMI/SMI delivery, scheduling, HLT, MOV SS and REP
+boundaries are excluded.

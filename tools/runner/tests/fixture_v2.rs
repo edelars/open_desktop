@@ -45,6 +45,24 @@ const CLI_SUCCESS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_27h_cli_cpl0_iopl0_if1.case.json");
 const CLI_FAULT: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_27h_cli_cpl3_iopl0_if1.case.json");
+const STI_FIXTURES: [&[u8]; 16] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27i_sti_cpl0_iopl0_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27i_sti_cpl0_iopl1_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27i_sti_cpl0_iopl2_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27i_sti_cpl0_iopl3_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27i_sti_cpl1_iopl0_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27i_sti_cpl1_iopl1_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27i_sti_cpl1_iopl2_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27i_sti_cpl1_iopl3_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27i_sti_cpl2_iopl0_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27i_sti_cpl2_iopl1_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27i_sti_cpl2_iopl2_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27i_sti_cpl2_iopl3_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27i_sti_cpl3_iopl0_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27i_sti_cpl3_iopl1_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27i_sti_cpl3_iopl2_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27i_sti_cpl3_iopl3_if0.case.json"),
+];
 const FSTP_INVALID_SOURCE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30w_fstp_invalid_source.case.json");
 const FST_INVALID_SOURCE: &[u8] =
@@ -1862,6 +1880,89 @@ fn cli_profile_is_denied_by_jit() {
         result.instructions_executed,
         Observation::Unavailable { .. }
     ));
+}
+
+#[test]
+fn sti_fixtures_preserve_shadow_and_cover_the_cpl_iopl_matrix() {
+    assert_eq!(STI_FIXTURES.len(), 16);
+    for fixture in STI_FIXTURES {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert_eq!(input.fixture.profile, od_testkit::v2::Profile::LongStiV1);
+        let cpl: u8 = input.fixture.cli_cpl.unwrap().into();
+        let iopl = ((input.fixture.initial_state.rflags.get() >> 12) & 3) as u8;
+        if cpl <= iopl {
+            assert!(matches!(result.outcome, Outcome::StopAddress {}));
+            assert_eq!(count(&result), 1);
+            let observed = snapshot(&result);
+            assert_eq!(
+                observed.state.rip,
+                HexU64(input.fixture.initial_state.rip.get() + 1)
+            );
+            assert_ne!(observed.state.rflags.get() & (1 << 9), 0);
+            assert_eq!(
+                observed.state.sti_shadow,
+                Some(od_testkit::v2::StiShadowSnapshot::Blocking)
+            );
+            assert_eq!(
+                od_testkit::v2::compare(&input, &result, &result).unwrap(),
+                Vec::<String>::new()
+            );
+
+            let mut tampered = result.clone();
+            if let Observation::Available { value } = &mut tampered.snapshot {
+                value.state.sti_shadow = Some(od_testkit::v2::StiShadowSnapshot::Clear);
+            }
+            assert!(
+                od_testkit::v2::compare(&input, &result, &tampered)
+                    .unwrap()
+                    .contains(&"state.sti_shadow".to_owned())
+            );
+            for bit in [9, 12] {
+                let mut flags_tampered = result.clone();
+                if let Observation::Available { value } = &mut flags_tampered.snapshot {
+                    value.state.rflags = HexU64(value.state.rflags.get() ^ (1 << bit));
+                    if bit == 9 {
+                        value.state.sti_shadow = Some(od_testkit::v2::StiShadowSnapshot::Clear);
+                    }
+                }
+                assert!(
+                    od_testkit::v2::compare(&input, &result, &flags_tampered)
+                        .unwrap()
+                        .contains(&"rflags".to_owned())
+                );
+            }
+        } else {
+            assert!(matches!(result.outcome, Outcome::Exception {}));
+            assert_eq!(count(&result), 0);
+            assert_eq!(snapshot(&result).state, input.fixture.initial_state);
+        }
+    }
+}
+
+#[test]
+fn sti_compound_fixture_requires_exact_success_boundary() {
+    let mut input = Fixture::from_json(STI_FIXTURES[0]).unwrap();
+    let code = input
+        .fixture
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.length = 2;
+    code.initial_bytes_hex = "fb90".into();
+    code.comparison_mask_hex = "ffff".into();
+    input.fixture.instruction_budget = 2;
+    input.fixture.stop_rip = None;
+    input.fixture.expected_exit = ExpectedExit::Unsupported;
+
+    assert!(input.fixture.validate().is_err());
+}
+
+#[test]
+fn sti_profile_is_denied_by_jit() {
+    let (_, result) = run(STI_FIXTURES[0], "jit", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
 }
 
 #[test]

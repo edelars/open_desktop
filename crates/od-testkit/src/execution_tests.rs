@@ -10943,6 +10943,7 @@ fn movsb_rejects_prefixes_and_other_string_widths_without_commit() {
         &[0xf3, 0x66, 0xa4][..],
     ] {
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0x100000,
             gpr: [0; 16],
             rflags: 2,
@@ -12288,6 +12289,7 @@ fn on_demand_execution_skips_invalid_tail_and_accepts_arbitrary_reached_entry() 
     let base = 0x1000;
     let mut mem = memory(&code, base);
     let mut state = LongModeState {
+        sti_shadow: None,
         rip: base,
         rflags: 0x42,
         ..LongModeState::default()
@@ -12831,6 +12833,7 @@ fn failed_fetch_and_unsupported_encoding_never_commit_cpu_or_ram() {
     for length in 1..code.len() {
         let mut mem = memory(&code[..length], 0);
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [u64::MAX; 16],
             ..LongModeState::default()
         };
@@ -12935,6 +12938,7 @@ fn ud2_fetch_boundary_is_exact_across_complete_and_adjacent_executable_regions()
         ),
     ] {
         let mut state = LongModeState {
+            sti_shadow: None,
             rip,
             gpr: [
                 0x1122_3344_5566_7788,
@@ -13015,6 +13019,7 @@ fn ud2_second_fetch_errors_preserve_backend_class_payload_and_state() {
     ];
     for error in errors {
         let mut state = LongModeState {
+            sti_shadow: None,
             rip,
             gpr: [0xfeed_face_cafe_beef; 16],
             rflags: 0x08d7,
@@ -13090,6 +13095,7 @@ fn ud2_missing_second_byte_and_first_fetch_failure_do_not_become_ud_or_commit() 
     ];
     for (mut inner, injected, expected_exit, fetch_count) in cases {
         let mut state = LongModeState {
+            sti_shadow: None,
             rip,
             gpr: [0x0123_4567_89ab_cdef; 16],
             rflags: 0x08d7,

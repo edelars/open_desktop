@@ -991,8 +991,8 @@ fn execute_fixture_v2(
         run_with_fxrstor64_cr0_controls, run_with_fxsave64_cr0_controls,
         run_with_kernel_gs_base_profile, run_with_minss_invalid_controls,
         run_with_minss_unmasked_denormal_controls, run_with_msr_profile, run_with_rdtsc_source,
-        run_with_rep_continuation, run_with_sep_profile, run_with_swapgs_profile,
-        run_with_xorpd_prerequisites,
+        run_with_rep_continuation, run_with_sep_profile, run_with_sti_profile,
+        run_with_swapgs_profile, run_with_xorpd_prerequisites,
     };
     use od_testkit::v2;
     use std::time::{Duration, Instant};
@@ -1007,7 +1007,10 @@ fn execute_fixture_v2(
     let mut timed_out = false;
     // A cooperative deadline is checked at the same instruction boundaries as
     // STOP, before budget/fetch. It cannot interrupt a stalled backend call.
-    let context = if loaded.fixture.profile == v2::Profile::LongCliV1 {
+    let context = if matches!(
+        loaded.fixture.profile,
+        v2::Profile::LongCliV1 | v2::Profile::LongStiV1
+    ) {
         let privilege = match loaded.fixture.cli_cpl.expect("validated CLI CPL") {
             v2::CliCpl::Cpl0 => od_isa::memory::PrivilegeLevel::Ring0,
             v2::CliCpl::Cpl1 => od_isa::memory::PrivilegeLevel::Ring1,
@@ -1108,6 +1111,14 @@ fn execute_fixture_v2(
             memory,
             config,
             &od_isa::CliProfile::NonPviLong64V1,
+            timeout,
+        )
+    } else if loaded.fixture.profile == v2::Profile::LongStiV1 {
+        run_with_sti_profile(
+            &mut state,
+            memory,
+            config,
+            &od_isa::StiProfile::NonPviLong64V1,
             timeout,
         )
     } else if loaded.fixture.profile == v2::Profile::LongKernelGsBaseV1 {

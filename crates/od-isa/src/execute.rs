@@ -138,12 +138,60 @@ pub enum RunInputError {
 pub enum MaskableRequestRunInputError {
     InvalidRflagsDefined { value: u64 },
     IncompatibleEntryFlags { value: u64 },
+    InterruptInhibitionActive,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MaskableRequestRunResult {
     InterruptEligible { vector: u8, rip: u64 },
     Run(RunResult),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StiSequenceProgress {
+    StartIfClear,
+    StartIfSet,
+    AfterSti,
+    AfterCli,
+    AfterCliSti,
+    AfterShadow,
+    Done,
+}
+
+impl StiSequenceProgress {
+    fn new(state: &LongModeState) -> Self {
+        if state.sti_shadow == Some(crate::StiShadow::Blocking) {
+            Self::AfterShadow
+        } else if state.rflags & (1 << 9) == 0 {
+            Self::StartIfClear
+        } else {
+            Self::StartIfSet
+        }
+    }
+
+    fn admit(&mut self, instruction: &long_decode::Instruction) -> bool {
+        let operation = instruction.operation;
+        let sti = operation == Operation::Sti;
+        let cli = operation == Operation::Cli;
+        let nop = operation == Operation::Nop
+            && instruction.length == 1
+            && instruction.prefixes == Prefixes::default();
+        let next = match self {
+            Self::StartIfClear if sti => Some(Self::AfterSti),
+            Self::StartIfClear if cli => Some(Self::AfterCli),
+            Self::StartIfSet if sti => Some(Self::Done),
+            Self::AfterSti if nop || sti || cli => Some(Self::Done),
+            Self::AfterCli if sti => Some(Self::AfterCliSti),
+            Self::AfterCliSti if nop => Some(Self::Done),
+            Self::AfterShadow if nop || sti || cli => Some(Self::Done),
+            _ => None,
+        };
+        let Some(next) = next else {
+            return false;
+        };
+        *self = next;
+        true
+    }
 }
 
 /// Explicit in-memory restart state for bounded address-size-32 REPNE strings.
@@ -172,6 +220,7 @@ enum RepContinuationOperand {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RepRunInputError {
     InvalidRflagsDefined { value: u64 },
+    InterruptInhibitionActive,
     ContinuationStateMismatch,
     ContinuationInstructionMismatch,
 }
@@ -187,6 +236,9 @@ pub fn run_with_rep_continuation(
     continuation: &mut Option<RepContinuation>,
     mut stop_requested: impl FnMut() -> bool,
 ) -> Result<RunResult, RepRunInputError> {
+    if state.sti_shadow == Some(crate::StiShadow::Blocking) {
+        return Err(RepRunInputError::InterruptInhibitionActive);
+    }
     if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
         return Err(RepRunInputError::InvalidRflagsDefined {
             value: initial_rflags_defined,
@@ -939,6 +991,36 @@ pub fn run_with_cli_profile(
     )
 }
 
+/// Execute the bounded exact STI/CLI sequence profile. This profile requires
+/// explicit interrupt-shadow state in `LongModeState`.
+pub fn run_with_sti_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    profile: &crate::StiProfile,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_execution_loop_with_profiles_and_rdtsc_and_sti(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        None,
+        Some(profile),
+        &mut stop_requested,
+    )
+}
+
 /// Execute exact bare Long64 RDTSC with explicit CR4.TSD and an injected source.
 pub fn run_with_rdtsc_source(
     state: &mut LongModeState,
@@ -1019,6 +1101,9 @@ pub fn run_with_maskable_request(
         return Err(MaskableRequestRunInputError::InvalidRflagsDefined {
             value: initial_rflags_defined,
         });
+    }
+    if state.sti_shadow == Some(crate::StiShadow::Blocking) {
+        return Err(MaskableRequestRunInputError::InterruptInhibitionActive);
     }
 
     const IF: u64 = 1 << 9;
@@ -1145,6 +1230,45 @@ fn run_execution_loop_with_profiles_and_rdtsc(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     config: RunConfig,
+    rflags_defined: u64,
+    cpuid_profile: Option<&CpuidProfile>,
+    msr_profile: Option<&MsrProfile>,
+    sep_profile: Option<&SepProfile>,
+    xorpd_prerequisites: Option<XorpdPrerequisiteState>,
+    minss_invalid_controls: Option<MinssInvalidControls>,
+    fx_cr0_gate_controls: Option<FxCr0GateControls>,
+    unmasked_minss_denormal: bool,
+    rdtsc_controls: Option<RdtscControls>,
+    rdtsc_source: Option<&mut dyn FnMut() -> u64>,
+    swapgs_profile: Option<&SwapgsProfile>,
+    cli_profile: Option<&crate::CliProfile>,
+    stop_requested: &mut impl FnMut() -> bool,
+) -> RunResult {
+    run_execution_loop_with_profiles_and_rdtsc_and_sti(
+        state,
+        memory,
+        config,
+        rflags_defined,
+        cpuid_profile,
+        msr_profile,
+        sep_profile,
+        xorpd_prerequisites,
+        minss_invalid_controls,
+        fx_cr0_gate_controls,
+        unmasked_minss_denormal,
+        rdtsc_controls,
+        rdtsc_source,
+        swapgs_profile,
+        cli_profile,
+        None,
+        stop_requested,
+    )
+}
+
+fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
     mut rflags_defined: u64,
     cpuid_profile: Option<&CpuidProfile>,
     msr_profile: Option<&MsrProfile>,
@@ -1157,8 +1281,34 @@ fn run_execution_loop_with_profiles_and_rdtsc(
     mut rdtsc_source: Option<&mut dyn FnMut() -> u64>,
     swapgs_profile: Option<&SwapgsProfile>,
     cli_profile: Option<&crate::CliProfile>,
+    sti_profile: Option<&crate::StiProfile>,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> RunResult {
+    if sti_profile.is_some() && state.sti_shadow.is_none() {
+        return RunResult {
+            exit: RunExit::Unsupported { opcode: 0xfb },
+            instructions_executed: 0,
+            rflags_defined,
+        };
+    }
+    if sti_profile.is_some()
+        && state.sti_shadow == Some(crate::StiShadow::Blocking)
+        && state.rflags & (1 << 9) == 0
+    {
+        return RunResult {
+            exit: RunExit::Unsupported { opcode: 0xfb },
+            instructions_executed: 0,
+            rflags_defined,
+        };
+    }
+    if sti_profile.is_none() && state.sti_shadow == Some(crate::StiShadow::Blocking) {
+        return RunResult {
+            exit: RunExit::Unsupported { opcode: 0xfb },
+            instructions_executed: 0,
+            rflags_defined,
+        };
+    }
+    let mut sti_sequence = sti_profile.map(|_| StiSequenceProgress::new(state));
     let mut retired = 0;
     loop {
         // The harness address is checked first; STOP then budget are checked
@@ -1170,6 +1320,7 @@ fn run_execution_loop_with_profiles_and_rdtsc(
         } else if retired == config.instruction_budget {
             Some(RunExit::InstructionBudgetExhausted)
         } else {
+            let old_shadow = state.sti_shadow;
             let outcome = if let Some(source) = rdtsc_source.take() {
                 let outcome = step_tracked_with_profiles_and_rdtsc(
                     state,
@@ -1187,6 +1338,8 @@ fn run_execution_loop_with_profiles_and_rdtsc(
                     Some(&mut *source),
                     swapgs_profile,
                     cli_profile,
+                    sti_profile,
+                    sti_sequence.as_mut(),
                     stop_requested,
                 );
                 rdtsc_source = Some(source);
@@ -1208,11 +1361,16 @@ fn run_execution_loop_with_profiles_and_rdtsc(
                     None,
                     swapgs_profile,
                     cli_profile,
+                    sti_profile,
+                    sti_sequence.as_mut(),
                     stop_requested,
                 )
             };
             match outcome {
                 Ok(StepOutcome::Advanced | StepOutcome::Branched) => {
+                    if sti_profile.is_some() && old_shadow == Some(crate::StiShadow::Blocking) {
+                        state.sti_shadow = Some(crate::StiShadow::Clear);
+                    }
                     retired += 1;
                     None
                 }
@@ -1337,6 +1495,8 @@ pub fn step_with_swapgs_profile(
         None,
         Some(profile),
         None,
+        None,
+        None,
         &mut || false,
     )
 }
@@ -1427,6 +1587,8 @@ fn step_tracked_with_profiles(
         None,
         None,
         None,
+        None,
+        None,
         stop_requested,
     )
 }
@@ -1447,8 +1609,13 @@ fn step_tracked_with_profiles_and_rdtsc(
     rdtsc_source: Option<&mut dyn FnMut() -> u64>,
     swapgs_profile: Option<&SwapgsProfile>,
     cli_profile: Option<&crate::CliProfile>,
+    sti_profile: Option<&crate::StiProfile>,
+    sti_sequence: Option<&mut StiSequenceProgress>,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> Result<StepOutcome, MemoryError> {
+    if state.sti_shadow == Some(crate::StiShadow::Blocking) && sti_profile.is_none() {
+        return Ok(StepOutcome::Unsupported { opcode: 0xfb });
+    }
     let instruction = match long_decode::decode(memory, state.rip, context) {
         Ok(instruction) => instruction,
         Err(DecodeError::Unsupported { opcode, .. }) => {
@@ -1468,6 +1635,15 @@ fn step_tracked_with_profiles_and_rdtsc(
         }
         Err(DecodeError::Memory(error)) => return Err(error),
     };
+    if sti_profile.is_some()
+        && !sti_sequence
+            .expect("STI profile carries its bounded sequence state")
+            .admit(&instruction)
+    {
+        return Ok(StepOutcome::Unsupported {
+            opcode: instruction.opcode.byte,
+        });
+    }
     if let Some(controls) = fx_cr0_gate_controls {
         let (exact_operation, gate) = match controls {
             FxCr0GateControls::Save(controls) => (
@@ -1594,10 +1770,17 @@ fn step_tracked_with_profiles_and_rdtsc(
         });
     }
     let next_rip = state.rip.wrapping_add(u64::from(instruction.length));
-    if instruction.operation == Operation::Cli {
-        let Some(_profile) = cli_profile else {
-            return Ok(StepOutcome::Unsupported { opcode: 0xfa });
-        };
+    if instruction.operation == Operation::Cli || instruction.operation == Operation::Sti {
+        let has_cli = cli_profile.is_some() || sti_profile.is_some();
+        if !has_cli {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        let is_sti = instruction.operation == Operation::Sti;
+        if is_sti && sti_profile.is_none() {
+            return Ok(StepOutcome::Unsupported { opcode: 0xfb });
+        }
         if instruction.prefixes.group1 == Some(0xf0) && instruction.length == 2 {
             return Ok(StepOutcome::Fault(ArchitecturalFault {
                 vector: 6,
@@ -1606,7 +1789,9 @@ fn step_tracked_with_profiles_and_rdtsc(
             }));
         }
         if instruction.prefixes != Prefixes::default() || instruction.length != 1 {
-            return Ok(StepOutcome::Unsupported { opcode: 0xfa });
+            return Ok(StepOutcome::Unsupported {
+                opcode: if is_sti { 0xfb } else { 0xfa },
+            });
         }
         let cpl: u8 = match context.privilege {
             PrivilegeLevel::Ring0 => 0,
@@ -1622,7 +1807,20 @@ fn step_tracked_with_profiles_and_rdtsc(
                 linear_address: None,
             }));
         }
-        state.rflags &= !(1 << 9);
+        let was_enabled = state.rflags & (1 << 9) != 0;
+        if is_sti {
+            state.rflags |= 1 << 9;
+            state.sti_shadow = Some(if was_enabled {
+                crate::StiShadow::Clear
+            } else {
+                crate::StiShadow::Blocking
+            });
+        } else {
+            state.rflags &= !(1 << 9);
+            if sti_profile.is_some() {
+                state.sti_shadow = Some(crate::StiShadow::Clear);
+            }
+        }
         state.rip = next_rip;
         return Ok(StepOutcome::Advanced);
     }
@@ -2327,7 +2525,7 @@ fn step_tracked_with_profiles_and_rdtsc(
     // Direct control flow uses the decoded condition/displacement; integer
     // operations below use normalized operands at each accepted width.
     let executable = match instruction.operation {
-        Operation::Cpuid | Operation::Rdtsc | Operation::Cli => false,
+        Operation::Cpuid | Operation::Rdtsc | Operation::Cli | Operation::Sti => false,
         Operation::Swapgs => true,
         Operation::ReadMsr | Operation::WriteMsr => false,
         Operation::Sysenter | Operation::Sysexit => false,
@@ -3959,6 +4157,7 @@ fn step_tracked_with_profiles_and_rdtsc(
         Operation::Cpuid => unreachable!("CPUID is executed before transfer dispatch"),
         Operation::Rdtsc => unreachable!("RDTSC is handled by its explicit source profile"),
         Operation::Cli => unreachable!("CLI commits in its profile-gated state path"),
+        Operation::Sti => unreachable!("STI commits in its profile-gated state path"),
         Operation::Swapgs => unreachable!("SWAPGS commits in its profile-gated state path"),
         Operation::FxsaveRipRelative(_) => {
             unreachable!("FXSAVE commits in its prevalidated field-store path")
@@ -12349,6 +12548,7 @@ mod tests {
     fn direct_relative_branches_use_next_rip_and_preserve_flags() {
         let flags = crate::CF | crate::PF | crate::ZF;
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x1122; 16],
             rflags: flags,
             fs_base: 0,
@@ -12423,6 +12623,7 @@ mod tests {
     #[test]
     fn indirect_register_jmp_updates_rip_or_faults_before_commit() {
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x55; 16],
             rflags: crate::CF | crate::ZF,
             fs_base: 0,
@@ -12467,6 +12668,7 @@ mod tests {
         assert_eq!(defined, crate::CF | crate::ZF);
 
         let before = LongModeState {
+            sti_shadow: None,
             gpr: [0x55; 16],
             rflags: before_flags,
             fs_base: 0,
@@ -12519,6 +12721,7 @@ mod tests {
     fn indirect_memory_jmp_reads_exact_qword_before_target_validation() {
         let base = 0x2000;
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x55; 16],
             rflags: crate::CF | crate::ZF,
             fs_base: 0,
@@ -12557,6 +12760,7 @@ mod tests {
         assert_eq!(memory.accesses, [(AccessKind::Read, 0x1008, 8)]);
 
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x55; 16],
             rflags: crate::CF | crate::ZF,
             fs_base: 0,
@@ -12619,6 +12823,7 @@ mod tests {
     #[test]
     fn indirect_memory_call_reads_source_then_pushes_and_faults_without_commit() {
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x55; 16],
             rflags: crate::CF | crate::ZF,
             fs_base: 0,
@@ -12690,6 +12895,7 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0x55; 16],
                 rflags: crate::CF | crate::ZF,
                 fs_base: 0,
@@ -12731,6 +12937,7 @@ mod tests {
         }
 
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x55; 16],
             rflags: crate::CF | crate::ZF,
             fs_base: 0,
@@ -12777,6 +12984,7 @@ mod tests {
     #[test]
     fn popfq_updates_only_profile_flags_and_commits_after_stack_read() {
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x55; 16],
             rflags: (1 << 9) | (1 << 16) | (1 << 21) | 2,
             fs_base: 0,
@@ -12832,6 +13040,7 @@ mod tests {
     #[test]
     fn popfq_stack_fault_and_out_of_profile_event_flags_do_not_commit() {
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x55; 16],
             rflags: (1 << 9) | 2,
             fs_base: 0,
@@ -12943,6 +13152,7 @@ mod tests {
     #[test]
     fn pushfq_stores_the_sdm_mask_and_preserves_flags() {
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x55; 16],
             rflags: u64::MAX,
             fs_base: 0,
@@ -12989,6 +13199,7 @@ mod tests {
     #[test]
     fn pushfq_bounded_write_failure_does_not_commit_cpu_state() {
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x55; 16],
             rflags: crate::CF | (1 << 10) | 2,
             fs_base: 0,
@@ -13038,6 +13249,7 @@ mod tests {
     #[test]
     fn pushfw_stores_the_low_flags_word_and_preserves_flags() {
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x55; 16],
             rflags: 0xffff_ffff_ffff_04d7,
             fs_base: 0,
@@ -13081,6 +13293,7 @@ mod tests {
     #[test]
     fn pushfw_bounded_write_failure_does_not_commit_cpu_state() {
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x55; 16],
             rflags: crate::CF | (1 << 10) | 2,
             fs_base: 0,
@@ -13131,6 +13344,7 @@ mod tests {
     fn ret_imm16_reads_qword_then_commits_pop_and_zero_extended_adjustment() {
         for (immediate, expected_rsp) in [(0u16, 0x1008u64), (0x20, 0x1028), (u16::MAX, 0x1_1007)] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0x55; 16],
                 rflags: crate::CF | crate::ZF,
                 fs_base: 0,
@@ -13174,6 +13388,7 @@ mod tests {
     #[test]
     fn ret_imm16_truncation_stack_read_and_noncanonical_target_do_not_commit() {
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x55; 16],
             rflags: crate::CF | crate::ZF,
             fs_base: 0,
@@ -13249,6 +13464,7 @@ mod tests {
     fn direct_branch_wraps_rip_and_taken_noncanonical_target_faults_without_commit() {
         let base = u64::MAX - 1;
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x55; 16],
             rflags: crate::ZF,
             fs_base: 0,
@@ -13284,6 +13500,7 @@ mod tests {
 
         let base = 0x0000_7fff_ffff_fffd;
         let before = LongModeState {
+            sti_shadow: None,
             gpr: [0x55; 16],
             rflags: crate::ZF,
             fs_base: 0,
@@ -13338,6 +13555,7 @@ mod tests {
             &[0xf3, 0xeb, 0][..],
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0x55; 16],
                 rflags: crate::ZF,
                 fs_base: 0,
@@ -13374,6 +13592,7 @@ mod tests {
         }
 
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x55; 16],
             rflags: crate::ZF,
             fs_base: 0,
@@ -13451,6 +13670,7 @@ mod tests {
             ), // REX.R / ignored ModRM.reg does not change AL destination
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0x1122_3344_5566_7788; 16],
                 rflags: crate::ZF | crate::CF | crate::OF | crate::PF,
                 fs_base: 0,
@@ -13504,6 +13724,7 @@ mod tests {
     fn setcc_memory_store_is_one_byte_and_faults_do_not_commit() {
         let code = [0x0f, 0x94, 0x45, 0x00]; // SETZ byte ptr [RBP]
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0; 16],
             rflags: crate::ZF | crate::PF | crate::OF,
             fs_base: 0,
@@ -13598,6 +13819,7 @@ mod tests {
     #[test]
     fn setcc_accepts_address_override_and_rejects_unsupported_repeat_or_segment_forms() {
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0; 16],
             rflags: crate::ZF,
             fs_base: 0,
@@ -13639,6 +13861,7 @@ mod tests {
             &[0x64, 0x0f, 0x94, 0x00][..],
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0; 16],
                 rflags: crate::ZF,
                 fs_base: 0,
@@ -13680,6 +13903,7 @@ mod tests {
     fn cmovcc_reads_memory_even_when_false_and_commits_only_after_success() {
         let code = [0x0f, 0x44, 0x03]; // CMOVE EAX, dword ptr [RBX]
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x1122_3344_5566_7788; 16],
             rflags: crate::CF | crate::OF,
             fs_base: 0,
@@ -13727,6 +13951,7 @@ mod tests {
         assert_eq!(defined, crate::INTEGER_FLAGS);
 
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x1122_3344_5566_7788; 16],
             rflags: crate::ZF | crate::PF,
             fs_base: 0,
@@ -13770,6 +13995,7 @@ mod tests {
     fn cmovcc_false_memory_read_faults_before_any_architectural_commit() {
         let code = [0x0f, 0x44, 0x45, 0x00]; // CMOVE EAX, dword ptr [RBP]
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x8877_6655_4433_2211; 16],
             rflags: crate::CF | crate::PF,
             fs_base: 0,
@@ -13844,6 +14070,7 @@ mod tests {
     #[test]
     fn cmovcc_accepts_operand_and_address_overrides_and_rejects_group1_and_fs_gs_memory() {
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0; 16],
             rflags: crate::ZF,
             fs_base: 0,
@@ -13887,6 +14114,7 @@ mod tests {
             &[0x65, 0x0f, 0x44, 0x00][..],
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0; 16],
                 rflags: 0,
                 fs_base: 0,
@@ -13953,6 +14181,7 @@ mod tests {
                     let mut memory = Memory::new(&code);
                     let before_ram = memory.bytes.clone();
                     let mut state = LongModeState {
+                        sti_shadow: None,
                         gpr: [0x8877_6655_4433_2211; 16],
                         rflags: 0x8d7,
                         fs_base: 0,
@@ -14033,6 +14262,7 @@ mod tests {
     #[test]
     fn high_byte_register_mov_load_and_store_use_legacy_aliases() {
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0; 16],
             rflags: 0x8d7,
             fs_base: 0,
@@ -14101,6 +14331,7 @@ mod tests {
                 );
                 code.extend_from_slice(&0x8877_6655_4433_2211u64.to_le_bytes()[..size.bytes()]);
                 let mut state = LongModeState {
+                    sti_shadow: None,
                     gpr: [u64::MAX; 16],
                     rflags: 0x8d7,
                     fs_base: 0,
@@ -14173,6 +14404,7 @@ mod tests {
     #[test]
     fn multiply_forms_write_the_correct_halves_and_truncated_result() {
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0; 16],
             rip: 0,
             rflags: 0x8d7,
@@ -14310,6 +14542,7 @@ mod tests {
 
         for (code, target, initial_rax, initial_target, expected) in cases {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0xdead_beef_cafe_babe; 16],
                 rip: 0,
                 rflags: 0x8d7,
@@ -14450,6 +14683,7 @@ mod tests {
         });
         // AX / BL produces a quotient above AL's representable range.
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x1122_3344_5566_7788; 16],
             rip: 0,
             rflags: 0x8d7,
@@ -14491,6 +14725,7 @@ mod tests {
 
         // The byte signed minimum divided by -1 has a quotient outside i8.
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x7654_3210_fedc_ba98; 16],
             rip: 0,
             rflags: 0xcd7,
@@ -14531,6 +14766,7 @@ mod tests {
         assert_eq!(state, before);
 
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0; 16],
             rip: 0,
             rflags: 0x8d7,
@@ -14581,6 +14817,7 @@ mod tests {
 
         // This exact case exercises signed 128-bit minimum divided by -1.
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x8877_6655_4433_2211; 16],
             rip: 0,
             rflags: 0xcd7,
@@ -14621,6 +14858,7 @@ mod tests {
 
         // Zero divisor has the same architectural exception and exact RIP.
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x1234; 16],
             rip: 0,
             rflags: 0x8d7,
@@ -14690,6 +14928,7 @@ mod tests {
     #[test]
     fn memory_bit_scan_read_fault_does_not_commit_cpu_or_definedness() {
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x1234_5678_9abc_def0; 16],
             rip: 0,
             rflags: 0xcd7,
@@ -14782,6 +15021,7 @@ mod tests {
                 memory.error = Some(error.clone());
                 let before_ram = memory.bytes.clone();
                 let mut state = LongModeState {
+                    sti_shadow: None,
                     gpr: [0x1234; 16],
                     rip: 0,
                     rflags: 0x8d7,
@@ -14924,6 +15164,7 @@ mod tests {
             (&[0x4c, 0xc7, 0xc0, 1, 0, 0, 0], 1), // REX.R ignored for /0
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0; 16],
                 rip: 0,
                 rflags: 0x8d7,
@@ -15013,6 +15254,7 @@ mod tests {
                     );
                     code.extend_from_slice(&0x1001u64.to_le_bytes()[..if addr32 { 4 } else { 8 }]);
                     let mut state = LongModeState {
+                        sti_shadow: None,
                         gpr: [0; 16],
                         rip: 0,
                         rflags: 0x8d7,
@@ -15100,6 +15342,7 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0; 16],
                 rip: 0,
                 rflags: 0x8d7,
@@ -15172,6 +15415,7 @@ mod tests {
             (&[0x48, 0x8d, 0x05, 0xff, 0xff, 0xff, 0xff], 0, 6),
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0; 16],
                 rip: 0,
                 rflags: 0x8d7,
@@ -15218,6 +15462,7 @@ mod tests {
     fn xchg_captures_aliases_before_writes_and_distinguishes_nop_from_eax_self_write() {
         for code in [&[0x90][..], &[0x40, 0x90], &[0x48, 0x90], &[0x66, 0x90]] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0x1122_3344_5566_7788; 16],
                 rip: 0,
                 rflags: 0x8d7,
@@ -15275,6 +15520,7 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0xaabb_ccdd_eeff_0011; 16],
                 rip: 0,
                 rflags: 0x8d7,
@@ -15318,6 +15564,7 @@ mod tests {
     fn qword_memory_xchg_uses_one_atomic_call_and_commits_only_on_success() {
         let code = [0x48, 0x87, 0x00]; // XCHG [RAX], RAX
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x1122_3344_5566_7788; 16],
             rip: 0,
             rflags: 0x0cd7,
@@ -15384,6 +15631,7 @@ mod tests {
             MemoryError::Backend("atomic exchange failed".into()),
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0x1122_3344_5566_7788; 16],
                 rip: 0,
                 rflags: 0x0cd7,
@@ -15446,6 +15694,7 @@ mod tests {
     fn qword_memory_xadd_uses_one_atomic_call_and_commits_only_on_success() {
         let code = [0x48, 0x0f, 0xc1, 0x00]; // XADD [RAX], RAX
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x1122_3344_5566_7788; 16],
             rip: 0,
             rflags: 0x0cd7,
@@ -15509,6 +15758,7 @@ mod tests {
             MemoryError::Backend("atomic fetch-add failed".into()),
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0x1122_3344_5566_7788; 16],
                 rip: 0,
                 rflags: 0x0cd7,
@@ -15572,6 +15822,7 @@ mod tests {
     fn lock_qword_memory_xadd_uses_one_atomic_call_and_delays_commit_on_error() {
         let code = [0xf0, 0x48, 0x0f, 0xc1, 0x00]; // LOCK XADD [RAX], RAX
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x1122_3344_5566_7788; 16],
             rip: 0,
             rflags: 0x0cd7,
@@ -15635,6 +15886,7 @@ mod tests {
             MemoryError::Backend("locked atomic fetch-add failed".into()),
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0x1122_3344_5566_7788; 16],
                 rip: 0,
                 rflags: 0x0cd7,
@@ -15698,6 +15950,7 @@ mod tests {
     fn qword_memory_cmpxchg_uses_one_atomic_call_and_preserves_prestate_on_error() {
         let code = [0x48, 0x0f, 0xb1, 0x00]; // CMPXCHG [RAX], RAX
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x1122_3344_5566_7788; 16],
             rip: 0,
             rflags: 0x0202,
@@ -15761,6 +16014,7 @@ mod tests {
             MemoryError::Backend("atomic compare-exchange failed".into()),
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0x1122_3344_5566_7788; 16],
                 rip: 0,
                 rflags: 0x0202,
@@ -15824,6 +16078,7 @@ mod tests {
     fn qword_register_xadd_alias_doubles_destination_and_sets_add_flags() {
         let code = [0x48, 0x0f, 0xc1, 0xc0]; // XADD RAX, RAX
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0xaabb_ccdd_eeff_0011; 16],
             rip: 0,
             rflags: 0x0cd7,
@@ -15876,6 +16131,7 @@ mod tests {
         assert!(memory.accesses.is_empty());
 
         let mut extended_state = LongModeState {
+            sti_shadow: None,
             gpr: [0xaabb_ccdd_eeff_0011; 16],
             rip: 0,
             rflags: 0x0cd7,
@@ -15927,6 +16183,7 @@ mod tests {
             for cut in 0..code.len() {
                 for architectural in [false, true] {
                     let mut state = LongModeState {
+                        sti_shadow: None,
                         gpr: [0x1000; 16],
                         rip: 0,
                         rflags: 0x8d7,
@@ -15994,6 +16251,7 @@ mod tests {
             &[0x48, 0xc7, 0x03, 1, 2, 3, 4],
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0x1000; 16],
                 rip: 0,
                 rflags: 0x8d7,
@@ -16208,6 +16466,7 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0; 16],
                 rip: 0,
                 rflags: 0x402 | carry,
@@ -16296,6 +16555,7 @@ mod tests {
                 }
                 for architectural in [false, true] {
                     let mut state = LongModeState {
+                        sti_shadow: None,
                         gpr: [1; 16],
                         rip: 0,
                         rflags: 0xcd7,
@@ -16363,6 +16623,7 @@ mod tests {
             for cut in 0..code.len() {
                 for architectural in [false, true] {
                     let mut state = LongModeState {
+                        sti_shadow: None,
                         gpr: [0x1000; 16],
                         rip: 0,
                         rflags: 0xcd7,
@@ -16533,6 +16794,7 @@ mod tests {
             (&[0xf7, 0xd0][..], 0xffff_ffff_0000_0000, 0, 0xffff_ffff),
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0; 16],
                 rip: 0,
                 rflags: 0xcd7,
@@ -16571,6 +16833,7 @@ mod tests {
             assert!(memory.accesses.is_empty());
         }
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0; 16],
             rip: 0,
             rflags: 0xcd7,
@@ -16620,6 +16883,7 @@ mod tests {
             &[0x48, 0xf7, 0x03, 0xff, 0xff, 0xff, 0xff],
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [u64::MAX; 16],
                 rip: 0,
                 rflags: 0xcd7,
@@ -16674,6 +16938,7 @@ mod tests {
             &[0x48, 0xf7, 0xc0, 0, 0, 0, 0x80],
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0; 16],
                 rip: 0,
                 rflags: 0xcd7,
@@ -16728,6 +16993,7 @@ mod tests {
                     continue;
                 }
                 let mut state = LongModeState {
+                    sti_shadow: None,
                     gpr: [1; 16],
                     rip: 0,
                     rflags: 0xcd7,
@@ -16775,6 +17041,7 @@ mod tests {
             }
             for cut in 0..code.len() {
                 let mut state = LongModeState {
+                    sti_shadow: None,
                     gpr: [0x1000; 16],
                     rip: 0,
                     rflags: 0xcd7,
@@ -16844,6 +17111,7 @@ mod tests {
             (&[0x31, 0xc0, 0x48, 0x21, 0x03][..], 0xcc7, 1), // unmapped AND fault
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0; 16],
                 rip: 0,
                 rflags: 0xcd7,
@@ -16915,6 +17183,7 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0; 16],
                 rip: 0,
                 rflags: 0x8d7,
@@ -16965,6 +17234,7 @@ mod tests {
         // Rotates reduce the loop count modulo the ring, but flag definedness
         // still follows the architectural masked count before that reduction.
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0; 16],
             rip: 0,
             rflags: 0,
@@ -17011,6 +17281,7 @@ mod tests {
         );
 
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0; 16],
             rip: 0,
             rflags: crate::CF,
@@ -17057,6 +17328,7 @@ mod tests {
         );
 
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0; 16],
             rip: 0,
             rflags: 0,
@@ -17103,6 +17375,7 @@ mod tests {
             (&[0x41, 0xc1, 0xe0, 0][..], 8, 0x1234_5678), // SHL R8D,0
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0; 16],
                 rip: 0,
                 rflags: 0x8d7,
@@ -17140,6 +17413,7 @@ mod tests {
 
         for access in [AccessKind::Read, AccessKind::Write] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0; 16],
                 rip: 0,
                 rflags: 0x8d7,
@@ -17186,6 +17460,7 @@ mod tests {
 
         // Through-carry rotation of AL includes the incoming CF as a ninth bit.
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0; 16],
             rip: 0,
             rflags: crate::CF,
@@ -17226,6 +17501,7 @@ mod tests {
 
         // SHLD RAX,RCX,1 moves RAX's MSB to CF and RCX's MSB into bit 0.
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0; 16],
             rip: 0,
             rflags: 0,
@@ -17273,6 +17549,7 @@ mod tests {
             &[0x66, 0x0f, 0xac, 0xc8, 17][..],
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0; 16],
                 rip: 0,
                 rflags: 0x8d7,
@@ -17320,6 +17597,7 @@ mod tests {
         // dword alias still applies normal register write semantics.
         let code = [0x48, 0xc1, 0xe0, 0x40];
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0; 16],
             rip: 0,
             rflags: 0x8d7,
@@ -17365,6 +17643,7 @@ mod tests {
 
         for access in [AccessKind::Read, AccessKind::Write] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [0; 16],
                 rip: 0,
                 rflags: 0x8d7,
@@ -17452,6 +17731,7 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 rip: 0,
                 rflags: 0x8d7,
                 fs_base: 0,
@@ -17485,6 +17765,7 @@ mod tests {
         // 66 selects the SDM's undefined 16-bit result; execution must leave
         // the entire state untouched while reporting the encoding unsupported.
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0,
             gpr: [0x1122_3344_5566_7788; 16],
             rflags: 0x8d7,
@@ -17642,6 +17923,7 @@ mod tests {
                 Operation::Bit { kind: decoded_kind, .. } if decoded_kind == kind
             ));
             let mut state = LongModeState {
+                sti_shadow: None,
                 rip: 0,
                 rflags: 0xcd7,
                 fs_base: 0,
@@ -17691,6 +17973,7 @@ mod tests {
     #[test]
     fn bit_immediate_truncation_and_memory_boundaries_do_not_commit() {
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0x1122_3344_5566_7788; 16],
             rip: 0,
             rflags: 0xcd7,
@@ -17742,6 +18025,7 @@ mod tests {
     fn bit_immediate_memory_uses_width_mask_exact_access_and_delayed_commit() {
         let code = [0x0f, 0xba, 0x20, 0xff]; // BT dword [RAX],255 => bit 31 at [RAX]
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0,
             rflags: 0xcd6,
             fs_base: 0,
@@ -17784,6 +18068,7 @@ mod tests {
         // the ordinary exact-width write before committing flags and RIP.
         let code = [0x0f, 0xba, 0x28, 0]; // BTS dword [RAX],0
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0,
             rflags: 0xcd6,
             fs_base: 0,
@@ -17838,6 +18123,7 @@ mod tests {
     fn bit_immediate_memory_read_fault_does_not_commit_and_rip_relative_uses_immediate_end() {
         let code = [0x0f, 0xba, 0x28, 0xff]; // BTS dword [RAX],255
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0,
             rflags: 0xcd7,
             fs_base: 0,
@@ -17883,6 +18169,7 @@ mod tests {
         // The displacement makes next_rip (including imm8) land at 0x1000.
         let code = [0x0f, 0xba, 0x3d, 0xf8, 0x0f, 0, 0, 0];
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0,
             rflags: 0xcd6,
             fs_base: 0,
@@ -17951,6 +18238,7 @@ mod tests {
                 let mut code = prefix.to_vec();
                 code.extend([0x0f, opcode, 0x08]); // [RAX], CX
                 let mut state = LongModeState {
+                    sti_shadow: None,
                     rip: 0,
                     rflags: 0xcd6,
                     fs_base: 0,
@@ -18002,6 +18290,7 @@ mod tests {
         // Positive offset equal to the operand width selects the next element.
         let code = [0x0f, 0xab, 0x08]; // BTS dword [RAX], ECX
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0,
             ..LongModeState::default()
         };
@@ -18026,6 +18315,7 @@ mod tests {
         let code = [0x0f, 0xab, 0x08]; // BTS dword [RAX], ECX
         for fault_kind in [Some(AccessKind::Read), Some(AccessKind::Write)] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 rip: 0,
                 rflags: 0xcd6,
                 fs_base: 0,
@@ -18085,6 +18375,7 @@ mod tests {
         // leaves all CPU state and flag definedness untouched.
         let code = [0x0f, 0xab, 0x08];
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0,
             rflags: 0xcd6,
             fs_base: 0,
@@ -18128,6 +18419,7 @@ mod tests {
         // architectural 32-bit address-size wrap and exact-width access.
         let code = [0x67, 0x0f, 0xa3, 0x08]; // BT dword [EAX], ECX
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0,
             ..LongModeState::default()
         };
@@ -18174,6 +18466,7 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 rip: 0,
                 rflags: 0xcd6,
                 fs_base: 0,
@@ -18221,6 +18514,7 @@ mod tests {
         // beyond the canonical edge, so the exact-width check faults before read.
         let code = [0x48, 0x0f, 0xa3, 0x08];
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0,
             rflags: 0xcd6,
             fs_base: 0,
@@ -18271,6 +18565,7 @@ mod tests {
             (&[0x66, 0x0f, 0xbb, 0xc0][..], BitKind::Complement, 0x8003),
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 rip: 0,
                 rflags: 0xcd6,
                 fs_base: 0,
@@ -18311,6 +18606,7 @@ mod tests {
 
         let code = [0x4d, 0x0f, 0xbb, 0xd1]; // BTC R9,R10
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0,
             rflags: 0xcd7,
             fs_base: 0,
@@ -18442,6 +18738,7 @@ mod tests {
 
         for (code, kind, dst, src, width, source, old_dst, expected_index) in cases {
             let mut state = LongModeState {
+                sti_shadow: None,
                 rip: 0,
                 gpr: [0xfeed_face_dead_beef; 16],
                 rflags: 0x8000_0000_0000_0cd7,
@@ -18506,6 +18803,7 @@ mod tests {
     #[test]
     fn fs_selector_read_zero_extends_and_preserves_other_state() {
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [0xfeed_face_dead_beef; 16],
             rip: 0,
             rflags: 0x8000_0000_0000_0cd7,
@@ -18547,6 +18845,7 @@ mod tests {
     #[test]
     fn gs_selector_read_zero_extends_and_preserves_other_state() {
         let mut state = LongModeState {
+            sti_shadow: None,
             gpr: [u64::MAX; 16],
             rip: 0,
             rflags: 0xcd7,
@@ -18589,6 +18888,7 @@ mod tests {
 
     fn verw_state(selector: u16, limit: u16) -> LongModeState {
         let mut state = LongModeState {
+            sti_shadow: None,
             gdtr: Some(crate::state::Gdtr {
                 base: 0x1000,
                 limit,
@@ -18814,6 +19114,7 @@ mod tests {
 
     fn fs_load_state(selector: u16, limit: u16) -> LongModeState {
         let mut state = LongModeState {
+            sti_shadow: None,
             gdtr: Some(crate::state::Gdtr {
                 base: 0x1000,
                 limit,
@@ -19239,6 +19540,7 @@ mod tests {
     fn fs_base_qword_load_uses_prestate_alias_and_faults_without_commit() {
         let code = [0x64, 0x48, 0x8b, 0x00];
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0,
             rflags: 0xcd7,
             fs_base: 0x1000,
@@ -19257,6 +19559,7 @@ mod tests {
         assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, 8)]);
 
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0,
             fs_base: 0x1000,
             ..LongModeState::default()
@@ -19276,6 +19579,7 @@ mod tests {
         assert!(memory.accesses.is_empty());
 
         let mut edge_state = LongModeState {
+            sti_shadow: None,
             rip: 0,
             ..LongModeState::default()
         };
@@ -19294,6 +19598,7 @@ mod tests {
         assert!(edge_memory.accesses.is_empty());
 
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0,
             fs_base: 0x1000,
             ..LongModeState::default()
@@ -19311,6 +19616,7 @@ mod tests {
         assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, 8)]);
 
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0,
             ..LongModeState::default()
         };
@@ -19333,6 +19639,7 @@ mod tests {
             &[0x48, 0x64, 0x48, 0x8b, 0x00], // earlier ignored REX
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 rip: 0,
                 ..LongModeState::default()
             };
@@ -19354,6 +19661,7 @@ mod tests {
     fn gs_base_qword_load_uses_prestate_alias_and_faults_without_commit() {
         let code = [0x65, 0x48, 0x8b, 0x00];
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0,
             rflags: 0xcd7,
             gs_base: 0x1000,
@@ -19387,6 +19695,7 @@ mod tests {
         assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, 8)]);
 
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0,
             gs_base: 0x1000,
             kernel_gs_base: None,
@@ -19421,6 +19730,7 @@ mod tests {
         assert!(memory.accesses.is_empty());
 
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0,
             gs_base: 0x1000,
             kernel_gs_base: None,
@@ -19454,6 +19764,7 @@ mod tests {
 
     fn gs_load_state(selector: u16, limit: u16) -> LongModeState {
         let mut state = LongModeState {
+            sti_shadow: None,
             gdtr: Some(crate::state::Gdtr {
                 base: 0x1000,
                 limit,
@@ -69942,6 +70253,62 @@ mod tests {
     }
 
     #[test]
+    fn rep_continuation_rejects_active_sti_shadow_before_any_access_or_token_use() {
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        state.rflags = 0x202;
+        state.sti_shadow = Some(crate::StiShadow::Blocking);
+        state.gpr[Register::Rax as usize] = 0x41;
+        state.gpr[Register::Rcx as usize] = 1;
+        state.gpr[Register::Rdi as usize] = 0x1000;
+        let original_state = state.clone();
+        let mut memory = Memory::at(&[0xf2, 0x67, 0xae], 0x2000);
+        let mut continuation = Some(RepContinuation {
+            rip: 0x2000,
+            operand_size: OperandSize::Byte,
+            address_size: OperandSize::Dword,
+            instruction_length: 3,
+            entry_rflags: state.rflags,
+            entry_defined: crate::INTEGER_FLAGS,
+            operand: RepContinuationOperand::Scas {
+                rax: state.gpr[Register::Rax as usize],
+                size: OperandSize::Byte,
+            },
+            expected_rcx: state.gpr[Register::Rcx as usize],
+            expected_rdi: state.gpr[Register::Rdi as usize],
+            expected_rflags: state.rflags,
+            expected_defined: crate::INTEGER_FLAGS,
+            context: AccessContext::default(),
+        });
+        let original_continuation = continuation.clone();
+        let mut stop_calls = 0;
+
+        assert_eq!(
+            run_with_rep_continuation(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                crate::INTEGER_FLAGS,
+                &mut continuation,
+                || {
+                    stop_calls += 1;
+                    false
+                },
+            ),
+            Err(RepRunInputError::InterruptInhibitionActive)
+        );
+        assert!(memory.fetches.is_empty());
+        assert!(memory.accesses.is_empty());
+        assert_eq!(state, original_state);
+        assert_eq!(continuation, original_continuation);
+        assert_eq!(stop_calls, 0);
+    }
+
+    #[test]
     fn repne_scasb_addr32_continuation_yields_resumes_and_old_entry_fails_closed() {
         let mut state = LongModeState::default();
         state.rip = 0x2000;
@@ -80777,6 +81144,7 @@ mod tests {
 
         let mut memory = Memory::at(&[0x66, 0x0f, 0x57, 0xc1], 0x2000);
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0x2000,
             ..LongModeState::default()
         };
@@ -83556,6 +83924,7 @@ mod tests {
             (&[0x8e, 0xd8, 0x8e, 0xd8][..], true, false),
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 ds_selector: 0x2b,
                 es_selector: 0x30,
                 cs_selector: None,
@@ -83681,6 +84050,7 @@ mod tests {
 
     fn ds_load_state(selector: u64) -> LongModeState {
         let mut state = LongModeState {
+            sti_shadow: None,
             ds_selector: 0x23,
             ds_unusable: false,
             ds_cache: Some(crate::state::DsDescriptorCache {
@@ -84167,6 +84537,7 @@ mod tests {
         code.extend([0x48, 0x8b, 0x18]); // MOV RBX, [RAX]
 
         let mut state = LongModeState {
+            sti_shadow: None,
             ds_cache: Some(crate::state::DsDescriptorCache {
                 base: 0,
                 limit: 0xffff,
@@ -90685,6 +91056,7 @@ mod tests {
             ..AccessContext::default()
         };
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0x1000,
             gs_base: 0x3000,
             kernel_gs_base: Some(0x5000),
@@ -91049,6 +91421,7 @@ mod tests {
 
     fn lgdt_state(rbp: u64) -> LongModeState {
         let mut state = LongModeState {
+            sti_shadow: None,
             gdtr: Some(crate::state::Gdtr {
                 base: 0x2222,
                 limit: 0x3333,
@@ -91367,6 +91740,7 @@ mod tests {
 
     fn lidt_state(rsp: u64) -> LongModeState {
         LongModeState {
+            sti_shadow: None,
             gpr: {
                 let mut gpr = [0; 16];
                 gpr[Register::Rsp as usize] = rsp;
@@ -91569,6 +91943,7 @@ mod tests {
     #[test]
     fn maskable_request_notification_is_pre_fetch_preserving_and_idempotent() {
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0x1000,
             rflags: 2 | (1 << 9) | crate::CF,
             ..LongModeState::default()
@@ -91615,6 +91990,7 @@ mod tests {
             context: AccessContext::default(),
         };
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0x1000,
             rflags: 2 | (1 << 9),
             ..LongModeState::default()
@@ -91691,6 +92067,7 @@ mod tests {
     fn maskable_request_without_request_or_if_matches_event_free_run() {
         for (request, flags) in [(None, 2 | (1 << 9)), (Some(0x30), 2)] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 rip: 0x1000,
                 rflags: flags,
                 ..LongModeState::default()
@@ -91730,6 +92107,7 @@ mod tests {
     #[test]
     fn maskable_request_definedness_and_incompatible_flag_gates_fail_closed() {
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0x1000,
             rflags: 2 | (1 << 9),
             ..LongModeState::default()
@@ -91775,6 +92153,7 @@ mod tests {
     #[test]
     fn maskable_request_never_relabels_fetch_or_data_faults_on_event_free_path() {
         let mut fetch_state = LongModeState {
+            sti_shadow: None,
             rip: 0x1000,
             rflags: 2,
             ..LongModeState::default()
@@ -91804,6 +92183,7 @@ mod tests {
         ));
 
         let mut data_state = LongModeState {
+            sti_shadow: None,
             rip: 0x1000,
             rflags: 2,
             ..LongModeState::default()
@@ -93427,6 +93807,7 @@ mod fxsave_rip_tests {
         ] {
             for cr4_tsd in [false, true] {
                 let mut state = LongModeState {
+                    sti_shadow: None,
                     rip: 0x1000,
                     rflags: 0x0cd7,
                     ..LongModeState::default()
@@ -93487,6 +93868,7 @@ mod fxsave_rip_tests {
     #[test]
     fn rdtsc_legacy_prefix_and_boundary_paths_do_not_read_the_source() {
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0x1000,
             ..LongModeState::default()
         };
@@ -93546,6 +93928,7 @@ mod fxsave_rip_tests {
 
         for code in [&[0x48, 0x0f, 0x31][..], &[0xf3, 0x0f, 0x31][..]] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 rip: 0x1000,
                 ..LongModeState::default()
             };
@@ -93574,6 +93957,7 @@ mod fxsave_rip_tests {
         }
 
         let mut truncated_state = LongModeState {
+            sti_shadow: None,
             rip: 0x1000,
             ..LongModeState::default()
         };
@@ -93757,6 +94141,7 @@ mod swapgs_profile_tests {
     fn exact_swapgs_exchanges_bases_and_profile_gates_are_atomic() {
         let profile = SwapgsProfile::SwapgsV1;
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0x1000,
             gs_base: 0x2000,
             kernel_gs_base: Some(0x3000),
@@ -93786,6 +94171,7 @@ mod swapgs_profile_tests {
         assert_eq!(state.rip, 0x1003);
 
         let mut user = LongModeState {
+            sti_shadow: None,
             rip: 0x1000,
             gs_base: 0x2000,
             kernel_gs_base: Some(0x3000),
@@ -93843,6 +94229,7 @@ mod swapgs_profile_tests {
         };
         for (gs, kernel) in [(0x2000, 0x3000), (0, 0x3000), (0x2000, 0x2000), (0, 0)] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 rip: 0,
                 gs_base: gs,
                 kernel_gs_base: Some(kernel),
@@ -93910,6 +94297,7 @@ mod swapgs_profile_tests {
             PrivilegeLevel::Ring3,
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 rip: 0,
                 gs_base: 0x2000,
                 kernel_gs_base: Some(0x3000),
@@ -93944,6 +94332,7 @@ mod swapgs_profile_tests {
             assert!(memory.accesses.is_empty());
         }
         let mut state = LongModeState {
+            sti_shadow: None,
             rip: 0,
             ..LongModeState::default()
         };
@@ -93969,6 +94358,7 @@ mod swapgs_profile_tests {
             (0, Some(0x0000_8000_0000_0000)),
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 rip: 0,
                 gs_base,
                 kernel_gs_base,
@@ -94045,6 +94435,7 @@ mod swapgs_profile_tests {
         };
         for length in 0..3 {
             let mut state = LongModeState {
+                sti_shadow: None,
                 kernel_gs_base: Some(0),
                 ..LongModeState::default()
             };
@@ -94074,6 +94465,7 @@ mod swapgs_profile_tests {
             (1, Some(0), RunExit::StopAddress),
         ] {
             let mut state = LongModeState {
+                sti_shadow: None,
                 kernel_gs_base: Some(0),
                 ..LongModeState::default()
             };
@@ -94094,6 +94486,7 @@ mod swapgs_profile_tests {
             assert!(memory.fetches.is_empty());
         }
         let mut state = LongModeState {
+            sti_shadow: None,
             kernel_gs_base: Some(0x2000),
             gs_base: 0x1000,
             ..LongModeState::default()

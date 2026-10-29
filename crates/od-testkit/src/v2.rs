@@ -118,6 +118,7 @@ pub const PROFILE_MOVUPS_MEMORY_STORE: &str = "s2-long-movups-mem-store-v1";
 pub const PROFILE_MOVUPS_MEMORY_BASE: &str = "s2-long-movups-mem-base-v1";
 pub const PROFILE_SWAPGS: &str = "s2-long-swapgs-v1";
 pub const PROFILE_CLI: &str = "s2-long-cli-v1";
+pub const PROFILE_STI: &str = "s2-long-sti-v1";
 pub const PROFILE_KERNEL_GS_BASE: &str = "s2-long-msr-kernel-gs-base-v1";
 /// Diagnostic mask for this bounded local fixture profile only. It is not a
 /// universal hardware CPUID mask and does not model guest #GP behavior.
@@ -141,6 +142,8 @@ pub enum Profile {
     LongSwapgsV1,
     #[serde(rename = "s2-long-cli-v1")]
     LongCliV1,
+    #[serde(rename = "s2-long-sti-v1")]
+    LongStiV1,
     #[serde(rename = "s2-long-msr-kernel-gs-base-v1")]
     LongKernelGsBaseV1,
     #[serde(rename = "s2-long-fs-base-msr-v1")]
@@ -531,6 +534,16 @@ pub struct IntegerState {
         skip_serializing_if = "Option::is_none"
     )]
     pub sse: Option<SseSnapshot>,
+    /// Present only in `s2-long-sti-v1`; records the architectural interrupt shadow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sti_shadow: Option<StiShadowSnapshot>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StiShadowSnapshot {
+    Clear,
+    Blocking,
 }
 
 /// Lossless Long64 x87 observation. Register hex strings contain ten bytes in
@@ -797,6 +810,10 @@ impl TryFrom<&LongModeState> for IntegerState {
             gs_cache_flags: None,
             x87: None,
             sse: None,
+            sti_shadow: state.sti_shadow.map(|shadow| match shadow {
+                od_isa::StiShadow::Clear => StiShadowSnapshot::Clear,
+                od_isa::StiShadow::Blocking => StiShadowSnapshot::Blocking,
+            }),
         })
     }
 }
@@ -809,6 +826,10 @@ impl IntegerState {
     pub fn to_cpu_for(&self, profile: Profile) -> Result<LongModeState, FormatError> {
         self.validate_for(profile)?;
         Ok(LongModeState {
+            sti_shadow: self.sti_shadow.map(|shadow| match shadow {
+                StiShadowSnapshot::Clear => od_isa::StiShadow::Clear,
+                StiShadowSnapshot::Blocking => od_isa::StiShadow::Blocking,
+            }),
             gpr: self.gpr.map(HexU64::get),
             rip: self.rip.get(),
             rflags: self.rflags.get(),
@@ -1433,6 +1454,20 @@ impl IntegerState {
     }
 
     fn validate_for(&self, profile: Profile) -> Result<(), FormatError> {
+        match (profile, self.sti_shadow) {
+            (Profile::LongStiV1, Some(_)) => {}
+            (Profile::LongStiV1, None) => {
+                return Err(invalid("state.sti_shadow", "required by the STI profile"));
+            }
+            (_, Some(_)) => return Err(invalid("state.sti_shadow", "not part of this profile")),
+            (_, None) => {}
+        }
+        if profile == Profile::LongStiV1
+            && self.sti_shadow == Some(StiShadowSnapshot::Blocking)
+            && self.rflags.get() & (1 << 9) == 0
+        {
+            return Err(invalid("state.sti_shadow", "blocking state requires IF=1"));
+        }
         if profile == Profile::LongNativeXorpdXmm0Xmm1V1 {
             if self.x87.is_some() {
                 return Err(invalid(
@@ -1569,12 +1604,14 @@ impl IntegerState {
             | Profile::LongSepDisabledV1
             | Profile::LongRdtscV1
             | Profile::LongCliV1 => Profile::LongIntegerV1,
+            Profile::LongStiV1 => Profile::LongIntegerV1,
             other => other,
         };
         match (state_profile, self.fs_base) {
             (
                 Profile::LongIntegerV1
                 | Profile::LongCliV1
+                | Profile::LongStiV1
                 | Profile::LongSepDisabledV1
                 | Profile::LongRdtscV1
                 | Profile::LongX87StateV1
@@ -1710,6 +1747,7 @@ impl IntegerState {
             (
                 Profile::LongIntegerV1
                 | Profile::LongCliV1
+                | Profile::LongStiV1
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
@@ -1850,6 +1888,7 @@ impl IntegerState {
             (
                 Profile::LongIntegerV1
                 | Profile::LongCliV1
+                | Profile::LongStiV1
                 | Profile::LongSepDisabledV1
                 | Profile::LongRdtscV1
                 | Profile::LongX87StateV1
@@ -1999,6 +2038,7 @@ impl IntegerState {
             (
                 Profile::LongIntegerV1
                 | Profile::LongCliV1
+                | Profile::LongStiV1
                 | Profile::LongSepDisabledV1
                 | Profile::LongRdtscV1
                 | Profile::LongX87StateV1
@@ -2296,7 +2336,7 @@ impl IntegerState {
             (_, None, None, None) => {}
             _ => return Err(invalid("state.gs_cache", "not part of this profile")),
         }
-        let system_flags = if profile == Profile::LongCliV1 {
+        let system_flags = if matches!(profile, Profile::LongCliV1 | Profile::LongStiV1) {
             (1 << 9) | (3 << 12)
         } else {
             0
@@ -3022,20 +3062,20 @@ impl Fixture {
         }
         const IF_IOPL: u64 = (1 << 9) | (3 << 12);
         let cli_flags_mask = INTEGER_FLAGS | IF_IOPL;
-        if self.profile == Profile::LongCliV1 {
+        if matches!(self.profile, Profile::LongCliV1 | Profile::LongStiV1) {
             if self.rflags_mask.get() != cli_flags_mask {
                 return Err(invalid(
                     "rflags_mask",
-                    "CLI fixtures must compare INTEGER_FLAGS, IF, and IOPL",
+                    "CLI/STI fixtures must compare INTEGER_FLAGS, IF, and IOPL",
                 ));
             }
         } else if self.rflags_mask.get() & !INTEGER_FLAGS != 0 {
             return Err(invalid("rflags_mask", "outside the integer profile"));
         }
         match (self.profile, self.cli_cpl) {
-            (Profile::LongCliV1, Some(_)) => {}
-            (Profile::LongCliV1, None) => {
-                return Err(invalid("cli_cpl", "required by the CLI profile"));
+            (Profile::LongCliV1 | Profile::LongStiV1, Some(_)) => {}
+            (Profile::LongCliV1 | Profile::LongStiV1, None) => {
+                return Err(invalid("cli_cpl", "required by the CLI/STI profile"));
             }
             (_, Some(_)) => return Err(invalid("cli_cpl", "not part of this profile")),
             (_, None) => {}
@@ -3123,6 +3163,49 @@ impl Fixture {
                 return Err(invalid(
                     "memory.code",
                     "CLI fixtures require one bare FA, budget one, and outcome/stop matching CPL versus IOPL",
+                ));
+            }
+        }
+        if self.profile == Profile::LongStiV1 {
+            let Some(code) = self.memory.iter().find(|region| region.region_id == "code") else {
+                return Err(invalid("memory.code", "required by the STI profile"));
+            };
+            let bytes = code.initial_bytes_hex.to_ascii_lowercase();
+            let (length, budget, privilege_gate) = match bytes.as_str() {
+                "fb" => (1, 1, true),
+                "fb90" | "fbfb" | "fbfa" => (2, 2, false),
+                "fafb90" => (3, 3, false),
+                _ => {
+                    return Err(invalid(
+                        "memory.code",
+                        "STI profile admits only FB, FB90, FBFB, FBFA, and FAFB90",
+                    ));
+                }
+            };
+            let cpl: u8 = self.cli_cpl.expect("validated STI CPL").into();
+            let iopl = ((self.initial_state.rflags.get() >> 12) & 3) as u8;
+            let success = cpl <= iopl;
+            let expected_exit = if privilege_gate && !success {
+                ExpectedExit::Exception
+            } else {
+                ExpectedExit::StopAddress
+            };
+            let expected_stop = (expected_exit == ExpectedExit::StopAddress)
+                .then(|| self.initial_state.rip.get().checked_add(length as u64))
+                .flatten();
+            if self.initial_state.rflags.get() & (1 << 9) != 0
+                || self.initial_state.sti_shadow != Some(StiShadowSnapshot::Clear)
+                || code.guest_address.get() != self.initial_state.rip.get()
+                || code.length != length
+                || !code.permissions.execute
+                || self.instruction_budget != budget
+                || (!privilege_gate && !success)
+                || self.expected_exit != expected_exit
+                || self.stop_rip.map(HexU64::get) != expected_stop
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "STI fixtures require IF=0, Clear shadow, allowed CPL for sequence forms, exact budget, and the expected terminal boundary",
                 ));
             }
         }
@@ -6007,7 +6090,10 @@ pub fn compare(
         return Err(invalid("snapshot", "unavailable"));
     };
     let mask = loaded.fixture.rflags_mask.get();
-    let defined_mask = if loaded.fixture.profile == Profile::LongCliV1 {
+    let defined_mask = if matches!(
+        loaded.fixture.profile,
+        Profile::LongCliV1 | Profile::LongStiV1
+    ) {
         mask & INTEGER_FLAGS
     } else {
         mask
@@ -6116,6 +6202,9 @@ pub fn compare(
     if a.state.sse != b.state.sse {
         differences.push("sse".into());
     }
+    if a.state.sti_shadow != b.state.sti_shadow {
+        differences.push("state.sti_shadow".into());
+    }
     if a.xorpd_prerequisites != b.xorpd_prerequisites {
         differences.push("xorpd_prerequisites".into());
     }
@@ -6216,7 +6305,7 @@ pub fn compare(
 }
 
 fn rflags_differ(profile: Profile, mask: u64, left: u64, right: u64) -> bool {
-    let allowed = if profile == Profile::LongCliV1 {
+    let allowed = if matches!(profile, Profile::LongCliV1 | Profile::LongStiV1) {
         INTEGER_FLAGS | (1 << 9) | (3 << 12)
     } else {
         INTEGER_FLAGS

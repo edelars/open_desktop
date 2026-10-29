@@ -16,6 +16,7 @@ pub mod msr;
 mod rational_rounding;
 pub mod sep;
 pub mod state;
+pub mod sti;
 pub mod swapgs;
 pub mod x87;
 pub use cli::CliProfile;
@@ -26,8 +27,9 @@ pub use interrupt::{
 pub use state::{
     CodeSegmentDescriptorCache, DataSegmentDescriptorCache, DsDescriptorCache,
     FragmentAdapterError, FsDescriptorCache, LongModeState, OperandSize, RegisterError,
-    RegisterView, StackSegmentDescriptorCache,
+    RegisterView, StackSegmentDescriptorCache, StiShadow,
 };
+pub use sti::StiProfile;
 pub use swapgs::SwapgsProfile;
 
 const CF: u64 = 1 << 0;

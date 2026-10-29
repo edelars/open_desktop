@@ -11609,3 +11609,35 @@ The selected interpretation follows Intel SDM Rev. 093, Vol. 2A,
 `CLI` pp. 3-148–3-149, Table 3-7; [official Intel SDM](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
 The profile is a CPU-side decision only and does not implement #GP/#UD delivery
 or claim physical, Linux, JIT, native or C execution.
+
+### S2-27i — exact Long64 `STI` and maskable-interrupt inhibition
+
+`StiProfile::NonPviLong64V1` admits bare `FB` and carries the explicit
+`LongModeState::sti_shadow` state (`Clear` or `Blocking`). `None` means the
+selected legacy contract does not model interrupt inhibition; the STI profile
+requires `Some`, initialized to `Clear`. The profile fixes Long64, CR0.PE=1,
+RFLAGS.VM=0, CR4.PVI=0, and VMX/SMM disabled. CPL comes from
+`AccessContext`; IOPL comes from RFLAGS[13:12]. At CPL<=IOPL, STI sets IF,
+advances RIP and retires once. If IF was clear on entry it sets `Blocking`;
+if IF was already set it sets `Clear`. CPL>IOPL raises #GP(0) atomically.
+
+The next successfully retired allowed instruction clears an earlier
+`Blocking` state. A second STI observes IF=1 and creates no new block. CPU
+fault, unsupported instruction, STOP, budget exhaustion and fetch failure do
+not consume the shadow. The maskable-request entry rejects `Blocking` before
+eligibility or fetch; interrupt delivery rejects it before descriptor and
+stack callbacks. Legacy REP continuation entry rejects `Blocking` before token
+validation, stop callbacks, fetch, data access or retirement. Fragment adapters
+reject any modeled shadow, including `Clear`; the schema-v2 STI profile
+serializes and compares it.
+
+The bounded schema admits only `FB`, `FB 90`, `FB FB`, `FB FA`, and `FA FB 90`
+with the documented instruction budgets; success fixtures start with IF=0 and
+allowed CPL, while single-STI denial fixtures cover CPL>IOPL. The profile
+compares `INTEGER_FLAGS|IF|IOPL` as concrete state without changing
+`rflags_defined`. Prefix variants, legacy execution, JIT, native execution and
+C/fragment execution remain outside the profile. NMI, SMI, event-delivery
+ordering and scheduler integration are excluded.
+
+The local instruction contract follows Intel SDM Rev. 093, Vol. 2B, STI
+pp. 4-674–4-675, Table 4-22; [official Intel SDM](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).

@@ -248,6 +248,17 @@ pub struct LongModeState {
     pub x87: Option<X87State>,
     /// Raw SSE state only for profiles that explicitly carry it.
     pub sse: Option<SseState>,
+    /// Maskable-interrupt inhibition state carried only by explicit profiles.
+    /// `None` means the selected legacy contract does not model this state.
+    pub sti_shadow: Option<StiShadow>,
+}
+
+/// One-instruction interrupt inhibition after STI; `Clear` records a modeled
+/// boundary with no active inhibition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StiShadow {
+    Clear,
+    Blocking,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -325,6 +336,7 @@ impl Default for LongModeState {
             gs_cache: None,
             x87: None,
             sse: None,
+            sti_shadow: None,
         }
     }
 }
@@ -367,6 +379,7 @@ pub enum FragmentAdapterError {
     UnsupportedGsCache(FsDescriptorCache),
     UnsupportedX87,
     UnsupportedSse,
+    UnsupportedStiShadow(StiShadow),
     InstructionPointerOutOfRange(u64),
     UnsupportedFlags(u64),
     ReservedFlagMissing,
@@ -391,6 +404,9 @@ impl TryFrom<&LongModeState> for FragmentState {
         }
         if state.sse.is_some() {
             return Err(FragmentAdapterError::UnsupportedSse);
+        }
+        if let Some(shadow) = state.sti_shadow {
+            return Err(FragmentAdapterError::UnsupportedStiShadow(shadow));
         }
         if state.fs_base != 0 {
             return Err(FragmentAdapterError::UnsupportedFsBase(state.fs_base));
@@ -554,6 +570,20 @@ mod tests {
     }
 
     #[test]
+    fn fragment_adapter_rejects_any_modeled_sti_shadow() {
+        for shadow in [StiShadow::Clear, StiShadow::Blocking] {
+            let state = LongModeState {
+                sti_shadow: Some(shadow),
+                ..LongModeState::default()
+            };
+            assert_eq!(
+                FragmentState::try_from(&state),
+                Err(FragmentAdapterError::UnsupportedStiShadow(shadow))
+            );
+        }
+    }
+
+    #[test]
     fn fragment_adapter_rejects_present_cs_ss_selectors_and_caches_even_when_zero() {
         let mut state = LongModeState::default();
         state.cs_selector = Some(0);
@@ -603,6 +633,7 @@ mod tests {
                     OperandSize::Qword,
                 ] {
                     let mut state = LongModeState {
+                        sti_shadow: None,
                         gpr: [0x1234_5678_9abc_def0; 16],
                         rip: u64::MAX,
                         rflags: 0x8d7,
@@ -655,6 +686,7 @@ mod tests {
             let rex = RegisterView::decode_byte(encoding, true).unwrap();
             assert_eq!(rex.register() as u8, encoding);
             let mut state = LongModeState {
+                sti_shadow: None,
                 gpr: [u64::MAX; 16],
                 ..LongModeState::default()
             };

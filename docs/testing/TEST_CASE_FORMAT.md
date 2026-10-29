@@ -23,6 +23,17 @@ and IOPL as concrete system state, while `rflags_defined` remains limited to
 arithmetic `INTEGER_FLAGS`. This addition is omitted when serializing every
 older profile, preserving prior fixture wire shapes and digests.
 
+The local-only `s2-long-sti-v1` profile reuses the existing narrow numeric
+`cli_cpl` input restricted to 0–3 and adds optional `initial_state.sti_shadow` and result-state
+`sti_shadow` values (`clear` or `blocking`). This field is required for the STI
+profile and forbidden on older profiles; unlike other optional state, both
+values are meaningful, including `clear`. The exact bounded instruction
+programs are `FB`, `FB 90`, `FB FB`, `FB FA`, and `FA FB 90`, with budgets 1,
+2, 2, 2 and 3. The profile's RFLAGS mask may include `INTEGER_FLAGS|IF|IOPL`;
+arithmetic `rflags_defined` remains `INTEGER_FLAGS`. The snapshot comparison
+checks the shadow as architectural state, so changing IF/IOPL or the shadow
+cannot be hidden by the legacy state projection.
+
 The local-only `s2-long-sep-disabled-v1` fixtures describe one exact bare
 Long64 instruction: the handwritten cases each use one code mapping at the
 initial RIP containing exactly `0F 34` or `0F 35`, with

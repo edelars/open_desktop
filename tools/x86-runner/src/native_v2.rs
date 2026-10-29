@@ -442,6 +442,7 @@ fn state(regs: &libc::user_regs_struct) -> LongModeState {
 
         x87: None,
         sse: None,
+        sti_shadow: None,
         es_cache: None,
     }
 }
@@ -588,6 +589,9 @@ fn admission_with_tracee_memory(
     ) || instruction.operation == Operation::Swapgs
     {
         return Err("SWAPGS is denied by the native runner profile".into());
+    }
+    if fixture.profile == v2::Profile::LongStiV1 || instruction.operation == Operation::Sti {
+        return Err("STI is denied by the native runner profile".into());
     }
     if fixture.profile == v2::Profile::LongNativeXorpdXmm0Xmm1V1 {
         let exact = instruction.length == 4
@@ -6673,6 +6677,31 @@ mod tests {
             let mut decoder = FlatMemory::from_fixture(&wrong).unwrap();
             assert!(admission(&wrong, &mut decoder, &actual).is_err(), "{bytes}");
         }
+    }
+
+    #[test]
+    fn sti_fixture_is_rejected_by_preflight_before_trace() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/x86/stage2/s2_27i_sti_cpl0_iopl0_if0.case.json");
+        let loaded = Fixture::from_json(&std::fs::read(path).unwrap()).unwrap();
+        assert!(crate::native_fp::native_profile_local_only(
+            loaded.fixture.profile
+        ));
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { ref reason }
+                if reason == "this profile is local-only; native state does not observe every profile field"
+        ));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert_eq!(
+            admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
+            "STI is denied by the native runner profile"
+        );
     }
 
     #[test]

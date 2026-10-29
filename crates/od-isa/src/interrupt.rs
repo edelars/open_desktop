@@ -28,6 +28,7 @@ pub enum InterruptOutsideProfile {
     InvalidRflagsDefined(u64),
     NotRing0Long64,
     InterruptsMasked,
+    InterruptsInhibited,
     IncompatibleEntryFlags(u64),
     MissingIdtr,
     MissingVisibleCsOrSs,
@@ -74,6 +75,9 @@ pub fn deliver_maskable_interrupt(
     context: AccessContext,
     rflags_defined: u64,
 ) -> InterruptDeliveryResult {
+    if state.sti_shadow == Some(crate::StiShadow::Blocking) {
+        return outside(InterruptOutsideProfile::InterruptsInhibited);
+    }
     if rflags_defined & !INTEGER_FLAGS != 0 {
         return outside(InterruptOutsideProfile::InvalidRflagsDefined(
             rflags_defined,
@@ -396,6 +400,7 @@ mod tests {
 
     fn ready_state(rsp: u64) -> LongModeState {
         LongModeState {
+            sti_shadow: None,
             gpr: {
                 let mut gpr = [0; 16];
                 gpr[crate::Register::Rsp as usize] = rsp;
@@ -440,6 +445,21 @@ mod tests {
             },
             INTEGER_FLAGS,
         )
+    }
+
+    #[test]
+    fn active_sti_shadow_rejects_delivery_before_descriptor_or_stack_access() {
+        let mut state = ready_state(0x8000);
+        state.sti_shadow = Some(crate::StiShadow::Blocking);
+        let before = state.clone();
+        let mut ram = Ram::new();
+        assert_eq!(
+            deliver(&mut state, &mut ram, 0x20),
+            InterruptDeliveryResult::OutsideProfile(InterruptOutsideProfile::InterruptsInhibited)
+        );
+        assert_eq!(state, before);
+        assert!(ram.reads.is_empty());
+        assert!(ram.writes.is_empty());
     }
 
     #[test]

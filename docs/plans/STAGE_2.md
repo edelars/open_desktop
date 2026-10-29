@@ -2526,6 +2526,38 @@ request after CLI: IF=0 executes the following NOP without notification,
 delivery, acknowledgement or IDT/data access; IF=1 reports entry eligibility.
 The same composition is not queried after a CLI fault.
 
+#### S2-27i — exact Long64 `STI` and one-instruction maskable interrupt shadow
+
+Implement `StiProfile::NonPviLong64V1` for bare `FB` with an explicit
+`LongModeState::sti_shadow` (`None` for legacy contracts; `Some(Clear)` or
+`Some(Blocking)` in this profile). Reuse the private interpreter loop. CPL is
+the `AccessContext` privilege and IOPL is RFLAGS[13:12]. Success sets IF and
+retires once; a clear entry IF creates one-instruction inhibition. The next
+successfully retired instruction consumes it. CLI clears IF and the shadow;
+STI followed by STI does not extend the block. CPU faults, unsupported forms,
+fetch errors, STOP and budget boundaries preserve it. Active inhibition blocks
+maskable-request eligibility and interrupt delivery before callbacks.
+The legacy REP continuation API rejects active `Blocking` before token checks,
+callbacks, fetch or data access. Compound fixture programs require a
+`StopAddress` result at the exact entry plus program length; the one-instruction
+CPL>IOPL case remains the exception fixture.
+
+The bounded fixture allowlist is exactly `FB`, `FB 90`, `FB FB`, `FB FA`, and
+`FA FB 90`; the 32-case privilege/IF matrix and resumable shadow cases compare
+the full modeled state. `s2-long-sti-v1` compares `INTEGER_FLAGS|IF|IOPL` while
+leaving arithmetic `rflags_defined` unchanged. Legacy, prefix, JIT, native and
+C/fragment paths remain denied. NMI/SMI delivery details, HLT, MOV SS,
+scheduler behavior and REP boundaries are excluded. Architecture source:
+Intel SDM Rev. 093, Vol. 2B, STI pp. 4-674–4-675, Table 4-22. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-27i--exact-long64-sti-and-maskable-interrupt-inhibition).
+Five focused core tests, the 16-case fixture matrix, schema/native/REP regressions,
+workspace check, Linux-target compile check, formatting, diff check and Graphify
+passed. Independent Sol-medium review found and verified fixes for native
+preflight, REP continuation and exact compound-fixture terminal boundaries;
+no findings remain. Layout validation reports only the known worktree pointer
+and two absent historical oracle manifests. No native runtime or physical checks
+were run; they remain in the combined final hardware batch.
+
 Architecture source: Intel SDM Rev. 093, Vol. 2A, CLI pp. 3-148–3-149,
 Table 3-7. Independent Sol-medium review found and verified a missing native
 local-only preflight fix; no findings remain. Local checks do not establish

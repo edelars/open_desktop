@@ -16655,3 +16655,40 @@ Linux execution. Independent Sol-medium review found the missing native
 local-only preflight; the profile and helper test were corrected, and re-review
 found no remaining findings. Source: Intel SDM Rev. 093, Vol. 2A CLI pp. 3-148–3-149,
 Table 3-7. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27h--exact-long64-cli), [plan](../plans/STAGE_2.md#s2-27h--exact-long64-cli), [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-27h-exact-long64-cli-fixture-profile), and [Linux matrix](STAGE_2_LINUX_PROFILE.md#s2-27h-local-cli-matrix-entry).
+
+## S2-27i — exact Long64 `STI` and one-instruction shadow
+
+Added `StiProfile::NonPviLong64V1`, bare `FB` decoding, and explicit optional
+`LongModeState::sti_shadow`. The profile requires a modeled shadow state,
+applies the bounded Long64/non-PVI assumptions and the CPL/IOPL rule, sets IF,
+and creates a one-instruction block only when IF was clear. The shared private
+execution loop consumes that block only after a successful retirement. CLI
+clears IF and shadow, and another STI with IF already set creates no new block.
+Legacy paths reject active shadow state; maskable-request and interrupt
+delivery reject it before eligibility/fetch or descriptor/stack callbacks.
+Legacy REP continuation rejects it before token checks, stop callbacks, fetch,
+data access or retirement. Native preflight treats the profile as local-only
+before trace setup.
+
+The `s2-long-sti-v1` fixture schema carries and compares shadow state and uses
+`INTEGER_FLAGS|IF|IOPL` without changing arithmetic flag definedness. Its
+literal privilege cases are supplemented by focused tests for resume,
+double-STI, CLI, STOP/budget/fetch/unsupported preservation, active-shadow
+request/REP rejection and compound-schema terminal-boundary validation. JIT,
+native and C/fragment execution remain denied.
+
+Architecture source: Intel SDM Rev. 093, Vol. 2B, STI pp. 4-674–4-675,
+Table 4-22. NMI/SMI delivery details, HLT, MOV SS, scheduler effects and REP
+boundary behavior are outside this slice. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27i--exact-long64-sti-and-maskable-interrupt-inhibition), [plan](../plans/STAGE_2.md#s2-27i--exact-long64-sti-and-one-instruction-maskable-interrupt-shadow), [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-27i-exact-long64-sti-fixture-profile), and [Linux matrix](STAGE_2_LINUX_PROFILE.md#s2-27i-local-sti-matrix-entry).
+
+**Checks:** five focused `od-isa` STI tests, the 16-case privilege/IF fixture
+matrix, malformed compound fixture validation, active-shadow REP continuation
+rejection, and native local-only helper tests passed. Workspace all-target
+check, Linux x86-64 all-target compile check, formatting, diff check and
+`graphify update .` passed. The Linux-only native execute preflight regression
+compiled but was not run on macOS. Layout validation reports the linked-worktree
+`.git` pointer and two pre-existing missing oracle manifests under `work/`.
+Independent Sol-medium review found three issues—native preflight, REP
+continuation bypass, and compound fixture terminal-boundary validation. All
+were fixed and re-reviewed clean. No Linux runtime, SSH, physical or Mac mini
+checks were run.

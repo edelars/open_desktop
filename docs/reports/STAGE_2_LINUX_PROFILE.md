@@ -813,3 +813,15 @@ that Linux boot/runtime behavior was observed. JIT/native/C execution is
 denied; physical and SSH execution remain deferred to the final batch. See the
 [CPU contract](../specs/CPU_CONTRACT.md#локальный-профиль-kernelgsbasev1-s2-26g)
 and [Stage 2 plan](../plans/STAGE_2.md#s2-26g--bounded-kernelgsbasev1-msr-and-swapgs-composition).
+
+### S2-27i local STI matrix entry
+
+The interpreter-only `s2-long-sti-v1` profile covers exact bare Long64 `FB`
+with explicit IF, CPL, IOPL and interrupt-shadow state. A successful STI sets
+IF and inhibits maskable requests until one following allowed instruction
+retires only when entry IF was clear; CPL>IOPL yields CPU-side #GP(0). Local
+tests check the 32-case privilege/IF matrix, continuation and fault/boundary
+preservation. This is not evidence of Ubuntu STI execution, event delivery,
+Linux boot or native/physical behavior. JIT, native and C/fragment execution
+remain denied. Source: Intel SDM Rev. 093, Vol. 2B, STI pp. 4-674–4-675,
+Table 4-22. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27i--exact-long64-sti-and-maskable-interrupt-inhibition) and [Stage 2 plan](../plans/STAGE_2.md#s2-27i--exact-long64-sti-and-one-instruction-maskable-interrupt-shadow).
