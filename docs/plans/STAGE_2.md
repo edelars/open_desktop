@@ -528,6 +528,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 
 ### S2-00. Принять проверяемый профиль
 
+Состояние принятого scope, локального evidence и оставшихся parent gates сверено в существующей [матрице S2-00/S2-40a](../reports/STAGE_2_LINUX_PROFILE.md#s2-40a--матрица-требований-ubuntu-generic-amd64). Это docs-only reconciliation: target и normative scope не меняются; полный C/D manifest, S2-41/42/43/44 и общий финальный hardware substage остаются открытыми.
+
 **Статус:** выполнено для диагностического A, x86-64-v1 ABI/ISA floor и выбора синтетического Ubuntu Generic `amd64` target `od-x86-64-v1-neutral-v0.1`; exact kernel/buildinfo/metapackage/source hashes подтверждены подписанными Ubuntu indexes/snapshot, а direct64, startup, CPUID и FPU paths сопоставлены с exact image/source lines. Реализация/проверка target, сценарный machine manifest, полная C/D matrix, PE signature и наблюдаемое исполнение остаются открытыми. См. [отчёт](../reports/STAGE_2_REPORT.md#s2-00--профиль) и [Linux profile evidence](../reports/STAGE_2_LINUX_PROFILE.md#решение-по-generic-amd64-baseline).
 
 **Файлы:** CPU_CONTRACT, GUEST_REQUIREMENTS по фактическим уточнениям, будущий INTERPRETER.

@@ -212,6 +212,8 @@ pp. 4-559–560 ([официальный Intel PDF](https://cdrdv2-public.intel.
 
 ### Ubuntu Generic `amd64`: `od-x86-64-v1-neutral-v0.1`
 
+Связь принятого target и таблицы A–D с local slices, tests/oracles и оставшейся приёмкой сверена в существующей [матрице S2-00/S2-40a](../reports/STAGE_2_LINUX_PROFILE.md#s2-40a--матрица-требований-ubuntu-generic-amd64). Это документационный inventory, который не расширяет capabilities и не объявляет полный C/D inventory или Stage 2 завершёнными.
+
 Это выбранная синтетическая reference-цель для последующего CPU контракта и diagnostic Linux boot analysis. Она задаёт x86-64-v1 ABI/ISA floor и перечисленные дополнительные machine capabilities; она не является обещанием, что движок уже реализует эти функции, и не подтверждает совместимость или загрузку Ubuntu. Общий ABI floor остаётся x86-64-v1; v2/v3/v4 исключены. `PSE`, `TSC`, `MSR`, `PAE`, `CX8`, `APIC`, `PGE`, `PAT`, `NX` и `SYSCALL` ниже выбраны для этой project target отдельно и не выводятся все из одного psABI floor.
 
 | CPUID input | EAX | EBX | ECX | EDX |
