@@ -24,6 +24,18 @@ permission, does not access guest data memory, and keeps JIT/native closed.
 Hardware checks validate the `3/8192` error envelope for non-flushed normal
 outputs in the combined final Mac mini substage. See [S2-37b plan](../../../../docs/plans/STAGE_2.md#s2-37b--local-long64-register-only-legacy-rcpss) and [ISSUE-025](../../../../docs/KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
 
+### S2-37c local legacy RSQRTPS register profile
+
+`s2_37c_rsqrtps_register.case.json` is a schema-v2 XMM8/XMM9 fixture for the
+exact `45 0F 52 C1` register encoding. Its four XMM9 lanes are `4.0`, `-0`,
+`+∞`, and `-1`; literal local outputs are `0.5`, `-∞`, `+0`, and the negative
+indefinite QNaN. The interpreter updates all four destination lanes, preserves
+all other architectural state and makes no data-memory access. The profile
+assumes SSE and CR0/CR4 permission; it does not model CPUID, #UD/#NM, MXCSR or
+SIMD exception behavior. JIT/native remain denied. Final Mac mini checks use the
+`3/8192` relative-error envelope for non-flushed normal outputs, not exact
+approximate bits. See the [S2-37c plan](../../../../docs/plans/STAGE_2.md#s2-37c--local-long64-register-only-legacy-rsqrtps).
+
 Байты написаны вручную по Intel SDM revision 093: Vol.2B `MOV—Move`,
 Vol.2A `ADD—Add`, Vol.2A §§2.1.5 и 2.2.1.2 (ModR/M/SIB и REX),
 Vol.1 §3.4.1.1 (GPR/subregister aliases). Нормативная ссылка:

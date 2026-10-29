@@ -2173,3 +2173,22 @@ substage and checks the `3/8192` error envelope for non-flushed normal outputs.
 See [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37b-register-only-rcpss),
 [plan](../plans/STAGE_2.md#s2-37b--local-long64-register-only-legacy-rcpss),
 and [fixture](../../tests/fixtures/x86/stage2/s2_37b_rcpss_register.case.json).
+
+## Local packed RSQRTPS register profile — S2-37c
+
+The schema-v2 profile `s2-long-rsqrtps-reg-v1` admits one Long64 legacy
+`NP [optional adjacent REX.R/B] 0F 52 /r` instruction, ModR/M.mod=3, XMM0–15.
+The executor copies all 16 source bytes, computes four independent binary32
+lanes with `Binary32::reciprocal_sqrt_sse_raw()`, then writes the full
+destination XMM. This preserves other registers and raw MXCSR and makes no data
+memory access. The profile requires raw x87/SSE snapshots and assumes SSE plus
+CR0/CR4 permission; it does not model CPUID, #UD/#NM, MXCSR or SIMD exceptions.
+
+The XMM8←XMM9 fixture contains `4.0`, `-0`, `+∞`, and `-1`; literal expected
+lanes are `0.5`, `-∞`, `+0`, and the negative indefinite QNaN. This checks
+lane order without using the production helper as its sole oracle. Hardware
+comparisons must use the `3/8192` error bound for non-flushed normal outputs,
+not require equal approximate bits. JIT/native remain unsupported; physical
+validation is reserved for the combined Mac mini substage. See [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37c-register-only-rsqrtps),
+[plan](../plans/STAGE_2.md#s2-37c--local-long64-register-only-legacy-rsqrtps),
+and [fixture](../../tests/fixtures/x86/stage2/s2_37c_rsqrtps_register.case.json).

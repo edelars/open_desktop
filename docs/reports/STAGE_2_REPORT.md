@@ -172,6 +172,46 @@ fragments. Both were corrected; focused RSQRTSS/RCPSS runner tests and
 clean with no remaining findings. S2-37b is complete within this local-only
 profile; parent S2-37 and Stage 2 remain open.
 
+## S2-37c — local-only Long64 legacy register RSQRTPS
+
+Added schema-v2 profile `s2-long-rsqrtps-reg-v1` for exactly one bare or
+REX.R/B-extended `0F 52 /r` register instruction in Long64 mode, ModR/M.mod=3,
+XMM0–15. Other prefixes, REX.W/X, repeated/nonadjacent REX, memory, VEX/EVEX,
+truncation, and neighboring scalar/packed opcodes are rejected. Execution copies
+all 16 source bytes before evaluating four independent little-endian binary32
+lanes with `Binary32::reciprocal_sqrt_sse_raw()`, then writes the full destination
+XMM. Source/destination aliasing is covered across all 256 register pairs. It
+preserves unrelated XMM, GPR, x87, RFLAGS and MXCSR state, and makes no data-memory
+callbacks. Missing SSE state and truncated fetches do not commit CPU state.
+
+The handwritten XMM8←XMM9 fixture uses mixed lanes `4.0`, `-0`, `+∞`, and `-1`
+with literal outputs `0.5`, `-∞`, `+0`, and negative indefinite QNaN. Additional
+literal cases exercise QNaN, SNaN, negative infinity and subnormal lanes; all four
+MXCSR RC encodings preserve the same raw state and results. JIT/native admission
+remains closed. The profile assumes SSE and CR0/CR4 permission; CPUID, #UD/#NM,
+MXCSR exception semantics and guest FP flags are not implemented. Physical
+comparison is deferred to the combined final Mac mini substage and must use the
+`3/8192` error envelope for non-flushed normal outputs without exact-bit claims.
+
+**Checks:** `cargo test -p od-isa --offline rsqrtps_register` passed (3 tests);
+`cargo test -p od-testkit --offline` passed (369 tests);
+`cargo test -p od-runner --offline --test fixture_v2 local_rsqrtps_register`
+passed (1 test); the existing RSQRTSS and RCPSS runner fixture tests each passed
+(1 test). `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, and
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`
+passed. The Linux target check compile-checked the native-denial path, which was
+not executed on this macOS host. Physical/Mac mini validation remains `not_run`.
+The first independent Sol medium code review found a missing explicit native
+local-only guard and one incorrect literal input/expected pair. Both were
+corrected. Follow-up review found no remaining code findings and independently
+reran the focused ISA tests (3 passed). Independent Sol medium documentation
+review found no defects. The optional `tools/check_layout.py` run encountered
+the checkout's pre-existing unmapped `.git` worktree marker and two stale links
+to absent Stage 1/Stage 2 oracle manifests; this slice did not change repository
+layout. The Linux target check compile-checked the native-denial path, but Linux
+native execution was not run on this macOS host.
+
 ## S2-36a — raw binary32/binary64 classification and finite normalization
 
 **Статус:** source implementation and focused tests are complete; workspace

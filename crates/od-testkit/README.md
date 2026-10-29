@@ -141,3 +141,9 @@ XMM8←XMM9 case; its exact expected bits express the local deterministic helper
 not an exact hardware result. JIT/native stay denied, and physical checks belong
 to the combined final Mac mini substage. ISSUE-025 remains open for RCPSS's
 ambiguous tiny-result threshold.
+
+S2-37c adds the strict `s2-long-rsqrtps-reg-v1` schema-v2 profile for one
+bare or REX.R/B-extended `0F 52 /r` XMM-register instruction. The packed fixture
+contains four independent literal lanes, and the profile checks exactly one
+three- or four-byte instruction with no trailing data. Scalar RSQRTSS,
+mandatory-prefix forms, memory operands, JIT and native execution remain denied.

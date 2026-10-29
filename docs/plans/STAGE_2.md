@@ -486,6 +486,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-37 | Scalar/packed SSE FP и conversions | S2-35, S2-36 |
 | [x] | S2-37a | Local-only Long64 legacy register RSQRTSS profile `s2-long-rsqrtss-reg-v1`, using S2-36ac raw helper; JIT/native closed | S2-34.1, S2-36ac; independent review |
 | [x] | S2-37b | Local-only Long64 legacy register RCPSS profile `s2-long-rcpss-reg-v1`, using S2-36ab raw helper; JIT/native closed | S2-34.1, S2-36ab; ISSUE-025; independent review |
+| [x] | S2-37c | Local-only Long64 legacy register RSQRTPS profile `s2-long-rsqrtps-reg-v1`, using S2-36ac per lane; JIT/native closed | S2-34.1, S2-36ac; independent review |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
@@ -5893,6 +5894,31 @@ result bits express the local exact-reciprocal/nearest-ties-even/flush policy,
 not universal hardware bits. Final Mac mini validation checks the `3/8192`
 error envelope for non-flushed normal outputs; the ISSUE-025 tiny-result
 boundary remains unresolved and is tested separately.
+
+#### S2-37c — local Long64 register-only legacy RSQRTPS
+
+Add one schema-v2 diagnostic profile, `s2-long-rsqrtps-reg-v1`, for exact
+Long64 legacy `NP [one adjacent REX.R/B] 0F 52 /r`, ModR/M.mod=3, XMM0–15.
+Accept a bare three-byte form or one adjacent REX byte followed by the opcode;
+reject mandatory/legacy prefixes, REX.W/X, duplicate/nonadjacent REX, memory,
+VEX/EVEX, truncation, and neighboring opcodes. The decoder maps ModR/M.reg
+(plus REX.R) to destination and r/m (plus REX.B) to source.
+
+Execution copies the complete source XMM before calculating four independent
+little-endian binary32 results through `Binary32::reciprocal_sqrt_sse_raw()`,
+then replaces all 128 destination bits. This supports source/destination aliasing
+and preserves every other XMM, GPR, x87, RFLAGS, MXCSR, and state outside normal
+successful RIP retirement. No data-memory callback is made. Missing SSE state
+refuses before commit under the local profile; SSE and CR0/CR4 permission remain
+preconditions. Generic CPUID, #UD/#NM/fault delivery, MXCSR flags/exceptions,
+memory operands, JIT and native execution remain out of scope.
+
+Use a handwritten literal mixed-lane fixture with independent results, including
+`4.0→0.5`, `-0→-∞`, `+∞→+0`, and negative finite→indefinite QNaN. Tests cover
+every source/destination pair, lane ordering, aliases, REX extensions, supported
+prefix negatives, all RC encodings with raw MXCSR preservation, fetch failure,
+and no data access. Final Mac mini validation checks the `3/8192` relative-error
+bound for non-flushed normal lanes; it must not require exact approximate bits.
 
 ### S2-38. MXCSR и FP fault ordering
 

@@ -10746,3 +10746,32 @@ exceptions, and JIT/native execution are not implemented. See the
 [Stage 2 plan](../plans/STAGE_2.md#s2-37b--local-long64-register-only-legacy-rcpss),
 [implementation report](../reports/STAGE_2_REPORT.md#s2-37b--local-only-long64-legacy-register-rcpss),
 and [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
+
+## Local S2-37c: register-only RSQRTPS
+
+The schema-v2 diagnostic profile `s2-long-rsqrtps-reg-v1` admits exactly one
+Long64 legacy register instruction, `NP [optional adjacent REX.R/B] 0F 52 /r`,
+with ModR/M.mod=3 and XMM0–15. A bare encoding is three bytes; a REX encoding is
+four bytes. The profile rejects all legacy mandatory/segment/address/LOCK
+prefixes, REX.W/X, repeated/nonadjacent REX, memory operands, VEX/EVEX,
+truncation, and neighboring opcodes. ModR/M.reg is the destination and r/m is
+the source, with REX.R/B extensions.
+
+Execution copies the complete source XMM before calculating four independent
+little-endian binary32 lanes through `Binary32::reciprocal_sqrt_sse_raw()`, then
+replaces the complete destination XMM. This supports register aliasing. It
+preserves all other XMM/GPR/x87 state, RFLAGS and MXCSR; RIP advances only on
+successful retirement. It makes no guest data-memory access.
+
+The helper is deterministic local value policy; fixture bits are not claimed to
+match an approximate hardware result. Literal coverage includes `4.0→0.5`,
+`-0→-∞`, `+∞→+0`, and negative finite→indefinite QNaN. Intel SDM Rev. 093 Vol.
+2B RSQRTPS pp. 4-594–4-595 gives the `3/8192` maximum relative-error envelope,
+no SIMD FP exceptions, and independence from MXCSR.RC. Final Mac mini acceptance
+checks that envelope for non-flushed normal outputs without exact-bit comparison.
+
+SSE and CR0/CR4 permission are profile preconditions. Generic CPUID, #UD/#NM
+delivery, MXCSR arithmetic/exception behavior, memory forms, JIT and native
+execution are not implemented. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37c--local-long64-register-only-legacy-rsqrtps),
+[implementation report](../reports/STAGE_2_REPORT.md#s2-37c--local-only-long64-legacy-register-rsqrtps),
+and [fixture](../../tests/fixtures/x86/stage2/s2_37c_rsqrtps_register.case.json).

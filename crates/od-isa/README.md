@@ -27,6 +27,14 @@ are outside these profiles. The exact helper bits are not physical CPU claims;
 RCPSS's tiny-output hardware threshold remains unresolved in ISSUE-025. JIT
 and native admission stay closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-37b-register-only-rcpss).
 
+S2-37c adds local-only register `RSQRTPS`: four binary32 lanes use the
+existing deterministic value reference and replace all 128 destination bits.
+All unrelated state, including MXCSR, is preserved. Literal mixed-lane tests
+cover result routing; hardware checks use the Intel `3/8192` error envelope,
+not exact output bits. SSE/control gates are assumed, while CPUID, FP flags,
+exceptions, JIT and native execution remain outside the profile. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-37c-register-only-rsqrtps).
+
 S2-10 добавляет C6/C7 immediate r/m, A0–A3 moffs, MOVSX/MOVSXD/MOVZX,
 LEA и register-only XCHG/NOP90 с сохранением flags. Пять дополнительных
 transfer программ и три прежних MOV cases прошли physical interpreter/native

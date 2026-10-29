@@ -650,3 +650,17 @@ JSON fields and does not change older fixture bytes or digests. JIT/native
 execution is unsupported. Expected output is the deterministic local helper
 value, not an exact CPU oracle around the unresolved RCPSS tiny-result
 threshold; see [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
+
+## Local RSQRTPS diagnostic profile — S2-37c
+
+`s2-long-rsqrtps-reg-v1` reuses schema v2 and requires the existing full
+long-mode state, including raw x87 and SSE snapshots. Its executable region
+must contain exactly one bare `0F 52 /r` (three bytes) or one adjacent REX.R/B
+byte followed by `0F 52 /r` (four bytes), with ModR/M.mod=3 and no trailing
+bytes; ModR/M.reg selects destination and r/m selects source. The fixture stop
+RIP is the instruction end. Other prefixes, REX.W/X, memory, VEX/EVEX, scalar
+RSQRTSS and all neighboring forms are rejected. The profile adds no JSON fields
+and does not change existing fixture bytes or digests. JIT/native execution is
+unsupported. Expected outputs are literal local reference values; hardware
+validation compares the `3/8192` error envelope for non-flushed normal outputs
+without requiring exact approximate bits. See [the S2-37c fixture](../../tests/fixtures/x86/stage2/s2_37c_rsqrtps_register.case.json).

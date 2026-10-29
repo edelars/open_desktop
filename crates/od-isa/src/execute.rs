@@ -1166,6 +1166,7 @@ fn step_tracked_with_profiles(
             | Operation::MovupdLoadMemory { .. }
             | Operation::MovupdStoreMemory { .. }
             | Operation::RsqrtssRegister { .. }
+            | Operation::RsqrtpsRegister { .. }
             | Operation::RcpssRegister { .. }
     ) && state.sse.is_none()
     {
@@ -1701,6 +1702,7 @@ fn step_tracked_with_profiles(
         | Operation::AndnpsRegister { .. }
         | Operation::MovssRegister { .. }
         | Operation::RsqrtssRegister { .. }
+        | Operation::RsqrtpsRegister { .. }
         | Operation::RcpssRegister { .. }
         | Operation::MovsdRegister { .. }
         | Operation::MovsdStoreRegister { .. }
@@ -4568,6 +4570,34 @@ fn step_tracked_with_profiles(
                 .expect("RCPSS local profile state was prevalidated")
                 .xmm[usize::from(destination)][..4]
                 .copy_from_slice(&result_bits.to_le_bytes());
+        }
+        Operation::RsqrtpsRegister {
+            destination,
+            source,
+        } => {
+            let source_xmm = state
+                .sse
+                .as_ref()
+                .expect("RSQRTPS local profile state was prevalidated")
+                .xmm[usize::from(source)];
+            let mut result_xmm = [0u8; 16];
+            for lane in 0..4 {
+                let offset = lane * 4;
+                let source_bits = u32::from_le_bytes(
+                    source_xmm[offset..offset + 4]
+                        .try_into()
+                        .expect("binary32 lane has four bytes"),
+                );
+                let result_bits = Binary32::from_bits(source_bits)
+                    .reciprocal_sqrt_sse_raw()
+                    .to_bits();
+                result_xmm[offset..offset + 4].copy_from_slice(&result_bits.to_le_bytes());
+            }
+            state
+                .sse
+                .as_mut()
+                .expect("RSQRTPS local profile state was prevalidated")
+                .xmm[usize::from(destination)] = result_xmm;
         }
         Operation::MovsdRegister {
             destination,
@@ -76063,6 +76093,136 @@ mod tests {
             step(&mut state, &mut memory, AccessContext::default()).unwrap(),
             StepOutcome::Unsupported { opcode: 0x53 }
         );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn rsqrtps_register_transforms_all_lanes_for_all_xmm_pairs_without_other_state_changes() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let code = [rex, 0x0f, 0x52, modrm];
+                let mut memory = Memory::at(&code, 0x1000);
+                let mut state = LongModeState::default();
+                state.rip = 0x1000;
+                state.rflags = crate::DF | 2;
+                state.gpr[Register::Rcx as usize] = 0x1234_5678_9abc_def0;
+                state.x87 = Some(X87State::fixture_seed());
+                let mut xmm = std::array::from_fn(|register| {
+                    std::array::from_fn(|byte| (register * 16 + byte) as u8)
+                });
+                for (register, bytes) in xmm.iter_mut().enumerate() {
+                    for lane in 0..4 {
+                        let power = register * 4 + lane;
+                        let exponent = 127 + (2 * power) as u32;
+                        bytes[lane * 4..lane * 4 + 4]
+                            .copy_from_slice(&(exponent << 23).to_le_bytes());
+                    }
+                }
+                state.sse = Some(SseState {
+                    xmm,
+                    mxcsr: 0x0000_ffff,
+                });
+                let before = state.clone();
+
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                    StepOutcome::Advanced
+                );
+
+                let mut expected = before.clone();
+                expected.rip = 0x1004;
+                for lane in 0..4 {
+                    let power = usize::from(source) * 4 + lane;
+                    let exponent = 127 - power as u32;
+                    expected.sse.as_mut().unwrap().xmm[usize::from(destination)]
+                        [lane * 4..lane * 4 + 4]
+                        .copy_from_slice(&(exponent << 23).to_le_bytes());
+                }
+                assert_eq!(
+                    state, expected,
+                    "destination={destination}, source={source}"
+                );
+                assert!(memory.accesses.is_empty());
+                assert_eq!(memory.fetches, (0x1000..0x1004).collect::<Vec<_>>());
+            }
+        }
+    }
+
+    #[test]
+    fn rsqrtps_register_matches_literal_lanes_ignores_rc_and_preflights_state() {
+        let code = [0x45, 0x0f, 0x52, 0xc1]; // RSQRTPS XMM8, XMM9
+        let vectors: [([u32; 4], [u32; 4]); 3] = [
+            (
+                [0x4080_0000, 0x8000_0000, 0x7f80_0000, 0xbf80_0000],
+                [0x3f00_0000, 0xff80_0000, 0x0000_0000, 0xffc0_0000],
+            ),
+            (
+                [0x7fc1_2345, 0x7f81_2345, 0xff80_0000, 0x0000_0001],
+                [0x7fc1_2345, 0x7fc1_2345, 0xffc0_0000, 0x7f80_0000],
+            ),
+            (
+                [0x8000_0001, 0xff80_0000, 0xbf80_0000, 0x4080_0000],
+                [0xff80_0000, 0xffc0_0000, 0xffc0_0000, 0x3f00_0000],
+            ),
+        ];
+        for (source_lanes, expected_lanes) in vectors {
+            for rc in 0..4u32 {
+                let mxcsr = (0x0000_1f80 & !0x6000) | (rc << 13) | 0x0000_80bf;
+                let mut memory = Memory::at(&code, 0x2000);
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                state.rflags = crate::DF | 2;
+                state.gpr[Register::Rcx as usize] = 0x0123_4567_89ab_cdef;
+                state.x87 = Some(X87State::fixture_seed());
+                let mut xmm = std::array::from_fn(|register| {
+                    std::array::from_fn(|byte| (0xf0usize.wrapping_sub(register * 16 + byte)) as u8)
+                });
+                for lane in 0..4 {
+                    xmm[9][lane * 4..lane * 4 + 4]
+                        .copy_from_slice(&source_lanes[lane].to_le_bytes());
+                }
+                state.sse = Some(SseState { xmm, mxcsr });
+                let before = state.clone();
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                    StepOutcome::Advanced
+                );
+                let mut expected = before.clone();
+                expected.rip = 0x2004;
+                for lane in 0..4 {
+                    expected.sse.as_mut().unwrap().xmm[8][lane * 4..lane * 4 + 4]
+                        .copy_from_slice(&expected_lanes[lane].to_le_bytes());
+                }
+                assert_eq!(state, expected, "MXCSR RC={rc}");
+                assert!(memory.accesses.is_empty());
+            }
+        }
+
+        let mut memory = Memory::at(&code, 0x2000);
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        state.x87 = Some(X87State::fixture_seed());
+        let before = state.clone();
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+            StepOutcome::Unsupported { opcode: 0x52 }
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+
+        let truncated = [0x40, 0x0f, 0x52];
+        let mut memory = Memory::at(&truncated, 0x3000);
+        let mut state = LongModeState::default();
+        state.rip = 0x3000;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x0000_1f80,
+        });
+        let before = state.clone();
+        assert!(step(&mut state, &mut memory, AccessContext::default()).is_err());
         assert_eq!(state, before);
         assert!(memory.accesses.is_empty());
     }

@@ -5120,6 +5120,54 @@ fn local_rcpss_register_transforms_only_the_destination_low_dword_and_keeps_jit_
 }
 
 #[test]
+fn local_rsqrtps_register_transforms_all_destination_lanes_and_keeps_jit_closed() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_37c_rsqrtps_register.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongRsqrtpsRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8].replace_range(..32, "0000003f000080ff000000000000c0ff");
+    assert_eq!(snapshot(&result).state, expected);
+
+    for bytes_hex in [
+        "f3450f52c1", // scalar RSQRTSS neighbor
+        "450f5201",   // memory form
+        "450f52c190", // trailing byte
+        "66450f52c1", // operand-size prefix
+        "480f52c1",   // REX.W
+        "420f52c1",   // REX.X
+        "40410f52c1", // repeated REX
+        "450f52",     // truncated ModR/M
+    ] {
+        let mut invalid = input.fixture.clone();
+        let code = invalid
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = bytes_hex.to_owned();
+        code.length = (bytes_hex.len() / 2) as u32;
+        code.comparison_mask_hex = "ff".repeat(bytes_hex.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (bytes_hex.len() / 2) as u64,
+        ));
+        assert!(invalid.to_json().is_err(), "accepted {bytes_hex}");
+    }
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
 fn local_movsd_register_copies_only_scalar_low_qword_and_keeps_native_closed() {
     let bytes =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_9a_movsd_register.case.json");
