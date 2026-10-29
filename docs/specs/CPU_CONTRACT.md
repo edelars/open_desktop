@@ -10802,3 +10802,27 @@ tiny-result boundary separately. See the [Stage 2 plan](../plans/STAGE_2.md#s2-3
 [implementation report](../reports/STAGE_2_REPORT.md#s2-37d--local-only-long64-legacy-register-rcpps),
 [fixture](../../tests/fixtures/x86/stage2/s2_37d_rcpps_register.case.json), and
 [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
+
+## Local S2-37e register-only MINSS with masked status
+
+The schema-v2 profile `s2-long-minss-reg-masked-v1` admits exactly one Long64
+legacy `F3 [optional adjacent REX.R/B] 0F 5D /r` instruction with ModR/M.mod=3
+and XMM0–15. It requires SSE state, all MXCSR exception masks set, DAZ and FTZ
+clear, and reserved MXCSR bits 16–31 zero. Any rounding-control value and
+pre-existing sticky bits are permitted. An unsupported profile precondition
+returns a local refusal; it does not assert architectural #GP/#XM/#UD delivery.
+
+MINSS selects operand 2 if either operand is QNaN or SNaN and sets IE sticky.
+With DAZ clear, either subnormal input sets DE sticky. IE and DE are ORed
+independently. For non-NaNs, value selection uses the existing raw MINSS helper,
+including operand-2 selection for equal values/signed zeros. The executor
+snapshots both operands before writing, supports aliasing, updates only the
+destination low dword and MXCSR IE/DE bits, and preserves the destination upper
+96 bits, all other CPU state, and all other MXCSR bits. It performs no data
+memory access. JIT, native and CPUID admission remain closed.
+
+Normative source: Intel SDM Rev. 093 Vol. 1 §11.5 and Appendix D Tables D-9 and
+D-15, plus Vol. 2B `MINSS`. This is only the masked IE/DE subset consumed by
+S2-37e. Unmasked exception delivery, #XM, CR0/CR4/OSXMMEXCPT, memory and
+alignment fault ordering, and the rest of S2-38 remain open. Physical
+validation is deferred to the combined final Mac mini substage.

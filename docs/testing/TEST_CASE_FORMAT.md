@@ -680,3 +680,18 @@ unresolved ISSUE-025 tiny-result threshold. Hardware validation checks the
 `3/8192` error envelope for non-flushed normal outputs without exact approximate
 bit equality. See [the S2-37d fixture](../../tests/fixtures/x86/stage2/s2_37d_rcpps_register.case.json)
 and [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
+
+## Local MINSS masked-status profile — S2-37e
+
+The schema-v2 profile `s2-long-minss-reg-masked-v1` requires the existing full
+Long64 state, including raw x87 and SSE snapshots. Its code region contains
+exactly one `F3 [optional adjacent REX.R/B] 0F 5D /r` instruction with
+ModR/M.mod=3, no memory operand and no trailing bytes; ModR/M.reg is the
+destination and r/m is the source. Unsupported mandatory/legacy prefixes,
+REX.W/X, repeated/nonadjacent REX, truncation, VEX/EVEX and neighboring forms
+are rejected by the profile. MXCSR must have all six exception masks set,
+DAZ/FTZ clear and reserved bits 16–31 clear; RC and pre-set sticky bits are
+allowed. No fixture fields are added. The expected low dword and IE/DE sticky
+bits are literal; the profile is local-only and JIT/native remain denied. See
+[the S2-37e fixture](../../tests/fixtures/x86/stage2/s2_37e_minss_masked_register.case.json)
+and [the bounded plan](../plans/STAGE_2.md#s2-37e--local-long64-register-only-legacy-minss-with-masked-status).

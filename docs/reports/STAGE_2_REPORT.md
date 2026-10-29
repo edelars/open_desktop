@@ -15459,3 +15459,48 @@ Implemented the local diagnostic `s2-long-pmuludq-reg-v1` profile for mandatory-
 Implemented `s2-long-pmaddwd-reg-v1` for mandatory-66 `0F F5 /r` in Long64 with ModR/M.mod=3 and optional REX.R/B. It multiplies adjacent signed 16-bit lanes, adds the signed 32-bit products with modulo-2^32 wrapping, and writes four dword lanes. Coverage includes the architectural `(-32768 × -32768) + (-32768 × -32768) = 0x80000000` case, every XMM destination/source pair, aliasing, state preservation, no data-memory callbacks, malformed encodings and atomic state/fetch failures. A handwritten high-XMM fixture checks the wrapped corner; testkit profile validation, interpreter execution, JIT denial and native-denial coverage are present. SSE2 and CR0/CR4 remain assumed preconditions; CPUID advertisement and JIT/native/physical admission remain closed.
 
 Focused local validation passed: `cargo test -p od-isa pmaddwd --offline` (3/3), `cargo test -p od-testkit pmaddwd --offline` (1/1), `cargo test -p od-runner --test fixture_v2 local_pmaddwd --offline` (1/1), `cargo check -p od-x86-runner --all-targets --offline`, and the same x86-runner all-target check for `x86_64-unknown-linux-gnu`. `cargo fmt --all -- --check`, `git diff --check`, and `graphify update .` passed. Linux native denial was compile-checked but not executed. Mac mini/SSH/physical checks remain deferred to the combined final substage. Intel SDM revision 093, Vol. 2B, PMADDWD ([official PDF](https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-2b-manual.pdf)) is the semantic reference. See the [CPU contract](../specs/CPU_CONTRACT.md#local-register-only-pmaddwd-profile--s2-3563), [plan](../plans/STAGE_2.md#s2-3563-local-only-bounded-register-pmaddwd), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-3563-local-register-pmaddwd-diagnostic-profile).
+
+## S2-37e / bounded S2-38a — local MINSS masked IE/DE status
+
+Implemented the local-only schema-v2 profile `s2-long-minss-reg-masked-v1` for
+exactly `F3 [optional adjacent REX.R/B] 0F 5D /r`, ModR/M.mod=3, XMM0–15 in
+Long64. The profile requires SSE state, all six MXCSR exception masks set,
+DAZ/FTZ clear and reserved MXCSR bits 16–31 clear. Any RC and pre-set sticky
+flags are permitted. Unsupported state is refused locally and does not claim
+architectural #GP/#XM/#UD delivery.
+
+The executor snapshots both low dwords before mutation. Either QNaN or SNaN
+selects operand 2 and sets IE sticky; a subnormal in either source sets DE
+sticky with DAZ clear. IE/DE accumulate independently, including NaN plus
+subnormal. Non-NaN values use the existing `Binary32::min_sse_raw_result`
+selection semantics, including operand-2 selection for equal values and signed
+zeros. Only the destination low dword and MXCSR IE/DE bits change; the upper
+destination 96 bits and every other state bit are preserved. Aliasing is
+supported and no data-memory callback occurs. JIT, native and CPUID admission
+remain closed.
+
+The handwritten fixture `s2_37e_minss_masked_register.case.json` exercises
+XMM8←XMM9 QNaN plus smallest positive subnormal, selecting RHS and producing
+MXCSR `0x1f83`. Tests cover all 256 register pairs, QNaN/SNaN in either
+position, signed-zero orderings, subnormal/NaN combinations, all RC encodings,
+sticky preservation, invalid-MXCSR and missing-SSE atomic refusals, exact
+decoder negatives/truncation/no-memory behavior, fixture literals, and explicit
+JIT/native denial.
+
+Normative sources are Intel SDM Rev. 093 Vol. 1 §11.5 and Appendix D Tables D-9
+and D-15 (masked exception and denormal status), and Vol. 2B `MINSS` (operand
+selection). This is only the masked IE/DE subset consumed by S2-37e. Full
+unmasked exception delivery, #XM, CR0/CR4/OSXMMEXCPT gating, memory/alignment/FP
+fault priority and ordering, and the rest of S2-38 remain open. The Linux
+native-denial path is compile-checked only. All Mac mini/physical validation is
+deferred to the combined final hardware substage.
+
+**Checks:** `cargo test -p od-isa --offline minss_register` passed (4 tests);
+`cargo test -p od-testkit --offline` passed (369 tests); the focused runner
+MINSS fixture test passed (1 test). Existing local RSQRTSS, RCPSS, RSQRTPS and
+RCPPS fixture regressions passed (1 each). `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, the `od-x86-runner`
+all-target check for `x86_64-unknown-linux-gnu`, `git diff --check`, and
+`graphify update .` passed. Independent `gpt-6.1-sol` medium-effort code and
+documentation reviews found no actionable findings; the documentation reviewer
+also verified all eight added local links and anchors.

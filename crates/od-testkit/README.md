@@ -154,3 +154,11 @@ the F3 scalar RCPSS neighbor while common decoding continues to support RCPSS
 and RSQRTPS separately. Four literal lanes exercise the local reciprocal value
 policy, with native/JIT closed and ISSUE-025's hardware tiny-result boundary
 left unresolved.
+
+S2-37e adds schema-v2 profile `s2-long-minss-reg-masked-v1` for exactly one
+Long64 register-only legacy MINSS instruction. The profile requires all six
+MXCSR exception masks, DAZ/FTZ clear and reserved bits clear; it permits any RC
+and sticky state. Literal expected outputs include operand-2 NaN selection and
+masked IE/DE sticky bits. No fixture schema fields are added, and JIT/native
+remain unsupported. Full S2-38 exception delivery/order is still open. See the
+[plan](../../docs/plans/STAGE_2.md#s2-37e--local-long64-register-only-legacy-minss-with-masked-status).

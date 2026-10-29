@@ -481,3 +481,11 @@ S2-35.9 adds local-only register `PSUBUSW` for `66 [one optional REX.R/B] 0F D9 
 S2-35.10 adds local-only register `PADDSB` for `66 [one optional REX.R/B] 0F EC /r` with ModR/M.mod=3. Sixteen independent signed i8 lanes add with saturation to [-128, 127], storing the raw result bytes. MMX, wider forms, subtraction, memory, other prefixes, REX.W/X, VEX/EVEX, JIT/native and physical execution remain excluded. S2-35.12 adds local-only register `PADDSW` for `66 [one optional REX.R/B] 0F ED /r`, ModR/M.mod=3; eight independent signed i16 lanes add using widened intermediates and saturate to [-32768, 32767]. SSE2 and CR0/CR4 conditions are assumptions only. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-register-only-paddsb-profile--s2-3510).
 
 S2-35.14 adds local-only register PADDD for `66 [one optional REX.R/B] 0F FE /r`, ModR/M.mod=3. Four little-endian u32 lanes add modulo 2^32 independently; the bounded profile excludes MMX, other widths, saturation, memory, extra prefixes, REX.W/X, VEX/EVEX and native/JIT execution.
+
+S2-37e adds local-only register MINSS profile `s2-long-minss-reg-masked-v1`.
+With all MXCSR exception masks set, DAZ/FTZ clear and reserved bits clear, it
+selects operand 2 for either NaN and accumulates masked IE/DE sticky bits for
+NaN/subnormal inputs. It preserves upper destination bits and unrelated state;
+JIT/native remain closed. Full unmasked FP exception delivery and fault ordering
+remain open. Normative source: Intel SDM Rev. 093 Vol. 1 §11.5, Appendix D
+Tables D-9/D-15, and Vol. 2B MINSS. See [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-37e-register-only-minss-with-masked-status).

@@ -2214,3 +2214,25 @@ unsupported, and Mac mini checks remain in the combined final substage. See
 [plan](../plans/STAGE_2.md#s2-37d--local-long64-register-only-legacy-rcpps),
 [fixture](../../tests/fixtures/x86/stage2/s2_37d_rcpps_register.case.json), and
 [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
+
+## Local scalar MINSS register profile — S2-37e
+
+`s2-long-minss-reg-masked-v1` admits exactly one Long64 legacy
+`F3 [optional adjacent REX.R/B] 0F 5D /r` instruction, ModR/M.mod=3,
+XMM0–15. The profile requires SSE state; all six MXCSR exception masks set;
+DAZ/FTZ clear; and reserved bits 16–31 clear. Any RC and pre-existing sticky
+flags are accepted. Unsupported state is a local profile refusal, with no
+architectural fault claim.
+
+For either QNaN or SNaN, MINSS selects operand 2 and sets IE sticky. A
+subnormal in either input sets DE sticky; these bits accumulate independently.
+Non-NaN value selection uses `Binary32::min_sse_raw_result`, including operand
+2 for equality and signed-zero ties. Both low operands are captured before
+write for aliasing. Only destination low 32 bits and MXCSR IE/DE can change;
+destination upper 96 bits and all remaining state are preserved. There is no
+data-memory access, JIT or native execution. Intel SDM Rev. 093 Vol. 1 §11.5,
+Appendix D Tables D-9/D-15 and Vol. 2B `MINSS` are the normative sources. Full
+unmasked exception delivery and the remaining S2-38 fault ordering are open.
+See [the plan](../plans/STAGE_2.md#s2-37e--local-long64-register-only-legacy-minss-with-masked-status),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-37e-register-only-minss-with-masked-status),
+and [literal fixture](../../tests/fixtures/x86/stage2/s2_37e_minss_masked_register.case.json).

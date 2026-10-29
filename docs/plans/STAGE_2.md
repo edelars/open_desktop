@@ -488,6 +488,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37b | Local-only Long64 legacy register RCPSS profile `s2-long-rcpss-reg-v1`, using S2-36ab raw helper; JIT/native closed | S2-34.1, S2-36ab; ISSUE-025; independent review |
 | [x] | S2-37c | Local-only Long64 legacy register RSQRTPS profile `s2-long-rsqrtps-reg-v1`, using S2-36ac per lane; JIT/native closed | S2-34.1, S2-36ac; independent review |
 | [x] | S2-37d | Local-only Long64 legacy register RCPPS profile `s2-long-rcpps-reg-v1`, using S2-36ab per lane; JIT/native closed | S2-34.1, S2-36ab; ISSUE-025; independent review |
+| [x] | S2-37e | Local-only Long64 legacy register MINSS profile `s2-long-minss-reg-masked-v1`; bounded masked IE/DE status only; JIT/native closed | S2-36z; independent review |
+| [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e: masked MINSS invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e; independent review |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
@@ -5946,6 +5948,40 @@ ISSUE-025 remains open: no universal hardware cutoff or exact helper-bit match
 is claimed around the normal/subnormal boundary. Final Mac mini validation
 checks the `3/8192` relative-error bound for non-flushed normal lanes and treats
 the ambiguous tiny-result boundary separately.
+
+#### S2-37e — local Long64 register-only legacy MINSS with masked status
+
+Add schema-v2 diagnostic profile `s2-long-minss-reg-masked-v1` for exactly
+`F3 [optional one adjacent REX.R/B] 0F 5D /r`, ModR/M.mod=3, XMM0–15, in
+Long64. Reject all other legacy/mandatory prefixes, REX.W/X, repeated or
+nonadjacent REX, memory, truncation, VEX/EVEX and neighboring forms. Execute
+only when SSE state exists and MXCSR satisfies the local profile preconditions:
+all six exception masks are set; DAZ and FTZ are clear; reserved high bits
+16–31 are zero. Any RC and pre-existing sticky flags are accepted and
+preserved. Unsupported state is a profile refusal, not an architectural fault
+claim.
+
+Snapshot both low dwords before writes to allow aliasing. For a NaN in either
+operand, select operand 2 and set IE sticky; for a subnormal in either operand
+with DAZ clear, set DE sticky. These status bits are ORed independently, so
+NaN plus subnormal sets both. Otherwise use existing
+`Binary32::min_sse_raw_result` value selection, including RHS selection for
+equal signed zeros. Write only the destination low dword and IE/DE sticky bits;
+preserve destination upper 96 bits, all other CPU state and every other MXCSR
+bit. No data memory, callback, JIT, native or CPUID admission is added.
+
+Normative behavior source: Intel SDM Rev. 093, Vol. 1 §11.5 and Appendix D,
+Tables D-9/D-15 (masked floating-point exceptions and denormal status); MINSS
+operand selection is Intel SDM Rev. 093, Vol. 2B, `MINSS`. A literal schema-v2
+fixture and pairwise/state/encoding tests cover the bounded profile.
+
+#### S2-38a — consumed masked MINSS status subset
+
+Only masked IE/DE sticky-status updates used by S2-37e are implemented. Full
+S2-38 remains open: unmasked exception delivery, #XM behavior, CR0/CR4 and
+OSXMMEXCPT gating, memory/alignment/FP fault priority, precise fault ordering,
+and the remaining MXCSR/SSE exception surface are not implemented or claimed.
+Final physical checks stay in the combined Mac mini substage.
 
 ### S2-38. MXCSR и FP fault ordering
 

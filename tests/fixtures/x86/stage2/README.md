@@ -5491,3 +5491,15 @@ JIT/native admission is denied; physical status remains `not_run`.
 ### S2-35.63 local register PMADDWD diagnostic profile
 
 `s2_35_63_pmaddwd_register.case.json` is a handwritten high-XMM fixture for `s2-long-pmaddwd-reg-v1`, encoded as `66 45 0F F5 C1` (`PMADDWD XMM8, XMM9`). The inputs cover signed products, adjacent pair addition, the two-product signed overflow corner, and independent high-register extension. It verifies 32-bit wrapping and unrelated-state preservation. The local profile accepts only register form with optional REX.R/B; SSE2 and CR0/CR4 are assumed, while JIT/native/physical admission remains closed.
+
+### S2-37e local masked-status MINSS register profile
+
+`s2_37e_minss_masked_register.case.json` is a handwritten schema-v2 XMM8←XMM9
+fixture for `F3 45 0F 5D C1`. The source low lanes are QNaN and the smallest
+positive subnormal. MINSS selects operand 2 and the profile sets both masked IE
+and DE sticky flags, producing MXCSR `0x1f83`. The upper destination bits and
+other state are preserved. The local contract requires all six exception masks,
+DAZ/FTZ clear and reserved MXCSR bits clear. Normative references are Intel SDM
+Rev. 093 Vol. 1 §11.5, Appendix D Tables D-9/D-15 and Vol. 2B MINSS. This fixture
+does not claim unmasked exception or fault-ordering behavior; JIT/native remain
+closed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37e--local-long64-register-only-legacy-minss-with-masked-status).
