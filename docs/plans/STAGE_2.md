@@ -6885,6 +6885,34 @@ JIT/native/C/fragment admission и общий CR model остаются вне �
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39h-fp-init-plus-fxsave64-composition),
 и [fixture format](../testing/TEST_CASE_FORMAT.md#s2-39h-fp-init-plus-fxsave64-profile).
 
+#### S2-39i. Exact FP initialization composition followed by FXRSTOR64
+
+**Статус:** локальный interpreter profile завершён для exact 33-byte S2-25c
+последовательности с `48 0F AE 4B 40` (`FXRSTOR64 [RBX+0x40]`) и девятью
+retirements. Новый строгий профиль `s2-long-cr0-cr4-fp-init-fxrstor64-v1`
+повторно использует S2-25c CR0/CR4 transitions и staged S2-39e restore.
+EM/TS и OSFXSR/OSXMMEXCPT независимо покрыты всеми 16 начальными сочетаниями;
+у FXRSTOR берутся текущие CR0 bits после init, OSFXSR должен быть 1. При
+OSFXSR=0 результат локально Unsupported; для этой ветви fault не придуман.
+
+Handwritten fixture содержит отдельный literal FXRSTOR image, RBX=`0x620`,
+aligned private readable area `0x660..0x85f`, CPL0, budget 9 и STOP после
+33 bytes. Image не является результатом предыдущего FXSAVE и отличается от
+post-init state: восстановление меняет XMM0 и другие x87/SSE fields. Проверки
+охватывают TOP rotation, abridged FTW reconstruction, полный FIP/FDP, low-11
+FOP, selectors и ignored bytes, target MXCSR mask (image MXCSR_MASK игнорируется),
+padding/software fields, reserved-MXCSR rejection, exact 13 read callbacks,
+каждый callback failure и no CPU commit финального restore; первые восемь
+retirements остаются. STOP, exhausted budget и truncated fetch не читают image.
+
+Это только локальное подтверждение interpreter. Fault priority для
+одновременных условий не заявлен; physical x86, JIT/native/C/fragment и
+альтернативные формы не открыты. См. [CPU contract](../specs/CPU_CONTRACT.md#s2-39i--exact-fp-init-plus-fxrstor64-composition),
+[report](../reports/STAGE_2_REPORT.md#s2-39i--exact-fp-init-plus-fxrstor64-composition),
+[Linux profile report](../reports/STAGE_2_LINUX_PROFILE.md#s2-39i--local-fp-init-plus-fxrstor64-composition),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39i-fp-init-plus-fxrstor64-composition),
+и [fixture format](../testing/TEST_CASE_FORMAT.md#s2-39i-fp-init-plus-fxrstor64-profile).
+
 ### S2-40. Дополнительные обязательные расширения
 
 1. Сопоставить принятый Linux/Windows candidate profile с оставшимися ISA requirements: не считать SSE2 автоматически достаточным для любого современного ПО.

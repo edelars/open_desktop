@@ -35,6 +35,7 @@ pub const PROFILE_FXSAVE_RIP: &str = "s2-long-fxsave-rip-v1";
 pub const PROFILE_FXSAVE64_RAX: &str = "s2-long-fxsave64-rax-disp8-v1";
 pub const PROFILE_FXRSTOR64_RBX: &str = "s2-long-fxrstor64-rbx-disp8-v1";
 pub const PROFILE_FXRSTOR64_CR0_GATES: &str = "s2-long-fxrstor64-cr0-gates-v1";
+pub const PROFILE_CR0_CR4_FP_INIT_FXRSTOR64: &str = "s2-long-cr0-cr4-fp-init-fxrstor64-v1";
 pub const PROFILE_MOVUPS_REGISTER: &str = "s2-long-movups-reg-v1";
 pub const PROFILE_MOVAPS_REGISTER: &str = "s2-long-movaps-reg-v1";
 pub const PROFILE_MOVAPS_REVERSE_REGISTER: &str = "s2-long-movaps-reg-reverse-v1";
@@ -193,6 +194,8 @@ pub enum Profile {
     LongCr0Cr4FpInitV1,
     #[serde(rename = "s2-long-cr0-cr4-fp-init-fxsave64-v1")]
     LongCr0Cr4FpInitFxsave64V1,
+    #[serde(rename = "s2-long-cr0-cr4-fp-init-fxrstor64-v1")]
+    LongCr0Cr4FpInitFxrstor64V1,
     #[serde(rename = "s2-long-movups-reg-v1")]
     LongMovupsRegV1,
     #[serde(rename = "s2-long-movaps-reg-v1")]
@@ -1044,6 +1047,7 @@ impl IntegerState {
                     Profile::LongCr0FpInitV1
                     | Profile::LongCr4FpInitV1
                     | Profile::LongCr0Cr4FpInitFxsave64V1
+                    | Profile::LongCr0Cr4FpInitFxrstor64V1
                     | Profile::LongCr0Cr4FpInitV1,
                     Some(x87),
                 ) => Some(x87.to_cpu()?),
@@ -1171,6 +1175,7 @@ impl IntegerState {
                     | Profile::LongCr0FpInitV1
                     | Profile::LongCr4FpInitV1
                     | Profile::LongCr0Cr4FpInitFxsave64V1
+                    | Profile::LongCr0Cr4FpInitFxrstor64V1
                     | Profile::LongCr0Cr4FpInitV1
                     | Profile::LongX87SelectorsStateV1
                     | Profile::LongFxsaveRipV1
@@ -1345,6 +1350,7 @@ impl IntegerState {
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
@@ -1469,6 +1475,7 @@ impl IntegerState {
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
@@ -1666,6 +1673,7 @@ impl IntegerState {
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1,
                 Some(_),
             ) => {}
@@ -1677,6 +1685,7 @@ impl IntegerState {
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1,
                 None,
             ) => {
@@ -1696,6 +1705,7 @@ impl IntegerState {
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1,
                 Some(_),
             ) => {}
@@ -1706,6 +1716,7 @@ impl IntegerState {
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1,
                 None,
             ) => {
@@ -1719,6 +1730,7 @@ impl IntegerState {
             Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1,
         ) && (self.activity != Some(CpuActivitySnapshot::Running)
             || self.sti_shadow != Some(StiShadowSnapshot::Clear))
@@ -1902,6 +1914,7 @@ impl IntegerState {
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
@@ -2043,6 +2056,7 @@ impl IntegerState {
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
@@ -2193,6 +2207,7 @@ impl IntegerState {
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
@@ -2350,6 +2365,7 @@ impl IntegerState {
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
@@ -2722,6 +2738,7 @@ impl IntegerState {
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1,
         ) {
             (1 << 9) | (3 << 12)
@@ -2739,6 +2756,7 @@ impl IntegerState {
             | (
                 Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1,
                 Some(value),
             ) if [
@@ -2752,6 +2770,7 @@ impl IntegerState {
                 Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1,
                 Some(_),
             ) => {
@@ -2764,6 +2783,7 @@ impl IntegerState {
                 Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1,
                 None,
             ) => {
@@ -2776,6 +2796,7 @@ impl IntegerState {
             (
                 Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1,
                 Some(value),
             ) if [
@@ -2788,6 +2809,7 @@ impl IntegerState {
             (
                 Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1,
                 Some(_),
             ) => {
@@ -2799,6 +2821,7 @@ impl IntegerState {
             (
                 Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1,
                 None,
             ) => {
@@ -2813,6 +2836,7 @@ impl IntegerState {
                 Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1,
                 Some(x87),
             ) => {
@@ -2945,6 +2969,7 @@ impl IntegerState {
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1,
                 None,
             ) => {
@@ -3100,6 +3125,7 @@ impl IntegerState {
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1
                 | Profile::LongX87SelectorsStateV1
                 | Profile::LongFxsaveRipV1
@@ -3559,6 +3585,7 @@ impl Fixture {
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1,
         ) {
             if self.rflags_mask.get() != cli_flags_mask {
@@ -3580,6 +3607,7 @@ impl Fixture {
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1,
                 Some(_),
             ) => {}
@@ -3592,6 +3620,7 @@ impl Fixture {
                 | Profile::LongCr0FpInitV1
                 | Profile::LongCr4FpInitV1
                 | Profile::LongCr0Cr4FpInitFxsave64V1
+                | Profile::LongCr0Cr4FpInitFxrstor64V1
                 | Profile::LongCr0Cr4FpInitV1,
                 None,
             ) => {
@@ -3837,6 +3866,67 @@ impl Fixture {
                 return Err(invalid(
                     "memory.code/memory.save",
                     "S2-39h requires the exact 33-byte composition, RAX=0x620, a private aligned 512-byte save area at 0x660, CPL0, budget 9, and terminal STOP",
+                ));
+            }
+        }
+        if self.profile == Profile::LongCr0Cr4FpInitFxrstor64V1 {
+            let code = self.memory.iter().find(|region| region.region_id == "code");
+            let image = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "image");
+            let expected_program =
+                "0f20c04883e0f30f22c0dbe30f20e0480d000600000f22e0660f57c1480fae4b40";
+            let exact_code = code.is_some_and(|region| {
+                region.guest_address == self.initial_state.rip
+                    && region.length == 33
+                    && region.permissions
+                        == crate::case::MemoryPermissions {
+                            read: false,
+                            write: false,
+                            execute: true,
+                        }
+                    && region
+                        .initial_bytes_hex
+                        .eq_ignore_ascii_case(expected_program)
+                    && region
+                        .comparison_mask_hex
+                        .eq_ignore_ascii_case(&"ff".repeat(33))
+            });
+            let exact_image = image.is_some_and(|region| {
+                region.guest_address.get() == 0x660
+                    && region.length == 512
+                    && region.permissions
+                        == crate::case::MemoryPermissions {
+                            read: true,
+                            write: false,
+                            execute: false,
+                        }
+                    && region
+                        .comparison_mask_hex
+                        .eq_ignore_ascii_case(&"ff".repeat(512))
+            });
+            let image_bytes = image.and_then(|region| decode_bytes(&region.initial_bytes_hex).ok());
+            let mxcsr_valid = image_bytes.as_ref().is_some_and(|bytes| {
+                bytes.get(24..28).is_some_and(|value| {
+                    let mxcsr = u32::from_le_bytes(value.try_into().unwrap());
+                    mxcsr & !od_isa::TARGET_FXSAVE_MXCSR_MASK == 0
+                })
+            });
+            if !exact_code
+                || !exact_image
+                || !mxcsr_valid
+                || self.cli_cpl != Some(CliCpl::Cpl0)
+                || self.initial_state.gpr[3].get() != 0x620
+                || self.memory.len() != 2
+                || self.instruction_budget != 9
+                || self.stop_rip.map(HexU64::get) != self.initial_state.rip.get().checked_add(33)
+                || self.expected_exit != ExpectedExit::StopAddress
+                || self.rflags_mask.get() != (INTEGER_FLAGS | (1 << 9) | (3 << 12))
+            {
+                return Err(invalid(
+                    "memory.code/memory.image",
+                    "S2-39i requires the exact 33-byte composition, RBX=0x620, an aligned private 512-byte readable image at 0x660, valid target MXCSR, CPL0, budget 9, and terminal STOP",
                 ));
             }
         }
@@ -7548,6 +7638,96 @@ impl RunResult {
                     }
                 }
             }
+            if loaded.fixture.profile == Profile::LongCr0Cr4FpInitFxrstor64V1 {
+                let initial = &loaded.fixture.initial_state;
+                let initial_cr4 = initial.cr4.ok_or(FormatError::CaseMismatch("state.cr4"))?;
+                let expected_cr4 = HexU64(initial_cr4.get() | 0x600);
+                let mut expected_x87 = initial
+                    .x87
+                    .as_ref()
+                    .ok_or(FormatError::CaseMismatch("state.x87"))?
+                    .to_cpu()?;
+                let mut expected_sse = initial
+                    .sse
+                    .as_ref()
+                    .ok_or(FormatError::CaseMismatch("state.sse"))?
+                    .to_cpu()?;
+                let image = loaded
+                    .fixture
+                    .memory
+                    .iter()
+                    .find(|region| region.region_id == "image")
+                    .ok_or(FormatError::CaseMismatch("memory.image"))?;
+                let bytes = decode_bytes(&image.initial_bytes_hex)?;
+                expected_x87.control_word = u16::from_le_bytes(bytes[0..2].try_into().unwrap());
+                expected_x87.status_word = u16::from_le_bytes(bytes[2..4].try_into().unwrap());
+                let top = usize::from((expected_x87.status_word >> 11) & 7);
+                let abridged = bytes[4];
+                for logical in 0..8 {
+                    let physical = (top + logical) & 7;
+                    let start = 32 + logical * 16;
+                    let raw: [u8; 10] = bytes[start..start + 10].try_into().unwrap();
+                    expected_x87.registers[physical] = raw;
+                    let significand = u64::from_le_bytes(raw[..8].try_into().unwrap());
+                    let exponent = u16::from_le_bytes([raw[8], raw[9]]) & 0x7fff;
+                    let tag = if abridged & (1 << physical) == 0 {
+                        od_isa::state::X87Tag::Empty
+                    } else if exponent == 0 && significand == 0 {
+                        od_isa::state::X87Tag::Zero
+                    } else if (1..=0x7ffe).contains(&exponent) && significand & (1 << 63) != 0 {
+                        od_isa::state::X87Tag::Valid
+                    } else {
+                        od_isa::state::X87Tag::Special
+                    };
+                    expected_x87.set_tag(physical as u8, tag);
+                }
+                expected_x87.last_opcode =
+                    u16::from_le_bytes(bytes[6..8].try_into().unwrap()) & 0x07ff;
+                expected_x87.instruction_pointer =
+                    u64::from_le_bytes(bytes[8..16].try_into().unwrap());
+                expected_x87.data_pointer = u64::from_le_bytes(bytes[16..24].try_into().unwrap());
+                expected_sse.mxcsr = u32::from_le_bytes(bytes[24..28].try_into().unwrap());
+                for register in 0..16 {
+                    expected_sse.xmm[register]
+                        .copy_from_slice(&bytes[160 + register * 16..176 + register * 16]);
+                }
+                if value.state.cr0 != Some(HexU64(od_isa::execute::Cr0Profile::BASE))
+                    || value.state.cr4 != Some(expected_cr4)
+                    || value.state.gpr[0] != expected_cr4
+                    || value.state.rip != HexU64(initial.rip.get() + 33)
+                    || value.state.rflags != HexU64(initial.rflags.get() & !0x8c5)
+                    || value.state.x87 != Some(X87Snapshot::from(&expected_x87))
+                    || value.state.sse != Some(SseSnapshot::from(&expected_sse))
+                    || value.rflags_defined
+                        != HexU64(
+                            INTEGER_FLAGS
+                                & !((1 << 0)
+                                    | (1 << 2)
+                                    | (1 << 4)
+                                    | (1 << 6)
+                                    | (1 << 7)
+                                    | (1 << 11)),
+                        )
+                    || self.instructions_executed != (Observation::Available { value: HexU64(9) })
+                    || self.outcome != (Outcome::StopAddress {})
+                    || value
+                        .state
+                        .gpr
+                        .iter()
+                        .enumerate()
+                        .any(|(i, reg)| i != 0 && *reg != initial.gpr[i])
+                {
+                    return Err(FormatError::CaseMismatch("state.cr0_cr4_fxrstor64"));
+                }
+                let found = value
+                    .memory
+                    .iter()
+                    .find(|region| region.region_id == "image")
+                    .ok_or(FormatError::CaseMismatch("memory.image"))?;
+                if found.bytes_hex != image.initial_bytes_hex {
+                    return Err(FormatError::CaseMismatch("memory.image.unchanged"));
+                }
+            }
             if value.memory.len() != loaded.fixture.memory.len() {
                 return Err(FormatError::CaseMismatch("memory"));
             }
@@ -7615,7 +7795,9 @@ pub fn compare(
             }
     } else if matches!(
         loaded.fixture.profile,
-        Profile::LongCr0Cr4FpInitV1 | Profile::LongCr0Cr4FpInitFxsave64V1
+        Profile::LongCr0Cr4FpInitV1
+            | Profile::LongCr0Cr4FpInitFxsave64V1
+            | Profile::LongCr0Cr4FpInitFxrstor64V1
     ) {
         mask & INTEGER_FLAGS & !arithmetic_flags
     } else if matches!(
@@ -7902,6 +8084,7 @@ fn rflags_differ(profile: Profile, mask: u64, left: u64, right: u64) -> bool {
             | Profile::LongCr0FpInitV1
             | Profile::LongCr4FpInitV1
             | Profile::LongCr0Cr4FpInitFxsave64V1
+            | Profile::LongCr0Cr4FpInitFxrstor64V1
             | Profile::LongCr0Cr4FpInitV1,
     ) {
         INTEGER_FLAGS | (1 << 9) | (3 << 12)

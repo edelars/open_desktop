@@ -564,6 +564,36 @@ See the [S2-39h plan](../plans/STAGE_2.md#s2-39h-exact-fp-initialization-composi
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39h-fp-init-plus-fxsave64-composition),
 and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-39h-fp-init-plus-fxsave64-profile).
 
+### S2-39i — Exact FP-init plus FXRSTOR64 composition
+
+The local-only `s2-long-cr0-cr4-fp-init-fxrstor64-v1` schema-v2 profile
+admits exactly the S2-25c 28-byte sequence followed by
+`48 0F AE 4B 40` (`FXRSTOR64 [RBX+0x40]`), for 33 bytes and nine retirements.
+It reuses the live CR0/CR4 initialization path and S2-39e staged restore. The
+16 starting CR0.EM/TS × CR4.OSFXSR/OSXMMEXCPT combinations are accepted; the
+preceding sequence clears EM/TS and sets OSFXSR/OSXMMEXCPT. Restore gates read
+current CR0 and require OSFXSR=1. An OSFXSR-clear local profile result is
+Unsupported; no fault is inferred. FXSR availability is assumed.
+
+The strict fixture fixes CPL0, RBX `0x620`, an aligned private readable 512-byte
+image at `0x660..0x85f`, budget 9 and STOP after the final instruction. Its
+literal image is authored independently from the post-init CPU state. Restore
+performs the existing 13 ascending read callbacks, stages fields and validates
+MXCSR against `TARGET_FXSAVE_MXCSR_MASK` before replacing CPU state. Image
+MXCSR_MASK, reserved/padding/software bytes are ignored and remain unchanged.
+The restore applies TOP rotation and abridged physical FTW reconstruction,
+copies raw x87 payloads, full FIP/FDP, low eleven FOP bits, MXCSR and XMM0–15,
+and preserves selectors. No x87/SSE exception delivery is implied.
+
+Failure at each read callback or MXCSR validation leaves the final instruction
+unretired and CPU state uncommitted; the earlier eight operations remain
+retired. STOP, zero budget and truncated final fetch issue no restore reads.
+No combined-fault priority, physical/hardware, JIT/native/C/fragment or other
+encoding claim is made. See the [S2-39i plan](../plans/STAGE_2.md#s2-39i-exact-fp-initialization-composition-followed-by-fxrstor64),
+[report](../reports/STAGE_2_REPORT.md#s2-39i--exact-fp-init-plus-fxrstor64-composition),
+[fixture](../../tests/fixtures/x86/stage2/README.md#s2-39i-fp-init-plus-fxrstor64-composition),
+and [format](../testing/TEST_CASE_FORMAT.md#s2-39i-fp-init-plus-fxrstor64-profile).
+
 ## Предлагаемый профиль тестового прототипа S0-09
 
 Прототип — изолированный пользовательский fragment runner с единым vCPU, только immutable code buffer и register-only вычислениями. Это набор для сравнения decoder → interpreter/JIT, а не профиль x86-64 машины.

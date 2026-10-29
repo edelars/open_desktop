@@ -16945,3 +16945,34 @@ runtime bytes, physical x86, Mac mini, or hardware result is claimed. See the [S
 contract](../specs/CPU_CONTRACT.md#s2-39h--exact-fp-init-plus-fxsave64-composition),
 [plan](../plans/STAGE_2.md#s2-39h-exact-fp-initialization-composition-followed-by-fxsave64),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39h-fp-init-plus-fxsave64-composition).
+
+## S2-39i — exact FP-init plus FXRSTOR64 composition
+
+Added strict interpreter profile `s2-long-cr0-cr4-fp-init-fxrstor64-v1` for
+the 33-byte S2-25c sequence ending in `48 0F AE 4B 40`, with nine retirements.
+It uses current post-init CR0/CR4 values and the existing staged S2-39e restore.
+All 16 initial CR0.EM/TS × CR4.OSFXSR/OSXMMEXCPT combinations are covered;
+OSFXSR-clear at the final instruction is local Unsupported and introduces no
+fault rule. The handwritten fixture uses a separate literal image, RBX=`0x620`,
+and private readable aligned RAM at `0x660..0x85f`.
+
+Coverage checks restored raw x87/SSE state, nonzero TOP and abridged-tag
+reconstruction, full FIP/FDP, XMM0 replacement, target MXCSR validation,
+ignored MXCSR_MASK/padding/software fields, preserved image bytes, all 13 read
+callback failures, no final retirement/CPU commit on read or MXCSR failure,
+and absence of image reads on STOP/budget/truncated fetch. Strict fixture and
+result checks reject altered state/image data. The result remains local
+interpreter evidence; no physical x86, hardware, JIT/native or machine fault
+priority is claimed.
+
+**Checks:** `cargo test -p od-isa -p od-testkit -p od-runner --offline` passed
+(1,458 + 407 + 376 tests); `cargo check --workspace --all-targets --offline`,
+Linux x86_64 `cargo check -p od-x86-runner --all-targets --target
+x86_64-unknown-linux-gnu --offline`, `cargo fmt --all -- --check`,
+`git diff --check`, and `graphify update .` passed. `python3
+tools/check_layout.py` remains failing on the worktree `.git` metadata entry and
+two pre-existing missing oracle-manifest links; see [ISSUE-023](../KNOWN_ISSUES.md#issue-023--layout-checker-reports-worktree-metadata-and-stale-oracle-links).
+The Linux target check is compile-only on this Apple ARM host. See [CPU contract](../specs/CPU_CONTRACT.md#s2-39i--exact-fp-init-plus-fxrstor64-composition),
+[plan](../plans/STAGE_2.md#s2-39i-exact-fp-initialization-composition-followed-by-fxrstor64),
+[Linux profile report](STAGE_2_LINUX_PROFILE.md#s2-39i--local-fp-init-plus-fxrstor64-composition),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39i-fp-init-plus-fxrstor64-composition).

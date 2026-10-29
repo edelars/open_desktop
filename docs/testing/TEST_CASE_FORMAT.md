@@ -1147,3 +1147,24 @@ failure case makes no whole-memory rollback claim. JIT/native/C/fragment
 admission and physical execution remain closed. See the [fixture note](../../tests/fixtures/x86/stage2/README.md#s2-39h-fp-init-plus-fxsave64-composition),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-39h--exact-fp-init-plus-fxsave64-composition),
 and [plan](../plans/STAGE_2.md#s2-39h-exact-fp-initialization-composition-followed-by-fxsave64).
+
+## S2-39i `s2-long-cr0-cr4-fp-init-fxrstor64-v1`
+
+This strict profile admits exactly the S2-25c 28-byte CR0/FNINIT/CR4/XORPD
+sequence followed by `48 0F AE 4B 40` (`FXRSTOR64 [RBX+0x40]`), with budget 9
+and STOP after byte 33. Fixtures are CPL0, set RBX to `0x620`, and provide an
+aligned private readable 512-byte image at `0x660..0x85f`. The image is a
+literal input independent from the post-init CPU state. All four CR0.EM/TS ×
+four CR4.OSFXSR/OSXMMEXCPT initial combinations are accepted. Final gates use
+live post-init CR0; OSFXSR must be one, otherwise execution is Unsupported.
+
+Results require nine retirements, initialized CR0/CR4 and preserved GPR state,
+exact restored x87/SSE values derived from the image's defined fields, and an
+unchanged complete image. Validation enforces target MXCSR validity while
+ignoring the image MXCSR_MASK and undefined/padding/software bytes. Failure at
+any staged read or MXCSR validation leaves the restore unretired with CPU
+state unchanged after the first eight retirements. STOP, exhausted budget and
+truncated fetch issue no restore reads. The profile makes no combined-fault
+priority, physical, native or JIT claim. See the [fixture](../../tests/fixtures/x86/stage2/README.md#s2-39i-fp-init-plus-fxrstor64-composition),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-39i--exact-fp-init-plus-fxrstor64-composition),
+and [plan](../plans/STAGE_2.md#s2-39i-exact-fp-initialization-composition-followed-by-fxrstor64).

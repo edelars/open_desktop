@@ -894,3 +894,17 @@ privilege outcomes, FNINIT #NM gating, and write→FNINIT composition. This is
 synthetic local interpreter coverage, not observation of Ubuntu instruction
 bytes or execution. No Ubuntu/Linux runtime, native, hardware, SMP, MMU or
 physical result is claimed. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-25a--bounded-long64-cr0-emts-fp-initialization) and [plan](../plans/STAGE_2.md#s2-25a--bounded-long64-cr0emts-fp-initialization).
+
+## S2-39i — local FP-init plus FXRSTOR64 composition
+
+The local `s2-long-cr0-cr4-fp-init-fxrstor64-v1` profile appends exact
+`48 0F AE 4B 40` to the 28-byte S2-25c program. It confirms local staged
+FXRSTOR behavior, not Linux runtime execution or a Linux kernel dependency.
+The restore image is a separately authored fixture input and remains unchanged;
+all 16 starting CR0/CR4 pairs and callback failure/no-commit behavior are local
+interpreter checks. This result does not establish feature advertisement, boot
+reachability, hardware-image equivalence, physical x86 execution, or combined
+fault priority. See the [plan](../plans/STAGE_2.md#s2-39i-exact-fp-initialization-composition-followed-by-fxrstor64),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-39i--exact-fp-init-plus-fxrstor64-composition),
+[implementation report](STAGE_2_REPORT.md#s2-39i--exact-fp-init-plus-fxrstor64-composition),
+and [fixture](../../tests/fixtures/x86/stage2/README.md#s2-39i-fp-init-plus-fxrstor64-composition).

@@ -5773,6 +5773,29 @@ fragment and physical execution are not claimed. See the [CPU contract](../../..
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-39h--exact-fp-init-plus-fxsave64-composition),
 and [fixture format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-39h-fp-init-plus-fxsave64-profile).
 
+### S2-39i FP-init plus FXRSTOR64 composition
+
+`s2_39i_cr0_cr4_fxrstor64.case.json` is a handwritten schema-v2 fixture for
+`s2-long-cr0-cr4-fp-init-fxrstor64-v1`. It appends exact `48 0F AE 4B 40`
+to S2-25c for 33 bytes and nine retirements. RBX=`0x620` addresses a private,
+aligned readable 512-byte literal image at `0x660`; the image is independently
+authored and does not come from the preceding FP-init sequence. Its varied
+raw x87 payloads, nonzero TOP, MXCSR, and XMM values replace the state left by
+FNINIT/XORPD, including XMM0. Nonzero ignored MXCSR_MASK and reserved/padding/
+software bytes exercise defined-image handling.
+
+Runner tests cover all 16 initial CR0/CR4 pairs, restored full pointers, TOP and
+abridged-tag reconstruction, selectors, all XMM registers, target MXCSR
+validation, ignored fields, unchanged image, and strict result/schema tampering.
+Core executor tests inject failure at each of 13 read callbacks and verify the
+final instruction does not retire or commit CPU state while the preceding eight
+instructions remain retired. STOP, budget exhaustion and truncated fetch do
+not read the image. Hardware and physical execution are not claimed. See the
+[plan](../../../../docs/plans/STAGE_2.md#s2-39i-exact-fp-initialization-composition-followed-by-fxrstor64),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-39i--exact-fp-init-plus-fxrstor64-composition),
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-39i--exact-fp-init-plus-fxrstor64-composition),
+and [fixture format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-39i-fp-init-plus-fxrstor64-profile).
+
 ### S2-40b native XORPD XMM0 XMM1
 
 `s2_40b_xorpd_xmm0_xmm1_asymmetric_a.case.json` and

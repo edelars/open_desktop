@@ -2053,6 +2053,181 @@ fn s2_39h_cr0_cr4_fxsave64_composition_is_strict_and_saves_literal_defined_field
 }
 
 #[test]
+fn s2_39i_cr0_cr4_fxrstor64_composition_is_strict_and_restores_literal_image() {
+    use od_testkit::v2::Profile;
+    let base = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_39i_cr0_cr4_fxrstor64.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(base.profile, Profile::LongCr0Cr4FpInitFxrstor64V1);
+    let literal = od_testkit::v2::decode_bytes(
+        include_str!("../../../tests/fixtures/x86/stage2/s2_39i_fxrstor64_literal_image.hex")
+            .trim()
+            .replace('\n', "")
+            .as_str(),
+    )
+    .unwrap();
+    assert_eq!(literal.len(), 512);
+    for cr0_pair in 0..4 {
+        for cr4_pair in 0..4 {
+            let mut input = base.clone();
+            input.case_id = format!("s2_39i_cr0_{cr0_pair}_cr4_{cr4_pair}");
+            input.initial_state.cr0 = Some(HexU64(
+                od_isa::execute::Cr0Profile::BASE
+                    | (((cr0_pair & 1) as u64) << 2)
+                    | (((cr0_pair >> 1) as u64) << 3),
+            ));
+            input.initial_state.cr4 = Some(HexU64(
+                od_isa::execute::Cr4Profile::BASE
+                    | (((cr4_pair & 1) as u64) << 9)
+                    | (((cr4_pair >> 1) as u64) << 10),
+            ));
+            let bytes = input.to_json().unwrap();
+            let (loaded, result) = run(&bytes, "interpreter", 0);
+            assert_eq!(count(&result), 9);
+            result.validate_for(&loaded).unwrap();
+            let state = &snapshot(&result).state;
+            assert_eq!(state.cr0, Some(HexU64(od_isa::execute::Cr0Profile::BASE)));
+            assert_eq!(
+                state.cr4,
+                Some(HexU64(od_isa::execute::Cr4Profile::BASE | 0x600))
+            );
+            assert_eq!(state.sse.as_ref().unwrap().mxcsr, HexU64(0x1f85));
+            assert_eq!(state.x87.as_ref().unwrap().status_word, HexU64(0x2845));
+            assert_eq!(
+                state.x87.as_ref().unwrap().instruction_pointer,
+                HexU64(0x8877_6655_4433_2211)
+            );
+            assert_eq!(
+                state.x87.as_ref().unwrap().data_pointer,
+                HexU64(0x1234_5678_9abc_def0)
+            );
+            assert_eq!(
+                state.sse.as_ref().unwrap().xmm[0],
+                od_testkit::memory::encode_bytes(&literal[160..176])
+            );
+            assert_eq!(
+                snapshot(&result)
+                    .memory
+                    .iter()
+                    .find(|region| region.region_id == "image")
+                    .unwrap()
+                    .bytes_hex,
+                base.memory[1].initial_bytes_hex
+            );
+            od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+        }
+    }
+    let base_bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_39i_cr0_cr4_fxrstor64.case.json");
+    let (loaded, baseline) = run(base_bytes, "interpreter", 0);
+    let mut forged_result = baseline.clone();
+    if let Observation::Available { value: state } = &mut forged_result.snapshot {
+        state.state.sse.as_mut().unwrap().xmm[0] = "ff".repeat(16);
+    }
+    assert!(forged_result.validate_for(&loaded).is_err());
+    let mut forged_image = baseline.clone();
+    if let Observation::Available { value: state } = &mut forged_image.snapshot {
+        let image = state
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "image")
+            .unwrap();
+        image.bytes_hex.replace_range(0..2, "ff");
+    }
+    assert!(forged_image.validate_for(&loaded).is_err());
+
+    let mut altered_ignored: serde_json::Value = serde_json::from_slice(base_bytes).unwrap();
+    let mut ignored_bytes = od_testkit::v2::decode_bytes(
+        altered_ignored["memory"][1]["initial_bytes_hex"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    for (offset, value) in [
+        (5usize, 0x55),
+        (28, 0x7f),
+        (42, 0xe1),
+        (416, 0x33),
+        (480, 0x99),
+    ] {
+        ignored_bytes[offset] = value;
+    }
+    ignored_bytes[24..28].copy_from_slice(&0x1f80u32.to_le_bytes());
+    altered_ignored["memory"][1]["initial_bytes_hex"] =
+        serde_json::json!(od_testkit::memory::encode_bytes(&ignored_bytes));
+    let (ignored_loaded, ignored_result) = run(
+        &serde_json::to_vec(&altered_ignored).unwrap(),
+        "interpreter",
+        0,
+    );
+    ignored_result.validate_for(&ignored_loaded).unwrap();
+    assert_eq!(
+        snapshot(&ignored_result).state.x87,
+        snapshot(&baseline).state.x87
+    );
+    let mut expected_sse = snapshot(&baseline).state.sse.clone().unwrap();
+    expected_sse.mxcsr = HexU64(0x1f80);
+    assert_eq!(snapshot(&ignored_result).state.sse, Some(expected_sse));
+    assert_eq!(
+        snapshot(&ignored_result)
+            .memory
+            .iter()
+            .find(|region| region.region_id == "image")
+            .unwrap()
+            .bytes_hex,
+        od_testkit::memory::encode_bytes(&ignored_bytes)
+    );
+
+    let (jit_loaded, jit_result) = run(base_bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+    assert_eq!(
+        jit_loaded.fixture.profile,
+        Profile::LongCr0Cr4FpInitFxrstor64V1
+    );
+
+    let mut invalid = serde_json::from_slice::<serde_json::Value>(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_39i_cr0_cr4_fxrstor64.case.json"
+    ))
+    .unwrap();
+    let image = invalid["memory"][1]["initial_bytes_hex"].as_str().unwrap();
+    let mut image_bytes = od_testkit::v2::decode_bytes(image).unwrap();
+    image_bytes[24..28].copy_from_slice(&0x1fc0u32.to_le_bytes());
+    invalid["memory"][1]["initial_bytes_hex"] =
+        serde_json::json!(od_testkit::memory::encode_bytes(&image_bytes));
+    assert!(Fixture::from_json(&serde_json::to_vec(&invalid).unwrap()).is_err());
+    for (field, replacement) in [
+        ("instruction_budget", serde_json::json!(8)),
+        (
+            "initial_state.gpr.rbx",
+            serde_json::json!("0x0000000000000630"),
+        ),
+        (
+            "memory.code.bytes",
+            serde_json::json!("0f20c04883e0f30f22c0dbe30f20e0480d000600000f22e0660f57c1480fae4b41"),
+        ),
+    ] {
+        let mut tampered: serde_json::Value = serde_json::from_slice(base_bytes).unwrap();
+        match field {
+            "instruction_budget" => tampered[field] = replacement,
+            "initial_state.gpr.rbx" => tampered["initial_state"]["gpr"][3] = replacement,
+            "memory.code.bytes" => tampered["memory"][0]["initial_bytes_hex"] = replacement,
+            _ => unreachable!(),
+        }
+        assert!(Fixture::from_json(&serde_json::to_vec(&tampered).unwrap()).is_err());
+    }
+    let mut forbidden_controls: serde_json::Value = serde_json::from_slice(base_bytes).unwrap();
+    forbidden_controls["fxrstor64_cr0_controls"] =
+        serde_json::json!({ "cr0_em": false, "cr0_ts": false });
+    assert!(Fixture::from_json(&serde_json::to_vec(&forbidden_controls).unwrap()).is_err());
+}
+
+#[test]
 fn operand_size_prefixed_near_ret_keeps_qword_stack_semantics() {
     for (bytes, expected_code, expected_rip) in [
         (RET66, "66c3", 0x0010_0002),
