@@ -346,9 +346,10 @@ fn execute_fixture_v2(
     memory: &mut od_testkit::memory::FlatMemory,
 ) -> od_testkit::v2::RunResult {
     use od_isa::execute::{
-        MinssInvalidControls, RunConfig, RunExit, XorpdPrerequisiteState, run,
-        run_with_minss_invalid_controls, run_with_minss_unmasked_denormal_controls,
-        run_with_rep_continuation, run_with_sep_profile, run_with_xorpd_prerequisites,
+        Fxsave64Cr0Controls, MinssInvalidControls, RunConfig, RunExit, XorpdPrerequisiteState, run,
+        run_with_fxsave64_cr0_controls, run_with_minss_invalid_controls,
+        run_with_minss_unmasked_denormal_controls, run_with_rep_continuation, run_with_sep_profile,
+        run_with_xorpd_prerequisites,
     };
     use od_testkit::v2;
     use std::time::{Duration, Instant};
@@ -441,6 +442,21 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongFxsave64Cr0GatesV1 {
+        let controls = loaded
+            .fixture
+            .fxsave64_cr0_controls
+            .expect("validated FXSAVE64 profile has explicit CR0 controls");
+        run_with_fxsave64_cr0_controls(
+            &mut state,
+            memory,
+            config,
+            Fxsave64Cr0Controls {
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongMinssInvalidControlsV1 {
         let controls = loaded
             .fixture
@@ -529,6 +545,7 @@ fn execute_fixture_v2(
                 memory: memory.snapshot(),
                 xorpd_prerequisites: loaded.fixture.xorpd_prerequisites,
                 minss_invalid_controls: loaded.fixture.minss_invalid_controls,
+                fxsave64_cr0_controls: loaded.fixture.fxsave64_cr0_controls,
                 exception: Observation::Available { value: exception },
             },
         },
@@ -1528,6 +1545,7 @@ mod tests {
                         .snapshot(),
                     xorpd_prerequisites: input.fixture.xorpd_prerequisites,
                     minss_invalid_controls: input.fixture.minss_invalid_controls,
+                    fxsave64_cr0_controls: input.fixture.fxsave64_cr0_controls,
                     exception: Observation::Available { value: None },
                 },
             },

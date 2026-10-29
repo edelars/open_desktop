@@ -4580,6 +4580,82 @@ fn local_fxsave64_rax_fixture_runs_only_in_the_interpreter() {
 }
 
 #[test]
+fn local_fxsave64_cr0_em_fixture_reports_nm_without_commit_and_is_backend_denied() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_39f_fxsave64_cr0_em_nm.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongFxsave64Cr0GatesV1
+    );
+    assert_eq!(result.outcome, Outcome::Exception {});
+    assert!(matches!(
+        result.instructions_executed,
+        Observation::Available { value: HexU64(0) }
+    ));
+    assert_eq!(input.fixture.fxsave64_cr0_controls.unwrap().cr0_em, true);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state, input.fixture.initial_state);
+    assert_eq!(
+        observed.fxsave64_cr0_controls,
+        input.fixture.fxsave64_cr0_controls
+    );
+    assert_eq!(
+        observed.memory[1].bytes_hex,
+        input.fixture.memory[1].initial_bytes_hex
+    );
+    assert!(matches!(
+        &observed.exception,
+        Observation::Available {
+            value: Some(exception)
+        } if exception.vector == 7
+            && matches!(exception.error_code, Observation::Unavailable { .. })
+            && exception.faulting_rip == input.fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. })
+    ));
+
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(bytes, backend, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(
+            denied.instructions_executed,
+            Observation::Unavailable { .. }
+        ));
+    }
+}
+
+#[test]
+fn local_fxsave64_cr0_clear_fixture_matches_literal_image_and_is_backend_denied() {
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_39f_fxsave64_cr0_clear_success.case.json"
+    );
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongFxsave64Cr0GatesV1
+    );
+    assert_eq!(count(&result), 1);
+    assert_eq!(snapshot(&result).state.rip, input.fixture.stop_rip.unwrap());
+    assert_eq!(
+        od_testkit::v2::decode_bytes(&snapshot(&result).memory[1].bytes_hex).unwrap(),
+        od_testkit::v2::decode_bytes(
+            include_str!("../../../tests/fixtures/x86/stage2/s2_39f_fxsave64_expected_image.hex")
+                .trim()
+        )
+        .unwrap()
+    );
+
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(bytes, backend, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(
+            denied.instructions_executed,
+            Observation::Unavailable { .. }
+        ));
+    }
+}
+
+#[test]
 fn local_fxrstor64_rbx_fixture_runs_only_in_the_interpreter() {
     let bytes = include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_39e_fxrstor64_rbx_disp8_literal.case.json"

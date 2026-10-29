@@ -91,6 +91,14 @@ pub struct MinssInvalidControls {
     pub cr4_osxmmexcpt: bool,
 }
 
+/// Explicit CR0.EM/TS inputs for the exact local FXSAVE64 form.
+/// FXSR and CR4.OSFXSR remain fixed prerequisites of this bounded profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Fxsave64Cr0Controls {
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RunResult {
     pub exit: RunExit,
@@ -653,6 +661,31 @@ pub fn run_with_xorpd_prerequisites(
         None,
         Some(prerequisites),
         None,
+        None,
+        false,
+        &mut stop_requested,
+    )
+}
+
+/// Execute the exact `48 0F AE 40 40` profile with explicit CR0.EM/TS gates.
+pub fn run_with_fxsave64_cr0_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: Fxsave64Cr0Controls,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_execution_loop_with_profiles(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(controls),
         false,
         &mut stop_requested,
     )
@@ -676,6 +709,7 @@ pub fn run_with_minss_invalid_controls(
         None,
         None,
         Some(controls),
+        None,
         false,
         &mut stop_requested,
     )
@@ -699,6 +733,7 @@ pub fn run_with_minss_unmasked_denormal_controls(
         None,
         None,
         Some(controls),
+        None,
         true,
         &mut stop_requested,
     )
@@ -742,6 +777,7 @@ pub fn run_with_msr_profile(
         None,
         None,
         None,
+        None,
         false,
         &mut stop_requested,
     )
@@ -764,6 +800,7 @@ pub fn run_with_sep_profile(
         None,
         None,
         Some(profile),
+        None,
         None,
         None,
         false,
@@ -880,6 +917,7 @@ fn run_execution_loop(
         None,
         None,
         None,
+        None,
         false,
         stop_requested,
     )
@@ -903,6 +941,7 @@ fn run_execution_loop_with_cpuid_profile(
         None,
         None,
         None,
+        None,
         false,
         stop_requested,
     )
@@ -918,6 +957,7 @@ fn run_execution_loop_with_profiles(
     sep_profile: Option<&SepProfile>,
     xorpd_prerequisites: Option<XorpdPrerequisiteState>,
     minss_invalid_controls: Option<MinssInvalidControls>,
+    fxsave64_cr0_controls: Option<Fxsave64Cr0Controls>,
     unmasked_minss_denormal: bool,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> RunResult {
@@ -942,6 +982,7 @@ fn run_execution_loop_with_profiles(
                 sep_profile,
                 xorpd_prerequisites,
                 minss_invalid_controls,
+                fxsave64_cr0_controls,
                 unmasked_minss_denormal,
                 stop_requested,
             ) {
@@ -1015,6 +1056,7 @@ pub fn step_with_msr_profile(
         None,
         None,
         None,
+        None,
         false,
         &mut || false,
     )
@@ -1037,6 +1079,7 @@ pub fn step_with_sep_profile(
         None,
         None,
         Some(profile),
+        None,
         None,
         None,
         false,
@@ -1070,6 +1113,7 @@ fn step_tracked_with_stop(
         None,
         None,
         None,
+        None,
         false,
         stop_requested,
     )
@@ -1093,6 +1137,7 @@ fn step_tracked_with_cpuid_profile(
         None,
         None,
         None,
+        None,
         false,
         stop_requested,
     )
@@ -1108,6 +1153,7 @@ fn step_tracked_with_profiles(
     sep_profile: Option<&SepProfile>,
     xorpd_prerequisites: Option<XorpdPrerequisiteState>,
     minss_invalid_controls: Option<MinssInvalidControls>,
+    fxsave64_cr0_controls: Option<Fxsave64Cr0Controls>,
     unmasked_minss_denormal: bool,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> Result<StepOutcome, MemoryError> {
@@ -1130,6 +1176,37 @@ fn step_tracked_with_profiles(
         }
         Err(DecodeError::Memory(error)) => return Err(error),
     };
+    if let Some(controls) = fxsave64_cr0_controls {
+        let exact_fxsave64 = instruction.operation
+            == Operation::Fxsave64RaxDisp8(long_decode::MemoryOperand {
+                base: long_decode::AddressBase::Register(Register::Rax),
+                index: None,
+                scale: 1,
+                displacement: 0x40,
+                address_size: OperandSize::Qword,
+                size: OperandSize::Qword,
+            })
+            && instruction.length == 5
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0xae
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x48),
+                    ..Prefixes::default()
+                });
+        if !exact_fxsave64 {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        if controls.cr0_em || controls.cr0_ts {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 7,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+    }
     if let Some(controls) = xorpd_prerequisites {
         let exact_xorpd = instruction.operation
             == (Operation::XorpdRegister {
@@ -90732,7 +90809,7 @@ mod tests {
 #[cfg(test)]
 mod fxsave_rip_tests {
     use super::*;
-    use crate::memory::AccessKind;
+    use crate::memory::{AccessKind, PrivilegeLevel};
     use crate::state::{SseState, X87State};
 
     struct SepMemory {
@@ -91110,6 +91187,123 @@ mod fxsave_rip_tests {
                 assert_eq!(memory.reads, 0);
             }
         }
+    }
+
+    #[test]
+    fn fxsave64_cr0_em_ts_gates_fault_without_retirement_or_data_callbacks_at_every_cpl() {
+        for privilege in [
+            PrivilegeLevel::Ring0,
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            for (cr0_em, cr0_ts) in [(false, false), (false, true), (true, false), (true, true)] {
+                let mut state = fixture_state(5, 0, 0);
+                state.rip = RIP;
+                state.gpr[Register::Rax as usize] = AREA - 0x40;
+                state.x87.as_mut().unwrap().status_word |= 0x0081;
+                state.sse.as_mut().unwrap().mxcsr |= 0x0000_0005;
+                let before = state.clone();
+                let mut memory = TraceMemory::fxsave64(None);
+                let result = run_with_fxsave64_cr0_controls(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(RIP + 5),
+                        context: AccessContext {
+                            privilege,
+                            ..AccessContext::default()
+                        },
+                    },
+                    Fxsave64Cr0Controls { cr0_em, cr0_ts },
+                    || false,
+                );
+                if cr0_em || cr0_ts {
+                    assert_eq!(
+                        result.exit,
+                        RunExit::Fault(ArchitecturalFault {
+                            vector: 7,
+                            error_code: None,
+                            linear_address: None,
+                        })
+                    );
+                    assert_eq!(result.instructions_executed, 0);
+                    assert_eq!(state, before);
+                    assert!(memory.writes.is_empty());
+                    assert_eq!(memory.reads, 0);
+                    assert_eq!(memory.area, vec![0xa5; 512]);
+                } else {
+                    assert_eq!(result.exit, RunExit::StopAddress);
+                    assert_eq!(result.instructions_executed, 1);
+                    assert_eq!(memory.writes.len(), 13);
+                    assert_eq!(memory.area, expected_fxsave64_image(&before));
+                    assert_eq!(state.rip, RIP + 5);
+                    assert_eq!(state.x87, before.x87);
+                    assert_eq!(state.sse, before.sse);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fxsave64_cr0_gate_keeps_stop_budget_and_complete_fetch_precedence() {
+        let controls = Fxsave64Cr0Controls {
+            cr0_em: true,
+            cr0_ts: false,
+        };
+        let config = |instruction_budget, stop_rip| RunConfig {
+            instruction_budget,
+            stop_rip,
+            context: AccessContext::default(),
+        };
+        for (run_config, expected) in [
+            (config(1, Some(RIP)), RunExit::StopAddress),
+            (config(0, None), RunExit::InstructionBudgetExhausted),
+        ] {
+            let mut state = fixture_state(0, 0, 0);
+            let mut memory = SepMemory::new(&[0x48, 0x0f, 0xae, 0x40, 0x40], RIP);
+            let result = run_with_fxsave64_cr0_controls(
+                &mut state,
+                &mut memory,
+                run_config,
+                controls,
+                || false,
+            );
+            assert_eq!(result.exit, expected);
+            assert!(memory.fetches.is_empty());
+            assert_eq!(memory.data_accesses, 0);
+        }
+
+        let mut state = fixture_state(0, 0, 0);
+        let before = state.clone();
+        let mut memory = SepMemory::new(&[0x48, 0x0f, 0xae, 0x40, 0x40], RIP);
+        memory.fetch_error = Some((
+            RIP + 4,
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(1),
+                linear_address: Some(RIP + 4),
+            }),
+        ));
+        let result = run_with_fxsave64_cr0_controls(
+            &mut state,
+            &mut memory,
+            config(1, Some(RIP + 5)),
+            controls,
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(1),
+                linear_address: Some(RIP + 4),
+            })
+        );
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [RIP, RIP + 1, RIP + 2, RIP + 3, RIP + 4]);
+        assert_eq!(memory.data_accesses, 0);
     }
 
     #[test]

@@ -872,6 +872,24 @@ allowed; JIT/native are denied. See the [fixture note](../../tests/fixtures/x86/
 [CPU contract](../specs/CPU_CONTRACT.md#s2-39e--exact-long64-fxrstor64-rbx0x40),
 and [plan](../plans/STAGE_2.md#s2-39e-exact-long64-fxrstor64-rbx0x40).
 
+## S2-39f FXSAVE64 CR0 gate profile
+
+The local-only `s2-long-fxsave64-cr0-gates-v1` profile accepts exactly
+`48 0F AE 40 40`, one instruction, budget 1, and stop RIP immediately after
+the five-byte instruction. It requires x87/SSE snapshots and the strict
+`fxsave64_cr0_controls` object with exactly the immutable boolean fields
+`cr0_em` and `cr0_ts`. Both false uses the S2-39d save serializer; either true
+expects vector 7 `#NM`, no error code and zero retirement. The fixture has an
+aligned canonical48 writable private 512-byte destination. The fault case
+compares the full CPU and RAM snapshots; the success case is checked against
+the independent literal image in the fixture directory, including pending
+x87 exception and MXCSR sticky flags. FXSR=1 and CR4.OSFXSR=1 are fixed
+prerequisites. Combined target data-fault/gate priority, absent FXSR/OSFXSR,
+other image layouts, `#MF/#XM` delivery, hardware equivalence and JIT/native/C
+adapter execution remain outside scope. See the [fixture note](../../tests/fixtures/x86/stage2/README.md#s2-39f-long64-fxsave64-cr0-em-and-ts-gates),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-39f--bounded-fxsave64-cr0-em-and-ts-nm-gates),
+and [plan](../plans/STAGE_2.md#s2-39f-bounded-fxsave64-cr0-em-and-ts-nm-gates).
+
 ## S2-40b native SSE-only XORPD profile
 
 The `s2-long-native-xorpd-xmm0-xmm1-v1` schema-v2 profile requires a complete

@@ -16085,6 +16085,45 @@ See the [CPU contract](../specs/CPU_CONTRACT.md#s2-39e--exact-long64-fxrstor64-r
 [Linux mapping](STAGE_2_LINUX_PROFILE.md#s2-39e--exact-fxrstor64-evidence-only-mapping-plus-local-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39e-long64-fxrstor64-rbx0x40).
 
+## S2-39f — bounded FXSAVE64 CR0 EM and TS `#NM` gates
+
+Added the strict local profile `s2-long-fxsave64-cr0-gates-v1` for exactly
+`48 0F AE 40 40`. Its immutable controls are only `cr0_em` and `cr0_ts`;
+FXSR=1 and CR4.OSFXSR=1 remain fixed preconditions. Complete fetch/decode and
+incoming STOP/zero-budget ordering are preserved. Either CR0 bit set reports
+fault vector 7, no error code, zero retirement and no CPU/RAM commit or
+data-memory callback at CPL0–3. With both clear, execution reuses the S2-39d
+serializer. No SSE `#UD` helper is reused.
+
+The independent hand-authored success image verifies all 512 bytes, including
+preserved holes, pending x87 invalid/exception-summary state and MXCSR sticky
+flags. The fault fixture compares complete CPU state and unchanged RAM. Strict
+control shape, result echo/compare and S2-39d backward compatibility are
+covered. Data-address/page fault versus gate priority, CR4.OSFXSR=0, FXSR=0,
+alternate layouts, CPUID/CR writes, general CR support, FXRSTOR expansion,
+JIT/native/C adapter and physical behavior are not established. Intel SDM
+Rev. 093 Vol. 2A FXSAVE 64-Bit Mode Exceptions pp. 3-418–3-419 lists `#NM`
+for CR0.TS and CR0.EM; Vol. 3A Event 7 pp. 7-33–7-34 states this is a fault,
+has no error code and does not execute the instruction:
+[Vol. 2A](https://cdrdv2.intel.com/v1/dl/getContent/671199),
+[Vol. 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190).
+
+**Focused checks:** `cargo test -p od-isa fxsave64_cr0 --offline` passed
+(2/2); `cargo test -p od-testkit s2_39f --offline` passed (2/2); and
+`cargo test -p od-runner --test fixture_v2 local_fxsave64_cr0 --offline`
+passed (2/2). The control-snapshot compare/backward-compatibility regression
+`cargo test -p od-testkit fxsave64_cr0_snapshot_is_strict_echo_and_comparison_input --offline`
+passed (1/1). `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, and `git diff --check`
+passed. Graphify was refreshed after the code changes. These checks ran on the
+current local host; it reported its existing `host_abi.h` parser warning and
+skipped unsupported manifest/header files. They do not include hardware execution.
+Physical/Mac mini checks remain deferred to the combined final hardware batch.
+Parent S2-39 and the Generic amd64 target remain open. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-39f--bounded-fxsave64-cr0-em-and-ts-nm-gates),
+[plan](../plans/STAGE_2.md#s2-39f-bounded-fxsave64-cr0-em-and-ts-nm-gates),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39f-long64-fxsave64-cr0-em-and-ts-gates),
+and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-39f-fxsave64-cr0-gate-profile).
+
 ## S2-40a — Ubuntu Generic amd64 requirement/evidence matrix
 
 This documentation-only slice records the user's choice of Generic `amd64`

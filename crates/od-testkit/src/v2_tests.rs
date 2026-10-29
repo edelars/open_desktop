@@ -36,6 +36,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                     .collect(),
                 xorpd_prerequisites: input.fixture.xorpd_prerequisites,
                 minss_invalid_controls: input.fixture.minss_invalid_controls,
+                fxsave64_cr0_controls: input.fixture.fxsave64_cr0_controls,
                 exception: Observation::Available { value: None },
             },
         },
@@ -706,6 +707,45 @@ fn xorpd_prerequisite_snapshot_roundtrips_and_control_mismatch_does_not_compare_
     let old_roundtrip = RunResult::from_json(&old_bytes).unwrap();
     assert!(
         matches!(old_roundtrip.snapshot, Observation::Available { value } if value.xorpd_prerequisites.is_none())
+    );
+}
+
+#[test]
+fn fxsave64_cr0_snapshot_is_strict_echo_and_comparison_input() {
+    let input = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_39f_fxsave64_cr0_clear_success.case.json"
+    ))
+    .unwrap();
+    let left = result(&input);
+    let encoded = left.to_json().unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(
+        json["snapshot"]["value"]["fxsave64_cr0_controls"],
+        serde_json::json!({"cr0_em": false, "cr0_ts": false})
+    );
+    assert!(RunResult::from_json(&encoded).is_ok());
+
+    let mut changed = left.clone();
+    snapshot(&mut changed).fxsave64_cr0_controls = Some(Fxsave64Cr0Snapshot {
+        cr0_em: true,
+        cr0_ts: false,
+    });
+    let differences = compare(&input, &left, &changed).unwrap();
+    assert!(differences.contains(&"fxsave64_cr0_controls".into()));
+    assert!(differences.contains(&"right.fxsave64_cr0_controls".into()));
+
+    let legacy = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_39d_fxsave64_rax_disp8_literal.case.json"
+    ))
+    .unwrap();
+    assert_eq!(legacy.fixture.fxsave64_cr0_controls, None);
+    let legacy_result = result(&legacy);
+    let legacy_json: serde_json::Value =
+        serde_json::from_slice(&legacy_result.to_json().unwrap()).unwrap();
+    assert!(
+        legacy_json["snapshot"]["value"]
+            .get("fxsave64_cr0_controls")
+            .is_none()
     );
 }
 

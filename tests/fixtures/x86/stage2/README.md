@@ -5683,6 +5683,32 @@ representable state. JIT/native and physical execution are not claimed. See
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-39e--exact-long64-fxrstor64-rbx0x40),
 and [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-39e--exact-long64-fxrstor64-rbx0x40).
 
+### S2-39f Long64 FXSAVE64 CR0 EM and TS gates
+
+`s2_39f_fxsave64_cr0_em_nm.case.json` and
+`s2_39f_fxsave64_cr0_clear_success.case.json` are hand-authored schema-v2
+fixtures for `s2-long-fxsave64-cr0-gates-v1`, both using exact bytes
+`48 0F AE 40 40` and a valid aligned canonical writable 512-byte private RAM
+mapping. The EM fixture expects CPU-side vector 7 with no error code, zero
+retirement and unchanged complete CPU/RAM snapshots. The success fixture seeds
+an unmasked pending x87 invalid exception (`FSW.ES/IE`, `FCW.IE=0`) and MXCSR
+sticky flags; its output is compared byte-for-byte to the independent literal
+512-byte image `s2_39f_fxsave64_expected_image.hex`, including preserved holes.
+Tests cover all four EM/TS combinations at CPL0–3, exact fault state and zero
+data callbacks, full instruction fetch before gates, STOP/zero-budget precedence,
+strict control schema/result comparison and continued S2-39d behavior. Intel
+SDM Rev. 093 Vol. 2A FXSAVE 64-Bit Mode Exceptions pp. 3-418–3-419 lists #NM
+for either CR0 bit; Vol. 3A Event 7 pp. 7-33–7-34 specifies no error code and
+no program-state change for this fault. Sources: [Vol. 2A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199),
+[Vol. 3A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190). These fixtures
+do not test simultaneous target data mapping faults with CR0 gates, FXSR=0,
+OSFXSR=0, hardware equivalence, guest exception delivery, JIT/native/C adapter,
+or physical execution. Parent S2-39 and Generic amd64 acceptance remain open.
+See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-39f--bounded-fxsave64-cr0-em-and-ts-nm-gates),
+[plan](../../../../docs/plans/STAGE_2.md#s2-39f-bounded-fxsave64-cr0-em-and-ts-nm-gates),
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-39f--bounded-fxsave64-cr0-em-and-ts-nm-gates),
+and [fixture format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-39f-fxsave64-cr0-gate-profile).
+
 ### S2-40b native XORPD XMM0 XMM1
 
 `s2_40b_xorpd_xmm0_xmm1_asymmetric_a.case.json` and

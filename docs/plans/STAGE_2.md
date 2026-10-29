@@ -6487,6 +6487,40 @@ Mac mini/SSH остаются в едином финальном hardware substa
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39e-long64-fxrstor64-rbx0x40),
 и [fixture format](../testing/TEST_CASE_FORMAT.md#s2-39e-fxrstor64-profile).
 
+#### S2-39f. Bounded FXSAVE64 CR0 EM and TS `#NM` gates
+
+**Статус:** локальный interpreter slice и focused checks реализованы для
+отдельного strict profile `s2-long-fxsave64-cr0-gates-v1`, который принимает
+только `48 0F AE 40 40`. Профиль требует явные immutable `cr0_em` и `cr0_ts`;
+`FXSR=1` и `CR4.OSFXSR=1` остаются фиксированными prerequisites. После полного
+fetch/decode инструкция выдаёт fault vector 7 без error code, retirement,
+изменения CPU/RAM или data callbacks при `EM=1` либо `TS=1`, включая обе
+установленные бита и CPL0–3. При обоих сброшенных битах вызывается прежний
+S2-39d serializer. Pending x87 exception flags и MXCSR sticky flags сохраняются
+как данные образа; FXSAVE не доставляет `#MF`/`#XM`.
+
+Fixture допускает только точную кодировку и валидный aligned canonical
+512-byte writable private RAM image. Fetch завершён до gate; incoming STOP и
+нулевой budget проверяются до fetch. Не устанавливаются приоритет gate над
+ошибками data address/page mapping, `FXSR=0`, `OSFXSR=0`, правила альтернативной
+layout, аппаратная эквивалентность, общий CR framework, CPUID/CR writes,
+FXRSTOR, JIT/native/C adapter или дополнительные формы. S2-39c/d/e и S2-38b/c
+остаются отдельными профилями без изменений. Родительские S2-39 и выбранный
+Generic amd64 target остаются открытыми; Mac mini проверки входят только в
+единый финальный hardware batch.
+
+Проверки включают 4 комбинации CR0.EM/TS × CPL0–3, точные #NM snapshots,
+fetch/STOP/budget precedence, независимый literal 512-byte success image,
+pending x87/MXCSR flags, строгую fixture/control схему и запреты JIT/native.
+Нормативное основание: Intel SDM Rev. 093 Vol. 2A, FXSAVE 64-Bit Mode
+Exceptions, pp. 3-418–3-419; Vol. 3A Event 7 `#NM`, pp. 7-33–7-34. Источники:
+[Vol. 2A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199),
+[Vol. 3A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190). См. также
+[CPU contract](../specs/CPU_CONTRACT.md#s2-39f--bounded-fxsave64-cr0-em-and-ts-nm-gates),
+[report](../reports/STAGE_2_REPORT.md#s2-39f--bounded-fxsave64-cr0-em-and-ts-nm-gates),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39f-long64-fxsave64-cr0-em-and-ts-gates)
+и [fixture format](../testing/TEST_CASE_FORMAT.md#s2-39f-fxsave64-cr0-gate-profile).
+
 ### S2-40. Дополнительные обязательные расширения
 
 1. Сопоставить принятый Linux/Windows candidate profile с оставшимися ISA requirements: не считать SSE2 автоматически достаточным для любого современного ПО.

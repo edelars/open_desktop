@@ -4,8 +4,8 @@ use crate::case::MemoryPermissions;
 use crate::memory::{FlatMemory, encode_bytes};
 use crate::v2::{ExpectedExit, Fixture, decode_bytes};
 use od_isa::execute::{
-    REP_ITERATION_WORK_LIMIT, RunConfig, RunExit, StepOutcome, run, run_with_rep_continuation,
-    run_with_rflags_defined, step,
+    Fxsave64Cr0Controls, REP_ITERATION_WORK_LIMIT, RunConfig, RunExit, StepOutcome, run,
+    run_with_fxsave64_cr0_controls, run_with_rep_continuation, run_with_rflags_defined, step,
 };
 use od_isa::memory::{AccessContext, AccessKind, ArchitecturalFault, GuestMemory, MemoryError};
 use od_isa::{LongModeState, OperandSize, Register, RegisterView};
@@ -11774,6 +11774,120 @@ fn s2_39d_literal_fxsave64_fixture_writes_full_pointer_image_without_selectors()
     for range in [5..6, 32 + 10..32 + 16, 416..512] {
         assert_eq!(&bytes[range.clone()], &vec![0xa5; range.len()]);
     }
+}
+
+#[test]
+fn s2_39f_literal_fxsave64_cr0_gate_fixture_is_strict_and_preserves_the_image() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_39f_fxsave64_cr0_em_nm.case.json");
+    let loaded = crate::v2::Fixture::from_json(bytes).unwrap();
+    assert_eq!(
+        loaded.fixture.profile,
+        crate::v2::Profile::LongFxsave64Cr0GatesV1
+    );
+    assert_eq!(
+        loaded.fixture.fxsave64_cr0_controls,
+        Some(crate::v2::Fxsave64Cr0Snapshot {
+            cr0_em: true,
+            cr0_ts: false,
+        })
+    );
+    assert_eq!(
+        loaded.fixture.expected_exit,
+        crate::v2::ExpectedExit::Exception
+    );
+    let mut state = loaded
+        .fixture
+        .initial_state
+        .to_cpu_for(loaded.fixture.profile)
+        .unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+    let controls = loaded.fixture.fxsave64_cr0_controls.unwrap();
+    let result = run_with_fxsave64_cr0_controls(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: loaded.fixture.instruction_budget,
+            stop_rip: loaded.fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        Fxsave64Cr0Controls {
+            cr0_em: controls.cr0_em,
+            cr0_ts: controls.cr0_ts,
+        },
+        || false,
+    );
+    assert_eq!(
+        result.exit,
+        RunExit::Fault(ArchitecturalFault {
+            vector: 7,
+            error_code: None,
+            linear_address: None,
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    let memory = memory.snapshot();
+    assert_eq!(
+        memory[1].bytes_hex,
+        loaded.fixture.memory[1].initial_bytes_hex
+    );
+
+    let mut extra = serde_json::from_slice::<serde_json::Value>(bytes).unwrap();
+    extra["fxsave64_cr0_controls"]["cr4_osfxsr"] = serde_json::json!(false);
+    assert!(crate::v2::Fixture::from_json(&serde_json::to_vec(&extra).unwrap()).is_err());
+
+    let mut missing = serde_json::from_slice::<serde_json::Value>(bytes).unwrap();
+    missing
+        .as_object_mut()
+        .unwrap()
+        .remove("fxsave64_cr0_controls");
+    assert!(crate::v2::Fixture::from_json(&serde_json::to_vec(&missing).unwrap()).is_err());
+
+    let mut wrong_encoding = serde_json::from_slice::<serde_json::Value>(bytes).unwrap();
+    wrong_encoding["memory"][0]["initial_bytes_hex"] = serde_json::json!("480fae4b40");
+    assert!(crate::v2::Fixture::from_json(&serde_json::to_vec(&wrong_encoding).unwrap()).is_err());
+}
+
+#[test]
+fn s2_39f_clear_cr0_fixture_matches_an_independent_literal_fxsave64_image() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_39f_fxsave64_cr0_clear_success.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let controls = fixture.fxsave64_cr0_controls.unwrap();
+    let result = run_with_fxsave64_cr0_controls(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: fixture.instruction_budget,
+            stop_rip: fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        Fxsave64Cr0Controls {
+            cr0_em: controls.cr0_em,
+            cr0_ts: controls.cr0_ts,
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, fixture.stop_rip.unwrap().get());
+    let data = memory
+        .snapshot()
+        .into_iter()
+        .find(|region| region.region_id == "data")
+        .unwrap();
+    let expected = decode_bytes(
+        include_str!("../../../tests/fixtures/x86/stage2/s2_39f_fxsave64_expected_image.hex")
+            .trim(),
+    )
+    .unwrap();
+    assert_eq!(decode_bytes(&data.bytes_hex).unwrap(), expected);
 }
 
 #[test]

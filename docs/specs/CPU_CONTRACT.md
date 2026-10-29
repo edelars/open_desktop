@@ -389,6 +389,37 @@ See the [S2-39e plan](../plans/STAGE_2.md#s2-39e-exact-long64-fxrstor64-rbx0x40)
 [implementation report](../reports/STAGE_2_REPORT.md#s2-39e--exact-long64-fxrstor64-rbx0x40),
 and [fixture](../../tests/fixtures/x86/stage2/README.md#s2-39e-long64-fxrstor64-rbx0x40).
 
+### S2-39f — Bounded FXSAVE64 CR0 EM and TS `#NM` gates
+
+The local-only `s2-long-fxsave64-cr0-gates-v1` profile accepts exactly
+`48 0F AE 40 40` (`FXSAVE64 [RAX+0x40]`) and explicit immutable `cr0_em` and
+`cr0_ts` booleans. `FXSR=1` and `CR4.OSFXSR=1` remain fixed prerequisites;
+their absent cases are outside this profile. After complete instruction fetch
+and decode, `CR0.EM=1` or `CR0.TS=1` produces CPU fault vector 7 (`#NM`), no
+error code, zero retirement, no CPU/RAM mutation, and no data-memory callback,
+for CPL0–3. If both bits are clear, the existing S2-39d serializer executes.
+Pending x87 exception state and MXCSR sticky flags remain saved state; FXSAVE
+does not deliver `#MF` or `#XM`.
+
+The fixture is restricted to an aligned canonical48 writable private 512-byte
+data mapping. Incoming stop and zero budget precede fetch; the complete
+encoding is fetched before the CR0 gate. Combined data-address/page-fault gate
+priority is not claimed. The profile does not establish `FXSR=0`,
+`CR4.OSFXSR=0`, another FXSAVE layout, hardware-image equivalence, CPUID or CR
+writes, general CR state, FXRSTOR, JIT/native/C-adapter support or other forms.
+The handwritten success fixture compares against an independent literal
+512-byte image; the fault matrix covers all CR0 bit pairs at CPL0–3 and checks
+full snapshot/no-commit behavior. Intel SDM Rev. 093, Vol. 2A FXSAVE 64-Bit
+Mode Exceptions, pp. 3-418–3-419, lists `#NM` for either CR0 bit. Vol. 3A,
+Event 7, pp. 7-33–7-34, identifies `#NM` as a fault with no error code and no
+program-state change because the instruction is not executed:
+[Vol. 2A](https://cdrdv2.intel.com/v1/dl/getContent/671199),
+[Vol. 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190). Parent S2-39 and
+the Generic amd64 target remain open; hardware checks stay in the combined
+final Mac mini batch. See the [S2-39f plan](../plans/STAGE_2.md#s2-39f-bounded-fxsave64-cr0-em-and-ts-nm-gates),
+[report](../reports/STAGE_2_REPORT.md#s2-39f--bounded-fxsave64-cr0-em-and-ts-nm-gates),
+and [fixture](../../tests/fixtures/x86/stage2/README.md#s2-39f-long64-fxsave64-cr0-em-and-ts-gates).
+
 ## Предлагаемый профиль тестового прототипа S0-09
 
 Прототип — изолированный пользовательский fragment runner с единым vCPU, только immutable code buffer и register-only вычислениями. Это набор для сравнения decoder → interpreter/JIT, а не профиль x86-64 машины.

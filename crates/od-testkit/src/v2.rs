@@ -152,6 +152,8 @@ pub enum Profile {
     LongFxsaveRipV1,
     #[serde(rename = "s2-long-fxsave64-rax-disp8-v1")]
     LongFxsave64RaxV1,
+    #[serde(rename = "s2-long-fxsave64-cr0-gates-v1")]
+    LongFxsave64Cr0GatesV1,
     #[serde(rename = "s2-long-fxrstor64-rbx-disp8-v1")]
     LongFxrstor64RbxV1,
     #[serde(rename = "s2-long-movups-reg-v1")]
@@ -842,6 +844,7 @@ impl IntegerState {
                     | Profile::LongX87SelectorsStateV1
                     | Profile::LongFxsaveRipV1
                     | Profile::LongFxsave64RaxV1
+                    | Profile::LongFxsave64Cr0GatesV1
                     | Profile::LongFxrstor64RbxV1
                     | Profile::LongMovupsRegV1
                     | Profile::LongMovapsRegV1
@@ -959,6 +962,7 @@ impl IntegerState {
                     | Profile::LongX87SelectorsStateV1
                     | Profile::LongFxsaveRipV1
                     | Profile::LongFxsave64RaxV1
+                    | Profile::LongFxsave64Cr0GatesV1
                     | Profile::LongFxrstor64RbxV1
                     | Profile::LongMovupsRegV1
                     | Profile::LongMovapsRegV1
@@ -1078,6 +1082,7 @@ impl IntegerState {
         if profile != Profile::LongX87SelectorsStateV1
             && profile != Profile::LongFxsaveRipV1
             && profile != Profile::LongFxsave64RaxV1
+            && profile != Profile::LongFxsave64Cr0GatesV1
             && profile != Profile::LongFxrstor64RbxV1
             && state.x87.as_ref().is_some_and(|x87| {
                 x87.instruction_selector.is_some() || x87.data_selector.is_some()
@@ -1097,6 +1102,7 @@ impl IntegerState {
                 | Profile::LongX87SelectorsStateV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
+                | Profile::LongFxsave64Cr0GatesV1
                 | Profile::LongFxrstor64RbxV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
@@ -1215,6 +1221,7 @@ impl IntegerState {
                 | Profile::LongX87SelectorsStateV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
+                | Profile::LongFxsave64Cr0GatesV1
                 | Profile::LongFxrstor64RbxV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
@@ -1400,6 +1407,7 @@ impl IntegerState {
             | Profile::LongX87SelectorsStateV1
             | Profile::LongFxsaveRipV1
             | Profile::LongFxsave64RaxV1
+            | Profile::LongFxsave64Cr0GatesV1
             | Profile::LongFxrstor64RbxV1
             | Profile::LongMovupsRegV1
             | Profile::LongMovapsRegV1
@@ -1520,6 +1528,7 @@ impl IntegerState {
                 | Profile::LongX87SelectorsStateV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
+                | Profile::LongFxsave64Cr0GatesV1
                 | Profile::LongFxrstor64RbxV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
@@ -1647,6 +1656,7 @@ impl IntegerState {
                 | Profile::LongX87SelectorsStateV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
+                | Profile::LongFxsave64Cr0GatesV1
                 | Profile::LongFxrstor64RbxV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
@@ -1777,6 +1787,7 @@ impl IntegerState {
                 | Profile::LongX87SelectorsStateV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
+                | Profile::LongFxsave64Cr0GatesV1
                 | Profile::LongFxrstor64RbxV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
@@ -1910,6 +1921,7 @@ impl IntegerState {
                 | Profile::LongX87SelectorsStateV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
+                | Profile::LongFxsave64Cr0GatesV1
                 | Profile::LongFxrstor64RbxV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
@@ -2193,6 +2205,7 @@ impl IntegerState {
                 | Profile::LongX87SelectorsStateV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
+                | Profile::LongFxsave64Cr0GatesV1
                 | Profile::LongFxrstor64RbxV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
@@ -2310,6 +2323,7 @@ impl IntegerState {
                 | Profile::LongX87SelectorsStateV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
+                | Profile::LongFxsave64Cr0GatesV1
                 | Profile::LongFxrstor64RbxV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
@@ -2436,6 +2450,7 @@ impl IntegerState {
                     ));
                 }
             } else if profile != Profile::LongFxsave64RaxV1
+                && profile != Profile::LongFxsave64Cr0GatesV1
                 && profile != Profile::LongFxrstor64RbxV1
                 && (x87.instruction_selector.is_some() || x87.data_selector.is_some())
             {
@@ -2451,6 +2466,7 @@ impl IntegerState {
                 | Profile::LongX87SelectorsStateV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
+                | Profile::LongFxsave64Cr0GatesV1
                 | Profile::LongFxrstor64RbxV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
@@ -2566,6 +2582,7 @@ impl IntegerState {
                 | Profile::LongX87SelectorsStateV1
                 | Profile::LongFxsaveRipV1
                 | Profile::LongFxsave64RaxV1
+                | Profile::LongFxsave64Cr0GatesV1
                 | Profile::LongFxrstor64RbxV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
@@ -2739,6 +2756,9 @@ pub struct Fixture {
     /// Explicit controls required only by the exact S2-38c MINSS profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minss_invalid_controls: Option<MinssInvalidControlSnapshot>,
+    /// Explicit CR0 inputs required only by the exact S2-39f FXSAVE64 profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fxsave64_cr0_controls: Option<Fxsave64Cr0Snapshot>,
     /// Code and data share the same guest address space. No implicit host buffer.
     pub memory: Vec<MemoryRegionSpec>,
     /// Optional external harness boundary, checked before fetch, not an x86 opcode.
@@ -2766,6 +2786,13 @@ pub struct MinssInvalidControlSnapshot {
     pub cr0_ts: bool,
     pub cr4_osfxsr: bool,
     pub cr4_osxmmexcpt: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Fxsave64Cr0Snapshot {
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2951,6 +2978,22 @@ impl Fixture {
                 "xorpd_prerequisites",
                 "only valid for the XORPD prerequisite profile",
             ));
+        }
+        match (self.profile, self.fxsave64_cr0_controls) {
+            (Profile::LongFxsave64Cr0GatesV1, Some(_)) => {}
+            (Profile::LongFxsave64Cr0GatesV1, None) => {
+                return Err(invalid(
+                    "fxsave64_cr0_controls",
+                    "required by the FXSAVE64 CR0 gate profile",
+                ));
+            }
+            (_, Some(_)) => {
+                return Err(invalid(
+                    "fxsave64_cr0_controls",
+                    "only valid for the FXSAVE64 CR0 gate profile",
+                ));
+            }
+            (_, None) => {}
         }
         if matches!(
             self.profile,
@@ -3763,7 +3806,10 @@ impl Fixture {
                 ));
             }
         }
-        if self.profile == Profile::LongFxsave64RaxV1 {
+        if matches!(
+            self.profile,
+            Profile::LongFxsave64RaxV1 | Profile::LongFxsave64Cr0GatesV1
+        ) {
             let code = self.memory.iter().find(|region| region.region_id == "code");
             let data = self.memory.iter().find(|region| region.region_id == "data");
             let (Some(code), Some(data)) = (code, data) else {
@@ -3796,7 +3842,9 @@ impl Fixture {
                 || area_end.is_none_or(|end| !is_canonical(end))
                 || self.stop_rip.map(HexU64::get) != Some(next_rip)
                 || self.instruction_budget != 1
-                || self.expected_exit != ExpectedExit::StopAddress
+                || !(self.expected_exit == ExpectedExit::StopAddress
+                    || (self.profile == Profile::LongFxsave64Cr0GatesV1
+                        && self.expected_exit == ExpectedExit::Exception))
             {
                 return Err(invalid(
                     "memory",
@@ -5063,6 +5111,7 @@ impl Fixture {
             initial_state: IntegerState::try_from(&state)?,
             xorpd_prerequisites: None,
             minss_invalid_controls: None,
+            fxsave64_cr0_controls: None,
             memory: vec![MemoryRegionSpec {
                 region_id: "code".into(),
                 guest_address: HexU64(0),
@@ -5130,6 +5179,9 @@ pub struct Snapshot {
     /// Immutable MINSS gate inputs, echoed into results only for S2-38c.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minss_invalid_controls: Option<MinssInvalidControlSnapshot>,
+    /// Immutable FXSAVE64 CR0 gate inputs, echoed only for S2-39f.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fxsave64_cr0_controls: Option<Fxsave64Cr0Snapshot>,
     /// Available(None) means observed no exception; unavailable is not an empty result.
     pub exception: Observation<Option<ExceptionSnapshot>>,
 }
@@ -5219,6 +5271,22 @@ impl RunResult {
                 return Err(invalid(
                     "snapshot.xorpd_prerequisites",
                     "only valid for the XORPD prerequisite profile",
+                ));
+            }
+            (_, None) => {}
+        }
+        match (self.profile, snapshot.fxsave64_cr0_controls) {
+            (Profile::LongFxsave64Cr0GatesV1, Some(_)) => {}
+            (Profile::LongFxsave64Cr0GatesV1, None) => {
+                return Err(invalid(
+                    "snapshot.fxsave64_cr0_controls",
+                    "required by the FXSAVE64 CR0 gate profile",
+                ));
+            }
+            (_, Some(_)) => {
+                return Err(invalid(
+                    "snapshot.fxsave64_cr0_controls",
+                    "only valid for the FXSAVE64 CR0 gate profile",
                 ));
             }
             (_, None) => {}
@@ -5571,6 +5639,15 @@ pub fn compare(
     }
     if b.xorpd_prerequisites != loaded.fixture.xorpd_prerequisites {
         differences.push("right.xorpd_prerequisites".into());
+    }
+    if a.fxsave64_cr0_controls != b.fxsave64_cr0_controls {
+        differences.push("fxsave64_cr0_controls".into());
+    }
+    if a.fxsave64_cr0_controls != loaded.fixture.fxsave64_cr0_controls {
+        differences.push("left.fxsave64_cr0_controls".into());
+    }
+    if b.fxsave64_cr0_controls != loaded.fixture.fxsave64_cr0_controls {
+        differences.push("right.fxsave64_cr0_controls".into());
     }
     if a.minss_invalid_controls != b.minss_invalid_controls {
         differences.push("minss_invalid_controls".into());
