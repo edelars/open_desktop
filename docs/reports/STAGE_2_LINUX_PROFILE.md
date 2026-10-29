@@ -163,6 +163,18 @@ boundary behaviors, но не является реализацией. S2-00 п�
 A, x86-64-v1 ABI/ISA floor и выбора synthetic target; реализация/проверка target,
 profile C/D и observed boot остаются открытыми.
 
+## S2-26d — граница SEP и локального SYSENTER/SYSEXIT решения
+
+The selected Generic amd64 CPUID target has SEP clear, as shown by the
+CPUID.1 EDX value in the [CPU contract](../specs/CPU_CONTRACT.md).
+The S2-26d `SepDisabledV1` interpreter policy maps exact bare Long64 `0F 34`
+and `0F 35` to CPU-side #UD after complete instruction fetch. This is local
+policy evidence only: it does not exercise Linux exception delivery or safe
+MSR fixup, demonstrate an observed kernel branch, or establish boot behavior.
+Intel SDM revision 093, Vol. 2B, documents the SEP presence flag and the
+SYSENTER/SYSEXIT opcodes ([official Intel Vol. 2B PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf)).
+See the [Stage 2 report](STAGE_2_REPORT.md#s2-26d--local-sepdisabledv1-sysentersysexit-policy).
+
 ## S2-40a — матрица требований Ubuntu Generic amd64
 
 **Решение владельца:** для Ubuntu 26.04.1 используется кандидат Generic

@@ -2074,13 +2074,39 @@ CPUID `DiagnosticV1` feature masks остаются нулевыми.
 изоляцию от `SysenterProbeV1`; отсутствие изменений FS/GS selector и hidden
 cache state; отсутствие regression в zero-feature `DiagnosticV1`; prefix and
 truncated-fetch behavior для точных кодировок. Не включать Linux boot/fixup,
-guest `#GP` delivery или JIT/native/physical claims. Evidence и independent
-review пока pending; Mac mini checks остаются в общем финальном substage.
+guest `#GP` delivery или JIT/native/physical claims. Local evidence внесено в
+отчёт; independent Sol medium review завершено после исправления P3 замечания.
+Mac mini checks остаются в общем финальном substage.
 
 Нормативный контракт, включая прямую ссылку на Intel SDM Vol. 3A, находится в
 [CPU contract](../specs/CPU_CONTRACT.md#локальный-профиль-gsbasev1-s2-26c).
 После реализации внести только фактические результаты в
 [отчёт этапа](../reports/STAGE_2_REPORT.md#s2-26c--локальный-gsbasev1-msr).
+
+#### S2-26d — local `SepDisabledV1` SYSENTER/SYSEXIT policy
+
+**Статус:** local implementation and listed software checks are complete;
+independent review completed cleanly, physical checks were not run and remain
+deferred, and parent S2-26 remains open.
+
+Implement one immutable opt-in `SepProfile::SepDisabledV1` for exact bare Long64
+`0F 34` SYSENTER and `0F 35` SYSEXIT. The selected synthetic target has
+`SEP=0`; these two fully fetched forms produce CPU-side `#UD` at CPL0–3 with no
+error code, retirement, state change, or data-memory access. Legacy entry
+points remain fail closed, and JIT/native/C adapter/physical execution remain
+denied. This does not change `DiagnosticV1` CPUID masks, advertise SEP, or
+implement entry/return semantics, MSRs, exception delivery, or Linux fixups.
+Prefixes and neighboring encodings remain `Unsupported` unless an existing
+specific contract decides them after complete fetch.
+
+Handwritten schema-v2 fixtures cover the two bare opcodes; unit and runner
+coverage checks CPL0–3, fetch truncation/errors, budget/stop priority, snapshot
+and memory preservation, and backend denial. Intel SDM revision 093, Vol. 2B,
+documents the SEP presence flag and exact opcode forms in the
+[Intel SDM Rev. 093 Vol. 2B PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf).
+Local results are in the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-26d--local-sepdisabledv1-sysentersysexit-policy).
+S2-26d does not close parent S2-26.
 
 ### S2-27. Descriptors, события и системные переходы
 

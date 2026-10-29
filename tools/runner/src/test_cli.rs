@@ -345,7 +345,9 @@ fn execute_fixture_v2(
     loaded: &od_testkit::v2::LoadedFixture,
     memory: &mut od_testkit::memory::FlatMemory,
 ) -> od_testkit::v2::RunResult {
-    use od_isa::execute::{RunConfig, RunExit, run, run_with_rep_continuation};
+    use od_isa::execute::{
+        RunConfig, RunExit, run, run_with_rep_continuation, run_with_sep_profile,
+    };
     use od_testkit::v2;
     use std::time::{Duration, Instant};
 
@@ -412,6 +414,14 @@ fn execute_fixture_v2(
             timeout,
         )
         .expect("fixture supplies a valid fresh REP continuation boundary")
+    } else if loaded.fixture.profile == v2::Profile::LongSepDisabledV1 {
+        run_with_sep_profile(
+            &mut state,
+            memory,
+            config,
+            &od_isa::sep::SepProfile::SepDisabledV1,
+            timeout,
+        )
     } else {
         run(&mut state, memory, config, timeout)
     };

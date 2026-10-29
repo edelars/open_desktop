@@ -11260,6 +11260,57 @@ fn complete_ud2_cli_fixture_reports_ud_without_state_commit() {
 }
 
 #[test]
+fn s2_26d_sep_disabled_fixtures_report_cpu_ud_and_deny_jit() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    for case_id in [
+        "s2_26d_sysenter_sep_disabled",
+        "s2_26d_sysexit_sep_disabled",
+    ] {
+        let raw = fs::read(directory.join(format!("{case_id}.case.json"))).unwrap();
+        let (input, result) = run(&raw, "interpreter", 0);
+        assert_eq!(input.fixture.case_id, case_id);
+        assert!(matches!(result.outcome, Outcome::Exception {}), "{case_id}");
+        assert_eq!(count(&result), 0, "{case_id}");
+        let observed = snapshot(&result);
+        assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
+        assert_eq!(observed.state.rip, input.fixture.initial_state.rip);
+        assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+        assert_eq!(
+            observed.rflags_defined,
+            HexU64(od_isa::INTEGER_FLAGS),
+            "{case_id}"
+        );
+        assert_eq!(
+            observed.memory[0].bytes_hex,
+            input.fixture.memory[0].initial_bytes_hex
+        );
+        let Observation::Available {
+            value: Some(exception),
+        } = &observed.exception
+        else {
+            panic!("{case_id} must report #UD");
+        };
+        assert_eq!(exception.vector, 6, "{case_id}");
+        assert!(matches!(
+            exception.error_code,
+            Observation::Unavailable { .. }
+        ));
+        assert_eq!(exception.faulting_rip, input.fixture.initial_state.rip);
+
+        for engine in ["jit", "native"] {
+            let output = cli(&raw, engine);
+            assert_eq!(output.status.code(), Some(4), "{case_id} {engine}");
+            let result: RunResult = serde_json::from_slice(&output.stdout).unwrap();
+            assert!(
+                matches!(result.outcome, Outcome::Unsupported { .. }),
+                "{case_id} {engine}"
+            );
+        }
+    }
+}
+
+#[test]
 fn split_region_ud2_cli_fixture_reports_ud_without_state_or_ram_commit() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");

@@ -1,5 +1,8 @@
 # Собственные входные данные
 
+The local SEP-disabled SYSENTER/SYSEXIT fixtures are indexed in the
+[Stage 2 fixture notes](x86/stage2/README.md#s2-26d-sep-disabled-sysentersysexit).
+
 `x86/` — короткие тестовые последовательности и их исходное описание. `control/` — детерминированные сценарии проверки существующего control protocol; его wire format нормативно задан в `protocols/control/`. `guest/` — небольшие собственные данные для гостевых сценариев. Для каждого набора фиксировать источник, способ генерации, ожидаемый контракт и seed при необходимости. Установочные ISO, большие диски и пользовательские материалы сюда не помещать.
 
 The bounded S2-35.7 PSUBW example is documented in the

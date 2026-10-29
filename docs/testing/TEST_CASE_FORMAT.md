@@ -6,11 +6,23 @@
 `s2-long-fs-base-v1`, `s2-long-gs-base-v1`, `s2-long-fs-selector-v1` and
 `s2-long-gs-selector-v1`, `s2-long-verw-gdt-v1`, and local-only
 `s2-long-fs-load-v1`, `s2-long-x87-state-v1`, `s2-long-x87-sse-state-v1`, and
-`s2-long-x87-selectors-state-v1`, `s2-long-fxsave-rip-v1`, and
+`s2-long-x87-selectors-state-v1`, local-only `s2-long-sep-disabled-v1`,
+`s2-long-fxsave-rip-v1`, and
 `s2-long-fxsave64-rax-disp8-v1`.
 V1 readers, bytes and historical digests remain unchanged. Segment profiles are
 profile-specific state extensions;
 it does not reinterpret or rewrite existing integer-profile fixtures.
+
+The local-only `s2-long-sep-disabled-v1` fixtures describe one exact bare
+Long64 instruction: the handwritten cases each use one code mapping at the
+initial RIP containing exactly `0F 34` or `0F 35`, with
+`instruction_budget: 1`, `stop_rip: RIP + 2`, and `expected_exit: exception`
+for vector 6 with no error code. The S2-26d execution contract is CPU-side #UD
+at the initial RIP after complete fetch, with no retirement, architectural
+state/definedness or memory change, and no data-memory access. Its unit and
+runner tests assert those outcomes. These fixture examples do not add general
+schema restrictions on other mappings or comparator guarantees for other
+profiles.
 
 Fixture fields: `schema_version`, `case_id`, `profile`, `provenance`, optional
 HexU64 `seed`, `converted_from_v1_sha256`, `initial_state`, `memory`, optional

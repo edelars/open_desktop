@@ -1,5 +1,23 @@
 # Собственные schema v2 fixtures этапа 2
 
+## S2-26d SEP-disabled SYSENTER/SYSEXIT
+
+`s2_26d_sysenter_sep_disabled.case.json` and
+`s2_26d_sysexit_sep_disabled.case.json` are handwritten literal schema-v2
+fixtures for exact bare Long64 `0F 34` and `0F 35` under the explicit
+`s2-long-sep-disabled-v1` profile. They expect a CPU-side #UD with no error
+code, zero retirement, and unchanged GPR/RIP/RFLAGS/code memory. The profile
+represents the selected synthetic target with SEP clear; it does not model
+exception delivery, Linux fixup, or hardware observation. The runner checks
+both fixtures on the interpreter and denies JIT. Local unit coverage checks
+CPL0–3, fetch truncation and fetch-fault preservation, prefix/neighbour
+fail-closed behavior, and stop/zero-budget priority. Intel SDM revision 093,
+Vol. 2B, documents SYSENTER/SYSEXIT opcode forms and the SEP presence flag
+([official Intel PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf)).
+See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#локальная-политика-sepdisabledv1-s2-26d),
+[plan](../../../../docs/plans/STAGE_2.md#s2-26d--local-sepdisabledv1-sysentersysexit-policy),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-26d--local-sepdisabledv1-sysentersysexit-policy).
+
 ### S2-37a local legacy RSQRTSS register profile
 
 `s2_37a_rsqrtss_register.case.json` is a schema-v2 XMM8/XMM9 fixture for the

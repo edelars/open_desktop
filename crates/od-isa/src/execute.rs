@@ -10,6 +10,7 @@ use crate::long_decode::{
 };
 use crate::memory::{AccessContext, ArchitecturalFault, GuestMemory, MemoryError, PrivilegeLevel};
 use crate::msr::MsrProfile;
+use crate::sep::SepProfile;
 use crate::state::X87Tag;
 use crate::x87::{
     RationalRoundingMode, X87Binary80, X87Binary80Class, add_finite_same_exponent,
@@ -637,6 +638,28 @@ pub fn run_with_msr_profile(
         crate::INTEGER_FLAGS,
         None,
         Some(profile),
+        None,
+        &mut stop_requested,
+    )
+}
+
+/// Execute with an explicitly selected local SEP policy. The legacy `run`
+/// entry point remains closed to SYSENTER/SYSEXIT policy decisions.
+pub fn run_with_sep_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    profile: &SepProfile,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_execution_loop_with_profiles(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        None,
+        None,
+        Some(profile),
         &mut stop_requested,
     )
 }
@@ -747,6 +770,7 @@ fn run_execution_loop(
         rflags_defined,
         None,
         None,
+        None,
         stop_requested,
     )
 }
@@ -766,6 +790,7 @@ fn run_execution_loop_with_cpuid_profile(
         rflags_defined,
         cpuid_profile,
         None,
+        None,
         stop_requested,
     )
 }
@@ -777,6 +802,7 @@ fn run_execution_loop_with_profiles(
     mut rflags_defined: u64,
     cpuid_profile: Option<&CpuidProfile>,
     msr_profile: Option<&MsrProfile>,
+    sep_profile: Option<&SepProfile>,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> RunResult {
     let mut retired = 0;
@@ -797,6 +823,7 @@ fn run_execution_loop_with_profiles(
                 &mut rflags_defined,
                 cpuid_profile,
                 msr_profile,
+                sep_profile,
                 stop_requested,
             ) {
                 Ok(StepOutcome::Advanced | StepOutcome::Branched) => {
@@ -866,6 +893,28 @@ pub fn step_with_msr_profile(
         &mut rflags_defined,
         None,
         Some(profile),
+        None,
+        &mut || false,
+    )
+}
+
+/// Execute one instruction with an explicitly selected local SEP policy.
+/// Legacy [`step`] remains closed to SYSENTER/SYSEXIT policy decisions.
+pub fn step_with_sep_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    profile: &SepProfile,
+) -> Result<StepOutcome, MemoryError> {
+    let mut rflags_defined = crate::INTEGER_FLAGS;
+    step_tracked_with_profiles(
+        state,
+        memory,
+        context,
+        &mut rflags_defined,
+        None,
+        None,
+        Some(profile),
         &mut || false,
     )
 }
@@ -893,6 +942,7 @@ fn step_tracked_with_stop(
         rflags_defined,
         None,
         None,
+        None,
         stop_requested,
     )
 }
@@ -912,6 +962,7 @@ fn step_tracked_with_cpuid_profile(
         rflags_defined,
         cpuid_profile,
         None,
+        None,
         stop_requested,
     )
 }
@@ -923,6 +974,7 @@ fn step_tracked_with_profiles(
     rflags_defined: &mut u64,
     cpuid_profile: Option<&CpuidProfile>,
     msr_profile: Option<&MsrProfile>,
+    sep_profile: Option<&SepProfile>,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> Result<StepOutcome, MemoryError> {
     let instruction = match long_decode::decode(memory, state.rip, context) {
@@ -972,6 +1024,22 @@ fn step_tracked_with_profiles(
         state.gpr[Register::Rdx as usize] = u64::from(result.edx);
         state.rip = next_rip;
         return Ok(StepOutcome::Advanced);
+    }
+    if matches!(
+        instruction.operation,
+        Operation::Sysenter | Operation::Sysexit
+    ) {
+        return if sep_profile == Some(&SepProfile::SepDisabledV1) {
+            Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            }))
+        } else {
+            Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            })
+        };
     }
     if matches!(
         instruction.operation,
@@ -1586,6 +1654,7 @@ fn step_tracked_with_profiles(
     let executable = match instruction.operation {
         Operation::Cpuid => false,
         Operation::ReadMsr | Operation::WriteMsr => false,
+        Operation::Sysenter | Operation::Sysexit => false,
         Operation::MovImmediate { .. }
         | Operation::Mov { .. }
         | Operation::MovFsLoad { .. }
@@ -3200,6 +3269,9 @@ fn step_tracked_with_profiles(
         }
         Operation::ReadMsr | Operation::WriteMsr => {
             unreachable!("MSR probe policy resolves before state commit")
+        }
+        Operation::Sysenter | Operation::Sysexit => {
+            unreachable!("SEP policy resolves before state commit")
         }
         Operation::ClearDirectionFlag => {
             state.rflags &= !crate::DF;
@@ -9213,6 +9285,9 @@ fn transfer(
     match operation {
         Operation::ReadMsr | Operation::WriteMsr => {
             unreachable!("MSR probe policy resolves before transfer dispatch")
+        }
+        Operation::Sysenter | Operation::Sysexit => {
+            unreachable!("SEP policy resolves before transfer dispatch")
         }
         Operation::FxsaveRipRelative(_) => {
             unreachable!("FXSAVE commits before generic transfer dispatch")
@@ -89585,6 +89660,111 @@ mod fxsave_rip_tests {
     use crate::memory::AccessKind;
     use crate::state::{SseState, X87State};
 
+    struct SepMemory {
+        code: Vec<u8>,
+        base: u64,
+        fetches: Vec<u64>,
+        data_accesses: usize,
+        fetch_error: Option<(u64, MemoryError)>,
+    }
+
+    impl SepMemory {
+        fn new(code: &[u8], base: u64) -> Self {
+            Self {
+                code: code.to_vec(),
+                base,
+                fetches: Vec::new(),
+                data_accesses: 0,
+                fetch_error: None,
+            }
+        }
+    }
+
+    impl GuestMemory for SepMemory {
+        fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+            self.fetches.push(address);
+            if let Some((at, error)) = &self.fetch_error {
+                if *at == address {
+                    return Err(error.clone());
+                }
+            }
+            self.code
+                .get(
+                    address
+                        .checked_sub(self.base)
+                        .and_then(|n| usize::try_from(n).ok())
+                        .unwrap_or(usize::MAX),
+                )
+                .copied()
+                .ok_or(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Fetch,
+                })
+        }
+        fn read(
+            &mut self,
+            address: u64,
+            _: AccessContext,
+            _: &mut [u8],
+        ) -> Result<(), MemoryError> {
+            self.data_accesses += 1;
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Read,
+            })
+        }
+        fn write(&mut self, address: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
+            self.data_accesses += 1;
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Write,
+            })
+        }
+        fn atomic_exchange_integer(
+            &mut self,
+            address: u64,
+            _: AccessContext,
+            _: OperandSize,
+            _: u64,
+        ) -> Result<u64, MemoryError> {
+            self.data_accesses += 1;
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Read,
+            })
+        }
+        fn atomic_fetch_add_integer(
+            &mut self,
+            address: u64,
+            _: AccessContext,
+            _: OperandSize,
+            _: u64,
+        ) -> Result<u64, MemoryError> {
+            self.data_accesses += 1;
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Read,
+            })
+        }
+        fn atomic_compare_exchange_integer(
+            &mut self,
+            address: u64,
+            _: AccessContext,
+            _: OperandSize,
+            _: u64,
+            _: u64,
+        ) -> Result<u64, MemoryError> {
+            self.data_accesses += 1;
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Read,
+            })
+        }
+        fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+            unreachable!("SYSENTER/SYSEXIT do not fence")
+        }
+    }
+
     const RIP: u64 = 0x1000;
     const AREA: u64 = 0x3000;
     const CODE: [u8; 7] = [0x0f, 0xae, 0x05, 0xf9, 0x1f, 0, 0];
@@ -90680,5 +90860,181 @@ mod fxsave_rip_tests {
         expected_x87.data_selector = None;
         assert_eq!(state.x87.as_ref(), Some(&expected_x87));
         assert_eq!(state.sse, original.sse);
+    }
+
+    #[test]
+    fn sep_disabled_exact_forms_raise_ud_after_fetch_at_every_cpl() {
+        let profile = SepProfile::SepDisabledV1;
+        for code in [&[0x0f, 0x34][..], &[0x0f, 0x35][..]] {
+            for privilege in [
+                PrivilegeLevel::Ring0,
+                PrivilegeLevel::Ring1,
+                PrivilegeLevel::Ring2,
+                PrivilegeLevel::Ring3,
+            ] {
+                let mut state = LongModeState::default();
+                state.rip = 0x1000;
+                state.gpr[Register::Rax as usize] = 0x1122_3344_5566_7788;
+                state.rflags = 0x8d7;
+                let before = state.clone();
+                let mut memory = SepMemory::new(code, 0x1000);
+                assert_eq!(
+                    step_with_sep_profile(
+                        &mut state,
+                        &mut memory,
+                        AccessContext {
+                            privilege,
+                            ..AccessContext::default()
+                        },
+                        &profile,
+                    ),
+                    Ok(StepOutcome::Fault(ArchitecturalFault {
+                        vector: 6,
+                        error_code: None,
+                        linear_address: None,
+                    }))
+                );
+                assert_eq!(state, before);
+                assert_eq!(memory.fetches, [0x1000, 0x1001]);
+                assert!(memory.data_accesses == 0);
+            }
+        }
+    }
+
+    #[test]
+    fn sep_disabled_legacy_prefix_neighbor_and_fetch_failures_fail_closed() {
+        let profile = SepProfile::SepDisabledV1;
+        for code in [
+            &[0x0f, 0x34][..],
+            &[0x0f, 0x35][..],
+            &[0x48, 0x0f, 0x34][..],
+            &[0xf3, 0x0f, 0x35][..],
+            &[0xf0, 0x0f, 0x34][..],
+            &[0xf0, 0x0f, 0x35][..],
+            &[0x0f, 0x33][..],
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            let before = state.clone();
+            let mut memory = SepMemory::new(code, 0x1000);
+            let result = if code.len() == 2 && code[1] != 0x33 {
+                step(&mut state, &mut memory, AccessContext::default())
+            } else {
+                step_with_sep_profile(&mut state, &mut memory, AccessContext::default(), &profile)
+            };
+            assert!(matches!(result, Ok(StepOutcome::Unsupported { .. })));
+            assert_eq!(state, before);
+            assert!(memory.data_accesses == 0);
+        }
+
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        let before = state.clone();
+        let mut memory = SepMemory::new(&[0x0f, 0x34], 0x1000);
+        let result = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x34 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [0x1000, 0x1001]);
+        assert_eq!(memory.data_accesses, 0);
+
+        for length in 0..2 {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            let before = state.clone();
+            let mut memory = SepMemory::new(&[0x0f, 0x34][..length], 0x1000);
+            let result = run_with_sep_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                &profile,
+                || false,
+            );
+            assert!(matches!(
+                result.exit,
+                RunExit::MemoryError(MemoryError::Unmapped {
+                    access: AccessKind::Fetch,
+                    ..
+                })
+            ));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.data_accesses == 0);
+        }
+
+        for offset in 0..2 {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            let before = state.clone();
+            let expected = ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x24),
+                linear_address: Some(0x1000 + offset),
+            };
+            let mut memory = SepMemory::new(&[0x0f, 0x34], 0x1000);
+            memory.fetch_error = Some((
+                0x1000 + offset,
+                MemoryError::Architectural(expected.clone()),
+            ));
+            let result = run_with_sep_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                &profile,
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::Fault(expected));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert_eq!(memory.fetches.len(), (offset + 1) as usize);
+            assert!(memory.data_accesses == 0);
+        }
+    }
+
+    #[test]
+    fn sep_disabled_run_checks_stop_and_budget_before_fetch() {
+        let profile = SepProfile::SepDisabledV1;
+        for (budget, stop_rip, expected) in [
+            (0, None, RunExit::InstructionBudgetExhausted),
+            (1, Some(0x1000), RunExit::StopAddress),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x1000;
+            let before = state.clone();
+            let mut memory = SepMemory::new(&[0x0f, 0x34], 0x1000);
+            let result = run_with_sep_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                &profile,
+                || false,
+            );
+            assert_eq!(result.exit, expected);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.fetches.is_empty());
+            assert!(memory.data_accesses == 0);
+        }
     }
 }

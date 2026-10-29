@@ -393,6 +393,10 @@ pub enum Operation {
     ReadMsr,
     /// Bare long-mode `0F 30` WRMSR. A caller-selected MSR profile is required.
     WriteMsr,
+    /// Bare long-mode SYSENTER; policy is selected by the caller.
+    Sysenter,
+    /// Bare long-mode SYSEXIT; policy is selected by the caller.
+    Sysexit,
     /// Bare long-mode CLD, clearing only RFLAGS.DF.
     ClearDirectionFlag,
     /// Bare long-mode STD, setting only RFLAGS.DF.
@@ -1776,6 +1780,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
             (OpcodeMap::Escape0f, 0xa2) => Some(Operation::Cpuid),
             (OpcodeMap::Escape0f, 0x32) => Some(Operation::ReadMsr),
             (OpcodeMap::Escape0f, 0x30) => Some(Operation::WriteMsr),
+            (OpcodeMap::Escape0f, 0x34) => Some(Operation::Sysenter),
+            (OpcodeMap::Escape0f, 0x35) => Some(Operation::Sysexit),
             _ => None,
         };
         if let Some(operation) = modeled_system_operation {
@@ -1795,6 +1801,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !prefixes.address_override
                 && prefixes.rex.is_none()
                 && self.length == 3
+                && !matches!(operation, Operation::Sysenter | Operation::Sysexit)
             {
                 return Err(DecodeError::Invalid {
                     opcode,

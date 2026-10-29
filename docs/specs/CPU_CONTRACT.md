@@ -99,10 +99,40 @@ IA32_GS_BASE: [официальный Intel SDM Vol. 3A](https://cdrdv2.intel.co
 
 Профиль не меняет нулевые feature masks CPUID `DiagnosticV1` и не заявляет
 Linux boot, Linux fixup или guest `#GP` delivery. JIT/native/physical admission
-не допускается. S2-26c evidence пока pending; Mac mini проверки отложены до
-общего финального substage. Матрица реализации и проверки указана в
+не допускается. Local evidence и независимое Sol medium review S2-26c
+завершены; Mac mini проверки отложены до общего финального substage. Матрица
+реализации и проверки указана в
 [плане](../plans/STAGE_2.md#s2-26c--локальный-gsbasev1-msr) и будет отражена в
 [отчёте этапа 2](../reports/STAGE_2_REPORT.md#s2-26c--локальный-gsbasev1-msr).
+
+### Локальная политика `SepDisabledV1` (S2-26d)
+
+`SepProfile::SepDisabledV1` — отдельная immutable CPU-side policy для выбранной
+синтетической цели с `SEP=0`. Только точные bare Long64 `0F 34` (`SYSENTER`) и
+`0F 35` (`SYSEXIT`) распознаются как эти операции; после полного fetch оба дают
+`#UD` (vector 6, no error code) при CPL0–3. Решение не зависит от CPL и не
+исполняет переход: оно не retire-ит инструкцию и не меняет RIP, регистры,
+RFLAGS/definedness, RAM или другую state. Вызовов data-memory API нет.
+
+Без явного профиля legacy `step`/`run` оставляют точные формы `Unsupported`.
+Префиксы, иные режимы и соседние формы не расширяются этим slice; неизвестные
+или не точные варианты остаются `Unsupported` после успешного fetch, если
+отдельный существующий decoder contract не определяет их иначе. Ошибка fetch
+сохраняет исходный класс и payload и имеет приоритет над `#UD`. Проверки stop и
+zero budget остаются до fetch. JIT, native runner и C adapter не допускаются;
+никаких SEP/CPUID bits не объявляется, `DiagnosticV1` identity/leaves и нулевые
+feature masks не меняются. Это не задаёт `#UD` delivery, Linux fixup или
+наблюдение на физическом процессоре.
+
+Нормативный источник — Intel SDM revision 093, Vol. 2B, записи SYSENTER и
+SYSEXIT: opcode forms `0F 34`/`0F 35`, availability indicated by the SEP
+feature flag. Для выбранной цели SEP явно равен нулю, поэтому узкая local
+policy принимает решение `#UD`; проект не заявляет всеобщую x86 семантику
+для произвольных профилей. Нормативный текст находится в
+[Intel SDM Rev. 093 Vol. 2B PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf).
+Implementation evidence и
+границы проверок: [план S2-26d](../plans/STAGE_2.md#s2-26d--local-sepdisabledv1-sysentersysexit-policy),
+[отчёт](../reports/STAGE_2_REPORT.md#s2-26d--local-sepdisabledv1-sysentersysexit-policy).
 
 ### Ubuntu Generic `amd64`: `od-x86-64-v1-neutral-v0.1`
 
@@ -119,7 +149,7 @@ Linux boot, Linux fixup или guest `#GP` delivery. JIT/native/physical admissi
 
 The CPUID.0 vendor bytes in architectural EBX/EDX/ECX order form `OpenDesktop ` (12 ASCII bytes). CPUID.1 EDX advertises FPU, PSE, TSC, MSR, PAE, CX8, APIC, PGE, CMOV, PAT, MMX, FXSR, SSE and SSE2; SEP is clear. CPUID.1 ECX is zero (including no XSAVE, OSXSAVE, AVX, or hypervisor-present bit). CPUID.80000001 EDX advertises SYSCALL, NX and long mode. CPUID.80000008 reports physical-address width 36 and linear-address width 48. Any unlisted EAX function returns four zero registers. This table is the selected project target, not a claim that these values came from an existing physical CPU.
 
-For CPUID, the input ECX is ignored for every listed function in this profile; unlisted EAX function numbers return four zero registers irrespective of ECX. XSAVE/XRSTOR and XGETBV/XSETBV are outside this target; CR4.OSXSAVE must remain clear. Legacy x87/MMX/XMM state and FXSAVE/FXRSTOR remain in scope as required by the selected Linux startup path. SEP=0; SYSENTER/SYSEXIT are unsupported and raise `#UD`. Linux 7.0's `idt_syscall_init` calls `wrmsrq_safe` for IA32_SYSENTER_CS/ESP/EIP (`0x174..0x176`) in both `ia32_enabled()` branches, without guarding those writes on SEP; the calls are listed in authenticated Ubuntu `arch/x86/kernel/cpu/common.c:2265–2285` ([upstream v7.0 source](https://github.com/torvalds/linux/blob/v7.0/arch/x86/kernel/cpu/common.c#L2121-L2141)). The exact Ubuntu config has `CONFIG_PARAVIRT_XXL=y`: `arch/x86/include/asm/paravirt.h:159–161,186–188` routes the safe write through its MSR operation, and the default `pv_ops` table in `arch/x86/kernel/paravirt.c:116` binds that operation to `native_write_msr_safe` ([paravirt.h](https://github.com/torvalds/linux/blob/v7.0/arch/x86/include/asm/paravirt.h#L149-L176), [paravirt.c](https://github.com/torvalds/linux/blob/v7.0/arch/x86/kernel/paravirt.c#L98-L108)). The native wrapper installs `EX_TYPE_WRMSR_SAFE` in the exception table (`arch/x86/include/asm/msr.h:144–156`); `EX_TYPE_WRMSR_SAFE` identifies the `-EIO` failure result, and `arch/x86/mm/extable.c:188–191,346–347` sets that result and resumes at the fixup IP ([msr.h](https://github.com/torvalds/linux/blob/v7.0/arch/x86/include/asm/msr.h#L134-L146), [extable_fixup_types.h](https://github.com/torvalds/linux/blob/v7.0/arch/x86/include/asm/extable_fixup_types.h#L40), [extable.c](https://github.com/torvalds/linux/blob/v7.0/arch/x86/mm/extable.c#L154-L178)). For this synthetic target, the selected CPU-side policy for RDMSR/WRMSR to those indices is a `#GP(0)` decision without state change, as specified by the `SysenterProbeV1` profile above. This is not a statement about all x86 CPUs, guest `#GP` delivery, or execution of Linux safe-write fixup. Static source reachability does not show that the call or fixup was observed at runtime. The broader MSR set (including EFER, STAR/LSTAR/SFMASK, FS/GS bases, CSTAR and conditional startup probes), initial control/segment/table/FPU state, alternatives, initramfs and boot success milestone still require a versioned execution manifest and implementation checks.
+For CPUID, the input ECX is ignored for every listed function in this profile; unlisted EAX function numbers return four zero registers irrespective of ECX. XSAVE/XRSTOR and XGETBV/XSETBV are outside this target; CR4.OSXSAVE must remain clear. Legacy x87/MMX/XMM state and FXSAVE/FXRSTOR remain in scope as required by the selected Linux startup path. SEP=0; the explicit S2-26d `SepDisabledV1` local policy raises CPU-side `#UD` for exact bare SYSENTER/SYSEXIT after complete fetch. It does not model exception delivery or settle Linux behavior. Linux 7.0's `idt_syscall_init` calls `wrmsrq_safe` for IA32_SYSENTER_CS/ESP/EIP (`0x174..0x176`) in both `ia32_enabled()` branches, without guarding those writes on SEP; the calls are listed in authenticated Ubuntu `arch/x86/kernel/cpu/common.c:2265–2285` ([upstream v7.0 source](https://github.com/torvalds/linux/blob/v7.0/arch/x86/kernel/cpu/common.c#L2121-L2141)). The exact Ubuntu config has `CONFIG_PARAVIRT_XXL=y`: `arch/x86/include/asm/paravirt.h:159–161,186–188` routes the safe write through its MSR operation, and the default `pv_ops` table in `arch/x86/kernel/paravirt.c:116` binds that operation to `native_write_msr_safe` ([paravirt.h](https://github.com/torvalds/linux/blob/v7.0/arch/x86/include/asm/paravirt.h#L149-L176), [paravirt.c](https://github.com/torvalds/linux/blob/v7.0/arch/x86/kernel/paravirt.c#L98-L108)). The native wrapper installs `EX_TYPE_WRMSR_SAFE` in the exception table (`arch/x86/include/asm/msr.h:144–156`); `EX_TYPE_WRMSR_SAFE` identifies the `-EIO` failure result, and `arch/x86/mm/extable.c:188–191,346–347` sets that result and resumes at the fixup IP ([msr.h](https://github.com/torvalds/linux/blob/v7.0/arch/x86/include/asm/msr.h#L134-L146), [extable_fixup_types.h](https://github.com/torvalds/linux/blob/v7.0/arch/x86/include/asm/extable_fixup_types.h#L40), [extable.c](https://github.com/torvalds/linux/blob/v7.0/arch/x86/mm/extable.c#L154-L178)). For this synthetic target, the selected CPU-side policy for RDMSR/WRMSR to those indices is a `#GP(0)` decision without state change, as specified by the `SysenterProbeV1` profile above. This is not a statement about all x86 CPUs, guest `#GP` delivery, or execution of Linux safe-write fixup. Static source reachability does not show that the call or fixup was observed at runtime. The broader MSR set (including EFER, STAR/LSTAR/SFMASK, FS/GS bases, CSTAR and conditional startup probes), initial control/segment/table/FPU state, alternatives, initramfs and boot success milestone still require a versioned execution manifest and implementation checks.
 
 The choice uses the exact Ubuntu 7.0.0-38.38 source/binary mapping in [S2-00 Linux profile evidence](../reports/STAGE_2_LINUX_PROFILE.md#exact-source-to-binary-mapping--28-октября-2026); static evidence does not prove any runtime branch or guest boot. Windows CPU profile remains unselected. The x86-64-v1 baseline decision and its evidence are described in [GUEST_REQUIREMENTS.md](GUEST_REQUIREMENTS.md).
 

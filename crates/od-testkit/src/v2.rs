@@ -20,6 +20,7 @@ pub const MAX_FIXTURE_JSON_BYTES: usize = 512 * 1024;
 pub const PROFILE: &str = "s2-long-integer-v1";
 pub const PROFILE_FS_BASE: &str = "s2-long-fs-base-v1";
 pub const PROFILE_GS_BASE: &str = "s2-long-gs-base-v1";
+pub const PROFILE_SEP_DISABLED: &str = "s2-long-sep-disabled-v1";
 pub const PROFILE_FS_SELECTOR: &str = "s2-long-fs-selector-v1";
 pub const PROFILE_GS_SELECTOR: &str = "s2-long-gs-selector-v1";
 pub const PROFILE_VERW_GDT: &str = "s2-long-verw-gdt-v1";
@@ -120,6 +121,8 @@ pub const INTEGER_FLAGS: u64 = 0x8d7 | (1 << 10);
 pub enum Profile {
     #[serde(rename = "s2-long-integer-v1")]
     LongIntegerV1,
+    #[serde(rename = "s2-long-sep-disabled-v1")]
+    LongSepDisabledV1,
     #[serde(rename = "s2-long-fs-base-v1")]
     LongFsBaseV1,
     #[serde(rename = "s2-long-gs-base-v1")]
@@ -1480,12 +1483,14 @@ impl IntegerState {
             | Profile::LongMovupsMemBaseV1
             | Profile::LongMovupdMemBaseV1
             | Profile::LongMovupdMemRipV1
-            | Profile::LongMovupdMemSibV1 => Profile::LongIntegerV1,
+            | Profile::LongMovupdMemSibV1
+            | Profile::LongSepDisabledV1 => Profile::LongIntegerV1,
             other => other,
         };
         match (state_profile, self.fs_base) {
             (
                 Profile::LongIntegerV1
+                | Profile::LongSepDisabledV1
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
@@ -1605,6 +1610,9 @@ impl IntegerState {
             )
             | (Profile::LongFsBaseV1 | Profile::LongFsLoadV1, Some(_)) => {}
             (Profile::LongFsSelectorV1, Some(_)) => {}
+            (Profile::LongSepDisabledV1, Some(_)) => {
+                return Err(invalid("state.fs_base", "not part of this profile"));
+            }
             (
                 Profile::LongIntegerV1
                 | Profile::LongX87StateV1
@@ -1733,6 +1741,7 @@ impl IntegerState {
         match (state_profile, self.gs_base) {
             (
                 Profile::LongIntegerV1
+                | Profile::LongSepDisabledV1
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
@@ -1862,6 +1871,7 @@ impl IntegerState {
         match (state_profile, self.fs_selector) {
             (
                 Profile::LongIntegerV1
+                | Profile::LongSepDisabledV1
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
@@ -2742,6 +2752,29 @@ impl Fixture {
         }
         if self.expected_exit == ExpectedExit::StopAddress && self.stop_rip.is_none() {
             return Err(invalid("stop_rip", "required for stop_address"));
+        }
+        if self.profile == Profile::LongSepDisabledV1 {
+            let Some(code) = self.memory.iter().find(|region| region.region_id == "code") else {
+                return Err(invalid(
+                    "memory.code",
+                    "required by the SEP-disabled profile",
+                ));
+            };
+            let bytes = code.initial_bytes_hex.to_ascii_lowercase();
+            let expected_stop = self.initial_state.rip.get().checked_add(2);
+            if !matches!(bytes.as_str(), "0f34" | "0f35")
+                || code.guest_address.get() != self.initial_state.rip.get()
+                || code.length != 2
+                || !code.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != expected_stop
+                || self.expected_exit != ExpectedExit::Exception
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "SEP-disabled fixtures require one exact bare instruction, one instruction of budget, its following stop_rip, and an exception result",
+                ));
+            }
         }
         if matches!(
             self.profile,

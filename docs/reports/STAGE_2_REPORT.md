@@ -1701,9 +1701,9 @@ and [Stage 2 plan](../plans/STAGE_2.md#s2-27f--bounded-caller-selected-long64-ma
 
 ## S2-26c — локальный `GsBaseV1` MSR
 
-**Статус:** в процессе. Локальные проверки автора внесены ниже. Независимое
+**Статус:** локальная реализация и перечисленные проверки завершены. Независимое
 Sol medium code review завершено чисто после уточнения одного замечания P3;
-оставшихся замечаний нет. Mac/SSH проверки
+оставшихся замечаний нет. Parent S2-26 остаётся открыт; Mac/SSH проверки
 отложены до общего финального substage.
 
 Заявленная узкая политика `MsrProfile::GsBaseV1` охватывает только
@@ -1736,6 +1736,43 @@ physical execution. Mac mini проверки отложены до общего
 [официальный PDF Intel](https://cdrdv2.intel.com/v1/dl/getContent/671190).
 Контракт и матрица проверок: [CPU contract](../specs/CPU_CONTRACT.md#локальный-профиль-gsbasev1-s2-26c),
 [план](../plans/STAGE_2.md#s2-26c--локальный-gsbasev1-msr).
+
+## S2-26d — local `SepDisabledV1` SYSENTER/SYSEXIT policy
+
+Implemented immutable opt-in `SepProfile::SepDisabledV1` for exact bare
+Long64 SYSENTER (`0F 34`) and SYSEXIT (`0F 35`). The decoder returns these
+operations only for unprefixed forms and has fetched both bytes before the
+CPU policy returns vector 6 with no error code. Legacy APIs remain
+`Unsupported`; prefixes and the neighboring `0F 33` form remain
+`Unsupported`. With the explicit profile, CPL0–3 yield the same CPU-side
+`#UD`; the run loop does not retire or mutate CPU state, and no data-memory
+callback is made. Fetch truncation and injected fetch faults retain their
+original result and payload. Stop address and zero budget exit before fetch.
+The testkit schema-v2 profile admits only one exact bare opcode fixture with
+budget one, its following stop address, and `expected_exit: exception`;
+interpreter CLI runs those fixtures and JIT returns Unsupported. No SEP/CPUID
+advertisement, `DiagnosticV1` change, MSR/control-register support, exception
+delivery, Linux fixup, native or physical execution is claimed. Parent S2-26
+remains open.
+
+**Local checks:** `cargo test -p od-isa --offline sep_disabled_` (3 passed);
+`cargo test -p od-testkit --offline` (378 passed);
+`cargo test -p od-isa --offline cpuid_` (3 passed);
+`cargo test -p od-isa --offline diagnostic_v1_returns` (1 passed);
+`cargo test -p od-runner --test fixture_v2 s2_26d_sep_disabled_fixtures_report_cpu_ud_and_deny_jit --offline` (1 passed).
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`git diff --check`, and `graphify update .` passed. `python3 tools/check_layout.py`
+reported only the worktree root `.git` as unmapped and two pre-existing broken
+links in unrelated historical Stage 2 report entries pointing to absent work
+manifests; it reported no S2-26d links. Independent gpt-6.1-sol medium review
+completed with no remaining findings after fixing the LOCK-prefix and citation
+issues. No physical checks were run.
+
+Normative basis: Intel SDM revision 093, Vol. 2B, SYSENTER/SYSEXIT opcode and
+SEP presence descriptions ([official Intel Vol. 2B PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf)).
+See the [CPU contract](../specs/CPU_CONTRACT.md#локальная-политика-sepdisabledv1-s2-26d),
+[plan](../plans/STAGE_2.md#s2-26d--local-sepdisabledv1-sysentersysexit-policy),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-26d-sep-disabled-sysentersysexit).
 
 ## S2-26b — локальный `SysenterProbeV1` MSR probe
 
