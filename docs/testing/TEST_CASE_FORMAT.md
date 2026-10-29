@@ -764,3 +764,18 @@ this profile. MXCSR requires all exception masks, DAZ/FTZ clear and reserved
 bits 16–31 clear. See [fixture](../../tests/fixtures/x86/stage2/s2_37j_maxsd_masked_register.case.json),
 [plan](../plans/STAGE_2.md#s2-37j--local-long64-register-only-legacy-maxsd-with-masked-status),
 and [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37j-register-only-maxsd-with-masked-status).
+
+## Local MINPD masked-status profile — S2-37k
+
+The schema-v2 profile `s2-long-minpd-reg-masked-v1` accepts exactly one
+Long64 `66 [optional adjacent REX.R/B] 0F 5D /r` instruction with
+ModR/M.mod=3 and XMM0–15. Bare MINPS, F3 MINSS and F2 MINSD remain distinct
+and are rejected by this profile. MXCSR requires all exception masks,
+DAZ/FTZ clear and reserved bits 16–31 clear; any RC and old sticky bits are
+allowed. The handwritten high-register fixture checks independent lane
+selection, same-lane IE-over-DE and cross-lane IE|DE aggregation. Missing SSE
+or unsupported MXCSR refuses before mutation. JIT/native/CPUID, unmasked
+delivery, memory forms and fault ordering remain out of scope. See
+[fixture](../../tests/fixtures/x86/stage2/s2_37k_minpd_masked_register.case.json),
+[plan](../plans/STAGE_2.md#s2-37k--local-long64-register-only-legacy-minpd-with-masked-status),
+and [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37k-register-only-minpd-with-masked-status).

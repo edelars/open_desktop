@@ -15767,3 +15767,39 @@ findings; the reviewer reran the five MAXSD ISA tests and `git diff --check`.
 The documentation review found no content/scope findings and verified all eight
 new relative links and anchors. The Linux-only native-denial list includes the
 MAXSD fixture; native execution was not run here because this host is macOS.
+
+## S2-37k / bounded S2-38a — local MINPD masked IE/DE status
+
+Added schema-v2 profile `s2-long-minpd-reg-masked-v1` for exactly one Long64
+`66 [optional adjacent REX.R/B] 0F 5D /r` instruction with ModR/M.mod=3 and
+XMM0–15. The decoder now distinguishes MINPD from bare MINPS, F3 MINSS and
+F2 MINSD. Strict fixture validation requires the exact form, SSE state, all six
+MXCSR exception masks, DAZ/FTZ clear and reserved bits clear; any RC and old
+sticky bits remain accepted.
+
+Execution snapshots both full XMM operands, applies the existing raw Binary64
+MIN selector to each little-endian lane, and commits the full destination XMM
+and aggregated IE/DE sticky bits after preflight. Same-lane IE suppresses only
+that lane's new DE, while IE and DE from different lanes aggregate. Aliasing
+and no-data-memory behavior are covered. Missing SSE and unsupported MXCSR
+refuse atomically. The high-register literal fixture checks NaN/subnormal
+selection and cross-lane IE|DE. JIT/native/CPUID admission, memory forms,
+unmasked exceptions and fault ordering remain closed. No physical or Mac mini
+execution was run; those checks remain in the combined final hardware substage.
+
+**Checks:** `cargo test -p od-isa --offline register_masked` passed (28 tests);
+`cargo test -p od-testkit --offline` passed (369 tests); and
+`cargo test -p od-runner --test fixture_v2 --offline masked_register` passed
+(7 tests). `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, the Linux cross-check
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`,
+`git diff --check` and `graphify update .` passed. New relative Markdown link
+targets resolve. The Linux all-target check compiled the native-denial test, but
+native execution and physical/Mac mini checks were not run; physical validation
+remains in the combined final hardware substage.
+
+**Review:** independent Sol medium code review found no implementation or test
+findings. Documentation review verified the fixture, bounded S2-38a scope and
+all added links/anchors; it identified report wording that conflated compiling
+the native-denial test with running it, which was corrected. Follow-up review
+confirmed no finding remains.

@@ -91,6 +91,7 @@ pub const PROFILE_RCPPS_REGISTER: &str = "s2-long-rcpps-reg-v1";
 pub const PROFILE_MINSS_MASKED_REGISTER: &str = "s2-long-minss-reg-masked-v1";
 pub const PROFILE_MINSD_MASKED_REGISTER: &str = "s2-long-minsd-reg-masked-v1";
 pub const PROFILE_MAXSD_MASKED_REGISTER: &str = "s2-long-maxsd-reg-masked-v1";
+pub const PROFILE_MINPD_MASKED_REGISTER: &str = "s2-long-minpd-reg-masked-v1";
 pub const PROFILE_MAXSS_MASKED_REGISTER: &str = "s2-long-maxss-reg-masked-v1";
 pub const PROFILE_MOVSD_REGISTER: &str = "s2-long-movsd-reg-v1";
 pub const PROFILE_MOVSD_STORE_REGISTER: &str = "s2-long-movsd-store-reg-v1";
@@ -299,6 +300,8 @@ pub enum Profile {
     LongMinsdMaskedRegV1,
     #[serde(rename = "s2-long-maxsd-reg-masked-v1")]
     LongMaxsdMaskedRegV1,
+    #[serde(rename = "s2-long-minpd-reg-masked-v1")]
+    LongMinpdMaskedRegV1,
     #[serde(rename = "s2-long-maxss-reg-masked-v1")]
     LongMaxssMaskedRegV1,
     #[serde(rename = "s2-long-minps-reg-masked-v1")]
@@ -850,6 +853,7 @@ impl IntegerState {
                     | Profile::LongMinssMaskedRegV1
                     | Profile::LongMinsdMaskedRegV1
                     | Profile::LongMaxsdMaskedRegV1
+                    | Profile::LongMinpdMaskedRegV1
                     | Profile::LongMaxssMaskedRegV1
                     | Profile::LongMinpsMaskedRegV1
                     | Profile::LongMaxpsMaskedRegV1
@@ -958,6 +962,7 @@ impl IntegerState {
                     | Profile::LongMinssMaskedRegV1
                     | Profile::LongMinsdMaskedRegV1
                     | Profile::LongMaxsdMaskedRegV1
+                    | Profile::LongMinpdMaskedRegV1
                     | Profile::LongMaxssMaskedRegV1
                     | Profile::LongMinpsMaskedRegV1
                     | Profile::LongMaxpsMaskedRegV1
@@ -1073,6 +1078,7 @@ impl IntegerState {
                 | Profile::LongMinssMaskedRegV1
                 | Profile::LongMinsdMaskedRegV1
                 | Profile::LongMaxsdMaskedRegV1
+                | Profile::LongMinpdMaskedRegV1
                 | Profile::LongMaxssMaskedRegV1
                 | Profile::LongMinpsMaskedRegV1
                 | Profile::LongMaxpsMaskedRegV1
@@ -1182,6 +1188,7 @@ impl IntegerState {
                 | Profile::LongMinssMaskedRegV1
                 | Profile::LongMinsdMaskedRegV1
                 | Profile::LongMaxsdMaskedRegV1
+                | Profile::LongMinpdMaskedRegV1
                 | Profile::LongMaxssMaskedRegV1
                 | Profile::LongMinpsMaskedRegV1
                 | Profile::LongMaxpsMaskedRegV1
@@ -1340,6 +1347,7 @@ impl IntegerState {
             | Profile::LongMinssMaskedRegV1
             | Profile::LongMinsdMaskedRegV1
             | Profile::LongMaxsdMaskedRegV1
+            | Profile::LongMinpdMaskedRegV1
             | Profile::LongMaxssMaskedRegV1
             | Profile::LongMinpsMaskedRegV1
             | Profile::LongMaxpsMaskedRegV1
@@ -1448,6 +1456,7 @@ impl IntegerState {
                 | Profile::LongMinssMaskedRegV1
                 | Profile::LongMinsdMaskedRegV1
                 | Profile::LongMaxsdMaskedRegV1
+                | Profile::LongMinpdMaskedRegV1
                 | Profile::LongMaxssMaskedRegV1
                 | Profile::LongMinpsMaskedRegV1
                 | Profile::LongMaxpsMaskedRegV1
@@ -1562,6 +1571,7 @@ impl IntegerState {
                 | Profile::LongMinssMaskedRegV1
                 | Profile::LongMinsdMaskedRegV1
                 | Profile::LongMaxsdMaskedRegV1
+                | Profile::LongMinpdMaskedRegV1
                 | Profile::LongMaxssMaskedRegV1
                 | Profile::LongMinpsMaskedRegV1
                 | Profile::LongMaxpsMaskedRegV1
@@ -1681,6 +1691,7 @@ impl IntegerState {
                 | Profile::LongMinssMaskedRegV1
                 | Profile::LongMinsdMaskedRegV1
                 | Profile::LongMaxsdMaskedRegV1
+                | Profile::LongMinpdMaskedRegV1
                 | Profile::LongMaxssMaskedRegV1
                 | Profile::LongMinpsMaskedRegV1
                 | Profile::LongMaxpsMaskedRegV1
@@ -1803,6 +1814,7 @@ impl IntegerState {
                 | Profile::LongMinssMaskedRegV1
                 | Profile::LongMinsdMaskedRegV1
                 | Profile::LongMaxsdMaskedRegV1
+                | Profile::LongMinpdMaskedRegV1
                 | Profile::LongMaxssMaskedRegV1
                 | Profile::LongMinpsMaskedRegV1
                 | Profile::LongMaxpsMaskedRegV1
@@ -2076,6 +2088,7 @@ impl IntegerState {
                 | Profile::LongMinssMaskedRegV1
                 | Profile::LongMinsdMaskedRegV1
                 | Profile::LongMaxsdMaskedRegV1
+                | Profile::LongMinpdMaskedRegV1
                 | Profile::LongMaxssMaskedRegV1
                 | Profile::LongMinpsMaskedRegV1
                 | Profile::LongMaxpsMaskedRegV1
@@ -2184,6 +2197,7 @@ impl IntegerState {
                 | Profile::LongMinssMaskedRegV1
                 | Profile::LongMinsdMaskedRegV1
                 | Profile::LongMaxsdMaskedRegV1
+                | Profile::LongMinpdMaskedRegV1
                 | Profile::LongMaxssMaskedRegV1
                 | Profile::LongMinpsMaskedRegV1
                 | Profile::LongMaxpsMaskedRegV1
@@ -2295,6 +2309,7 @@ impl IntegerState {
                 | Profile::LongMinssMaskedRegV1
                 | Profile::LongMinsdMaskedRegV1
                 | Profile::LongMaxsdMaskedRegV1
+                | Profile::LongMinpdMaskedRegV1
                 | Profile::LongMaxssMaskedRegV1
                 | Profile::LongMinpsMaskedRegV1
                 | Profile::LongMaxpsMaskedRegV1
@@ -2400,6 +2415,7 @@ impl IntegerState {
                 | Profile::LongMinssMaskedRegV1
                 | Profile::LongMinsdMaskedRegV1
                 | Profile::LongMaxsdMaskedRegV1
+                | Profile::LongMinpdMaskedRegV1
                 | Profile::LongMaxssMaskedRegV1
                 | Profile::LongMinpsMaskedRegV1
                 | Profile::LongMaxpsMaskedRegV1
@@ -2430,6 +2446,7 @@ impl IntegerState {
             Profile::LongMinssMaskedRegV1
                 | Profile::LongMinsdMaskedRegV1
                 | Profile::LongMaxsdMaskedRegV1
+                | Profile::LongMinpdMaskedRegV1
                 | Profile::LongMaxssMaskedRegV1
                 | Profile::LongMinpsMaskedRegV1
                 | Profile::LongMaxpsMaskedRegV1
@@ -2443,7 +2460,7 @@ impl IntegerState {
             if !min_max_masked_mxcsr_supported(mxcsr) {
                 return Err(invalid(
                     "state.sse.mxcsr",
-                    "MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD masked profiles require reserved bits clear, all exception masks set, and DAZ/FTZ disabled",
+                    "MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD masked profiles require reserved bits clear, all exception masks set, and DAZ/FTZ disabled",
                 ));
             }
         }
@@ -2658,6 +2675,7 @@ impl Fixture {
                 | Profile::LongMinssMaskedRegV1
                 | Profile::LongMinsdMaskedRegV1
                 | Profile::LongMaxsdMaskedRegV1
+                | Profile::LongMinpdMaskedRegV1
                 | Profile::LongMaxssMaskedRegV1
                 | Profile::LongMinpsMaskedRegV1
                 | Profile::LongMaxpsMaskedRegV1
@@ -2746,6 +2764,7 @@ impl Fixture {
                 Profile::LongMinssMaskedRegV1 => minss_register_masked_length(&code_bytes),
                 Profile::LongMinsdMaskedRegV1 => minsd_register_masked_length(&code_bytes),
                 Profile::LongMaxsdMaskedRegV1 => maxsd_register_masked_length(&code_bytes),
+                Profile::LongMinpdMaskedRegV1 => minpd_register_masked_length(&code_bytes),
                 Profile::LongMaxssMaskedRegV1 => maxss_register_masked_length(&code_bytes),
                 Profile::LongMinpsMaskedRegV1 => minps_register_masked_length(&code_bytes),
                 Profile::LongMaxpsMaskedRegV1 => maxps_register_masked_length(&code_bytes),
@@ -6396,6 +6415,19 @@ fn minsd_register_masked_length(code_bytes: &str) -> Option<u32> {
     match bytes.as_slice() {
         [0xf2, 0x0f, 0x5d, modrm] if modrm >> 6 == 3 => Some(4),
         [0xf2, rex, 0x0f, 0x5d, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn minpd_register_masked_length(code_bytes: &str) -> Option<u32> {
+    let bytes = decode_bytes(code_bytes).ok()?;
+    match bytes.as_slice() {
+        [0x66, 0x0f, 0x5d, modrm] if modrm >> 6 == 3 => Some(4),
+        [0x66, rex, 0x0f, 0x5d, modrm]
             if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
         {
             Some(5)

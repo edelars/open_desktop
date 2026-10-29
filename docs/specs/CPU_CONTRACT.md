@@ -10961,3 +10961,27 @@ substage.
 This extends only bounded S2-38a masked status. Sources: Intel SDM Rev. 093
 Vol. 1 §§4.9.2, 11.5.2 and Appendix D Tables D-9/D-13/D-15; Vol. 2B MAXSD.
 See the [plan](../plans/STAGE_2.md#s2-37j--local-long64-register-only-legacy-maxsd-with-masked-status).
+
+## Local S2-37k register-only MINPD with masked status
+
+The schema-v2 profile `s2-long-minpd-reg-masked-v1` admits exactly one Long64
+legacy `66 [optional adjacent REX.R/B] 0F 5D /r` instruction, ModR/M.mod=3,
+XMM0–15. Bare `0F 5D /r` remains MINPS; F3 selects MINSS and F2 selects MINSD.
+Profile validation accepts only its exact MINPD shape. SSE state, all six
+MXCSR exception masks, DAZ/FTZ clear and reserved bits 16–31 zero are required;
+any RC and prior sticky bits are allowed.
+
+Execution snapshots both complete XMM operands and uses
+`Binary64::min_sse_raw_result` on two little-endian binary64 lanes. Either
+QNaN or SNaN selects raw operand 2 and contributes IE. A lane's subnormal
+contributes new DE only if that lane does not raise IE; effective IE and DE are
+then aggregated across both lanes, preserving old sticky bits. The complete
+destination XMM and effective sticky status are committed after preflight.
+Aliasing is supported and no data-memory access occurs. Missing SSE or
+unsupported MXCSR refuses without mutation. JIT/native/CPUID, memory forms and
+unmasked exception paths remain closed; physical validation is deferred to the
+combined final Mac mini substage.
+
+This extends only the bounded S2-38a masked-status subset. Sources: Intel SDM
+Rev. 093 Vol. 1 §§4.9.2, 11.5.2 and Appendix D Tables D-9/D-13/D-15; Vol. 2B
+MINPD. See the [plan](../plans/STAGE_2.md#s2-37k--local-long64-register-only-legacy-minpd-with-masked-status).
