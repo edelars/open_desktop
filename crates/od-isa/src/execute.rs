@@ -1791,6 +1791,23 @@ fn step_tracked_with_profiles(
                 })
                 && state.sse.is_some()
         }
+        Operation::Fxsave64RaxDisp8(area) => {
+            instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0xae
+                && instruction.length == 5
+                && instruction.prefixes
+                    == (Prefixes {
+                        rex: Some(0x48),
+                        ..Prefixes::default()
+                    })
+                && instruction.address_size == OperandSize::Qword
+                && area.base == AddressBase::Register(Register::Rax)
+                && area.index.is_none()
+                && area.displacement == 0x40
+                && area.size == OperandSize::Qword
+                && state.x87.is_some()
+                && state.sse.is_some()
+        }
         Operation::FaddSt0St { source } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && instruction.opcode.byte == 0xd8
@@ -2489,7 +2506,15 @@ fn step_tracked_with_profiles(
     }
     if let Operation::FxsaveRipRelative(area) = instruction.operation {
         let address = area.effective_address(state, next_rip);
-        if let Err(error) = fxsave_rip_relative(state, memory, context, address) {
+        if let Err(error) = fxsave(state, memory, context, address, FxsaveLayout::Plain) {
+            return report_memory_error(error);
+        }
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
+    if let Operation::Fxsave64RaxDisp8(area) = instruction.operation {
+        let address = area.effective_address(state, next_rip);
+        if let Err(error) = fxsave(state, memory, context, address, FxsaveLayout::Long64) {
             return report_memory_error(error);
         }
         state.rip = next_rip;
@@ -3136,6 +3161,9 @@ fn step_tracked_with_profiles(
         Operation::Cpuid => unreachable!("CPUID is executed before transfer dispatch"),
         Operation::FxsaveRipRelative(_) => {
             unreachable!("FXSAVE commits in its prevalidated field-store path")
+        }
+        Operation::Fxsave64RaxDisp8(_) => {
+            unreachable!("FXSAVE64 commits in its prevalidated field-store path")
         }
         Operation::ReadMsr | Operation::WriteMsr => {
             unreachable!("MSR probe policy resolves before state commit")
@@ -8944,11 +8972,28 @@ fn report_memory_error(error: MemoryError) -> Result<StepOutcome, MemoryError> {
 /// Store the defined fields of the exact bounded plain-Long64 FXSAVE profile.
 /// The callback granularity is deliberately field-driven: failures keep prior
 /// successful private-RAM slices, and no reads or global rollback are implied.
+#[derive(Clone, Copy)]
+enum FxsaveLayout {
+    Plain,
+    Long64,
+}
+
+#[cfg(test)]
 fn fxsave_rip_relative(
     state: &LongModeState,
     memory: &mut impl GuestMemory,
     context: AccessContext,
     address: u64,
+) -> Result<(), MemoryError> {
+    fxsave(state, memory, context, address, FxsaveLayout::Plain)
+}
+
+fn fxsave(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    address: u64,
+    layout: FxsaveLayout,
 ) -> Result<(), MemoryError> {
     const IMAGE_BYTES: u64 = 512;
 
@@ -8976,22 +9021,29 @@ fn fxsave_rip_relative(
     }
     environment_0[4] = abridged_tag;
 
-    let mut environment_1 = [0u8; 8];
+    let mut environment_1 = [0u8; 10];
     environment_1[0..2].copy_from_slice(&(x87.last_opcode & 0x07ff).to_le_bytes());
-    environment_1[2..6].copy_from_slice(&(x87.instruction_pointer as u32).to_le_bytes());
-    environment_1[6..8].copy_from_slice(
-        &x87.instruction_selector
-            .expect("FXSAVE selector state was prevalidated")
-            .to_le_bytes(),
-    );
-
-    let mut environment_2 = [0u8; 6];
-    environment_2[0..4].copy_from_slice(&(x87.data_pointer as u32).to_le_bytes());
-    environment_2[4..6].copy_from_slice(
-        &x87.data_selector
-            .expect("FXSAVE selector state was prevalidated")
-            .to_le_bytes(),
-    );
+    let mut environment_2 = [0u8; 8];
+    match layout {
+        FxsaveLayout::Plain => {
+            environment_1[2..6].copy_from_slice(&(x87.instruction_pointer as u32).to_le_bytes());
+            environment_1[6..8].copy_from_slice(
+                &x87.instruction_selector
+                    .expect("plain FXSAVE selector state was prevalidated")
+                    .to_le_bytes(),
+            );
+            environment_2[0..4].copy_from_slice(&(x87.data_pointer as u32).to_le_bytes());
+            environment_2[4..6].copy_from_slice(
+                &x87.data_selector
+                    .expect("plain FXSAVE selector state was prevalidated")
+                    .to_le_bytes(),
+            );
+        }
+        FxsaveLayout::Long64 => {
+            environment_1[2..10].copy_from_slice(&x87.instruction_pointer.to_le_bytes());
+            environment_2.copy_from_slice(&x87.data_pointer.to_le_bytes());
+        }
+    }
 
     let mut mxcsr_fields = [0u8; 8];
     mxcsr_fields[0..4].copy_from_slice(&sse.mxcsr.to_le_bytes());
@@ -9012,8 +9064,16 @@ fn fxsave_rip_relative(
     // These are exactly the 13 ascending writes required by this local
     // profile. Reserved and software-available bytes remain untouched.
     memory.write(address, context, &environment_0)?;
-    memory.write(address + 6, context, &environment_1)?;
-    memory.write(address + 16, context, &environment_2)?;
+    match layout {
+        FxsaveLayout::Plain => {
+            memory.write(address + 6, context, &environment_1[..8])?;
+            memory.write(address + 16, context, &environment_2[..6])?;
+        }
+        FxsaveLayout::Long64 => {
+            memory.write(address + 6, context, &environment_1)?;
+            memory.write(address + 16, context, &environment_2)?;
+        }
+    }
     memory.write(address + 24, context, &mxcsr_fields)?;
     for (logical, slot) in x87_stack.iter().enumerate() {
         memory.write(address + 32 + (logical as u64) * 16, context, slot)?;
@@ -9035,6 +9095,9 @@ fn transfer(
         }
         Operation::FxsaveRipRelative(_) => {
             unreachable!("FXSAVE commits before generic transfer dispatch")
+        }
+        Operation::Fxsave64RaxDisp8(_) => {
+            unreachable!("FXSAVE64 commits before generic transfer dispatch")
         }
         Operation::MovImmediate { dst, value } => {
             write_operand(state, memory, context, next_rip, dst, value)?
@@ -89420,6 +89483,16 @@ mod fxsave_rip_tests {
                 fail_write,
             }
         }
+
+        fn fxsave64(fail_write: Option<usize>) -> Self {
+            Self {
+                area: vec![0xa5; 512],
+                code: [0x48, 0x0f, 0xae, 0x40, 0x40, 0, 0],
+                writes: Vec::new(),
+                reads: 0,
+                fail_write,
+            }
+        }
     }
 
     impl GuestMemory for TraceMemory {
@@ -89561,6 +89634,164 @@ mod fxsave_rip_tests {
             image[160 + register * 16..176 + register * 16].copy_from_slice(&sse.xmm[register]);
         }
         image
+    }
+
+    fn expected_fxsave64_image(state: &LongModeState) -> [u8; 512] {
+        let x87 = state.x87.as_ref().unwrap();
+        let sse = state.sse.as_ref().unwrap();
+        let mut image = [0xa5; 512];
+        image[0..2].copy_from_slice(&x87.control_word.to_le_bytes());
+        image[2..4].copy_from_slice(&x87.status_word.to_le_bytes());
+        let mut tag = 0;
+        for physical in 0..8 {
+            if (x87.tag_word >> (physical * 2)) & 3 != 3 {
+                tag |= 1 << physical;
+            }
+        }
+        image[4] = tag;
+        image[6..8].copy_from_slice(&0x07ffu16.to_le_bytes());
+        image[8..16].copy_from_slice(&x87.instruction_pointer.to_le_bytes());
+        image[16..24].copy_from_slice(&x87.data_pointer.to_le_bytes());
+        image[24..28].copy_from_slice(&sse.mxcsr.to_le_bytes());
+        image[28..32].copy_from_slice(&0x0000_ffbfu32.to_le_bytes());
+        for logical in 0..8 {
+            let physical = (usize::from(x87.top()) + logical) & 7;
+            image[32 + 16 * logical..42 + 16 * logical].copy_from_slice(&x87.registers[physical]);
+        }
+        for (register, bytes) in sse.xmm.iter().enumerate() {
+            image[160 + 16 * register..176 + 16 * register].copy_from_slice(bytes);
+        }
+        image
+    }
+
+    #[test]
+    fn fxsave64_writes_full_pointers_for_independent_selector_states_and_preserves_holes() {
+        let writes = [
+            (AREA, 5),
+            (AREA + 6, 10),
+            (AREA + 16, 8),
+            (AREA + 24, 8),
+            (AREA + 32, 10),
+            (AREA + 48, 10),
+            (AREA + 64, 10),
+            (AREA + 80, 10),
+            (AREA + 96, 10),
+            (AREA + 112, 10),
+            (AREA + 128, 10),
+            (AREA + 144, 10),
+            (AREA + 160, 256),
+        ];
+        for top in 0..8 {
+            for selectors in [
+                (None, None),
+                (Some(0x2b), None),
+                (None, Some(0x53)),
+                (Some(0x2b), Some(0x53)),
+            ] {
+                let mut state =
+                    fixture_state(top, selectors.0.unwrap_or(0), selectors.1.unwrap_or(0));
+                let x87 = state.x87.as_mut().unwrap();
+                x87.instruction_selector = selectors.0;
+                x87.data_selector = selectors.1;
+                state.gpr[Register::Rax as usize] = AREA - 0x40;
+                let before = state.clone();
+                let expected = expected_fxsave64_image(&before);
+                let mut memory = TraceMemory::fxsave64(None);
+                let result = run(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(RIP + 5),
+                        context: AccessContext::default(),
+                    },
+                    || false,
+                );
+                assert_eq!(result.exit, RunExit::StopAddress);
+                assert_eq!(result.instructions_executed, 1);
+                assert_eq!(state.rip, RIP + 5);
+                assert_eq!(state.x87, before.x87);
+                assert_eq!(state.sse, before.sse);
+                assert_eq!(memory.writes.len(), writes.len());
+                for (actual, expected) in memory.writes.iter().zip(writes) {
+                    assert_eq!((actual.0, actual.1), expected);
+                    assert!(!actual.2);
+                }
+                assert_eq!(
+                    &memory.area[8..24],
+                    &[
+                        0xef, 0xcd, 0xab, 0x89, 0x78, 0x56, 0x34, 0x12, 0x10, 0x32, 0x54, 0x76,
+                        0x98, 0xba, 0xdc, 0xfe,
+                    ]
+                );
+                for range in [5..6, 32 + 10..32 + 16, 416..464, 464..512] {
+                    assert_eq!(&memory.area[range.clone()], &vec![0xa5; range.len()]);
+                }
+                assert_eq!(memory.area, expected);
+                assert_eq!(memory.reads, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn fxsave64_each_callback_failure_does_not_commit_cpu_state() {
+        let expected_ranges = [
+            (AREA, 5),
+            (AREA + 6, 10),
+            (AREA + 16, 8),
+            (AREA + 24, 8),
+            (AREA + 32, 10),
+            (AREA + 48, 10),
+            (AREA + 64, 10),
+            (AREA + 80, 10),
+            (AREA + 96, 10),
+            (AREA + 112, 10),
+            (AREA + 128, 10),
+            (AREA + 144, 10),
+            (AREA + 160, 256),
+        ];
+        for failed_call in 1..=13 {
+            let mut state = fixture_state(4, 0x2b, 0x53);
+            state.gpr[Register::Rax as usize] = AREA - 0x40;
+            let before = state.clone();
+            let expected = expected_fxsave64_image(&before);
+            let mut memory = TraceMemory::fxsave64(Some(failed_call));
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(RIP + 5),
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert!(matches!(
+                result.exit,
+                RunExit::MemoryError(MemoryError::Backend(_))
+            ));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert_eq!(memory.writes.len(), failed_call);
+            assert_eq!(
+                memory.writes[failed_call - 1],
+                (
+                    expected_ranges[failed_call - 1].0,
+                    expected_ranges[failed_call - 1].1,
+                    true
+                )
+            );
+            for (call, &(address, length)) in expected_ranges.iter().enumerate() {
+                let offset = (address - AREA) as usize;
+                let range = offset..offset + length;
+                if call + 1 < failed_call {
+                    assert_eq!(&memory.area[range.clone()], &expected[range]);
+                } else {
+                    assert_eq!(&memory.area[range], &[0xa5; 256][..length]);
+                }
+            }
+            assert_eq!(memory.reads, 0);
+        }
     }
 
     #[test]

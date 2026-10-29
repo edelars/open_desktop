@@ -235,8 +235,9 @@ ordering. No selector is fabricated from CS/DS.
 This closes [ISSUE-026](../KNOWN_ISSUES.md#issue-026--plain-long64-fxsavefxrstor-target-lacks-selector-state)
 for state representation only. It does not add FNINIT execution or an
 FXSAVE/FXRSTOR memory image, instruction, alignment/fault behavior, or native
-observation. Plain Long64 REX.W=0 FXSAVE/FXRSTOR remain unsupported and S2-39
-remains open. Hardware/Mac mini checks are deferred to the combined final
+observation. S2-39c later implements one exact plain FXSAVE save form and S2-39d
+one exact FXSAVE64 save form; FXRSTOR and broader forms remain unsupported and
+S2-39 remains open. Hardware/Mac mini checks are deferred to the combined final
 hardware substage. See the [S2-39b plan](../plans/STAGE_2.md#s2-39b-lossless-selector-state-representation-no-fxsave-execution)
 and [implementation report](../reports/STAGE_2_REPORT.md#s2-39b--selector-state-representation-only).
 
@@ -245,8 +246,9 @@ and [implementation report](../reports/STAGE_2_REPORT.md#s2-39b--selector-state-
 The local profile `s2-long-fxsave-rip-v1` accepts exactly one unprefixed
 Long64 instruction, `0F AE 05 disp32` (`/0`, ModRM.mod=00, r/m=101,
 RIP-relative). REX.W is zero. The decoder rejects prefixes/REX, other ModRM
-forms, FXSAVE64, FXRSTOR, and neighboring `0F AE` operations except the
-existing independent MFENCE encoding. Execution requires x87/SSE state and
+forms, FXSAVE64 and FXRSTOR within this S2-39c profile, and neighboring `0F AE`
+operations except the existing independent MFENCE encoding. The shared decoder
+separately admits only the exact S2-39d FXSAVE64 form described below. Execution requires x87/SSE state and
 both known FCS/FDS selectors; `Some(0)` is known zero. CPUID FXSR=1,
 CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are profile preconditions, not runtime
 gates in the current state model. CPUID dispatch, JIT and native execution do
@@ -290,6 +292,25 @@ physical execution. FXRSTOR, other FXSAVE addressing forms, and complete S2-39
 remain open. Physical validation is deferred to the combined final Mac mini
 substage. See the [S2-39c plan](../plans/STAGE_2.md#s2-39c-exact-plain-long64-rip-relative-fxsave)
 and [implementation report](../reports/STAGE_2_REPORT.md#s2-39c--plain-long64-rip-relative-fxsave).
+
+### S2-39d — Exact Long64 FXSAVE64 `[RAX+0x40]`
+
+The local `s2-long-fxsave64-rax-disp8-v1` profile admits only the exact five
+bytes `48 0F AE 40 40`. This is REX.W=1 FXSAVE64 with base RAX and disp8
+`0x40`; other REX values, prefixes, registers, displacements, address forms,
+and FXRSTOR64 remain unsupported. The profile requires x87 and SSE state but
+accepts each optional FCS/FDS selector independently as present or absent,
+because the 64-bit image stores full FIP/FDP and no selector fields.
+
+The shared serializer keeps S2-39c's 13 ascending write-only callbacks. For
+this layout, the environment slices are `[6,16)` (FOP and full 64-bit FIP) and
+`[16,24)` (full 64-bit FDP); the bytes formerly used for selectors in the plain
+layout are pointer bytes here. All other field layouts, MXCSR mask policy,
+preflight geometry, callback-failure behavior, and preserved ranges match the
+plain profile. This local profile does not admit JIT/native execution and does
+not implement FXRSTOR or save/restore round-trip semantics. Physical checks
+remain in the combined final Mac mini substage. See the [S2-39d plan](../plans/STAGE_2.md#s2-39d-exact-long64-fxsave64-rax0x40) and
+[implementation report](../reports/STAGE_2_REPORT.md#s2-39d--exact-long64-fxsave64-rax0x40).
 
 ## Предлагаемый профиль тестового прототипа S0-09
 

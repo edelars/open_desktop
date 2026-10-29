@@ -5633,3 +5633,18 @@ Mac mini, guest exception delivery, FXRSTOR, or JIT/native result is claimed.
 See the [S2-39c plan](../../../../docs/plans/STAGE_2.md#s2-39c-exact-plain-long64-rip-relative-fxsave),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-39c--plain-long64-rip-relative-fxsave),
 and [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-39c--plain-long64-rip-relative-fxsave).
+
+### S2-39d Long64 FXSAVE64 `[RAX+0x40]`
+
+`s2_39d_fxsave64_rax_disp8_literal.case.json` is a handwritten schema-v2
+fixture for `s2-long-fxsave64-rax-disp8-v1`. It contains the exact bytes
+`48 0F AE 40 40`, raw x87/SSE state with selectors absent, high-width FIP/FDP,
+and an aligned 512-byte destination prefilled with `A5` sentinels. The local
+profile writes the full pointers at `[8,16)` and `[16,24)` using the same
+13-callback contract as S2-39c; reserved and software-available bytes remain
+preserved. Core tests also cover known selectors, all TOP values and callback
+failures. This is local interpreter evidence only: it does not claim physical
+execution, native/JIT support, FXRSTOR, or round-trip behavior. See the
+[S2-39d plan](../../../../docs/plans/STAGE_2.md#s2-39d-exact-long64-fxsave64-rax0x40),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-39d--exact-long64-fxsave64-rax0x40),
+and [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-39d--exact-long64-fxsave64-rax0x40).

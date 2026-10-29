@@ -15939,3 +15939,56 @@ See the [S2-39c CPU contract](../specs/CPU_CONTRACT.md#s2-39c--plain-long64-rip-
 [plan](../plans/STAGE_2.md#s2-39c-exact-plain-long64-rip-relative-fxsave),
 [Linux evidence](STAGE_2_LINUX_PROFILE.md#s2-39c--plain-long64-rip-relative-fxsave),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39c-plain-long64-rip-relative-fxsave).
+
+## S2-39d — exact Long64 FXSAVE64 `[RAX+0x40]`
+
+Added a separate `s2-long-fxsave64-rax-disp8-v1` profile for exactly the
+five-byte encoding `48 0F AE 40 40`. It requires the 512-byte destination at
+aligned canonical `RAX+0x40`, x87/SSE state, budget 1, and stop RIP immediately
+after the instruction. The decoder rejects other REX/prefix, base register,
+ModRM, displacement and FXRSTOR64 forms. JIT/native admission remains closed.
+
+The existing FXSAVE serializer now takes an explicit plain or Long64 image
+layout. Plain S2-39c remains unchanged: it still requires known FCS/FDS and
+writes low 32-bit FIP/FDP with selector fields. FXSAVE64 does not require or
+mutate selectors; it writes full 64-bit FIP at `[8,16)` and FDP at `[16,24)`.
+Both layouts use the same 13 ascending write-only callbacks, with the two
+pointer callback lengths changing from 8/6 to 10/8 bytes. All other saved
+fields, target MXCSR mask, TOP-rotated raw ST slots, XMM0–15 and preserved
+sentinels share the established S2-39c path.
+
+The handwritten fixture uses exact observed bytes, absent selectors, high-width
+distinct pointers and an `A5`-filled destination. Focused tests cover exact
+prefix-stream decoding/truncation, selectors absent and present (including
+independent availability), all TOP values, pointer bytes, and callback
+order/count. Callback failure at every write confirms earlier slices remain
+committed, the failing and later slices stay untouched, and CPU/RIP/retirement
+do not commit. Profile and execution regressions confirm a wrapping `RAX+0x40`
+effective address can select canonical image address zero, while canonical
+range and overflow preflight remain enforced. The runner CLI confirms
+interpreter success with JIT and native-x86 denial. Existing plain FXSAVE and
+MFENCE tests remain passing. These are local interpreter/profile results only;
+no hardware/physical, guest exception-delivery, FXRSTOR, or round-trip result is
+claimed. Mac mini checks remain grouped in the final hardware substage.
+
+**Checks:** `od-isa` FXSAVE64 tests (3/3), FXSAVE regressions (6/6), and MFENCE
+regression (1/1) passed. `od-testkit` FXSAVE64 profile/execution tests (2/2)
+and literal fixture execution (2/2, including wrapped effective address) passed.
+The `od-runner` FXSAVE64 CLI interpreter/JIT/native test passed. `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`,
+`git diff --check`, and `graphify update .` passed. The Linux target check is
+compile-only on this Apple ARM host; it does not run the Linux-only native
+denial test or the physical runner. Graphify retained the existing
+`host_abi.h` parser warning and skipped unsupported header/metadata files.
+
+**Review:** independent Sol-medium code and documentation reviews completed
+without remaining findings after two implementation fixes: exact prefix-stream
+admission and wrapping effective-address calculation. The added callback-memory
+and runner CLI regressions were re-reviewed clean. No Mac mini, SSH, hardware,
+or physical results are claimed.
+
+See the [S2-39d CPU contract](../specs/CPU_CONTRACT.md#s2-39d--exact-long64-fxsave64-rax0x40),
+[plan](../plans/STAGE_2.md#s2-39d-exact-long64-fxsave64-rax0x40),
+[Linux evidence](STAGE_2_LINUX_PROFILE.md#s2-39d--exact-long64-fxsave64-rax0x40),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39d-long64-fxsave64-rax0x40).

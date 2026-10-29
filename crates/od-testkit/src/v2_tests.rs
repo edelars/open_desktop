@@ -312,6 +312,91 @@ fn fxsave_rip_profile_is_exact_and_requires_geometry_and_both_selectors() {
 }
 
 #[test]
+fn fxsave64_rax_profile_is_exact_and_selectors_are_independently_optional() {
+    let raw = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_39d_fxsave64_rax_disp8_literal.case.json"
+    );
+    let base = Fixture::from_json(raw).unwrap().fixture;
+    assert_eq!(base.profile, Profile::LongFxsave64RaxV1);
+    let state = base
+        .initial_state
+        .to_cpu_for(Profile::LongFxsave64RaxV1)
+        .unwrap();
+    let x87 = state.x87.as_ref().unwrap();
+    assert_eq!(x87.instruction_selector, None);
+    assert_eq!(x87.data_selector, None);
+
+    let mut known_selectors = base.clone();
+    known_selectors
+        .initial_state
+        .x87
+        .as_mut()
+        .unwrap()
+        .instruction_selector = Some(HexU64(0x2b));
+    known_selectors
+        .initial_state
+        .x87
+        .as_mut()
+        .unwrap()
+        .data_selector = Some(HexU64(0x53));
+    assert!(known_selectors.validate().is_ok());
+    known_selectors
+        .initial_state
+        .x87
+        .as_mut()
+        .unwrap()
+        .instruction_selector = None;
+    assert!(known_selectors.validate().is_ok());
+    let x87 = known_selectors.initial_state.x87.as_mut().unwrap();
+    x87.data_selector = None;
+    x87.instruction_selector = Some(HexU64(0));
+    assert!(known_selectors.validate().is_ok());
+
+    for code in [
+        "480fae4041",    // different displacement
+        "490fae4040",    // REX.B changes the base
+        "4c0fae4040",    // another REX form
+        "4848 0fae4040", // repeated REX
+        "66480fae4040",  // operand-size prefix
+        "67480fae4040",  // address-size prefix
+        "f3480fae4040",  // group-1 prefix
+        "64480fae4040",  // segment prefix
+        "480fae4140",    // different base register
+        "480fae4b40",    // FXRSTOR64
+    ] {
+        let code = code.replace(' ', "");
+        let mut invalid = base.clone();
+        invalid.memory[0].initial_bytes_hex = code.clone();
+        invalid.memory[0].length = (code.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(code.len() / 2);
+        assert!(invalid.validate().is_err(), "{code}");
+    }
+
+    let mut wrong_base = base.clone();
+    wrong_base.initial_state.gpr[0] = HexU64(0x0000_0000_001f_ffc1);
+    assert!(wrong_base.validate().is_err());
+    let mut wrapped_ea = base.clone();
+    wrapped_ea.initial_state.gpr[0] = HexU64(u64::MAX - 0x3f);
+    wrapped_ea.memory[1].guest_address = HexU64(0);
+    assert!(wrapped_ea.validate().is_ok());
+
+    let mut noncanonical_ea = base.clone();
+    noncanonical_ea.initial_state.gpr[0] = HexU64(0x0000_7fff_ffff_ffc0);
+    noncanonical_ea.memory[1].guest_address = HexU64(0x0000_8000_0000_0000);
+    assert!(noncanonical_ea.validate().is_err());
+    let mut overflowing_image = base.clone();
+    overflowing_image.initial_state.gpr[0] = HexU64(0xffff_ffff_ffff_fec0);
+    overflowing_image.memory[1].guest_address = HexU64(0xffff_ffff_ffff_ff00);
+    assert!(overflowing_image.validate().is_err());
+    let mut wrong_stop = base.clone();
+    wrong_stop.stop_rip = Some(HexU64(0x80694));
+    assert!(wrong_stop.validate().is_err());
+    let mut no_sse = base.clone();
+    no_sse.initial_state.sse = None;
+    assert!(no_sse.validate().is_err());
+}
+
+#[test]
 fn integer_snapshot_export_rejects_ds_hidden_cache() {
     let mut state = od_isa::LongModeState::default();
     state.ds_cache = Some(od_isa::state::DsDescriptorCache {

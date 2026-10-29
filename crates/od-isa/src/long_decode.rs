@@ -477,6 +477,8 @@ pub enum Operation {
     Mfence,
     /// Exact S2-39c plain Long64 `0F AE 05 disp32` FXSAVE form.
     FxsaveRipRelative(MemoryOperand),
+    /// Exact S2-39d Long64 `48 0F AE 40 40` FXSAVE64 `[RAX+0x40]` form.
+    Fxsave64RaxDisp8(MemoryOperand),
     /// Local-only legacy `0F 10/11 /r` MOVUPS XMM-to-XMM register form.
     MovupsRegister {
         destination: u8,
@@ -4597,21 +4599,40 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::VerwGdt
             }
             (OpcodeMap::Escape0f, 0xae) => {
-                if prefixes != Prefixes::default() {
-                    return Err(self.unsupported(opcode));
-                }
                 let modrm = self.byte()?;
-                match modrm {
-                    0xf0 => Operation::Mfence,
-                    0x05 => {
-                        let Operand::Memory(area) =
-                            self.rm_operand(modrm, prefixes, OperandSize::Qword)?
-                        else {
-                            unreachable!("ModRM 05 is a memory operand");
-                        };
-                        Operation::FxsaveRipRelative(area)
+                if prefixes == Prefixes::default() {
+                    match modrm {
+                        0xf0 => Operation::Mfence,
+                        0x05 => {
+                            let Operand::Memory(area) =
+                                self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                            else {
+                                unreachable!("ModRM 05 is a memory operand");
+                            };
+                            Operation::FxsaveRipRelative(area)
+                        }
+                        _ => return Err(self.unsupported(opcode)),
                     }
-                    _ => return Err(self.unsupported(opcode)),
+                } else if prefixes
+                    == (Prefixes {
+                        rex: Some(0x48),
+                        ..Prefixes::default()
+                    })
+                    && prefix_count == 1
+                    && prefix_bytes[0] == 0x48
+                    && modrm == 0x40
+                {
+                    let Operand::Memory(area) =
+                        self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                    else {
+                        unreachable!("ModRM 40 is a memory operand");
+                    };
+                    if area.displacement != 0x40 {
+                        return Err(self.unsupported(opcode));
+                    }
+                    Operation::Fxsave64RaxDisp8(area)
+                } else {
+                    return Err(self.unsupported(opcode));
                 }
             }
             (OpcodeMap::Escape0f, 0xc1) => {
@@ -14260,6 +14281,54 @@ mod tests {
                 }))
             ));
             assert_eq!(truncated.fetched.len(), available + 1);
+        }
+    }
+
+    #[test]
+    fn fxsave64_profile_decodes_only_exact_rax_disp8_form() {
+        let bytes = [0x48, 0x0f, 0xae, 0x40, 0x40];
+        let instruction = Memory::new(&bytes).decode().unwrap();
+        assert_eq!(instruction.length, 5);
+        assert_eq!(instruction.prefixes.rex, Some(0x48));
+        assert_eq!(
+            instruction.operation,
+            Operation::Fxsave64RaxDisp8(MemoryOperand {
+                base: AddressBase::Register(Register::Rax),
+                index: None,
+                scale: 1,
+                displacement: 0x40,
+                address_size: OperandSize::Qword,
+                size: OperandSize::Qword,
+            })
+        );
+        for invalid in [
+            &[0x48, 0x0f, 0xae, 0x40][..],
+            &[0x48, 0x0f, 0xae, 0x40, 0x41][..],
+            &[0x49, 0x0f, 0xae, 0x40, 0x40][..],
+            &[0x4c, 0x0f, 0xae, 0x40, 0x40][..],
+            &[0x48, 0x48, 0x0f, 0xae, 0x40, 0x40][..],
+            &[0x49, 0x48, 0x0f, 0xae, 0x40, 0x40][..],
+            &[0x48, 0x0f, 0xae, 0x41, 0x40][..],
+            &[0x48, 0x0f, 0xae, 0x42, 0x40][..],
+            &[0x48, 0x0f, 0xae, 0x48, 0x40][..],
+            &[0x48, 0x0f, 0xae, 0x50, 0x40][..],
+            &[0x48, 0x0f, 0xae, 0x58, 0x40][..],
+            &[0x48, 0x0f, 0xae, 0x60, 0x40][..],
+            &[0x48, 0x0f, 0xae, 0x68, 0x40][..],
+            &[0x48, 0x0f, 0xae, 0x70, 0x40][..],
+            &[0x48, 0x0f, 0xae, 0x78, 0x40][..],
+            &[0x66, 0x48, 0x0f, 0xae, 0x40, 0x40][..],
+            &[0x67, 0x48, 0x0f, 0xae, 0x40, 0x40][..],
+            &[0xf3, 0x48, 0x0f, 0xae, 0x40, 0x40][..],
+            &[0x64, 0x48, 0x0f, 0xae, 0x40, 0x40][..],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(invalid).decode(),
+                    Err(DecodeError::Unsupported { .. }) | Err(DecodeError::Memory(_))
+                ),
+                "{invalid:02x?}"
+            );
         }
     }
 

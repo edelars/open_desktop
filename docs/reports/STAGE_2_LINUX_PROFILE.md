@@ -603,8 +603,7 @@ substage.
 The missing FCS/FDS representation has been added as independent optional
 16-bit values in core and strict schema-v2 snapshots; the older profiles omit
 and explicitly reject these values. This is a lossless state-model update, not
-an FXSAVE/FXRSTOR implementation or observation. Plain REX.W=0 forms remain
-unsupported, while S2-39 remains open. The bounded fixture and local verification
+an FXSAVE/FXRSTOR implementation or observation. The bounded fixtures and local verification
 are recorded in the [Stage 2 report](STAGE_2_REPORT.md#s2-39b--selector-state-representation-only)
 and [S2-39b plan](../plans/STAGE_2.md#s2-39b-lossless-selector-state-representation-no-fxsave-execution).
 
@@ -634,3 +633,25 @@ the combined final Mac mini substage. Details are in the [S2-39c plan](../plans/
 [CPU contract](../specs/CPU_CONTRACT.md#s2-39c--plain-long64-rip-relative-fxsave),
 [Stage 2 report](STAGE_2_REPORT.md#s2-39c--plain-long64-rip-relative-fxsave),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39c-plain-long64-rip-relative-fxsave).
+
+## S2-39d — exact Long64 FXSAVE64 `[RAX+0x40]`
+
+The statically selected Ubuntu legacy save encoding `48 0F AE 40 40` now has a
+separate local `s2-long-fxsave64-rax-disp8-v1` interpreter profile. It accepts
+only that five-byte instruction and only the 512-byte area at aligned,
+canonical `RAX+0x40`; other REX/prefix, base, displacement, address, and restore
+forms remain unsupported. It requires x87/SSE snapshots while allowing FCS
+and FDS independently absent or present. The image writes full 64-bit FIP and
+FDP at `[8,16)` and `[16,24)`, respectively.
+
+The serializer shares all other fields and uses the same 13 ascending
+write-only callbacks as S2-39c, with pointer slices `[6,16)` and `[16,24)`.
+The handwritten literal fixture uses absent selectors and high-width pointers;
+direct tests cover every TOP position, selector-independent execution and
+per-callback failure without CPU-state retirement on error. JIT/native remain
+closed. No hardware, boot, exception-delivery, FXRSTOR, or round-trip result is
+claimed. Physical validation remains in the combined final Mac mini substage.
+See the [S2-39d implementation report](STAGE_2_REPORT.md#s2-39d--exact-long64-fxsave64-rax0x40),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-39d--exact-long64-fxsave64-rax0x40),
+[plan](../plans/STAGE_2.md#s2-39d-exact-long64-fxsave64-rax0x40), and
+[fixture note](../../tests/fixtures/x86/stage2/README.md#s2-39d-long64-fxsave64-rax0x40).

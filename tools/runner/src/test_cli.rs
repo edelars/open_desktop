@@ -206,14 +206,15 @@ pub fn run_fixture(args: &[String]) -> ExitCode {
     }
     let Some(fixture_path) = fixture_path else {
         return invalid_input(
-            "usage: od-runner --fixture CASE.json --engine interpreter|jit --json",
+            "usage: od-runner --fixture CASE.json --engine interpreter|jit|native --json",
         );
     };
     let backend = match engine {
         Some("interpreter") => Backend::Interpreter,
         Some("jit") => Backend::Jit,
+        Some("native") => Backend::NativeX86,
         Some(other) => return invalid_input(&format!("unknown fixture engine '{other}'")),
-        None => return invalid_input("--fixture requires --engine interpreter|jit"),
+        None => return invalid_input("--fixture requires --engine interpreter|jit|native"),
     };
 
     let input = match fs::read(fixture_path) {

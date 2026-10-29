@@ -6,7 +6,8 @@
 `s2-long-fs-base-v1`, `s2-long-gs-base-v1`, `s2-long-fs-selector-v1` and
 `s2-long-gs-selector-v1`, `s2-long-verw-gdt-v1`, and local-only
 `s2-long-fs-load-v1`, `s2-long-x87-state-v1`, `s2-long-x87-sse-state-v1`, and
-`s2-long-x87-selectors-state-v1`, and `s2-long-fxsave-rip-v1`.
+`s2-long-x87-selectors-state-v1`, `s2-long-fxsave-rip-v1`, and
+`s2-long-fxsave64-rax-disp8-v1`.
 V1 readers, bytes and historical digests remain unchanged. Segment profiles are
 profile-specific state extensions;
 it does not reinterpret or rewrite existing integer-profile fixtures.
@@ -831,3 +832,15 @@ local and does not open FXRSTOR, alternate FXSAVE forms, JIT, native execution,
 CPUID execution, or physical acceptance. See the [fixture note](../../tests/fixtures/x86/stage2/README.md#s2-39c-plain-long64-rip-relative-fxsave),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-39c--plain-long64-rip-relative-fxsave),
 and [plan](../plans/STAGE_2.md#s2-39c-exact-plain-long64-rip-relative-fxsave).
+
+## S2-39d FXSAVE64 profile
+
+The local-only `s2-long-fxsave64-rax-disp8-v1` profile admits exactly the five
+bytes `48 0F AE 40 40`, with a 512-byte aligned canonical writable data region
+at `RAX+0x40`, one-instruction budget, and stop RIP immediately after the
+instruction. It requires raw x87/SSE state. FCS and FDS are independent optional
+fields and do not affect this 64-bit image. The image stores full FIP/FDP at
+offsets `[8,16)` and `[16,24)`. JIT, native execution, FXRSTOR and other
+addressing forms remain closed. See the [fixture note](../../tests/fixtures/x86/stage2/README.md#s2-39d-long64-fxsave64-rax0x40),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-39d--exact-long64-fxsave64-rax0x40),
+and [plan](../plans/STAGE_2.md#s2-39d-exact-long64-fxsave64-rax0x40).
