@@ -499,6 +499,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j/k/l: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j/k/l; independent review |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
+| [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
 | [ ] | S2-41 | Независимо проверить системный профиль | S2-27; machine backend по сценариям |
 | [ ] | S2-42 | Расширить corpus/reducer/harness | S2-21, S2-39, S2-40 |
@@ -511,7 +512,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 
 ### S2-00. Принять проверяемый профиль
 
-**Статус:** выполнено для диагностического A и x86-64-v1 ABI/ISA floor; exact kernel/buildinfo/metapackage/source hashes подтверждены подписанными Ubuntu indexes/snapshot, а direct64, startup, CPUID и FPU paths сопоставлены с exact image/source lines. Выбор CPU/CPUID policy, сценарный machine manifest, полная C/D matrix, PE signature и наблюдаемое исполнение остаются открытыми. См. [отчёт](../reports/STAGE_2_REPORT.md#s2-00--профиль) и [Linux profile evidence](../reports/STAGE_2_LINUX_PROFILE.md#решение-по-generic-amd64-baseline).
+**Статус:** выполнено для диагностического A, x86-64-v1 ABI/ISA floor и выбора синтетического Ubuntu Generic `amd64` target `od-x86-64-v1-neutral-v0.1`; exact kernel/buildinfo/metapackage/source hashes подтверждены подписанными Ubuntu indexes/snapshot, а direct64, startup, CPUID и FPU paths сопоставлены с exact image/source lines. Реализация/проверка target, сценарный machine manifest, полная C/D matrix, PE signature и наблюдаемое исполнение остаются открытыми. См. [отчёт](../reports/STAGE_2_REPORT.md#s2-00--профиль) и [Linux profile evidence](../reports/STAGE_2_LINUX_PROFILE.md#решение-по-generic-amd64-baseline).
 
 **Файлы:** CPU_CONTRACT, GUEST_REQUIREMENTS по фактическим уточнениям, будущий INTERPRETER.
 
@@ -6189,6 +6190,42 @@ physical acceptance remain separate dependencies.
 **Готово:** фиксируются правильные values, flags, RIP и доступное exception metadata. CPUID SSE/SSE2 не включён до готовности обязательных state/exceptions/operations.
 
 ### S2-39. Сохранение и восстановление FP/SIMD
+
+#### S2-39a. Нормативное evidence legacy FXSAVE/FXRSTOR (evidence only)
+
+**Статус:** завершено как документация/evidence-only; никаких decoder, executor,
+fixture, тестов или runtime claims добавлено не было. Источник — Intel SDM
+Rev. 093 (September 2026), Vol. 2A pp. 3-409–3-419, Tables 3-45–3-49, и
+Vol. 1 §§10.5.1–10.5.3, 11.6.5–11.6.6. Сопоставление точных инструкций в
+подписанном Ubuntu kernel candidate есть в [Linux profile evidence](../reports/STAGE_2_LINUX_PROFILE.md#s2-39a--fxsave-evidence-only); форматы и границы определены в
+[CPU contract](../specs/CPU_CONTRACT.md#s2-39a--legacy-fxsavefxrstor-contract-evidence-only).
+
+Выбранный Generic `amd64` target уже определён, но не реализован и не принят
+как загрузочный. Legacy FXSAVE area всегда занимает 512 байт с базой,
+выравненной на 16 байт. В Long64 без REX.W `FXSAVE/FXRSTOR` сохраняют 32-bit
+FIP/FDP и при выбранном CPUID leaf-7 result (EBX[13]=0) CS/DS selectors; с
+REX.W `FXSAVE64/FXRSTOR64` сохраняют полные 64-bit FIP/FDP без selector
+полей. Остальная карта, включая abridged physical FTW и XMM0–15, общая.
+Existing S2-34.1 snapshots не являются такой memory image. Текущий `X87State`
+содержит raw registers, TOP/tag, opcode и 64-bit pointers, но не FCS/FDS; его
+нельзя считать достаточной моделью plain `FXSAVE` до разрешения этого
+расхождения.
+
+| Observed form | Long64 layout | Main relevance | Local gate/evidence |
+|---|---|---|---|
+| `0F AE 05 6B F9 17 00` | `FXSAVE`, REX.W=0; RIP+disp32; 32-bit pointer offsets plus selector fields | Exact Ubuntu MXCSR-mask initialization probe | Best first executable slice after state and defined field writes are supported; it writes architectural state beyond the mask, while preserving bytes 464–511. |
+| `48 0F AE 40 40` | `FXSAVE64`, REX.W=1; `[RAX+0x40]`; 64-bit FIP/FDP | Exact Ubuntu legacy state-save path | Later save form; do not alias it to `FXSAVE` format. |
+| `48 0F AE 4B 40` | `FXRSTOR64`, REX.W=1; `[RBX+0x40]`; 64-bit FIP/FDP | Exact Ubuntu legacy state-restore path | Later restore form; requires full image validation and target MXCSR policy. |
+
+Prerequisites include CPUID.01H:EDX.FXSR[24], CR0.EM=0 and CR0.TS=0; CR4.OSFXSR=1 is needed for defined SSE-state behavior. Target CPUID also advertises SSE/SSE2, while OSXSAVE/XSAVE remain disabled. The selected MXCSR policy must use the FXSAVE mask, with Intel's specified `0x0000ffbf` fallback only when the saved `MXCSR_MASK` field is zero. That policy is distinct from testkit's existing `diagnostic_mxcsr_mask` metadata, even though its current numeric value is also `0x0000ffbf`.
+
+Fault handling must account for 16-byte alignment, noncanonical addresses, page faults, and #NM/#UD gates. The memory area is 512 bytes, but this does not mean every byte is written: FXSAVE preserves software-available bytes 464–511, while bytes 416–463 are reserved and their write behavior is not asserted here. No whole-area atomic commit or backend rollback guarantee is asserted. Physical x86/Mac mini validation belongs to the combined final substage; no boot, runtime execution, C/D coverage or physical result is claimed. Next code step: close the FCS/FDS and definedness contract, then implement one exact form end-to-end; the Linux RIP-relative `FXSAVE` mask probe is the recommended first candidate if all required architectural state writes are supported.
+
+The confirmed selector-state representation gap is tracked in [ISSUE-026](../KNOWN_ISSUES.md#issue-026--plain-long64-fxsavefxrstor-target-lacks-selector-state).
+
+S2-39 overall remains open until implementation covers the selected forms and
+tests save → modify → restore with raw mixed x87/MMX/XMM state and invalid-image
+fault behavior.
 
 1. Реализовать требуемые x87 environment save/restore и FXSAVE/FXRSTOR формы с нормативными layouts, modes, alignment и reserved-bit checks.
 2. Проверить mixed x87/MMX/XMM state, tag representation, instruction/data pointer rules и round-trip без потери bits.

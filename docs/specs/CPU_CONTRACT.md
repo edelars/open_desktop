@@ -123,6 +123,89 @@ For CPUID, the input ECX is ignored for every listed function in this profile; u
 
 The choice uses the exact Ubuntu 7.0.0-38.38 source/binary mapping in [S2-00 Linux profile evidence](../reports/STAGE_2_LINUX_PROFILE.md#exact-source-to-binary-mapping--28-октября-2026); static evidence does not prove any runtime branch or guest boot. Windows CPU profile remains unselected. The x86-64-v1 baseline decision and its evidence are described in [GUEST_REQUIREMENTS.md](GUEST_REQUIREMENTS.md).
 
+### S2-39a — Legacy FXSAVE/FXRSTOR contract (evidence-only)
+
+This section records the selected target's normative legacy FP/SIMD memory
+image. It does not claim implementation, guest boot, C/D acceptance, or
+physical execution. Sources: Intel SDM Rev. 093 (September 2026), Vol. 2A
+pp. 3-409–3-419, especially Tables 3-45–3-49, and Vol. 1 §§10.5.1–10.5.3
+and 11.6.5–11.6.6 ([Vol. 2A](https://cdrdv2.intel.com/v1/dl/getContent/671199),
+[Vol. 1](https://cdrdv2.intel.com/v1/dl/getContent/671436)). Exact Linux forms
+and source/binary mapping are in the [S2-39a profile evidence](../reports/STAGE_2_LINUX_PROFILE.md#s2-39a--fxsave-evidence-only).
+
+The legacy save area is 512 bytes; its base must be 16-byte aligned. The
+architectural defined fields are:
+
+| Offset | Bytes | Field and rule |
+|---:|---:|---|
+| `0` | 2 | FCW |
+| `2` | 2 | FSW, including TOP in bits 13:11 |
+| `4` | 1 | Abridged FTW: one bit per physical register R0–R7, 1 means nonempty; 0 means empty. It does not preserve Valid/Zero/Special distinctions. |
+| `5` | 1 | Reserved |
+| `6` | 2 | FOP in low 11 bits; upper five bits reserved |
+| `8..23` | 16 | Mode-specific FIP/FDP and, only for REX.W=0 with CPUID.07H.00H:EBX[13]=0, FCS/FDS selectors; see below. |
+| `24` | 4 | MXCSR |
+| `28` | 4 | MXCSR_MASK; FXRSTOR ignores this field |
+| `32..159` | 128 | ST0–ST7 (MM0–MM7 aliases), 16 bytes each; low 80 bits are raw payload and upper 48 bits are unused/reserved. |
+| `160..415` | 256 | XMM0–XMM15, 16 bytes each in 64-bit mode. |
+| `416..463` | 48 | Reserved; not architecturally meaningful state. No write behavior is asserted here. |
+| `464..511` | 48 | Software-available; FXSAVE does not write these bytes, and FXRSTOR does not use them. FXSAVE therefore preserves their prior memory contents. They are not architectural CPU state. |
+
+The image is not the `FSAVE` image or the project's schema-v2 state snapshot.
+The eight data slots are ST0–ST7 order; FTW is abridged and in physical R0–R7
+order, so the relation between a slot and its FTW bit depends on TOP rotation.
+FXRSTOR reconstructs each nonempty full tag
+from the corresponding raw 80-bit payload; this can only preserve distinctions
+that payload encoding and the architectural reconstruction permit. Compare
+and round-trip tests must use architecturally defined fields, not reserved or
+unused bytes. In particular, reserved/unused image bytes are not, by that
+label alone, a restore-time validation rule; only explicit SDM checks such as
+reserved MXCSR bits are asserted here. Bytes 464–511 are software-available;
+FXSAVE does not write them and preserves their prior contents, while FXRSTOR
+does not use them. Bytes 416–463 are reserved and not meaningful state. Vol. 1
+states that the instructions do not use bytes 416–511, but this contract does
+not infer write semantics for reserved bytes 416–463. Saving does not
+initialize or otherwise clear the live FP/SIMD registers.
+
+In Long64, ordinary `FXSAVE/FXRSTOR` with REX.W=0 stores FIP at bytes 8–11 and
+FDP at bytes 16–19 as 32-bit offsets. Because this selected target's unlisted
+CPUID leaf 7 returns zero, bytes 12–13 and 20–21 hold FCS and FDS; bytes 14–15
+and 22–23 are unused. `FXSAVE64/FXRSTOR64` with REX.W=1 instead stores complete
+64-bit FIP and FDP at bytes 8–15 and 16–23, with no selectors in those ranges.
+The remaining fields and XMM offsets are shared. The current `X87State` has
+64-bit pointer fields but no FCS/FDS, so it is insufficient to model the
+plain Long64 form losslessly. `X87State`/`SseState` and `SseSnapshot` are
+component snapshots, not interchangeable with this 512-byte wire image.
+
+The selected target advertises FXSR separately from SSE/SSE2; Vol. 1 notes that
+FXSAVE/FXRSTOR have their own CPUID feature bit. Execution preconditions for a
+defined SSE save/restore include CPUID.01H:EDX.FXSR[24]=1, CR0.EM=0,
+CR0.TS=0 and CR4.OSFXSR=1. With OSFXSR clear, SSE state handling is
+implementation-dependent. This target keeps CR4.OSXSAVE clear and does not
+advertise XSAVE/OSXSAVE/AVX. The exact FXSAVE 64-bit mode exceptions include
+misalignment #GP(0) (with specified #AC variability where enabled), noncanonical
+address #GP(0)/#SS(0), #PF, #NM for CR0.EM/TS, and #UD if FXSR is absent or
+LOCK is used. This evidence slice does not implement their guest delivery.
+
+MXCSR is an architectural 32-bit value and FXRSTOR faults if reserved MXCSR
+bits are set. The architectural supported mask comes from the FXSAVE image's
+MXCSR_MASK; when that field is zero, Intel Vol. 1 specifies fallback mask
+`0x0000ffbf`. This is distinct from testkit's `diagnostic_mxcsr_mask` snapshot
+metadata: numerical equality does not make that local diagnostic metadata the
+selected target's capability source.
+
+Each instruction operates on a 512-byte memory area and can encounter
+alignment, address, or page faults. This describes the area, not a promise that
+every byte is written or read. Intel's cited description does not establish an
+all-area atomic write or a general rollback guarantee for external memory
+backends; the interpreter must not claim either. The Linux exact forms and
+recommended order are recorded in [S2-39a plan](../plans/STAGE_2.md#s2-39a-нормативное-evidence-legacy-fxsavefxrstor-evidence-only).
+S2-39a is evidence-only. The first implementation candidate is the plain
+Long64 RIP-relative FXSAVE mask-init probe, but only after FCS/FDS and the
+defined field writes are supported. It stores architectural state beyond
+MXCSR_MASK, while preserving bytes 464–511; it is not a mask-only store. The
+open selector representation gap is tracked in [ISSUE-026](../KNOWN_ISSUES.md#issue-026--plain-long64-fxsavefxrstor-target-lacks-selector-state).
+
 ## Предлагаемый профиль тестового прототипа S0-09
 
 Прототип — изолированный пользовательский fragment runner с единым vCPU, только immutable code buffer и register-only вычислениями. Это набор для сравнения decoder → interpreter/JIT, а не профиль x86-64 машины.

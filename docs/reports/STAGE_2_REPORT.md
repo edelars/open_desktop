@@ -15803,3 +15803,27 @@ findings. Documentation review verified the fixture, bounded S2-38a scope and
 all added links/anchors; it identified report wording that conflated compiling
 the native-denial test with running it, which was corrected. Follow-up review
 confirmed no finding remains.
+
+## S2-39a — legacy FXSAVE/FXRSTOR contract (evidence only)
+
+Recorded the Intel SDM Rev. 093 legacy 512-byte state map, definedness,
+Long64 `REX.W=0` versus `REX.W=1` pointer/selector layouts, abridged physical
+FTW/TOP rotation, XMM0–15, MXCSR mask fallback, alignment and architectural
+gate/fault preconditions in the [CPU contract](../specs/CPU_CONTRACT.md#s2-39a--legacy-fxsavefxrstor-contract-evidence-only). The exact Ubuntu 7.0.0-38.38 static
+package evidence ties the mask probe `0F AE 05 6B F9 17 00` to plain
+`FXSAVE` RIP+disp32, and the save/restore forms `48 0F AE 40 40` and
+`48 0F AE 4B 40` to `FXSAVE64`/`FXRSTOR64`; details and source locations are in
+the [Linux profile report](STAGE_2_LINUX_PROFILE.md#s2-39a--fxsave-evidence-only).
+
+This documentation-only slice adds no implementation or executable checks and
+does not claim a boot, C/D acceptance, physical execution, or whole-area
+atomicity. The chosen generic `amd64` target is selected, but target
+implementation, runtime manifest and boot remain open. Current `X87State`
+does not store FCS/FDS selectors required by the plain Long64 FXSAVE image;
+this confirmed representation gap is tracked in [ISSUE-026](../KNOWN_ISSUES.md#issue-026--plain-long64-fxsavefxrstor-target-lacks-selector-state). The recommended initial
+implementation is the exact RIP-relative mask-probe FXSAVE form once the
+required architectural state fields are representable. FXSAVE writes defined
+state in the 512-byte area, while preserving software-available bytes 464–511;
+reserved bytes 416–463 are not treated as meaningful state or given write
+semantics here. Mac mini/SSH checks stay in the combined final hardware
+substage.

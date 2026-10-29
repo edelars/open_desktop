@@ -159,8 +159,9 @@ compressed direct64 prefix сопоставлен с исходником и н�
 До scenario freeze остаются initramfs, command line, полное начальное
 CPU/MSR/CR/segment/table/FP state, memory/device manifest и измеримый success
 milestone. Выбранный reference CPU target определяет CPUID и несколько ранних
-boundary behaviors, но не является реализацией. Это не меняет статус S2-00:
-принят диагностический A; profile C/D и observed boot открыты.
+boundary behaviors, но не является реализацией. S2-00 принят для диагностического
+A, x86-64-v1 ABI/ISA floor и выбора synthetic target; реализация/проверка target,
+profile C/D и observed boot остаются открытыми.
 
 ## Что остаётся для C/D
 
@@ -269,8 +270,9 @@ project CPU vendor/family/model/stepping, maximum CPUID leaves и feature mask;
 нужно определить начальные CR/EFER/segment/table state;
 mitigation policy; exact kernel/initramfs/ELF64 init/module hashes;
 command line, page/memory map, UART, timer/interrupt controller и root path;
-критерий успеха (PID1/serial marker). `S2-00` остаётся принятым только для
-диагностического A. Profile C/D, S2-22/25/26/27, S2-23 necessity и source-to-
+критерий успеха (PID1/serial marker). `S2-00` принят для диагностического A,
+x86-64-v1 ABI/ISA floor и выбора synthetic target; реализация/проверка target
+остаются открытыми. Profile C/D, S2-22/25/26/27, S2-23 necessity и source-to-
 binary/observed-execution evidence остаются открытыми. Физический x86/Mac
 mini acceptance будет единым финальным подэтапом, не заменой этому manifest.
 
@@ -321,7 +323,8 @@ PE/Authenticode signature по-прежнему не проверена. Лок�
 observed execution. Initramfs, command line, initial CPU/CPUID/MSR/state,
 device/topology/memory manifest, success milestone и полный ISA/exception
 matrix остаются открытыми; S2-00 по-прежнему принят только для диагностического
-A и x86-64-v1 ABI/ISA floor.
+A и x86-64-v1 ABI/ISA floor, а synthetic CPU target выбран, но ещё не
+реализован или проверен.
 
 ## Exact source-to-binary mapping — 28 октября 2026
 
@@ -550,3 +553,46 @@ Vol. 3A IDTR/interrupt-descriptor-table sections; see the official sources
 already cited in the [CPU contract](../specs/CPU_CONTRACT.md#s2-27d--exact-long64-lidt-rsp-6).
 The [Stage 2 plan](../plans/STAGE_2.md#s2-27d--exact-long64-lidt-rsp-6)
 records the bounded test matrix.
+
+## S2-39a — FXSAVE evidence-only
+
+Static exact-image evidence above identifies three forms in Ubuntu
+7.0.0-38.38: `0F AE 05 6B F9 17 00` is a plain Long64 `FXSAVE` with RIP+disp32
+addressing in the MXCSR-mask initialization path; `48 0F AE 40 40` is
+`FXSAVE64 [RAX+0x40]`; and `48 0F AE 4B 40` is `FXRSTOR64 [RBX+0x40]` in the
+legacy save/restore path. These are disassembly/source-reachability facts, not
+observed guest execution. The complete addresses and source locations are in
+the exact package mapping table above.
+
+Intel SDM Rev. 093 (September 2026), Vol. 2A pp. 3-409–3-419, Tables 3-45–3-49,
+and Vol. 1 §§10.5.1–10.5.3, 11.6.5–11.6.6 define the 512-byte,
+16-byte-aligned area. The two
+Long64 formats have identical x87 environment/data, MXCSR, XMM0–15, and
+reserved/unused ranges, but differ at bytes 8–23: REX.W=0 stores 32-bit FIP/FDP
+and (for the selected CPUID leaf-7 zero result) FCS/FDS selectors; REX.W=1
+stores full 64-bit FIP/FDP without selectors. The abridged FTW encodes empty
+versus nonempty in physical-register order, while its eight raw 80-bit stack
+values are laid out ST0–ST7 in stack order; TOP rotates those identities.
+FXSAVE writes the defined architectural state fields, not every byte in the
+area: it preserves software-available bytes 464–511, while bytes 416–463 are
+reserved and their write behavior is not asserted here. The complete field
+map and definedness policy are in the [CPU contract](../specs/CPU_CONTRACT.md#s2-39a--legacy-fxsavefxrstor-contract-evidence-only).
+
+Intel defines the FXSR CPUID gate, CR0.EM/TS #NM gates, CR4.OSFXSR dependency
+for deterministic SSE state, 16-byte alignment, and the 32-bit-versus-64-bit
+pointer layouts. MXCSR_MASK is read from the area; Intel specifies
+`0x0000ffbf` only as the fallback when that field is zero. It is not testkit's
+diagnostic mask metadata, despite the current equal numeric value. A 512-byte
+instruction operand can fault on address/alignment/page conditions; neither
+this static evidence nor the cited instruction summary supports claiming a
+whole-area atomic commit or arbitrary memory-backend rollback.
+
+S2-39a closes only the normative evidence/contract subtask. The current
+S2-34.1 snapshot is not an FXSAVE image; specifically, `X87State` lacks FCS/FDS
+for the exact plain FXSAVE form. This confirmed state-representation gap is
+tracked in [ISSUE-026](../KNOWN_ISSUES.md#issue-026--plain-long64-fxsavefxrstor-target-lacks-selector-state).
+Recommended first implementation is the plain Long64 RIP-relative FXSAVE
+mask-probe form only after its architectural state fields and memory behavior
+are representable; it must leave bytes 464–511 unchanged. No implementation,
+tests, native oracle, C/D coverage, runtime boot, or physical/Mac mini check
+was performed; the latter remains in the combined final hardware substage.
