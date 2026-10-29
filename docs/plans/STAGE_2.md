@@ -6224,7 +6224,7 @@ physical acceptance remain separate dependencies.
 Локальный CPU-side срез принимает только schema-v2 profile
 `s2-long-xorpd-prerequisites-v1` и байты `66 0F 57 C1` (XORPD XMM0,XMM1).
 После полного fetch приоритет соответствует Intel SDM Rev. 093 Vol. 3A
-Table 15-1: отсутствующий SSE2, CR0.EM=1 или CR4.OSFXSR=0 дают #UD; только
+Table 16-1: отсутствующий SSE2, CR0.EM=1 или CR4.OSFXSR=0 дают #UD; только
 при разрешённых предыдущих условиях CR0.TS=1 даёт #NM; иначе XORPD
 исполняется обычной локальной семантикой. #UD приоритетен над #NM. Все 16
 комбинаций проверяются при CPL0–3: 14 #UD, один #NM, один успешный результат.
@@ -6234,7 +6234,9 @@ CR0.TS и CR4.OSFXSR. Гейты CPU-side, без error code и retirement; faul
 сохраняет полный CPU snapshot и не обращается к data memory. Бюджет/STOP
 проверяются до fetch, а gate — после полного fetch. Политика локальна ровно
 этой форме: универсальных CR state/write и CPUID изменений нет. OSXMMEXCPT и
-#XM не моделируются для этой неарифметической формы. Старые XORPD профили,
+#XM не моделируются для этой неарифметической формы. Источник: [Intel SDM
+Rev. 093, Vol. 3A, Table 16-1](https://cdrdv2.intel.com/v1/dl/getContent/671190).
+Старые XORPD профили,
 S2-40b native profile, JIT/native/C adapter не расширены. S2-38, Generic
 amd64 и S2-26/39/40/41/42 остаются открытыми; Mac mini physical stage —
 `not_run` до общего заключительного hardware substage. Детали — в

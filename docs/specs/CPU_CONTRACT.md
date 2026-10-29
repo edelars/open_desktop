@@ -11290,9 +11290,10 @@ Schema-v2 profile `s2-long-xorpd-prerequisites-v1` принимает ровно
 поле не сериализуется.
 
 После полного fetch выбранной формы выполняются gates в порядке Intel SDM
-Rev. 093 Vol. 3A Table 15-1: `!sse2_available || cr0_em || !cr4_osfxsr`
+Rev. 093 Vol. 3A Table 16-1: `!sse2_available || cr0_em || !cr4_osfxsr`
 возвращает CPU-side #UD; иначе `cr0_ts` возвращает CPU-side #NM; иначе
 исполняется существующий bytewise XORPD. Первая ветка имеет приоритет над TS.
+Источник: [Intel SDM Rev. 093, Vol. 3A, Table 16-1](https://cdrdv2.intel.com/v1/dl/getContent/671190).
 Правило одинаково для CPL0–3. Fault содержит вектор 6 или 7, не имеет error
 code и не retirement; RIP и полный `LongModeState` сохраняются. Нет data
 memory access. Входной STOP и нулевой budget завершают запуск до fetch; fetch
