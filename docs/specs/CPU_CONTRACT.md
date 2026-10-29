@@ -11684,6 +11684,50 @@ core composition test covers `STI; HLT`, successful S2-27f delivery, IRETQ,
 post-HLT continuation and all 16 old-RSP low-bit alignments. This synthetic
 composition is not Linux boot, hardware, or general event-delivery evidence.
 
+### S2-27l — exact Long64 same-CPL0 `LRETQ`
+
+`LretqProfile::SameCpl0ValidFrameV1` admits only exact bytes `48 CB` in
+Long64/CPL0, with Running activity, Clear STI shadow, `rflags_defined` equal
+to `INTEGER_FLAGS`, and current RFLAGS limited to `INTEGER_FLAGS|IF|IOPL`
+with reserved bit 1 set. The caller certifies private synchronous RAM,
+FRED/CET/shadow stacks/VMX/SMM disabled, and no pending debug or NMI event.
+Explicit current GDTR and a non-null CPL0 CS selector/cache are required. This
+profile does not model guest exception delivery or broader privilege
+transitions.
+
+At old RSP, read exactly two little-endian qwords: target RIP and CS. Use only
+the low 16 CS bits. Require canonical48 target RIP and the complete 16-byte
+frame range including `old_rsp + 16` to be canonical without overflow. CS is
+a non-null GDT selector with TI=RPL=0 and its descriptor must fit current GDTR.
+Read the descriptor from current GDT even if its selector equals the cached CS.
+Accept only the bounded S2-27k descriptor: present/accessed nonconforming ring-0
+code, base 0, effective limit 4 GiB, L=1/D=0 (`access=9B`, `flags=A`).
+
+After all reads and validation succeed, commit target RIP, CS selector/cache,
+RSP=`old_rsp+16` and one retirement atomically. RFLAGS and its definedness,
+SS selector/cache, other segments and bases, all GPR except RSP, FP, GDTR/IDTR,
+memory, Running activity and Clear shadow are preserved. No target instruction
+fetch is part of LRETQ. Invalid state, frame, selector or descriptor is
+Unsupported without CPU commit. Callback failures are terminal
+`ReadAborted { phase: Fetch|Frame|CsDescriptor, cause }`, not guest faults.
+Exact `F0 48 CB` produces #UD only after all three bytes are fetched; other
+prefix forms remain unsupported. JIT/native/C/fragment paths remain closed.
+
+The `s2-long-lretq-cpl0-valid-v1` fixture admits one instruction with budget 1,
+separate code/frame/GDT regions and stop RIP equal to the target RIP. Its two
+qword frame stores target RIP and CS; complete CS/SS selector/cache fields are
+opt-in so unchanged SS state is compared while older fixture wire forms remain
+unchanged. Four literal cases cross IF=0/1 × IOPL=0/3. This is local interpreter
+coverage, not Linux runtime or physical execution evidence.
+
+This bounded local profile does not generalize far-return semantics or claim
+that the selected Linux image contains these exact bytes. Linux source and
+symbol evidence identify `LRETQ` in `startup_64`; the binary instruction bytes
+were not independently established. Normative behavior is based on Intel SDM
+Rev. 093, Vol. 2B, `RET` instruction entry; exact `F0 48 CB` #UD handling is
+the source-backed LOCK-invalid rule for this profile. See the [official SDM](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)
+and [S2-27l Linux evidence](../reports/STAGE_2_LINUX_PROFILE.md#s2-27l-lretq-evidence-and-local-profile).
+
 ### S2-27j — exact Long64 HLT and synchronous maskable wake
 
 `HaltProfile::Long64V1` admits bare `F4` in Long64 with an explicit

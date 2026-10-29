@@ -1013,6 +1013,7 @@ fn execute_fixture_v2(
             | v2::Profile::LongStiV1
             | v2::Profile::LongHltV1
             | v2::Profile::LongIretqCpl0ValidV1
+            | v2::Profile::LongLretqCpl0ValidV1
     ) {
         let privilege = match loaded.fixture.cli_cpl.expect("validated CLI CPL") {
             v2::CliCpl::Cpl0 => od_isa::memory::PrivilegeLevel::Ring0,
@@ -1151,6 +1152,33 @@ fn execute_fixture_v2(
             od_isa::IretqRunExit::ReadAborted { phase, cause } => {
                 RunExit::MemoryError(od_isa::memory::MemoryError::Backend(format!(
                     "IRETQ {phase:?} read abort: {cause:?}"
+                )))
+            }
+        };
+        CpuRunResult {
+            exit,
+            instructions_executed: execution.instructions_executed,
+            rflags_defined: execution.rflags_defined,
+        }
+    } else if loaded.fixture.profile == v2::Profile::LongLretqCpl0ValidV1 {
+        use od_isa::execute::RunResult as CpuRunResult;
+        let execution = od_isa::run_with_lretq_profile(
+            &mut state,
+            memory,
+            config,
+            od_isa::INTEGER_FLAGS,
+            od_isa::LretqProfile::SameCpl0ValidFrameV1,
+            timeout,
+        );
+        let exit = match execution.exit {
+            od_isa::LretqRunExit::StopAddress => RunExit::StopAddress,
+            od_isa::LretqRunExit::StopRequested => RunExit::StopRequested,
+            od_isa::LretqRunExit::InstructionBudgetExhausted => RunExit::InstructionBudgetExhausted,
+            od_isa::LretqRunExit::Unsupported => RunExit::Unsupported { opcode: 0xcb },
+            od_isa::LretqRunExit::Fault(fault) => RunExit::Fault(fault),
+            od_isa::LretqRunExit::ReadAborted { phase, cause } => {
+                RunExit::MemoryError(od_isa::memory::MemoryError::Backend(format!(
+                    "LRETQ {phase:?} read abort: {cause:?}"
                 )))
             }
         };

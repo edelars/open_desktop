@@ -1,0 +1,94 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_27l_lretq_if1_iopl3",
+  "profile": "s2-long-lretq-cpl0-valid-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten exact LRETQ (48 CB); current IF=1, IOPL=3.",
+    "specification": "Intel SDM Rev. 093, Vol. 2B, RET; bounded S2-27l profile.",
+    "specification_version": "Intel SDM Rev. 093; Long64 CPL0 same-CPL valid frame; S2-27l."
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300000",
+      "0x0000000000300080",
+      "0x0000000000200004",
+      "0x0000000000200010",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100100",
+    "rflags": "0x0000000000003202",
+    "gdtr_base": "0x0000000000200000",
+    "gdtr_limit": "0x000000000000001f",
+    "cs_selector": "0x0000000000000018",
+    "cs_cache_base": "0x0000000000000000",
+    "cs_cache_limit": "0x00000000ffffffff",
+    "cs_cache_access": "0x000000000000009b",
+    "cs_cache_flags": "0x000000000000000a",
+    "ss_selector": "0x0000000000000010",
+    "ss_cache_base": "0x0000000000000000",
+    "ss_cache_limit": "0x00000000ffffffff",
+    "ss_cache_access": "0x0000000000000093",
+    "ss_cache_flags": "0x000000000000000c",
+    "sti_shadow": "clear",
+    "activity": "running"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100100",
+      "length": 2,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "48cb",
+      "comparison_mask_hex": "ffff"
+    },
+    {
+      "region_id": "frame",
+      "guest_address": "0x0000000000300000",
+      "length": 16,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "001200000080ffff080000000000cdab",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffff"
+    },
+    {
+      "region_id": "gdt",
+      "guest_address": "0x0000000000200000",
+      "length": 32,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "0000000000000000ffff0000009baf00ffff00000093cf00ffff0000009baf00",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0xffff800000001200",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000003ed7",
+  "expected_exit": "stop_address",
+  "cli_cpl": 0
+}

@@ -2639,6 +2639,36 @@ exception delivery, native/JIT/C execution, Linux runtime behavior or physical
 execution. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27k--exact-long64-same-cpl0-iretq)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-27k-exact-same-cpl0-iretq-fixture-profile).
 
+#### S2-27l — exact Long64 same-CPL0 `LRETQ`
+
+Add only exact `48 CB` behind `LretqProfile::SameCpl0ValidFrameV1`. Require
+Long64/CPL0, Running activity, Clear STI shadow, defined integer flags equal
+to `INTEGER_FLAGS`, current RFLAGS limited to `INTEGER_FLAGS|IF|IOPL` with bit
+1 set, and caller-certified FRED/CET/shadow-stack/VMX/SMM off with no pending
+debug/NMI. Require explicit GDTR and current CPL0 CS/cache state. Read exactly
+two little-endian qwords at old RSP: target RIP and CS.
+Ignore upper CS bits; require canonical48 target and whole 16-byte old-stack
+range including `old_rsp+16`, without overflow. Require a non-null GDT
+selector with TI=RPL=0 within current GDTR. Read and validate only the target
+descriptor from the current GDT, even if its selector matches the old cached
+CS. Accept only S2-27k's accessed `9B/A` ring-0 Long64 code descriptor, base 0,
+effective limit 4 GiB. Commit target RIP, CS selector/cache, RSP+16 and one
+retirement after all validation; preserve RFLAGS and definedness, SS and other
+state, memory and activity/shadow. Do not read a third qword or fetch target.
+Malformed inputs are Unsupported and callback errors are terminal phased
+read-aborts, not architectural faults. Exact `F0 48 CB` may #UD after complete
+fetch; other prefixes are unsupported. The new fixture profile is
+`s2-long-lretq-cpl0-valid-v1`; CS/SS transport is opt-in and old wire bytes remain
+unchanged. Compose exact LGDT `[RBP-10]` → LRETQ → target NOP with literal frame
+bytes. Linux evidence confirms the mnemonic but not exact instruction bytes.
+Eight focused `od-isa` tests and three runner fixture/schema tests pass, and
+`cargo test --workspace --offline` passes. Workspace all-target checks, Linux
+x86-runner compile check, formatting and diff checks pass.
+`tools/check_layout.py` reports only the pre-existing linked-worktree
+`.git` marker and absent historical oracle manifests. Graphify is refreshed
+and independent Sol-medium review is clean. Umbrella S2-27 and S2 remain open;
+Stage 3 is untouched. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27l--exact-long64-same-cpl0-lretq).
+
 ## 9. x87, MMX и SSE/SSE2
 
 Здесь особенно запрещены shortcuts: host `double` вместо extended precision, сравнение только обычных конечных значений, потеря NaN payload/classification или blanket masking всех FP differences. Если нужны библиотеки для общей инфраструктуры, они не должны реализовывать за проект x86/FP semantics.

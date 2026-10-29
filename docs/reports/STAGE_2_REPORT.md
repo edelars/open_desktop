@@ -16767,3 +16767,41 @@ native/JIT/C execution, physical x86, SSH or Mac mini checks were run. Intel SDM
 Vol. 2A IRET and Vol. 3A §7.14.3 are the normative source; the accepted
 descriptor bytes are an explicit local profile restriction, not a general
 descriptor allowlist. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27k--exact-long64-same-cpl0-iretq), [plan](../plans/STAGE_2.md#s2-27k--exact-long64-same-cpl0-iretq), [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-27k-exact-same-cpl0-iretq-fixture-profile), and [Linux matrix](STAGE_2_LINUX_PROFILE.md#s2-27k-local-iretq-matrix-entry).
+
+## S2-27l — exact Long64 same-CPL0 LRETQ
+
+Added interpreter-only `LretqProfile::SameCpl0ValidFrameV1` for exact `48 CB`.
+Admission requires Long64/CPL0, Running/Clear state, `rflags_defined` equal to
+`INTEGER_FLAGS`, and current RFLAGS limited to `INTEGER_FLAGS|IF|IOPL`. The
+instruction reads two qwords at old RSP, validates the canonical target and
+full 16-byte stack range, then rereads and validates the selected descriptor
+from current GDTR. Success commits only RIP, CS selector/cache and RSP+16;
+flags, SS and all other CPU and memory state remain unchanged. It never fetches
+the target instruction. Exact `F0 48 CB` reports #UD after complete fetch;
+other prefixes remain unsupported. Callback failures retain Fetch/Frame/
+CsDescriptor phase.
+
+Core tests cover all 16 stack alignments, old/new and same CS selectors, upper
+selector bits, exact read trace, current-GDT reread, atomic rejection/aborts,
+STOP and zero-budget prefetch, plus LGDT `[RBP-10]` → LRETQ → target NOP
+composition. Added the strict v2 profile and four literal IF=0/1 × IOPL=0/3
+fixtures; the runner verifies two-qword restoration, unchanged SS, and JIT/native
+denial, while schema negatives reject neighboring code, frame length and
+descriptor bytes. The matrix includes a high-canonical target and result
+validation rejects frame mutation. Eight focused `od-isa` tests and three
+runner fixture/schema tests pass, and `cargo test --workspace --offline` passes.
+Workspace all-target check and Linux `od-x86-runner` compile check pass;
+formatting, diff whitespace, and Graphify update pass. Layout check reports
+only the pre-existing linked-worktree `.git` marker and missing historical
+oracle manifests. Independent Sol-medium code review is clean; verification
+results above were run by the author. No Linux runtime,
+native execution, physical x86 or Mac mini checks were run. Umbrella S2-27/S2
+remain open.
+Ubuntu evidence identifies the `LRETQ` mnemonic in `startup_64`, but does not
+establish exact image bytes or runtime execution. S2-27/S2 remain open; JIT,
+native, C, physical execution and general fault delivery are outside scope.
+
+See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27l--exact-long64-same-cpl0-lretq),
+[plan](../plans/STAGE_2.md#s2-27l--exact-long64-same-cpl0-lretq),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-27l-exact-same-cpl0-lretq-profile),
+and [Linux evidence](STAGE_2_LINUX_PROFILE.md#s2-27l-lretq-evidence-and-local-profile).

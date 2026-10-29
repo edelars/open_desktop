@@ -582,6 +582,9 @@ fn admission_with_tracee_memory(
     actual: &LongModeState,
     tracee_pid: Option<libc::pid_t>,
 ) -> Result<FlagEffects, String> {
+    if fixture.profile == v2::Profile::LongLretqCpl0ValidV1 {
+        return Err("LRETQ is interpreter-only in the bounded S2-27l profile".into());
+    }
     let instruction = long_decode::decode(decoder, actual.rip, AccessContext::default())
         .map_err(|e| format!("native instruction outside admitted decode slice: {e:?}"))?;
     if matches!(
@@ -6747,6 +6750,35 @@ mod tests {
             result.instructions_executed,
             Observation::Unavailable { .. }
         ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lretq_fixture_is_rejected_by_preflight_before_trace() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_27l_lretq_if0_iopl0.case.json"
+        ))
+        .unwrap();
+        assert_eq!(loaded.fixture.memory[0].initial_bytes_hex, "48cb");
+        assert!(crate::native_fp::native_profile_local_only(
+            loaded.fixture.profile
+        ));
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { ref reason }
+                if reason == "this profile is local-only; native state does not observe every profile field"
+        ));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert!(
+            admission(&loaded.fixture, &mut decoder, &actual)
+                .unwrap_err()
+                .contains("LRETQ")
+        );
     }
 
     #[test]

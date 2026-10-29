@@ -5989,3 +5989,16 @@ Selector/cache fields are omitted from older profile wire forms and rejected
 there. Interpreter-only; JIT/native/C/fragment execution is denied. This is
 local bounded coverage, not general IRET exception behavior or Linux/physical
 execution. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-27k--exact-long64-same-cpl0-iretq).
+
+## S2-27l exact same-CPL0 LRETQ profile
+
+The local interpreter profile `s2-long-lretq-cpl0-valid-v1` admits only exact
+`48 CB`, budget 1, and stop RIP equal to the target RIP stored in an exact
+16-byte frame. Code, frame and current GDT are separate regions; only target
+RIP and CS are consumed. The target descriptor is reread from the current GDT
+even when it matches the old CS selector. Result state compares CS selector and
+cache while preserving SS/cache, flags and every other modeled field. Four
+literal fixtures cross IF=0/1 × IOPL=0/3 and runner checks preserve the frame
+and GDT. This local fixture evidence does not claim Linux runtime coverage.
+Ubuntu's selected kernel source names an
+`LRETQ` in `startup_64`, but these bytes have not been independently recovered.

@@ -2106,6 +2106,111 @@ fn iretq_cpl0_fixtures_restore_frame_and_both_descriptor_caches() {
 }
 
 #[test]
+fn lretq_cpl0_fixtures_consume_two_qwords_and_preserve_ss() {
+    let cases: [&[u8]; 4] = [
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_27l_lretq_if0_iopl0.case.json"),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_27l_lretq_if0_iopl3.case.json"),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_27l_lretq_if1_iopl0.case.json"),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_27l_lretq_if1_iopl3.case.json"),
+    ];
+    for fixture in cases {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), 1);
+        let observed = snapshot(&result);
+        let frame = od_testkit::v2::decode_bytes(
+            &input
+                .fixture
+                .memory
+                .iter()
+                .find(|r| r.region_id == "frame")
+                .unwrap()
+                .initial_bytes_hex,
+        )
+        .unwrap();
+        let target = u64::from_le_bytes(frame[0..8].try_into().unwrap());
+        let selector = u64::from_le_bytes(frame[8..16].try_into().unwrap()) as u16;
+        assert_eq!(observed.state.rip, HexU64(target));
+        assert_eq!(observed.state.gpr[4], HexU64(0x0030_0010));
+        assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+        assert_eq!(observed.state.cs_selector, Some(HexU64(selector as u64)));
+        assert_eq!(observed.state.cs_cache_access, Some(HexU64(0x9b)));
+        assert_eq!(observed.state.cs_cache_flags, Some(HexU64(0xa)));
+        assert_eq!(
+            observed.state.ss_selector,
+            input.fixture.initial_state.ss_selector
+        );
+        assert_eq!(
+            observed.state.ss_cache_access,
+            input.fixture.initial_state.ss_cache_access
+        );
+        assert_eq!(
+            observed.state.ss_cache_flags,
+            input.fixture.initial_state.ss_cache_flags
+        );
+        assert_eq!(
+            observed.rflags_defined,
+            HexU64(od_testkit::v2::INTEGER_FLAGS)
+        );
+    }
+    for engine in ["jit", "native"] {
+        let (_, result) = run(cases[3], engine, 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    }
+}
+
+#[test]
+fn lretq_profile_rejects_neighboring_code_frame_and_descriptor_shapes() {
+    let fixture =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_27l_lretq_if1_iopl3.case.json");
+    let mut invalid = Fixture::from_json(fixture).unwrap().fixture;
+    invalid
+        .memory
+        .iter_mut()
+        .find(|r| r.region_id == "code")
+        .unwrap()
+        .initial_bytes_hex = "cb".into();
+    assert!(invalid.to_json().is_err());
+
+    let mut invalid = Fixture::from_json(fixture).unwrap().fixture;
+    let frame = invalid
+        .memory
+        .iter_mut()
+        .find(|r| r.region_id == "frame")
+        .unwrap();
+    frame.length = 8;
+    frame.initial_bytes_hex.truncate(16);
+    frame.comparison_mask_hex.truncate(16);
+    assert!(invalid.to_json().is_err());
+
+    let mut invalid = Fixture::from_json(fixture).unwrap().fixture;
+    let gdt = invalid
+        .memory
+        .iter_mut()
+        .find(|r| r.region_id == "gdt")
+        .unwrap();
+    gdt.initial_bytes_hex.replace_range(26..28, "91");
+    assert!(invalid.to_json().is_err());
+}
+
+#[test]
+fn lretq_result_rejects_changed_frame_or_gdt_bytes() {
+    let fixture =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_27l_lretq_if1_iopl3.case.json");
+    let (input, mut result) = run(fixture, "interpreter", 0);
+    let Observation::Available { value } = &mut result.snapshot else {
+        panic!("interpreter result must include a snapshot");
+    };
+    let frame = value
+        .memory
+        .iter_mut()
+        .find(|r| r.region_id == "frame")
+        .unwrap();
+    frame.bytes_hex.replace_range(0..2, "ff");
+    assert!(result.validate_for(&input).is_err());
+}
+
+#[test]
 fn sti_compound_fixture_requires_exact_success_boundary() {
     let mut input = Fixture::from_json(STI_FIXTURES[0]).unwrap();
     let code = input

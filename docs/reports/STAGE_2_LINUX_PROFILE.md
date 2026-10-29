@@ -852,3 +852,14 @@ show that Ubuntu executes this path, establish IRET fault delivery or priority,
 or constitute Linux boot/native/physical evidence. JIT/native/C/fragment paths
 remain denied. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27k--exact-long64-same-cpl0-iretq)
 and [Stage 2 plan](../plans/STAGE_2.md#s2-27k--exact-long64-same-cpl0-iretq).
+
+### S2-27l LRETQ evidence and local profile
+
+The selected Ubuntu kernel's `arch/x86/kernel/head_64.S:59–138` startup path
+is mapped to `startup_64` and records an `LRETQ` mnemonic after GDT/IDT setup.
+This confirms source/symbol-level presence only. The exact instruction bytes
+were not independently located in the image, so this evidence does not claim
+opcode `48 CB` or runtime execution. The bounded local `48 CB` interpreter
+profile is specified in the [CPU contract](../specs/CPU_CONTRACT.md#s2-27l--exact-long64-same-cpl0-lretq); Linux runtime, native/physical execution,
+fixture runner integration and general far-return semantics remain
+unestablished.

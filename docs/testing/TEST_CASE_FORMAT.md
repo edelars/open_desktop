@@ -1112,3 +1112,16 @@ omitting those optional fields. Result snapshots compare both complete caches,
 selectors, RIP/RSP/RFLAGS, activity, shadow and unchanged frame/GDT bytes. The
 literal matrix covers IF=0/1 × IOPL=0/3. No profile fields authorize JIT,
 native or C/fragment execution.
+
+## S2-27l `s2-long-lretq-cpl0-valid-v1`
+
+The profile admits exact code `48 CB`, one retirement and budget 1. It requires
+separate executable code, a readable 16-byte frame at initial RSP, and a
+readable current GDT matching explicit GDTR base/limit. The frame contains only
+target RIP and CS; expected stop address equals target RIP. The interpreter
+also reads the selected CS descriptor from that GDT. Initial activity/shadow
+are Running/Clear and CPL is zero. Result state compares RIP, RSP, flags and
+definedness, CS selector/cache, unchanged SS and all other modeled fields, plus
+unchanged frame/GDT. CS/SS transport is opt-in for this and the IRETQ profiles;
+legacy serialized state remains unchanged. Four literal cases cross IF=0/1 ×
+IOPL=0/3. JIT, native and C/fragment execution are not authorized.

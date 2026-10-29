@@ -13,6 +13,7 @@ pub mod hlt;
 pub mod interrupt;
 pub mod iretq;
 pub mod long_decode;
+pub mod lretq;
 pub mod memory;
 pub mod msr;
 mod rational_rounding;
@@ -30,6 +31,10 @@ pub use interrupt::{
 pub use iretq::{
     IretqProfile, IretqReadPhase, IretqResult, IretqRunExit, IretqRunResult,
     run_with_iretq_profile, step_with_iretq_profile,
+};
+pub use lretq::{
+    LretqProfile, LretqReadPhase, LretqResult, LretqRunExit, LretqRunResult,
+    run_with_lretq_profile, step_with_lretq_profile,
 };
 pub use state::{
     CodeSegmentDescriptorCache, CpuActivity, DataSegmentDescriptorCache, DsDescriptorCache,
