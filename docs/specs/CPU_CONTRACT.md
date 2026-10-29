@@ -12098,3 +12098,39 @@ rejection, sentinels, schema/result tampering, comparator control echoes and
 JIT/native denial. Sources: Intel SDM Rev. 093 Vol. 2B MINSD pp.4-22–4-23
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241)); Vol. 1
 §§4.9.2, 11.5.2, 11.5.3.2–3 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)). See the [plan](../plans/STAGE_2.md#s2-38g-exact-long64-minsd-xmm0xmm1-unmasked-invalid-and-denormal-exit).
+
+
+## S2-38h — exact MAXSD unmasked invalid and denormal exit
+
+The interpreter-only schema-v2 profile `s2-long-maxsd-unmasked-denormal-v1`
+accepts only Long64 `F2 0F 5F C1` (`MAXSD XMM0,XMM1`), one executable code
+region, budget 1 and stop RIP `entry+4`. Its immutable `MaxsdUnmaskedControls`
+contains `sse2_available`, CR0.EM/TS, CR4.OSFXSR and CR4.OSXMMEXCPT and is echoed
+unchanged by the result. Full fetch precedes SSE2/EM/OSFXSR #UD and TS #NM gates;
+operands are classified only after the gates, at CPL0–3. Other registers,
+REX/prefix variations, memory and packed forms are outside admission.
+
+The profile requires reserved MXCSR bits clear, ZE/OE/UE/PE masks set, and
+DAZ/FTZ clear. IM/DM, RC and prior sticky flags are accepted. Per the MAXSD
+entry in Intel SDM Rev. 093 Vol. 2B pp. 4-11–4-12, finite operands select the
+numeric maximum. Either NaN, equality or a signed-zero tie selects raw source 2;
+source-2 SNaN/QNaN payload/sign are preserved. This is MAXSD-specific evidence,
+not an inference from MINSD. Raw subnormal classification is kept separate from
+the existing masked MAXSD/MINSD status path. For mixed NaN+subnormal with both
+masks set, invalid priority reports IE only and completes. If IM or DM is
+unmasked, IE|DE are recorded and one #XM (OSXMMEXCPT=1) or #UD
+(OSXMMEXCPT=0) occurs. A DE-only unmasked input records DE. Faults preserve full
+XMM0/RIP and retire zero; completion updates only XMM0 low qword and RIP. Old
+sticky IE/DE bits alone do not fault. No handler continuation is modeled.
+
+Fixed local evidence includes the full NaN/subnormal/mixed × operand-position ×
+IM × DM × OSXMMEXCPT matrix, SSE2/EM/OSFXSR/TS controls, CPL0–3, partial fetch,
+STOP/zero budget, exact-form rejects, finite/equal/signed-zero/infinity cases,
+raw payloads, upper-qword sentinels, independent result validation, tamper and
+comparator checks. All 88 literal MAXSD fixtures run through the interpreter
+profile; JIT/native are rejected. C/fragment and physical admission remain
+closed. Normative source: [Intel SDM Rev. 093 Vol. 2B](https://cdrdv2.intel.com/v1/dl/getContent/671241),
+MAXSD pp. 4-11–4-12, SHA-256
+`a261998ace8e07f624bf3e2486bb6cfe950fb8be8d0dc9631bcecb4c5ec953e4`; Vol. 1
+§§4.9.2, 11.5.2.1–2, 11.5.3.2–3 and Vol. 2A Table 2-20. See the
+[plan](../plans/STAGE_2.md#s2-38h-exact-long64-maxsd-xmm0xmm1-unmasked-invalid-and-denormal-exit).

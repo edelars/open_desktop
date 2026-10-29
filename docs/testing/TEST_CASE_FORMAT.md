@@ -1236,3 +1236,24 @@ fixtures include NaN-only, subnormal-only, mixed-mask and OSXMMEXCPT choices.
 The full local matrix is covered by unit tests. JIT/native reject this profile;
 physical execution is deferred. Semantics cite Intel SDM Rev. 093 Vol. 2B MINSD
 pp.4-22–4-23 and Vol. 1 §§4.9.2, 11.5.2, 11.5.3.2–3.
+
+
+## S2-38h exact MAXSD unmasked IM/DM profile
+
+The strict schema-v2 profile `s2-long-maxsd-unmasked-denormal-v1` admits only
+Long64 bytes `f20f5fc1`. It requires a `maxsd_unmasked_controls` object with
+five booleans (`sse2_available`, `cr0_em`, `cr0_ts`, `cr4_osfxsr`,
+`cr4_osxmmexcpt`); results repeat it as `snapshot.maxsd_unmasked_controls`.
+Missing/unknown/cross-profile controls, non-exact code, result omission or
+tampering are rejected. MXCSR reserved bits must be clear; ZE/OE/UE/PE masks
+set; DAZ/FTZ clear; IM/DM/RC/previous sticky bits are accepted. A fixture has
+one executable code mapping, budget one and stop RIP `entry+4`.
+
+Independent validation classifies raw binary64 NaN/subnormal operands and
+checks the MAXSD raw selector, IE/DE status, complete state, retirement and
+exception metadata. The fixed fixtures contain the full NaN/subnormal/mixed
+operand-position × IM × DM × OSXMMEXCPT cross-product, MAXSD finite/equal/
+signed-zero/infinity cases and a prior-sticky-only no-event case. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38h--exact-maxsd-unmasked-invalid-and-denormal-exit),
+[plan](../plans/STAGE_2.md#s2-38h-exact-long64-maxsd-xmm0xmm1-unmasked-invalid-and-denormal-exit),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38h-local-maxsd-unmasked-invalid-and-denormal).

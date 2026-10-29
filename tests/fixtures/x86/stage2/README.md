@@ -6184,3 +6184,22 @@ the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38g--exact-minsd-un
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-38g--exact-long64-minsd-with-bounded-unmasked-imdm-exits),
 [plan](../../../../docs/plans/STAGE_2.md#s2-38g-exact-long64-minsd-xmm0xmm1-unmasked-invalid-and-denormal-exit),
 and [format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-38g-exact-minsd-unmasked-imdm-profile). Normative sources: Intel SDM Rev. 093 Vol. 2B MINSD pp. 4-22–4-23 and Vol. 1 §§4.9.2, 11.5.2, 11.5.3.2–3.
+
+
+### S2-38h local MAXSD unmasked invalid and denormal
+
+The separate schema-v2 profile `s2-long-maxsd-unmasked-denormal-v1` admits
+only Long64 `F2 0F 5F C1` and carries a MAXSD-specific immutable SSE2/CR0/CR4
+control object. Eighty fixed literal inputs cover QNaN, SNaN, subnormal and
+mixed NaN/subnormal classes in both operand positions crossed with IM, DM and
+OSXMMEXCPT. Seven more selector cases cover finite maxima, equal values,
+both signed-zero ties and infinities; one pre-existing IE/DE-only case proves
+old sticky flags alone do not cause a fault. The result validator independently
+checks each actual interpreter snapshot, raw payload/sign preservation, upper
+qword and unrelated state, IE/DE status, retirement and exception metadata.
+Fault cases preserve XMM0/RIP with zero retirement. JIT/native deny the profile;
+C/fragment and hardware execution remain deferred. The selector and exception
+list cite Intel SDM Rev. 093 Vol. 2B MAXSD pp. 4-11–4-12 (official PDF SHA-256
+`a261998ace8e07f624bf3e2486bb6cfe950fb8be8d0dc9631bcecb4c5ec953e4`), not a
+MINSD-only inference; Vol. 1 §§4.9.2, 11.5.2.1–2, 11.5.3.2–3 and Vol. 2A
+Table 2-20 establish the exception/control behavior.

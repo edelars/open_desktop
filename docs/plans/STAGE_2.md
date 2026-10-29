@@ -501,7 +501,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
 | [x] | S2-38e | Exact S2-39i FP-init/FXRSTOR64 followed by MINSS; image-controlled IM/DM completion and #XM policy; interpreter-only | S2-38d, S2-39i; independent review complete |
 | [x] | S2-38f | Exact Long64 `MAXSS XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, literal fixtures, complete local control/fault/result matrix; interpreter-only | S2-38d policy source after MAXSS-specific SDM review; independent review clean |
-| [ ] | S2-38g | Exact Long64 `MINSD XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, raw denormal classification, literal fixtures and complete local control/fault/result matrix; interpreter-only | S2-37i, S2-38f policy after MINSD-specific SDM review; independent review |
+| [x] | S2-38g | Exact Long64 `MINSD XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, raw denormal classification, literal fixtures and complete local control/fault/result matrix; interpreter-only | S2-37i, S2-38f policy after MINSD-specific SDM review; independent review clean |
+| [ ] | S2-38h | Exact Long64 `MAXSD XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, MAXSD-specific Rev. 093 semantics, full NaN/subnormal/control cross-product and raw-result fixtures; interpreter-only | S2-37j, S2-38g control policy after MAXSD-specific SDM review; independent review |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
@@ -12337,3 +12338,42 @@ closed. This does not claim Linux's observed entry value, WRMSR behavior, mode
 transitions, NX enforcement, guest exception delivery, MMU/paging effects, or
 hardware execution. Normative source: Intel SDM Rev. 093 Vol. 2B RDMSR and
 Vol. 3A IA32_EFER / IA-32e paging.
+
+
+#### S2-38h. Exact Long64 MAXSD XMM0,XMM1 unmasked invalid and denormal exit
+
+The interpreter-only schema-v2 profile `s2-long-maxsd-unmasked-denormal-v1`
+admits only Long64 `F2 0F 5F C1`, one executable code mapping, budget 1 and
+stop RIP `entry+4`. It has its own immutable `MaxsdUnmaskedControls` snapshot
+for SSE2 availability, CR0.EM/TS and CR4.OSFXSR/OSXMMEXCPT; the result echoes
+that object. Complete fetch precedes SSE2/EM/OSFXSR #UD and then TS #NM checks;
+only after those gates are low qwords XMM0/XMM1 classified. CPL0–3 follow the
+same gate sequence. Reserved MXCSR bits, DAZ and FTZ must be clear; ZE/OE/UE/PE
+masks must be set; IM, DM, RC and existing sticky bits may vary.
+
+MAXSD-specific Rev. 093 Vol. 2B pp. 4-11–4-12 evidence governs its selector and
+exception list. Finite operands select the numeric maximum. Either NaN, equal
+values and signed-zero ties select raw source 2; source-2 SNaN/QNaN sign and
+payload remain unchanged. The profile records raw subnormal classification.
+For NaN+subnormal with both IM/DM masked, invalid priority adds IE only and
+completes. If either relevant exception is unmasked, IE|DE are sticky and one
+#XM (OSXMMEXCPT=1) or #UD (OSXMMEXCPT=0) occurs. Faults preserve all XMM0/RIP
+and retire zero; completion changes only XMM0's low qword. Existing masked
+MAXSD/MINSD execution is unchanged. JIT/native/C/fragment and physical admission
+remain closed; no handler continuation is modeled.
+
+The 88 fixed JSON inputs include the full QNaN/SNaN/subnormal/mixed operand
+position × IM × DM × OSXMMEXCPT matrix, finite/equal/signed-zero/infinity
+selectors, and pre-existing IE/DE without a new event. Independent schema-v2
+result validation uses raw classification and its own ordering rule, validates
+state/retirement/exception/control echoes, and rejects tampering. Two focused
+ISA tests cover the complete input/control and prerequisite/fetch/budget/form
+matrices; the runner integration consumes all 88 fixtures and checks JIT/native
+denial. Sources: Intel SDM Rev. 093 Vol. 2B MAXSD pp. 4-11–4-12
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241), SHA-256
+`a261998ace8e07f624bf3e2486bb6cfe950fb8be8d0dc9631bcecb4c5ec953e4`); Vol. 1
+§§4.9.2, 11.5.2.1–2, 11.5.3.2–3
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)); Vol. 2A
+Table 2-20. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38h--exact-maxsd-unmasked-invalid-and-denormal-exit),
+[fixture format](../testing/TEST_CASE_FORMAT.md#s2-38h-exact-maxsd-unmasked-imdm-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38h-local-maxsd-unmasked-invalid-and-denormal).

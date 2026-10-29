@@ -16951,3 +16951,103 @@ fn decode_xmm_literal(value: &str) -> [u8; 16] {
 fn encode_xmm_literal(bytes: &[u8; 16]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
+
+#[test]
+fn maxsd_unmasked_literal_matrix_validates_independent_results_and_denials() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let mut paths: Vec<_> = fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("s2_38h_maxsd_")
+        })
+        .collect();
+    paths.sort();
+    assert_eq!(
+        paths.len(),
+        88,
+        "literal MAXSD cross-product and outcome fixtures"
+    );
+    let mut denial_source = None;
+    for path in paths {
+        let source = fs::read(&path).unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongMaxsdUnmaskedDenormalV1
+        );
+        assert_eq!(
+            od_testkit::v2::compare(&input, &result, &result).unwrap(),
+            Vec::<String>::new()
+        );
+        let Observation::Available { value } = &result.snapshot else {
+            panic!("snapshot unavailable")
+        };
+        assert_eq!(
+            value.maxsd_unmasked_controls,
+            input.fixture.maxsd_unmasked_controls
+        );
+        if denial_source.is_none() {
+            denial_source = Some(source.clone());
+        }
+        let name = input.fixture.case_id.as_str();
+        let expected = match name {
+            "s2_38h_maxsd_finite_lhs_max" => Some("0000000000000040"),
+            "s2_38h_maxsd_finite_rhs_max" => Some("0000000000000040"),
+            "s2_38h_maxsd_equal_finite_source2" => Some("182d4454fb210940"),
+            "s2_38h_maxsd_positive_zero_tie_source2" => Some("0000000000000080"),
+            "s2_38h_maxsd_negative_zero_tie_source2" => Some("0000000000000000"),
+            "s2_38h_maxsd_infinity_lhs_max" | "s2_38h_maxsd_infinity_rhs_max" => {
+                Some("000000000000f07f")
+            }
+            _ => None,
+        };
+        if let Some(expected_low) = expected {
+            assert!(matches!(result.outcome, Outcome::StopAddress {}));
+            assert_eq!(
+                &value.state.sse.as_ref().unwrap().xmm[0][..16],
+                expected_low
+            );
+            let initial = input.fixture.initial_state.sse.as_ref().unwrap();
+            let final_sse = value.state.sse.as_ref().unwrap();
+            assert_eq!(&final_sse.xmm[0][16..], &initial.xmm[0][16..]);
+            assert_eq!(&final_sse.xmm[1..], &initial.xmm[1..]);
+        }
+    }
+    let source = denial_source.unwrap();
+    let (_, jit) = run(&source, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    let (_, native) = run(&source, "native", 4);
+    assert!(matches!(native.outcome, Outcome::Unsupported { .. }));
+
+    let (input, result) = run(&source, "interpreter", 0);
+    let mut wrong_form = input.fixture.clone();
+    wrong_form.memory[0].initial_bytes_hex = "f20f5fc2".into();
+    assert!(wrong_form.validate().is_err());
+    let mut missing_controls = input.fixture.clone();
+    missing_controls.maxsd_unmasked_controls = None;
+    assert!(missing_controls.validate().is_err());
+    let mut bad_mxcsr = input.fixture.clone();
+    bad_mxcsr.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x7e50);
+    assert!(bad_mxcsr.validate().is_err());
+    let mut tampered_controls = result.clone();
+    let Observation::Available { value } = &mut tampered_controls.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value
+        .maxsd_unmasked_controls
+        .as_mut()
+        .unwrap()
+        .sse2_available = false;
+    assert!(od_testkit::v2::compare(&input, &result, &tampered_controls).is_err());
+    let mut tampered_output = result.clone();
+    let Observation::Available { value } = &mut tampered_output.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.state.sse.as_mut().unwrap().xmm[0].replace_range(..2, "ff");
+    assert!(od_testkit::v2::compare(&input, &result, &tampered_output).is_err());
+}

@@ -17100,9 +17100,9 @@ checks were not run by design.
 
 ## S2-38g — exact Long64 MINSD with bounded unmasked IM/DM exits
 
-**Status:** local interpreter/schema-v2 implementation and focused validation
-complete; independent review pending. Combined physical/Mac mini acceptance
-remains deferred to the final hardware substage.
+**Status:** local interpreter/schema-v2 implementation, focused validation and
+independent review complete; physical/Mac mini acceptance remains deferred to
+the final hardware substage.
 
 Added the separate `s2-long-minsd-unmasked-denormal-v1` profile for only
 `F2 0F 5D C1`. It carries independent immutable controls with
@@ -17124,12 +17124,12 @@ classification in both operand positions with IM×DM×OSXMMEXCPT and CPL0–3, a
 cover prerequisite/fetch/budget/form boundaries, upper-qword sentinels, strict
 schema/result tampering, comparator controls, and JIT/native denial.
 
-Focused verification passed: two `od-isa` MINSD profile tests and the S2-38g
-runner fixture integration test. `cargo fmt --all -- --check`,
+Focused verification passed: two named `od-isa` MINSD profile matrix tests and
+one S2-38g runner fixture integration test. `cargo fmt --all -- --check`,
 `cargo check --workspace --all-targets --offline`, `git diff --check`, and
 `graphify update .` passed. `python3 tools/check_layout.py` reports the existing
 ISSUE-023 worktree `.git` pointer and two missing archived oracle manifests;
-no new layout finding is introduced. Independent `gpt-6.1-sol` review is pending.
+no new layout finding is introduced. The independent code review completed cleanly.
 Hardware exception delivery and Mac mini physical execution were not run and
 remain out of scope for this local slice.
 
@@ -17141,3 +17141,51 @@ Normative source: Intel SDM Rev. 093 Vol. 2B MINSD pp. 4-22–4-23
 [plan](../plans/STAGE_2.md#s2-38g-exact-long64-minsd-xmm0xmm1-unmasked-invalid-and-denormal-exit),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38g-local-minsd-unmasked-invalid-and-denormal),
 and [format](../testing/TEST_CASE_FORMAT.md#s2-38g-exact-minsd-unmasked-imdm-profile).
+
+
+## S2-38h — exact Long64 MAXSD with bounded unmasked IM/DM exits
+
+**Status:** local interpreter/schema-v2 implementation and focused validation
+complete; independent review pending. Physical/Mac mini acceptance remains
+`not_run` and is deferred to the final hardware substage.
+
+Added the distinct `s2-long-maxsd-unmasked-denormal-v1` profile for exact
+`F2 0F 5F C1`. Immutable MAXSD controls hold SSE2, CR0.EM/TS and
+CR4.OSFXSR/OSXMMEXCPT; complete fetch precedes SSE2/EM/OSFXSR #UD, then TS #NM,
+then operand classification. Only XMM0/XMM1 low qwords participate. MXCSR
+reserved bits, DAZ and FTZ must be clear; ZE/OE/UE/PE masks are set; IM, DM, RC
+and prior sticky bits are allowed. The old masked MAXSD/MINSD execution path is
+unchanged.
+
+Using the MAXSD entry in Intel SDM Rev. 093 Vol. 2B (not MINSD as a substitute),
+finite inputs select the numeric maximum and NaN, equal-value and signed-zero
+ties select raw source 2. QNaN/SNaN source-2 payload and sign are preserved.
+Raw DE classification is independent from IE priority: mixed NaN+subnormal with
+both masks set completes with IE only; if IM or DM is open, IE|DE are committed
+and a single #XM/#UD occurs according to OSXMMEXCPT. Faults preserve full XMM0
+and RIP and retire zero; completion changes only XMM0 low qword. No handler
+continuation, native, JIT, C or fragment admission is claimed.
+
+The 88 fixed literal fixture inputs comprise the NaN/SNaN/subnormal/mixed class
+× operand position × IM × DM × OSXMMEXCPT matrix, seven MAXSD-specific finite,
+equal, signed-zero and infinity selectors, and one prior-sticky-only no-event
+case. The independent schema-v2 result validator checks the actual interpreter
+snapshots using raw classification and an independent ordering rule; runner
+coverage includes output/control tampering, comparator rejection, and JIT/native
+denial. Verification passed: two named `od-isa` S2-38h matrix tests and one
+runner integration test over all 88 fixtures. The ISA matrix also checks
+SSE2/EM/OSFXSR/TS gates, CPL0–3, partial fetch, STOP, zero budget, exact-form
+rejects and zero data-memory callbacks. `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`git diff --check` and `graphify update .` passed. `python3 tools/check_layout.py`
+reports only the existing ISSUE-023 worktree `.git` pointer and two missing
+historical oracle manifests. No physical execution or Mac mini check was run.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2B MAXSD pp. 4-11–4-12
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241), SHA-256
+`a261998ace8e07f624bf3e2486bb6cfe950fb8be8d0dc9631bcecb4c5ec953e4`); Vol. 1
+§§4.9.2, 11.5.2.1–2, 11.5.3.2–3
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)); Vol. 2A
+Table 2-20. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38h--exact-maxsd-unmasked-invalid-and-denormal-exit),
+[plan](../plans/STAGE_2.md#s2-38h-exact-long64-maxsd-xmm0xmm1-unmasked-invalid-and-denormal-exit),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38h-local-maxsd-unmasked-invalid-and-denormal),
+and [format](../testing/TEST_CASE_FORMAT.md#s2-38h-exact-maxsd-unmasked-imdm-profile).
