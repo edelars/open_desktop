@@ -1762,14 +1762,76 @@ unsafe impl od_jit::memory_dispatch::MemoryBlockExecutor for PublishedMemoryBloc
         stop_rip: Option<u64>,
         stop_requested: &AtomicU8,
     ) -> Result<od_jit::memory_dispatch::MemoryBlockReport, Self::Error> {
+        // SAFETY: forwards the existing executor contract with event polling
+        // disabled, preserving this implementation's original entrypoint.
+        unsafe {
+            self.execute_one_memory_block_controlled(
+                block,
+                state,
+                memory,
+                access_context,
+                incoming_budget,
+                stop_rip,
+                stop_requested,
+                None,
+            )
+        }
+    }
+
+    unsafe fn execute_one_memory_block_controlled(
+        &mut self,
+        block: &od_jit::memory_dispatch::BoundedMemoryArtifact,
+        state: &mut od_isa::LongModeState,
+        memory: &mut dyn od_isa::memory::GuestMemory,
+        access_context: od_isa::memory::AccessContext,
+        incoming_budget: u64,
+        stop_rip: Option<u64>,
+        stop_requested: &AtomicU8,
+        event_requested: Option<&AtomicBool>,
+    ) -> Result<od_jit::memory_dispatch::MemoryBlockReport, Self::Error> {
         use od_jit::memory_dispatch::{MemoryBlockExit, MemoryBlockReport};
 
-        let (published, result) = match block {
+        let published = match block {
             od_jit::memory_dispatch::BoundedMemoryArtifact::Pair(compiled) => {
-                let published = PublishedCode::publish_ir_memory_two_site_v2(compiled)
-                    .map_err(PublishedMemoryBlockError::Publish)?;
+                PublishedCode::publish_ir_memory_two_site_v2(compiled)
+                    .map_err(PublishedMemoryBlockError::Publish)?
+            }
+            od_jit::memory_dispatch::BoundedMemoryArtifact::Load(compiled) => {
+                PublishedCode::publish_ir_memory_load_v2(compiled)
+                    .map_err(PublishedMemoryBlockError::Publish)?
+            }
+            od_jit::memory_dispatch::BoundedMemoryArtifact::Store(compiled) => {
+                PublishedCode::publish_ir_memory_store_v2(compiled)
+                    .map_err(PublishedMemoryBlockError::Publish)?
+            }
+        };
+
+        let pre_entry_exit = if stop_rip == Some(state.rip) {
+            Some(MemoryBlockExit::StopAddress)
+        } else if stop_requested.load(Ordering::Acquire) != 0 {
+            Some(MemoryBlockExit::StopRequested)
+        } else if incoming_budget == 0 {
+            Some(MemoryBlockExit::BudgetExhausted)
+        } else if event_requested.is_some_and(|request| request.load(Ordering::Acquire)) {
+            Some(MemoryBlockExit::EventPending)
+        } else {
+            None
+        };
+        if let Some(exit) = pre_entry_exit {
+            // The just-published mapping is dropped before returning the
+            // no-entry outcome to the dispatcher.
+            drop(published);
+            return Ok(MemoryBlockReport {
+                exit,
+                remaining_budget: incoming_budget,
+                retired_instructions: 0,
+            });
+        }
+
+        let result = match block {
+            od_jit::memory_dispatch::BoundedMemoryArtifact::Pair(_) => {
                 // SAFETY: forwarded from this trait's caller contract.
-                let result = unsafe {
+                unsafe {
                     published.execute_ir_memory_two_site_v2(
                         state,
                         memory,
@@ -1778,27 +1840,20 @@ unsafe impl od_jit::memory_dispatch::MemoryBlockExecutor for PublishedMemoryBloc
                         stop_rip,
                         stop_requested,
                     )
-                };
-                (published, result)
+                }
             }
-            od_jit::memory_dispatch::BoundedMemoryArtifact::Load(compiled) => {
-                let published = PublishedCode::publish_ir_memory_load_v2(compiled)
-                    .map_err(PublishedMemoryBlockError::Publish)?;
-                let result = published.execute_ir_memory_load_v2(
+            od_jit::memory_dispatch::BoundedMemoryArtifact::Load(_) => published
+                .execute_ir_memory_load_v2(
                     state,
                     memory,
                     access_context,
                     incoming_budget,
                     stop_rip,
                     stop_requested,
-                );
-                (published, result)
-            }
-            od_jit::memory_dispatch::BoundedMemoryArtifact::Store(compiled) => {
-                let published = PublishedCode::publish_ir_memory_store_v2(compiled)
-                    .map_err(PublishedMemoryBlockError::Publish)?;
+                ),
+            od_jit::memory_dispatch::BoundedMemoryArtifact::Store(_) => {
                 // SAFETY: forwarded from this trait's caller contract.
-                let result = unsafe {
+                unsafe {
                     published.execute_ir_memory_store_v2(
                         state,
                         memory,
@@ -1807,8 +1862,7 @@ unsafe impl od_jit::memory_dispatch::MemoryBlockExecutor for PublishedMemoryBloc
                         stop_rip,
                         stop_requested,
                     )
-                };
-                (published, result)
+                }
             }
         };
         let result = result.map_err(PublishedMemoryBlockError::Execute)?;
@@ -39683,12 +39737,16 @@ mod tests {
             0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b, // store/load pair
         ];
 
-        #[derive(Clone, Debug, Eq, PartialEq)]
         struct Ram {
             code: [u8; CODE.len()],
             data: [u8; 64],
             reads: usize,
             writes: usize,
+            callback_order: Vec<char>,
+            callback_count: usize,
+            event_after_callback: Option<(usize, std::sync::Arc<AtomicBool>)>,
+            stop_after_callback: Option<(usize, std::sync::Arc<AtomicU8>)>,
+            write_fault: Option<MemoryError>,
         }
         impl Ram {
             fn fresh() -> Self {
@@ -39700,6 +39758,26 @@ mod tests {
                     data,
                     reads: 0,
                     writes: 0,
+                    callback_order: Vec::new(),
+                    callback_count: 0,
+                    event_after_callback: None,
+                    stop_after_callback: None,
+                    write_fault: None,
+                }
+            }
+
+            fn record_callback(&mut self, kind: char) {
+                self.callback_order.push(kind);
+                self.callback_count += 1;
+                if let Some((after, event)) = &self.event_after_callback {
+                    if self.callback_count == *after {
+                        event.store(true, Ordering::Release);
+                    }
+                }
+                if let Some((after, stop)) = &self.stop_after_callback {
+                    if self.callback_count == *after {
+                        stop.store(1, Ordering::Release);
+                    }
                 }
             }
         }
@@ -39723,6 +39801,7 @@ mod tests {
                 out: &mut [u8],
             ) -> Result<(), MemoryError> {
                 self.reads += 1;
+                self.record_callback('R');
                 let start = usize::try_from(address).map_err(|_| MemoryError::Unmapped {
                     address,
                     access: AccessKind::Read,
@@ -39745,6 +39824,10 @@ mod tests {
                 input: &[u8],
             ) -> Result<(), MemoryError> {
                 self.writes += 1;
+                self.record_callback('W');
+                if let Some(error) = self.write_fault.take() {
+                    return Err(error);
+                }
                 let start = usize::try_from(address).map_err(|_| MemoryError::Unmapped {
                     address,
                     access: AccessKind::Write,
@@ -39815,6 +39898,175 @@ mod tests {
         };
         let stop = AtomicU8::new(0);
 
+        // The host executor publishes before sampling this already-pending
+        // event. Directly exercising its controlled entrypoint proves that it
+        // drops the just-published artifact without entering guest code.
+        let published_pair_view = CodeView::new(BASE, &CODE[..6]).unwrap();
+        let published_pair =
+            od_jit::memory_load_v2::compile_ir_memory_two_site_block_v2(published_pair_view, BASE)
+                .unwrap();
+        let mut publication_state = initial_state();
+        let mut publication_ram = Ram::fresh();
+        let publication_event = AtomicBool::new(true);
+        let publication_stop = AtomicU8::new(0);
+        let publication_report = unsafe {
+            <PublishedMemoryBlockExecutor as od_jit::memory_dispatch::MemoryBlockExecutor>::
+                execute_one_memory_block_controlled(
+                    &mut PublishedMemoryBlockExecutor,
+                    &od_jit::memory_dispatch::BoundedMemoryArtifact::Pair(published_pair),
+                    &mut publication_state,
+                    &mut publication_ram,
+                    AccessContext::default(),
+                    3,
+                    None,
+                    &publication_stop,
+                    Some(&publication_event),
+                )
+        }
+        .unwrap();
+        assert_eq!(
+            publication_report.exit,
+            od_jit::memory_dispatch::MemoryBlockExit::EventPending
+        );
+        assert_eq!(
+            (
+                publication_report.remaining_budget,
+                publication_report.retired_instructions
+            ),
+            (3, 0)
+        );
+        assert_eq!(publication_state, initial_state());
+        assert_eq!((publication_ram.reads, publication_ram.writes), (0, 0));
+
+        let stopped_publication_event = AtomicBool::new(true);
+        let stopped_publication = AtomicU8::new(1);
+        let mut stopped_publication_state = initial_state();
+        let mut stopped_publication_ram = Ram::fresh();
+        let stopped_publication_report = unsafe {
+            <PublishedMemoryBlockExecutor as od_jit::memory_dispatch::MemoryBlockExecutor>::
+                execute_one_memory_block_controlled(
+                    &mut PublishedMemoryBlockExecutor,
+                    &od_jit::memory_dispatch::BoundedMemoryArtifact::Pair(
+                        od_jit::memory_load_v2::compile_ir_memory_two_site_block_v2(
+                            published_pair_view,
+                            BASE,
+                        )
+                        .unwrap(),
+                    ),
+                    &mut stopped_publication_state,
+                    &mut stopped_publication_ram,
+                    AccessContext::default(),
+                    3,
+                    None,
+                    &stopped_publication,
+                    Some(&stopped_publication_event),
+                )
+        }
+        .unwrap();
+        assert_eq!(
+            stopped_publication_report.exit,
+            od_jit::memory_dispatch::MemoryBlockExit::StopRequested
+        );
+        assert_eq!(stopped_publication_state, initial_state());
+        assert_eq!(
+            (
+                stopped_publication_ram.reads,
+                stopped_publication_ram.writes
+            ),
+            (0, 0)
+        );
+
+        // Singleton load/store artifacts commit the whole transfer before the
+        // event boundary; clearing the request resumes at the following NOP.
+        for is_load in [true, false] {
+            let mut source = [0x90; 5];
+            source[..3].copy_from_slice(&[
+                0x48,
+                if is_load { 0x8b } else { 0x89 },
+                if is_load { 0x03 } else { 0x02 },
+            ]);
+            let single_view = CodeView::new(BASE, &source).unwrap();
+            let single_boundary =
+                FixtureExecutionBoundary::new(single_view, single_view.code_end()).unwrap();
+            let mut guest_code = [0x90; CODE.len()];
+            guest_code[..source.len()].copy_from_slice(&source);
+            let mut single_ram = Ram::fresh();
+            single_ram.code = guest_code;
+            let single_event = std::sync::Arc::new(AtomicBool::new(false));
+            single_ram.event_after_callback = Some((1, single_event.clone()));
+            let mut single_state = initial_state();
+            let mut single_executor = PublishedMemoryBlockExecutor;
+            let yielded = unsafe {
+                od_jit::memory_dispatch::run_with_nop_fallback_controlled(
+                    single_view,
+                    single_boundary.clone(),
+                    &mut single_state,
+                    &mut single_ram,
+                    AccessContext::default(),
+                    3,
+                    None,
+                    &stop,
+                    Some(&single_event),
+                    &mut single_executor,
+                )
+            }
+            .unwrap();
+            assert_eq!(yielded.exit, BoundedMemoryExit::EventPending);
+            assert_eq!(
+                (yielded.retired_native, yielded.retired_interpreter),
+                (1, 0)
+            );
+            assert_eq!(yielded.remaining_budget, 2);
+            assert_eq!(single_state.rip, BASE + 3);
+            assert!(single_event.load(Ordering::Acquire));
+            assert_eq!(single_ram.callback_order, [if is_load { 'R' } else { 'W' }]);
+
+            single_event.store(false, Ordering::Release);
+            single_ram.event_after_callback = None;
+            let resumed = unsafe {
+                od_jit::memory_dispatch::run_with_nop_fallback_controlled(
+                    single_view,
+                    single_boundary,
+                    &mut single_state,
+                    &mut single_ram,
+                    AccessContext::default(),
+                    yielded.remaining_budget,
+                    None,
+                    &stop,
+                    Some(&single_event),
+                    &mut single_executor,
+                )
+            }
+            .unwrap();
+            let mut expected_state = initial_state();
+            let mut expected_ram = Ram::fresh();
+            expected_ram.code = guest_code;
+            let expected = od_isa::execute::run(
+                &mut expected_state,
+                &mut expected_ram,
+                od_isa::execute::RunConfig {
+                    instruction_budget: 3,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(single_state, expected_state);
+            assert_eq!(single_ram.data, expected_ram.data);
+            assert_eq!(
+                (single_ram.reads, single_ram.writes),
+                (expected_ram.reads, expected_ram.writes)
+            );
+            assert_eq!(single_ram.callback_order, expected_ram.callback_order);
+            assert_eq!(
+                yielded.retired_native
+                    + yielded.retired_interpreter
+                    + resumed.retired_native
+                    + resumed.retired_interpreter,
+                expected.instructions_executed
+            );
+        }
+
         for budget in 0..=5 {
             let mut native_state = initial_state();
             let mut native_ram = Ram::fresh();
@@ -39884,7 +40136,290 @@ mod tests {
             }
         }
 
-        // STOP from the completed native pair is observed before the NOP step.
+        // An event raised by the first helper callback is sampled only after
+        // the complete native pair, then resumes from the pair's actual RIP.
+        let event = std::sync::Arc::new(AtomicBool::new(false));
+        let mut event_state = initial_state();
+        let mut event_ram = Ram::fresh();
+        event_ram.event_after_callback = Some((1, event.clone()));
+        let mut event_executor = PublishedMemoryBlockExecutor;
+        let yielded = unsafe {
+            od_jit::memory_dispatch::run_with_nop_fallback_controlled(
+                view,
+                boundary.clone(),
+                &mut event_state,
+                &mut event_ram,
+                AccessContext::default(),
+                5,
+                None,
+                &stop,
+                Some(&event),
+                &mut event_executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(yielded.exit, BoundedMemoryExit::EventPending);
+        assert_eq!(
+            (yielded.retired_native, yielded.retired_interpreter),
+            (2, 0)
+        );
+        assert_eq!(yielded.remaining_budget, 3);
+        assert_eq!(yielded.blocks_executed, 1);
+        assert_eq!(event_state.rip, BASE + 6);
+        assert!(event.load(Ordering::Acquire));
+        assert_eq!(event_ram.callback_order, ['R', 'W']);
+        assert_eq!((event_ram.reads, event_ram.writes), (1, 1));
+
+        event.store(false, Ordering::Release);
+        event_ram.event_after_callback = None;
+        let resumed = unsafe {
+            od_jit::memory_dispatch::run_with_nop_fallback_controlled(
+                view,
+                boundary.clone(),
+                &mut event_state,
+                &mut event_ram,
+                AccessContext::default(),
+                yielded.remaining_budget,
+                None,
+                &stop,
+                Some(&event),
+                &mut event_executor,
+            )
+        }
+        .unwrap();
+        let mut interpreted_state = initial_state();
+        let mut interpreted_ram = Ram::fresh();
+        let interpreted = od_isa::execute::run(
+            &mut interpreted_state,
+            &mut interpreted_ram,
+            od_isa::execute::RunConfig {
+                instruction_budget: 5,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(
+            resumed.exit,
+            BoundedMemoryExit::BoundaryReached {
+                rip: view.code_end()
+            }
+        );
+        assert_eq!(event_state, interpreted_state);
+        assert_eq!(event_ram.data, interpreted_ram.data);
+        assert_eq!(
+            (event_ram.reads, event_ram.writes),
+            (interpreted_ram.reads, interpreted_ram.writes)
+        );
+        assert_eq!(event_ram.callback_order, ['R', 'W', 'W', 'R']);
+        assert_eq!(resumed.retired_native + resumed.retired_interpreter, 3);
+        assert_eq!(
+            yielded.retired_native
+                + yielded.retired_interpreter
+                + resumed.retired_native
+                + resumed.retired_interpreter,
+            interpreted.instructions_executed
+        );
+
+        // A precise second-site guest fault wins over the event raised by the
+        // first callback; the first helper's write prefix is committed once.
+        let fault_event = std::sync::Arc::new(AtomicBool::new(false));
+        let mut fault_state = initial_state();
+        let mut fault_ram = Ram::fresh();
+        fault_ram.event_after_callback = Some((1, fault_event.clone()));
+        fault_ram.write_fault = Some(MemoryError::Architectural(
+            od_isa::memory::ArchitecturalFault {
+                vector: 14,
+                error_code: Some(2),
+                linear_address: Some(24),
+            },
+        ));
+        let fault_result = unsafe {
+            od_jit::memory_dispatch::run_with_nop_fallback_controlled(
+                view,
+                boundary.clone(),
+                &mut fault_state,
+                &mut fault_ram,
+                AccessContext::default(),
+                5,
+                None,
+                &stop,
+                Some(&fault_event),
+                &mut event_executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            fault_result.exit,
+            BoundedMemoryExit::GuestFault(od_isa::memory::ArchitecturalFault {
+                vector: 14,
+                error_code: Some(2),
+                linear_address: Some(24),
+            })
+        );
+        assert_eq!(
+            (fault_result.retired_native, fault_result.remaining_budget),
+            (1, 4)
+        );
+        assert_eq!(fault_state.rip, BASE + 3);
+        assert_eq!((fault_ram.reads, fault_ram.writes), (1, 1));
+        assert_eq!(fault_ram.callback_order, ['R', 'W']);
+        assert!(fault_event.load(Ordering::Acquire));
+
+        // Backend failure on site two likewise remains the executor error.
+        let backend_event = std::sync::Arc::new(AtomicBool::new(false));
+        let mut backend_state = initial_state();
+        let mut backend_ram = Ram::fresh();
+        backend_ram.event_after_callback = Some((1, backend_event.clone()));
+        backend_ram.write_fault = Some(MemoryError::Backend("injected second-site failure".into()));
+        let backend_result = unsafe {
+            od_jit::memory_dispatch::run_with_nop_fallback_controlled(
+                view,
+                boundary.clone(),
+                &mut backend_state,
+                &mut backend_ram,
+                AccessContext::default(),
+                5,
+                None,
+                &stop,
+                Some(&backend_event),
+                &mut event_executor,
+            )
+        };
+        assert!(matches!(
+            backend_result,
+            Err(od_jit::memory_dispatch::BoundedMemoryError::Executor(
+                PublishedMemoryBlockError::Execute(_)
+            ))
+        ));
+        assert_eq!(backend_state.rip, BASE + 3);
+        assert_eq!((backend_ram.reads, backend_ram.writes), (1, 1));
+        assert_eq!(backend_ram.callback_order, ['R', 'W']);
+        assert!(backend_event.load(Ordering::Acquire));
+
+        // STOP and event raised by the first pair callback preserve that
+        // committed instruction prefix; clearing both resumes at the second
+        // site's RIP without re-running the first read.
+        let callback_stop = std::sync::Arc::new(AtomicU8::new(0));
+        let callback_event = std::sync::Arc::new(AtomicBool::new(false));
+        let mut callback_stop_state = initial_state();
+        let mut callback_stop_ram = Ram::fresh();
+        callback_stop_ram.event_after_callback = Some((1, callback_event.clone()));
+        callback_stop_ram.stop_after_callback = Some((1, callback_stop.clone()));
+        let mut callback_stop_executor = PublishedMemoryBlockExecutor;
+        let callback_stopped = unsafe {
+            od_jit::memory_dispatch::run_with_nop_fallback_controlled(
+                view,
+                boundary.clone(),
+                &mut callback_stop_state,
+                &mut callback_stop_ram,
+                AccessContext::default(),
+                5,
+                None,
+                &callback_stop,
+                Some(&callback_event),
+                &mut callback_stop_executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(callback_stopped.exit, BoundedMemoryExit::StopRequested);
+        assert_eq!(
+            (
+                callback_stopped.retired_native,
+                callback_stopped.retired_interpreter
+            ),
+            (1, 0)
+        );
+        assert_eq!(callback_stopped.remaining_budget, 4);
+        assert_eq!(callback_stop_state.rip, BASE + 3);
+        assert_eq!(callback_stop_ram.callback_order, ['R']);
+        assert_eq!((callback_stop_ram.reads, callback_stop_ram.writes), (1, 0));
+        assert!(callback_event.load(Ordering::Acquire));
+        assert_eq!(callback_stop.load(Ordering::Acquire), 1);
+
+        let interpreter_event = std::sync::Arc::new(AtomicBool::new(false));
+        let mut interpreter_stop_state = initial_state();
+        let mut interpreter_stop_ram = Ram::fresh();
+        interpreter_stop_ram.event_after_callback = Some((1, interpreter_event.clone()));
+        let interpreter_stop = std::sync::Arc::new(AtomicU8::new(0));
+        // Both engines observe the same host STOP source from the first read.
+        interpreter_stop_ram.stop_after_callback = Some((1, interpreter_stop.clone()));
+        let interpreter_stopped = od_isa::execute::run(
+            &mut interpreter_stop_state,
+            &mut interpreter_stop_ram,
+            od_isa::execute::RunConfig {
+                instruction_budget: 5,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || interpreter_stop.load(Ordering::Acquire) != 0,
+        );
+        assert_eq!(
+            interpreter_stopped.exit,
+            od_isa::execute::RunExit::StopRequested
+        );
+        assert_eq!(interpreter_stopped.instructions_executed, 1);
+        assert_eq!(callback_stop_state, interpreter_stop_state);
+        assert_eq!(callback_stop_ram.data, interpreter_stop_ram.data);
+        assert_eq!(
+            callback_stop_ram.callback_order,
+            interpreter_stop_ram.callback_order
+        );
+
+        callback_stop.store(0, Ordering::Release);
+        callback_event.store(false, Ordering::Release);
+        callback_stop_ram.event_after_callback = None;
+        callback_stop_ram.stop_after_callback = None;
+        interpreter_stop.store(0, Ordering::Release);
+        interpreter_stop_ram.event_after_callback = None;
+        interpreter_stop_ram.stop_after_callback = None;
+        let callback_resumed = unsafe {
+            od_jit::memory_dispatch::run_with_nop_fallback_controlled(
+                view,
+                boundary.clone(),
+                &mut callback_stop_state,
+                &mut callback_stop_ram,
+                AccessContext::default(),
+                callback_stopped.remaining_budget,
+                None,
+                &callback_stop,
+                Some(&callback_event),
+                &mut callback_stop_executor,
+            )
+        }
+        .unwrap();
+        let interpreter_resumed = od_isa::execute::run(
+            &mut interpreter_stop_state,
+            &mut interpreter_stop_ram,
+            od_isa::execute::RunConfig {
+                instruction_budget: callback_stopped.remaining_budget,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || interpreter_stop.load(Ordering::Acquire) != 0,
+        );
+        assert_eq!(
+            callback_resumed.exit,
+            BoundedMemoryExit::BoundaryReached {
+                rip: view.code_end()
+            }
+        );
+        assert_eq!(callback_stop_state, interpreter_stop_state);
+        assert_eq!(callback_stop_ram.data, interpreter_stop_ram.data);
+        assert_eq!(callback_stop_ram.callback_order, ['R', 'W', 'W', 'R']);
+        assert_eq!(
+            callback_stop_ram.callback_order,
+            interpreter_stop_ram.callback_order
+        );
+        assert_eq!(
+            callback_stopped.retired_native
+                + callback_stopped.retired_interpreter
+                + callback_resumed.retired_native
+                + callback_resumed.retired_interpreter,
+            interpreter_stopped.instructions_executed + interpreter_resumed.instructions_executed
+        );
+
+        // STOP from a completed pair is also observed before the NOP step.
         struct StopAfterFirstBlock {
             inner: PublishedMemoryBlockExecutor,
             calls: usize,

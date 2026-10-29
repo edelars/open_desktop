@@ -89,6 +89,23 @@ the next native publication; the executor contract and explicit host drop
 place that release before the interpreter step. This is fixture-only evidence;
 it adds neither general interpreter fallback nor production owner/MMU tests.
 
+### S3-28b cooperative events in bounded checked-memory dispatch
+
+Run focused dispatcher tests with
+`cargo test -p od-jit --offline --lib event` and
+`cargo test -p od-host --offline bounded_memory_dispatch_opt_in_bare_nop_bridge_preserves_budget_and_effects --lib`.
+The `od-jit` cases cover a request before work, event after artifact completion,
+post-publication pre-entry yield, STOP priority, stop-RIP/fixture-boundary/
+budget priority, malformed `EventPending` accounting, and pair→NOP→pair
+continuation without replay. The host fixture covers published-artifact drop
+before entry, singleton load/store callback events, complete pair callback
+ordering before sampling, first-read STOP+event with a committed one-instruction
+prefix, second-site architectural/backend failures, and interpreter parity
+after clearing the request. Event remains set on yield and the caller resumes
+at the returned guest RIP. These tests exercise only the
+bounded fixture dispatcher; they make no Stage 2/owner/MMU, Mini, or performance
+claim.
+
 ### Bounded S3-34a two-site memory corpus
 
 For the two exact V2 memory sequences in the JIT contract, run

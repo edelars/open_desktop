@@ -4,7 +4,7 @@
 //! kept alive for the complete call, and the data-memory borrow is held until
 //! the synchronous executor returns. It is not an MMU or production RAM owner.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use od_isa::{
     LongModeState, long_decode,
@@ -35,6 +35,9 @@ pub enum MemoryBlockExit {
     BudgetExhausted,
     StopRequested,
     StopAddress,
+    /// The host executor published the artifact, then observed a pending
+    /// cooperative event before native entry. No guest work may be committed.
+    EventPending,
     GuestFault(ArchitecturalFault),
 }
 
@@ -69,18 +72,86 @@ pub unsafe trait MemoryBlockExecutor {
         stop_rip: Option<u64>,
         stop_requested: &AtomicU8,
     ) -> Result<MemoryBlockReport, Self::Error>;
+
+    /// Event-aware counterpart for controlled dispatch. Existing executors
+    /// retain their event-disabled implementation; the dispatcher still
+    /// samples the request after the synchronous artifact returns. Executors
+    /// that publish before entry should override this method to sample between
+    /// publication and native execution, returning `MemoryBlockExit::EventPending`
+    /// without changing `state`, `memory`, or accounting.
+    unsafe fn execute_one_memory_block_controlled(
+        &mut self,
+        block: &BoundedMemoryArtifact,
+        state: &mut LongModeState,
+        memory: &mut dyn GuestMemory,
+        access_context: AccessContext,
+        incoming_budget: u64,
+        stop_rip: Option<u64>,
+        stop_requested: &AtomicU8,
+        event_requested: Option<&AtomicBool>,
+    ) -> Result<MemoryBlockReport, Self::Error> {
+        if stop_rip == Some(state.rip) {
+            return Ok(MemoryBlockReport {
+                exit: MemoryBlockExit::StopAddress,
+                remaining_budget: incoming_budget,
+                retired_instructions: 0,
+            });
+        }
+        if stop_requested.load(Ordering::Acquire) != 0 {
+            return Ok(MemoryBlockReport {
+                exit: MemoryBlockExit::StopRequested,
+                remaining_budget: incoming_budget,
+                retired_instructions: 0,
+            });
+        }
+        if incoming_budget == 0 {
+            return Ok(MemoryBlockReport {
+                exit: MemoryBlockExit::BudgetExhausted,
+                remaining_budget: 0,
+                retired_instructions: 0,
+            });
+        }
+        if event_requested.is_some_and(|request| request.load(Ordering::Acquire)) {
+            return Ok(MemoryBlockReport {
+                exit: MemoryBlockExit::EventPending,
+                remaining_budget: incoming_budget,
+                retired_instructions: 0,
+            });
+        }
+        // SAFETY: this default preserves the original executor contract. The
+        // dispatcher samples the event after the completed block returns.
+        unsafe {
+            self.execute_one_memory_block(
+                block,
+                state,
+                memory,
+                access_context,
+                incoming_budget,
+                stop_rip,
+                stop_requested,
+            )
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BoundedMemoryExit {
-    BoundaryReached { rip: u64 },
+    BoundaryReached {
+        rip: u64,
+    },
     CodeInvalidated,
     BudgetExhausted,
     StopRequested,
     StopAddress,
+    /// A cooperative host event is pending at a safe dispatcher boundary.
+    EventPending,
     GuestFault(ArchitecturalFault),
-    Unsupported { rip: u64 },
-    Invalid { rip: u64 },
+    Unsupported {
+        rip: u64,
+    },
+    Invalid {
+        rip: u64,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -192,6 +263,43 @@ pub unsafe fn run<E: MemoryBlockExecutor>(
     stop_requested: &AtomicU8,
     executor: &mut E,
 ) -> Result<BoundedMemoryResult, BoundedMemoryError<E::Error>> {
+    // SAFETY: forwards the caller contract with event polling disabled.
+    unsafe {
+        run_controlled(
+            code,
+            boundary,
+            state,
+            memory,
+            access_context,
+            total_budget,
+            stop_rip,
+            stop_requested,
+            None,
+            executor,
+        )
+    }
+}
+
+/// Event-aware bounded checked-memory dispatch. The event is sampled only
+/// after stop-RIP, STOP, byte-boundary, and budget guards, and is never cleared here.
+/// Executors which publish artifacts before entry may return
+/// `MemoryBlockExit::EventPending` to yield between publication and execution.
+///
+/// # Safety
+/// Has the same synchronous private-memory and immutable-code requirements as
+/// [`run`]. The request owner must not clear the event while this call runs.
+pub unsafe fn run_controlled<E: MemoryBlockExecutor>(
+    code: CodeView<'_>,
+    boundary: FixtureExecutionBoundary,
+    state: &mut LongModeState,
+    memory: &mut dyn GuestMemory,
+    access_context: AccessContext,
+    total_budget: u64,
+    stop_rip: Option<u64>,
+    stop_requested: &AtomicU8,
+    event_requested: Option<&AtomicBool>,
+    executor: &mut E,
+) -> Result<BoundedMemoryResult, BoundedMemoryError<E::Error>> {
     let mut remaining = total_budget;
     let mut retired = 0u64;
     let mut blocks = 0u64;
@@ -248,6 +356,14 @@ pub unsafe fn run<E: MemoryBlockExecutor>(
                 blocks,
             ));
         }
+        if event_requested.is_some_and(|request| request.load(Ordering::Acquire)) {
+            return Ok(result(
+                BoundedMemoryExit::EventPending,
+                remaining,
+                retired,
+                blocks,
+            ));
+        }
 
         let block = match compile_at(code, state.rip, boundary.end_rip) {
             CompileAt::Block(block) => block,
@@ -284,7 +400,7 @@ pub unsafe fn run<E: MemoryBlockExecutor>(
         // SAFETY: forwarded unchanged from this function's documented caller contract.
         let incoming_budget = remaining;
         let report = unsafe {
-            executor.execute_one_memory_block(
+            executor.execute_one_memory_block_controlled(
                 &block,
                 state,
                 memory,
@@ -292,6 +408,7 @@ pub unsafe fn run<E: MemoryBlockExecutor>(
                 incoming_budget,
                 stop_rip,
                 stop_requested,
+                event_requested,
             )
         }
         .map_err(BoundedMemoryError::Executor)?;
@@ -310,6 +427,57 @@ pub unsafe fn run<E: MemoryBlockExecutor>(
                 incoming: incoming_budget,
                 report,
             });
+        }
+
+        if report.exit == MemoryBlockExit::EventPending {
+            if report.retired_instructions != 0
+                || report.remaining_budget != incoming_budget
+                || state.rip != prior_rip
+                || !event_requested.is_some_and(|request| request.load(Ordering::Acquire))
+            {
+                return Err(BoundedMemoryError::InvalidAccounting {
+                    incoming: incoming_budget,
+                    report,
+                });
+            }
+            if stop_rip == Some(state.rip) {
+                return Ok(result(
+                    BoundedMemoryExit::StopAddress,
+                    remaining,
+                    retired,
+                    blocks,
+                ));
+            }
+            if stop_requested.load(Ordering::Acquire) != 0 {
+                return Ok(result(
+                    BoundedMemoryExit::StopRequested,
+                    remaining,
+                    retired,
+                    blocks,
+                ));
+            }
+            if state.rip == boundary.end_rip {
+                return Ok(result(
+                    BoundedMemoryExit::BoundaryReached { rip: state.rip },
+                    remaining,
+                    retired,
+                    blocks,
+                ));
+            }
+            if remaining == 0 {
+                return Ok(result(
+                    BoundedMemoryExit::BudgetExhausted,
+                    remaining,
+                    retired,
+                    blocks,
+                ));
+            }
+            return Ok(result(
+                BoundedMemoryExit::EventPending,
+                remaining,
+                retired,
+                blocks,
+            ));
         }
         remaining = report.remaining_budget;
         retired = retired
@@ -363,6 +531,7 @@ pub unsafe fn run<E: MemoryBlockExecutor>(
                     blocks,
                 ));
             }
+            MemoryBlockExit::EventPending => unreachable!("handled before accounting commit"),
             MemoryBlockExit::GuestFault(fault) => {
                 return Ok(result(
                     BoundedMemoryExit::GuestFault(fault),
@@ -401,6 +570,42 @@ pub unsafe fn run_with_nop_fallback<E: MemoryBlockExecutor>(
     stop_requested: &AtomicU8,
     executor: &mut E,
 ) -> Result<BoundedMemoryFallbackResult, BoundedMemoryError<E::Error>> {
+    // SAFETY: forwards the caller contract with event polling disabled.
+    unsafe {
+        run_with_nop_fallback_controlled(
+            code,
+            boundary,
+            state,
+            memory,
+            access_context,
+            total_budget,
+            stop_rip,
+            stop_requested,
+            None,
+            executor,
+        )
+    }
+}
+
+/// Event-aware version of [`run_with_nop_fallback`]. An event is checked
+/// before each native artifact and before each bare-NOP interpreter step.
+/// The caller owns clearing the request and resuming at the actual guest RIP.
+///
+/// # Safety
+/// Has the same requirements as [`run_with_nop_fallback`]. The request owner
+/// must not clear the event while this call runs.
+pub unsafe fn run_with_nop_fallback_controlled<E: MemoryBlockExecutor>(
+    code: CodeView<'_>,
+    boundary: FixtureExecutionBoundary,
+    state: &mut LongModeState,
+    memory: &mut dyn GuestMemory,
+    access_context: AccessContext,
+    total_budget: u64,
+    stop_rip: Option<u64>,
+    stop_requested: &AtomicU8,
+    event_requested: Option<&AtomicBool>,
+    executor: &mut E,
+) -> Result<BoundedMemoryFallbackResult, BoundedMemoryError<E::Error>> {
     let mut remaining = total_budget;
     let mut retired_native = 0u64;
     let mut retired_interpreter = 0u64;
@@ -409,7 +614,7 @@ pub unsafe fn run_with_nop_fallback<E: MemoryBlockExecutor>(
     loop {
         // SAFETY: forwarded unchanged from this function's caller contract.
         let native = unsafe {
-            run(
+            run_controlled(
                 code,
                 boundary.clone(),
                 state,
@@ -418,6 +623,7 @@ pub unsafe fn run_with_nop_fallback<E: MemoryBlockExecutor>(
                 remaining,
                 stop_rip,
                 stop_requested,
+                event_requested,
                 executor,
             )
         }?;
@@ -470,9 +676,27 @@ pub unsafe fn run_with_nop_fallback<E: MemoryBlockExecutor>(
                 blocks_executed,
             });
         }
+        if state.rip == boundary.end_rip {
+            return Ok(BoundedMemoryFallbackResult {
+                exit: BoundedMemoryExit::BoundaryReached { rip: state.rip },
+                remaining_budget: remaining,
+                retired_native,
+                retired_interpreter,
+                blocks_executed,
+            });
+        }
         if remaining == 0 {
             return Ok(BoundedMemoryFallbackResult {
                 exit: BoundedMemoryExit::BudgetExhausted,
+                remaining_budget: remaining,
+                retired_native,
+                retired_interpreter,
+                blocks_executed,
+            });
+        }
+        if event_requested.is_some_and(|request| request.load(Ordering::Acquire)) {
+            return Ok(BoundedMemoryFallbackResult {
+                exit: BoundedMemoryExit::EventPending,
                 remaining_budget: remaining,
                 retired_native,
                 retired_interpreter,
@@ -2139,6 +2363,9 @@ mod tests {
     #[derive(Default)]
     struct AdvancingExecutor {
         entries: Vec<(u64, usize)>,
+        request_event_after_entry: bool,
+        request_stop_after_entry: bool,
+        invalidate_after_entry: bool,
     }
     unsafe impl MemoryBlockExecutor for AdvancingExecutor {
         type Error = ();
@@ -2161,11 +2388,522 @@ mod tests {
             self.entries.push((state.rip, source.len()));
             state.rip = site.next_rip();
             Ok(MemoryBlockReport {
-                exit: MemoryBlockExit::Complete,
+                exit: if self.invalidate_after_entry {
+                    MemoryBlockExit::CodeInvalidated
+                } else {
+                    MemoryBlockExit::Complete
+                },
                 remaining_budget: incoming_budget - 1,
                 retired_instructions: 1,
             })
         }
+
+        unsafe fn execute_one_memory_block_controlled(
+            &mut self,
+            block: &BoundedMemoryArtifact,
+            state: &mut LongModeState,
+            memory: &mut dyn GuestMemory,
+            access_context: AccessContext,
+            incoming_budget: u64,
+            stop_rip: Option<u64>,
+            stop_requested: &AtomicU8,
+            event_requested: Option<&AtomicBool>,
+        ) -> Result<MemoryBlockReport, Self::Error> {
+            // SAFETY: this mock performs exactly one bounded artifact and only
+            // raises the request after its guest state/accounting has committed.
+            let report = unsafe {
+                self.execute_one_memory_block(
+                    block,
+                    state,
+                    memory,
+                    access_context,
+                    incoming_budget,
+                    stop_rip,
+                    stop_requested,
+                )?
+            };
+            if self.request_event_after_entry {
+                if let Some(event_requested) = event_requested {
+                    event_requested.store(true, Ordering::Release);
+                }
+            }
+            if self.request_stop_after_entry {
+                stop_requested.store(1, Ordering::Release);
+            }
+            Ok(report)
+        }
+    }
+
+    #[derive(Default)]
+    struct PublishBoundaryExecutor {
+        publications: usize,
+        entries: usize,
+        request_stop_after_publish: bool,
+    }
+    unsafe impl MemoryBlockExecutor for PublishBoundaryExecutor {
+        type Error = ();
+
+        unsafe fn execute_one_memory_block(
+            &mut self,
+            _: &BoundedMemoryArtifact,
+            _: &mut LongModeState,
+            _: &mut dyn GuestMemory,
+            _: AccessContext,
+            _: u64,
+            _: Option<u64>,
+            _: &AtomicU8,
+        ) -> Result<MemoryBlockReport, Self::Error> {
+            self.entries += 1;
+            Err(())
+        }
+
+        unsafe fn execute_one_memory_block_controlled(
+            &mut self,
+            _: &BoundedMemoryArtifact,
+            _: &mut LongModeState,
+            _: &mut dyn GuestMemory,
+            _: AccessContext,
+            incoming_budget: u64,
+            _: Option<u64>,
+            stop_requested: &AtomicU8,
+            event_requested: Option<&AtomicBool>,
+        ) -> Result<MemoryBlockReport, Self::Error> {
+            // Represents publication completing before the event sample. The
+            // old entrypoint is deliberately not called on this path.
+            self.publications += 1;
+            if self.request_stop_after_publish {
+                stop_requested.store(1, Ordering::Release);
+            }
+            if let Some(event) = event_requested {
+                event.store(true, Ordering::Release);
+            }
+            Ok(MemoryBlockReport {
+                // The dispatcher applies its stop-before-event priority after
+                // this simulated post-publication event sample.
+                exit: MemoryBlockExit::EventPending,
+                remaining_budget: incoming_budget,
+                retired_instructions: 0,
+            })
+        }
+    }
+
+    struct MalformedEventExecutor;
+    unsafe impl MemoryBlockExecutor for MalformedEventExecutor {
+        type Error = ();
+
+        unsafe fn execute_one_memory_block(
+            &mut self,
+            _: &BoundedMemoryArtifact,
+            _: &mut LongModeState,
+            _: &mut dyn GuestMemory,
+            _: AccessContext,
+            incoming_budget: u64,
+            _: Option<u64>,
+            _: &AtomicU8,
+        ) -> Result<MemoryBlockReport, Self::Error> {
+            Ok(MemoryBlockReport {
+                exit: MemoryBlockExit::EventPending,
+                remaining_budget: incoming_budget - 1,
+                retired_instructions: 1,
+            })
+        }
+
+        unsafe fn execute_one_memory_block_controlled(
+            &mut self,
+            _: &BoundedMemoryArtifact,
+            _: &mut LongModeState,
+            _: &mut dyn GuestMemory,
+            _: AccessContext,
+            incoming_budget: u64,
+            _: Option<u64>,
+            _: &AtomicU8,
+            event_requested: Option<&AtomicBool>,
+        ) -> Result<MemoryBlockReport, Self::Error> {
+            if let Some(event) = event_requested {
+                event.store(true, Ordering::Release);
+            }
+            Ok(MemoryBlockReport {
+                exit: MemoryBlockExit::EventPending,
+                remaining_budget: incoming_budget - 1,
+                retired_instructions: 1,
+            })
+        }
+    }
+
+    #[test]
+    fn event_after_publication_skips_entry_and_stop_wins() {
+        const ENTRY: u64 = 0x99c0;
+        let source = [0x48, 0x8b, 0x30];
+        let code = CodeView::new(ENTRY, &source).unwrap();
+        let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
+        let mut memory = EmptyMemory;
+        let initial = LongModeState {
+            rip: ENTRY,
+            ..Default::default()
+        };
+
+        for (stop_after_publish, expected) in [
+            (false, BoundedMemoryExit::EventPending),
+            (true, BoundedMemoryExit::StopRequested),
+        ] {
+            let stop = AtomicU8::new(0);
+            let event = AtomicBool::new(false);
+            let mut state = initial.clone();
+            let mut executor = PublishBoundaryExecutor {
+                request_stop_after_publish: stop_after_publish,
+                ..Default::default()
+            };
+            let result = unsafe {
+                run_controlled(
+                    code,
+                    boundary.clone(),
+                    &mut state,
+                    &mut memory,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &stop,
+                    Some(&event),
+                    &mut executor,
+                )
+            }
+            .unwrap();
+            assert_eq!(result.exit, expected);
+            assert_eq!(state, initial);
+            assert_eq!(
+                (result.remaining_budget, result.retired_instructions),
+                (1, 0)
+            );
+            assert_eq!(result.blocks_executed, 0);
+            assert_eq!((executor.publications, executor.entries), (1, 0));
+            assert!(event.load(Ordering::Acquire));
+        }
+    }
+
+    #[test]
+    fn malformed_event_pending_executor_accounting_is_rejected() {
+        const ENTRY: u64 = 0x99d0;
+        let source = [0x48, 0x8b, 0x30];
+        let code = CodeView::new(ENTRY, &source).unwrap();
+        let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
+        let mut state = LongModeState {
+            rip: ENTRY,
+            ..Default::default()
+        };
+        let mut memory = EmptyMemory;
+        let event = AtomicBool::new(false);
+        let result = unsafe {
+            run_controlled(
+                code,
+                boundary,
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                1,
+                None,
+                &AtomicU8::new(0),
+                Some(&event),
+                &mut MalformedEventExecutor,
+            )
+        };
+        assert!(matches!(
+            result,
+            Err(BoundedMemoryError::InvalidAccounting { .. })
+        ));
+        assert_eq!(state.rip, ENTRY);
+    }
+
+    #[test]
+    fn controlled_event_yields_before_work_and_after_one_committed_artifact() {
+        const ENTRY: u64 = 0x9a00;
+        let source = [0x48, 0x8b, 0x30, 0x48, 0x8b, 0x30];
+        let code = CodeView::new(ENTRY, &source).unwrap();
+        let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
+        let stop_requested = AtomicU8::new(0);
+        let event_requested = AtomicBool::new(true);
+        let initial = LongModeState {
+            rip: ENTRY,
+            ..Default::default()
+        };
+        let mut state = initial.clone();
+        let mut memory = EmptyMemory;
+        let mut executor = AdvancingExecutor::default();
+
+        let early = unsafe {
+            run_controlled(
+                code,
+                boundary.clone(),
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                2,
+                None,
+                &stop_requested,
+                Some(&event_requested),
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(early.exit, BoundedMemoryExit::EventPending);
+        assert_eq!(early.remaining_budget, 2);
+        assert_eq!((early.retired_instructions, early.blocks_executed), (0, 0));
+        assert_eq!(state, initial);
+        assert!(executor.entries.is_empty());
+
+        event_requested.store(false, Ordering::Release);
+        executor.request_event_after_entry = true;
+        let yielded = unsafe {
+            run_controlled(
+                code,
+                boundary.clone(),
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                2,
+                None,
+                &stop_requested,
+                Some(&event_requested),
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(yielded.exit, BoundedMemoryExit::EventPending);
+        assert_eq!(state.rip, ENTRY + 3);
+        assert_eq!(yielded.remaining_budget, 1);
+        assert_eq!(
+            (yielded.retired_instructions, yielded.blocks_executed),
+            (1, 1)
+        );
+        assert!(event_requested.load(Ordering::Acquire));
+        assert_eq!(executor.entries, [(ENTRY, 3)]);
+
+        event_requested.store(false, Ordering::Release);
+        executor.request_event_after_entry = false;
+        let resumed = unsafe {
+            run_controlled(
+                code,
+                boundary.clone(),
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                yielded.remaining_budget,
+                None,
+                &stop_requested,
+                Some(&event_requested),
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            resumed.exit,
+            BoundedMemoryExit::BoundaryReached {
+                rip: code.code_end()
+            }
+        );
+        assert_eq!(state.rip, code.code_end());
+        assert_eq!(
+            (resumed.remaining_budget, resumed.retired_instructions),
+            (0, 1)
+        );
+        assert_eq!(executor.entries, [(ENTRY, 3), (ENTRY + 3, 3)]);
+
+        let mut uninterrupted_state = initial;
+        let mut uninterrupted_executor = AdvancingExecutor::default();
+        let uninterrupted = unsafe {
+            run(
+                code,
+                boundary,
+                &mut uninterrupted_state,
+                &mut memory,
+                AccessContext::default(),
+                2,
+                None,
+                &stop_requested,
+                &mut uninterrupted_executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(uninterrupted.exit, resumed.exit);
+        assert_eq!(uninterrupted_state, state);
+        assert_eq!(uninterrupted_executor.entries, [(ENTRY, 3), (ENTRY + 3, 3)]);
+    }
+
+    #[test]
+    fn completed_artifact_terminal_exit_and_stop_are_not_masked_by_event() {
+        const ENTRY: u64 = 0x9a80;
+        let source = [0x48, 0x8b, 0x30, 0x48, 0x8b, 0x30];
+        let code = CodeView::new(ENTRY, &source).unwrap();
+        let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
+        let mut memory = EmptyMemory;
+
+        for (invalidate, stop_after, expected) in [
+            (true, false, BoundedMemoryExit::CodeInvalidated),
+            (false, true, BoundedMemoryExit::StopRequested),
+        ] {
+            let stop = AtomicU8::new(0);
+            let event = AtomicBool::new(false);
+            let mut state = LongModeState {
+                rip: ENTRY,
+                ..Default::default()
+            };
+            let mut executor = AdvancingExecutor {
+                request_event_after_entry: true,
+                request_stop_after_entry: stop_after,
+                invalidate_after_entry: invalidate,
+                ..Default::default()
+            };
+            let result = unsafe {
+                run_controlled(
+                    code,
+                    boundary.clone(),
+                    &mut state,
+                    &mut memory,
+                    AccessContext::default(),
+                    2,
+                    None,
+                    &stop,
+                    Some(&event),
+                    &mut executor,
+                )
+            }
+            .unwrap();
+            assert_eq!(result.exit, expected);
+            assert_eq!(state.rip, ENTRY + 3);
+            assert_eq!(
+                (result.remaining_budget, result.retired_instructions),
+                (1, 1)
+            );
+            assert_eq!(result.blocks_executed, 1);
+            assert!(event.load(Ordering::Acquire));
+            assert_eq!(executor.entries, [(ENTRY, 3)]);
+        }
+    }
+
+    #[test]
+    fn controlled_event_respects_stop_boundary_and_budget_priority() {
+        const ENTRY: u64 = 0x9b00;
+        let source = [0x48, 0x8b, 0x30];
+        let code = CodeView::new(ENTRY, &source).unwrap();
+        let stop_requested = AtomicU8::new(0);
+        let event_requested = AtomicBool::new(true);
+        let mut memory = EmptyMemory;
+
+        for (stop_rip, stop, end, budget, expected) in [
+            (Some(ENTRY), 0, ENTRY + 3, 1, BoundedMemoryExit::StopAddress),
+            (None, 1, ENTRY + 3, 1, BoundedMemoryExit::StopRequested),
+            (
+                None,
+                0,
+                ENTRY,
+                1,
+                BoundedMemoryExit::BoundaryReached { rip: ENTRY },
+            ),
+            (None, 0, ENTRY + 3, 0, BoundedMemoryExit::BudgetExhausted),
+            (None, 0, ENTRY + 3, 1, BoundedMemoryExit::EventPending),
+        ] {
+            stop_requested.store(stop, Ordering::Release);
+            let boundary = FixtureExecutionBoundary::new(code, end).unwrap();
+            let mut state = LongModeState {
+                rip: ENTRY,
+                ..Default::default()
+            };
+            let mut executor = AdvancingExecutor::default();
+            let result = unsafe {
+                run_controlled(
+                    code,
+                    boundary,
+                    &mut state,
+                    &mut memory,
+                    AccessContext::default(),
+                    budget,
+                    stop_rip,
+                    &stop_requested,
+                    Some(&event_requested),
+                    &mut executor,
+                )
+            }
+            .unwrap();
+            assert_eq!(result.exit, expected);
+            assert_eq!(state.rip, ENTRY);
+            assert!(executor.entries.is_empty());
+        }
+    }
+
+    #[test]
+    fn nop_fallback_event_yields_before_nop_and_resumes_without_replay() {
+        const ENTRY: u64 = 0x9c00;
+        let source = [0x48, 0x8b, 0x30, 0x90, 0x48, 0x8b, 0x30];
+        let code = CodeView::new(ENTRY, &source).unwrap();
+        let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
+        let stop_requested = AtomicU8::new(0);
+        let event_requested = AtomicBool::new(false);
+        let mut state = LongModeState {
+            rip: ENTRY,
+            ..Default::default()
+        };
+        let mut memory = EmptyMemory;
+        let mut executor = AdvancingExecutor {
+            request_event_after_entry: true,
+            ..Default::default()
+        };
+
+        let yielded = unsafe {
+            run_with_nop_fallback_controlled(
+                code,
+                boundary.clone(),
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                3,
+                None,
+                &stop_requested,
+                Some(&event_requested),
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(yielded.exit, BoundedMemoryExit::EventPending);
+        assert_eq!(state.rip, ENTRY + 3);
+        assert_eq!(
+            (yielded.retired_native, yielded.retired_interpreter),
+            (1, 0)
+        );
+        assert_eq!(yielded.remaining_budget, 2);
+        assert_eq!(executor.entries, [(ENTRY, 3)]);
+
+        event_requested.store(false, Ordering::Release);
+        executor.request_event_after_entry = false;
+        let resumed = unsafe {
+            run_with_nop_fallback_controlled(
+                code,
+                boundary,
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                yielded.remaining_budget,
+                None,
+                &stop_requested,
+                Some(&event_requested),
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            resumed.exit,
+            BoundedMemoryExit::BoundaryReached {
+                rip: code.code_end()
+            }
+        );
+        assert_eq!(state.rip, code.code_end());
+        assert_eq!(
+            (
+                resumed.remaining_budget,
+                resumed.retired_native,
+                resumed.retired_interpreter
+            ),
+            (0, 1, 1)
+        );
+        assert_eq!(executor.entries, [(ENTRY, 3), (ENTRY + 4, 3)]);
     }
 
     #[test]
