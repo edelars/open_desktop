@@ -17219,3 +17219,32 @@ pointer and two absent historical oracle manifests), with no new layout findings
 No physical or Mac mini run was made. Normative sources: Intel SDM Rev. 093 Vol. 2B MINPD pp. 4-16–4-18
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241)); Vol. 1
 §§4.9.2, 11.5.3.1–3 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+
+
+## S2-38j — exact Long64 MAXPD with bounded unmasked IM/DM exits
+
+**Status:** local interpreter/schema-v2 implementation, focused verification, and independent `gpt-6.1-sol` high review complete with no remaining findings. Physical/Mac mini acceptance remains `not_run` and is deferred to the final hardware substage.
+
+Added the distinct `s2-long-maxpd-unmasked-denormal-v1` profile for exact
+`66 0F 5F C1`. MAXPD-specific selection preserves raw SRC2 for either NaN,
+equal values and both-zero ties; a source-2 SNaN is forwarded unchanged. Both
+binary64 lanes are precomputed and raw IE/DE collected before deciding whether
+to commit. An unmasked event updates all newly detected IE/DE status bits and
+faults once without changing XMM0 or RIP or retiring; masked completion applies
+invalid priority within each lane and commits the complete XMM. Existing masked
+MAXPD is unchanged.
+
+The 128 literal fixtures cross both lane classes `{none, I, D, I+D}` with IM,
+DM and OSXMMEXCPT. Sixteen supplemental literals cover both NaN operand sides,
+QNaN/SNaN payload/sign, zero ties, equal finite values, infinities, max-versus-
+min selection, subnormals and pre-existing sticky flags. The independent result
+validator uses raw classification and its own MAX selector. Runner coverage
+executes all 144 fixtures, asserts literal selector outputs, verifies result
+and control tampering, and confirms JIT/native denial. ISA tests cover the 32
+control combinations across CPL0–3, gate priority, partial fetch, budget/STOP,
+exact-form rejection, full-state preservation and no data-memory access.
+Verification passed: `cargo test -p od-isa --offline maxpd_unmasked` (2 tests), `cargo test -p od-isa --offline maxpd_register_masked` (3 regression tests), `cargo test -p od-runner --offline local_maxpd_masked_register_aggregates_ie_de_and_keeps_jit_closed`, `cargo test -p od-runner --offline local_minpd_masked_register_aggregates_ie_de_and_keeps_jit_closed`, and `cargo test -p od-runner --offline maxpd_unmasked_two_lane_cross_product_validates_independent_results_and_denials` (128 matrix plus 16 special fixtures), `cargo test -p od-testkit --offline` (408 tests), `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, `git diff --check`, and `graphify update .`. `python3 tools/check_layout.py` reports the existing unmapped worktree `.git` pointer and two absent historical oracle manifests; no new layout finding was reported. No physical or Mac mini run was made. Independent code review found no remaining issues.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2B MAXPD pp. 4-5–4-7
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241)); Vol. 1
+§§4.9.2, 11.5.3.1–3 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)). See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38j--exact-maxpd-unmasked-invalid-and-denormal-exit), [plan](../plans/STAGE_2.md#s2-38j--exact-long64-maxpd-xmm0xmm1-unmasked-invalid-and-denormal-exit), [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38j-local-maxpd-unmasked-invalid-and-denormal), and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38j-exact-maxpd-unmasked-imdm-profile).

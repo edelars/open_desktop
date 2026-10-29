@@ -6216,3 +6216,18 @@ masked completion, atomic full-XMM state, retirement and fault metadata. JIT
 and native deny the profile; C/fragment and physical hardware remain deferred.
 Normative sources: Intel SDM Rev. 093 Vol. 2B MINPD pp. 4-16–4-18 and Vol. 1
 §§4.9.2, 11.5.3.1–3.
+
+### S2-38j local MAXPD unmasked invalid and denormal
+
+The separate schema-v2 profile `s2-long-maxpd-unmasked-denormal-v1` accepts
+only Long64 `66 0F 5F C1` and carries immutable SSE2/CR0/CR4 controls. Its 128
+fixed inputs cross both lane classes `{none, I, D, I+D}` with IM, DM and
+OSXMMEXCPT; 16 additional literal results distinguish MAXPD selection, NaN
+payload/sign forwarding, SNaN non-quieting, zero ties, equal values, infinities
+and prior sticky status. The validator checks both lanes independently, full
+XMM fault suppression, exception metadata and retirement. JIT/native reject the
+profile; C/fragment and physical hardware remain deferred. Normative sources:
+Intel SDM Rev. 093 Vol. 2B MAXPD pp. 4-5–4-7 and Vol. 1 §§4.9.2,
+11.5.3.1–3. See [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38j--exact-maxpd-unmasked-invalid-and-denormal-exit),
+[plan](../../../../docs/plans/STAGE_2.md#s2-38j--exact-long64-maxpd-xmm0xmm1-unmasked-invalid-and-denormal-exit),
+and [fixture format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-38j-exact-maxpd-unmasked-imdm-profile).

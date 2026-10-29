@@ -136,6 +136,16 @@ pub struct MinpdUnmaskedControls {
     pub cr4_osxmmexcpt: bool,
 }
 
+/// Explicit SSE2 and exception-delivery controls for exact S2-38j MAXPD.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MaxpdUnmaskedControls {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
 /// Explicit CR0.EM/TS inputs for the exact local FXSAVE64 form.
 /// FXSR and CR4.OSFXSR remain fixed prerequisites of this bounded profile.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -208,6 +218,7 @@ struct ExecutionProfiles<'a> {
     minsd_unmasked: Option<MinsdUnmaskedControls>,
     maxsd_unmasked: Option<MaxsdUnmaskedControls>,
     minpd_unmasked: Option<MinpdUnmaskedControls>,
+    maxpd_unmasked: Option<MaxpdUnmaskedControls>,
     fx_cr0: Option<FxCr0GateControls>,
     unmasked_minss_denormal: bool,
     rdtsc: Option<RdtscControls>,
@@ -1004,6 +1015,7 @@ pub fn run_with_maxss_unmasked_controls(
             minsd_unmasked: None,
             maxsd_unmasked: None,
             minpd_unmasked: None,
+            maxpd_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -1046,6 +1058,7 @@ pub fn run_with_minsd_unmasked_controls(
             minsd_unmasked: Some(controls),
             maxsd_unmasked: None,
             minpd_unmasked: None,
+            maxpd_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -1088,6 +1101,7 @@ pub fn run_with_maxsd_unmasked_controls(
             minsd_unmasked: None,
             maxsd_unmasked: Some(controls),
             minpd_unmasked: None,
+            maxpd_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -1130,6 +1144,50 @@ pub fn run_with_minpd_unmasked_controls(
             minsd_unmasked: None,
             maxsd_unmasked: None,
             minpd_unmasked: Some(controls),
+            maxpd_unmasked: None,
+            fx_cr0: None,
+            unmasked_minss_denormal: false,
+            rdtsc: None,
+            swapgs: None,
+            cli: None,
+            sti: None,
+            halt: None,
+            cr0: None,
+            cr4: None,
+        },
+        StepRuntime {
+            rdtsc_source: None,
+            sti_sequence: None,
+            exact_hlt_only: false,
+            stop_requested: &mut stop_requested,
+        },
+    )
+}
+
+/// Execute exact `66 0F 5F C1` MAXPD with bounded unmasked IM/DM delivery.
+pub fn run_with_maxpd_unmasked_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: MaxpdUnmaskedControls,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_configured(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        ExecutionProfiles {
+            cpuid: None,
+            msr: None,
+            sep: None,
+            xorpd: None,
+            minss_invalid: None,
+            maxss_unmasked: None,
+            minsd_unmasked: None,
+            maxsd_unmasked: None,
+            minpd_unmasked: None,
+            maxpd_unmasked: Some(controls),
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -1172,6 +1230,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             minsd_unmasked: None,
             maxsd_unmasked: None,
             minpd_unmasked: None,
+            maxpd_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: true,
             rdtsc: None,
@@ -1267,6 +1326,7 @@ pub fn run_with_efer_rdmsr_profile(
             minsd_unmasked: None,
             maxsd_unmasked: None,
             minpd_unmasked: None,
+            maxpd_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -1518,6 +1578,7 @@ pub fn run_with_cr0_profile(
             minsd_unmasked: None,
             maxsd_unmasked: None,
             minpd_unmasked: None,
+            maxpd_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -1561,6 +1622,7 @@ pub fn run_with_cr4_profile(
             minsd_unmasked: None,
             maxsd_unmasked: None,
             minpd_unmasked: None,
+            maxpd_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: profile == Cr4Profile::FpInitThenFxrstor64MinssLong64V1,
             rdtsc: None,
@@ -1838,6 +1900,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             minsd_unmasked: None,
             maxsd_unmasked: None,
             minpd_unmasked: None,
+            maxpd_unmasked: None,
             fx_cr0: fx_cr0_gate_controls,
             unmasked_minss_denormal,
             rdtsc: rdtsc_controls,
@@ -2065,6 +2128,7 @@ pub fn step_with_cr0_profile(
             minsd_unmasked: None,
             maxsd_unmasked: None,
             minpd_unmasked: None,
+            maxpd_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2350,6 +2414,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             minsd_unmasked: None,
             maxsd_unmasked: None,
             minpd_unmasked: None,
+            maxpd_unmasked: None,
             fx_cr0: fx_cr0_gate_controls,
             unmasked_minss_denormal,
             rdtsc: rdtsc_controls,
@@ -2387,6 +2452,7 @@ fn step_configured(
         minsd_unmasked: configured_minsd_controls,
         maxsd_unmasked: configured_maxsd_controls,
         minpd_unmasked: configured_minpd_controls,
+        maxpd_unmasked: configured_maxpd_controls,
         fx_cr0: fx_cr0_gate_controls,
         unmasked_minss_denormal,
         rdtsc: rdtsc_controls,
@@ -2945,6 +3011,38 @@ fn step_configured(
             }));
         }
     }
+    if let Some(controls) = configured_maxpd_controls {
+        let exact_maxpd = instruction.operation
+            == (Operation::MaxpdRegisterMasked {
+                destination: 0,
+                source: 1,
+            })
+            && instruction.length == 4
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x5f
+            && instruction.prefixes.group1.is_none()
+            && instruction.prefixes.operand_override
+            && instruction.prefixes.rex.is_none();
+        if !exact_maxpd {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        let fault_vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+            Some(6)
+        } else if controls.cr0_ts {
+            Some(7)
+        } else {
+            None
+        };
+        if let Some(vector) = fault_vector {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+    }
 
     if instruction.opcode.map == long_decode::OpcodeMap::Primary
         && (0xd8..=0xdf).contains(&instruction.opcode.byte)
@@ -3469,6 +3567,14 @@ fn step_configured(
         } else if configured_minpd_controls.is_some()
             && instruction.operation
                 == (Operation::MinpdRegisterMasked {
+                    destination: 0,
+                    source: 1,
+                })
+        {
+            minss_unmasked_denormal_mxcsr_supported(sse.mxcsr)
+        } else if configured_maxpd_controls.is_some()
+            && instruction.operation
+                == (Operation::MaxpdRegisterMasked {
                     destination: 0,
                     source: 1,
                 })
@@ -7359,9 +7465,10 @@ fn step_configured(
                 )
             };
             let mut result_xmm = destination_xmm;
-            let mut invalid_operation = false;
-            let mut denormal_operand = false;
+            let mut lane_invalid = [false; 2];
+            let mut lane_denormal = [false; 2];
             for offset in [0, 8] {
+                let lane = offset / 8;
                 let lhs_bits = u64::from_le_bytes(
                     destination_xmm[offset..offset + 8]
                         .try_into()
@@ -7375,11 +7482,9 @@ fn step_configured(
                 let lhs = Binary64::from_bits(lhs_bits);
                 let rhs = Binary64::from_bits(rhs_bits);
                 let result = Binary64::max_sse_raw_result(lhs, rhs);
-                let invalid = result.invalid_operation();
-                invalid_operation |= invalid;
-                denormal_operand |= !invalid
-                    && (lhs.class() == BinaryClass::Subnormal
-                        || rhs.class() == BinaryClass::Subnormal);
+                lane_invalid[lane] = result.invalid_operation();
+                lane_denormal[lane] =
+                    lhs.class() == BinaryClass::Subnormal || rhs.class() == BinaryClass::Subnormal;
                 result_xmm[offset..offset + 8]
                     .copy_from_slice(&result.value().to_bits().to_le_bytes());
             }
@@ -7387,9 +7492,37 @@ fn step_configured(
                 .sse
                 .as_mut()
                 .expect("MAXPD local profile state was prevalidated");
-            sse.xmm[usize::from(destination)] = result_xmm;
-            sse.mxcsr =
-                old_mxcsr | u32::from(invalid_operation) | (u32::from(denormal_operand) << 1);
+            if configured_maxpd_controls.is_some()
+                && instruction.operation
+                    == (Operation::MaxpdRegisterMasked {
+                        destination: 0,
+                        source: 1,
+                    })
+            {
+                let any_invalid = lane_invalid.into_iter().any(|flag| flag);
+                let any_denormal = lane_denormal.into_iter().any(|flag| flag);
+                let unmasked_invalid = any_invalid && old_mxcsr & (1 << 7) == 0;
+                let unmasked_denormal = any_denormal && old_mxcsr & (1 << 8) == 0;
+                if unmasked_invalid || unmasked_denormal {
+                    sse.mxcsr = old_mxcsr | u32::from(any_invalid) | (u32::from(any_denormal) << 1);
+                    let controls = configured_maxpd_controls.expect("MAXPD controls selected");
+                    return Ok(StepOutcome::Fault(ArchitecturalFault {
+                        vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                        error_code: None,
+                        linear_address: None,
+                    }));
+                }
+                let masked_denormal = (0..2).any(|lane| lane_denormal[lane] && !lane_invalid[lane]);
+                sse.xmm[usize::from(destination)] = result_xmm;
+                sse.mxcsr = old_mxcsr | u32::from(any_invalid) | (u32::from(masked_denormal) << 1);
+            } else {
+                let invalid_operation = lane_invalid.into_iter().any(|flag| flag);
+                let denormal_operand =
+                    (0..2).any(|lane| lane_denormal[lane] && !lane_invalid[lane]);
+                sse.xmm[usize::from(destination)] = result_xmm;
+                sse.mxcsr =
+                    old_mxcsr | u32::from(invalid_operation) | (u32::from(denormal_operand) << 1);
+            }
         }
         Operation::MinpsRegisterMasked {
             destination,
@@ -99362,6 +99495,297 @@ mod swapgs_profile_tests {
             state.rip = 0x7900;
             let prior = state.clone();
             let result = run_with_minpd_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x7900 + bytes.len() as u64),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert!(matches!(result.exit, RunExit::Unsupported { .. }));
+            assert_eq!(state, prior);
+        }
+    }
+
+    #[test]
+    fn maxpd_unmasked_cross_lane_events_aggregate_and_suppress_full_xmm_atomically() {
+        let qnan = 0x7ff8_1234_5678_9abcu64;
+        let subnormal = 0x8000_0000_0000_0001u64;
+        let one = 0x3ff0_0000_0000_0000u64;
+        let two = 0x4000_0000_0000_0000u64;
+        let classes = [
+            (one, two, false, false),
+            (qnan, two, true, false),
+            (subnormal, two, false, true),
+            (qnan, subnormal, true, true),
+        ];
+        for left in classes {
+            for right in classes {
+                for im in [false, true] {
+                    for dm in [false, true] {
+                        for osxmmexcpt in [false, true] {
+                            for privilege in [
+                                PrivilegeLevel::Ring0,
+                                PrivilegeLevel::Ring1,
+                                PrivilegeLevel::Ring2,
+                                PrivilegeLevel::Ring3,
+                            ] {
+                                let code = [0x66, 0x0f, 0x5f, 0xc1];
+                                let mut memory = Memory::at(&code, 0x7400);
+                                let mut state = LongModeState::default();
+                                state.rip = 0x7400;
+                                state.x87 = Some(X87State::fixture_seed());
+                                let mut xmm = [[0x5a; 16]; 16];
+                                xmm[0][..8].copy_from_slice(&left.0.to_le_bytes());
+                                xmm[0][8..].copy_from_slice(&right.0.to_le_bytes());
+                                xmm[1][..8].copy_from_slice(&left.1.to_le_bytes());
+                                xmm[1][8..].copy_from_slice(&right.1.to_le_bytes());
+                                let mxcsr =
+                                    0x1e00 | (u32::from(im) << 7) | (u32::from(dm) << 8) | 0x12;
+                                state.sse = Some(SseState { xmm, mxcsr });
+                                let before = state.clone();
+                                let raw_ie = left.2 || right.2;
+                                let raw_de = left.3 || right.3;
+                                let fault = raw_ie && !im || raw_de && !dm;
+                                let result = run_with_maxpd_unmasked_controls(
+                                    &mut state,
+                                    &mut memory,
+                                    RunConfig {
+                                        instruction_budget: 1,
+                                        stop_rip: Some(0x7404),
+                                        context: AccessContext {
+                                            privilege,
+                                            ..AccessContext::default()
+                                        },
+                                    },
+                                    MaxpdUnmaskedControls {
+                                        sse2_available: true,
+                                        cr0_em: false,
+                                        cr0_ts: false,
+                                        cr4_osfxsr: true,
+                                        cr4_osxmmexcpt: osxmmexcpt,
+                                    },
+                                    || false,
+                                );
+                                if fault {
+                                    assert_eq!(
+                                        result.exit,
+                                        RunExit::Fault(ArchitecturalFault {
+                                            vector: if osxmmexcpt { 19 } else { 6 },
+                                            error_code: None,
+                                            linear_address: None
+                                        })
+                                    );
+                                    assert_eq!(result.instructions_executed, 0);
+                                    assert_eq!(state.rip, before.rip);
+                                    assert_eq!(
+                                        state.sse.as_ref().unwrap().xmm,
+                                        before.sse.as_ref().unwrap().xmm
+                                    );
+                                } else {
+                                    assert_eq!(result.exit, RunExit::StopAddress);
+                                    assert_eq!(result.instructions_executed, 1);
+                                    assert_eq!(state.rip, 0x7404);
+                                    assert_eq!(
+                                        state.sse.as_ref().unwrap().xmm[0][..8],
+                                        (if left.2 {
+                                            left.1
+                                        } else if f64::from_bits(left.0) > f64::from_bits(left.1) {
+                                            left.0
+                                        } else {
+                                            left.1
+                                        })
+                                        .to_le_bytes()
+                                    );
+                                    assert_eq!(
+                                        state.sse.as_ref().unwrap().xmm[0][8..],
+                                        (if right.2 {
+                                            right.1
+                                        } else if f64::from_bits(right.0) > f64::from_bits(right.1)
+                                        {
+                                            right.0
+                                        } else {
+                                            right.1
+                                        })
+                                        .to_le_bytes()
+                                    );
+                                    assert_eq!(
+                                        state.sse.as_ref().unwrap().xmm[1],
+                                        before.sse.as_ref().unwrap().xmm[1]
+                                    );
+                                }
+                                let masked_de = (left.3 && !left.2) || (right.3 && !right.2);
+                                let status_de = if fault { raw_de } else { masked_de };
+                                assert_eq!(
+                                    state.sse.as_ref().unwrap().mxcsr,
+                                    mxcsr | u32::from(raw_ie) | (u32::from(status_de) << 1)
+                                );
+                                assert!(memory.accesses.is_empty());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn maxpd_unmasked_prerequisite_precedence_fetch_budget_and_exact_form() {
+        for privilege in [
+            PrivilegeLevel::Ring0,
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            for bits in 0..32u8 {
+                let controls = MaxpdUnmaskedControls {
+                    sse2_available: bits & 1 != 0,
+                    cr0_em: bits & 2 != 0,
+                    cr0_ts: bits & 4 != 0,
+                    cr4_osfxsr: bits & 8 != 0,
+                    cr4_osxmmexcpt: bits & 16 != 0,
+                };
+                let mut memory = Memory::at(&[0x66, 0x0f, 0x5f, 0xc1], 0x7500);
+                let mut state = LongModeState::default();
+                state.rip = 0x7500;
+                state.x87 = Some(X87State::fixture_seed());
+                let mut xmm = [[0x5a; 16]; 16];
+                xmm[0][..8].copy_from_slice(&0x3ff0_0000_0000_0000u64.to_le_bytes());
+                xmm[0][8..].copy_from_slice(&0x4000_0000_0000_0000u64.to_le_bytes());
+                xmm[1][..8].copy_from_slice(&0x4000_0000_0000_0000u64.to_le_bytes());
+                xmm[1][8..].copy_from_slice(&0x3ff0_0000_0000_0000u64.to_le_bytes());
+                state.sse = Some(SseState { xmm, mxcsr: 0x1e00 });
+                let before = state.clone();
+                let result = run_with_maxpd_unmasked_controls(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(0x7504),
+                        context: AccessContext {
+                            privilege,
+                            ..AccessContext::default()
+                        },
+                    },
+                    controls,
+                    || false,
+                );
+                let gate = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+                    Some(6)
+                } else if controls.cr0_ts {
+                    Some(7)
+                } else {
+                    None
+                };
+                if let Some(vector) = gate {
+                    assert_eq!(
+                        result.exit,
+                        RunExit::Fault(ArchitecturalFault {
+                            vector,
+                            error_code: None,
+                            linear_address: None
+                        })
+                    );
+                    assert_eq!(result.instructions_executed, 0);
+                    assert_eq!(state, before);
+                } else {
+                    assert_eq!(result.exit, RunExit::StopAddress);
+                    assert_eq!(result.instructions_executed, 1);
+                }
+            }
+        }
+        let controls = MaxpdUnmaskedControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        let code = [0x66, 0x0f, 0x5f, 0xc1];
+        let mut memory = Memory::at(&code[..3], 0x7600);
+        let mut state = LongModeState::default();
+        state.rip = 0x7600;
+        state.x87 = Some(X87State::fixture_seed());
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1e00,
+        });
+        let before = state.clone();
+        let result = run_with_maxpd_unmasked_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x7604),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::MemoryError(MemoryError::Unmapped {
+                address: 0x7603,
+                access: crate::memory::AccessKind::Fetch
+            })
+        );
+        assert_eq!(state, before);
+
+        for bytes in [&[0x66, 0x45, 0x0f, 0x5f, 0xc1][..], &[][..]] {
+            let mut memory = Memory::at(bytes, 0x7700);
+            let mut state = before.clone();
+            state.rip = 0x7700;
+            let expected = if bytes.is_empty() {
+                RunExit::StopAddress
+            } else {
+                RunExit::Unsupported { opcode: 0x5f }
+            };
+            let result = run_with_maxpd_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: u64::from(!bytes.is_empty()),
+                    stop_rip: Some(if bytes.is_empty() { 0x7700 } else { 0x7705 }),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(result.exit, expected);
+            assert_eq!(result.instructions_executed, 0);
+        }
+        let mut memory = Memory::at(&code, 0x7800);
+        let mut state = before.clone();
+        state.rip = 0x7800;
+        let prior = state.clone();
+        let result = run_with_maxpd_unmasked_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 0,
+                stop_rip: Some(0x7804),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+        assert_eq!(state, prior);
+
+        for bytes in [
+            &[0x0f, 0x5f, 0xc1][..],
+            &[0xf3, 0x0f, 0x5f, 0xc1],
+            &[0xf2, 0x0f, 0x5f, 0xc1],
+            &[0x66, 0x0f, 0x5f, 0x01],
+        ] {
+            let mut memory = Memory::at(bytes, 0x7900);
+            let mut state = before.clone();
+            state.rip = 0x7900;
+            let prior = state.clone();
+            let result = run_with_maxpd_unmasked_controls(
                 &mut state,
                 &mut memory,
                 RunConfig {

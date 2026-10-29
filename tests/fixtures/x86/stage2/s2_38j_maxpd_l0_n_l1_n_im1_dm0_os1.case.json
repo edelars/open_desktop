@@ -1,0 +1,102 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_38j_maxpd_l0_n_l1_n_im1_dm0_os1",
+  "profile": "s2-long-maxpd-unmasked-denormal-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Project-materialized literal MAXPD two-lane input l0_n_l1_n_im1_dm0_os1.",
+    "specification": "Intel SDM Rev. 093 Vol. 1 \u00a7\u00a74.9.2, 11.5.3.1\u20133; Vol. 2B MAXPD pp. 4-5\u20134-7.",
+    "specification_version": "Intel SDM Rev. 093; bounded local S2-38j."
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0000000000000100",
+      "0x0000000000000101",
+      "0x0000000000000102",
+      "0x0000000000000103",
+      "0x0000000000000104",
+      "0x0000000000000105",
+      "0x0000000000000106",
+      "0x0000000000000107",
+      "0x0000000000000108",
+      "0x0000000000000109",
+      "0x000000000000010a",
+      "0x000000000000010b",
+      "0x000000000000010c",
+      "0x000000000000010d",
+      "0x000000000000010e",
+      "0x000000000000010f"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000402",
+    "x87": {
+      "registers": [
+        "00070e151c232a31383f",
+        "11181f262d343b424950",
+        "222930373e454c535a61",
+        "333a41484f565d646b72",
+        "444b525960676e757c83",
+        "555c636a71787f868d94",
+        "666d747b828990979ea5",
+        "777e858c939aa1a8afb6"
+      ],
+      "control_word": "0x000000000000037f",
+      "status_word": "0x0000000000000000",
+      "tag_word": "0x000000000000ffff",
+      "instruction_pointer": "0x0123456789abcdef",
+      "data_pointer": "0xfedcba9876543210",
+      "last_opcode": "0x00000000000005aa"
+    },
+    "sse": {
+      "xmm": [
+        "000000000000f03f000000000000f03f",
+        "00000000000000400000000000000040",
+        "202122232425262728292a2b2c2d2e2f",
+        "303132333435363738393a3b3c3d3e3f",
+        "404142434445464748494a4b4c4d4e4f",
+        "505152535455565758595a5b5c5d5e5f",
+        "606162636465666768696a6b6c6d6e6f",
+        "707172737475767778797a7b7c7d7e7f",
+        "4523c17f8485868788898a8b8c8d8e8f",
+        "010000001415161718191a1b1c1d1e1f",
+        "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+        "b0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+        "c0c1c2c3c4c5c6c7c8c9cacbcccdcecf",
+        "d0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
+        "e0e1e2e3e4e5e6e7e8e9eaebecedeeef",
+        "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+      ],
+      "mxcsr": "0x0000000000001e80",
+      "diagnostic_mxcsr_mask": "0x000000000000ffbf"
+    }
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 4,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "660f5fc1",
+      "comparison_mask_hex": "ffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100004",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000000",
+  "expected_exit": "stop_address",
+  "maxpd_unmasked_controls": {
+    "sse2_available": true,
+    "cr0_em": false,
+    "cr0_ts": false,
+    "cr4_osfxsr": true,
+    "cr4_osxmmexcpt": true
+  }
+}

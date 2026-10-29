@@ -287,6 +287,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 minsd_unmasked_controls: input.fixture.minsd_unmasked_controls,
                 maxsd_unmasked_controls: input.fixture.maxsd_unmasked_controls,
                 minpd_unmasked_controls: input.fixture.minpd_unmasked_controls,
+                maxpd_unmasked_controls: input.fixture.maxpd_unmasked_controls,
                 fxsave64_cr0_controls: input.fixture.fxsave64_cr0_controls,
                 fxrstor64_cr0_controls: input.fixture.fxrstor64_cr0_controls,
                 rdtsc_source_calls: None,

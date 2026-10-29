@@ -12167,3 +12167,32 @@ control/result tampering, comparator echoes and JIT/native denial.
 Normative sources: Intel SDM Rev. 093 Vol. 2B MINPD pp. 4-16–4-18
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241)); Vol. 1
 §§4.9.2, 11.5.3.1–3 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)). See the [plan](../plans/STAGE_2.md#s2-38i--exact-long64-minpd-xmm0xmm1-unmasked-invalid-and-denormal-exit).
+
+## S2-38j — exact MAXPD unmasked invalid and denormal exit
+
+The interpreter-only profile `s2-long-maxpd-unmasked-denormal-v1` accepts only
+Long64 `66 0F 5F C1` (`MAXPD XMM0,XMM1`), one executable code region, budget one
+and stop RIP `entry+4`. Its immutable `MaxpdUnmaskedControlSnapshot` records
+SSE2 availability, CR0.EM/TS, CR4.OSFXSR and CR4.OSXMMEXCPT and is echoed exactly
+by the result. Complete fetch precedes SSE2/EM/OSFXSR #UD and then TS #NM gates;
+both lanes are examined only after these gates, independent of CPL. Reserved
+MXCSR bits, DAZ and FTZ must be zero; ZE/OE/UE/PE masks must be set; IM/DM, RC
+and prior sticky status are permitted.
+
+Both full XMM operands are snapshotted and both binary64 lanes are precomputed.
+MAXPD selects raw SRC2 for either NaN, equal values and signed-zero ties. A
+source-2 SNaN is forwarded unchanged. For other operands, SRC1 is selected only
+when SRC1 is strictly greater. Raw IE and DE conditions are collected across
+both lanes before exception disposition. If any newly detected event is
+unmasked, every detected IE/DE flag is ORed into MXCSR and one #XM
+(OSXMMEXCPT=1) or #UD (OSXMMEXCPT=0) is reported, preserving full XMM0/RIP with
+zero retirement. If all events are masked, invalid priority suppresses DE only
+in its own lane; the complete XMM result and effective aggregate status commit.
+Existing masked MAXPD remains unchanged. There is no handler continuation.
+
+JIT/native/C/fragment and physical execution remain closed. The bounded local
+evidence uses 128 literal lane-class × IM × DM × OSXMMEXCPT fixtures plus 16
+selector/sticky cases and an independent raw-bit validator. Normative sources:
+Intel SDM Rev. 093 Vol. 2B MAXPD pp. 4-5–4-7
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241)); Vol. 1
+§§4.9.2, 11.5.3.1–3 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).

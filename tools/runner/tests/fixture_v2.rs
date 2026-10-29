@@ -17231,3 +17231,171 @@ fn minpd_unmasked_two_lane_cross_product_validates_independent_results_and_denia
     value.state.sse.as_mut().unwrap().xmm[0].replace_range(..2, "ff");
     assert!(od_testkit::v2::compare(&input, &result, &bad_state).is_err());
 }
+
+#[test]
+fn maxpd_unmasked_two_lane_cross_product_validates_independent_results_and_denials() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let mut paths: Vec<_> = fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("s2_38j_maxpd_l0_")
+        })
+        .collect();
+    paths.sort();
+    assert_eq!(
+        paths.len(),
+        128,
+        "MAXPD lane-class x IM x DM x OSXMMEXCPT fixtures"
+    );
+    let mut denial_source = None;
+    let mut representative = None;
+    for path in paths {
+        let source = fs::read(&path).unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongMaxpdUnmaskedDenormalV1
+        );
+        assert_eq!(
+            od_testkit::v2::compare(&input, &result, &result).unwrap(),
+            Vec::<String>::new()
+        );
+        let expected_lanes = input
+            .fixture
+            .case_id
+            .split("_l0_")
+            .nth(1)
+            .unwrap()
+            .split("_im")
+            .next()
+            .unwrap();
+        let expected_lanes: Vec<_> = expected_lanes.split("_l1_").collect();
+        let sse = input.fixture.initial_state.sse.as_ref().unwrap();
+        let lhs = decode_xmm_literal(&sse.xmm[0]);
+        let rhs = decode_xmm_literal(&sse.xmm[1]);
+        for lane in 0..2 {
+            let offset = lane * 8;
+            let operands = [
+                u64::from_le_bytes(lhs[offset..offset + 8].try_into().unwrap()),
+                u64::from_le_bytes(rhs[offset..offset + 8].try_into().unwrap()),
+            ];
+            let invalid = operands
+                .iter()
+                .any(|bits| ((bits >> 52) & 0x7ff) == 0x7ff && bits & ((1u64 << 52) - 1) != 0);
+            let denormal = operands
+                .iter()
+                .any(|bits| ((bits >> 52) & 0x7ff) == 0 && bits & ((1u64 << 52) - 1) != 0);
+            let actual = match (invalid, denormal) {
+                (false, false) => "n",
+                (true, false) => "i",
+                (false, true) => "d",
+                (true, true) => "id",
+            };
+            assert_eq!(
+                actual, expected_lanes[lane],
+                "fixture lane encoding: {}",
+                input.fixture.case_id
+            );
+        }
+        let Observation::Available { value } = &result.snapshot else {
+            panic!("snapshot unavailable")
+        };
+        assert_eq!(
+            value.maxpd_unmasked_controls,
+            input.fixture.maxpd_unmasked_controls
+        );
+        if denial_source.is_none() {
+            denial_source = Some(source.clone());
+        }
+        if representative.is_none() {
+            representative = Some((input.clone(), result.clone()));
+        }
+    }
+    let expected = [
+        (
+            "distinguish_max_from_min",
+            "000000000000f03f0000000000000040",
+        ),
+        ("equal_finite_source2", "182d4454fb2109406957148b0abf05c0"),
+        ("negative_infinity_lhs", "000000000000f0bf000000000000f03f"),
+        (
+            "negative_zero_tie_source2",
+            "0000000000000000000000000000f03f",
+        ),
+        (
+            "payload_sign_qnan_source2",
+            "000000000000f03f547698badcfef8ff",
+        ),
+        (
+            "payload_sign_snan_source2",
+            "000000000000f03f420000000000f0ff",
+        ),
+        ("positive_infinity_lhs", "000000000000f07f000000000000f03f"),
+        ("positive_infinity_rhs", "000000000000f07f000000000000f03f"),
+        (
+            "positive_zero_tie_source2",
+            "0000000000000080000000000000f03f",
+        ),
+        ("qnan_and_subnormal", "000000000000f03f020000000000f87f"),
+        ("qnan_source1_lane0", "00000000000000400000000000000040"),
+        ("qnan_source2_lane0", "452301efcdabf8ff0000000000000040"),
+        ("snan_source1_lane1", "0000000000000040000000000000f0bf"),
+        ("snan_source2_lane1", "0000000000000040bc9a78563412f07f"),
+        ("sticky_ie_de_no_event", "00000000000000400000000000000040"),
+        ("subnormal_and_normal", "000000000000f03f000000000000f03f"),
+    ];
+    for (name, expected_xmm0) in expected {
+        let path = root.join(format!("s2_38j_maxpd_special_{name}.case.json"));
+        let source = fs::read(path).unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongMaxpdUnmaskedDenormalV1
+        );
+        assert_eq!(
+            od_testkit::v2::compare(&input, &result, &result).unwrap(),
+            Vec::<String>::new()
+        );
+        let Observation::Available { value } = &result.snapshot else {
+            panic!("snapshot unavailable")
+        };
+        assert_eq!(
+            value.state.sse.as_ref().unwrap().xmm[0],
+            expected_xmm0,
+            "literal MAXPD result: {name}"
+        );
+    }
+    let source = denial_source.unwrap();
+    let (_, jit) = run(&source, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    let (_, native) = run(&source, "native", 4);
+    assert!(matches!(native.outcome, Outcome::Unsupported { .. }));
+    let (input, result) = representative.unwrap();
+    let mut missing_controls = input.fixture.clone();
+    missing_controls.maxpd_unmasked_controls = None;
+    assert!(missing_controls.validate().is_err());
+    let mut wrong_form = input.fixture.clone();
+    wrong_form.memory[0].initial_bytes_hex = "660f5dc1".into();
+    assert!(wrong_form.validate().is_err());
+    let mut bad = result.clone();
+    let Observation::Available { value } = &mut bad.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value
+        .maxpd_unmasked_controls
+        .as_mut()
+        .unwrap()
+        .cr4_osxmmexcpt = !value.maxpd_unmasked_controls.unwrap().cr4_osxmmexcpt;
+    assert!(od_testkit::v2::compare(&input, &result, &bad).is_err());
+    let mut bad_state = result.clone();
+    let Observation::Available { value } = &mut bad_state.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.state.sse.as_mut().unwrap().xmm[0].replace_range(..2, "ff");
+    assert!(od_testkit::v2::compare(&input, &result, &bad_state).is_err());
+}

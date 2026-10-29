@@ -504,6 +504,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38g | Exact Long64 `MINSD XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, raw denormal classification, literal fixtures and complete local control/fault/result matrix; interpreter-only | S2-37i, S2-38f policy after MINSD-specific SDM review; independent review clean |
 | [x] | S2-38h | Exact Long64 `MAXSD XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, MAXSD-specific Rev. 093 semantics, full NaN/subnormal/control cross-product and raw-result fixtures; interpreter-only | S2-37j, S2-38g control policy after MAXSD-specific SDM review; independent review clean |
 | [x] | S2-38i | Exact Long64 `MINPD XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, 2-lane raw exception aggregation and atomic XMM suppression; interpreter-only | S2-37k, S2-38h control policy after MINPD-specific SDM review; independent review clean |
+| [x] | S2-38j | Exact Long64 `MAXPD XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, MAXPD-specific raw selector and 2-lane exception aggregation; interpreter-only | S2-37l, S2-38i control policy after MAXPD-specific SDM review; independent review clean |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
@@ -12411,3 +12412,41 @@ JIT/native/C/fragment admission and physical execution remain closed. Sources:
 Intel SDM Rev. 093 Vol. 2B MINPD pp. 4-16–4-18
 (https://cdrdv2.intel.com/v1/dl/getContent/671241); Vol. 1 §§4.9.2, 11.5.3.1–3
 (https://cdrdv2.intel.com/v1/dl/getContent/671436). See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38i--exact-minpd-unmasked-invalid-and-denormal-exit), [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38i-exact-minpd-unmasked-imdm-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38i-local-minpd-unmasked-invalid-and-denormal).
+
+
+#### S2-38j — exact Long64 MAXPD XMM0,XMM1 unmasked invalid and denormal exit
+
+The interpreter-only schema-v2 profile `s2-long-maxpd-unmasked-denormal-v1`
+admits only Long64 `66 0F 5F C1`, one executable code mapping, budget one and
+stop RIP `entry+4`. Immutable profile controls record SSE2 availability,
+CR0.EM/TS, CR4.OSFXSR and CR4.OSXMMEXCPT and are echoed in the result. Complete
+fetch precedes SSE2/EM/OSFXSR #UD and then TS #NM; lane classification follows
+only after those gates, at any CPL. MXCSR reserved bits, DAZ and FTZ are clear;
+ZE/OE/UE/PE masks are set; IM, DM, RC and existing sticky flags may vary.
+
+Both XMM operands are snapshotted and both binary64 lanes are precomputed using
+the MAXPD raw selector. Raw IE/DE conditions are collected for both lanes before
+commit. If any newly detected event is unmasked, every raw IE/DE condition is
+ORed into sticky status, one #XM or #UD is reported, and full XMM0/RIP remain
+unchanged with zero retirement. Otherwise, masked invalid suppresses denormal
+only within its own lane, then the complete XMM result and aggregated status
+commit atomically. MAXPD selects SRC2 for either NaN (including forwarding SRC2
+SNaN bits unchanged) and for equal values; both signed-zero operands select
+SRC2. Other non-NaN values select SRC1 only when SRC1 is strictly greater.
+Existing masked MAXPD remains unchanged.
+
+The 128 handwritten schema-v2 fixtures cross lane0/lane1 raw event classes
+{none, I, D, I+D} with IM, DM and OSXMMEXCPT. Sixteen supplemental literal
+fixtures cover QNaN/SNaN on either operand side with payload/sign preservation,
+both zero ties, equal finite values, infinities, a max-vs-min discriminator,
+subnormals and pre-existing sticky status. Focused ISA tests cover the complete
+control gate matrix, CPL0–3, partial fetch, budget/STOP, exact-form rejection,
+full-state preservation and no data-memory callbacks. The independent fixture
+validator classifies raw NaN/subnormal bits and uses its own MAX ordering rule.
+JIT/native/C/fragment admission and physical execution remain closed. Sources:
+Intel SDM Rev. 093 Vol. 2B MAXPD pp. 4-5–4-7
+(https://cdrdv2.intel.com/v1/dl/getContent/671241); Vol. 1 §§4.9.2,
+11.5.3.1–3 (https://cdrdv2.intel.com/v1/dl/getContent/671436). See the [CPU
+contract](../specs/CPU_CONTRACT.md#s2-38j--exact-maxpd-unmasked-invalid-and-denormal-exit),
+[fixture format](../testing/TEST_CASE_FORMAT.md#s2-38j-exact-maxpd-unmasked-imdm-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38j-local-maxpd-unmasked-invalid-and-denormal).

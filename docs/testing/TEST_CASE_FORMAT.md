@@ -1277,3 +1277,24 @@ aggregates raw events for an unmasked exit, otherwise applies same-lane
 invalid-over-denormal priority, and verifies full XMM state, status, retirement,
 exception metadata and control echoes. JIT and native reject the profile. See
 the [CPU contract](../specs/CPU_CONTRACT.md#s2-38i--exact-minpd-unmasked-invalid-and-denormal-exit), [plan](../plans/STAGE_2.md#s2-38i--exact-long64-minpd-xmm0xmm1-unmasked-invalid-and-denormal-exit), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38i-local-minpd-unmasked-invalid-and-denormal).
+
+## S2-38j exact MAXPD unmasked IM/DM profile
+
+The strict schema-v2 profile `s2-long-maxpd-unmasked-denormal-v1` admits only
+Long64 bytes `660f5fc1`. `maxpd_unmasked_controls` records the five immutable
+SSE2/CR0/CR4 booleans; results echo it as
+`snapshot.maxpd_unmasked_controls`. Strict validation rejects missing, unknown,
+cross-profile, omitted or tampered controls, non-exact code, and MXCSR outside
+the bounded set. One executable code mapping, budget 1 and stop RIP `entry+4`
+are required.
+
+The 128 fixed fixtures cross lane0/lane1 raw classes `{none, I, D, I+D}` with
+IM, DM and OSXMMEXCPT; 16 supplemental literals cover NaN operand positions,
+raw QNaN/SNaN payload and sign forwarding, both signed-zero ties, equal finite
+values, infinities, max-vs-min selection and sticky-only status. The independent
+validator derives raw IE/DE per lane, aggregates all raw events on unmasked
+exit, otherwise applies same-lane invalid-over-denormal priority, and verifies
+full XMM state, MXCSR, retirement, exception metadata and control echoes. JIT
+and native reject the profile. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38j--exact-maxpd-unmasked-invalid-and-denormal-exit),
+[plan](../plans/STAGE_2.md#s2-38j--exact-long64-maxpd-xmm0xmm1-unmasked-invalid-and-denormal-exit),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38j-local-maxpd-unmasked-invalid-and-denormal).
