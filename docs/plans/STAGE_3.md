@@ -682,8 +682,16 @@ identities могут alias один backing ID/generation. IDs и ненуле�
 получает generation или identity из host pointer. Key использует полное
 сравнение content при hash collisions. Full production cache/invalidation и
 выбор структуры поиска не добавлены; отдельный one-entry S3-18a partial
-описан ниже, а S3-17 остаётся открытой до измерения и оставшихся acceptance
-checks.
+описан ниже. Независимый `gpt-6.1-sol` reviewer на revision
+`629b1b14a341e47758e7dd9f1da11f7abf5a68cd` подтвердил fixture-level key,
+dependency и lookup acceptance; проверены bytes/ranges, aliases,
+mapping/backing identity/generation, executable permissions, hash-collision
+equality и validation order. Это закрывает reviewer-acceptance gate, но не
+всю S3-17: owner-provided identity/version guarantees, production
+cache/invalidation и выбор production lookup policy остаются открытыми.
+Исторические Vec/HashMap timings относятся к source revision `85afb316…` и
+не являются замером текущего `ExecutionContextSnapshot` key или end-to-end JIT.
+Подробности и provenance — в [S3-17 review acceptance report](../reports/STAGE_3_S3-17-review-acceptance-2026-10-29.md).
 
 **Benchmark prototype:** `tools/bench` содержит ARM64 macOS `record` wrapper
 вокруг реальных `dispatch::run` block-entry вызовов и portable `measure`
@@ -695,9 +703,12 @@ key-size ladder/observed count, hot loops, unique sequence, mixed hit/miss,
 stale mapping/backing/permission, aliases и 1/2/4 dependency spans. Это только
 прототип harness. На frozen corpus выполнены три release process runs; 18
 сценариев и сырые результаты описаны в [отчёте измерений](../reports/STAGE_3_S3-17-lookup-measurements-2026-10-26.md).
-Эти table-level результаты не являются end-to-end JIT speedup и пока не
-выбрали production lookup/cache policy. S3-17 остаётся открытой для reviewer
-acceptance и оставшихся cache-key/dependency требований. Ограничения и команды
+Эти table-level результаты не являются end-to-end JIT speedup и не выбирают
+production lookup/cache policy. Reviewer-acceptance gate закрыт на revision
+`629b1b14a341e47758e7dd9f1da11f7abf5a68cd`; S3-17 остаётся открытой для
+owner-provided identity/version guarantees, production cache/invalidation и
+решения о production lookup policy. См. [отчёт reviewer acceptance](../reports/STAGE_3_S3-17-review-acceptance-2026-10-29.md).
+Ограничения и команды
 описаны в [протоколе измерений](../testing/BENCHMARKS.md#s3-17-translation-key-lookup-prototype).
 
 ### S3-18. Реализовать ограниченный cache
