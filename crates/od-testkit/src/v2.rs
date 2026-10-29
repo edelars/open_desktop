@@ -116,6 +116,7 @@ pub const PROFILE_MOVUPD_MEMORY_STORE: &str = "s2-long-movupd-mem-store-v1";
 pub const PROFILE_MOVUPD_MEMORY_SIB: &str = "s2-long-movupd-mem-sib-v1";
 pub const PROFILE_MOVUPS_MEMORY_STORE: &str = "s2-long-movups-mem-store-v1";
 pub const PROFILE_MOVUPS_MEMORY_BASE: &str = "s2-long-movups-mem-base-v1";
+pub const PROFILE_SWAPGS: &str = "s2-long-swapgs-v1";
 /// Diagnostic mask for this bounded local fixture profile only. It is not a
 /// universal hardware CPUID mask and does not model guest #GP behavior.
 pub const PROFILE_SSE_MXCSR_DIAGNOSTIC_MASK: u32 = 0x0000_ffbf;
@@ -134,6 +135,8 @@ pub enum Profile {
     LongFsBaseV1,
     #[serde(rename = "s2-long-gs-base-v1")]
     LongGsBaseV1,
+    #[serde(rename = "s2-long-swapgs-v1")]
+    LongSwapgsV1,
     #[serde(rename = "s2-long-fs-base-msr-v1")]
     LongFsBaseMsrV1,
     #[serde(rename = "s2-long-fs-selector-v1")]
@@ -408,6 +411,13 @@ pub struct IntegerState {
         skip_serializing_if = "Option::is_none"
     )]
     pub gs_base: Option<HexU64>,
+    /// Present only in `s2-long-swapgs-v1`; `Some(0)` is significant.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_hex_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub kernel_gs_base: Option<HexU64>,
     /// Present only in `s2-long-fs-selector-v1` and constrained to a 16-bit selector.
     #[serde(
         default,
@@ -764,6 +774,7 @@ impl TryFrom<&LongModeState> for IntegerState {
             rflags: HexU64(state.rflags),
             fs_base: None,
             gs_base: None,
+            kernel_gs_base: state.kernel_gs_base.map(HexU64),
             fs_selector: None,
             gs_selector: None,
             ds_selector: None,
@@ -797,6 +808,7 @@ impl IntegerState {
             rflags: self.rflags.get(),
             fs_base: self.fs_base.map_or(0, HexU64::get),
             gs_base: self.gs_base.map_or(0, HexU64::get),
+            kernel_gs_base: self.kernel_gs_base.map(HexU64::get),
             fs_selector: self.fs_selector.map_or(0, |selector| selector.get() as u16),
             gs_selector: self.gs_selector.map_or(0, |selector| selector.get() as u16),
             ds_selector: self.ds_selector.map_or(0, |selector| selector.get() as u16),
@@ -1089,6 +1101,21 @@ impl IntegerState {
     }
 
     pub fn from_cpu_for(state: &LongModeState, profile: Profile) -> Result<Self, FormatError> {
+        match (profile, state.kernel_gs_base) {
+            (Profile::LongSwapgsV1, Some(base)) => {
+                let upper = base >> 47;
+                if upper != 0 && upper != 0x1ffff {
+                    return Err(invalid("state.kernel_gs_base", "must be canonical48"));
+                }
+            }
+            (Profile::LongSwapgsV1, None) => {
+                return Err(invalid("state.kernel_gs_base", "required by this profile"));
+            }
+            (_, Some(_)) => {
+                return Err(invalid("state.kernel_gs_base", "not part of this profile"));
+            }
+            (_, None) => {}
+        }
         if profile != Profile::LongX87SelectorsStateV1
             && profile != Profile::LongFxsaveRipV1
             && profile != Profile::LongFxsave64RaxV1
@@ -1352,6 +1379,9 @@ impl IntegerState {
             result.fs_base = Some(HexU64(state.fs_base));
         } else if profile == Profile::LongGsBaseV1 {
             result.gs_base = Some(HexU64(state.gs_base));
+        } else if profile == Profile::LongSwapgsV1 {
+            result.gs_base = Some(HexU64(state.gs_base));
+            result.kernel_gs_base = state.kernel_gs_base.map(HexU64);
         } else if profile == Profile::LongFsSelectorV1 {
             result.fs_base = Some(HexU64(state.fs_base));
             result.fs_selector = Some(HexU64(u64::from(state.fs_selector)));
@@ -1658,7 +1688,8 @@ impl IntegerState {
                 | Profile::LongGsSelectorV1
                 | Profile::LongVerwGdtV1
                 | Profile::LongGsLoadV1
-                | Profile::LongNullDsEsV1,
+                | Profile::LongNullDsEsV1
+                | Profile::LongSwapgsV1,
                 None,
             )
             | (Profile::LongFsBaseV1 | Profile::LongFsBaseMsrV1 | Profile::LongFsLoadV1, Some(_)) =>
@@ -1788,7 +1819,8 @@ impl IntegerState {
                 | Profile::LongGsSelectorV1
                 | Profile::LongVerwGdtV1
                 | Profile::LongGsLoadV1
-                | Profile::LongNullDsEsV1,
+                | Profile::LongNullDsEsV1
+                | Profile::LongSwapgsV1,
                 Some(_),
             ) => {
                 return Err(invalid("state.fs_base", "not part of this profile"));
@@ -1932,11 +1964,20 @@ impl IntegerState {
                 None,
             )
             | (
-                Profile::LongGsBaseV1 | Profile::LongGsSelectorV1 | Profile::LongGsLoadV1,
+                Profile::LongGsBaseV1
+                | Profile::LongGsSelectorV1
+                | Profile::LongGsLoadV1
+                | Profile::LongSwapgsV1,
                 Some(_),
             ) => {}
             (_, Some(_)) => return Err(invalid("state.gs_base", "not part of this profile")),
-            (Profile::LongGsBaseV1 | Profile::LongGsSelectorV1 | Profile::LongGsLoadV1, None) => {
+            (
+                Profile::LongGsBaseV1
+                | Profile::LongGsSelectorV1
+                | Profile::LongGsLoadV1
+                | Profile::LongSwapgsV1,
+                None,
+            ) => {
                 return Err(invalid("state.gs_base", "required by this profile"));
             }
         }
@@ -2065,7 +2106,8 @@ impl IntegerState {
                 | Profile::LongGsBaseV1
                 | Profile::LongVerwGdtV1
                 | Profile::LongGsLoadV1
-                | Profile::LongNullDsEsV1,
+                | Profile::LongNullDsEsV1
+                | Profile::LongSwapgsV1,
                 None,
             )
             | (Profile::LongFsSelectorV1 | Profile::LongFsLoadV1, Some(_)) => {}
@@ -2169,6 +2211,21 @@ impl IntegerState {
             let upper = base >> 47;
             if upper != 0 && upper != 0x1ffff {
                 return Err(invalid("state.gs_base", "must be canonical48"));
+            }
+        }
+        match (state_profile, self.kernel_gs_base) {
+            (Profile::LongSwapgsV1, Some(base)) => {
+                let upper = base.get() >> 47;
+                if upper != 0 && upper != 0x1ffff {
+                    return Err(invalid("state.kernel_gs_base", "must be canonical48"));
+                }
+            }
+            (Profile::LongSwapgsV1, None) => {
+                return Err(invalid("state.kernel_gs_base", "required by this profile"));
+            }
+            (_, None) => {}
+            (_, Some(_)) => {
+                return Err(invalid("state.kernel_gs_base", "not part of this profile"));
             }
         }
         match (
@@ -2930,6 +2987,37 @@ impl Fixture {
                 return Err(invalid(
                     "memory.code",
                     "SEP-disabled fixtures require one exact bare instruction, one instruction of budget, its following stop_rip, and an exception result",
+                ));
+            }
+        }
+        if self.profile == Profile::LongSwapgsV1 {
+            let Some(code) = self.memory.iter().find(|region| region.region_id == "code") else {
+                return Err(invalid("memory.code", "required by the SWAPGS profile"));
+            };
+            let bytes = code.initial_bytes_hex.to_ascii_lowercase();
+            let (budget, stop_offset, expected_exit) = match bytes.as_str() {
+                "0f01f8" => (1, 3, ExpectedExit::StopAddress),
+                "0f01f80f01f8" => (2, 6, ExpectedExit::StopAddress),
+                "0f01f865488b00" => (2, 7, ExpectedExit::StopAddress),
+                _ => {
+                    return Err(invalid(
+                        "memory.code",
+                        "SWAPGS profile admits only the exact one, double, and faulting GS-load programs",
+                    ));
+                }
+            };
+            if code.guest_address.get() != self.initial_state.rip.get()
+                || !code.permissions.execute
+                || self.instruction_budget != budget
+                || self.expected_exit != expected_exit
+                || self.stop_rip.map(HexU64::get)
+                    != (expected_exit == ExpectedExit::StopAddress)
+                        .then(|| self.initial_state.rip.get().checked_add(stop_offset))
+                        .flatten()
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "SWAPGS fixtures require the exact profile program, instruction budget, entry address, and terminal expectation",
                 ));
             }
         }
@@ -5632,14 +5720,24 @@ impl RunResult {
                     self.instructions_executed,
                     Observation::Available { value } if value.get() > 0
                 );
+            let swapgs_retired = loaded.fixture.profile == Profile::LongSwapgsV1
+                && matches!(self.instructions_executed, Observation::Available { value } if value.get() > 0);
             if !fs_load_retired
                 && !fs_base_msr_committed
                 && value.state.fs_base != loaded.fixture.initial_state.fs_base
             {
                 return Err(FormatError::CaseMismatch("state.fs_base"));
             }
-            if !gs_load_retired && value.state.gs_base != loaded.fixture.initial_state.gs_base {
+            if !gs_load_retired
+                && !swapgs_retired
+                && value.state.gs_base != loaded.fixture.initial_state.gs_base
+            {
                 return Err(FormatError::CaseMismatch("state.gs_base"));
+            }
+            if !swapgs_retired
+                && value.state.kernel_gs_base != loaded.fixture.initial_state.kernel_gs_base
+            {
+                return Err(FormatError::CaseMismatch("state.kernel_gs_base"));
             }
             if !fs_load_retired
                 && value.state.fs_selector != loaded.fixture.initial_state.fs_selector
@@ -5813,6 +5911,9 @@ pub fn compare(
     }
     if a.state.gs_base != b.state.gs_base {
         differences.push("gs_base".into());
+    }
+    if a.state.kernel_gs_base != b.state.kernel_gs_base {
+        differences.push("kernel_gs_base".into());
     }
     if a.state.fs_selector != b.state.fs_selector {
         differences.push("fs_selector".into());

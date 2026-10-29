@@ -423,6 +423,7 @@ fn state(regs: &libc::user_regs_struct) -> LongModeState {
         rflags: (regs.eflags & v2::INTEGER_FLAGS) | 2,
         fs_base: 0,
         gs_base: 0,
+        kernel_gs_base: None,
         fs_selector: 0,
         gs_selector: 0,
         cs_selector: None,
@@ -581,6 +582,9 @@ fn admission_with_tracee_memory(
 ) -> Result<FlagEffects, String> {
     let instruction = long_decode::decode(decoder, actual.rip, AccessContext::default())
         .map_err(|e| format!("native instruction outside admitted decode slice: {e:?}"))?;
+    if fixture.profile == v2::Profile::LongSwapgsV1 || instruction.operation == Operation::Swapgs {
+        return Err("SWAPGS is denied by the native runner profile".into());
+    }
     if fixture.profile == v2::Profile::LongNativeXorpdXmm0Xmm1V1 {
         let exact = instruction.length == 4
             && instruction.operation
@@ -4077,6 +4081,23 @@ mod tests {
         let actual = old_profile.fixture.initial_state.to_cpu().unwrap();
         let mut decoder = FlatMemory::from_fixture(&old_profile.fixture).unwrap();
         assert!(admission(&old_profile.fixture, &mut decoder, &actual).is_err());
+    }
+
+    #[test]
+    fn swapgs_profile_is_denied_before_native_trace() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/x86/stage2/s2_27g_swapgs_once.case.json");
+        let loaded = Fixture::from_json(&std::fs::read(path).unwrap()).unwrap();
+        let result = execute(&loaded);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
 
     #[test]

@@ -1,5 +1,60 @@
 use super::*;
 
+#[test]
+fn swapgs_kernel_gs_base_preserves_some_zero_and_old_wire_shape() {
+    let mut cpu = od_isa::LongModeState::default();
+    cpu.kernel_gs_base = Some(0);
+    let swapgs = IntegerState::from_cpu_for(&cpu, Profile::LongSwapgsV1).unwrap();
+    let json = serde_json::to_value(&swapgs).unwrap();
+    assert_eq!(json["kernel_gs_base"], "0x0000000000000000");
+    let roundtrip: IntegerState = serde_json::from_value(json).unwrap();
+    assert_eq!(
+        roundtrip
+            .to_cpu_for(Profile::LongSwapgsV1)
+            .unwrap()
+            .kernel_gs_base,
+        Some(0)
+    );
+    assert!(roundtrip.to_cpu_for(Profile::LongIntegerV1).is_err());
+    assert!(IntegerState::from_cpu_for(&cpu, Profile::LongIntegerV1).is_err());
+
+    cpu.kernel_gs_base = None;
+    let legacy = IntegerState::from_cpu_for(&cpu, Profile::LongIntegerV1).unwrap();
+    let legacy_json = serde_json::to_value(legacy).unwrap();
+    assert!(legacy_json.get("kernel_gs_base").is_none());
+    assert!(IntegerState::from_cpu_for(&cpu, Profile::LongSwapgsV1).is_err());
+}
+
+#[test]
+fn swapgs_fixture_profile_accepts_exactly_the_three_program_shapes() {
+    for case_id in [
+        "s2_27g_swapgs_once",
+        "s2_27g_swapgs_double",
+        "s2_27g_swapgs_gs_load_fault",
+    ] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "../../tests/fixtures/x86/stage2/{case_id}.case.json"
+        ));
+        let fixture = Fixture::from_json(&std::fs::read(path).unwrap())
+            .unwrap()
+            .fixture;
+        assert_eq!(fixture.profile, Profile::LongSwapgsV1);
+        let mut lock = fixture.clone();
+        lock.memory[0].initial_bytes_hex = "f00f01f8".into();
+        lock.memory[0].length = 4;
+        lock.memory[0].comparison_mask_hex = "ff".repeat(4);
+        assert!(lock.validate().is_err(), "LOCK: {case_id}");
+        let mut neighbor = fixture.clone();
+        neighbor.memory[0].initial_bytes_hex = "0f01f9".into();
+        neighbor.memory[0].length = 3;
+        neighbor.memory[0].comparison_mask_hex = "ff".repeat(3);
+        assert!(neighbor.validate().is_err(), "neighbor: {case_id}");
+        let mut wrong_budget = fixture;
+        wrong_budget.instruction_budget += 1;
+        assert!(wrong_budget.validate().is_err(), "budget: {case_id}");
+    }
+}
+
 fn loaded() -> LoadedFixture {
     let old = crate::case::Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/s0_09_mov_imm64.case.json"

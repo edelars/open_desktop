@@ -990,7 +990,8 @@ fn execute_fixture_v2(
         RunExit, XorpdPrerequisiteState, run, run_with_fxrstor64_cr0_controls,
         run_with_fxsave64_cr0_controls, run_with_minss_invalid_controls,
         run_with_minss_unmasked_denormal_controls, run_with_msr_profile, run_with_rdtsc_source,
-        run_with_rep_continuation, run_with_sep_profile, run_with_xorpd_prerequisites,
+        run_with_rep_continuation, run_with_sep_profile, run_with_swapgs_profile,
+        run_with_xorpd_prerequisites,
     };
     use od_testkit::v2;
     use std::time::{Duration, Instant};
@@ -1007,7 +1008,7 @@ fn execute_fixture_v2(
     // STOP, before budget/fetch. It cannot interrupt a stalled backend call.
     let context = if matches!(
         loaded.fixture.profile,
-        v2::Profile::LongNullDsEsV1 | v2::Profile::LongFsBaseMsrV1
+        v2::Profile::LongNullDsEsV1 | v2::Profile::LongFsBaseMsrV1 | v2::Profile::LongSwapgsV1
     ) {
         od_isa::memory::AccessContext {
             privilege: od_isa::memory::PrivilegeLevel::Ring0,
@@ -1076,6 +1077,14 @@ fn execute_fixture_v2(
             memory,
             config,
             &od_isa::sep::SepProfile::SepDisabledV1,
+            timeout,
+        )
+    } else if loaded.fixture.profile == v2::Profile::LongSwapgsV1 {
+        run_with_swapgs_profile(
+            &mut state,
+            memory,
+            config,
+            &od_isa::SwapgsProfile::SwapgsV1,
             timeout,
         )
     } else if loaded.fixture.profile == v2::Profile::LongRdtscV1 {

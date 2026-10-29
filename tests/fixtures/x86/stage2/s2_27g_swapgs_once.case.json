@@ -1,0 +1,81 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_27g_swapgs_once",
+  "profile": "s2-long-swapgs-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten SWAPGS opcode, starting bases, and distinct literal qwords at the old and new bases. The qword GS-load case denies data read at the exchanged base to expose first-instruction commit.",
+    "specification": "Intel SDM revision 093 (253667-093US), Vol.2B SWAPGS pp.4-697\u20134-698; Vol.3A FRED transition behavior.",
+    "specification_version": "Intel SDM Rev. 093; CS.L=1, FRED disabled, canonical48 bases, no VMX/SMM; project S2-27g."
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000",
+      "0x0000000000000000"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000cd7",
+    "gs_base": "0x0000000000400000",
+    "kernel_gs_base": "0x0000000000800000"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 3,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "0f01f8",
+      "comparison_mask_hex": "ffffff"
+    },
+    {
+      "region_id": "old_gs_qword",
+      "guest_address": "0x0000000000400000",
+      "length": 8,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "1122334455667788",
+      "comparison_mask_hex": "ffffffffffffffff"
+    },
+    {
+      "region_id": "new_gs_qword",
+      "guest_address": "0x0000000000800000",
+      "length": 8,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "8877665544332211",
+      "comparison_mask_hex": "ffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100003",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

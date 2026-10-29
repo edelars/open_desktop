@@ -215,6 +215,8 @@ pub struct LongModeState {
     pub fs_base: u64,
     /// GS base in the limited canonical48 data-address profile.
     pub gs_base: u64,
+    /// Kernel GS base, carried only by the explicit SWAPGS profile.
+    pub kernel_gs_base: Option<u64>,
     /// FS selector in local selector/load profiles.
     pub fs_selector: u16,
     /// GS selector in the local selector-read profile; hidden descriptor state is not modeled.
@@ -304,6 +306,7 @@ impl Default for LongModeState {
             rflags: 2,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -349,6 +352,7 @@ pub enum FragmentAdapterError {
     ExtraRegister(Register),
     UnsupportedFsBase(u64),
     UnsupportedGsBase(u64),
+    UnsupportedKernelGsBase(u64),
     UnsupportedFsSelector(u16),
     UnsupportedGsSelector(u16),
     UnsupportedGdtr(Gdtr),
@@ -393,6 +397,9 @@ impl TryFrom<&LongModeState> for FragmentState {
         }
         if state.gs_base != 0 {
             return Err(FragmentAdapterError::UnsupportedGsBase(state.gs_base));
+        }
+        if let Some(base) = state.kernel_gs_base {
+            return Err(FragmentAdapterError::UnsupportedKernelGsBase(base));
         }
         if state.fs_selector != 0 {
             return Err(FragmentAdapterError::UnsupportedFsSelector(
@@ -601,6 +608,7 @@ mod tests {
                         rflags: 0x8d7,
                         fs_base: 0,
                         gs_base: 0,
+                        kernel_gs_base: None,
                         fs_selector: 0,
                         gs_selector: 0,
                         ds_selector: 0,
@@ -815,5 +823,15 @@ mod tests {
                 Err(FragmentAdapterError::InstructionPointerOutOfRange(u64::MAX))
             );
         }
+    }
+
+    #[test]
+    fn fragment_adapter_rejects_present_kernel_gs_base_including_zero() {
+        let mut state = LongModeState::default();
+        state.kernel_gs_base = Some(0);
+        assert_eq!(
+            FragmentState::try_from(&state),
+            Err(FragmentAdapterError::UnsupportedKernelGsBase(0))
+        );
     }
 }

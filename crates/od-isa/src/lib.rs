@@ -15,6 +15,7 @@ pub mod msr;
 mod rational_rounding;
 pub mod sep;
 pub mod state;
+pub mod swapgs;
 pub mod x87;
 pub use interrupt::{
     InterruptDeliveryPhase, InterruptDeliveryResult, InterruptFrameSlot, InterruptOutsideProfile,
@@ -25,6 +26,7 @@ pub use state::{
     FragmentAdapterError, FsDescriptorCache, LongModeState, OperandSize, RegisterError,
     RegisterView, StackSegmentDescriptorCache,
 };
+pub use swapgs::SwapgsProfile;
 
 const CF: u64 = 1 << 0;
 const PF: u64 = 1 << 2;

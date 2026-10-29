@@ -426,6 +426,8 @@ pub enum Operation {
     MovGsSelectorToRax,
     /// The sole S2-22e descriptor-rights check: bare `0F 00 E8` (VERW AX).
     VerwGdt,
+    /// Exact bare Long64 `0F 01 F8`; execution requires an explicit profile.
+    Swapgs,
     /// S2-27a bare `0F 01 55 ib` (LGDT [RBP + sign-extended disp8]).
     LoadGdtr {
         source: MemoryOperand,
@@ -1816,6 +1818,16 @@ impl<M: GuestMemory> Fetch<'_, M> {
         if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x01 {
             if prefixes == Prefixes::default() {
                 let modrm = self.byte()?;
+                if modrm == 0xf8 {
+                    return Ok(Instruction {
+                        length: self.length,
+                        opcode,
+                        prefixes,
+                        operand_size: OperandSize::Qword,
+                        address_size: OperandSize::Qword,
+                        operation: Operation::Swapgs,
+                    });
+                }
                 if modrm == 0x5c {
                     let sib = self.byte()?;
                     if sib != 0x24 {
@@ -1866,6 +1878,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
             {
                 let modrm = self.byte()?;
                 match modrm {
+                    0xf8 => {}
                     0x55 => {
                         self.byte()?;
                     }
@@ -4609,6 +4622,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 Operation::VerwGdt
+            }
+            (OpcodeMap::Escape0f, 0x01) => {
+                if prefixes != Prefixes::default() || self.byte()? != 0xf8 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::Swapgs
             }
             (OpcodeMap::Escape0f, 0xae) => {
                 let modrm = self.byte()?;
@@ -17113,6 +17132,7 @@ mod tests {
                 rflags: 2,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,

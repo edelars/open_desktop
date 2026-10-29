@@ -2446,6 +2446,32 @@ and [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-27f--bounded-caller-selecte
 
 **Готово:** обязательные переходы имеют исполняемые tests с корректным state; полноценная доставка при paging/privilege transitions подтверждается интеграционно вместе с machine backend, а не mock callbacks.
 
+#### S2-27g — exact Long64 `SWAPGS`
+
+Add only bare `0F 01 F8` under an explicit `SwapgsV1` interpreter profile and
+fixture profile `s2-long-swapgs-v1`. Add mutable architectural
+`LongModeState::kernel_gs_base: Option<u64>`; legacy/default profiles keep
+`None`, and no MSR index or immutable controls/runner sidecar may stand in for
+it. Assume CS.L=1, FRED disabled, canonical48 bases, and no VMX/SMM. CPL0
+atomically exchanges GS and kernel-GS bases, advances RIP by three, and retires
+once while preserving other CPU/memory state. CPL1–3 raise #GP(0) before data
+access or mutation. Missing profile/state is unsupported. Exact LOCK gets #UD
+after full fetch; other prefixes/neighbors are unsupported and truncation
+preserves fetch order.
+
+The schema admits exactly three programs: one SWAPGS (budget 1), double SWAPGS
+(budget 2), and SWAPGS plus exact GS qword load (budget 2). Use different
+literal qwords at old/new bases; separately inject a second-instruction page
+fault and verify prior commit, one retirement, and fault RIP at instruction
+two. Preserve optional state in
+serialization, validation, and result comparison, including `Some(0)`, without
+changing old profile wire bytes/digests. Deny JIT/native/C execution. Cover CPL,
+base/canonical/equal/zero/double/preservation, encoding/fetch/STOP/budget, and
+runner expected-state cases. Update the CPU contract, report, fixture format
+and README, and Linux validation matrix. Architecture source: Intel SDM Rev.
+093 Vol. 2B SWAPGS pp. 4-697–4-698, including the CR4.FRED caveat; do not claim
+unconditional Long64 support. No physical, SSH, or Mac mini checks.
+
 ## 9. x87, MMX и SSE/SSE2
 
 Здесь особенно запрещены shortcuts: host `double` вместо extended precision, сравнение только обычных конечных значений, потеря NaN payload/classification или blanket masking всех FP differences. Если нужны библиотеки для общей инфраструктуры, они не должны реализовывать за проект x86/FP semantics.

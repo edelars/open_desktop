@@ -12,6 +12,7 @@ use crate::memory::{AccessContext, ArchitecturalFault, GuestMemory, MemoryError,
 use crate::msr::MsrProfile;
 use crate::sep::SepProfile;
 use crate::state::X87Tag;
+use crate::swapgs::SwapgsProfile;
 use crate::x87::{
     RationalRoundingMode, X87Binary80, X87Binary80Class, add_finite_same_exponent,
     divide_finite_significands, multiply_finite_significands, normalize_exact_magnitude,
@@ -852,6 +853,34 @@ pub fn run_with_sep_profile(
     )
 }
 
+/// Execute with the explicit exact SWAPGS profile; all other system forms
+/// remain closed to this profile.
+pub fn run_with_swapgs_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    profile: &SwapgsProfile,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_execution_loop_with_profiles_and_rdtsc(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        None,
+        None,
+        Some(profile),
+        &mut stop_requested,
+    )
+}
+
 /// Execute exact bare Long64 RDTSC with explicit CR4.TSD and an injected source.
 pub fn run_with_rdtsc_source(
     state: &mut LongModeState,
@@ -875,6 +904,7 @@ pub fn run_with_rdtsc_source(
         false,
         Some(controls),
         Some(source),
+        None,
         &mut stop_requested,
     )
 }
@@ -1046,6 +1076,7 @@ fn run_execution_loop_with_profiles(
         unmasked_minss_denormal,
         None,
         None,
+        None,
         stop_requested,
     )
 }
@@ -1064,6 +1095,7 @@ fn run_execution_loop_with_profiles_and_rdtsc(
     unmasked_minss_denormal: bool,
     rdtsc_controls: Option<RdtscControls>,
     mut rdtsc_source: Option<&mut dyn FnMut() -> u64>,
+    swapgs_profile: Option<&SwapgsProfile>,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> RunResult {
     let mut retired = 0;
@@ -1092,6 +1124,7 @@ fn run_execution_loop_with_profiles_and_rdtsc(
                     unmasked_minss_denormal,
                     rdtsc_controls,
                     Some(&mut *source),
+                    swapgs_profile,
                     stop_requested,
                 );
                 rdtsc_source = Some(source);
@@ -1111,6 +1144,7 @@ fn run_execution_loop_with_profiles_and_rdtsc(
                     unmasked_minss_denormal,
                     rdtsc_controls,
                     None,
+                    swapgs_profile,
                     stop_requested,
                 )
             };
@@ -1216,6 +1250,33 @@ pub fn step_with_sep_profile(
     )
 }
 
+/// Execute one instruction with the explicit exact SWAPGS profile.
+pub fn step_with_swapgs_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    profile: &SwapgsProfile,
+) -> Result<StepOutcome, MemoryError> {
+    let mut rflags_defined = crate::INTEGER_FLAGS;
+    step_tracked_with_profiles_and_rdtsc(
+        state,
+        memory,
+        context,
+        &mut rflags_defined,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        None,
+        None,
+        Some(profile),
+        &mut || false,
+    )
+}
+
 fn step_tracked(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -1300,6 +1361,7 @@ fn step_tracked_with_profiles(
         unmasked_minss_denormal,
         None,
         None,
+        None,
         stop_requested,
     )
 }
@@ -1318,6 +1380,7 @@ fn step_tracked_with_profiles_and_rdtsc(
     unmasked_minss_denormal: bool,
     rdtsc_controls: Option<RdtscControls>,
     rdtsc_source: Option<&mut dyn FnMut() -> u64>,
+    swapgs_profile: Option<&SwapgsProfile>,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> Result<StepOutcome, MemoryError> {
     let instruction = match long_decode::decode(memory, state.rip, context) {
@@ -2149,6 +2212,7 @@ fn step_tracked_with_profiles_and_rdtsc(
     // operations below use normalized operands at each accepted width.
     let executable = match instruction.operation {
         Operation::Cpuid | Operation::Rdtsc => false,
+        Operation::Swapgs => true,
         Operation::ReadMsr | Operation::WriteMsr => false,
         Operation::Sysenter | Operation::Sysexit => false,
         Operation::MovImmediate { .. }
@@ -3090,6 +3154,29 @@ fn step_tracked_with_profiles_and_rdtsc(
             opcode: instruction.opcode.byte,
         });
     }
+    if instruction.operation == Operation::Swapgs {
+        if swapgs_profile.is_none() {
+            return Ok(StepOutcome::Unsupported { opcode: 0x01 });
+        }
+        if context.privilege != PrivilegeLevel::Ring0 {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }));
+        }
+        let Some(kernel_gs_base) = state.kernel_gs_base else {
+            return Ok(StepOutcome::Unsupported { opcode: 0x01 });
+        };
+        if !canonical(state.gs_base) || !canonical(kernel_gs_base) {
+            return Ok(StepOutcome::Unsupported { opcode: 0x01 });
+        }
+        let old_gs_base = state.gs_base;
+        state.gs_base = kernel_gs_base;
+        state.kernel_gs_base = Some(old_gs_base);
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
     if let Operation::FxsaveRipRelative(area) = instruction.operation {
         let address = area.effective_address(state, next_rip);
         if let Err(error) = fxsave(state, memory, context, address, FxsaveLayout::Plain) {
@@ -3755,6 +3842,7 @@ fn step_tracked_with_profiles_and_rdtsc(
     match instruction.operation {
         Operation::Cpuid => unreachable!("CPUID is executed before transfer dispatch"),
         Operation::Rdtsc => unreachable!("RDTSC is handled by its explicit source profile"),
+        Operation::Swapgs => unreachable!("SWAPGS commits in its profile-gated state path"),
         Operation::FxsaveRipRelative(_) => {
             unreachable!("FXSAVE commits in its prevalidated field-store path")
         }
@@ -10007,13 +10095,13 @@ mod tests {
     use crate::memory::AccessKind;
     use crate::state::{Gdtr, SseState, X87State};
 
-    struct Memory {
+    pub(super) struct Memory {
         code: Vec<u8>,
         code_base: u64,
-        fetches: Vec<u64>,
+        pub(super) fetches: Vec<u64>,
         data_base: u64,
         bytes: Vec<u8>,
-        accesses: Vec<(AccessKind, u64, usize)>,
+        pub(super) accesses: Vec<(AccessKind, u64, usize)>,
         contexts: Vec<(AccessKind, AccessContext)>,
         read_errors: Vec<MemoryError>,
         error: Option<MemoryError>,
@@ -10027,10 +10115,10 @@ mod tests {
         fetch_error: Option<(u64, MemoryError)>,
     }
     impl Memory {
-        fn new(code: &[u8]) -> Self {
+        pub(super) fn new(code: &[u8]) -> Self {
             Self::at(code, 0)
         }
-        fn at(code: &[u8], code_base: u64) -> Self {
+        pub(super) fn at(code: &[u8], code_base: u64) -> Self {
             Self {
                 code: code.to_vec(),
                 code_base,
@@ -12148,6 +12236,7 @@ mod tests {
             rflags: flags,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -12221,6 +12310,7 @@ mod tests {
             rflags: crate::CF | crate::ZF,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -12264,6 +12354,7 @@ mod tests {
             rflags: before_flags,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -12315,6 +12406,7 @@ mod tests {
             rflags: crate::CF | crate::ZF,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -12352,6 +12444,7 @@ mod tests {
             rflags: crate::CF | crate::ZF,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -12413,6 +12506,7 @@ mod tests {
             rflags: crate::CF | crate::ZF,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -12483,6 +12577,7 @@ mod tests {
                 rflags: crate::CF | crate::ZF,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -12523,6 +12618,7 @@ mod tests {
             rflags: crate::CF | crate::ZF,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -12568,6 +12664,7 @@ mod tests {
             rflags: (1 << 9) | (1 << 16) | (1 << 21) | 2,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -12622,6 +12719,7 @@ mod tests {
             rflags: (1 << 9) | 2,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -12732,6 +12830,7 @@ mod tests {
             rflags: u64::MAX,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -12777,6 +12876,7 @@ mod tests {
             rflags: crate::CF | (1 << 10) | 2,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -12825,6 +12925,7 @@ mod tests {
             rflags: 0xffff_ffff_ffff_04d7,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -12867,6 +12968,7 @@ mod tests {
             rflags: crate::CF | (1 << 10) | 2,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -12916,6 +13018,7 @@ mod tests {
                 rflags: crate::CF | crate::ZF,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -12958,6 +13061,7 @@ mod tests {
             rflags: crate::CF | crate::ZF,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -13032,6 +13136,7 @@ mod tests {
             rflags: crate::ZF,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -13066,6 +13171,7 @@ mod tests {
             rflags: crate::ZF,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -13119,6 +13225,7 @@ mod tests {
                 rflags: crate::ZF,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -13154,6 +13261,7 @@ mod tests {
             rflags: crate::ZF,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -13230,6 +13338,7 @@ mod tests {
                 rflags: crate::ZF | crate::CF | crate::OF | crate::PF,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -13282,6 +13391,7 @@ mod tests {
             rflags: crate::ZF | crate::PF | crate::OF,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -13375,6 +13485,7 @@ mod tests {
             rflags: crate::ZF,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -13415,6 +13526,7 @@ mod tests {
                 rflags: crate::ZF,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -13455,6 +13567,7 @@ mod tests {
             rflags: crate::CF | crate::OF,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -13501,6 +13614,7 @@ mod tests {
             rflags: crate::ZF | crate::PF,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -13543,6 +13657,7 @@ mod tests {
             rflags: crate::CF | crate::PF,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -13616,6 +13731,7 @@ mod tests {
             rflags: crate::ZF,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -13658,6 +13774,7 @@ mod tests {
                 rflags: 0,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -13723,6 +13840,7 @@ mod tests {
                         rflags: 0x8d7,
                         fs_base: 0,
                         gs_base: 0,
+                        kernel_gs_base: None,
                         fs_selector: 0,
                         gs_selector: 0,
                         ds_selector: 0,
@@ -13802,6 +13920,7 @@ mod tests {
             rflags: 0x8d7,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -13869,6 +13988,7 @@ mod tests {
                     rflags: 0x8d7,
                     fs_base: 0,
                     gs_base: 0,
+                    kernel_gs_base: None,
                     fs_selector: 0,
                     gs_selector: 0,
                     ds_selector: 0,
@@ -13941,6 +14061,7 @@ mod tests {
             rflags: 0x8d7,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -14077,6 +14198,7 @@ mod tests {
                 rflags: 0x8d7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -14216,6 +14338,7 @@ mod tests {
             rflags: 0x8d7,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -14256,6 +14379,7 @@ mod tests {
             rflags: 0xcd7,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -14295,6 +14419,7 @@ mod tests {
             rflags: 0x8d7,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -14344,6 +14469,7 @@ mod tests {
             rflags: 0xcd7,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -14383,6 +14509,7 @@ mod tests {
             rflags: 0x8d7,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -14451,6 +14578,7 @@ mod tests {
             rflags: 0xcd7,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -14542,6 +14670,7 @@ mod tests {
                     rflags: 0x8d7,
                     fs_base: 0,
                     gs_base: 0,
+                    kernel_gs_base: None,
                     fs_selector: 0,
                     gs_selector: 0,
                     ds_selector: 0,
@@ -14683,6 +14812,7 @@ mod tests {
                 rflags: 0x8d7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -14771,6 +14901,7 @@ mod tests {
                         rflags: 0x8d7,
                         fs_base: 0,
                         gs_base: 0,
+                        kernel_gs_base: None,
                         fs_selector: 0,
                         gs_selector: 0,
                         ds_selector: 0,
@@ -14857,6 +14988,7 @@ mod tests {
                 rflags: 0x8d7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -14928,6 +15060,7 @@ mod tests {
                 rflags: 0x8d7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -14973,6 +15106,7 @@ mod tests {
                 rflags: 0x8d7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -15029,6 +15163,7 @@ mod tests {
                 rflags: 0x8d7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -15071,6 +15206,7 @@ mod tests {
             rflags: 0x0cd7,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -15136,6 +15272,7 @@ mod tests {
                 rflags: 0x0cd7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -15197,6 +15334,7 @@ mod tests {
             rflags: 0x0cd7,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -15259,6 +15397,7 @@ mod tests {
                 rflags: 0x0cd7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -15321,6 +15460,7 @@ mod tests {
             rflags: 0x0cd7,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -15383,6 +15523,7 @@ mod tests {
                 rflags: 0x0cd7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -15445,6 +15586,7 @@ mod tests {
             rflags: 0x0202,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -15507,6 +15649,7 @@ mod tests {
                 rflags: 0x0202,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -15569,6 +15712,7 @@ mod tests {
             rflags: 0x0cd7,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -15620,6 +15764,7 @@ mod tests {
             rflags: 0x0cd7,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -15670,6 +15815,7 @@ mod tests {
                         rflags: 0x8d7,
                         fs_base: 0,
                         gs_base: 0,
+                        kernel_gs_base: None,
                         fs_selector: 0,
                         gs_selector: 0,
                         ds_selector: 0,
@@ -15736,6 +15882,7 @@ mod tests {
                 rflags: 0x8d7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -15949,6 +16096,7 @@ mod tests {
                 rflags: 0x402 | carry,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -16036,6 +16184,7 @@ mod tests {
                         rflags: 0xcd7,
                         fs_base: 0,
                         gs_base: 0,
+                        kernel_gs_base: None,
                         fs_selector: 0,
                         gs_selector: 0,
                         ds_selector: 0,
@@ -16102,6 +16251,7 @@ mod tests {
                         rflags: 0xcd7,
                         fs_base: 0,
                         gs_base: 0,
+                        kernel_gs_base: None,
                         fs_selector: 0,
                         gs_selector: 0,
                         ds_selector: 0,
@@ -16271,6 +16421,7 @@ mod tests {
                 rflags: 0xcd7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -16308,6 +16459,7 @@ mod tests {
             rflags: 0xcd7,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -16356,6 +16508,7 @@ mod tests {
                 rflags: 0xcd7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -16409,6 +16562,7 @@ mod tests {
                 rflags: 0xcd7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -16462,6 +16616,7 @@ mod tests {
                     rflags: 0xcd7,
                     fs_base: 0,
                     gs_base: 0,
+                    kernel_gs_base: None,
                     fs_selector: 0,
                     gs_selector: 0,
                     ds_selector: 0,
@@ -16508,6 +16663,7 @@ mod tests {
                     rflags: 0xcd7,
                     fs_base: 0,
                     gs_base: 0,
+                    kernel_gs_base: None,
                     fs_selector: 0,
                     gs_selector: 0,
                     ds_selector: 0,
@@ -16576,6 +16732,7 @@ mod tests {
                 rflags: 0xcd7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -16646,6 +16803,7 @@ mod tests {
                 rflags: 0x8d7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -16695,6 +16853,7 @@ mod tests {
             rflags: 0,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -16740,6 +16899,7 @@ mod tests {
             rflags: crate::CF,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -16785,6 +16945,7 @@ mod tests {
             rflags: 0,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -16830,6 +16991,7 @@ mod tests {
                 rflags: 0x8d7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -16866,6 +17028,7 @@ mod tests {
                 rflags: 0x8d7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -16911,6 +17074,7 @@ mod tests {
             rflags: crate::CF,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -16950,6 +17114,7 @@ mod tests {
             rflags: 0,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -16996,6 +17161,7 @@ mod tests {
                 rflags: 0x8d7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -17042,6 +17208,7 @@ mod tests {
             rflags: 0x8d7,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -17086,6 +17253,7 @@ mod tests {
                 rflags: 0x8d7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -17171,6 +17339,7 @@ mod tests {
                 rflags: 0x8d7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -17204,6 +17373,7 @@ mod tests {
             rflags: 0x8d7,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -17359,6 +17529,7 @@ mod tests {
                 rflags: 0xcd7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -17408,6 +17579,7 @@ mod tests {
             rflags: 0xcd7,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -17457,6 +17629,7 @@ mod tests {
             rflags: 0xcd6,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -17498,6 +17671,7 @@ mod tests {
             rflags: 0xcd6,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -17551,6 +17725,7 @@ mod tests {
             rflags: 0xcd7,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -17595,6 +17770,7 @@ mod tests {
             rflags: 0xcd6,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -17662,6 +17838,7 @@ mod tests {
                     rflags: 0xcd6,
                     fs_base: 0,
                     gs_base: 0,
+                    kernel_gs_base: None,
                     fs_selector: 0,
                     gs_selector: 0,
                     ds_selector: 0,
@@ -17736,6 +17913,7 @@ mod tests {
                 rflags: 0xcd6,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -17794,6 +17972,7 @@ mod tests {
             rflags: 0xcd6,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -17882,6 +18061,7 @@ mod tests {
                 rflags: 0xcd6,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -17928,6 +18108,7 @@ mod tests {
             rflags: 0xcd6,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -17977,6 +18158,7 @@ mod tests {
                 rflags: 0xcd6,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -18016,6 +18198,7 @@ mod tests {
             rflags: 0xcd7,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -18147,6 +18330,7 @@ mod tests {
                 rflags: 0x8000_0000_0000_0cd7,
                 fs_base: 0,
                 gs_base: 0,
+                kernel_gs_base: None,
                 fs_selector: 0,
                 gs_selector: 0,
                 ds_selector: 0,
@@ -18210,6 +18394,7 @@ mod tests {
             rflags: 0x8000_0000_0000_0cd7,
             fs_base: 0xffff_8000_0000_1000,
             gs_base: 0x1234,
+            kernel_gs_base: None,
             fs_selector: 0xf123,
             gs_selector: 0,
             ds_selector: 0,
@@ -18250,6 +18435,7 @@ mod tests {
             rflags: 0xcd7,
             fs_base: 0x1234,
             gs_base: 0xffff_8000_0000_1000,
+            kernel_gs_base: None,
             fs_selector: 0xabcd,
             gs_selector: 0xf123,
             ds_selector: 0,
@@ -19054,6 +19240,7 @@ mod tests {
             rip: 0,
             rflags: 0xcd7,
             gs_base: 0x1000,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -19085,6 +19272,7 @@ mod tests {
         let mut state = LongModeState {
             rip: 0,
             gs_base: 0x1000,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -19118,6 +19306,7 @@ mod tests {
         let mut state = LongModeState {
             rip: 0,
             gs_base: 0x1000,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -19153,6 +19342,7 @@ mod tests {
                 limit,
             }),
             gs_base: 0xffff_8000_1234_5678,
+            kernel_gs_base: None,
             gs_selector: 0x33,
             ds_selector: 0,
             es_selector: 0,
@@ -93081,5 +93271,378 @@ mod fxsave_rip_tests {
             assert!(memory.fetches.is_empty());
             assert!(memory.data_accesses == 0);
         }
+    }
+}
+
+#[cfg(test)]
+mod swapgs_profile_tests {
+    use super::tests::Memory;
+    use super::*;
+    use crate::memory::PrivilegeLevel;
+
+    #[test]
+    fn exact_swapgs_exchanges_bases_and_profile_gates_are_atomic() {
+        let profile = SwapgsProfile::SwapgsV1;
+        let mut state = LongModeState {
+            rip: 0x1000,
+            gs_base: 0x2000,
+            kernel_gs_base: Some(0x3000),
+            ..LongModeState::default()
+        };
+        let mut memory = Memory::at(&[0x0f, 0x01, 0xf8], 0x1000);
+        let result = run_with_swapgs_profile(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x1003),
+                context: AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+            },
+            &profile,
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(
+            (state.gs_base, state.kernel_gs_base),
+            (0x3000, Some(0x2000))
+        );
+        assert_eq!(state.rip, 0x1003);
+
+        let mut user = LongModeState {
+            rip: 0x1000,
+            gs_base: 0x2000,
+            kernel_gs_base: Some(0x3000),
+            ..LongModeState::default()
+        };
+        let before = user.clone();
+        let mut memory = Memory::at(&[0x0f, 0x01, 0xf8], 0x1000);
+        let result = run_with_swapgs_profile(
+            &mut user,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            &profile,
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(user, before);
+        assert!(memory.accesses.is_empty());
+
+        let mut unprofiled = before.clone();
+        let mut memory = Memory::at(&[0x0f, 0x01, 0xf8], 0x1000);
+        let result = run(
+            &mut unprofiled,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+            },
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x01 });
+        assert_eq!(unprofiled, before);
+    }
+
+    #[test]
+    fn swapgs_double_swap_zero_equal_and_preservation_cases() {
+        let context = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        };
+        for (gs, kernel) in [(0x2000, 0x3000), (0, 0x3000), (0x2000, 0x2000), (0, 0)] {
+            let mut state = LongModeState {
+                rip: 0,
+                gs_base: gs,
+                kernel_gs_base: Some(kernel),
+                rflags: 0x8d7,
+                gpr: [0x0123_4567_89ab_cdef; 16],
+                fs_base: 0xffff_8000_0000_1234,
+                fs_selector: 0x53,
+                fs_cache: Some(crate::state::FsDescriptorCache {
+                    limit: 0x4321,
+                    access: 0x93,
+                    flags: 0x1,
+                }),
+                gs_selector: 0x2b,
+                ds_selector: 0x10,
+                es_selector: 0x18,
+                ds_unusable: true,
+                es_unusable: true,
+                ds_cache: Some(crate::state::DsDescriptorCache {
+                    base: 0x1234,
+                    limit: 0x5678,
+                    access: 0xf3,
+                    flags: 0x8,
+                }),
+                es_cache: Some(crate::state::DataSegmentDescriptorCache {
+                    base: 0x2345,
+                    limit: 0x6789,
+                    access: 0xf3,
+                    flags: 0x4,
+                }),
+                gs_cache: Some(crate::state::FsDescriptorCache {
+                    limit: 0x9876,
+                    access: 0x93,
+                    flags: 0x2,
+                }),
+                ..LongModeState::default()
+            };
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x0f, 0x01, 0xf8, 0x0f, 0x01, 0xf8]);
+            let result = run_with_swapgs_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 2,
+                    stop_rip: Some(6),
+                    context,
+                },
+                &SwapgsProfile::SwapgsV1,
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::StopAddress);
+            assert_eq!(result.instructions_executed, 2);
+            assert_eq!(result.rflags_defined, crate::INTEGER_FLAGS);
+            assert!(memory.accesses.is_empty());
+            let mut expected = before;
+            expected.rip = 6;
+            assert_eq!(state, expected, "bases ({gs:#x}, {kernel:#x})");
+        }
+    }
+
+    #[test]
+    fn swapgs_all_user_cpls_gp_before_state_and_missing_state_is_unsupported() {
+        for privilege in [
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            let mut state = LongModeState {
+                rip: 0,
+                gs_base: 0x2000,
+                kernel_gs_base: Some(0x3000),
+                ..LongModeState::default()
+            };
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x0f, 0x01, 0xf8]);
+            let result = run_with_swapgs_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext {
+                        privilege,
+                        ..AccessContext::default()
+                    },
+                },
+                &SwapgsProfile::SwapgsV1,
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None
+                })
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        let mut state = LongModeState {
+            rip: 0,
+            ..LongModeState::default()
+        };
+        let mut memory = Memory::new(&[0x0f, 0x01, 0xf8]);
+        let result = run_with_swapgs_profile(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+            },
+            &SwapgsProfile::SwapgsV1,
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x01 });
+        assert_eq!(result.instructions_executed, 0);
+        for (gs_base, kernel_gs_base) in [
+            (0x0000_8000_0000_0000, Some(0)),
+            (0, Some(0x0000_8000_0000_0000)),
+        ] {
+            let mut state = LongModeState {
+                rip: 0,
+                gs_base,
+                kernel_gs_base,
+                ..LongModeState::default()
+            };
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x0f, 0x01, 0xf8]);
+            let result = run_with_swapgs_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext {
+                        privilege: PrivilegeLevel::Ring0,
+                        ..AccessContext::default()
+                    },
+                },
+                &SwapgsProfile::SwapgsV1,
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x01 });
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+        }
+    }
+
+    #[test]
+    fn swapgs_lock_is_ud_after_full_fetch_and_neighbors_stay_unsupported() {
+        let mut state = LongModeState::default();
+        let mut memory = Memory::at(&[0xf0, 0x0f, 0x01, 0xf8], 0);
+        let result = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None
+            })
+        );
+        assert_eq!(memory.fetches, vec![0, 1, 2, 3]);
+        let mut state = LongModeState::default();
+        let mut memory = Memory::new(&[0x0f, 0x01, 0xf9]);
+        assert_eq!(
+            run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default()
+                },
+                || false
+            )
+            .exit,
+            RunExit::Unsupported { opcode: 0x01 }
+        );
+    }
+
+    #[test]
+    fn swapgs_truncation_stop_and_budget_boundaries_precede_next_fetch() {
+        let context = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        };
+        for length in 0..3 {
+            let mut state = LongModeState {
+                kernel_gs_base: Some(0),
+                ..LongModeState::default()
+            };
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x0f, 0x01, 0xf8][..length]);
+            let result = run_with_swapgs_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context,
+                },
+                &SwapgsProfile::SwapgsV1,
+                || false,
+            );
+            assert!(matches!(
+                result.exit,
+                RunExit::Fault(_) | RunExit::MemoryError(_)
+            ));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert_eq!(memory.fetches.len(), length + 1);
+        }
+        for (budget, stop_rip, expected) in [
+            (0, None, RunExit::InstructionBudgetExhausted),
+            (1, Some(0), RunExit::StopAddress),
+        ] {
+            let mut state = LongModeState {
+                kernel_gs_base: Some(0),
+                ..LongModeState::default()
+            };
+            let mut memory = Memory::new(&[0x0f, 0x01, 0xf8]);
+            let result = run_with_swapgs_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context,
+                },
+                &SwapgsProfile::SwapgsV1,
+                || false,
+            );
+            assert_eq!(result.exit, expected);
+            assert_eq!(result.instructions_executed, 0);
+            assert!(memory.fetches.is_empty());
+        }
+        let mut state = LongModeState {
+            kernel_gs_base: Some(0x2000),
+            gs_base: 0x1000,
+            ..LongModeState::default()
+        };
+        let mut memory = Memory::new(&[0x0f, 0x01, 0xf8, 0x0f, 0x01, 0xf8]);
+        let result = run_with_swapgs_profile(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context,
+            },
+            &SwapgsProfile::SwapgsV1,
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(
+            (state.rip, state.gs_base, state.kernel_gs_base),
+            (3, 0x2000, Some(0x1000))
+        );
+        assert_eq!(memory.fetches, vec![0, 1, 2]);
     }
 }

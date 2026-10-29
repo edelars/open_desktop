@@ -10948,6 +10948,7 @@ fn movsb_rejects_prefixes_and_other_string_widths_without_commit() {
             rflags: 2,
             fs_base: 0,
             gs_base: 0,
+            kernel_gs_base: None,
             fs_selector: 0,
             gs_selector: 0,
             ds_selector: 0,
@@ -12409,6 +12410,113 @@ fn s2_22b_gs_base_fixture_executes_and_faults_before_commit() {
         result.exit
     );
     assert_eq!(state, before);
+}
+
+#[test]
+fn s2_27g_swapgs_literals_exchange_state_and_preserve_second_fault_commit() {
+    use od_isa::SwapgsProfile;
+    use od_isa::execute::run_with_swapgs_profile;
+    use od_isa::memory::PrivilegeLevel;
+    for (case_id, retired, final_gs, final_kernel, rip_offset, exit) in [
+        (
+            "s2_27g_swapgs_once",
+            1,
+            0x0080_0000,
+            0x0040_0000,
+            3,
+            RunExit::StopAddress,
+        ),
+        (
+            "s2_27g_swapgs_double",
+            2,
+            0x0040_0000,
+            0x0080_0000,
+            6,
+            RunExit::StopAddress,
+        ),
+        (
+            "s2_27g_swapgs_gs_load_fault",
+            2,
+            0x0080_0000,
+            0x0040_0000,
+            7,
+            RunExit::StopAddress,
+        ),
+    ] {
+        let path = arithmetic_fixture_directory().join(format!("{case_id}.case.json"));
+        let fixture = Fixture::from_json(&std::fs::read(path).unwrap())
+            .unwrap()
+            .fixture;
+        assert_eq!(fixture.profile, crate::v2::Profile::LongSwapgsV1);
+        let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+        let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+        let result = run_with_swapgs_profile(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: fixture.instruction_budget,
+                stop_rip: fixture.stop_rip.map(HexU64::get),
+                context: AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+            },
+            &SwapgsProfile::SwapgsV1,
+            || false,
+        );
+        assert_eq!(result.exit, exit, "{case_id}");
+        assert_eq!(result.instructions_executed, retired, "{case_id}");
+        assert_eq!(state.gs_base, final_gs, "{case_id}");
+        assert_eq!(state.kernel_gs_base, Some(final_kernel), "{case_id}");
+        assert_eq!(state.rip, 0x0010_0000 + rip_offset, "{case_id}");
+        if case_id.ends_with("fault") {
+            assert_eq!(state.gpr[Register::Rax as usize], 0x1122_3344_5566_7788);
+        }
+    }
+
+    let path = arithmetic_fixture_directory().join("s2_27g_swapgs_gs_load_fault.case.json");
+    let fixture = Fixture::from_json(&std::fs::read(path).unwrap())
+        .unwrap()
+        .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    memory.inject_once(
+        0x0080_0000,
+        AccessKind::Read,
+        MemoryError::Architectural(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(0x0080_0000),
+        }),
+    );
+    let result = run_with_swapgs_profile(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: 2,
+            stop_rip: None,
+            context: AccessContext {
+                privilege: PrivilegeLevel::Ring0,
+                ..AccessContext::default()
+            },
+        },
+        &SwapgsProfile::SwapgsV1,
+        || false,
+    );
+    assert_eq!(
+        result.exit,
+        RunExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(0x0080_0000)
+        })
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, 0x0010_0003);
+    assert_eq!(
+        (state.gs_base, state.kernel_gs_base),
+        (0x0080_0000, Some(0x0040_0000))
+    );
 }
 
 #[test]

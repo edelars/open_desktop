@@ -777,3 +777,16 @@ user-mode transport, но не определяет target MXCSR mask для gue
 profile. См. [S2-40b plan](../plans/STAGE_2.md#s2-40b-узкий-sse-only-native-xorpd-oracle),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-40b--bounded-sse-only-native-xorpd-oracle),
 и [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-40b-native-xorpd-xmm0-xmm1).
+
+### S2-27g local SWAPGS matrix entry
+
+The S2-27g interpreter profile admits exact bare Long64 `0F 01 F8` only with
+FRED disabled and canonical48 base values. It covers the architectural CPL0
+exchange and CPL1–3 #GP(0) contract, plus a GS-load result at the exchanged
+base and injected fault coverage for prior commit. This matrix entry is local CPU coverage only: it
+makes no claim that a selected Ubuntu branch executed SWAPGS, that the profile
+covers all Long64 configurations, or that Linux boot/native/physical behavior
+was checked. Intel SDM Rev. 093 Vol. 2B identifies the exact operation, and
+the Vol. 2B CR4.FRED restriction is excluded by the local assumption. See
+the [CPU contract](../specs/CPU_CONTRACT.md#s2-27g--exact-long64-swapgs) and
+[Stage 2 plan](../plans/STAGE_2.md#s2-27g--exact-long64-swapgs).

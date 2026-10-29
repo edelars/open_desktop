@@ -11522,3 +11522,30 @@ checks. Linux x86_64 transport is compile-checked only; physical execution is
 S2-41 and S2-42 remain open. See [S2-40b plan](../plans/STAGE_2.md#s2-40b-узкий-sse-only-native-xorpd-oracle),
 [Linux profile report](../reports/STAGE_2_LINUX_PROFILE.md#s2-40b--ограниченный-sse-only-native-xorpd-oracle),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-40b-native-xorpd-xmm0-xmm1).
+
+### S2-27g — exact Long64 `SWAPGS`
+
+The local `SwapgsV1` execution profile admits only bare `0F 01 F8` in Long64,
+with FRED disabled. `LongModeState::kernel_gs_base: Option<u64>` holds the
+mutable second architectural base; `None` is the legacy/default state and is
+not inferred from immutable controls or an MSR sidecar. The profile assumes
+canonical48 GS and kernel-GS bases, VMX/SMM disabled, and no guest mode other
+than Long64. It does not implement IA32_KERNEL_GS_BASE as a general MSR.
+
+CPL0 atomically exchanges `gs_base` and `kernel_gs_base`, advances RIP by 3,
+and retires once. GPRs, RFLAGS and definedness, selectors/cache attributes,
+FS state, and memory remain unchanged. CPL1–3 raises #GP(0) before state or
+data access and does not retire. Missing profile or missing second base is
+`Unsupported`. Exact LOCK-prefixed `F0 0F 01 F8` raises #UD after complete
+fetch; truncated encodings retain fetch-fault priority. Other prefixes and
+neighbors are `Unsupported`. A subsequent GS load consumes the exchanged
+`gs_base`; if that load faults, the completed SWAPGS remains committed and
+only the second instruction is unretired.
+
+Intel SDM Rev. 093, Vol. 2B, SWAPGS pp. 4-697–4-698, defines the exact opcode,
+Long64 validity, CPL0 restriction, base exchange, and unchanged flags. It also
+states SWAPGS is unavailable when CR4.FRED=1 because FRED transitions perform
+the swap automatically; this profile therefore assumes FRED disabled. See the
+[official Vol. 2B PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241). This local
+interpreter profile does not claim JIT, native, physical, or unconditional
+Long64 support.

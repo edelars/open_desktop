@@ -16529,3 +16529,34 @@ branch target preservation, memory/REP and FP-fault groups, and physical
 comparison. See [plan](../plans/STAGE_2.md#s2-42b-bounded-xmm-input-reducer),
 [format/replay](../testing/TEST_CASE_FORMAT.md#s2-42b-bounded-native-xorpd-xmm-input-reducer),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42b-native-xorpd-xmm-input-reducer).
+
+## S2-27g — exact Long64 SWAPGS
+
+Implemented exact bare `0F 01 F8` execution under explicit `SwapgsV1` with
+observable exchange of `gs_base` and optional `kernel_gs_base`. The schema
+profile is `s2-long-swapgs-v1`; legacy state defaults to `None`, and schema
+serialization retains `Some(0)` while omitting the field for old profiles.
+Fixture admission is limited to a single SWAPGS (budget 1), a double SWAPGS
+(budget 2), and SWAPGS followed by exact GS qword load (budget 2). Distinct
+literal qwords at old/new bases prove which address the load used; a separate
+injected second-instruction page fault checks prior SWAPGS commit.
+CPL1–3 #GP(0), missing profile/state, base canonicality, exact LOCK #UD fetch
+ordering, neighbors, preservation, double/zero/equal bases, and budget/STOP
+boundaries are covered by focused tests. The runner opts into this profile;
+JIT, native, and C/fragment execution deny the new state/operation.
+
+Author verification: `cargo test --workspace swapgs --offline -- --nocapture`,
+`cargo test -p od-testkit swapgs --offline -- --nocapture`,
+`cargo check --workspace --all-targets --offline`,
+`cargo fmt --all -- --check`, `git diff --check`, and `graphify update .` pass.
+`python3 tools/check_layout.py` was attempted; it reports the repository `.git`
+directory as an unmapped root file and two older report links to absent oracle
+manifests under `work/`. The new fixture README link passes after correction.
+Independent Sol review found and then cleared a profile-export validation issue:
+legacy profiles now reject present kernel-GS state, while SWAPGS export requires
+canonical kernel-GS state. Linux/native execution and physical acceptance were
+not performed. Architecture boundary: Intel SDM Rev. 093
+Vol. 2B SWAPGS pp. 4-697–4-698, including its CR4.FRED restriction; FRED is
+assumed disabled, and this is not unconditional Long64 support. See the [CPU
+contract](../specs/CPU_CONTRACT.md#s2-27g--exact-long64-swapgs) and
+[plan](../plans/STAGE_2.md#s2-27g--exact-long64-swapgs).

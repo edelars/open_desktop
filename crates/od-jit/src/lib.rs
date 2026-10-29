@@ -407,6 +407,14 @@ mod tests {
     }
 
     #[test]
+    fn swapgs_is_not_admitted_to_the_fragment_jit() {
+        assert!(matches!(
+            compile(&[0x0f, 0x01, 0xf8]),
+            Err(JitError::Decode(_))
+        ));
+    }
+
+    #[test]
     fn emits_guest_offset_map_and_native_words() {
         let code = [0x48, 0xB8, 7, 0, 0, 0, 0, 0, 0, 0];
         let output = compile(&code).unwrap();

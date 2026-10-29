@@ -5879,3 +5879,24 @@ ignored high RCX bits in index selection. The second covers exact
 The schema admits only exact bare `0F 32` or `0F 30` at budget 1, or this exact
 write-then-load composition at budget 2. No native, JIT, C ABI, Linux runtime or
 physical execution is claimed.
+
+## S2-27g exact Long64 SWAPGS fixture profile
+
+`s2-long-swapgs-v1` is an explicit bounded interpreter profile for bare
+`0F 01 F8`, with Long64, FRED disabled, canonical48 bases, and no VMX/SMM.
+Its only admitted programs are `0F 01 F8` (budget 1), two repetitions (budget
+2), and `0F 01 F8 65 48 8B 00` (budget 2). The final program loads through the
+exchanged GS base. Distinct qwords at old/new bases identify the active base.
+An injected second-instruction page fault separately checks that the SWAPGS
+exchange remains committed, retirement is 1, and RIP points at instruction 2.
+Fixture schema stores `kernel_gs_base` as an
+optional state field; a `Some(0)` value is serialized, while old profiles omit
+the field and retain their previous wire shape.
+
+CPL0 executes the exchange; CPL1–3 produce #GP(0) before state/data access.
+Missing profile or base is unsupported. Exact LOCK gets #UD after complete
+fetch; other prefixes/neighbors are unsupported and truncation keeps fetch
+priority. JIT, native runner, and fragment/C adapters deny SWAPGS. This fixture
+profile does not establish unconditional Long64 support or physical/Linux
+runtime behavior. Source: Intel SDM Rev. 093 Vol. 2B, SWAPGS pp. 4-697–4-698,
+including CR4.FRED behavior. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-27g--exact-long64-swapgs).
