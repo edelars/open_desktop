@@ -1257,3 +1257,23 @@ signed-zero/infinity cases and a prior-sticky-only no-event case. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38h--exact-maxsd-unmasked-invalid-and-denormal-exit),
 [plan](../plans/STAGE_2.md#s2-38h-exact-long64-maxsd-xmm0xmm1-unmasked-invalid-and-denormal-exit),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38h-local-maxsd-unmasked-invalid-and-denormal).
+
+
+## S2-38i exact MINPD unmasked IM/DM profile
+
+The schema-v2 profile `s2-long-minpd-unmasked-denormal-v1` admits only
+Long64 bytes `660f5dc1`. `minpd_unmasked_controls` records the five immutable
+SSE2/CR0/CR4 booleans; results echo it as
+`snapshot.minpd_unmasked_controls`. Strict validation rejects missing, unknown,
+cross-profile, omitted or tampered controls, non-exact code, and MXCSR outside
+the bounded set. One executable code mapping, budget one and stop RIP `entry+4`
+are required.
+
+The 128 fixed fixtures cross lane0 and lane1 raw classes `{none, I, D, I+D}`
+with IM, DM and OSXMMEXCPT; 16 supplemental literals cover NaN operand
+positions and payloads, masked source-2 selection, signed-zero ties, equal
+values, infinities and sticky-only status. The independent validator classifies each lane,
+aggregates raw events for an unmasked exit, otherwise applies same-lane
+invalid-over-denormal priority, and verifies full XMM state, status, retirement,
+exception metadata and control echoes. JIT and native reject the profile. See
+the [CPU contract](../specs/CPU_CONTRACT.md#s2-38i--exact-minpd-unmasked-invalid-and-denormal-exit), [plan](../plans/STAGE_2.md#s2-38i--exact-long64-minpd-xmm0xmm1-unmasked-invalid-and-denormal-exit), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38i-local-minpd-unmasked-invalid-and-denormal).

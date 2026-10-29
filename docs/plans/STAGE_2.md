@@ -502,7 +502,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38e | Exact S2-39i FP-init/FXRSTOR64 followed by MINSS; image-controlled IM/DM completion and #XM policy; interpreter-only | S2-38d, S2-39i; independent review complete |
 | [x] | S2-38f | Exact Long64 `MAXSS XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, literal fixtures, complete local control/fault/result matrix; interpreter-only | S2-38d policy source after MAXSS-specific SDM review; independent review clean |
 | [x] | S2-38g | Exact Long64 `MINSD XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, raw denormal classification, literal fixtures and complete local control/fault/result matrix; interpreter-only | S2-37i, S2-38f policy after MINSD-specific SDM review; independent review clean |
-| [ ] | S2-38h | Exact Long64 `MAXSD XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, MAXSD-specific Rev. 093 semantics, full NaN/subnormal/control cross-product and raw-result fixtures; interpreter-only | S2-37j, S2-38g control policy after MAXSD-specific SDM review; independent review |
+| [x] | S2-38h | Exact Long64 `MAXSD XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, MAXSD-specific Rev. 093 semantics, full NaN/subnormal/control cross-product and raw-result fixtures; interpreter-only | S2-37j, S2-38g control policy after MAXSD-specific SDM review; independent review clean |
+| [x] | S2-38i | Exact Long64 `MINPD XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, 2-lane raw exception aggregation and atomic XMM suppression; interpreter-only | S2-37k, S2-38h control policy after MINPD-specific SDM review; independent review clean |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
@@ -12377,3 +12378,36 @@ denial. Sources: Intel SDM Rev. 093 Vol. 2B MAXSD pp. 4-11–4-12
 Table 2-20. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38h--exact-maxsd-unmasked-invalid-and-denormal-exit),
 [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38h-exact-maxsd-unmasked-imdm-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38h-local-maxsd-unmasked-invalid-and-denormal).
+
+
+#### S2-38i — exact Long64 MINPD XMM0,XMM1 unmasked invalid and denormal exit
+
+The interpreter-only schema-v2 profile `s2-long-minpd-unmasked-denormal-v1`
+admits only Long64 `66 0F 5D C1`, one executable code mapping, budget one, and
+stop RIP `entry+4`. Immutable profile controls record SSE2 availability,
+CR0.EM/TS, CR4.OSFXSR and CR4.OSXMMEXCPT and are echoed in the result. Complete
+fetch precedes SSE2/EM/OSFXSR #UD and then TS #NM; lane classification follows
+only after those gates, at any CPL. MXCSR reserved bits, DAZ and FTZ are clear;
+ZE/OE/UE/PE masks are set; IM, DM, RC and existing sticky flags may vary.
+
+Both XMM operands are snapshotted and both binary64 lanes are precomputed using
+`Binary64::min_sse_raw_result`. Raw IE/DE conditions are collected for both
+lanes before deciding whether to commit. If any newly detected event is
+unmasked, all detected IE/DE conditions are ORed into sticky status, a single
+#XM or #UD is reported, and the entire destination XMM plus RIP are preserved
+with zero retirement. If no detected event is unmasked, invalid suppresses DE
+only within its own lane; lane results, aggregated IE/DE and the complete XMM
+commit atomically. Source-2 NaN bits, equal values and signed-zero ties follow
+the raw MIN selector. Existing masked MINPD remains unchanged.
+
+The 128 handwritten schema-v2 fixtures cross lane0/lane1 raw event classes
+{none, I, D, I+D} with IM, DM and OSXMMEXCPT; 16 supplemental literals cover
+QNaN/SNaN positions and payloads, masked source-2 selection, signed-zero ties,
+equal values, infinities and pre-existing sticky flags. Focused ISA coverage adds both
+operand positions, swapped lane combinations, split and same-lane events, CPL,
+full-state preservation and zero data-memory callbacks. Independent fixture
+validation uses raw IEEE-754 bit classification and separate ordering logic.
+JIT/native/C/fragment admission and physical execution remain closed. Sources:
+Intel SDM Rev. 093 Vol. 2B MINPD pp. 4-16–4-18
+(https://cdrdv2.intel.com/v1/dl/getContent/671241); Vol. 1 §§4.9.2, 11.5.3.1–3
+(https://cdrdv2.intel.com/v1/dl/getContent/671436). See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38i--exact-minpd-unmasked-invalid-and-denormal-exit), [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38i-exact-minpd-unmasked-imdm-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38i-local-minpd-unmasked-invalid-and-denormal).

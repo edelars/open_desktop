@@ -19,3 +19,6 @@ The local masked-status MAXPS fixture is documented in the
 
 The local masked-status MINSD fixture is documented in the
 [Stage 2 fixture index](x86/stage2/README.md#s2-37i-local-masked-status-minsd-register-profile).
+
+The local unmasked-status MINPD fixture set is documented in the
+[Stage 2 fixture index](x86/stage2/README.md#s2-38i-local-minpd-unmasked-invalid-and-denormal).

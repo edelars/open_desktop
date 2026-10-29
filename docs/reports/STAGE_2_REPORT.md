@@ -17145,9 +17145,7 @@ and [format](../testing/TEST_CASE_FORMAT.md#s2-38g-exact-minsd-unmasked-imdm-pro
 
 ## S2-38h — exact Long64 MAXSD with bounded unmasked IM/DM exits
 
-**Status:** local interpreter/schema-v2 implementation and focused validation
-complete; independent review pending. Physical/Mac mini acceptance remains
-`not_run` and is deferred to the final hardware substage.
+**Status:** local interpreter/schema-v2 implementation, focused validation, and independent `gpt-6.1-sol` review complete with no findings. Physical/Mac mini acceptance remains `not_run` and is deferred to the final hardware substage.
 
 Added the distinct `s2-long-maxsd-unmasked-denormal-v1` profile for exact
 `F2 0F 5F C1`. Immutable MAXSD controls hold SSE2, CR0.EM/TS and
@@ -17189,3 +17187,35 @@ Table 2-20. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38h--exact-maxsd-
 [plan](../plans/STAGE_2.md#s2-38h-exact-long64-maxsd-xmm0xmm1-unmasked-invalid-and-denormal-exit),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38h-local-maxsd-unmasked-invalid-and-denormal),
 and [format](../testing/TEST_CASE_FORMAT.md#s2-38h-exact-maxsd-unmasked-imdm-profile).
+
+
+## S2-38i — exact Long64 MINPD with bounded unmasked IM/DM exits
+
+**Status:** local interpreter/schema-v2 implementation, focused validation and independent `gpt-6.1-sol` medium review complete with no remaining findings. Physical/Mac mini acceptance remains `not_run` and is deferred to the final hardware substage.
+
+Added the distinct `s2-long-minpd-unmasked-denormal-v1` profile for exact
+`66 0F 5D C1`. Both binary64 lanes are precomputed before one disposition. An
+unmasked event commits all raw IE/DE conditions and faults once without changing
+XMM0 or retiring; a masked completion applies invalid priority per lane and
+commits the whole XMM. Existing masked MINPD is unchanged.
+
+The 128 literal fixtures cross lane0/lane1 event classes `{none, I, D, I+D}`
+with IM, DM and OSXMMEXCPT; 16 supplemental cases cover masked QNaN/SNaN in
+both operand positions with literal payload/sign results, both signed-zero tie
+directions across two lanes, equal values, infinities and sticky-only status.
+Two focused ISA tests cover cross-lane atomic fault/commit behavior and
+SSE2/EM/TS/OSFXSR gates, CPL, partial fetch, STOP, zero budget and exact-form
+rejection. One runner integration consumes all 144 fixtures, verifies encoded
+lane classes and literal XMM0 results, validates controls/state independently,
+checks tampering/comparator behavior, and confirms JIT/native denial. Existing
+masked MINPD and scalar MINSD regression fixtures pass. JIT/native/C/fragment and
+physical admission stay closed. Verification: the two focused `od-isa` MINPD
+tests passed; `cargo test -p od-testkit --offline` passed 408/408; the runner
+integration passed all 144 fixtures; masked MINPD and unmasked MINSD regression
+fixtures passed; `cargo check --workspace --all-targets --offline`,
+`cargo fmt --all -- --check`, `git diff --check`, and `graphify update .` passed.
+`python3 tools/check_layout.py` reports only existing ISSUE-023 (.git worktree
+pointer and two absent historical oracle manifests), with no new layout findings.
+No physical or Mac mini run was made. Normative sources: Intel SDM Rev. 093 Vol. 2B MINPD pp. 4-16–4-18
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241)); Vol. 1
+§§4.9.2, 11.5.3.1–3 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).

@@ -12134,3 +12134,36 @@ MAXSD pp. 4-11–4-12, SHA-256
 `a261998ace8e07f624bf3e2486bb6cfe950fb8be8d0dc9631bcecb4c5ec953e4`; Vol. 1
 §§4.9.2, 11.5.2.1–2, 11.5.3.2–3 and Vol. 2A Table 2-20. See the
 [plan](../plans/STAGE_2.md#s2-38h-exact-long64-maxsd-xmm0xmm1-unmasked-invalid-and-denormal-exit).
+
+
+## S2-38i — exact MINPD unmasked invalid and denormal exit
+
+The interpreter-only profile `s2-long-minpd-unmasked-denormal-v1` accepts only
+Long64 `66 0F 5D C1` (`MINPD XMM0,XMM1`), one executable code region, budget
+one and stop RIP `entry+4`. Its immutable `MinpdUnmaskedControlSnapshot`
+records SSE2 availability, CR0.EM/TS, CR4.OSFXSR and CR4.OSXMMEXCPT and is
+echoed exactly by the result. Fetch is complete before SSE2/EM/OSFXSR #UD and
+then TS #NM gates; both lanes are examined only after gates, independent of CPL.
+Reserved MXCSR bits, DAZ and FTZ must be zero; ZE/OE/UE/PE masks must be set;
+IM/DM, RC and prior sticky status are permitted.
+
+Both full XMM operands are snapshotted. Each binary64 lane uses the raw MIN
+selector, which chooses raw operand 2 for either QNaN/SNaN, equal values and
+signed-zero ties. Raw IE and DE conditions are collected per lane. If any newly
+detected event is unmasked, the instruction ORs all detected IE/DE flags from
+both lanes into MXCSR and reports one #XM (OSXMMEXCPT=1) or #UD
+(OSXMMEXCPT=0), preserving complete XMM0/RIP with zero retirement. If all
+detected events are masked, invalid priority suppresses denormal only in the
+same lane; the two lane results and aggregated effective IE/DE commit with the
+full destination XMM. Existing sticky flags alone do not fault. This bounded
+model has no handler continuation and does not claim hardware delivery. Existing
+masked MINPD remains unchanged; JIT/native/C/fragment and physical execution
+remain closed.
+
+Local fixed evidence includes the 128 class × class × IM × DM × OSXMMEXCPT
+fixtures and 16 supplemental selector/sticky fixtures, complete
+control/fetch/budget/form checks, independent result validation,
+control/result tampering, comparator echoes and JIT/native denial.
+Normative sources: Intel SDM Rev. 093 Vol. 2B MINPD pp. 4-16–4-18
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241)); Vol. 1
+§§4.9.2, 11.5.3.1–3 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)). See the [plan](../plans/STAGE_2.md#s2-38i--exact-long64-minpd-xmm0xmm1-unmasked-invalid-and-denormal-exit).

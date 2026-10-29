@@ -17051,3 +17051,183 @@ fn maxsd_unmasked_literal_matrix_validates_independent_results_and_denials() {
     value.state.sse.as_mut().unwrap().xmm[0].replace_range(..2, "ff");
     assert!(od_testkit::v2::compare(&input, &result, &tampered_output).is_err());
 }
+
+#[test]
+fn minpd_unmasked_two_lane_cross_product_validates_independent_results_and_denials() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let mut paths: Vec<_> = fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("s2_38i_minpd_l0_")
+        })
+        .collect();
+    paths.sort();
+    assert_eq!(
+        paths.len(),
+        128,
+        "MINPD lane-class x IM x DM x OSXMMEXCPT fixtures"
+    );
+    let mut denial_source = None;
+    let mut representative = None;
+    for path in paths {
+        let source = fs::read(&path).unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongMinpdUnmaskedDenormalV1
+        );
+        let expected_lanes = input
+            .fixture
+            .case_id
+            .split("_l0_")
+            .nth(1)
+            .unwrap()
+            .split("_im")
+            .next()
+            .unwrap();
+        let expected_lanes: Vec<_> = expected_lanes.split("_l1_").collect();
+        let sse = input.fixture.initial_state.sse.as_ref().unwrap();
+        let lhs = decode_xmm_literal(&sse.xmm[0]);
+        let rhs = decode_xmm_literal(&sse.xmm[1]);
+        for lane in 0..2 {
+            let offset = lane * 8;
+            let operands = [
+                u64::from_le_bytes(lhs[offset..offset + 8].try_into().unwrap()),
+                u64::from_le_bytes(rhs[offset..offset + 8].try_into().unwrap()),
+            ];
+            let invalid = operands
+                .iter()
+                .any(|bits| ((bits >> 52) & 0x7ff) == 0x7ff && bits & ((1u64 << 52) - 1) != 0);
+            let denormal = operands
+                .iter()
+                .any(|bits| ((bits >> 52) & 0x7ff) == 0 && bits & ((1u64 << 52) - 1) != 0);
+            let actual = match (invalid, denormal) {
+                (false, false) => "n",
+                (true, false) => "i",
+                (false, true) => "d",
+                (true, true) => "id",
+            };
+            assert_eq!(
+                actual, expected_lanes[lane],
+                "fixture lane encoding: {}",
+                input.fixture.case_id
+            );
+        }
+        assert_eq!(
+            od_testkit::v2::compare(&input, &result, &result).unwrap(),
+            Vec::<String>::new()
+        );
+        let Observation::Available { value } = &result.snapshot else {
+            panic!("snapshot unavailable")
+        };
+        assert_eq!(
+            value.minpd_unmasked_controls,
+            input.fixture.minpd_unmasked_controls
+        );
+        if denial_source.is_none() {
+            denial_source = Some(source.clone());
+        }
+        if representative.is_none() {
+            representative = Some((input.clone(), result.clone()));
+        }
+    }
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let mut special_paths: Vec<_> = fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("s2_38i_minpd_special_")
+        })
+        .collect();
+    special_paths.sort();
+    assert_eq!(
+        special_paths.len(),
+        16,
+        "MINPD NaN, selector, signed-zero and sticky-only literals"
+    );
+    for path in special_paths {
+        let source = fs::read(path).unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongMinpdUnmaskedDenormalV1
+        );
+        assert_eq!(
+            od_testkit::v2::compare(&input, &result, &result).unwrap(),
+            Vec::<String>::new()
+        );
+        let Observation::Available { value } = &result.snapshot else {
+            panic!("snapshot unavailable")
+        };
+        let expected_xmm0 = match input.fixture.case_id.as_str() {
+            "s2_38i_minpd_special_masked_qnan_source2_lane0" => {
+                Some("452301efcdabf8ff000000000000f03f")
+            }
+            "s2_38i_minpd_special_masked_snan_source2_lane1" => {
+                Some("000000000000f03f98badcfe3412f07f")
+            }
+            "s2_38i_minpd_special_masked_qnan_source1_lane0" => {
+                Some("0000000000000040000000000000f03f")
+            }
+            "s2_38i_minpd_special_masked_snan_source1_lane1" => {
+                Some("000000000000f03f0000000000000040")
+            }
+            "s2_38i_minpd_special_positive_zero_tie_source2" => {
+                Some("00000000000000800000000000000000")
+            }
+            "s2_38i_minpd_special_negative_zero_tie_source2" => {
+                Some("00000000000000000000000000000080")
+            }
+            "s2_38i_minpd_special_equal_finite_source2" => Some("0921fb54442df83f0921fb54442df83f"),
+            "s2_38i_minpd_special_infinity_lhs_min" | "s2_38i_minpd_special_infinity_rhs_min" => {
+                Some("000000000000f0ff000000000000f03f")
+            }
+            _ => None,
+        };
+        if let Some(expected) = expected_xmm0 {
+            assert_eq!(
+                value.state.sse.as_ref().unwrap().xmm[0],
+                expected,
+                "literal MINPD result bits: {}",
+                input.fixture.case_id
+            );
+        }
+    }
+    let source = denial_source.unwrap();
+    let (_, jit) = run(&source, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    let (_, native) = run(&source, "native", 4);
+    assert!(matches!(native.outcome, Outcome::Unsupported { .. }));
+    let (input, result) = representative.unwrap();
+    let mut missing_controls = input.fixture.clone();
+    missing_controls.minpd_unmasked_controls = None;
+    assert!(missing_controls.validate().is_err());
+    let mut wrong_form = input.fixture.clone();
+    wrong_form.memory[0].initial_bytes_hex = "f20f5dc1".into();
+    assert!(wrong_form.validate().is_err());
+    let mut bad = result.clone();
+    let Observation::Available { value } = &mut bad.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value
+        .minpd_unmasked_controls
+        .as_mut()
+        .unwrap()
+        .cr4_osxmmexcpt = !value.minpd_unmasked_controls.unwrap().cr4_osxmmexcpt;
+    assert!(od_testkit::v2::compare(&input, &result, &bad).is_err());
+    let mut bad_state = result.clone();
+    let Observation::Available { value } = &mut bad_state.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.state.sse.as_mut().unwrap().xmm[0].replace_range(..2, "ff");
+    assert!(od_testkit::v2::compare(&input, &result, &bad_state).is_err());
+}

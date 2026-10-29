@@ -6203,3 +6203,16 @@ list cite Intel SDM Rev. 093 Vol. 2B MAXSD pp. 4-11–4-12 (official PDF SHA-256
 `a261998ace8e07f624bf3e2486bb6cfe950fb8be8d0dc9631bcecb4c5ec953e4`), not a
 MINSD-only inference; Vol. 1 §§4.9.2, 11.5.2.1–2, 11.5.3.2–3 and Vol. 2A
 Table 2-20 establish the exception/control behavior.
+
+
+### S2-38i local MINPD unmasked invalid and denormal
+
+The separate schema-v2 profile `s2-long-minpd-unmasked-denormal-v1` accepts
+only Long64 `66 0F 5D C1` and carries immutable SSE2/CR0/CR4 controls. The 128
+fixed inputs cross lane0/lane1 event classes `{none, I, D, I+D}` with IM, DM
+and OSXMMEXCPT. The independent validator checks raw per-lane conditions,
+all-lane flag collection on an unmasked exit, same-lane invalid priority for a
+masked completion, atomic full-XMM state, retirement and fault metadata. JIT
+and native deny the profile; C/fragment and physical hardware remain deferred.
+Normative sources: Intel SDM Rev. 093 Vol. 2B MINPD pp. 4-16–4-18 and Vol. 1
+§§4.9.2, 11.5.3.1–3.
