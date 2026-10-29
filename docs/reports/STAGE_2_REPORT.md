@@ -16124,6 +16124,61 @@ Parent S2-39 and the Generic amd64 target remain open. See the [CPU contract](..
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39f-long64-fxsave64-cr0-em-and-ts-gates),
 and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-39f-fxsave64-cr0-gate-profile).
 
+## S2-39g — bounded FXRSTOR64 CR0 EM and TS `#NM` gates
+
+Added the separate interpreter-only profile `s2-long-fxrstor64-cr0-gates-v1`
+for exactly `48 0F AE 4B 40` and explicit immutable `cr0_em`/`cr0_ts` inputs.
+FXSR=1 and CR4.OSFXSR=1 remain fixed prerequisites. After full fetch/decode,
+either bit set returns vector 7 `#NM` with no error code, no CPU/RAM/RIP
+mutation, zero retirement and zero data reads across CPL0–3. If both bits are
+clear, execution reuses S2-39e's staged 13-read restore and immutable target
+MXCSR mask. The existing S2-39e profile and its malformed-image/address tests
+remain unchanged.
+
+The hand-authored success and fault fixtures use a valid-MXCSR literal 512-byte
+image with ignored mask/padding bytes; success begins from different x87/SSE
+state and restores pending x87 status plus MXCSR sticky bits as data. The v2
+controls are strict, required for this profile only, echoed into snapshots and
+included in fixture-bound comparison. Admission requires the exact encoding,
+one instruction, aligned canonical48 readable private memory and valid image
+MXCSR. It intentionally does not assert `#NM` precedence over malformed image,
+address or page faults. STOP/zero budget and complete fetch ordering are
+checked. JIT/native/C adapter remain denied.
+
+**Focused verification:** `cargo test -p od-isa --lib --offline
+fxrstor64_cr0` passed (2/2); `cargo test -p od-testkit --offline s2_39g`
+passed (1/1); the strict result echo/compare/backward-compatibility check
+`cargo test -p od-testkit --offline fxrstor64_cr0_snapshot` passed (1/1); and
+`cargo test -p od-runner --test fixture_v2 --offline
+local_fxrstor64_cr0_gate_fixtures_run_only_in_interpreter` passed (1/1).
+The S2-39g fixture regression also rejects an image with reserved MXCSR bits.
+S2-39e regression `cargo test -p od-isa --lib --offline fxrstor64` passed
+(7/7), S2-39f regression `cargo test -p od-isa --lib --offline
+fxsave64_cr0` passed (2/2), `cargo test -p od-testkit --offline fxrstor64`
+passed (3/3), and the existing S2-39e runner fixture passed (1/1). Also
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+and `git diff --check` passed. `graphify update .` refreshed the index to 8,425
+nodes and 17,036 edges; its pre-existing parser warning for `include/open_desktop/host_abi.h`
+and skipped unsupported manifest/header files remain. Markdown anchor audit
+checked 18 new S2-39g links with no missing paths or anchors. Independent
+Sol-medium review found that the initial MXCSR validator was in the wrong
+profile branch. It was moved into the FXRSTOR64 validator, its reserved-bit
+regression and runner fixture passed afterward, and the final re-review found
+no remaining issues. These checks ran locally; no hardware/Mac mini or physical
+x86 execution was attempted.
+No hardware, Mac mini, guest exception delivery, or physical x86 result is
+claimed; hardware checks stay in the combined final substage. Intel SDM Rev.
+093 Vol. 2A FXRSTOR 64-Bit Mode Exceptions pp. 3-409–3-411 lists `#NM` for
+CR0.EM or CR0.TS. Vol. 3A Event 7 pp. 7-33–7-34 specifies fault classification,
+no error code and no program-state change because the instruction is not
+executed: [Vol. 2A](https://cdrdv2.intel.com/v1/dl/getContent/671199),
+[Vol. 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190).
+
+See the [CPU contract](../specs/CPU_CONTRACT.md#s2-39g--bounded-fxrstor64-cr0-em-and-ts-nm-gates),
+[plan](../plans/STAGE_2.md#s2-39g-bounded-fxrstor64-cr0-em-and-ts-nm-gates),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39g-long64-fxrstor64-cr0-em-and-ts-gates),
+and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-39g-fxrstor64-cr0-gate-profile).
+
 ## S2-40a — Ubuntu Generic amd64 requirement/evidence matrix
 
 This documentation-only slice records the user's choice of Generic `amd64`

@@ -5709,6 +5709,29 @@ See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-39f--bounded-fx
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-39f--bounded-fxsave64-cr0-em-and-ts-nm-gates),
 and [fixture format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-39f-fxsave64-cr0-gate-profile).
 
+### S2-39g Long64 FXRSTOR64 CR0 EM and TS gates
+
+`s2_39g_fxrstor64_cr0_em_nm.case.json` and
+`s2_39g_fxrstor64_cr0_clear_success.case.json` are hand-authored schema-v2
+fixtures for `s2-long-fxrstor64-cr0-gates-v1`, with exact bytes
+`48 0F AE 4B 40` and explicit immutable `cr0_em`/`cr0_ts` controls. Both use
+the same independently authored literal 512-byte readable private image with
+valid MXCSR, ignored forged MXCSR_MASK and nonzero padding. The initial x87/SSE
+state in the success fixture differs from the image, including a pending x87
+exception flag and MXCSR sticky flags. At either CR0 gate the expected result is
+vector 7 with no error code, zero retirement and complete unchanged CPU/RAM
+snapshots. With both bits clear, the existing S2-39e staged restore semantics
+apply. Core tests cover all four EM/TS combinations at CPL0–3 and verify zero
+read callbacks on #NM; clear controls verify the 13 reads and committed pending
+status as data. Fixture validation restricts the profile to aligned canonical48
+readable private memory and valid MXCSR, so combined gate plus malformed-image
+or mapping-fault precedence is not claimed. Fetch order and STOP/budget order
+are covered. JIT/native/C adapter remain denied; physical execution is deferred.
+See the [S2-39g plan](../../../../docs/plans/STAGE_2.md#s2-39g-bounded-fxrstor64-cr0-em-and-ts-nm-gates),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-39g--bounded-fxrstor64-cr0-em-and-ts-nm-gates),
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-39g--bounded-fxrstor64-cr0-em-and-ts-nm-gates),
+and [fixture format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-39g-fxrstor64-cr0-gate-profile).
+
 ### S2-40b native XORPD XMM0 XMM1
 
 `s2_40b_xorpd_xmm0_xmm1_asymmetric_a.case.json` and

@@ -890,6 +890,29 @@ adapter execution remain outside scope. See the [fixture note](../../tests/fixtu
 [CPU contract](../specs/CPU_CONTRACT.md#s2-39f--bounded-fxsave64-cr0-em-and-ts-nm-gates),
 and [plan](../plans/STAGE_2.md#s2-39f-bounded-fxsave64-cr0-em-and-ts-nm-gates).
 
+## S2-39g FXRSTOR64 CR0 gate profile
+
+The local-only `s2-long-fxrstor64-cr0-gates-v1` profile accepts exactly
+`48 0F AE 4B 40`, one instruction, budget 1 and stop RIP immediately after the
+five-byte instruction. It requires complete x87/SSE state and the strict
+`fxrstor64_cr0_controls` object containing only immutable booleans `cr0_em` and
+`cr0_ts`. Either bit true expects vector 7 `#NM`, no error code, zero retirement
+and an unchanged full CPU/RAM snapshot; both false execute the S2-39e staged
+restore. The readable, private 512-byte image must be aligned, canonical48,
+and have valid MXCSR under the immutable target mask. It may contain ignored
+MXCSR_MASK and padding values. The schema does not combine a gate with invalid
+image/address/page-fault cases and makes no precedence claim for those cases.
+STOP/zero-budget order and complete fetch before gate remain observable.
+
+The result repeats controls as `snapshot.fxrstor64_cr0_controls`; result
+validation requires the field for this profile, and comparison checks both
+observations against each other and the input fixture. Older result schemas
+omit the optional field. Interpreter is the only admitted backend. JIT/native/C
+adapter, alternate layouts, FXSR=0 and CR4.OSFXSR=0 remain unsupported. See the
+[fixture note](../../tests/fixtures/x86/stage2/README.md#s2-39g-long64-fxrstor64-cr0-em-and-ts-gates),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-39g--bounded-fxrstor64-cr0-em-and-ts-nm-gates),
+and [plan](../plans/STAGE_2.md#s2-39g-bounded-fxrstor64-cr0-em-and-ts-nm-gates).
+
 ## S2-40b native SSE-only XORPD profile
 
 The `s2-long-native-xorpd-xmm0-xmm1-v1` schema-v2 profile requires a complete

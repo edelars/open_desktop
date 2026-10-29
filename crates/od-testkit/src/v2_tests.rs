@@ -37,6 +37,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 xorpd_prerequisites: input.fixture.xorpd_prerequisites,
                 minss_invalid_controls: input.fixture.minss_invalid_controls,
                 fxsave64_cr0_controls: input.fixture.fxsave64_cr0_controls,
+                fxrstor64_cr0_controls: input.fixture.fxrstor64_cr0_controls,
                 exception: Observation::Available { value: None },
             },
         },
@@ -745,6 +746,45 @@ fn fxsave64_cr0_snapshot_is_strict_echo_and_comparison_input() {
     assert!(
         legacy_json["snapshot"]["value"]
             .get("fxsave64_cr0_controls")
+            .is_none()
+    );
+}
+
+#[test]
+fn fxrstor64_cr0_snapshot_is_strict_echo_and_comparison_input() {
+    let input = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_39g_fxrstor64_cr0_clear_success.case.json"
+    ))
+    .unwrap();
+    let left = result(&input);
+    let encoded = left.to_json().unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(
+        json["snapshot"]["value"]["fxrstor64_cr0_controls"],
+        serde_json::json!({"cr0_em": false, "cr0_ts": false})
+    );
+    assert!(RunResult::from_json(&encoded).is_ok());
+
+    let mut changed = left.clone();
+    snapshot(&mut changed).fxrstor64_cr0_controls = Some(Fxrstor64Cr0Snapshot {
+        cr0_em: true,
+        cr0_ts: false,
+    });
+    let differences = compare(&input, &left, &changed).unwrap();
+    assert!(differences.contains(&"fxrstor64_cr0_controls".into()));
+    assert!(differences.contains(&"right.fxrstor64_cr0_controls".into()));
+
+    let legacy = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_39e_fxrstor64_rbx_disp8_literal.case.json"
+    ))
+    .unwrap();
+    assert_eq!(legacy.fixture.fxrstor64_cr0_controls, None);
+    let legacy_result = result(&legacy);
+    let legacy_json: serde_json::Value =
+        serde_json::from_slice(&legacy_result.to_json().unwrap()).unwrap();
+    assert!(
+        legacy_json["snapshot"]["value"]
+            .get("fxrstor64_cr0_controls")
             .is_none()
     );
 }

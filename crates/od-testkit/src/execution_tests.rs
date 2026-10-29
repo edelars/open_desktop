@@ -4,8 +4,9 @@ use crate::case::MemoryPermissions;
 use crate::memory::{FlatMemory, encode_bytes};
 use crate::v2::{ExpectedExit, Fixture, decode_bytes};
 use od_isa::execute::{
-    Fxsave64Cr0Controls, REP_ITERATION_WORK_LIMIT, RunConfig, RunExit, StepOutcome, run,
-    run_with_fxsave64_cr0_controls, run_with_rep_continuation, run_with_rflags_defined, step,
+    Fxrstor64Cr0Controls, Fxsave64Cr0Controls, REP_ITERATION_WORK_LIMIT, RunConfig, RunExit,
+    StepOutcome, run, run_with_fxrstor64_cr0_controls, run_with_fxsave64_cr0_controls,
+    run_with_rep_continuation, run_with_rflags_defined, step,
 };
 use od_isa::memory::{AccessContext, AccessKind, ArchitecturalFault, GuestMemory, MemoryError};
 use od_isa::{LongModeState, OperandSize, Register, RegisterView};
@@ -11848,6 +11849,109 @@ fn s2_39f_literal_fxsave64_cr0_gate_fixture_is_strict_and_preserves_the_image() 
     let mut wrong_encoding = serde_json::from_slice::<serde_json::Value>(bytes).unwrap();
     wrong_encoding["memory"][0]["initial_bytes_hex"] = serde_json::json!("480fae4b40");
     assert!(crate::v2::Fixture::from_json(&serde_json::to_vec(&wrong_encoding).unwrap()).is_err());
+}
+
+#[test]
+fn s2_39g_literal_fxrstor64_cr0_fixtures_are_strict_and_restore_staged_image() {
+    let nm_bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_39g_fxrstor64_cr0_em_nm.case.json");
+    let nm = crate::v2::Fixture::from_json(nm_bytes).unwrap().fixture;
+    assert_eq!(nm.profile, crate::v2::Profile::LongFxrstor64Cr0GatesV1);
+    assert_eq!(
+        nm.fxrstor64_cr0_controls,
+        Some(crate::v2::Fxrstor64Cr0Snapshot {
+            cr0_em: true,
+            cr0_ts: false,
+        })
+    );
+    let mut state = nm.initial_state.to_cpu_for(nm.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&nm).unwrap();
+    let result = run_with_fxrstor64_cr0_controls(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: nm.instruction_budget,
+            stop_rip: nm.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        Fxrstor64Cr0Controls {
+            cr0_em: true,
+            cr0_ts: false,
+        },
+        || false,
+    );
+    assert_eq!(
+        result.exit,
+        RunExit::Fault(ArchitecturalFault {
+            vector: 7,
+            error_code: None,
+            linear_address: None,
+        })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert_eq!(state, before);
+    assert_eq!(
+        memory.snapshot()[1].bytes_hex,
+        nm.memory[1].initial_bytes_hex
+    );
+
+    let mut malformed = serde_json::from_slice::<serde_json::Value>(nm_bytes).unwrap();
+    malformed["fxrstor64_cr0_controls"]["cr4_osfxsr"] = serde_json::json!(false);
+    assert!(crate::v2::Fixture::from_json(&serde_json::to_vec(&malformed).unwrap()).is_err());
+    let mut missing = serde_json::from_slice::<serde_json::Value>(nm_bytes).unwrap();
+    missing
+        .as_object_mut()
+        .unwrap()
+        .remove("fxrstor64_cr0_controls");
+    assert!(crate::v2::Fixture::from_json(&serde_json::to_vec(&missing).unwrap()).is_err());
+    let mut wrong_encoding = serde_json::from_slice::<serde_json::Value>(nm_bytes).unwrap();
+    wrong_encoding["memory"][0]["initial_bytes_hex"] = serde_json::json!("480fae4b41");
+    assert!(crate::v2::Fixture::from_json(&serde_json::to_vec(&wrong_encoding).unwrap()).is_err());
+    let mut invalid_mxcsr = serde_json::from_slice::<serde_json::Value>(nm_bytes).unwrap();
+    let image = invalid_mxcsr["memory"][1]["initial_bytes_hex"]
+        .as_str()
+        .unwrap();
+    let mut image_bytes = decode_bytes(image).unwrap();
+    image_bytes[24..28].copy_from_slice(&0x0000_1fc0u32.to_le_bytes());
+    invalid_mxcsr["memory"][1]["initial_bytes_hex"] = serde_json::json!(encode_bytes(&image_bytes));
+    assert!(crate::v2::Fixture::from_json(&serde_json::to_vec(&invalid_mxcsr).unwrap()).is_err());
+
+    let success_bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_39g_fxrstor64_cr0_clear_success.case.json"
+    );
+    let success = crate::v2::Fixture::from_json(success_bytes)
+        .unwrap()
+        .fixture;
+    assert_eq!(success.profile, crate::v2::Profile::LongFxrstor64Cr0GatesV1);
+    let mut state = success.initial_state.to_cpu_for(success.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&success).unwrap();
+    let result = run_with_fxrstor64_cr0_controls(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: success.instruction_budget,
+            stop_rip: success.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        Fxrstor64Cr0Controls {
+            cr0_em: false,
+            cr0_ts: false,
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, success.stop_rip.unwrap().get());
+    assert_ne!(state.x87, before.x87);
+    assert_ne!(state.sse, before.sse);
+    assert_eq!(state.x87.as_ref().unwrap().status_word & 1, 1);
+    assert_eq!(state.sse.as_ref().unwrap().mxcsr & 0x1f, 5);
+    assert_eq!(
+        memory.snapshot()[1].bytes_hex,
+        success.memory[1].initial_bytes_hex
+    );
 }
 
 #[test]

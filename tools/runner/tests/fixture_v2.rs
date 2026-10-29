@@ -4697,6 +4697,62 @@ fn local_fxrstor64_rbx_fixture_runs_only_in_the_interpreter() {
 }
 
 #[test]
+fn local_fxrstor64_cr0_gate_fixtures_run_only_in_interpreter() {
+    let nm_bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_39g_fxrstor64_cr0_em_nm.case.json");
+    let (input, result) = run(nm_bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongFxrstor64Cr0GatesV1
+    );
+    assert_eq!(result.outcome, Outcome::Exception {});
+    assert_eq!(count(&result), 0);
+    assert_eq!(snapshot(&result).state, input.fixture.initial_state);
+    assert_eq!(
+        snapshot(&result).fxrstor64_cr0_controls,
+        input.fixture.fxrstor64_cr0_controls
+    );
+    assert_eq!(
+        snapshot(&result).memory[1].bytes_hex,
+        input.fixture.memory[1].initial_bytes_hex
+    );
+    assert!(matches!(
+        &snapshot(&result).exception,
+        Observation::Available {
+            value: Some(exception)
+        } if exception.vector == 7
+            && matches!(exception.error_code, Observation::Unavailable { .. })
+            && exception.faulting_rip == input.fixture.initial_state.rip
+    ));
+
+    let success_bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_39g_fxrstor64_cr0_clear_success.case.json"
+    );
+    let (input, result) = run(success_bytes, "interpreter", 0);
+    assert_eq!(count(&result), 1);
+    let state = &snapshot(&result).state;
+    assert_ne!(state.x87, input.fixture.initial_state.x87);
+    assert_ne!(state.sse, input.fixture.initial_state.sse);
+    assert_eq!(state.x87.as_ref().unwrap().status_word.get() & 1, 1);
+    assert_eq!(state.sse.as_ref().unwrap().mxcsr.get() & 0x1f, 5);
+    assert_eq!(
+        snapshot(&result).memory[1].bytes_hex,
+        input.fixture.memory[1].initial_bytes_hex
+    );
+
+    for bytes in [nm_bytes.as_slice(), success_bytes.as_slice()] {
+        for backend in ["jit", "native"] {
+            let (_, denied) = run(bytes, backend, 4);
+            assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+            assert!(matches!(
+                denied.instructions_executed,
+                Observation::Unavailable { .. }
+            ));
+        }
+    }
+}
+
+#[test]
 fn local_xorps_register_fixture_xors_raw_xmm_and_keeps_native_closed() {
     let bytes =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_7a_xorps_register.case.json");

@@ -506,6 +506,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-39c | Один plain Long64 RIP-relative FXSAVE profile | S2-39a/b; broader save/restore remains open |
 | [x] | S2-39d | Один exact Long64 FXSAVE64 `[RAX+0x40]` profile с полными FIP/FDP | S2-39a–c; FXRSTOR and broader forms remained open at this historical substage |
 | [x] | S2-39e | Один strict interpreter-only FXRSTOR64 `[RBX+0x40]` profile | S2-39a–d; other forms and physical acceptance remain open |
+| [x] | S2-39f | Exact FXSAVE64 `[RAX+0x40]` CR0.EM/TS `#NM` gates | S2-39d; other forms and physical acceptance remain open |
+| [x] | S2-39g | Exact FXRSTOR64 `[RBX+0x40]` CR0.EM/TS `#NM` gates | S2-39e/f; other forms and physical acceptance remain open |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
 | [ ] | S2-41 | Независимо проверить системный профиль | S2-27; machine backend по сценариям |
 | [ ] | S2-42 | Расширить corpus/reducer/harness | S2-21, S2-39, S2-40 |
@@ -6520,6 +6522,40 @@ Exceptions, pp. 3-418–3-419; Vol. 3A Event 7 `#NM`, pp. 7-33–7-34. Исто�
 [report](../reports/STAGE_2_REPORT.md#s2-39f--bounded-fxsave64-cr0-em-and-ts-nm-gates),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39f-long64-fxsave64-cr0-em-and-ts-gates)
 и [fixture format](../testing/TEST_CASE_FORMAT.md#s2-39f-fxsave64-cr0-gate-profile).
+
+#### S2-39g. Bounded FXRSTOR64 CR0 EM and TS `#NM` gates
+
+**Статус:** локальный interpreter profile и focused checks завершены для
+отдельного strict profile `s2-long-fxrstor64-cr0-gates-v1`, который принимает
+только байты `48 0F AE 4B 40`. Он требует явные immutable `cr0_em` и
+`cr0_ts`; `FXSR=1` и `CR4.OSFXSR=1` остаются фиксированными prerequisites.
+После полного fetch/decode `EM=1` либо `TS=1` возвращают fault vector 7 без
+error code, без retirement и изменений CPU/RAM/RIP, с нулём data reads при
+CPL0–3. Когда оба бита очищены, вызывается существующий staged S2-39e restore
+с его 13 ascending callbacks, target MXCSR mask и атомарной CPU commit.
+
+Fixture validator разрешает только exact instruction, aligned canonical48
+readable private 512-byte image и исходный MXCSR без reserved target bits.
+Это намеренно не задаёт приоритет `#NM` относительно malformed-image,
+address или page faults. Incoming STOP и zero-budget остаются до fetch; весь
+код инструкции читается до gate. Состояние pending x87/SSE exception и MXCSR
+sticky flags переносится как данные: FXRSTOR не доставляет `#MF`/`#XM`.
+Существующий S2-39e и его fault/address tests не менялись. JIT/native/C adapter,
+другие образы/layouts, `FXSR=0`, `OSFXSR=0` и физическое выполнение не открыты.
+
+Проверки покрывают четыре пары EM/TS × CPL0–3 с полным неизменённым snapshot и
+нулём callbacks на #NM, clear-gates restore из независимого handwritten
+literal image, TOP/tag/FIP/FDP/XMM/selectors/MXCSR, ignored mask/padding,
+pending flags, fetch truncation и STOP/budget precedence, strict control/result
+comparison, S2-39e/f regressions, и interpreter-only backend admission.
+Нормативное основание: Intel SDM Rev. 093 Vol. 2A FXRSTOR 64-Bit Mode
+Exceptions, pp. 3-409–3-411; Vol. 3A Event 7 `#NM`, pp. 7-33–7-34:
+[Vol. 2A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199),
+[Vol. 3A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190). См. также
+[CPU contract](../specs/CPU_CONTRACT.md#s2-39g--bounded-fxrstor64-cr0-em-and-ts-nm-gates),
+[report](../reports/STAGE_2_REPORT.md#s2-39g--bounded-fxrstor64-cr0-em-and-ts-nm-gates),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39g-long64-fxrstor64-cr0-em-and-ts-gates)
+и [fixture format](../testing/TEST_CASE_FORMAT.md#s2-39g-fxrstor64-cr0-gate-profile).
 
 ### S2-40. Дополнительные обязательные расширения
 

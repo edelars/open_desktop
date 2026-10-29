@@ -420,6 +420,41 @@ final Mac mini batch. See the [S2-39f plan](../plans/STAGE_2.md#s2-39f-bounded-f
 [report](../reports/STAGE_2_REPORT.md#s2-39f--bounded-fxsave64-cr0-em-and-ts-nm-gates),
 and [fixture](../../tests/fixtures/x86/stage2/README.md#s2-39f-long64-fxsave64-cr0-em-and-ts-gates).
 
+### S2-39g — Bounded FXRSTOR64 CR0 EM and TS `#NM` gates
+
+The interpreter-only profile `s2-long-fxrstor64-cr0-gates-v1` admits exactly
+`48 0F AE 4B 40` (`FXRSTOR64 [RBX+0x40]`) with immutable `cr0_em` and `cr0_ts`
+inputs. FXSR=1 and CR4.OSFXSR=1 remain fixed prerequisites. Once the complete
+instruction has been fetched and decoded, either bit set returns CPU fault
+vector 7 (`#NM`), no error code, zero retirement, no CPU/RAM/RIP change, and no
+data-memory reads at CPL0–3. With both bits clear, the existing S2-39e restore
+path performs its 13 staged reads and commits only after MXCSR validation.
+
+To keep the fixture oracle bounded, it admits only an aligned canonical48
+readable private 512-byte image with MXCSR valid under the immutable target
+mask. This profile does not claim `#NM` priority against invalid-image,
+address, or page faults. STOP and zero budget are checked before fetch; all
+instruction bytes are fetched before the gate. Restored pending x87/SSE status
+and MXCSR sticky flags remain state data; FXRSTOR does not deliver `#MF` or
+`#XM`. Existing S2-39e invalid-image/address/fault coverage remains in that
+separate profile. No JIT/native/C-adapter path, alternate image layout,
+FXSR=0, or CR4.OSFXSR=0 behavior is admitted.
+
+Handwritten success and `#NM` fixtures use a literal 512-byte image with valid
+MXCSR and nonzero ignored/padding bytes. Coverage checks TOP/tag reconstruction,
+full FIP/FDP, XMM0–15, optional selector preservation, ignored MXCSR_MASK and
+padding, pending status, full no-commit snapshots, and the four CR0 combinations
+at CPL0–3 with zero callbacks on `#NM`. Intel SDM Rev. 093, Vol. 2A, FXRSTOR
+64-Bit Mode Exceptions, pp. 3-409–3-411 lists `#NM` for CR0.EM or CR0.TS. Vol.
+3A Event 7, pp. 7-33–7-34 specifies no error code and no program-state change
+because the faulting instruction is not executed:
+[Vol. 2A](https://cdrdv2.intel.com/v1/dl/getContent/671199),
+[Vol. 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190). Local software
+checks do not establish physical execution or broader S2-39 acceptance. See the
+[S2-39g plan](../plans/STAGE_2.md#s2-39g-bounded-fxrstor64-cr0-em-and-ts-nm-gates),
+[report](../reports/STAGE_2_REPORT.md#s2-39g--bounded-fxrstor64-cr0-em-and-ts-nm-gates),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39g-long64-fxrstor64-cr0-em-and-ts-gates).
+
 ## Предлагаемый профиль тестового прототипа S0-09
 
 Прототип — изолированный пользовательский fragment runner с единым vCPU, только immutable code buffer и register-only вычислениями. Это набор для сравнения decoder → interpreter/JIT, а не профиль x86-64 машины.
