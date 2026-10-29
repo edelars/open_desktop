@@ -124,6 +124,29 @@ enum FxCr0GateControls {
     Restore(Fxrstor64Cr0Controls),
 }
 
+#[derive(Clone, Copy)]
+struct ExecutionProfiles<'a> {
+    cpuid: Option<&'a CpuidProfile>,
+    msr: Option<&'a MsrProfile>,
+    sep: Option<&'a SepProfile>,
+    xorpd: Option<XorpdPrerequisiteState>,
+    minss_invalid: Option<MinssInvalidControls>,
+    fx_cr0: Option<FxCr0GateControls>,
+    unmasked_minss_denormal: bool,
+    rdtsc: Option<RdtscControls>,
+    swapgs: Option<&'a SwapgsProfile>,
+    cli: Option<&'a crate::CliProfile>,
+    sti: Option<&'a crate::StiProfile>,
+    halt: Option<&'a crate::HaltProfile>,
+}
+
+struct StepRuntime<'source, 'sti, 'stop> {
+    rdtsc_source: Option<&'source mut dyn FnMut() -> u64>,
+    sti_sequence: Option<&'sti mut StiSequenceProgress>,
+    exact_hlt_only: bool,
+    stop_requested: &'stop mut dyn FnMut() -> bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RunResult {
     pub exit: RunExit,
@@ -1350,7 +1373,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     config: RunConfig,
-    mut rflags_defined: u64,
+    rflags_defined: u64,
     cpuid_profile: Option<&CpuidProfile>,
     msr_profile: Option<&MsrProfile>,
     sep_profile: Option<&SepProfile>,
@@ -1359,13 +1382,53 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
     fx_cr0_gate_controls: Option<FxCr0GateControls>,
     unmasked_minss_denormal: bool,
     rdtsc_controls: Option<RdtscControls>,
-    mut rdtsc_source: Option<&mut dyn FnMut() -> u64>,
+    rdtsc_source: Option<&mut dyn FnMut() -> u64>,
     swapgs_profile: Option<&SwapgsProfile>,
     cli_profile: Option<&crate::CliProfile>,
     sti_profile: Option<&crate::StiProfile>,
     halt_profile: Option<&crate::HaltProfile>,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> RunResult {
+    run_configured(
+        state,
+        memory,
+        config,
+        rflags_defined,
+        ExecutionProfiles {
+            cpuid: cpuid_profile,
+            msr: msr_profile,
+            sep: sep_profile,
+            xorpd: xorpd_prerequisites,
+            minss_invalid: minss_invalid_controls,
+            fx_cr0: fx_cr0_gate_controls,
+            unmasked_minss_denormal,
+            rdtsc: rdtsc_controls,
+            swapgs: swapgs_profile,
+            cli: cli_profile,
+            sti: sti_profile,
+            halt: halt_profile,
+        },
+        StepRuntime {
+            rdtsc_source,
+            sti_sequence: None,
+            exact_hlt_only: false,
+            stop_requested,
+        },
+    )
+}
+
+fn run_configured(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    mut rflags_defined: u64,
+    profiles: ExecutionProfiles<'_>,
+    mut runtime: StepRuntime<'_, '_, '_>,
+) -> RunResult {
+    let sti_profile = profiles.sti;
+    let halt_profile = profiles.halt;
+    let rdtsc_source = &mut runtime.rdtsc_source;
+    let stop_requested = &mut runtime.stop_requested;
     if halt_profile.is_some()
         && (config.context.mode != InstructionMode::Long64
             || state.activity.is_none()
@@ -1419,52 +1482,34 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
         } else {
             let old_shadow = state.sti_shadow;
             let outcome = if let Some(source) = rdtsc_source.take() {
-                let outcome = step_tracked_with_profiles_and_rdtsc(
+                let outcome = step_configured(
                     state,
                     memory,
                     config.context,
                     &mut rflags_defined,
-                    cpuid_profile,
-                    msr_profile,
-                    sep_profile,
-                    xorpd_prerequisites,
-                    minss_invalid_controls,
-                    fx_cr0_gate_controls,
-                    unmasked_minss_denormal,
-                    rdtsc_controls,
-                    Some(&mut *source),
-                    swapgs_profile,
-                    cli_profile,
-                    sti_profile,
-                    halt_profile,
-                    sti_sequence.as_mut(),
-                    false,
-                    stop_requested,
+                    profiles,
+                    StepRuntime {
+                        rdtsc_source: Some(&mut *source),
+                        sti_sequence: sti_sequence.as_mut(),
+                        exact_hlt_only: false,
+                        stop_requested: &mut **stop_requested,
+                    },
                 );
-                rdtsc_source = Some(source);
+                *rdtsc_source = Some(source);
                 outcome
             } else {
-                step_tracked_with_profiles_and_rdtsc(
+                step_configured(
                     state,
                     memory,
                     config.context,
                     &mut rflags_defined,
-                    cpuid_profile,
-                    msr_profile,
-                    sep_profile,
-                    xorpd_prerequisites,
-                    minss_invalid_controls,
-                    fx_cr0_gate_controls,
-                    unmasked_minss_denormal,
-                    rdtsc_controls,
-                    None,
-                    swapgs_profile,
-                    cli_profile,
-                    sti_profile,
-                    halt_profile,
-                    sti_sequence.as_mut(),
-                    false,
-                    stop_requested,
+                    profiles,
+                    StepRuntime {
+                        rdtsc_source: None,
+                        sti_sequence: sti_sequence.as_mut(),
+                        exact_hlt_only: false,
+                        stop_requested: &mut **stop_requested,
+                    },
                 )
             };
             match outcome {
@@ -1762,6 +1807,62 @@ fn step_tracked_with_profiles_and_rdtsc(
     exact_hlt_only: bool,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> Result<StepOutcome, MemoryError> {
+    step_configured(
+        state,
+        memory,
+        context,
+        rflags_defined,
+        ExecutionProfiles {
+            cpuid: cpuid_profile,
+            msr: msr_profile,
+            sep: sep_profile,
+            xorpd: xorpd_prerequisites,
+            minss_invalid: minss_invalid_controls,
+            fx_cr0: fx_cr0_gate_controls,
+            unmasked_minss_denormal,
+            rdtsc: rdtsc_controls,
+            swapgs: swapgs_profile,
+            cli: cli_profile,
+            sti: sti_profile,
+            halt: halt_profile,
+        },
+        StepRuntime {
+            rdtsc_source,
+            sti_sequence,
+            exact_hlt_only,
+            stop_requested,
+        },
+    )
+}
+
+fn step_configured(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    rflags_defined: &mut u64,
+    profiles: ExecutionProfiles<'_>,
+    runtime: StepRuntime<'_, '_, '_>,
+) -> Result<StepOutcome, MemoryError> {
+    let ExecutionProfiles {
+        cpuid: cpuid_profile,
+        msr: msr_profile,
+        sep: sep_profile,
+        xorpd: xorpd_prerequisites,
+        minss_invalid: minss_invalid_controls,
+        fx_cr0: fx_cr0_gate_controls,
+        unmasked_minss_denormal,
+        rdtsc: rdtsc_controls,
+        swapgs: swapgs_profile,
+        cli: cli_profile,
+        sti: sti_profile,
+        halt: halt_profile,
+    } = profiles;
+    let StepRuntime {
+        rdtsc_source,
+        sti_sequence,
+        exact_hlt_only,
+        stop_requested,
+    } = runtime;
     if halt_profile.is_some()
         && (context.mode != InstructionMode::Long64
             || state.activity.is_none()
