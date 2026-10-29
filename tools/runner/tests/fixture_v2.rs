@@ -15088,3 +15088,85 @@ fn local_native_xorpd_fixtures_match_independent_literal_and_preserve_state() {
         assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
     }
 }
+
+#[test]
+fn native_xorpd_handwritten_boundaries_match_raw_byte_oracle() {
+    let cases = [
+        (
+            "s2_42a_hand_zero_ones",
+            "00000000000000000000000000000000",
+            "ffffffffffffffffffffffffffffffff",
+            "ffffffffffffffffffffffffffffffff",
+        ),
+        (
+            "s2_42a_hand_ones_zero",
+            "ffffffffffffffffffffffffffffffff",
+            "00000000000000000000000000000000",
+            "ffffffffffffffffffffffffffffffff",
+        ),
+        (
+            "s2_42a_hand_alternating",
+            "55555555555555555555555555555555",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "ffffffffffffffffffffffffffffffff",
+        ),
+        (
+            "s2_42a_hand_equal",
+            "0123456789abcdeffedcba9876543210",
+            "0123456789abcdeffedcba9876543210",
+            "00000000000000000000000000000000",
+        ),
+    ];
+    let template = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_40b_xorpd_xmm0_xmm1_asymmetric_a.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    for (case_id, xmm0, xmm1, expected_xmm0) in cases {
+        let mut fixture = template.clone();
+        fixture.case_id = case_id.into();
+        let sse = fixture.initial_state.sse.as_mut().unwrap();
+        sse.xmm[0] = xmm0.into();
+        sse.xmm[1] = xmm1.into();
+        for register in 2..16 {
+            sse.xmm[register] = format!("{:02x}", register).repeat(16);
+        }
+        let bytes = fixture.to_json().unwrap();
+        let (loaded, result) = run(&bytes, "interpreter", 0);
+        let observed = snapshot(&result);
+        let mut oracle = [0; 16];
+        let lhs = decode_xmm_literal(xmm0);
+        let rhs = decode_xmm_literal(xmm1);
+        for index in 0..16 {
+            oracle[index] = lhs[index] ^ rhs[index];
+        }
+        assert_eq!(encode_xmm_literal(&oracle), expected_xmm0);
+        assert_eq!(observed.state.sse.as_ref().unwrap().xmm[0], expected_xmm0);
+        assert_eq!(observed.state.gpr, loaded.fixture.initial_state.gpr);
+        assert_eq!(observed.state.rflags, loaded.fixture.initial_state.rflags);
+        assert_eq!(observed.state.rip, loaded.fixture.stop_rip.unwrap());
+        assert_eq!(observed.state.sse.as_ref().unwrap().mxcsr, HexU64(0x1f80));
+        for register in 1..16 {
+            assert_eq!(
+                observed.state.sse.as_ref().unwrap().xmm[register],
+                loaded.fixture.initial_state.sse.as_ref().unwrap().xmm[register]
+            );
+        }
+        assert_eq!(
+            observed.memory[0].bytes_hex,
+            loaded.fixture.memory[0].initial_bytes_hex
+        );
+    }
+}
+
+fn decode_xmm_literal(value: &str) -> [u8; 16] {
+    let mut bytes = [0; 16];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).unwrap();
+    }
+    bytes
+}
+
+fn encode_xmm_literal(bytes: &[u8; 16]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}

@@ -984,3 +984,26 @@ The v2 result repeats the same object at `snapshot.xorpd_prerequisites`; result
 validation requires it for this profile, and the comparator checks left and
 right values against each other and the bound fixture. Results for older
 profiles omit the field.
+
+## S2-42a native XORPD generated corpus
+
+Generated cases use the existing schema-v2 profile
+`s2-long-native-xorpd-xmm0-xmm1-v1`; fixture shape and admission do not change.
+The deterministic generator version is `od-testkit-native-xorpd-v1`, with four
+fixed seeds and sequences `0..256` per seed. Each case randomizes all 16 XMM
+registers and retains exact bytes `66 0F 57 C1`, budget 1, stop RIP `entry+4`,
+one code mapping, MXCSR `0x1f80`, and no x87 snapshot. The committed, handwritten
+cases remain the source for small boundary patterns.
+
+`od-runner --generate-native-xorpd-corpus` creates 1024 case files plus a
+versioned ordered manifest in ignored `work/stage2/s2-42a-xorpd/`. The manifest
+records generator version, seeds and sequence, profile, each exact JSON
+SHA-256, and a corpus digest computed over the ordered digest list.
+`od-runner --verify-native-xorpd-corpus` enforces strict schema, manifest/file
+digest integrity, full case presence and distinct XMM input contents. It runs
+the interpreter twice per case and checks the complete result against a
+separate test-harness oracle that XORs operand bytes directly. Unsupported
+mandatory interpreter execution or any mismatch is a nonzero failure. A single
+case can be replayed with the ordinary `od-runner --fixture CASE.json --engine
+interpreter --json` command. Native execution is `not_run` for this local
+acceptance; it remains scheduled for the combined final hardware batch.

@@ -16369,3 +16369,44 @@ See [CPU contract](../specs/CPU_CONTRACT.md#s2-38d--exact-minss-unmasked-denorma
 [plan](../plans/STAGE_2.md#s2-38d-exact-long64-minss-xmm0xmm1-unmasked-denormal-operand-exit),
 [test format](../testing/TEST_CASE_FORMAT.md#s2-38d-exact-minss-unmasked-denormal-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38d-local-minss-unmasked-denormal-operand).
+
+## S2-42a — generated corpus для native XORPD
+
+Для существующего профиля `s2-long-native-xorpd-xmm0-xmm1-v1` добавлен
+детерминированный generated corpus: 4 фиксированных seed × 256 случаев,
+1024 попарно различных 16-регистровых XMM input states. Новый generator
+version `od-testkit-native-xorpd-v1` находится в `od-testkit`; legacy
+`generate_fixture` и команда `--generate-corpus` не изменялись. Corpus,
+ordered manifest и результат приёмки хранятся только в игнорируемом
+`work/stage2/s2-42a-xorpd/`. Manifest содержит профиль, версию генератора,
+seeds/sequence, упорядоченные SHA-256 fixture и digest списка.
+
+Локальная команда `od-runner --verify-native-xorpd-corpus` проверяет строгую
+schema-v2 валидацию, целостность manifest и файлов, наличие всех 1024 cases,
+уникальность XMM входов, а затем выполняет по два interpreter runs на fixture.
+Каждый результат сравнивается с независимым bytewise XOR ожидаемым полным
+состоянием, включая все GPR, RIP, defined integer flags, XMM0–15, MXCSR,
+retirement/exit, отсутствие exception и неизменность code mapping. Mismatch,
+отсутствующий case/result и unsupported mandatory interpreter execution
+завершают проверку ненулевым кодом. Handwritten checks независимо покрывают
+zero/ones, alternating, equal operands и untouched registers.
+
+**Проверки:** `cargo test -p od-testkit --offline native_xorpd -- --nocapture`
+(3 passed), включая детерминизм, попарную различность, digest и missing-case
+manifest ошибки. `cargo test -p od-runner --bin od-runner
+native_xorpd_corpus_tests --offline -- --nocapture` (4 passed) проверяет
+missing case/result, corrupt digest, mismatch, unsupported execution и
+неверный обязательный profile. `cargo test -p od-runner --test fixture_v2
+native_xorpd_handwritten_boundaries_match_raw_byte_oracle --offline --
+--nocapture` (1 passed). Полный corpus принят локально: 1024 cases, 2048
+interpreter runs, `native=not_run`; replay доступен обычной командой
+`od-runner --fixture work/stage2/s2-42a-xorpd/corpus/<case>.case.json
+--engine interpreter --json`. Точные revision/toolchain, digest и replay path
+записаны в локальном `work/stage2/s2-42a-xorpd/result-report.json`.
+
+Физическое/Mac mini исполнение не запускалось; оно отложено до объединённого
+финального hardware batch. S2-42 остаётся открытым: reducer и прочие группы
+инструкций этим срезом не закрыты. Generic amd64 и CPUID не менялись. См.
+[план S2-42a](../plans/STAGE_2.md#s2-42a-deterministic-corpus-для-native-xorpd),
+[формат fixtures](../testing/TEST_CASE_FORMAT.md#s2-42a-native-xorpd-generated-corpus)
+и [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42a-native-xorpd-generated-corpus).

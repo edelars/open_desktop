@@ -5811,3 +5811,23 @@ Physical/Mac mini status is `not_run` until the combined final hardware stage.
 See the [S2-38d plan](../../../../docs/plans/STAGE_2.md#s2-38d-exact-long64-minss-xmm0xmm1-unmasked-denormal-operand-exit),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38d--exact-minss-unmasked-denormal-operand-exit),
 and [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-38d--exact-minss-unmasked-denormal-operand-handling).
+
+### S2-42a native XORPD generated corpus
+
+The existing `s2-long-native-xorpd-xmm0-xmm1-v1` profile now has a local,
+versioned deterministic corpus of 1024 generated cases (4 fixed seeds × 256
+sequences). Generated cases are written only under ignored
+`work/stage2/s2-42a-xorpd/corpus/`; the ordered manifest and local result report
+are stored beside that directory. `od-runner --generate-native-xorpd-corpus`
+creates them, and `od-runner --verify-native-xorpd-corpus` checks strict schema,
+digests, missing/duplicate inputs, two interpreter runs per case, the
+independent raw-byte XOR result, full XMM and integer snapshots, MXCSR, code
+immutability, and exit/retirement. A saved case is replayed with the normal
+`od-runner --fixture CASE.json --engine interpreter --json` command.
+
+Handwritten runner checks cover zero/ones, alternating, equal operands and
+preservation of XMM1–XMM15, integer state and code bytes. These are deterministic
+local interpreter checks; native/hardware output remains `not_run` until the
+combined final hardware batch. See the [S2-42a plan](../../../../docs/plans/STAGE_2.md#s2-42a-deterministic-corpus-для-native-xorpd),
+[test format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-42a-native-xorpd-generated-corpus),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-42a--generated-corpus-для-native-xorpd).

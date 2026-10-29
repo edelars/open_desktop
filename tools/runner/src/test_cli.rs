@@ -1,24 +1,340 @@
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 
 use od_isa::{CpuState, ExecutionResult, interpret};
-use od_testkit::HexU64;
 use od_testkit::case::{Fixture, LoadedFixture};
 use od_testkit::compare::{
     CompareError, ComparisonReport, compare_results as compare_result_values,
 };
 use od_testkit::generate::generate_fixture;
 use od_testkit::minimize::{MinimizeError, minimize_fixture as minimize_fixture_value};
+use od_testkit::native_xorpd::{
+    NATIVE_XORPD_CASES_PER_SEED, NATIVE_XORPD_FIXED_SEEDS, NativeXorpdCorpusManifest,
+    generate_native_xorpd_fixture, native_xorpd_case_id,
+};
 use od_testkit::result::{
     Backend, BuildMetadata, CompletionStatus, CpuSnapshot, ExitReason, GprSnapshot,
     MachineMetadata, Observation, RESULT_SCHEMA_VERSION, RunResult,
 };
+use od_testkit::{HexU64, sha256_hex};
 
 const EXIT_MISMATCH: u8 = 2;
 const EXIT_INVALID_INPUT: u8 = 3;
 const EXIT_UNSUPPORTED: u8 = 4;
 const EXIT_HARNESS_FAILURE: u8 = 5;
+
+const NATIVE_XORPD_WORK_DIR: &str = "work/stage2/s2-42a-xorpd";
+
+pub fn generate_native_xorpd_corpus(args: &[String]) -> ExitCode {
+    if !args.is_empty() {
+        return invalid_input("usage: od-runner --generate-native-xorpd-corpus");
+    }
+    let result = (|| -> Result<(), String> {
+        let root = std::path::Path::new(NATIVE_XORPD_WORK_DIR);
+        let corpus_dir = root.join("corpus");
+        fs::create_dir_all(root).map_err(|error| error.to_string())?;
+        fs::create_dir(&corpus_dir)
+            .map_err(|error| format!("could not create generated corpus directory: {error}"))?;
+
+        let mut case_bytes = Vec::with_capacity(
+            NATIVE_XORPD_FIXED_SEEDS.len() * NATIVE_XORPD_CASES_PER_SEED as usize,
+        );
+        for &seed in &NATIVE_XORPD_FIXED_SEEDS {
+            for sequence in 0..NATIVE_XORPD_CASES_PER_SEED {
+                let fixture = generate_native_xorpd_fixture(seed, sequence);
+                let bytes = fixture.to_json().map_err(|error| error.to_string())?;
+                let path = corpus_dir.join(format!("{}.case.json", fixture.case_id));
+                let mut output = fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(path)
+                    .map_err(|error| error.to_string())?;
+                output
+                    .write_all(&bytes)
+                    .map_err(|error| error.to_string())?;
+                case_bytes.push(bytes);
+            }
+        }
+        let manifest = NativeXorpdCorpusManifest::from_ordered_case_bytes(&case_bytes)?;
+        let manifest_path = root.join("manifest.json");
+        let mut output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(manifest_path)
+            .map_err(|error| error.to_string())?;
+        output
+            .write_all(&manifest.to_json()?)
+            .map_err(|error| error.to_string())?;
+        println!(
+            "generated {} native XORPD cases; corpus_digest={}",
+            manifest.case_digests.len(),
+            manifest.corpus_digest
+        );
+        Ok(())
+    })();
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => invalid_input(&error),
+    }
+}
+
+pub fn verify_native_xorpd_corpus(args: &[String]) -> ExitCode {
+    if !args.is_empty() {
+        return invalid_input("usage: od-runner --verify-native-xorpd-corpus");
+    }
+    match verify_native_xorpd_corpus_inner() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("native XORPD corpus verification failed: {error}");
+            ExitCode::from(EXIT_HARNESS_FAILURE)
+        }
+    }
+}
+
+fn verify_native_xorpd_corpus_inner() -> Result<(), String> {
+    use od_testkit::v2;
+
+    let root = std::path::Path::new(NATIVE_XORPD_WORK_DIR);
+    let corpus_dir = root.join("corpus");
+    let manifest_bytes = fs::read(root.join("manifest.json"))
+        .map_err(|error| format!("missing or unreadable corpus manifest: {error}"))?;
+    let manifest = NativeXorpdCorpusManifest::from_json(&manifest_bytes)?;
+    let expected_count = NATIVE_XORPD_FIXED_SEEDS.len() * NATIVE_XORPD_CASES_PER_SEED as usize;
+    let actual_files = fs::read_dir(&corpus_dir)
+        .map_err(|error| format!("missing or unreadable corpus directory: {error}"))?
+        .map(|entry| {
+            entry
+                .map(|entry| entry.path())
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_native_xorpd_file_count(actual_files.len(), expected_count)?;
+
+    let mut unique_inputs = HashSet::with_capacity(expected_count);
+    let mut ran_twice = 0usize;
+    let mut first_replay = None;
+    let mut case_index = 0usize;
+    for &seed in &NATIVE_XORPD_FIXED_SEEDS {
+        for sequence in 0..NATIVE_XORPD_CASES_PER_SEED {
+            let case_id = native_xorpd_case_id(seed, sequence);
+            let path = corpus_dir.join(format!("{case_id}.case.json"));
+            let bytes =
+                fs::read(&path).map_err(|error| format!("missing case {case_id}: {error}"))?;
+            validate_native_xorpd_case_digest(
+                &bytes,
+                &manifest.case_digests[case_index],
+                &case_id,
+            )?;
+            let loaded = v2::Fixture::from_json(&bytes)
+                .map_err(|error| format!("invalid strict-schema fixture {case_id}: {error}"))?;
+            if loaded.fixture.case_id != case_id
+                || loaded.fixture.profile != v2::Profile::LongNativeXorpdXmm0Xmm1V1
+            {
+                return Err(format!("case identity or profile mismatch for {case_id}"));
+            }
+            let sse = loaded
+                .fixture
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| format!("missing full SSE state in {case_id}"))?;
+            if !unique_inputs.insert(sse.xmm.join("")) {
+                return Err(format!("duplicate XMM input contents in {case_id}"));
+            }
+
+            let first = run_native_xorpd_interpreter(&loaded)?;
+            let second = run_native_xorpd_interpreter(&loaded)?;
+            if first != second {
+                return Err(format!("two interpreter runs differ for {case_id}"));
+            }
+            validate_native_xorpd_result(&loaded, &first)?;
+            validate_native_xorpd_result(&loaded, &second)?;
+            first_replay.get_or_insert_with(|| {
+                format!(
+                    "od-runner --fixture {} --engine interpreter --json",
+                    path.display()
+                )
+            });
+            ran_twice += 2;
+            case_index += 1;
+        }
+    }
+
+    let report = serde_json::json!({
+        "report_version": 1,
+        "profile": manifest.profile,
+        "generator_version": manifest.generator_version,
+        "corpus_digest": manifest.corpus_digest,
+        "cases": expected_count,
+        "interpreter_runs": ran_twice,
+        "repeated_runs_per_fixture": 2,
+        "comparison_scope": "all 16 GPRs, RIP, defined integer flags, all 16 XMM registers, MXCSR, retirement count, exit, exception absence, and immutable code mapping; expected XMM0 computed by test harness bytewise XOR",
+        "revision": local_revision(),
+        "toolchain": local_rustc_version(),
+        "native": "not_run",
+        "replay_command": first_replay.unwrap_or_default(),
+        "physical_mac_mini": "not_run; reserved for combined final hardware batch"
+    });
+    let report_path = root.join("result-report.json");
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(report_path)
+        .map_err(|error| format!("could not create local result report: {error}"))?;
+    output
+        .write_all(&serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?)
+        .map_err(|error| error.to_string())?;
+    println!("verified {expected_count} fixtures in {ran_twice} interpreter runs; native=not_run");
+    Ok(())
+}
+
+fn validate_native_xorpd_result(
+    loaded: &od_testkit::v2::LoadedFixture,
+    result: &od_testkit::v2::RunResult,
+) -> Result<(), String> {
+    use od_testkit::v2::Outcome;
+
+    let case_id = &loaded.fixture.case_id;
+    if result.profile != od_testkit::v2::Profile::LongNativeXorpdXmm0Xmm1V1
+        || result.backend != Backend::Interpreter
+        || !matches!(result.outcome, Outcome::StopAddress {})
+        || result.instructions_executed != (Observation::Available { value: HexU64(1) })
+    {
+        return Err(format!(
+            "mandatory interpreter execution did not complete for {case_id}"
+        ));
+    }
+    let Observation::Available { value: snapshot } = &result.snapshot else {
+        return Err(format!("interpreter result is missing for {case_id}"));
+    };
+    let initial_sse = loaded
+        .fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or_else(|| format!("missing SSE input for {case_id}"))?;
+    let mut expected_state = loaded.fixture.initial_state.clone();
+    let mut expected_xmm0 = decode_hex_bytes(&initial_sse.xmm[0])?;
+    let xmm1 = decode_hex_bytes(&initial_sse.xmm[1])?;
+    if expected_xmm0.len() != 16 || xmm1.len() != 16 {
+        return Err(format!("XMM operand length is invalid for {case_id}"));
+    }
+    for (destination, source) in expected_xmm0.iter_mut().zip(xmm1) {
+        *destination ^= source;
+    }
+    expected_state
+        .sse
+        .as_mut()
+        .expect("strict native XORPD schema requires SSE state")
+        .xmm[0] = encode_hex_bytes(&expected_xmm0);
+    expected_state.rip = loaded.fixture.stop_rip.expect("strict fixture stop RIP");
+    if snapshot.state != expected_state || snapshot.rflags_defined != loaded.fixture.rflags_mask {
+        return Err(format!(
+            "full state differs from independent XOR oracle for {case_id}"
+        ));
+    }
+    if snapshot.memory.len() != 1
+        || snapshot.memory[0].region_id != "code"
+        || snapshot.memory[0].guest_address != loaded.fixture.memory[0].guest_address
+        || snapshot.memory[0].bytes_hex != loaded.fixture.memory[0].initial_bytes_hex
+    {
+        return Err(format!("code mapping changed or is absent for {case_id}"));
+    }
+    if !matches!(snapshot.exception, Observation::Available { value: None }) {
+        return Err(format!("unexpected exception observation for {case_id}"));
+    }
+    Ok(())
+}
+
+fn validate_native_xorpd_file_count(actual: usize, expected: usize) -> Result<(), String> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!("expected {expected} case files, found {actual}"))
+    }
+}
+
+fn validate_native_xorpd_case_digest(
+    bytes: &[u8],
+    expected_digest: &str,
+    case_id: &str,
+) -> Result<(), String> {
+    if sha256_hex(bytes) == expected_digest {
+        Ok(())
+    } else {
+        Err(format!("case digest mismatch for {case_id}"))
+    }
+}
+
+fn command_output(program: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(program).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+fn local_revision() -> String {
+    if let Some(revision) = option_env!("OPEN_DESKTOP_GIT_REVISION") {
+        return revision.to_string();
+    }
+    let Some(revision) = command_output("git", &["rev-parse", "HEAD"]) else {
+        return "unavailable".into();
+    };
+    let dirty = command_output("git", &["status", "--porcelain", "--untracked-files=no"])
+        .is_some_and(|status| !status.is_empty());
+    if dirty {
+        format!("{revision}+dirty")
+    } else {
+        revision
+    }
+}
+
+fn local_rustc_version() -> String {
+    option_env!("RUSTC_VERSION")
+        .map(ToString::to_string)
+        .or_else(|| command_output("rustc", &["--version"]))
+        .unwrap_or_else(|| "rustc version unavailable".into())
+}
+
+fn run_native_xorpd_interpreter(
+    loaded: &od_testkit::v2::LoadedFixture,
+) -> Result<od_testkit::v2::RunResult, String> {
+    let mut memory = od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture)
+        .map_err(|error| error.to_string())?;
+    let result = execute_fixture_v2(loaded, &mut memory);
+    result
+        .validate_for(loaded)
+        .map_err(|error| format!("invalid interpreter result: {error}"))?;
+    Ok(result)
+}
+
+fn decode_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
+    if value.len() % 2 != 0 {
+        return Err("invalid odd-length XMM byte string".into());
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let pair = std::str::from_utf8(pair).map_err(|error| error.to_string())?;
+            u8::from_str_radix(pair, 16).map_err(|error| error.to_string())
+        })
+        .collect()
+}
+
+fn encode_hex_bytes(bytes: &[u8]) -> String {
+    let mut value = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(value, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    value
+}
 
 pub fn convert_fixture_v1(args: &[String]) -> ExitCode {
     if args.len() != 2 {
@@ -965,6 +1281,85 @@ fn write_json(json: &[u8]) -> io::Result<()> {
 fn invalid_input(message: &str) -> ExitCode {
     eprintln!("invalid input: {message}");
     ExitCode::from(EXIT_INVALID_INPUT)
+}
+
+#[cfg(test)]
+mod native_xorpd_corpus_tests {
+    use super::*;
+    use od_testkit::v2::{Fixture, Outcome};
+
+    fn loaded_case() -> od_testkit::v2::LoadedFixture {
+        let fixture = generate_native_xorpd_fixture(NATIVE_XORPD_FIXED_SEEDS[0], 0);
+        Fixture::from_json(&fixture.to_json().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn mandatory_unsupported_interpreter_result_fails_verification() {
+        let loaded = loaded_case();
+        let mut result = run_native_xorpd_interpreter(&loaded).unwrap();
+        result.outcome = Outcome::Unsupported {
+            reason: "synthetic unsupported outcome for verifier rejection test".into(),
+        };
+        assert!(
+            validate_native_xorpd_result(&loaded, &result)
+                .unwrap_err()
+                .contains("mandatory interpreter execution did not complete")
+        );
+    }
+
+    #[test]
+    fn wrong_mandatory_profile_fails_verification() {
+        let loaded = loaded_case();
+        let mut result = run_native_xorpd_interpreter(&loaded).unwrap();
+        result.profile = od_testkit::v2::Profile::LongXorpdRegV1;
+        assert!(
+            validate_native_xorpd_result(&loaded, &result)
+                .unwrap_err()
+                .contains("mandatory interpreter execution did not complete")
+        );
+    }
+
+    #[test]
+    fn result_mismatch_fails_independent_oracle_comparison() {
+        let loaded = loaded_case();
+        let mut result = run_native_xorpd_interpreter(&loaded).unwrap();
+        let Observation::Available { value: snapshot } = &mut result.snapshot else {
+            panic!("completed interpreter result must include a snapshot");
+        };
+        snapshot.state.sse.as_mut().unwrap().xmm[0] = "00".repeat(16);
+        assert!(
+            validate_native_xorpd_result(&loaded, &result)
+                .unwrap_err()
+                .contains("independent XOR oracle")
+        );
+    }
+
+    #[test]
+    fn missing_case_result_digest_corruption_and_mismatch_fail_closed() {
+        let loaded = loaded_case();
+        let mut result = run_native_xorpd_interpreter(&loaded).unwrap();
+        result.snapshot = Observation::Unavailable {
+            reason: "synthetic missing result snapshot".into(),
+        };
+        assert!(
+            validate_native_xorpd_result(&loaded, &result)
+                .unwrap_err()
+                .contains("interpreter result is missing")
+        );
+        assert!(
+            validate_native_xorpd_file_count(1023, 1024)
+                .unwrap_err()
+                .contains("expected 1024 case files")
+        );
+        let bytes = loaded.fixture.to_json().unwrap();
+        let digest = sha256_hex(&bytes);
+        assert!(validate_native_xorpd_case_digest(&bytes, &digest, "case").is_ok());
+        assert!(
+            validate_native_xorpd_case_digest(b"corrupt", &digest, "case")
+                .unwrap_err()
+                .contains("digest mismatch")
+        );
+    }
 }
 
 #[cfg(test)]

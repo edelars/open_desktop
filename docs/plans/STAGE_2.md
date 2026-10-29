@@ -6621,6 +6621,38 @@ documentation-only result; CPU tests и hardware checks не выполняли�
 
 **Готово:** одна документированная команда проверяет выбранный срез, выдаёт machine-readable summary и ненулевой exit при недоступной обязательной проверке. Mismatch воспроизводится и сокращается без изменения его смысла.
 
+### S2-42a. Deterministic corpus для native XORPD
+
+**Статус:** локальный generated-corpus срез реализован; физический запуск
+`not_run` до объединённого финального hardware batch. Родительская задача
+S2-42 остаётся открытой.
+
+Для существующего профиля `s2-long-native-xorpd-xmm0-xmm1-v1` добавлен
+версионированный генератор в `od-testkit`: четыре фиксированных seed по 256
+случаев, каждый со своим полным 16-регистровым XMM input. Все 1024 входных
+XMM-состояния попарно различны. `od-runner` создаёт corpus и ordered manifest
+в игнорируемом `work/stage2/s2-42a-xorpd/`; прежние `generate_fixture` и
+`--generate-corpus` не менялись. Manifest хранит версию генератора, seeds,
+диапазон sequence, профиль, SHA-256 каждого JSON fixture в порядке corpus и
+сводный digest списка.
+
+`od-runner --verify-native-xorpd-corpus` проверяет полный набор, строгую
+fixture schema, digests, отсутствие пропусков и уникальность входов. На каждый
+fixture выполняются два interpreter runs; оба должны дать одинаковый полный
+result и совпасть с независимым ожидаемым результатом, полученным байтовым
+XOR в harness. Проверяются все GPR, RIP, defined integer flags, XMM0–15,
+MXCSR, retirement, exit, отсутствие exception и неизменность code mapping.
+Неподдержанное обязательное исполнение и mismatch дают ненулевой exit.
+Обычный one-case replay доступен командой `od-runner --fixture ... --engine
+interpreter --json`. Результат приёмки сохраняется локально рядом с corpus и
+отмечает `native=not_run`.
+
+Hand-authored границы проверяют zero/ones, alternating и равные operands, а
+также сохранение остальных XMM, integer state и code bytes. Физическое/Mac
+mini исполнение не запускалось; оно остаётся частью объединённой заключительной
+проверки. S2-42 в целом остаётся открытой: reducer и прочие группы инструкций
+не входят в этот срез.
+
 ### S2-43. Диагностический interpreter и граница JIT
 
 1. Предоставить CLI single-step/trace/replay с ограниченным объёмом и архитектурным state до/после, faulting RIP и memory effects. Не превращать trace в обязательный production overhead.
