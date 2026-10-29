@@ -34,6 +34,7 @@ fn cli_rflags_comparison_includes_if_and_iopl_without_expanding_definedness() {
 #[test]
 fn iretq_cs_ss_snapshot_fields_are_opt_in_and_lossless() {
     let cpu = od_isa::LongModeState {
+        cr4: None,
         cs_selector: Some(8),
         cs_cache: Some(od_isa::CodeSegmentDescriptorCache {
             base: 0,

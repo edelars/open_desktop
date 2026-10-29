@@ -415,6 +415,7 @@ fn registers(pid: libc::pid_t) -> Result<libc::user_regs_struct, String> {
 
 fn state(regs: &libc::user_regs_struct) -> LongModeState {
     LongModeState {
+        cr4: None,
         cr0: None,
         gpr: [
             regs.rax, regs.rcx, regs.rdx, regs.rbx, regs.rsp, regs.rbp, regs.rsi, regs.rdi,
@@ -6719,6 +6720,22 @@ mod tests {
             .join("../../tests/fixtures/x86/stage2/s2_25a_full_emts_0.case.json");
         let loaded = Fixture::from_json(&std::fs::read(path).unwrap()).unwrap();
         assert_eq!(loaded.fixture.profile, v2::Profile::LongCr0FpInitV1);
+        assert!(crate::native_fp::native_profile_local_only(
+            loaded.fixture.profile
+        ));
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { ref reason }
+                if reason == "this profile is local-only; native state does not observe every profile field"
+        ));
+    }
+
+    #[test]
+    fn cr4_fp_init_fixture_is_rejected_before_native_trace() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/x86/stage2/s2_25b_fninit_cr4_xorpd_composition.case.json");
+        let loaded = Fixture::from_json(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(loaded.fixture.profile, v2::Profile::LongCr4FpInitV1);
         assert!(crate::native_fp::native_profile_local_only(
             loaded.fixture.profile
         ));

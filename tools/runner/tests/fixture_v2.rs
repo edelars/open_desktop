@@ -1577,6 +1577,21 @@ const CR0_FP_INIT_FIXTURES: [&[u8]; 32] = [
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_25a_write_fninit_emts_3.case.json"),
 ];
 
+const CR4_FP_INIT_FIXTURES: [&[u8]; 6] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25b_xorpd_em_ts_osfxsr_ud.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25b_xorpd_osfxsr_ts_ud.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_25b_xorpd_ts_nm_preserves_osxmmexcpt.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_25b_xorpd_success_osxmmexcpt_clear.case.json"
+    ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_25b_xorpd_osxmmexcpt_only_ud.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_25b_fninit_cr4_xorpd_composition.case.json"
+    ),
+];
+
 trait ResetFpInitSnapshot {
     fn reset_for_fp_init(&mut self);
 }
@@ -1721,6 +1736,49 @@ fn cr0_fp_init_result_validation_rejects_tampered_control_x87_and_definedness() 
     }
     assert!(changed_definedness.validate_for(&loaded).is_err());
     assert!(od_testkit::v2::compare(&loaded, &changed_definedness, &changed_definedness).is_err());
+}
+
+#[test]
+fn cr4_fp_init_fixtures_use_mutable_controls_and_reject_tampering() {
+    use od_testkit::v2::Profile;
+
+    assert_eq!(CR4_FP_INIT_FIXTURES.len(), 6);
+    for bytes in CR4_FP_INIT_FIXTURES {
+        let (loaded, result) = run(bytes, "interpreter", 0);
+        assert_eq!(loaded.fixture.profile, Profile::LongCr4FpInitV1);
+        result
+            .validate_for(&loaded)
+            .unwrap_or_else(|error| panic!("{}: {error:?}", loaded.fixture.case_id));
+        let (_, jit) = run(bytes, "jit", 4);
+        assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(jit.snapshot, Observation::Unavailable { .. }));
+
+        let mut changed_cr4 = result.clone();
+        if let Observation::Available { value } = &mut changed_cr4.snapshot {
+            let current = value.state.cr4.unwrap().get();
+            value.state.cr4 = Some(HexU64(current ^ (1 << 10)));
+        }
+        assert!(changed_cr4.validate_for(&loaded).is_err());
+        assert!(od_testkit::v2::compare(&loaded, &changed_cr4, &result).is_err());
+    }
+    let mut invalid = od_testkit::v2::Fixture::from_json(CR4_FP_INIT_FIXTURES[0])
+        .unwrap()
+        .fixture;
+    invalid.initial_state.cr4 = Some(HexU64(od_isa::execute::Cr4Profile::BASE | (1 << 11)));
+    assert!(invalid.validate().is_err());
+
+    let mut missing_cpl = od_testkit::v2::Fixture::from_json(CR4_FP_INIT_FIXTURES[0])
+        .unwrap()
+        .fixture;
+    missing_cpl.cli_cpl = None;
+    assert!(missing_cpl.validate().is_err());
+
+    let mut invalid_composition = od_testkit::v2::Fixture::from_json(CR4_FP_INIT_FIXTURES[5])
+        .unwrap()
+        .fixture;
+    invalid_composition.initial_state.cr0 =
+        Some(HexU64(od_isa::execute::Cr0Profile::BASE | (1 << 3)));
+    assert!(invalid_composition.validate().is_err());
 }
 
 #[test]

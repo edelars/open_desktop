@@ -77,7 +77,7 @@ pub fn deliver_maskable_interrupt(
     context: AccessContext,
     rflags_defined: u64,
 ) -> InterruptDeliveryResult {
-    if state.cr0.is_some() {
+    if state.cr0.is_some() || state.cr4.is_some() {
         return outside(InterruptOutsideProfile::UnsupportedCr0State);
     }
     if state.sti_shadow == Some(crate::StiShadow::Blocking) {
@@ -413,6 +413,7 @@ mod tests {
 
     fn ready_state(rsp: u64) -> LongModeState {
         LongModeState {
+            cr4: None,
             sti_shadow: None,
             gpr: {
                 let mut gpr = [0; 16];

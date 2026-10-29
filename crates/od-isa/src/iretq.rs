@@ -68,7 +68,7 @@ pub fn run_with_iretq_profile(
         instructions_executed: retired,
         rflags_defined,
     };
-    if state.cr0.is_some() {
+    if state.cr0.is_some() || state.cr4.is_some() {
         return finish(IretqRunExit::Unsupported, 0);
     }
     if config.stop_rip == Some(state.rip) {
@@ -114,6 +114,7 @@ pub fn step_with_iretq_profile(
     _profile: IretqProfile,
 ) -> IretqResult {
     if state.cr0.is_some()
+        || state.cr4.is_some()
         || context.mode != crate::memory::InstructionMode::Long64
         || context.privilege != PrivilegeLevel::Ring0
         || state.activity != Some(CpuActivity::Running)
@@ -319,6 +320,7 @@ mod tests {
     #[test]
     fn cr0_state_rejects_run_and_step_before_stop_or_memory_access() {
         let mut cpu = LongModeState {
+            cr4: None,
             cr0: Some(crate::execute::Cr0Profile::BASE),
             ..LongModeState::default()
         };
@@ -499,6 +501,7 @@ mod tests {
 
     fn state() -> LongModeState {
         LongModeState {
+            cr4: None,
             rip: CODE,
             rflags: 2 | IF,
             gdtr: Some(Gdtr {
@@ -821,6 +824,7 @@ mod tests {
                 memory.configure_gate(14, CODE + 0x20);
                 let old_rsp = 0xf00 + offset;
                 let mut cpu = LongModeState {
+                    cr4: None,
                     rip: CODE,
                     rflags: 2 | (iopl << 12),
                     gdtr: Some(Gdtr {

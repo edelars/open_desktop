@@ -6015,3 +6015,16 @@ RIP. Results compare CR0, integer state, x87, SSE, activity, and STI shadow.
 The fixture source is handwritten and synthetic; it is not an Ubuntu byte or
 runtime claim. JIT/native/C/fragment execution remains denied. See the [CPU
 contract](../../../../docs/specs/CPU_CONTRACT.md#s2-25a--bounded-long64-cr0-emts-fp-initialization).
+
+## S2-25b bounded mutable CR4 OSFXSR/OSXMMEXCPT FP-init profile
+
+Six `s2_25b_*.case.json` fixtures use `s2-long-cr4-fp-init-v1`. They cover the
+four fixed CR4 PAE-base values (only OSFXSR/OSXMMEXCPT vary), EM and OSFXSR
+`#UD`, `#UD` priority over TS, TS `#NM`, a successful XORPD with OSXMMEXCPT
+clear, and the exact 18-byte `FNINIT; MOV RAX,CR4; OR RAX,0x600; MOV CR4,RAX;
+XORPD` composition, whose initial CR0 is constrained to the profile base so
+FNINIT succeeds. The current mutable CR0/CR4 values are the only sources for
+dynamic gates; the fixtures do not carry duplicate immutable prerequisites.
+Testkit checks exact bytes, state, budget, stop, results and tampering. These
+are local synthetic fixtures; JIT/native/C/fragment and physical execution
+remain denied/not run. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-25b--mutable-cr4-osfxsrosxmmexcpt-in-bounded-fp-initialization).

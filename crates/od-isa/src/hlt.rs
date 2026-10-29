@@ -97,6 +97,7 @@ mod tests {
 
     fn state() -> LongModeState {
         LongModeState {
+            cr4: None,
             rip: RIP,
             rflags: 0x2 | (1 << 9) | (1 << 10) | (1 << 0),
             sti_shadow: Some(StiShadow::Clear),
@@ -302,6 +303,7 @@ mod tests {
         assert_eq!(cpu, state());
 
         let mut legacy = LongModeState {
+            cr4: None,
             rip: RIP,
             ..LongModeState::default()
         };

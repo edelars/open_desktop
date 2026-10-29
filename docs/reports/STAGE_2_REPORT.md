@@ -16842,3 +16842,40 @@ historical oracle manifests under `work/stage1-oracle/` and `work/stage2-oracle/
 No Linux runtime, Ubuntu instruction-byte/runtime, hardware, SMP, MMU, native
 execution, SSH, or physical result is claimed. Intel SDM Rev. 093 sources and
 scope limits are recorded in the [CPU contract](../specs/CPU_CONTRACT.md#s2-25a--bounded-long64-cr0-emts-fp-initialization).
+
+## S2-25b — mutable bounded CR4 OSFXSR/OSXMMEXCPT FP initialization
+
+Added `Cr4Profile::FpInitLong64V1` and optional mutable CR4 state. The profile
+accepts only the fixed PAE base plus the four OSFXSR/OSXMMEXCPT combinations;
+current CR0 and CR4 values feed FNINIT/XORPD gates. Exact CR4 reads/writes
+require CPL0, writes outside the profile domain refuse without commit, and the
+exact FNINIT/read-OR-write/XORPD sequence sets bits 9/10 while preserving the
+rest of CR4. XORPD reports #UD for EM or clear OSFXSR before TS #NM. SSE2 is
+assumed; OSXMMEXCPT is preserved, with no #XM model. Legacy optional `None`
+behavior remains; optional CR4 is rejected by unprofiled CPU, event and return
+paths before fetch. JIT/native/C/fragment and physical paths remain closed.
+
+Six strict local schema-v2 fixtures exercise all four CR4 values, the EM and
+OSFXSR #UD gates, #UD priority over TS, TS #NM, success with OSXMMEXCPT clear,
+and the exact 18-byte composition. Testkit verifies current-state gates,
+retirement, full x87/SSE output, CR0/CR4 values and rejects tampered output;
+runner and native deny-list coverage retain local-only admission.
+
+Verification: `cargo test -p od-isa cr4_fp_init --offline` passed (1 focused
+CR4 access/privilege test); `cargo test -p od-runner --test fixture_v2
+cr4_fp_init --offline` passed (six interpreter fixtures, JIT denial, strict
+schema admission including missing-`cli_cpl` and composition-CR0 rejection,
+and result/comparator tamper rejection). `cargo test -p od-isa
+fragment_adapter_rejects_cr4_state_instead_of_dropping_it --offline` passed;
+the fragment adapter rejects optional CR4 instead of discarding it.
+`cargo check --workspace
+--all-targets --offline`, Linux x86_64
+`cargo check -p od-x86-runner --all-targets --target
+x86_64-unknown-linux-gnu --offline`, and `cargo fmt --all -- --check` passed.
+The Linux-only native denial test was compile-checked, not executed. Graphify
+code update passed. `python3 tools/check_layout.py` remains blocked by the
+existing unmapped `.git` root entry and two missing historical oracle manifest
+targets linked from this report. No Linux runtime, Ubuntu bytes/runtime,
+hardware, SSH or physical execution is claimed. Normative semantics: Intel SDM
+Rev. 093 Vol. 2B MOV CR/XORPD, Vol. 2A FNINIT, and Vol. 3A §5.10.4.1/Table
+16-1 ([official Intel SDM index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)).

@@ -96,6 +96,7 @@ mod tests {
 
     fn initial_state(iopl: u8, if_enabled: bool) -> LongModeState {
         LongModeState {
+            cr4: None,
             rflags: 2 | (u64::from(iopl) << 12) | (u64::from(if_enabled) << 9),
             sti_shadow: Some(StiShadow::Clear),
             ..LongModeState::default()

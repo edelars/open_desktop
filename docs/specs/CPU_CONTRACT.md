@@ -11798,3 +11798,44 @@ admission are unchanged.
 
 Sources: Intel SDM Rev. 093 Vol. 2B, MOV to/from control registers, pp. 4-32–4-34;
 Vol. 2A, FNINIT, pp. 3-345–3-346; Vol. 3A §5.10.4.1.
+
+## S2-25b — mutable CR4 OSFXSR/OSXMMEXCPT in bounded FP initialization
+
+`Cr4Profile::FpInitLong64V1` adds optional mutable `LongModeState::cr4` only
+for this profile. The admitted domain is four values: CR4.PAE (bit 5) fixed to
+one, with only OSFXSR (bit 9) and OSXMMEXCPT (bit 10) varying. The associated
+CR0 input remains the S2-25a fixed base with only EM/TS varying. These are
+bounded profile values, not a general control-register model. Legacy `None`
+state is unchanged; legacy step/run, event, REP and return paths fail closed
+before fetch when CR4 is present.
+
+The strict fixture profile admits either bare `66 0F 57 C1` (XORPD XMM0,XMM1)
+or the exact `DB E3 0F 20 E0 48 0D 00 06 00 00 0F 22 E0 66 0F 57 C1`
+composition (FNINIT; MOV RAX,CR4; OR RAX,0x600; MOV CR4,RAX; XORPD). CR reads
+and writes require CPL0 and full fetch; non-CPL0 accesses raise #GP(0). LOCK-
+prefixed CR4 moves raise #UD after full fetch, before privilege checks. CR4
+writes outside the four-value domain return local `Unsupported` without
+commit. The OR operation preserves preexisting CR4 bits while setting OSFXSR
+and OSXMMEXCPT. The successful composition fixture requires initial CR0 to
+equal the profile base (EM=TS=0), so FNINIT retires before CR4 is updated.
+
+FNINIT and XORPD gates use the current mutable `state.cr0` and `state.cr4`.
+FNINIT reports #NM for current CR0.EM or CR0.TS before x87 mutation. After
+complete XORPD fetch, CR0.EM or clear CR4.OSFXSR reports #UD before CR0.TS
+reports #NM; otherwise the existing bytewise XORPD operation runs. SSE2 is an
+explicit fixed assumption. OSXMMEXCPT is retained and compared as state; this
+non-arithmetic XORPD slice does not model #XM delivery. The profile does not
+add CPUID behavior, CR3/paging/TLB state, native/JIT/C/fragment execution or
+physical execution.
+
+Six local handwritten schema-v2 fixtures cover all four CR4 domain values,
+both #UD prerequisites, #UD-before-#NM priority, #NM, successful XORPD with
+OSXMMEXCPT clear, and the exact FNINIT/CR4-update/XORPD composition. Testkit
+validates the exact bytes, state domain, budget, stop, output CR0/CR4, XMM and
+x87 state; result tampering is rejected by the profile validator and
+comparator.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2B, MOV to/from control registers,
+pp. 4-32–4-34 and XORPD; Vol. 2A, FNINIT, pp. 3-345–3-346; Vol. 3A
+§5.10.4.1 and Table 16-1 for the SSE2 `#UD/#NM` priority. [Official Intel SDM
+index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).

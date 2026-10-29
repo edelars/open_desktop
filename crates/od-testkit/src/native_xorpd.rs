@@ -608,6 +608,7 @@ pub fn generate_native_xorpd_fixture(seed: u64, sequence: u32) -> Fixture {
             rip: HexU64(rip),
             rflags: HexU64(2),
             cr0: None,
+            cr4: None,
             fs_base: None,
             gs_base: None,
             kernel_gs_base: None,

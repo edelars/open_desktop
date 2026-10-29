@@ -12088,3 +12088,23 @@ write admission, x87 reset and full unrelated-state preservation. Add strict
 fixture admission and 32 handwritten cases. JIT/native/C/fragment remain closed;
 this is local evidence only and does not claim Ubuntu bytes/runtime, hardware,
 SMP, MMU, or general CR0 transition semantics.
+
+#### S2-25b — mutable bounded CR4 OSFXSR/OSXMMEXCPT FP initialization
+
+**Статус:** локальный interpreter-срез реализован и проверен; физическое
+исполнение `not_run`.
+
+`Cr4Profile::FpInitLong64V1` admits four CR4 values: fixed PAE=1 and only
+OSFXSR/OSXMMEXCPT varying. `LongModeState::cr4=None` preserves legacy state;
+unprofiled entry points fail closed on `Some(cr4)`. The exact composition is
+FNINIT, MOV RAX,CR4, OR RAX,0x600, MOV CR4,RAX, XORPD XMM0,XMM1. CR0 and CR4
+gates use current state. CR accesses require CPL0; locked CR4 moves raise #UD
+after full fetch; the successful composition fixture requires initial CR0 base
+(EM=TS=0); FNINIT uses current CR0.EM/TS; XORPD checks EM/OSFXSR for #UD
+before TS for #NM. SSE2 is assumed and OSXMMEXCPT is preserved without #XM
+modeling. Strict schema, six fixture cases, output/comparator tamper checks and
+interpreter/JIT/native-denial paths are recorded in the [CPU contract](../specs/CPU_CONTRACT.md#s2-25b--mutable-cr4-osfxsrosxmmexcpt-in-bounded-fp-initialization)
+and [report](../reports/STAGE_2_REPORT.md#s2-25b--mutable-bounded-cr4-osfxsrosxmmexcpt-fp-initialization). No
+CPUID, paging/TLB/CR3, JIT/native/C/fragment admission or physical result is
+claimed. Normative source: Intel SDM Rev. 093 Vol. 2B MOV CR/XORPD, Vol. 2A
+FNINIT and Vol. 3A §5.10.4.1/Table 16-1 ([official SDM index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)).

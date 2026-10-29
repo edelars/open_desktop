@@ -990,6 +990,10 @@ pub enum Operation {
     ReadCr0,
     /// Exact `0F 22 C0` MOV CR0, RAX for the bounded S2-25a profile.
     WriteCr0,
+    /// Exact `0F 20 E0` MOV RAX, CR4 for the bounded S2-25b profile.
+    ReadCr4,
+    /// Exact `0F 22 E0` MOV CR4, RAX for the bounded S2-25b profile.
+    WriteCr4,
     /// Bare `DB E2` FNCLEX in the local profile with an existing x87 state.
     Fnclex,
     /// Bare `DF E0` FNSTSW AX in the local profile with an existing x87 state.
@@ -1832,7 +1836,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && prefixes.rex.is_none()
             {
                 let modrm = self.byte()?;
-                if modrm == 0xc0 {
+                if matches!(modrm, 0xc0 | 0xe0) {
                     return Err(DecodeError::Invalid {
                         opcode,
                         length: self.length,
@@ -1844,7 +1848,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 return Err(self.unsupported(opcode));
             }
             let modrm = self.byte()?;
-            if modrm != 0xc0 {
+            if !matches!(modrm, 0xc0 | 0xe0) {
                 return Err(self.unsupported(opcode));
             }
             return Ok(Instruction {
@@ -1853,10 +1857,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 prefixes,
                 operand_size: OperandSize::Qword,
                 address_size: OperandSize::Qword,
-                operation: if opcode.byte == 0x20 {
-                    Operation::ReadCr0
-                } else {
-                    Operation::WriteCr0
+                operation: match (opcode.byte, modrm) {
+                    (0x20, 0xc0) => Operation::ReadCr0,
+                    (0x22, 0xc0) => Operation::WriteCr0,
+                    (0x20, 0xe0) => Operation::ReadCr4,
+                    (0x22, 0xe0) => Operation::WriteCr4,
+                    _ => unreachable!("control-register opcode was validated"),
                 },
             });
         }
@@ -17229,6 +17235,7 @@ mod tests {
             let mut memory = Memory::new(&bytes);
             assert!(memory.decode().is_ok());
             let mut state = crate::LongModeState {
+                cr4: None,
                 cr0: None,
                 sti_shadow: None,
                 rip: memory.base,
@@ -17270,6 +17277,7 @@ mod tests {
         }
         let mut memory = Memory::new(&[0x0f, 0x0b]);
         let mut state = crate::LongModeState {
+            cr4: None,
             sti_shadow: None,
             rip: memory.base,
             ..crate::LongModeState::default()
@@ -17485,6 +17493,7 @@ mod tests {
     #[test]
     fn canonical48_checks_select_ss_only_for_rsp_rbp_bases() {
         let mut state = LongModeState {
+            cr4: None,
             sti_shadow: None,
             gpr: [0x8000_0000_0000; 16],
             ..LongModeState::default()
