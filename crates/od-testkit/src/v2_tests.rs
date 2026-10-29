@@ -7391,3 +7391,57 @@ fn psubd_profile_admits_only_its_exact_register_encoding() {
     missing_sse.initial_state.sse = None;
     assert!(missing_sse.validate().is_err());
 }
+
+#[test]
+fn native_xorpd_profile_requires_sse_only_exact_input_state() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_40b_xorpd_xmm0_xmm1_asymmetric_a.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongNativeXorpdXmm0Xmm1V1);
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "660f57c1");
+    assert!(fixture.initial_state.x87.is_none());
+    assert_eq!(
+        fixture.initial_state.sse.as_ref().unwrap().mxcsr.get(),
+        0x1f80
+    );
+
+    let mut missing_sse = fixture.clone();
+    missing_sse.initial_state.sse = None;
+    assert!(missing_sse.validate().is_err());
+
+    let json = String::from_utf8(fixture.to_json().unwrap()).unwrap();
+    let with_null_x87 = json.replace("\"sse\": {", "\"x87\": null, \"sse\": {");
+    assert_ne!(with_null_x87, json);
+    assert!(Fixture::from_json(with_null_x87.as_bytes()).is_err());
+
+    let mut with_x87 = fixture.clone();
+    with_x87.initial_state.x87 = Some(
+        Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_34_17_xorpd_register.case.json"
+        ))
+        .unwrap()
+        .fixture
+        .initial_state
+        .x87
+        .unwrap(),
+    );
+    assert!(with_x87.validate().is_err());
+
+    let mut wrong_mxcsr = fixture.clone();
+    wrong_mxcsr.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f40);
+    assert!(wrong_mxcsr.validate().is_err());
+
+    for bytes in ["0f57c1", "f2660f57c1", "660f57c0", "660f57c2", "660f57c1c0"] {
+        let mut wrong = fixture.clone();
+        let code = &mut wrong.memory[0];
+        code.initial_bytes_hex = bytes.into();
+        code.length = (bytes.len() / 2) as u32;
+        code.comparison_mask_hex = "ff".repeat(bytes.len() / 2);
+        wrong.stop_rip = Some(HexU64(
+            wrong.initial_state.rip.get() + (bytes.len() / 2) as u64,
+        ));
+        assert!(wrong.validate().is_err(), "{bytes}");
+    }
+}

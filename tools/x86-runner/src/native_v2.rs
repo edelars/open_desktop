@@ -460,7 +460,10 @@ fn set_state(pid: libc::pid_t, input: &LongModeState) -> Result<(), String> {
         pid,
         (&mut regs as *mut libc::user_regs_struct).cast(),
     )?;
-    if state(&registers(pid)?) != *input {
+    let mut expected_integer = input.clone();
+    expected_integer.x87 = None;
+    expected_integer.sse = None;
+    if state(&registers(pid)?) != expected_integer {
         return Err("full initial GPR/RSP/RIP/flags readback differs".into());
     }
     Ok(())
@@ -503,7 +506,14 @@ fn capture(
     exception_known: bool,
     rflags_defined: u64,
 ) -> Result<Snapshot, String> {
-    let observed = state(&registers(pid)?);
+    let mut observed = state(&registers(pid)?);
+    if fixture.profile == v2::Profile::LongNativeXorpdXmm0Xmm1V1 {
+        let image = crate::native_fp::read_image(pid)?;
+        observed.sse = Some(od_isa::state::SseState {
+            xmm: image.xmm,
+            mxcsr: image.mxcsr,
+        });
+    }
     let memory = fixture
         .memory
         .iter()
@@ -516,7 +526,7 @@ fn capture(
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(Snapshot {
-        state: v2::IntegerState::try_from(&observed)
+        state: v2::IntegerState::from_cpu_for(&observed, fixture.profile)
             .map_err(|error| format!("cannot export native CPU state snapshot: {error}"))?,
         rflags_defined: HexU64(rflags_defined),
         memory,
@@ -566,6 +576,20 @@ fn admission_with_tracee_memory(
 ) -> Result<FlagEffects, String> {
     let instruction = long_decode::decode(decoder, actual.rip, AccessContext::default())
         .map_err(|e| format!("native instruction outside admitted decode slice: {e:?}"))?;
+    if fixture.profile == v2::Profile::LongNativeXorpdXmm0Xmm1V1 {
+        let exact = instruction.length == 4
+            && instruction.operation
+                == (Operation::XorpdRegister {
+                    destination: 0,
+                    source: 1,
+                })
+            && fixture.initial_state.rip.get() == actual.rip
+            && admits_range(fixture, actual.rip, 4, AccessKind::Fetch);
+        if exact {
+            return Ok(FlagEffects::default());
+        }
+        return Err("native XORPD admission requires exact 66 0F 57 C1 at entry".into());
+    }
     if matches!(
         instruction.operation,
         Operation::RepScas { .. } | Operation::RepCmps { .. }
@@ -1298,6 +1322,19 @@ fn trace(loaded: &LoadedFixture, plan: &MappingPlan) -> Result<RunResult, String
         libc::PTRACE_O_EXITKILL as usize as *mut libc::c_void,
     )?;
     set_state(pid, &input)?;
+    if fixture.profile == v2::Profile::LongNativeXorpdXmm0Xmm1V1 {
+        let sse = input
+            .sse
+            .as_ref()
+            .ok_or("native XORPD profile lacks SSE input state")?;
+        crate::native_fp::install_and_verify(
+            pid,
+            &crate::native_fp::SseImage {
+                xmm: sse.xmm,
+                mxcsr: sse.mxcsr,
+            },
+        )?;
+    }
     let mut rflags_defined = od_isa::INTEGER_FLAGS;
     let initial = capture(pid, fixture, true, rflags_defined)?;
     if initial
@@ -1396,111 +1433,7 @@ fn trace(loaded: &LoadedFixture, plan: &MappingPlan) -> Result<RunResult, String
 }
 
 fn execute(loaded: &LoadedFixture) -> RunResult {
-    if matches!(
-        loaded.fixture.profile,
-        v2::Profile::LongFsBaseV1
-            | v2::Profile::LongGsBaseV1
-            | v2::Profile::LongFsSelectorV1
-            | v2::Profile::LongGsSelectorV1
-            | v2::Profile::LongVerwGdtV1
-            | v2::Profile::LongFsLoadV1
-            | v2::Profile::LongGsLoadV1
-            | v2::Profile::LongNullDsEsV1
-            | v2::Profile::LongX87StateV1
-            | v2::Profile::LongX87SseStateV1
-            | v2::Profile::LongX87SelectorsStateV1
-            | v2::Profile::LongFxsaveRipV1
-            | v2::Profile::LongFxsave64RaxV1
-            | v2::Profile::LongFxrstor64RbxV1
-            | v2::Profile::LongMovupsRegV1
-            | v2::Profile::LongMovapsRegV1
-            | v2::Profile::LongMovapsReverseRegV1
-            | v2::Profile::LongMovapdRegV1
-            | v2::Profile::LongMovapdReverseRegV1
-            | v2::Profile::LongMovupdRegV1
-            | v2::Profile::LongMovupdReverseRegV1
-            | v2::Profile::LongXorpsRegV1
-            | v2::Profile::LongXorpdRegV1
-            | v2::Profile::LongAndpdRegV1
-            | v2::Profile::LongOrpdRegV1
-            | v2::Profile::LongAndnpdRegV1
-            | v2::Profile::LongPxorRegV1
-            | v2::Profile::LongPandRegV1
-            | v2::Profile::LongPandnRegV1
-            | v2::Profile::LongPorRegV1
-            | v2::Profile::LongPaddbRegV1
-            | v2::Profile::LongPaddwRegV1
-            | v2::Profile::LongPsubwRegV1
-            | v2::Profile::LongPadduswRegV1
-            | v2::Profile::LongPsubuswRegV1
-            | v2::Profile::LongPsubbRegV1
-            | v2::Profile::LongPaddusbRegV1
-            | v2::Profile::LongPaddsbRegV1
-            | v2::Profile::LongPsubsbRegV1
-            | v2::Profile::LongPaddswRegV1
-            | v2::Profile::LongPsubswRegV1
-            | v2::Profile::LongPadddRegV1
-            | v2::Profile::LongPsubdRegV1
-            | v2::Profile::LongPaddqRegV1
-            | v2::Profile::LongPsubqRegV1
-            | v2::Profile::LongPcmpeqbRegV1
-            | v2::Profile::LongPcmpeqwRegV1
-            | v2::Profile::LongPcmpeqdRegV1
-            | v2::Profile::LongPcmpgtbRegV1
-            | v2::Profile::LongPcmpgtwRegV1
-            | v2::Profile::LongPcmpgtdRegV1
-            | v2::Profile::LongPunpcklbwRegV1
-            | v2::Profile::LongPunpckhbwRegV1
-            | v2::Profile::LongPunpcklwdRegV1
-            | v2::Profile::LongPunpckhwdRegV1
-            | v2::Profile::LongPunpckldqRegV1
-            | v2::Profile::LongPunpckhdqRegV1
-            | v2::Profile::LongPunpcklqdqRegV1
-            | v2::Profile::LongPunpckhqdqRegV1
-            | v2::Profile::LongPacksswbRegV1
-            | v2::Profile::LongPackuswbRegV1
-            | v2::Profile::LongPackssdwRegV1
-            | v2::Profile::LongPsllwImmRegV1
-            | v2::Profile::LongPslldImmRegV1
-            | v2::Profile::LongPsllqImmRegV1
-            | v2::Profile::LongPslldqImmRegV1
-            | v2::Profile::LongPsrldqImmRegV1
-            | v2::Profile::LongPsrlqImmRegV1
-            | v2::Profile::LongPsrldImmRegV1
-            | v2::Profile::LongPsrlwImmRegV1
-            | v2::Profile::LongPsrawImmRegV1
-            | v2::Profile::LongPsradImmRegV1
-            | v2::Profile::LongPsubusbRegV1
-            | v2::Profile::LongAndpsRegV1
-            | v2::Profile::LongOrpsRegV1
-            | v2::Profile::LongAndnpsRegV1
-            | v2::Profile::LongRsqrtssRegV1
-            | v2::Profile::LongRsqrtpsRegV1
-            | v2::Profile::LongRcppsRegV1
-            | v2::Profile::LongMinssMaskedRegV1
-            | v2::Profile::LongMinsdMaskedRegV1
-            | v2::Profile::LongMaxsdMaskedRegV1
-            | v2::Profile::LongMinpdMaskedRegV1
-            | v2::Profile::LongMaxpdMaskedRegV1
-            | v2::Profile::LongMaxssMaskedRegV1
-            | v2::Profile::LongMinpsMaskedRegV1
-            | v2::Profile::LongMaxpsMaskedRegV1
-            | v2::Profile::LongRcpssRegV1
-            | v2::Profile::LongMovssRegV1
-            | v2::Profile::LongMovsdRegV1
-            | v2::Profile::LongMovsdMemLoadV1
-            | v2::Profile::LongMovsdMemStoreV1
-            | v2::Profile::LongMovssStoreRegV1
-            | v2::Profile::LongMovssMemLoadV1
-            | v2::Profile::LongMovssMemStoreV1
-            | v2::Profile::LongMovupsMemLoadV1
-            | v2::Profile::LongMovupdMemLoadV1
-            | v2::Profile::LongMovupdMemStoreV1
-            | v2::Profile::LongMovupsMemStoreV1
-            | v2::Profile::LongMovupsMemBaseV1
-            | v2::Profile::LongMovupdMemBaseV1
-            | v2::Profile::LongMovupdMemRipV1
-    ) {
+    if crate::native_fp::native_profile_local_only(loaded.fixture.profile) {
         return empty_result(
             loaded,
             Outcome::Unsupported {
@@ -6610,6 +6543,56 @@ mod tests {
         let result = execute(&loaded);
         assert!(matches!(result.outcome, Outcome::Unsupported { ref reason }
             if reason == "this profile is local-only; native state does not observe every profile field"));
+    }
+
+    #[test]
+    fn native_xorpd_admission_is_exact_and_has_no_integer_flag_effects() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_40b_xorpd_xmm0_xmm1_asymmetric_a.case.json"
+        ))
+        .unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert_eq!(
+            admission(&loaded.fixture, &mut decoder, &actual).unwrap(),
+            FlagEffects::default()
+        );
+
+        for bytes in ["660f57c0", "660f57c2", "660f57d1", "660f56c1"] {
+            let mut wrong = loaded.fixture.clone();
+            wrong.memory[0].initial_bytes_hex = bytes.into();
+            let mut decoder = FlatMemory::from_fixture(&wrong).unwrap();
+            assert!(admission(&wrong, &mut decoder, &actual).is_err(), "{bytes}");
+        }
+    }
+
+    #[test]
+    fn native_xorpd_is_the_only_new_sse_profile_admitted() {
+        let native = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_40b_xorpd_xmm0_xmm1_asymmetric_a.case.json"
+        ))
+        .unwrap();
+        assert!(!crate::native_fp::native_profile_local_only(
+            native.fixture.profile
+        ));
+
+        for path in [
+            "../../../tests/fixtures/x86/stage2/s2_34_17_xorpd_register.case.json",
+            "../../../tests/fixtures/x86/stage2/s2_34_1_x87_sse_raw_state_snapshot.case.json",
+        ] {
+            let bytes = match path {
+                "../../../tests/fixtures/x86/stage2/s2_34_17_xorpd_register.case.json" => include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_17_xorpd_register.case.json").as_slice(),
+                _ => include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_1_x87_sse_raw_state_snapshot.case.json").as_slice(),
+            };
+            let old = Fixture::from_json(bytes).unwrap();
+            assert!(crate::native_fp::native_profile_local_only(
+                old.fixture.profile
+            ));
+        }
     }
 
     #[cfg(target_os = "linux")]

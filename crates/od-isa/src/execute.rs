@@ -1681,7 +1681,6 @@ fn step_tracked_with_profiles(
         | Operation::MovupdRegister { .. }
         | Operation::MovupdReverseRegister { .. }
         | Operation::XorpsRegister { .. }
-        | Operation::XorpdRegister { .. }
         | Operation::PxorRegister { .. }
         | Operation::PaddbRegister { .. }
         | Operation::PaddwRegister { .. }
@@ -1771,6 +1770,11 @@ fn step_tracked_with_profiles(
         | Operation::MovssLoadMemory { .. }
         | Operation::MovssStoreMemory { .. }
         | Operation::MovupsStoreMemory { .. } => state.x87.is_some() && state.sse.is_some(),
+        Operation::XorpdRegister {
+            destination: 0,
+            source: 1,
+        } if state.x87.is_none() => state.sse.is_some(),
+        Operation::XorpdRegister { .. } => state.x87.is_some() && state.sse.is_some(),
         Operation::Mfence => {
             instruction.opcode.map == OpcodeMap::Escape0f
                 && instruction.opcode.byte == 0xae

@@ -859,3 +859,16 @@ MXCSR. Image memory is read-only in the fixture. Interpreter execution is
 allowed; JIT/native are denied. See the [fixture note](../../tests/fixtures/x86/stage2/README.md#s2-39e-long64-fxrstor64-rbx0x40),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-39e--exact-long64-fxrstor64-rbx0x40),
 and [plan](../plans/STAGE_2.md#s2-39e-exact-long64-fxrstor64-rbx0x40).
+
+## S2-40b native SSE-only XORPD profile
+
+The `s2-long-native-xorpd-xmm0-xmm1-v1` schema-v2 profile requires a complete
+`state.sse` object for XMM0–XMM15 and exact MXCSR `0x1f80`, with no `state.x87`
+member. It admits only the four code bytes `66 0F 57 C1`, one instruction,
+`stop_rip = initial_state.rip + 4`, `instruction_budget = 1`, and
+`expected_exit = stop_address`. The code mapping is the only fixture mapping.
+`rflags_mask` selects the defined integer flags to check. Fixture expected
+XMM0 bytes are literal test expectations written independently from the
+interpreter; native/interpreter comparison adds a second oracle check. See the
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-40b-native-xorpd-xmm0-xmm1)
+and [CPU contract](../specs/CPU_CONTRACT.md#s2-40b--bounded-sse-only-native-xorpd-oracle).

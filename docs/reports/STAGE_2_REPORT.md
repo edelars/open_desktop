@@ -16067,11 +16067,50 @@ category, and an owning task/stage. CPU-only fixtures, Linux user-mode physical
 oracle, privileged/system validation, and Stage 4 machine integration are
 separated. All deferred Mac mini hardware checks appear once as `not_run` in the
 Linux profile report and remain batched into one final hardware substage.
-S2-41 is not ready for acceptance without a real machine backend. The next
-programming slice needs a separate architecture contract for an SSE-capable
-native oracle, including target MXCSR mask, FXSAVE pointer layout, and selector
-differences; enabling current x87/SIMD fixtures alone is insufficient.
+S2-41 is not ready for acceptance without a real machine backend. The bounded
+SSE-only user-mode oracle contract is now documented separately in S2-40b; it
+does not settle guest FXSAVE target mask/layout or selector differences, and
+existing x87/SIMD fixtures are not thereby enabled for native comparison.
 
 The documentation and its Markdown links are the only checks for this slice;
 CPU tests, physical checks, and guest boot were not run. S2-26, S2-39, S2-40,
 S2-41, and S2-42 remain open.
+
+## S2-40b — bounded SSE-only native XORPD oracle
+
+Implemented `s2-long-native-xorpd-xmm0-xmm1-v1` as an exact one-instruction
+profile for `66 0F 57 C1` (`XORPD XMM0,XMM1`). The strict schema requires
+XMM0–XMM15, MXCSR exactly `0x1f80`, ordinary integer input, no x87 state,
+budget 1, stop RIP `entry+4`, and a single executable code mapping. The
+interpreter reuses the existing raw-bit XOR semantics but permits the exact
+XMM0/XMM1 form with SSE state and no x87 snapshot; existing general XORPD
+forms retain their x87+SSE precondition. Literal expected XMM0 outputs are
+handwritten independently in tests for two asymmetric fixtures. Tests also
+check all other XMM sentinels, MXCSR, GPRs, flags, RIP, malformed code, missing
+SSE, x87-present rejection and wrong MXCSR.
+
+The runner adds a portable 16-register/MXCSR codec and exact readback check.
+Linux x86_64 transport uses libc's `user_fpregs_struct`: `PTRACE_GETFPREGS`
+reads the full FP-register structure, the runner replaces only XMM0–XMM15 and
+MXCSR fields, and `PTRACE_SETFPREGS` writes the structure back. It verifies the
+initial values before stepping and reads final SSE state separately from
+integer registers. The supervisor, deadline and EXITKILL paths
+are unchanged. This is Linux ptrace transport, not guest FXSAVE format; no host
+MXCSR mask is substituted. Existing x87/SSE and FXSAVE profiles remain
+native-denied. JIT and C adapter remain denied; CPUID target bits are unchanged.
+
+**Checks:** `cargo test -p od-isa xorpd --offline` passed (3 tests);
+`cargo test -p od-testkit native_xorpd_profile --offline` passed (1);
+`cargo test -p od-runner local_native_xorpd --offline` passed (1);
+`cargo test -p od-x86-runner --bin od-x86-runner native_fp::tests --offline`
+passed (3); `cargo check --workspace --all-targets --offline`, the Linux
+x86_64 `cargo check -p od-x86-runner --all-targets --target
+x86_64-unknown-linux-gnu --offline`, `cargo fmt --all -- --check`, and
+`git diff --check` passed. Linux-only native admission/profile tests were
+compile-checked, not run on hardware. Independent gpt-6.1-sol medium code review and gpt-6.1-sol high
+documentation review found no remaining findings after the recorded fixes. Physical execution was not run; status
+remains `not_run` for the final Mac mini substage. S2-26, S2-39, S2-40, S2-41
+and S2-42 remain open. See [CPU contract](../specs/CPU_CONTRACT.md#s2-40b--bounded-sse-only-native-xorpd-oracle),
+[Linux profile report](STAGE_2_LINUX_PROFILE.md#s2-40b--ограниченный-sse-only-native-xorpd-oracle),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-40b-native-xorpd-xmm0-xmm1),
+and [test format](../testing/TEST_CASE_FORMAT.md#s2-40b-native-sse-only-xorpd-profile).

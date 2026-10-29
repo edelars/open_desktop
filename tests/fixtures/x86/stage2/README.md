@@ -5664,3 +5664,20 @@ representable state. JIT/native and physical execution are not claimed. See
 [S2-39e plan](../../../../docs/plans/STAGE_2.md#s2-39e-exact-long64-fxrstor64-rbx0x40),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-39e--exact-long64-fxrstor64-rbx0x40),
 and [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-39e--exact-long64-fxrstor64-rbx0x40).
+
+### S2-40b native XORPD XMM0 XMM1
+
+`s2_40b_xorpd_xmm0_xmm1_asymmetric_a.case.json` and
+`s2_40b_xorpd_xmm0_xmm1_asymmetric_b.case.json` are handwritten one-instruction
+fixtures for `s2-long-native-xorpd-xmm0-xmm1-v1`. Each contains exact bytes
+`66 0F 57 C1`, asymmetric byte patterns in XMM0/XMM1, unique sentinels in
+XMM2–XMM15, full GPR state, defined integer flags, and MXCSR `0x1f80`. No x87
+state is serialized. `tools/runner/tests/fixture_v2.rs` independently records
+the expected XMM0 byte strings and checks preservation of the remaining 240
+XMM bytes, MXCSR, GPRs, flags and RIP against the interpreter result. The
+native transport preserves the existing supervised child and deadline model,
+installs/readbacks only XMM and MXCSR with Linux ptrace FP-register requests,
+and keeps integer and SSE observations separate. No physical result is claimed;
+hardware status is `not_run`. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-40b--bounded-sse-only-native-xorpd-oracle),
+[plan](../../../../docs/plans/STAGE_2.md#s2-40b-узкий-sse-only-native-xorpd-oracle),
+and [Linux profile report](../../../../docs/reports/STAGE_2_LINUX_PROFILE.md#s2-40b--ограниченный-sse-only-native-xorpd-oracle).

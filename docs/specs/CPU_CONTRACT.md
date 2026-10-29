@@ -11246,3 +11246,28 @@ all RC settings, prior sticky flags, atomic refusal and strict form rejection.
 Physical acceptance remains in the combined final Mac mini substage. Normative
 source: Intel SDM Rev. 093 Vol. 1 Appendix D Tables D-9/D-13/D-15 and Vol. 2B
 MAXPD. See the [plan](../plans/STAGE_2.md#s2-37l--local-long64-register-only-legacy-maxpd-with-masked-status).
+
+## S2-40b — bounded SSE-only native XORPD oracle
+
+The native-only schema-v2 profile `s2-long-native-xorpd-xmm0-xmm1-v1` admits
+exactly `66 0F 57 C1` at the entry RIP, one instruction, and stops at
+`entry+4`. It requires all XMM0–XMM15 snapshots, MXCSR exactly `0x00001f80`,
+and ordinary Long64 integer state. An x87 snapshot is forbidden; a combined
+x87/SSE snapshot is rejected. The instruction writes `XMM0 := XMM0 XOR XMM1`
+bytewise and preserves XMM1–XMM15, MXCSR, all GPRs, defined integer flags,
+and fixture memory. The oracle compares all 256 XMM bytes and MXCSR exactly.
+
+On Linux x86_64, the ptrace transport reads the full FP-register structure
+through `PTRACE_GETFPREGS`, replaces only XMM0–XMM15 and MXCSR fields, writes
+the structure with `PTRACE_SETFPREGS`, and verifies initial readback before
+execution. It reads the final SSE state separately from integer registers. This is the Linux ptrace FP-register transport contract; it
+is not guest FXSAVE memory and it does not substitute the host `MXCSR_MASK`.
+The selected CPU feature bits do not change. All prior x87/SSE state, SIMD and
+FXSAVE profiles remain native-denied; JIT and the C adapter remain denied.
+
+The local schema, codec and interpreter comparison are covered by portable
+checks. Linux x86_64 transport is compile-checked only; physical execution is
+`not_run` and remains part of the final Mac mini substage. S2-26, S2-39, S2-40,
+S2-41 and S2-42 remain open. See [S2-40b plan](../plans/STAGE_2.md#s2-40b-узкий-sse-only-native-xorpd-oracle),
+[Linux profile report](../reports/STAGE_2_LINUX_PROFILE.md#s2-40b--ограниченный-sse-only-native-xorpd-oracle),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-40b-native-xorpd-xmm0-xmm1).

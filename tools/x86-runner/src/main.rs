@@ -1,5 +1,6 @@
 use std::process::ExitCode;
 
+mod native_fp;
 mod rep_trace;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

@@ -6400,10 +6400,11 @@ privileged/system validation и Stage 4 machine integration. S2-41 не гото
 в одном списке и помечены `not_run`; выполнять их следует единым hardware
 substage.
 
-До следующего программного slice необходимо определить отдельный architecture
-contract для SSE-capable native oracle: target MXCSR mask, FXSAVE pointer
-layout и selector differences. Простого native запуска текущих x87/SIMD
-fixtures недостаточно.
+Ограниченный user-mode contract для SSE-only native oracle и ptrace transport
+определён отдельным срезом [S2-40b](#s2-40b-узкий-sse-only-native-xorpd-oracle).
+Он не определяет target MXCSR mask для guest FXSAVE, 32-bit FXSAVE layout,
+selector differences или полный Linux profile; эти вопросы остаются в S2-39/40.
+Простого native запуска текущих x87/SIMD fixtures недостаточно.
 
 **Критерии этого среза:** (1) указан Generic amd64/x86-64-v1 scope; (2) для
 каждой requirement group перечислены source/image evidence, локальная
@@ -11505,3 +11506,25 @@ Implement the legacy mandatory-66 `0F F4 /r` XMM register form only, with option
 #### S2-35.63 — local-only bounded register `PMADDWD`
 
 Implement the mandatory-66 `0F F5 /r` Long64 XMM register form with ModR/M.mod=3 and optional REX.R/B, extending the destination and source independently to XMM15. Treat each pair of signed words as signed 32-bit products, then add adjacent products with 32-bit wrapping into four dword lanes; include the `(-32768 × -32768) + (-32768 × -32768) = 0x80000000` corner. Support aliasing, preserve unrelated state and perform no data-memory access. SSE2 and CR0/CR4 remain assumed; do not advertise CPUID or allow JIT/native/physical execution. Profile `s2-long-pmaddwd-reg-v1`. Local checks and physical deferral are recorded in the [report](../reports/STAGE_2_REPORT.md#s2-3563--local-pmaddwd-register-profile). Source: Intel SDM revision 093, Vol. 2B, PMADDWD ([official PDF](https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-2b-manual.pdf)).
+
+#### S2-40b. Узкий SSE-only native XORPD oracle
+
+**Статус:** программный срез реализован и проверен; физический запуск
+`not_run`. Родительские S2-26, S2-39, S2-40, S2-41 и S2-42 остаются открытыми.
+
+Отдельный профиль `s2-long-native-xorpd-xmm0-xmm1-v1` требует ровно
+`66 0F 57 C1`, `XMM0 := XMM0 XOR XMM1`, один retirement, stop RIP `entry+4`,
+полные XMM0–15 и MXCSR `0x1f80`; x87 state запрещён. Linux x86_64 runner
+перед инструкцией устанавливает только XMM/MXCSR через PTRACE_GETFPREGS и
+PTRACE_SETFPREGS и проверяет readback; итоговые SSE и integer snapshots
+снимаются отдельно. Это ptrace transport, а не guest FXSAVE image. Существующие
+x87/SSE и FXSAVE профили остаются native-denied; JIT, C adapter и CPUID target
+не меняются.
+
+Проверки включают строгий schema/admission, два handwritten asymmetric fixture
+с независимыми literal XMM0 ответами, portable codec/readback tests, interpreter
+comparison и Linux x86_64 compile check. Ни один физический результат не
+заявляется; hardware run остаётся в общем финальном Mac mini substage. Детали и
+границы приведены в [CPU contract](../specs/CPU_CONTRACT.md#s2-40b--bounded-sse-only-native-xorpd-oracle),
+[Linux profile report](../reports/STAGE_2_LINUX_PROFILE.md#s2-40b--ограниченный-sse-only-native-xorpd-oracle)
+и [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-40b-native-xorpd-xmm0-xmm1).

@@ -14679,3 +14679,44 @@ fn psubd_literal_cli_fixture_executes_and_keeps_jit_denied() {
     let (_, jit) = run(bytes, "jit", 4);
     assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
 }
+
+#[test]
+fn local_native_xorpd_fixtures_match_independent_literal_and_preserve_state() {
+    let cases: [(&[u8], &str); 2] = [
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_40b_xorpd_xmm0_xmm1_asymmetric_a.case.json"
+            ),
+            "f0e0d0c0b0a090807060504030201000",
+        ),
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_40b_xorpd_xmm0_xmm1_asymmetric_b.case.json"
+            ),
+            "5aa50ff0e1d2c3b4e11ec3f0f00f2d5a",
+        ),
+    ];
+    for (bytes, expected_xmm0) in cases {
+        let (input, result) = run(bytes, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongNativeXorpdXmm0Xmm1V1
+        );
+        assert_eq!(count(&result), 1);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        let observed = snapshot(&result);
+        assert_eq!(observed.state.rip, input.fixture.stop_rip.unwrap());
+        assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
+        assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+        assert_eq!(observed.state.sse.as_ref().unwrap().xmm[0], expected_xmm0);
+        assert_eq!(observed.state.sse.as_ref().unwrap().mxcsr, HexU64(0x1f80));
+        for register in 1..16 {
+            assert_eq!(
+                observed.state.sse.as_ref().unwrap().xmm[register],
+                input.fixture.initial_state.sse.as_ref().unwrap().xmm[register]
+            );
+        }
+        let (_, jit_result) = run(bytes, "jit", 4);
+        assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    }
+}

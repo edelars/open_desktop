@@ -227,3 +227,16 @@ rotation; `DD D8+i` FSTP remains Normal-only. The literal
 `d900ddd1dfe0` fixture and m32/m64 local compositions are interpreter/project
 fixture checks only. Native/JIT admission and physical x87 comparison remain
 closed under ISSUE-019. See the [S2-30ar contract](../specs/CPU_CONTRACT.md#local-s2-30ar-canonical-signed-zero-fst-sti-dd-d0i) and [report](../reports/STAGE_2_REPORT.md#s2-30ar--canonical-signed-zero-through-fst-sti).
+
+## S2-40b SSE-only native transport slice
+
+The exact native profile `s2-long-native-xorpd-xmm0-xmm1-v1` is limited to
+`66 0F 57 C1`, XMM0–XMM1, MXCSR `0x1f80`, one retired instruction and stop RIP
+at entry+4. It requires all sixteen XMM snapshots and rejects any x87 state.
+The Linux x86_64 transport uses `PTRACE_GETFPREGS`/`PTRACE_SETFPREGS` on the
+stopped tracee, modifies only the XMM and MXCSR fields, checks initial
+readback, and takes final SSE readback independently from GPR state. This is an
+OS ptrace register structure and not guest FXSAVE serialization. Pure codec,
+strict admission and interpreter/literal comparisons are portable; the Linux
+transport has compile-only coverage on this Mac. Physical execution remains
+`not_run`; existing x87/SSE and FXSAVE profiles, JIT and C adapter stay denied.

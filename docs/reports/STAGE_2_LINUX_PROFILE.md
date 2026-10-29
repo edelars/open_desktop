@@ -212,8 +212,8 @@ kernel, initramfs или userspace. В имеющемся evidence пока не
 | Mac mini hardware check | Статус | Граница |
 |---|---|---|
 | Снять текущие host CPU/OS/toolchain capabilities и зафиксировать revision перед прогоном | `not_run` | Инвентаризация стенда; не выбирает CPUID target автоматически |
-| Native comparison доступных обязательных x86-64-v1 и SSE-capable CPL3 cases против независимых literal expected results | `not_run` | Linux user-mode physical oracle; native/backend harness и oracle contract ещё не определены |
-| Проверить target MXCSR mask, FXSAVE pointer layout и selector behavior на подходящем SSE-capable oracle | `not_run` | Требует отдельного architecture contract для native oracle; текущие x87/SIMD fixtures сами по себе его не задают |
+| Native comparison доступных обязательных x86-64-v1 и SSE-capable CPL3 cases против независимых literal expected results | `not_run` | Узкий S2-40b transport/profile реализован и compile-checked; physical execution и остальные обязательные cases отложены до общего hardware substage |
+| Проверить target MXCSR mask, FXSAVE pointer layout и selector behavior на подходящем SSE-capable oracle | `not_run` | S2-40b не проверяет guest FXSAVE mask/layout/selectors; требует отдельного contract и hardware evidence |
 | Независимые privileged/mode-transition/event checks | `not_run` | Не подменять root user-mode запуском; способ проверки должен быть определён в S2-41 |
 
 Ubuntu guest boot и system-level serial success milestone: `not_run`; это
@@ -221,10 +221,12 @@ Ubuntu guest boot и system-level serial success milestone: `not_run`; это
 check. Она требует реального machine backend, замороженных initramfs/command
 line и board manifest.
 
-Следующая программная задача после S2-40a должна сначала определить
-architecture contract для SSE-capable native oracle, включая target MXCSR
-mask, 32/64-bit FXSAVE pointer layout и selector differences. Простого
-включения существующих x87/SIMD fixtures для native сравнения недостаточно.
+Узкий user-mode SSE-only native-oracle contract и Linux x86_64 ptrace
+transport определены в отдельном [S2-40b](#s2-40b--ограниченный-sse-only-native-xorpd-oracle).
+Этот срез фиксирует MXCSR input `0x1f80`, но не определяет target MXCSR mask
+для guest FXSAVE, 32-bit FXSAVE pointer layout, selector differences или полный
+Linux profile. Простого включения существующих x87/SIMD fixtures для native
+сравнения недостаточно.
 Результат этого S2-40a среза не закрывает S2-26, S2-39, S2-40, S2-41 или
 S2-42.
 
@@ -736,3 +738,30 @@ combined final hardware substage. Details are in the [CPU contract](../specs/CPU
 [plan](../plans/STAGE_2.md#s2-39e-exact-long64-fxrstor64-rbx0x40),
 [report](STAGE_2_REPORT.md#s2-39e--exact-long64-fxrstor64-rbx0x40), and
 [fixture note](../../tests/fixtures/x86/stage2/README.md#s2-39e-long64-fxrstor64-rbx0x40).
+
+## S2-40b — ограниченный SSE-only native XORPD oracle
+
+Выполнен программный срез с точным профилем
+`s2-long-native-xorpd-xmm0-xmm1-v1`: только `66 0F 57 C1`, XMM0/XMM1,
+один instruction retirement и stop RIP `entry+4`. Требуются все XMM0–15 и
+MXCSR `0x1f80`; x87 state отсутствует и запрещён schema. Linux x86_64 runner
+использует `PTRACE_GETFPREGS`/`PTRACE_SETFPREGS` как отдельный OS transport:
+устанавливает только XMM/MXCSR, проверяет initial readback и снимает финальный
+SSE результат отдельно от integer state. Это не guest FXSAVE serialization и
+не использует подмену host `MXCSR_MASK`.
+
+Два handwritten fixture с asymmetric inputs содержат independent literal
+expected bytes в interpreter tests. Portable codec, strict admission, exact
+initial MXCSR, missing SSE/x87-present rejection и preserved-state checks
+покрыты тестами. Linux x86_64 код прошёл compile-only check с текущего Mac;
+физического запуска не было. В hardware matrix строка остаётся `not_run` до
+финального общего Mac mini substage. Старые x87/SSE и FXSAVE профили остаются
+native-denied, CPUID unchanged; JIT и C adapter denied. S2-26, S2-39, S2-40,
+S2-41 и S2-42 остаются открытыми.
+
+Срез уточняет предшествовавший архитектурный блокер S2-40a для ограниченного
+user-mode transport, но не определяет target MXCSR mask для guest FXSAVE,
+32-bit layouts, selector behavior, privileged CPU contract или полный Linux
+profile. См. [S2-40b plan](../plans/STAGE_2.md#s2-40b-узкий-sse-only-native-xorpd-oracle),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-40b--bounded-sse-only-native-xorpd-oracle),
+и [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-40b-native-xorpd-xmm0-xmm1).

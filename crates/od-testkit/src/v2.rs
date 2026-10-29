@@ -41,6 +41,7 @@ pub const PROFILE_MOVUPD_REGISTER: &str = "s2-long-movupd-reg-v1";
 pub const PROFILE_MOVUPD_REVERSE_REGISTER: &str = "s2-long-movupd-reg-reverse-v1";
 pub const PROFILE_XORPS_REGISTER: &str = "s2-long-xorps-reg-v1";
 pub const PROFILE_XORPD_REGISTER: &str = "s2-long-xorpd-reg-v1";
+pub const PROFILE_NATIVE_XORPD_XMM0_XMM1: &str = "s2-long-native-xorpd-xmm0-xmm1-v1";
 pub const PROFILE_ANDPD_REGISTER: &str = "s2-long-andpd-reg-v1";
 pub const PROFILE_PXOR_REGISTER: &str = "s2-long-pxor-reg-v1";
 pub const PROFILE_PAND_REGISTER: &str = "s2-long-pand-reg-v1";
@@ -165,6 +166,8 @@ pub enum Profile {
     LongXorpsRegV1,
     #[serde(rename = "s2-long-xorpd-reg-v1")]
     LongXorpdRegV1,
+    #[serde(rename = "s2-long-native-xorpd-xmm0-xmm1-v1")]
+    LongNativeXorpdXmm0Xmm1V1,
     #[serde(rename = "s2-long-andpd-reg-v1")]
     LongAndpdRegV1,
     #[serde(rename = "s2-long-orpd-reg-v1")]
@@ -476,8 +479,12 @@ pub struct IntegerState {
         skip_serializing_if = "Option::is_none"
     )]
     pub gs_cache_flags: Option<HexU64>,
-    /// Full x87 state only in `s2-long-x87-state-v1`; absent from older wire profiles.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Full x87 state only in x87-bearing profiles; absent from SSE-only profiles.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_x87_snapshot",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub x87: Option<X87Snapshot>,
     /// Present only in `s2-long-x87-sse-state-v1`.
     #[serde(
@@ -674,6 +681,15 @@ where
     D: serde::Deserializer<'de>,
 {
     SseSnapshot::deserialize(deserializer).map(Some)
+}
+
+fn deserialize_present_x87_snapshot<'de, D>(
+    deserializer: D,
+) -> Result<Option<X87Snapshot>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    X87Snapshot::deserialize(deserializer).map(Some)
 }
 
 fn deserialize_present_bool<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
@@ -938,6 +954,7 @@ impl IntegerState {
                     | Profile::LongMovapdReverseRegV1
                     | Profile::LongXorpsRegV1
                     | Profile::LongXorpdRegV1
+                    | Profile::LongNativeXorpdXmm0Xmm1V1
                     | Profile::LongAndpdRegV1
                     | Profile::LongOrpdRegV1
                     | Profile::LongAndnpdRegV1
@@ -1187,6 +1204,7 @@ impl IntegerState {
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
+                | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
                 | Profile::LongAndnpdRegV1
@@ -1335,6 +1353,23 @@ impl IntegerState {
     }
 
     fn validate_for(&self, profile: Profile) -> Result<(), FormatError> {
+        if profile == Profile::LongNativeXorpdXmm0Xmm1V1 {
+            if self.x87.is_some() {
+                return Err(invalid(
+                    "state.x87",
+                    "x87 state is forbidden by the native XORPD profile",
+                ));
+            }
+            let Some(sse) = &self.sse else {
+                return Err(invalid("state.sse", "required by the native XORPD profile"));
+            };
+            if sse.mxcsr.get() != 0x1f80 {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "must equal 0x00001f80 for native XORPD",
+                ));
+            }
+        }
         let state_profile = match profile {
             Profile::LongX87StateV1
             | Profile::LongX87SseStateV1
@@ -1351,6 +1386,7 @@ impl IntegerState {
             | Profile::LongMovapdReverseRegV1
             | Profile::LongXorpsRegV1
             | Profile::LongXorpdRegV1
+            | Profile::LongNativeXorpdXmm0Xmm1V1
             | Profile::LongAndpdRegV1
             | Profile::LongOrpdRegV1
             | Profile::LongAndnpdRegV1
@@ -1465,6 +1501,7 @@ impl IntegerState {
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
+                | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
                 | Profile::LongAndnpdRegV1
@@ -1585,6 +1622,7 @@ impl IntegerState {
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
+                | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
                 | Profile::LongAndnpdRegV1
@@ -1710,6 +1748,7 @@ impl IntegerState {
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
+                | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
                 | Profile::LongAndnpdRegV1
@@ -1838,6 +1877,7 @@ impl IntegerState {
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
+                | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
                 | Profile::LongAndnpdRegV1
@@ -2369,6 +2409,7 @@ impl IntegerState {
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
+                | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
                 | Profile::LongAndnpdRegV1
@@ -2480,6 +2521,7 @@ impl IntegerState {
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
+                | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
                 | Profile::LongAndnpdRegV1
@@ -2738,10 +2780,38 @@ impl Fixture {
                 ));
             }
         }
+        if self.profile == Profile::LongNativeXorpdXmm0Xmm1V1 {
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by native XORPD profile"))?;
+            let start = self.initial_state.rip.get();
+            if code.guest_address.get() != start
+                || code.length != 4
+                || !code.permissions.execute
+                || code.initial_bytes_hex.to_ascii_lowercase() != "660f57c1"
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(4)
+                || self.expected_exit != ExpectedExit::StopAddress
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "native XORPD requires exactly 66 0F 57 C1, budget 1, and stop RIP entry+4",
+                ));
+            }
+            if self.memory.len() != 1 {
+                return Err(invalid(
+                    "memory",
+                    "native XORPD profile has only the code mapping",
+                ));
+            }
+        }
         if matches!(
             self.profile,
             Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
+                | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
                 | Profile::LongAndnpdRegV1
@@ -2831,7 +2901,9 @@ impl Fixture {
             let code_bytes = code.initial_bytes_hex.to_ascii_lowercase();
             let length = match self.profile {
                 Profile::LongXorpsRegV1 => xorps_register_length(&code_bytes),
-                Profile::LongXorpdRegV1 => xorpd_register_length(&code_bytes),
+                Profile::LongXorpdRegV1 | Profile::LongNativeXorpdXmm0Xmm1V1 => {
+                    xorpd_register_length(&code_bytes)
+                }
                 Profile::LongAndpdRegV1 => andpd_register_length(&code_bytes),
                 Profile::LongOrpdRegV1 => orpd_register_length(&code_bytes),
                 Profile::LongAndnpdRegV1 => andnpd_register_length(&code_bytes),
