@@ -2171,6 +2171,17 @@ at the post-INC boundary and normal next-entry event guards cover continuation.
 The eager default, cache and Mini/performance status do not change. See the
 [S3-29c report](../reports/STAGE_3_S3-29c_2026-10-29.md).
 
+S3-29d adds fixture-scoped uncached handoff evidence for the existing W64
+register arithmetic compiler, including two-writer ADD→SUB and ADD→CMP chains,
+the exact V2 `48 8B 03` checked load, and native JZ/JNZ suffix. Candidate/eager/interpreter paths share the remaining budget and
+continue at actual RIP; the real `PublishedMemoryBlockExecutor` performs the
+load between released native mappings. The test covers ADD/SUB/CMP, both branch
+outcomes, canonical flags at the helper handoff, #PF/#GP/backend-error behavior,
+repair and retry, callback event/fault priority, and STOP/budget guards. It adds
+no default, cache, owner/MMU, or general dispatcher route. Full S3-29 remains
+open; Mini and performance checks stay deferred until the end of Stage 3. See
+the [S3-29d report](../reports/STAGE_3_S3-29d_2026-10-29.md).
+
 ### S3-30. Выбрать register allocator
 
 1. На измеренных горячих workloads определить цену spills/reloads и helper clobbers текущего простого allocator.

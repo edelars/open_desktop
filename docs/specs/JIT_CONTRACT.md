@@ -1377,6 +1377,42 @@ the candidate PC-map witness requires pending flags before handoff. S3-29
 remains open pending remaining correctness gates, final strategy comparison,
 and deferred Mini/performance work.
 
+### S3-29d: uncached arithmetic-to-checked-load handoff
+
+The bounded host fixture composes existing eager and demand-flags native
+compilation with the existing V2 memory dispatcher and
+`PublishedMemoryBlockExecutor` for one or two exact W64 arithmetic encodings:
+`48 03 C3` (ADD RAX,RBX), `48 2B C3` (SUB RAX,RBX), or `48 3B C3`
+(CMP RAX,RBX), followed by
+`48 8B 03` (MOV RAX,[RBX]) and a native JZ/JNZ suffix. It uses one original
+immutable `CodeView`, passes the same remaining budget across phases, and
+starts each next phase at actual guest RIP. Candidate native entry samples
+stop/event controls again immediately before entering the artifact. The memory
+executor completes and drops its mapping before the suffix is compiled and
+entered. This is fixture-scoped integration evidence; it adds no general
+dispatcher, cache route, public runtime API, owner/MMU integration, or new
+instruction form.
+
+The host test compares full state, RAM, callback count, and separate native,
+checked-helper, and interpreter retirement counts for candidate/eager/interpreter
+paths, both JZ and JNZ outcomes, individual ADD/SUB/CMP operations, and
+two-writer ADD→SUB and ADD→CMP chains. The candidate
+PC-map witness shows pending flags in the native prefix, while the interpreter
+comparison checks canonical RFLAGS at the load handoff. A successful load
+retires once and performs one qword callback. #PF and noncanonical #GP preserve
+the prefix and load RIP without committing RAX or entering the suffix;
+noncanonical #GP occurs before a callback. Host backend errors remain executor
+errors. Fault/error/retry injection uses the demand-flags candidate path;
+eager/interpreter fault parity is not claimed. Repaired fixtures retry the load
+and suffix without replaying the prefix. A successful callback event commits the load and yields before native
+suffix entry; simultaneous event and guest fault returns the fault. Budget,
+STOP-RIP, STOP, and event precedence are exercised at the handoff, and branch
+targets inside the three-byte load are rejected by the fixture boundary check.
+Malformed native reports are not injected in this fixture; existing checked
+memory dispatcher tests retain invalid-accounting and zero-progress coverage.
+S3-29 remains open; eager stays the default, candidate remains uncached, and
+Mini/performance comparison remains deferred until the end of Stage 3.
+
 ### S3-13: opt-in one-block fixture CLI
 
 Fixture schema v1 accepts `--engine jit-block`, producing the distinct result
