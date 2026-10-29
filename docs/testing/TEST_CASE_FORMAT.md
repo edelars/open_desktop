@@ -1298,3 +1298,24 @@ full XMM state, MXCSR, retirement, exception metadata and control echoes. JIT
 and native reject the profile. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38j--exact-maxpd-unmasked-invalid-and-denormal-exit),
 [plan](../plans/STAGE_2.md#s2-38j--exact-long64-maxpd-xmm0xmm1-unmasked-invalid-and-denormal-exit),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38j-local-maxpd-unmasked-invalid-and-denormal).
+
+## S2-38k exact MINPS unmasked IM/DM profile
+
+The strict schema-v2 profile `s2-long-minps-unmasked-denormal-v1` admits only
+Long64 bytes `0f5dc1`. `minps_unmasked_controls` records SSE availability,
+CR0.EM/TS, CR4.OSFXSR and CR4.OSXMMEXCPT; the result echoes the controls as
+`snapshot.minps_unmasked_controls`. Validation requires one executable code
+mapping, budget 1, stop RIP `entry+3`, reserved MXCSR bits clear, ZE/OE/UE/PE
+masks set, and DAZ/FTZ clear. IM, DM, RC and old sticky status are variable.
+
+Sixteen four-lane class/control anchors exercise `{none,I,D,I+D}^4` examples,
+late lanes, split IE/DE, same-lane IE+DE, and OSXMMEXCPT selection. Sixteen
+additional literals cover QNaN/SNaN operand positions and payload/sign
+forwarding, signed-zero ties, equal finite values, infinities, subnormals,
+MIN-versus-MAX selection and sticky-only status. The independent validator
+classifies raw binary32 bits and computes expected result/state without calling
+the production MIN selector. It checks exception flags, atomic XMM suppression,
+retirement, control echoes and exception metadata. JIT/native reject the
+profile. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38k--exact-minps-unmasked-invalid-and-denormal-exit),
+[plan](../plans/STAGE_2.md#s2-38k--exact-long64-minps-xmm0xmm1-unmasked-invalid-and-denormal-exit),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38k-local-minps-unmasked-invalid-and-denormal).

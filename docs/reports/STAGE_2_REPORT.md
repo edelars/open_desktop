@@ -17248,3 +17248,47 @@ Verification passed: `cargo test -p od-isa --offline maxpd_unmasked` (2 tests), 
 Normative sources: Intel SDM Rev. 093 Vol. 2B MAXPD pp. 4-5–4-7
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241)); Vol. 1
 §§4.9.2, 11.5.3.1–3 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)). See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38j--exact-maxpd-unmasked-invalid-and-denormal-exit), [plan](../plans/STAGE_2.md#s2-38j--exact-long64-maxpd-xmm0xmm1-unmasked-invalid-and-denormal-exit), [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38j-local-maxpd-unmasked-invalid-and-denormal), and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38j-exact-maxpd-unmasked-imdm-profile).
+
+
+## S2-38k — exact Long64 MINPS with bounded unmasked IM/DM exits
+
+**Status:** local interpreter/schema-v2 implementation and independent Sol
+medium review complete with no findings; physical/Mac mini acceptance deferred.
+This does not complete S2-00 or Stage 2.
+
+Added the strict `s2-long-minps-unmasked-denormal-v1` profile for exact
+`0F 5D C1`. Four binary32 lanes are fully evaluated before global event
+disposition. Any newly unmasked IE/DE preserves XMM0 and RIP, ORs every
+discovered raw status bit into MXCSR, reports one #XM or #UD, and retires zero;
+masked completion applies IE-over-DE priority within each lane and commits all
+of XMM0. Source-2 NaN forwarding, SNaN bits, signed-zero ties, and finite MIN
+selection are covered. Existing masked MINPS remains on its previous path.
+
+The fixtures comprise sixteen lane/control anchors plus sixteen selector and
+status anchors. The independent validator uses raw binary32 classification and
+its own MIN comparator. Two ISA tests cover the complete 2048 class × mask ×
+delivery matrix, gate precedence, CPL0–3, exact forms, partial fetch, retirement,
+atomic state, and no data callbacks. One runner integration validates all 32
+fixtures and confirms JIT/native denial.
+
+Verification passed: focused `cargo test -p od-isa --offline minps_unmasked`
+(2 tests), masked MINPS regression (4 tests), MINPD and MAXPD unmasked
+regressions (2 tests each), `cargo test -p od-testkit --offline` (408 tests),
+and `cargo test -p od-runner --test fixture_v2 --offline` (385 tests,
+including all 32 MINPS fixtures and JIT/native denial). `cargo fmt --all --
+--check`, `cargo check --workspace --all-targets --offline`, `git diff --check`
+and `graphify update .` passed. Independent review checked the implementation,
+validator, controls, exact admission and all 32 fixtures; it reported no
+findings. `python3 tools/check_layout.py` reports only
+the existing ISSUE-023 `.git` worktree pointer and two absent historical oracle
+manifests; no new layout findings. No physical or Mac mini execution was
+performed.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2B MINPS pp. 4-19–4-21
+(https://cdrdv2.intel.com/v1/dl/getContent/671241); Vol. 2A Table 2-19
+(https://cdrdv2.intel.com/v1/dl/getContent/671199); Vol. 1 §§4.9.2,
+11.5.3.1–3 (https://cdrdv2.intel.com/v1/dl/getContent/671436). See the [CPU
+contract](../specs/CPU_CONTRACT.md#s2-38k--exact-minps-unmasked-invalid-and-denormal-exit),
+[plan](../plans/STAGE_2.md#s2-38k--exact-long64-minps-xmm0xmm1-unmasked-invalid-and-denormal-exit),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38k-local-minps-unmasked-invalid-and-denormal),
+and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38k-exact-minps-unmasked-imdm-profile).

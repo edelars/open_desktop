@@ -505,6 +505,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38h | Exact Long64 `MAXSD XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, MAXSD-specific Rev. 093 semantics, full NaN/subnormal/control cross-product and raw-result fixtures; interpreter-only | S2-37j, S2-38g control policy after MAXSD-specific SDM review; independent review clean |
 | [x] | S2-38i | Exact Long64 `MINPD XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, 2-lane raw exception aggregation and atomic XMM suppression; interpreter-only | S2-37k, S2-38h control policy after MINPD-specific SDM review; independent review clean |
 | [x] | S2-38j | Exact Long64 `MAXPD XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, MAXPD-specific raw selector and 2-lane exception aggregation; interpreter-only | S2-37l, S2-38i control policy after MAXPD-specific SDM review; independent review clean |
+| [x] | S2-38k | Exact Long64 `MINPS XMM0,XMM1` unmasked IM/DM exit; strict schema-v2 profile, four-lane raw event aggregation and atomic XMM suppression; interpreter-only | S2-37g, S2-38j control policy after MINPS-specific SDM review; independent Sol medium review clean |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
@@ -12450,3 +12451,37 @@ Intel SDM Rev. 093 Vol. 2B MAXPD pp. 4-5–4-7
 contract](../specs/CPU_CONTRACT.md#s2-38j--exact-maxpd-unmasked-invalid-and-denormal-exit),
 [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38j-exact-maxpd-unmasked-imdm-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38j-local-maxpd-unmasked-invalid-and-denormal).
+
+
+#### S2-38k — exact Long64 MINPS XMM0,XMM1 unmasked invalid and denormal exit
+
+The interpreter-only schema-v2 profile `s2-long-minps-unmasked-denormal-v1`
+admits only Long64 `0F 5D C1`, one executable code mapping, budget one and stop
+RIP `entry+3`. Immutable controls record SSE availability, CR0.EM/TS,
+CR4.OSFXSR and CR4.OSXMMEXCPT and are echoed in the result. Complete fetch
+precedes the SSE/EM/OSFXSR #UD and then TS #NM gates; lane evaluation follows
+only after these gates at any CPL. MXCSR reserved bits, DAZ and FTZ are clear;
+ZE/OE/UE/PE masks are set; IM, DM, RC and old sticky flags may vary.
+
+Both XMM operands are snapshotted and four binary32 lanes are evaluated before
+exception disposition. MINPS forwards raw SRC2 for either QNaN/SNaN, equal
+values and signed-zero ties, preserving SNaN bits. Raw IE/DE are collected
+across all lanes. An unmasked event ORs every discovered IE/DE bit into MXCSR,
+reports one #XM or #UD as selected by OSXMMEXCPT, preserves full XMM0/RIP and
+retires zero instructions. Masked completion suppresses DE only in a lane that
+also has IE, then commits the complete XMM result. Existing masked MINPS is
+unchanged.
+
+Sixteen literal lane/control anchors and sixteen selector/status anchors are
+executed through schema-v2. Focused ISA tests cover all 2048 combinations of
+four lane classes `{none, I, D, I+D}` and IM/DM/OSXMMEXCPT, gate/fetch/form
+precedence, CPL0–3, budget/STOP, full-state suppression and no data callbacks.
+The independent validator classifies raw binary32 bits and uses its own MIN
+selector. JIT/native/C/fragment admission and physical execution remain closed.
+Sources: Intel SDM Rev. 093 Vol. 2B MINPS pp. 4-19–4-21
+(https://cdrdv2.intel.com/v1/dl/getContent/671241); Vol. 2A Table 2-19
+(https://cdrdv2.intel.com/v1/dl/getContent/671199); Vol. 1 §§4.9.2,
+11.5.3.1–3 (https://cdrdv2.intel.com/v1/dl/getContent/671436). See the [CPU
+contract](../specs/CPU_CONTRACT.md#s2-38k--exact-minps-unmasked-invalid-and-denormal-exit),
+[fixture format](../testing/TEST_CASE_FORMAT.md#s2-38k-exact-minps-unmasked-imdm-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38k-local-minps-unmasked-invalid-and-denormal).

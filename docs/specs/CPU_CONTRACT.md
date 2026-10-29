@@ -12196,3 +12196,34 @@ selector/sticky cases and an independent raw-bit validator. Normative sources:
 Intel SDM Rev. 093 Vol. 2B MAXPD pp. 4-5–4-7
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241)); Vol. 1
 §§4.9.2, 11.5.3.1–3 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+
+## S2-38k — exact MINPS unmasked invalid and denormal exit
+
+The interpreter-only profile `s2-long-minps-unmasked-denormal-v1` admits only
+Long64 `0F 5D C1` (`MINPS XMM0,XMM1`), one executable code region, budget one
+and stop RIP `entry+3`. Its immutable control snapshot records SSE availability,
+CR0.EM/TS, CR4.OSFXSR and CR4.OSXMMEXCPT. Complete fetch precedes #UD for
+missing SSE, CR0.EM or CR4.OSFXSR, then #NM for CR0.TS; lane evaluation happens
+after those gates, independent of CPL. With CR4.OSXMMEXCPT clear, a newly
+unmasked SIMD FP event reports #UD; otherwise it reports #XM.
+
+MXCSR reserved bits, DAZ and FTZ are zero; ZE/OE/UE/PE masks are one; IM/DM,
+rounding control and prior sticky flags may vary. The interpreter snapshots both
+XMM operands and evaluates all four binary32 lanes before deciding whether to
+commit. MINPS selects raw SRC2 for either NaN, equal values and signed-zero
+ties; SRC2 SNaN bits and payload/sign are preserved. Raw IE/DE are aggregated
+across all lanes. If either event is newly unmasked, all discovered IE/DE bits
+are ORed into status and one exception is returned with XMM0 and RIP unchanged
+and no retirement. Otherwise, each lane with IE suppresses only its own DE
+status, then all result lanes commit atomically. Existing masked MINPS is
+unchanged and is specified by S2-37g.
+
+Sixteen literal lane/control and sixteen result/status fixtures are validated
+independently from the production selector. JIT/native/C/fragment admission,
+handler continuation and physical execution are not included. Normative source:
+Intel SDM Rev. 093 Vol. 2B MINPS pp. 4-19–4-21
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241)); Vol. 2A
+Table 2-19 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199));
+Vol. 1 §§4.9.2, 11.5.3.1–3
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)). See the
+[plan](../plans/STAGE_2.md#s2-38k--exact-long64-minps-xmm0xmm1-unmasked-invalid-and-denormal-exit).

@@ -17233,6 +17233,84 @@ fn minpd_unmasked_two_lane_cross_product_validates_independent_results_and_denia
 }
 
 #[test]
+fn minps_unmasked_four_lane_anchors_validate_independent_results_and_denials() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let mut paths: Vec<_> = fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("s2_38k_minps_")
+        })
+        .collect();
+    paths.sort();
+    assert_eq!(
+        paths.len(),
+        32,
+        "MINPS lane, event-control, NaN, zero and finite anchors"
+    );
+    let mut denial_source = None;
+    let mut representative = None;
+    for path in paths {
+        let source = fs::read(path).unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongMinpsUnmaskedDenormalV1
+        );
+        assert_eq!(
+            od_testkit::v2::compare(&input, &result, &result).unwrap(),
+            Vec::<String>::new()
+        );
+        let Observation::Available { value } = &result.snapshot else {
+            panic!("snapshot unavailable")
+        };
+        assert_eq!(
+            value.minps_unmasked_controls,
+            input.fixture.minps_unmasked_controls
+        );
+        if denial_source.is_none() {
+            denial_source = Some(source.clone());
+        }
+        if representative.is_none() {
+            representative = Some((input.clone(), result.clone()));
+        }
+    }
+    let source = denial_source.unwrap();
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(&source, backend, 4);
+        assert!(
+            matches!(denied.outcome, Outcome::Unsupported { .. }),
+            "{backend} must deny MINPS profile"
+        );
+    }
+    let (input, result) = representative.unwrap();
+    let mut missing = input.fixture.clone();
+    missing.minps_unmasked_controls = None;
+    assert!(missing.validate().is_err());
+    for wrong in [
+        "660f5dc1", "f20f5dc1", "f30f5dc1", "400f5dc1", "0f5d01", "0f5fc1",
+    ] {
+        let mut malformed = input.fixture.clone();
+        malformed.memory[0].initial_bytes_hex = wrong.into();
+        assert!(
+            malformed.validate().is_err(),
+            "admitted unexpected MINPS form {wrong}"
+        );
+    }
+    let mut tampered = result.clone();
+    let Observation::Available { value } = &mut tampered.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    let controls = value.minps_unmasked_controls.as_mut().unwrap();
+    controls.cr4_osxmmexcpt = !controls.cr4_osxmmexcpt;
+    assert!(od_testkit::v2::compare(&input, &result, &tampered).is_err());
+}
+
+#[test]
 fn maxpd_unmasked_two_lane_cross_product_validates_independent_results_and_denials() {
     let root =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");

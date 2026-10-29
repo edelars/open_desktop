@@ -6231,3 +6231,15 @@ Intel SDM Rev. 093 Vol. 2B MAXPD pp. 4-5–4-7 and Vol. 1 §§4.9.2,
 11.5.3.1–3. See [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38j--exact-maxpd-unmasked-invalid-and-denormal-exit),
 [plan](../../../../docs/plans/STAGE_2.md#s2-38j--exact-long64-maxpd-xmm0xmm1-unmasked-invalid-and-denormal-exit),
 and [fixture format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-38j-exact-maxpd-unmasked-imdm-profile).
+
+### S2-38k local MINPS unmasked invalid and denormal
+
+The exact Long64 `0F 5D C1` profile uses 32 literal fixtures: sixteen four-lane
+event/control anchors and sixteen selector/status anchors. The independent
+schema-v2 validator covers all four lanes, unmasked aggregate status, masked
+same-lane IE-over-DE filtering, atomic XMM fault suppression, payload/sign
+forwarding, zero ties, sticky-only status and exact SSE control echoes. JIT and
+native reject the profile; no physical run is claimed. Sources and scope are
+listed in the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38k--exact-minps-unmasked-invalid-and-denormal-exit),
+[plan](../../../../docs/plans/STAGE_2.md#s2-38k--exact-long64-minps-xmm0xmm1-unmasked-invalid-and-denormal-exit),
+and [fixture format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-38k-exact-minps-unmasked-imdm-profile).
