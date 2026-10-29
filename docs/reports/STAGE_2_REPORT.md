@@ -17020,3 +17020,27 @@ Mac mini hardware status remains `not_run`. See [CPU contract](../specs/CPU_CONT
 [Linux profile report](STAGE_2_LINUX_PROFILE.md#s2-38e--local-fp-init-fxrstor64-and-minss-composition),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38e-fp-init-fxrstor64-and-minss),
 and [format](../testing/TEST_CASE_FORMAT.md#s2-38e-s2-long-cr0-cr4-fp-init-fxrstor64-minss-v1).
+
+## S2-25d — main-kernel IA32 EFER evidence and read-only candidate
+
+Mapped `RDMSR IA32_EFER` (`0F 32`, index `0xc0000080`) at
+`ffffffff8139c1b4` and conditional `WRMSR` at `ffffffff8139c1d5` to the
+authenticated Ubuntu `common_startup_64` source/image. The code always sets
+SCE and conditionally sets NXE/`early_pmd_flags.NX` when
+CPUID.80000001:EDX[20] reports NX; it skips WRMSR if the low EFER value is
+unchanged. The selected synthetic target advertises NX. This is a mapped
+main-kernel direct64 continuation, not a claim that no earlier compressed or
+helper path accesses EFER, and not runtime observation. The 32-bit compressed
+entry's EFER access is bypassed by the selected direct64 prefix; transitive
+`__pi_*` and decompression-helper ordering remains unaudited.
+
+No runtime EFER field or MSR handler was added. The next candidate is only an
+explicit-profile read of IA32_EFER in Long64, CPL0-only, over synthetic values
+`0x500`, `0x501`, `0xd00`, `0xd01`; these are not asserted to be Ubuntu's entry
+value. WRMSR, LMA transitions, NX enforcement and paging/TLB effects remain
+outside CPU-only scope. The adjacent compiled CR0 load is `0x80050033`
+(including AM), unlike S2-25a's synthetic `0x80010033`; actual entry CR0 is
+unobserved. See the [source/image evidence](STAGE_2_LINUX_PROFILE.md#ia32-efer-on-the-mapped-main-kernel-direct64-continuation),
+[contract](../specs/CPU_CONTRACT.md#s2-25d--ia32-efer-evidence-and-read-only-candidate),
+[plan](../plans/STAGE_2.md#s2-25d--mapped-main-kernel-ia32-efer-access-read-only-candidate),
+and [open evidence limitation](../KNOWN_ISSUES.md#issue-027--first-efer-access-and-startup-control-snapshot-are-unproven).

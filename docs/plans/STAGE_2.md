@@ -12214,3 +12214,31 @@ progress that preserves earlier retirements; do not model the sequence as an
 atomic transaction. Keep JIT/native/C/fragment and legacy admission closed.
 This is local interpreter/profile evidence only; physical execution remains
 `not_run`.
+
+#### S2-25d — mapped main-kernel IA32 EFER access; read-only candidate
+
+**Статус:** documentary source/image mapping complete; no EFER runtime code.
+
+Map the `RDMSR IA32_EFER` site at `ffffffff8139c1b4` and conditional `WRMSR`
+at `ffffffff8139c1d5` in `common_startup_64`, including the SCE/NXE changes and
+the target CPUID.NX branch. Record that the compressed 32-bit EFER access is
+bypassed by selected direct64 entry, but absolute first-access ordering and
+the actual entry EFER/CR snapshot remain unproven because earlier compressed
+and `__pi_*` helper paths are not exhaustively audited. The adjacent compiled
+CR0 value `0x80050033` includes AM; the bounded S2-25a synthetic base
+`0x80010033` is not an authenticated startup snapshot.
+
+The next implementable CPU slice, if approved by evidence review, is a
+read-only exact Long64 `RDMSR` for IA32_EFER at ECX=`0xc0000080`, supplied by
+an explicit immutable profile value. A candidate synthetic domain is
+`0x500`, `0x501`, `0xd00`, `0xd01` (fixed LME/LMA, independently selected SCE
+and NXE); none is claimed as the observed Ubuntu entry value. Keep `WRMSR`,
+mode transition, NX page enforcement and paging effects outside that bounded
+slice; Stage 4 owns system-level effects. Do not add an inert EFER field or a
+general MSR map.
+
+**Критерии:** (1) exact source/package/ELF mapping and conditional flow are
+recorded; (2) observed bytes, architectural requirements and synthetic policy
+are separated; (3) LMA/paging effects and the CR0 AM discrepancy are explicit;
+(4) absolute first-access ordering and entry-state snapshot remain open in
+[ISSUE-027](../KNOWN_ISSUES.md#issue-027--first-efer-access-and-startup-control-snapshot-are-unproven); (5) no implementation or boot claim is made. See the [Linux profile mapping](../reports/STAGE_2_LINUX_PROFILE.md#ia32-efer-on-the-mapped-main-kernel-direct64-continuation).

@@ -11955,3 +11955,36 @@ nonzero CPL. JIT, native, C, fragment and legacy entry points remain denied.
 This establishes local interpreter behavior only; no hardware or physical
 execution claim is made. Normative instruction semantics use Intel SDM Rev.
 093 Vol. 2A FNINIT, Vol. 2B MOV CR/XORPD and Vol. 3A §5.10.4.1/Table 16-1.
+
+## S2-25d — IA32 EFER evidence and read-only candidate
+
+This is an evidence/contract proposal, **not an implemented MSR profile**.
+The authenticated Ubuntu 7.0.0-38.38 main-kernel direct64 continuation maps
+`RDMSR IA32_EFER` (`0F 32`, ECX=`0xc0000080`) to
+`ffffffff8139c1b4` / `arch/x86/kernel/head_64.S:385`, and a conditional
+`WRMSR` (`0F 30`) to `ffffffff8139c1d5` / line 401. It sets SCE and, when
+CPUID.80000001:EDX[20] reports NX, sets NXE. The write is skipped when those
+bits already match. The mapping is a main-kernel success-path site, not proof
+of the absolute first EFER access or of the runtime value. See the [source/image
+mapping](../reports/STAGE_2_LINUX_PROFILE.md#ia32-efer-on-the-mapped-main-kernel-direct64-continuation).
+
+If a CPU implementation follows, begin with read-only exact Long64
+`RDMSR IA32_EFER` under a caller-selected immutable profile value; CPL0 returns
+the selected 64-bit value in EDX:EAX and CPL1–3 raises #GP(0). Candidate
+synthetic inputs are `0x500`, `0x501`, `0xd00`, and `0xd01`: LME/LMA are fixed
+set and SCE/NXE vary independently. These values are a test domain only, not
+an inferred Ubuntu entry snapshot. Do not store an unmodeled EFER field or
+enable arbitrary MSRs.
+
+Architecturally LMA (bit 10) is read-only status derived from CR0.PG and
+IA32_EFER.LME; IA-32e paging also requires CR4.PAE. WRMSR mode changes, NX
+page-enforcement effects and translation changes are therefore outside this
+read-only CPU slice. In particular, this contract does not admit the mapped
+WRMSR. The source's later compiled CR0 value `0x80050033` includes AM, while
+the existing S2-25a base `0x80010033` is synthetic; neither proves initial
+entry state. Absolute earlier-helper access ordering and the actual initial
+EFER/CR snapshot remain open under [ISSUE-027](../KNOWN_ISSUES.md#issue-027--first-efer-access-and-startup-control-snapshot-are-unproven).
+
+Normative reference: Intel SDM Rev. 093 Vol. 2B, RDMSR/WRMSR; Vol. 3A,
+IA32_EFER layout and IA-32e paging requirements
+([official SDM index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)).
