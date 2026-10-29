@@ -664,3 +664,19 @@ and does not change existing fixture bytes or digests. JIT/native execution is
 unsupported. Expected outputs are literal local reference values; hardware
 validation compares the `3/8192` error envelope for non-flushed normal outputs
 without requiring exact approximate bits. See [the S2-37c fixture](../../tests/fixtures/x86/stage2/s2_37c_rsqrtps_register.case.json).
+
+## Local RCPPS diagnostic profile — S2-37d
+
+`s2-long-rcpps-reg-v1` reuses schema v2 and requires the existing full
+long-mode state, including raw x87 and SSE snapshots. Its executable region
+must contain exactly one bare `0F 53 /r` (three bytes) or one adjacent REX.R/B
+byte followed by `0F 53 /r` (four bytes), with ModR/M.mod=3 and no trailing
+bytes; ModR/M.reg selects destination and r/m selects source. The profile
+rejects RCPSS (`F3 0F 53 /r`) and other prefixes/forms locally, while common
+decoder profiles continue to admit separately implemented instructions.
+JIT/native execution is unsupported. Expected output is the deterministic
+local `Binary32::reciprocal_sse_raw()` value, not an exact CPU oracle near the
+unresolved ISSUE-025 tiny-result threshold. Hardware validation checks the
+`3/8192` error envelope for non-flushed normal outputs without exact approximate
+bit equality. See [the S2-37d fixture](../../tests/fixtures/x86/stage2/s2_37d_rcpps_register.case.json)
+and [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).

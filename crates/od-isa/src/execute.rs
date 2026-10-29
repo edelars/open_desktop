@@ -1168,6 +1168,7 @@ fn step_tracked_with_profiles(
             | Operation::RsqrtssRegister { .. }
             | Operation::RsqrtpsRegister { .. }
             | Operation::RcpssRegister { .. }
+            | Operation::RcppsRegister { .. }
     ) && state.sse.is_none()
     {
         return Ok(StepOutcome::Unsupported {
@@ -1704,6 +1705,7 @@ fn step_tracked_with_profiles(
         | Operation::RsqrtssRegister { .. }
         | Operation::RsqrtpsRegister { .. }
         | Operation::RcpssRegister { .. }
+        | Operation::RcppsRegister { .. }
         | Operation::MovsdRegister { .. }
         | Operation::MovsdStoreRegister { .. }
         | Operation::MovsdLoadMemory { .. }
@@ -4597,6 +4599,34 @@ fn step_tracked_with_profiles(
                 .sse
                 .as_mut()
                 .expect("RSQRTPS local profile state was prevalidated")
+                .xmm[usize::from(destination)] = result_xmm;
+        }
+        Operation::RcppsRegister {
+            destination,
+            source,
+        } => {
+            let source_xmm = state
+                .sse
+                .as_ref()
+                .expect("RCPPS local profile state was prevalidated")
+                .xmm[usize::from(source)];
+            let mut result_xmm = [0u8; 16];
+            for lane in 0..4 {
+                let offset = lane * 4;
+                let source_bits = u32::from_le_bytes(
+                    source_xmm[offset..offset + 4]
+                        .try_into()
+                        .expect("binary32 lane has four bytes"),
+                );
+                let result_bits = Binary32::from_bits(source_bits)
+                    .reciprocal_sse_raw()
+                    .to_bits();
+                result_xmm[offset..offset + 4].copy_from_slice(&result_bits.to_le_bytes());
+            }
+            state
+                .sse
+                .as_mut()
+                .expect("RCPPS local profile state was prevalidated")
                 .xmm[usize::from(destination)] = result_xmm;
         }
         Operation::MovsdRegister {
@@ -76214,6 +76244,147 @@ mod tests {
         assert!(memory.accesses.is_empty());
 
         let truncated = [0x40, 0x0f, 0x52];
+        let mut memory = Memory::at(&truncated, 0x3000);
+        let mut state = LongModeState::default();
+        state.rip = 0x3000;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x0000_1f80,
+        });
+        let before = state.clone();
+        assert!(step(&mut state, &mut memory, AccessContext::default()).is_err());
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn rcpps_register_transforms_all_lanes_for_all_xmm_pairs_without_other_state_changes() {
+        let expected_lanes = [0x3f00_0000u32, 0xff80_0000, 0x0000_0000, 0xbf00_0000];
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let code = if rex == 0x40 {
+                    vec![0x0f, 0x53, modrm]
+                } else {
+                    vec![rex, 0x0f, 0x53, modrm]
+                };
+                let mut memory = Memory::at(&code, 0x1000);
+                let mut state = LongModeState::default();
+                state.rip = 0x1000;
+                state.rflags = crate::DF | 2;
+                state.gpr[Register::Rcx as usize] = 0x1234_5678_9abc_def0;
+                state.x87 = Some(X87State::fixture_seed());
+                let mut xmm = std::array::from_fn(|register| {
+                    std::array::from_fn(|byte| (register * 16 + byte) as u8)
+                });
+                for bytes in &mut xmm {
+                    for (lane, bits) in [
+                        0x4000_0000u32, // 2 -> 0.5
+                        0x8000_0000,    // -0 -> -infinity
+                        0x7f80_0000,    // +infinity -> +0
+                        0xc000_0000,    // -2 -> -0.5
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        bytes[lane * 4..lane * 4 + 4].copy_from_slice(&bits.to_le_bytes());
+                    }
+                }
+                state.sse = Some(SseState {
+                    xmm,
+                    mxcsr: 0x0000_ffff,
+                });
+                let before = state.clone();
+
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                    StepOutcome::Advanced
+                );
+
+                let mut expected = before.clone();
+                expected.rip = 0x1000 + code.len() as u64;
+                for (lane, bits) in expected_lanes.iter().copied().enumerate() {
+                    expected.sse.as_mut().unwrap().xmm[usize::from(destination)]
+                        [lane * 4..lane * 4 + 4]
+                        .copy_from_slice(&bits.to_le_bytes());
+                }
+                assert_eq!(
+                    state, expected,
+                    "destination={destination}, source={source}"
+                );
+                assert!(memory.accesses.is_empty());
+                assert_eq!(
+                    memory.fetches,
+                    (0x1000..0x1000 + code.len() as u64).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rcpps_register_matches_literal_nan_subnormal_and_tiny_boundary_lanes() {
+        let code = [0x45, 0x0f, 0x53, 0xc1]; // RCPPS XMM8, XMM9
+        let vectors: [([u32; 4], [u32; 4]); 3] = [
+            (
+                [0x7fc1_2345, 0x7f81_2345, 0x0000_0001, 0x8000_0001],
+                [0x7fc1_2345, 0x7fc1_2345, 0x7f80_0000, 0xff80_0000],
+            ),
+            (
+                [0x7e7f_ffff, 0x7e80_0000, 0x7e80_0001, 0xfe80_0001],
+                [0x0080_0001, 0x0080_0000, 0x0000_0000, 0x8000_0000],
+            ),
+            (
+                [0x4000_0000, 0x8000_0000, 0x7f80_0000, 0xc000_0000],
+                [0x3f00_0000, 0xff80_0000, 0x0000_0000, 0xbf00_0000],
+            ),
+        ];
+        for (source_lanes, expected_lanes) in vectors {
+            for rc in 0..4u32 {
+                let mxcsr = (0x0000_1f80 & !0x6000) | (rc << 13) | 0x0000_80bf;
+                let mut memory = Memory::at(&code, 0x2000);
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                state.rflags = crate::DF | 2;
+                state.gpr[Register::Rcx as usize] = 0x0123_4567_89ab_cdef;
+                state.x87 = Some(X87State::fixture_seed());
+                let mut xmm = std::array::from_fn(|register| {
+                    std::array::from_fn(|byte| (0xf0usize.wrapping_sub(register * 16 + byte)) as u8)
+                });
+                for lane in 0..4 {
+                    xmm[9][lane * 4..lane * 4 + 4]
+                        .copy_from_slice(&source_lanes[lane].to_le_bytes());
+                }
+                state.sse = Some(SseState { xmm, mxcsr });
+                let before = state.clone();
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                    StepOutcome::Advanced
+                );
+                let mut expected = before.clone();
+                expected.rip = 0x2004;
+                for (lane, bits) in expected_lanes.iter().copied().enumerate() {
+                    expected.sse.as_mut().unwrap().xmm[8][lane * 4..lane * 4 + 4]
+                        .copy_from_slice(&bits.to_le_bytes());
+                }
+                assert_eq!(state, expected, "RC={rc}, input={source_lanes:08x?}");
+                assert!(memory.accesses.is_empty());
+            }
+        }
+
+        let mut memory = Memory::at(&code, 0x2000);
+        let mut state = LongModeState::default();
+        state.rip = 0x2000;
+        state.x87 = Some(X87State::fixture_seed());
+        let before = state.clone();
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+            StepOutcome::Unsupported { opcode: 0x53 }
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+
+        let truncated = [0x45, 0x0f, 0x53];
         let mut memory = Memory::at(&truncated, 0x3000);
         let mut state = LongModeState::default();
         state.rip = 0x3000;

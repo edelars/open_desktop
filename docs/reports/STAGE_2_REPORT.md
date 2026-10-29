@@ -212,6 +212,45 @@ to absent Stage 1/Stage 2 oracle manifests; this slice did not change repository
 layout. The Linux target check compile-checked the native-denial path, but Linux
 native execution was not run on this macOS host.
 
+## S2-37d — local-only Long64 legacy register RCPPS
+
+Added schema-v2 profile `s2-long-rcpps-reg-v1` for one bare or REX.R/B-extended
+`0F 53 /r` register instruction in Long64 mode, ModR/M.mod=3, XMM0–15. Other
+mandatory/legacy prefixes, REX.W/X, repeated/nonadjacent REX, memory, VEX/EVEX,
+truncation, and neighboring forms are rejected by this profile. The common
+decoder still admits F3 scalar RCPSS and packed RSQRTPS under their separate
+local profiles. Execution copies all 16 source bytes before evaluating four
+independent little-endian binary32 lanes with `Binary32::reciprocal_sse_raw()`,
+then replaces the full destination XMM, supporting aliasing. It preserves all
+unrelated XMM/GPR/x87, RFLAGS and raw MXCSR state and makes no guest data-memory
+callbacks. Missing SSE state and truncated fetches do not commit CPU state.
+
+The handwritten XMM8←XMM9 fixture has literal lanes `2.0`, `-0`, `+∞`, and
+`-2` with outputs `0.5`, `-∞`, `+0`, and `-0.5`. Additional interpreter tests
+cover every source/destination pair, QNaN/SNaN, signed subnormals, local
+tiny-result boundary cases, all four RC encodings, missing SSE, fetch refusal,
+and complete state preservation. JIT/native admission remains closed. The
+profile assumes SSE and CR0/CR4 permission; it does not implement CPUID,
+#UD/#NM, MXCSR exception behavior or guest FP flags. ISSUE-025 remains open:
+the deterministic exact reciprocal rounded nearest-ties-even and subnormal
+flush is local policy, not a universal hardware cutoff or exact-bit claim.
+Physical acceptance is deferred to the combined final Mac mini substage and
+will test the `3/8192` envelope for non-flushed normal outputs separately from
+the ambiguous tiny-result boundary.
+
+**Checks:** `cargo test -p od-isa --offline rcpps_register` passed (3 tests);
+`cargo test -p od-testkit --offline` passed (369 tests);
+`cargo test -p od-runner --offline --test fixture_v2 local_rcpps_register`
+passed (1 test), and existing RCPSS, RSQRTSS and RSQRTPS fixture tests passed
+(1 each). `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, and the Linux x86-64
+`od-x86-runner` all-target check passed. The Linux-target check compiles the
+native-denial test but does not execute it on this macOS host. No physical or
+Mac mini check was performed. Independent Sol medium code and documentation
+reviews found no actionable findings. The documentation reviewer checked all
+19 added local links/anchors; the code reviewer confirmed exact profile
+admission, packed lane/state behavior, and closed native/JIT boundaries.
+
 ## S2-36a — raw binary32/binary64 classification and finite normalization
 
 **Статус:** source implementation and focused tests are complete; workspace

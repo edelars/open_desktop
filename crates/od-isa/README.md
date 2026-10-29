@@ -35,6 +35,14 @@ not exact output bits. SSE/control gates are assumed, while CPUID, FP flags,
 exceptions, JIT and native execution remain outside the profile. See the
 [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-37c-register-only-rsqrtps).
 
+S2-37d adds local-only packed register `RCPPS`, applying the existing
+deterministic binary32 reciprocal reference to four copied source lanes before
+replacing the destination XMM. Raw MXCSR and all unrelated state are preserved.
+ISSUE-025 leaves the hardware tiny-result boundary ambiguous; the local helper
+does not promise hardware-exact result bits. JIT/native remain closed, and
+physical validation is reserved for the combined Mac mini substage. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-37d-register-only-rcpps).
+
 S2-10 добавляет C6/C7 immediate r/m, A0–A3 moffs, MOVSX/MOVSXD/MOVZX,
 LEA и register-only XCHG/NOP90 с сохранением flags. Пять дополнительных
 transfer программ и три прежних MOV cases прошли physical interpreter/native

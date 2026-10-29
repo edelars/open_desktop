@@ -36,6 +36,19 @@ SIMD exception behavior. JIT/native remain denied. Final Mac mini checks use the
 `3/8192` relative-error envelope for non-flushed normal outputs, not exact
 approximate bits. See the [S2-37c plan](../../../../docs/plans/STAGE_2.md#s2-37c--local-long64-register-only-legacy-rsqrtps).
 
+### S2-37d local legacy RCPPS register profile
+
+`s2_37d_rcpps_register.case.json` is a schema-v2 XMM8/XMM9 fixture for exact
+`45 0F 53 C1`. Its XMM9 lanes contain `2.0`, `-0`, `+∞`, and `-2`; independent
+literal local results are `0.5`, `-∞`, `+0`, and `-0.5`. The interpreter
+replaces all four destination lanes while preserving all other state and makes
+no data-memory access. It assumes SSE and CR0/CR4 permission; CPUID, MXCSR
+exception behavior, JIT and native execution remain outside the profile.
+The deterministic helper policy does not claim exact hardware result bits or a
+universal tiny-result cutoff. ISSUE-025 remains open. Final Mac mini checks use
+the `3/8192` relative-error envelope for non-flushed normal outputs and handle
+the tiny-result boundary separately. See the [S2-37d plan](../../../../docs/plans/STAGE_2.md#s2-37d--local-long64-register-only-legacy-rcpps) and [ISSUE-025](../../../../docs/KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
+
 Байты написаны вручную по Intel SDM revision 093: Vol.2B `MOV—Move`,
 Vol.2A `ADD—Add`, Vol.2A §§2.1.5 и 2.2.1.2 (ModR/M/SIB и REX),
 Vol.1 §3.4.1.1 (GPR/subregister aliases). Нормативная ссылка:

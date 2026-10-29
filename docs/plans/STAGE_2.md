@@ -487,6 +487,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37a | Local-only Long64 legacy register RSQRTSS profile `s2-long-rsqrtss-reg-v1`, using S2-36ac raw helper; JIT/native closed | S2-34.1, S2-36ac; independent review |
 | [x] | S2-37b | Local-only Long64 legacy register RCPSS profile `s2-long-rcpss-reg-v1`, using S2-36ab raw helper; JIT/native closed | S2-34.1, S2-36ab; ISSUE-025; independent review |
 | [x] | S2-37c | Local-only Long64 legacy register RSQRTPS profile `s2-long-rsqrtps-reg-v1`, using S2-36ac per lane; JIT/native closed | S2-34.1, S2-36ac; independent review |
+| [x] | S2-37d | Local-only Long64 legacy register RCPPS profile `s2-long-rcpps-reg-v1`, using S2-36ab per lane; JIT/native closed | S2-34.1, S2-36ab; ISSUE-025; independent review |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
@@ -5919,6 +5920,32 @@ every source/destination pair, lane ordering, aliases, REX extensions, supported
 prefix negatives, all RC encodings with raw MXCSR preservation, fetch failure,
 and no data access. Final Mac mini validation checks the `3/8192` relative-error
 bound for non-flushed normal lanes; it must not require exact approximate bits.
+
+#### S2-37d — local Long64 register-only legacy RCPPS
+
+Add one schema-v2 diagnostic profile, `s2-long-rcpps-reg-v1`, for exact
+Long64 legacy `NP [one adjacent REX.R/B] 0F 53 /r`, ModR/M.mod=3, XMM0–15.
+Accept a bare three-byte form or one adjacent REX byte followed by the opcode;
+reject mandatory/legacy prefixes, REX.W/X, duplicate/nonadjacent REX, memory,
+VEX/EVEX, truncation, and neighboring opcodes. Keep scalar `F3 0F 53 /r`
+RCPSS and packed `0F 52 /r` RSQRTPS admitted by their separate profiles.
+
+Execution copies the complete source XMM before calculating four independent
+little-endian binary32 results through `Binary32::reciprocal_sse_raw()`, then
+replaces all 128 destination bits. This supports aliasing and preserves every
+other XMM, GPR, x87, RFLAGS, MXCSR and state outside normal successful RIP
+retirement. No data-memory callback is made. Missing SSE state refuses before
+commit under the local profile; SSE and CR0/CR4 permission remain preconditions.
+Generic CPUID, #UD/#NM/fault delivery, MXCSR flags/exceptions, memory operands,
+JIT and native execution remain out of scope.
+
+Use a handwritten literal mixed-lane fixture for `2→0.5`, `-0→-∞`,
+`+∞→+0`, and `-2→-0.5`; add QNaN/SNaN, signed-subnormal and tiny-result
+boundary vectors that express only the deterministic S2-36ab helper policy.
+ISSUE-025 remains open: no universal hardware cutoff or exact helper-bit match
+is claimed around the normal/subnormal boundary. Final Mac mini validation
+checks the `3/8192` relative-error bound for non-flushed normal lanes and treats
+the ambiguous tiny-result boundary separately.
 
 ### S2-38. MXCSR и FP fault ordering
 

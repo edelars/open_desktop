@@ -147,3 +147,10 @@ bare or REX.R/B-extended `0F 52 /r` XMM-register instruction. The packed fixture
 contains four independent literal lanes, and the profile checks exactly one
 three- or four-byte instruction with no trailing data. Scalar RSQRTSS,
 mandatory-prefix forms, memory operands, JIT and native execution remain denied.
+
+S2-37d adds `s2-long-rcpps-reg-v1`, which admits exactly one bare or
+REX.R/B-extended `0F 53 /r` XMM-register instruction. Its schema profile rejects
+the F3 scalar RCPSS neighbor while common decoding continues to support RCPSS
+and RSQRTPS separately. Four literal lanes exercise the local reciprocal value
+policy, with native/JIT closed and ISSUE-025's hardware tiny-result boundary
+left unresolved.

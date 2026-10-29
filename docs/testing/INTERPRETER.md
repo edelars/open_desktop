@@ -2192,3 +2192,25 @@ not require equal approximate bits. JIT/native remain unsupported; physical
 validation is reserved for the combined Mac mini substage. See [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37c-register-only-rsqrtps),
 [plan](../plans/STAGE_2.md#s2-37c--local-long64-register-only-legacy-rsqrtps),
 and [fixture](../../tests/fixtures/x86/stage2/s2_37c_rsqrtps_register.case.json).
+
+## Local packed RCPPS register profile — S2-37d
+
+The schema-v2 profile `s2-long-rcpps-reg-v1` admits one Long64 legacy
+`NP [optional adjacent REX.R/B] 0F 53 /r` instruction, ModR/M.mod=3, XMM0–15.
+The executor snapshots all 16 source bytes, computes four independent
+binary32 lanes with `Binary32::reciprocal_sse_raw()`, then writes the full
+destination XMM. Other CPU state, including raw MXCSR, remains unchanged and no
+data-memory callback occurs. Missing SSE state refuses before commit. The
+profile assumes SSE and CR0/CR4 permission; it does not model CPUID, #UD/#NM,
+MXCSR or SIMD exceptions.
+
+Literal lanes cover `2→0.5`, `-0→-∞`, `+∞→+0`, and `-2→-0.5`, plus NaNs,
+subnormals, RC independence, and the local tiny-result policy. ISSUE-025 keeps
+the hardware tiny-result cutoff unresolved; helper bits are not an exact CPU
+claim. Final physical checks use the `3/8192` relative-error bound on
+non-flushed normal outputs, without exact-bit equality. JIT/native remain
+unsupported, and Mac mini checks remain in the combined final substage. See
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-37d-register-only-rcpps),
+[plan](../plans/STAGE_2.md#s2-37d--local-long64-register-only-legacy-rcpps),
+[fixture](../../tests/fixtures/x86/stage2/s2_37d_rcpps_register.case.json), and
+[ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).

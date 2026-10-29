@@ -10775,3 +10775,30 @@ delivery, MXCSR arithmetic/exception behavior, memory forms, JIT and native
 execution are not implemented. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37c--local-long64-register-only-legacy-rsqrtps),
 [implementation report](../reports/STAGE_2_REPORT.md#s2-37c--local-only-long64-legacy-register-rsqrtps),
 and [fixture](../../tests/fixtures/x86/stage2/s2_37c_rsqrtps_register.case.json).
+
+## Local S2-37d: register-only RCPPS
+
+The schema-v2 diagnostic profile `s2-long-rcpps-reg-v1` admits exactly one
+Long64 legacy register instruction, `NP [optional adjacent REX.R/B] 0F 53 /r`,
+with ModR/M.mod=3 and XMM0–15. A bare encoding is three bytes; a REX encoding is
+four bytes. The profile rejects legacy prefixes, REX.W/X, repeated/nonadjacent
+REX, memory, VEX/EVEX, truncation and trailing data. Scalar `F3 0F 53 /r`
+RCPSS and packed `0F 52 /r` RSQRTPS remain admitted only by their own profiles.
+
+Execution snapshots the whole source XMM, applies the existing
+`Binary32::reciprocal_sse_raw()` to four little-endian lanes, and replaces all
+128 bits of the destination. It preserves all other XMM/GPR/x87 state, RFLAGS
+and raw MXCSR; RIP advances only on successful retirement. No guest data-memory
+access occurs. Missing SSE state refuses before commit. SSE and CR0/CR4
+permission are preconditions; CPUID, #UD/#NM, MXCSR flags/exceptions, memory,
+JIT and native execution are excluded.
+
+This profile uses the deterministic local policy `1/x` rounded to binary32
+nearest-ties-even, then flushes a subnormal rounded output to signed zero. These
+bits are not a universal hardware result or cutoff claim. ISSUE-025 records the
+overlapping RCPPS/RCPSS threshold inequalities; final Mac mini acceptance checks
+the `3/8192` relative-error bound for non-flushed normal outputs and treats the
+tiny-result boundary separately. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37d--local-long64-register-only-legacy-rcpps),
+[implementation report](../reports/STAGE_2_REPORT.md#s2-37d--local-only-long64-legacy-register-rcpps),
+[fixture](../../tests/fixtures/x86/stage2/s2_37d_rcpps_register.case.json), and
+[ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
