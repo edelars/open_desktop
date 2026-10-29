@@ -2294,3 +2294,24 @@ occurs. JIT/native admission remains closed. Unmasked exception delivery and
 broader S2-38 fault ordering are not implemented. See the [plan](../plans/STAGE_2.md#s2-37h--local-long64-register-only-legacy-maxps-with-masked-status),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37h-register-only-maxps-with-masked-status),
 and [literal fixture](../../tests/fixtures/x86/stage2/s2_37h_maxps_masked_register.case.json).
+
+
+## Local scalar MINSD register profile — S2-37i
+
+`s2-long-minsd-reg-masked-v1` admits one Long64 `F2 [optional adjacent
+REX.R/B] 0F 5D /r` register instruction (ModR/M.mod=3, XMM0–15). F2 selects
+MINSD globally, F3 remains MINSS and the bare form remains MINPS. The profile
+requires SSE state, all six MXCSR exception masks, DAZ/FTZ clear and reserved
+bits 16–31 clear; any RC and prior sticky bits are accepted.
+
+The operation snapshots only the two low qwords. Either QNaN or SNaN input
+selects raw RHS and sets IE; a subnormal low qword sets DE. Equal values and
+signed-zero ties select RHS. It commits only the destination low qword and ORs
+sticky IE/DE, preserving the destination upper qword and all unrelated state.
+Upper-qword NaN/subnormal sentinels do not affect result or flags. The literal
+fixture includes those sentinels; tests cover all 256 XMM pairs, raw NaN/zero
+semantics, all RC values, preflight atomicity and JIT/native denial. Full
+unmasked exception delivery and S2-38 fault ordering remain open. See the
+[plan](../plans/STAGE_2.md#s2-37i--local-long64-register-only-legacy-minsd-with-masked-status),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-37i-register-only-minsd-with-masked-status),
+and [literal fixture](../../tests/fixtures/x86/stage2/s2_37i_minsd_masked_register.case.json).

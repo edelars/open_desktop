@@ -514,3 +514,13 @@ lanes; masked IE/DE conditions are ORed across lanes before the full destination
 and sticky-status commit. It uses the same all-masks-set, DAZ/FTZ-clear,
 reserved-bits-clear preconditions as MINPS. Unmasked exceptions, memory,
 JIT/native and physical execution remain closed. See [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-37h-register-only-maxps-with-masked-status).
+
+
+S2-37i adds local-only register MINSD operation `MinsdRegisterMasked` for
+`F2 [optional adjacent REX.R/B] 0F 5D /r`. Execution uses raw Binary64 MIN
+selection on the low qwords only, accumulates masked IE/DE, and commits only
+the destination low qword plus sticky status while preserving the upper qword
+and unrelated state. Upper-qword sentinels do not contribute flags. F2 is now
+globally decoded as MINSD; MINSS/MINPS profile validation remains prefix-exact.
+JIT/native/CPUID remain closed. The bounded behavior is documented in the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-37i-register-only-minsd-with-masked-status).

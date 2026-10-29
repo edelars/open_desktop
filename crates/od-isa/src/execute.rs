@@ -1,7 +1,7 @@
 //! On-demand single-instruction execution for the implemented long-mode integer slice.
 //! Unlike the fragment API, targets are decoded only when execution reaches them.
 
-use crate::binary_float::{Binary32, BinaryClass};
+use crate::binary_float::{Binary32, Binary64, BinaryClass};
 use crate::cpuid::CpuidProfile;
 use crate::long_decode::{
     self, AddressBase, ArithmeticKind, BitKind, BitOffset, BitScanKind, DecodeError, LogicKind,
@@ -1180,6 +1180,7 @@ fn step_tracked_with_profiles(
             | Operation::RcppsRegister { .. }
             | Operation::MinssRegisterMasked { .. }
             | Operation::MaxssRegisterMasked { .. }
+            | Operation::MinsdRegisterMasked { .. }
             | Operation::MinpsRegisterMasked { .. }
             | Operation::MaxpsRegisterMasked { .. }
     ) && state.sse.is_none()
@@ -1192,6 +1193,7 @@ fn step_tracked_with_profiles(
         instruction.operation,
         Operation::MinssRegisterMasked { .. }
             | Operation::MaxssRegisterMasked { .. }
+            | Operation::MinsdRegisterMasked { .. }
             | Operation::MinpsRegisterMasked { .. }
             | Operation::MaxpsRegisterMasked { .. }
     ) && !state
@@ -1736,6 +1738,7 @@ fn step_tracked_with_profiles(
         | Operation::RcppsRegister { .. }
         | Operation::MinssRegisterMasked { .. }
         | Operation::MaxssRegisterMasked { .. }
+        | Operation::MinsdRegisterMasked { .. }
         | Operation::MinpsRegisterMasked { .. }
         | Operation::MaxpsRegisterMasked { .. }
         | Operation::MovsdRegister { .. }
@@ -4706,6 +4709,45 @@ fn step_tracked_with_profiles(
                 .as_mut()
                 .expect("MINSS/MAXSS local profile state was prevalidated");
             sse.xmm[usize::from(destination)][..4].copy_from_slice(&result_bits.to_le_bytes());
+            sse.mxcsr =
+                old_mxcsr | u32::from(invalid_operation) | (u32::from(denormal_operand) << 1);
+        }
+        Operation::MinsdRegisterMasked {
+            destination,
+            source,
+        } => {
+            let (result_bits, invalid_operation, denormal_operand, old_mxcsr) = {
+                let sse = state
+                    .sse
+                    .as_ref()
+                    .expect("MINSD local profile state was prevalidated");
+                let lhs_bits = u64::from_le_bytes(
+                    sse.xmm[usize::from(destination)][..8]
+                        .try_into()
+                        .expect("binary64 lane has eight bytes"),
+                );
+                let rhs_bits = u64::from_le_bytes(
+                    sse.xmm[usize::from(source)][..8]
+                        .try_into()
+                        .expect("binary64 lane has eight bytes"),
+                );
+                let lhs = Binary64::from_bits(lhs_bits);
+                let rhs = Binary64::from_bits(rhs_bits);
+                let denormal_operand =
+                    lhs.class() == BinaryClass::Subnormal || rhs.class() == BinaryClass::Subnormal;
+                let result = Binary64::min_sse_raw_result(lhs, rhs);
+                (
+                    result.value().to_bits(),
+                    result.invalid_operation(),
+                    denormal_operand,
+                    sse.mxcsr,
+                )
+            };
+            let sse = state
+                .sse
+                .as_mut()
+                .expect("MINSD local profile state was prevalidated");
+            sse.xmm[usize::from(destination)][..8].copy_from_slice(&result_bits.to_le_bytes());
             sse.mxcsr =
                 old_mxcsr | u32::from(invalid_operation) | (u32::from(denormal_operand) << 1);
         }
@@ -76668,6 +76710,197 @@ mod tests {
     #[test]
     fn minss_register_masked_preflights_mxcsr_and_missing_sse_atomically() {
         let code = [0xf3, 0x45, 0x0f, 0x5d, 0xc1]; // MINSS XMM8, XMM9
+        for mxcsr in [
+            0x0000_1f00, // IE mask clear
+            0x0000_1fc0, // DAZ set
+            0x0000_9f80, // FTZ set
+            0x0001_1f80, // reserved bit set
+        ] {
+            let mut memory = Memory::at(&code, 0x4000);
+            let mut state = LongModeState::default();
+            state.rip = 0x4000;
+            state.x87 = Some(X87State::fixture_seed());
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr,
+            });
+            let before = state.clone();
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                StepOutcome::Unsupported { opcode: 0x5d },
+                "MXCSR={mxcsr:08x}"
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut memory = Memory::at(&code, 0x4000);
+        let mut state = LongModeState::default();
+        state.rip = 0x4000;
+        state.x87 = Some(X87State::fixture_seed());
+        let before = state.clone();
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+            StepOutcome::Unsupported { opcode: 0x5d }
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn minsd_register_masked_updates_ie_de_for_all_register_pairs_and_ignores_upper_qwords() {
+        use crate::binary_float::{Binary64, BinaryClass};
+
+        let values: [u64; 16] = [
+            0x3ff0_0000_0000_0000, // 1
+            0x4000_0000_0000_0000, // 2
+            0xbff0_0000_0000_0000, // -1
+            0xc000_0000_0000_0000, // -2
+            0x0000_0000_0000_0000, // +0
+            0x8000_0000_0000_0000, // -0
+            0x0000_0000_0000_0001, // positive subnormal
+            0x800f_ffff_ffff_ffff, // negative maximum subnormal
+            0x7ff0_0000_0000_0000, // +infinity
+            0xfff0_0000_0000_0000, // -infinity
+            0x7ff8_1234_5678_9abc, // QNaN
+            0xfff8_2345_6789_abcd, // negative QNaN
+            0x7ff0_1234_5678_9abc, // SNaN
+            0xfff0_0000_0000_0001, // negative SNaN
+            0x0010_0000_0000_0000, // minimum normal
+            0x3fe0_0000_0000_0000, // 0.5
+        ];
+
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let code = [0xf2, rex, 0x0f, 0x5d, modrm];
+                let mut memory = Memory::at(&code, 0x1000);
+                let mut state = LongModeState::default();
+                state.rip = 0x1000;
+                state.rflags = crate::DF | 2;
+                state.gpr[Register::Rcx as usize] = 0x0123_4567_89ab_cdef;
+                state.x87 = Some(X87State::fixture_seed());
+                let upper_destination = 0x7ff0_0000_0000_0001u64.to_le_bytes(); // SNaN sentinel
+                let upper_source = 0x0000_0000_0000_0001u64.to_le_bytes(); // subnormal sentinel
+                let mut xmm = std::array::from_fn(|register| {
+                    std::array::from_fn(|byte| (register * 16 + byte) as u8)
+                });
+                for (register, bits) in values.iter().copied().enumerate() {
+                    xmm[register][..8].copy_from_slice(&bits.to_le_bytes());
+                }
+                for register in 0..16 {
+                    xmm[register][8..].copy_from_slice(&upper_destination);
+                }
+                xmm[usize::from(source)][8..].copy_from_slice(&upper_source);
+                let mxcsr = 0x0000_1fa0; // masks set; old PE sticky
+                state.sse = Some(SseState { xmm, mxcsr });
+                let before = state.clone();
+
+                let lhs = Binary64::from_bits(values[usize::from(destination)]);
+                let rhs = Binary64::from_bits(values[usize::from(source)]);
+                let selection = Binary64::min_sse_raw_result(lhs, rhs);
+                let denormal =
+                    lhs.class() == BinaryClass::Subnormal || rhs.class() == BinaryClass::Subnormal;
+                let expected_mxcsr =
+                    mxcsr | u32::from(selection.invalid_operation()) | (u32::from(denormal) << 1);
+
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                    StepOutcome::Advanced,
+                    "destination={destination}, source={source}"
+                );
+                let mut expected = before.clone();
+                expected.rip = 0x1005;
+                expected.sse.as_mut().unwrap().xmm[usize::from(destination)][..8]
+                    .copy_from_slice(&selection.value().to_bits().to_le_bytes());
+                expected.sse.as_mut().unwrap().mxcsr = expected_mxcsr;
+                assert_eq!(
+                    state, expected,
+                    "destination={destination}, source={source}"
+                );
+                assert_eq!(state.rflags, before.rflags);
+                assert_eq!(state.x87, before.x87);
+                assert_eq!(memory.accesses, []);
+                assert_eq!(memory.fetches, (0x1000..0x1005).collect::<Vec<_>>());
+            }
+        }
+    }
+
+    #[test]
+    fn minsd_register_masked_matches_raw_nan_zero_and_denormal_behavior_for_every_rc() {
+        let code = [0xf2, 0x0f, 0x5d, 0xc1]; // MINSD XMM0, XMM1
+        let vectors: [(u64, u64, u64, u32); 9] = [
+            (
+                0x3ff0_0000_0000_0000,
+                0x4000_0000_0000_0000,
+                0x3ff0_0000_0000_0000,
+                0,
+            ),
+            (0, 0x8000_0000_0000_0000, 0x8000_0000_0000_0000, 0),
+            (0x8000_0000_0000_0000, 0, 0, 0),
+            (
+                0x7ff8_1234_5678_9abc,
+                0xc008_0000_0000_0000,
+                0xc008_0000_0000_0000,
+                1,
+            ),
+            (
+                0x3ff0_0000_0000_0000,
+                0xfff0_1234_5678_9abc,
+                0xfff0_1234_5678_9abc,
+                1,
+            ),
+            (1, 0x3ff0_0000_0000_0000, 1, 2),
+            (
+                0x3ff0_0000_0000_0000,
+                0x800f_ffff_ffff_ffff,
+                0x800f_ffff_ffff_ffff,
+                2,
+            ),
+            (
+                0x7ff8_1234_5678_9abc,
+                0x8000_0000_0000_0001,
+                0x8000_0000_0000_0001,
+                3,
+            ),
+            (0xfff0_1234_5678_9abc, 1, 1, 3),
+        ];
+        for (lhs_bits, rhs_bits, expected_bits, new_flags) in vectors {
+            for rc in 0..4u32 {
+                let mut memory = Memory::at(&code, 0x2000);
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                state.rflags = crate::DF | 2;
+                state.x87 = Some(X87State::fixture_seed());
+                let mut xmm = [[0x5a; 16]; 16];
+                xmm[0][..8].copy_from_slice(&lhs_bits.to_le_bytes());
+                xmm[1][..8].copy_from_slice(&rhs_bits.to_le_bytes());
+                let mxcsr = 0x0000_1fa0 | (rc << 13);
+                state.sse = Some(SseState { xmm, mxcsr });
+                let before = state.clone();
+
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                    StepOutcome::Advanced
+                );
+                let mut expected = before.clone();
+                expected.rip = 0x2004;
+                expected.sse.as_mut().unwrap().xmm[0][..8]
+                    .copy_from_slice(&expected_bits.to_le_bytes());
+                expected.sse.as_mut().unwrap().mxcsr = mxcsr | new_flags;
+                assert_eq!(
+                    state, expected,
+                    "lhs={lhs_bits:016x} rhs={rhs_bits:016x} RC={rc}"
+                );
+                assert!(memory.accesses.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn minsd_register_masked_preflights_mxcsr_and_missing_sse_atomically() {
+        let code = [0xf2, 0x45, 0x0f, 0x5d, 0xc1]; // MINSD XMM8, XMM9
         for mxcsr in [
             0x0000_1f00, // IE mask clear
             0x0000_1fc0, // DAZ set

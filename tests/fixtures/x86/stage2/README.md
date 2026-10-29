@@ -5540,3 +5540,18 @@ reserved bits clear. Normative references are Intel SDM Rev. 093 Vol. 1 §11.5,
 Appendix D Tables D-9/D-13/D-15, and Vol. 2B MAXPS. This is masked-status local
 coverage only; unmasked #XM delivery and fault ordering are not claimed. See
 the [plan](../../../../docs/plans/STAGE_2.md#s2-37h--local-long64-register-only-legacy-maxps-with-masked-status).
+
+
+### S2-37i local masked-status MINSD register profile
+
+`s2_37i_minsd_masked_register.case.json` is a handwritten schema-v2 XMM8←XMM9
+fixture for `F2 45 0F 5D C1`. The low qword destination is QNaN and the low
+qword source is the minimum positive subnormal; the fixture expects raw RHS in
+the low qword, preserves destination upper-qword SNaN sentinel, and checks
+MXCSR IE|DE (`0x1f80` to `0x1f83`). A source upper-qword subnormal sentinel
+must not affect the result or flags. The local profile requires all MXCSR
+exception masks set, DAZ/FTZ clear and reserved bits clear. It is not a claim
+about unmasked exception delivery, memory forms, JIT/native or physical CPU
+acceptance. Normative references are Intel SDM Rev. 093 Vol. 1 §11.5, Appendix
+D Tables D-9/D-15, and Vol. 2B MINSD. See the
+[plan](../../../../docs/plans/STAGE_2.md#s2-37i--local-long64-register-only-legacy-minsd-with-masked-status).

@@ -5237,6 +5237,7 @@ fn local_minss_masked_register_selects_rhs_and_sets_sticky_ie_de() {
         "450f52c1",     // RSQRTPS neighbor
         "f3450f5d01",   // memory operand
         "f3450f5dc190", // trailing byte
+        "f2450f5dc1",   // MINSD is globally decoded but outside this profile
         "f3660f5dc1",   // duplicate/operand-size prefix
         "f3480f5dc1",   // REX.W
         "f3420f5dc1",   // REX.X
@@ -5391,6 +5392,71 @@ fn local_minps_masked_register_aggregates_ie_de_across_lanes() {
     let mut missing_sse = input.fixture.clone();
     missing_sse.initial_state.sse = None;
     assert!(missing_sse.to_json().is_err());
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn local_minsd_masked_register_updates_only_low_qword_and_keeps_jit_closed() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_37i_minsd_masked_register.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMinsdMaskedRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8] = "0100000000000000010000000000f07f".to_owned();
+    expected.sse.as_mut().unwrap().mxcsr = HexU64(0x0000_1f83);
+    assert_eq!(snapshot(&result).state, expected);
+
+    for bytes_hex in [
+        "f2450f5d01",     // memory operand
+        "f2450f5dc190",   // trailing byte
+        "f3450f5dc1",     // MINSS prefix
+        "450f5dc1",       // MINPS form
+        "f2480f5dc1",     // REX.W
+        "f2420f5dc1",     // REX.X
+        "f240410f5dc1",   // repeated REX
+        "40f20f5dc1",     // nonadjacent REX
+        "f2f20f5dc1",     // repeated mandatory prefix
+        "f2660f5dc1",     // extra operand-size prefix
+        "66f20f5dc1",     // wrong prefix order
+        "2ef20f5dc1",     // segment override
+        "67f20f5dc1",     // address-size override
+        "f0f20f5dc1",     // LOCK prefix
+        "f2450f5d",       // truncated ModR/M
+        "f2c5fb5dc1",     // VEX
+        "f262f1ff085dc1", // EVEX
+    ] {
+        let mut invalid = input.fixture.clone();
+        let code = invalid
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = bytes_hex.to_owned();
+        code.length = (bytes_hex.len() / 2) as u32;
+        code.comparison_mask_hex = "ff".repeat(bytes_hex.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (bytes_hex.len() / 2) as u64,
+        ));
+        assert!(invalid.to_json().is_err(), "accepted {bytes_hex}");
+    }
+
+    let mut minss_profile = input.fixture.clone();
+    minss_profile.profile = od_testkit::v2::Profile::LongMinssMaskedRegV1;
+    assert!(minss_profile.to_json().is_err());
+    let mut minps_profile = input.fixture.clone();
+    minps_profile.profile = od_testkit::v2::Profile::LongMinpsMaskedRegV1;
+    assert!(minps_profile.to_json().is_err());
 
     let (_, jit_result) = run(bytes, "jit", 4);
     assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));

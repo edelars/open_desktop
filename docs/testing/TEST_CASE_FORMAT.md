@@ -735,3 +735,16 @@ aggregation and full state. JIT/native remain denied; unmasked exception
 delivery and fault ordering are outside this profile. See [the S2-37h
 fixture](../../tests/fixtures/x86/stage2/s2_37h_maxps_masked_register.case.json)
 and [the bounded plan](../plans/STAGE_2.md#s2-37h--local-long64-register-only-legacy-maxps-with-masked-status).
+
+
+## Local MINSD masked-status profile — S2-37i
+
+The schema-v2 profile `s2-long-minsd-reg-masked-v1` accepts exactly one
+Long64 `F2 [optional adjacent REX.R/B] 0F 5D /r` instruction with ModR/M.mod=3.
+F3 MINSS and bare MINPS remain distinct decoder operations and are rejected by
+this profile. The existing state schema is unchanged; MXCSR admission requires
+all exception masks, DAZ/FTZ clear and reserved bits 16–31 clear. A literal
+fixture checks low-qword RHS selection and masked IE/DE with upper-qword
+SNaN/subnormal sentinels. The profile is local-only, with JIT/native denied.
+See [the S2-37i fixture](../../tests/fixtures/x86/stage2/s2_37i_minsd_masked_register.case.json)
+and [the bounded plan](../plans/STAGE_2.md#s2-37i--local-long64-register-only-legacy-minsd-with-masked-status).

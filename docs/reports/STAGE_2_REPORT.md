@@ -15625,3 +15625,50 @@ was compile-checked, not executed on this macOS host. Independent Sol medium
 code and documentation reviews completed with no remaining findings; the
 documentation reviewer checked all eight added links after the misplaced
 report subsection was moved and the adjacent S2-27b text restored.
+
+## S2-37i / bounded S2-38a — local MINSD masked IE/DE status
+
+Added the local-only schema-v2 profile `s2-long-minsd-reg-masked-v1` for
+exactly one Long64 `F2 [optional adjacent REX.R/B] 0F 5D /r` instruction,
+ModR/M.mod=3, XMM0–15. F2 now globally decodes MINSD; F3 remains MINSS and bare
+`0F 5D /r` remains MINPS. Profile validators remain exact and reject the other
+mandatory-prefix variants, memory operands, trailing bytes, REX.W/X, repeated
+or misplaced prefixes, truncation, VEX and EVEX.
+
+The executor snapshots only the source and destination low qwords and calls
+existing `Binary64::min_sse_raw_result`. A NaN in either low qword selects raw
+operand 2 and sets sticky IE; a subnormal in either low qword sets sticky DE.
+Equal values and signed-zero ties select operand 2. It commits only the
+low-qword destination and ORs IE/DE into MXCSR, preserving the destination upper
+qword and all unrelated state. Upper-qword NaN/subnormal sentinels do not affect
+the result or flags. Aliasing is supported, no data-memory callback occurs,
+and unsupported MXCSR/missing SSE refuse before mutation. JIT/native/CPUID and
+unmasked exception delivery remain closed.
+
+The handwritten `s2_37i_minsd_masked_register.case.json` executes XMM8←XMM9
+with low-qword QNaN and minimum positive subnormal, plus upper-qword destination
+SNaN and source subnormal sentinels. It expects the raw RHS low qword, preserved
+destination upper qword and MXCSR `0x1f83`. The runner validator tests reject
+17 malformed or wrong-profile byte streams; MINSS and MINPS profile regressions
+explicitly reject the F2 MINSD form. Unit tests cover every one of the 256 XMM
+pairs, raw NaN/zero/subnormal behavior, all rounding-control values, upper
+qword isolation, state preservation, and atomic preflight refusals. A native
+fixture-denial case is registered and JIT remains refused.
+
+Normative sources are Intel SDM Rev. 093 Vol. 1 §11.5 and Appendix D Tables
+D-9/D-15 (masked invalid and denormal status), and Vol. 2B MINSD. This extends
+only the bounded S2-38a status subset; full unmasked delivery, #XM, control
+state and fault ordering remain open. Mac mini/physical checks are deferred to
+the combined final hardware substage; none were run here.
+
+**Checks:** `cargo test -p od-isa --offline minsd_register_masked -- --nocapture`
+passed (4 tests); `cargo test -p od-isa --offline register_masked` passed (20
+regressions); `cargo test -p od-testkit --offline` passed (369 tests);
+`cargo test -p od-runner --test fixture_v2 masked_register --offline` passed
+(5 tests). `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`,
+`git diff --check` and `graphify update .` all passed. Independent Sol medium
+code review found no remaining correctness findings after correcting the
+fixture's upper-qword SNaN literal. Independent documentation review found no
+content or link findings.

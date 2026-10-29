@@ -10904,3 +10904,30 @@ exceptions, #XM delivery/suppression, CR0/CR4/OSXMMEXCPT, memory and fault
 ordering, and the rest of S2-38 remain open. JIT/native/CPUID admission remain
 closed. Physical validation is deferred to the combined final Mac mini
 substage.
+
+
+## Local S2-37i register-only MINSD with masked status
+
+The schema-v2 profile `s2-long-minsd-reg-masked-v1` admits exactly one Long64
+legacy `F2 [optional adjacent REX.R/B] 0F 5D /r` instruction, ModR/M.mod=3,
+XMM0–15. The mandatory-prefix variants are distinct globally: F2 selects MINSD,
+F3 selects MINSS, and bare `0F 5D /r` selects MINPS. The profile requires SSE
+state, all six MXCSR exception masks set, DAZ/FTZ clear and reserved bits
+16–31 zero. Any RC and existing sticky bits are permitted. Missing/unsupported
+profile state refuses without claiming architectural fault delivery.
+
+Execution snapshots the source and destination low qwords, uses the existing
+raw Binary64 MIN selector, and commits only the destination low qword plus
+MXCSR IE/DE sticky bits after preflight. Either QNaN or SNaN in either low
+qword selects raw operand 2 and contributes IE; a low-qword subnormal in either
+operand contributes DE. Equal values and signed-zero ties select operand 2.
+The destination upper qword, all unrelated state and other MXCSR bits are
+preserved. Upper-qword NaN/subnormal values do not affect the result or flags;
+aliasing is supported and no data-memory access occurs.
+
+Intel SDM Rev. 093 Vol. 1 §11.5 and Appendix D Tables D-9/D-15 cover masked
+invalid and denormal status; Vol. 2B specifies MINSD selection. This extends
+only the bounded S2-38a subset. Unmasked exceptions, #XM delivery/suppression,
+control-state gating, memory/fault ordering and the rest of S2-38 remain open.
+JIT/native/CPUID admission remain closed. Physical validation is deferred to
+the combined final Mac mini substage.

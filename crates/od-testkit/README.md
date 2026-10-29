@@ -179,3 +179,12 @@ register `0F 5F /r` form. Fixture admission requires the supported masked
 MXCSR subset and rejects scalar MAXSS and other prefix/operand forms. Four
 literal binary32 lanes check output order and IE/DE sticky aggregation; JIT and
 native admission remain closed.
+
+
+S2-37i adds schema-v2 profile `s2-long-minsd-reg-masked-v1` for exactly one
+Long64 register-only `F2 [optional adjacent REX.R/B] 0F 5D /r` MINSD form. It
+requires the same masked-MXCSR subset as MINSS/MINPS and accepts any RC and old
+sticky bits. The schema validator keeps F2 MINSD distinct from F3 MINSS and
+bare MINPS, and the handwritten fixture includes upper-qword NaN/subnormal
+sentinels. JIT/native remain closed. See the
+[plan](../../docs/plans/STAGE_2.md#s2-37i--local-long64-register-only-legacy-minsd-with-masked-status).
