@@ -7,7 +7,7 @@
 use od_isa::LongModeState;
 use od_isa::execute::StepOutcome;
 use od_isa::memory::{AccessContext, MemoryError};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use crate::block::{AdmittedInstructionBoundaries, CodeMemory, CodeView};
 use crate::block_compile::{
@@ -86,17 +86,22 @@ pub struct BlockExecutionReport {
 
 pub use crate::block::S0_09NopAdmission as InterpreterFallbackAdmission;
 
-/// One cooperative control context is shared by generated guards and
-/// interpreter pre-step guards for the full dispatch invocation.
+/// One cooperative control context is shared for the full dispatch invocation.
+/// STOP fields are forwarded to generated guards; an event request is sampled
+/// only by the host dispatcher between completed blocks or interpreter steps.
 #[derive(Clone, Copy)]
 pub struct DispatchControl<'a> {
     pub stop_rip: Option<u64>,
     pub stop_requested: &'a AtomicU8,
+    /// Optional cooperative host event request. Dispatch observes it only
+    /// between completed native blocks or interpreter fallback steps.
+    pub event_requested: Option<&'a AtomicBool>,
 }
 
 /// Executor contract for fallback dispatch. Implementations must pass this
 /// exact stop address and atomic to the generated block invocation and release
-/// the executable mapping before returning.
+/// the executable mapping before returning. Event requests are host-side and
+/// do not enter the generated runtime ABI.
 pub trait ControlledBlockExecutor {
     type Error;
 
@@ -801,6 +806,9 @@ impl<H> CachedEntryStore<H> for MultiEntryBlockCache<H> {
 pub enum DispatchExit {
     CodeEnd,
     BudgetExhausted,
+    /// A host event was requested and the current guest work unit has ended.
+    /// The request remains set; the caller handles it and resumes at `state.rip`.
+    EventPending,
     Runtime(RuntimeExitTag),
 }
 
@@ -866,6 +874,7 @@ pub fn run_cached<B: CachedBlockBackend>(
         DispatchControl {
             stop_rip: None,
             stop_requested: &no_stop,
+            event_requested: None,
         },
         cache,
         backend,
@@ -922,6 +931,7 @@ pub fn run_multi_cached<B: MultiBlockCachedBackend>(
         DispatchControl {
             stop_rip: None,
             stop_requested: &no_stop,
+            event_requested: None,
         },
         cache,
         backend,
@@ -989,10 +999,6 @@ where
     if !admission.matches_code(code) {
         return Err(DispatchError::AdmissionDoesNotMatchCode);
     }
-    cache
-        .bind_execution_context(execution_context)
-        .map_err(DispatchError::ExecutionContext)?;
-
     if control.stop_rip == Some(state.rip) {
         return Ok(result(
             DispatchExit::Runtime(RuntimeExitTag::StopAddress),
@@ -1018,6 +1024,12 @@ where
     if total_budget == 0 {
         return Ok(result(DispatchExit::BudgetExhausted, 0, 0, 0));
     }
+    if let Some(exit) = event_exit(control) {
+        return Ok(result(exit, total_budget, 0, 0));
+    }
+    cache
+        .bind_execution_context(execution_context)
+        .map_err(DispatchError::ExecutionContext)?;
 
     let mut remaining = total_budget;
     let mut retired_total = 0u64;
@@ -1029,6 +1041,9 @@ where
         }
         if !admission.contains(state.rip) {
             return Err(DispatchError::EntryNotAdmitted { rip: state.rip });
+        }
+        if let Some(exit) = event_exit(control) {
+            return Ok(result(exit, remaining, retired_total, blocks_executed));
         }
 
         let built =
@@ -1112,6 +1127,12 @@ where
         let cached = cache.entry(cached_index).expect("cache index valid");
         let cached_block = &cached.block;
         let published = &cached.published;
+        if let Some(exit) = control_exit(state.rip, code.code_end(), remaining, control) {
+            return Ok(result(exit, remaining, retired_total, blocks_executed));
+        }
+        if let Some(exit) = event_exit(control) {
+            return Ok(result(exit, remaining, retired_total, blocks_executed));
+        }
         // Keep both the verified block metadata and published handle borrowed
         // across generated execution and host result validation. Cache clear,
         // eviction, or slot reuse requires `&mut cache` and therefore cannot
@@ -1152,6 +1173,9 @@ where
                 }
                 if report.retired_instructions == 0 {
                     return Err(DispatchError::ZeroProgress { rip: state.rip });
+                }
+                if let Some(exit) = event_exit(control) {
+                    return Ok(result(exit, remaining, retired_total, blocks_executed));
                 }
             }
             RuntimeExitTag::BudgetExhausted => {
@@ -1437,6 +1461,16 @@ pub fn run_with_nop_fallback<E: ControlledBlockExecutor>(
         if !admission.contains(state.rip) {
             return Err(DispatchError::EntryNotAdmitted { rip: state.rip });
         }
+        if let Some(exit) = event_exit(control) {
+            return fallback_result(
+                exit,
+                total_budget,
+                remaining,
+                retired_native,
+                retired_interpreter,
+                blocks_executed,
+            );
+        }
 
         let block = match compile_block_for_nop_fallback(code, state.rip, admission)
             .map_err(DispatchError::Compile)?
@@ -1544,6 +1578,16 @@ pub fn run_with_nop_fallback<E: ControlledBlockExecutor>(
                 if report.retired_instructions == 0 {
                     return Err(DispatchError::ZeroProgress { rip: state.rip });
                 }
+                if let Some(exit) = event_exit(control) {
+                    return fallback_result(
+                        exit,
+                        total_budget,
+                        remaining,
+                        retired_native,
+                        retired_interpreter,
+                        blocks_executed,
+                    );
+                }
             }
             RuntimeExitTag::BudgetExhausted => {
                 if remaining != 0 {
@@ -1595,6 +1639,13 @@ fn control_exit(
     None
 }
 
+fn event_exit(control: DispatchControl<'_>) -> Option<DispatchExit> {
+    control
+        .event_requested
+        .filter(|request| request.load(Ordering::Acquire))
+        .map(|_| DispatchExit::EventPending)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn step_admitted_nop<E>(
     code: CodeView<'_>,
@@ -1611,6 +1662,9 @@ fn step_admitted_nop<E>(
         return Err(DispatchError::InterpreterInstructionNotAdmitted { rip });
     }
     if let Some(exit) = control_exit(rip, code.code_end(), *remaining, control) {
+        return Ok(Some(exit));
+    }
+    if let Some(exit) = event_exit(control) {
         return Ok(Some(exit));
     }
 
@@ -1790,6 +1844,7 @@ mod tests {
         rax: Option<u64>,
         rflags: Option<u64>,
         request_stop: bool,
+        request_event: bool,
     }
 
     #[derive(Default)]
@@ -1849,6 +1904,12 @@ mod tests {
             if reply.request_stop {
                 control.stop_requested.store(1, Ordering::Release);
             }
+            if reply.request_event {
+                control
+                    .event_requested
+                    .expect("scripted event request must be configured")
+                    .store(true, Ordering::Release);
+            }
             Ok(reply.report)
         }
     }
@@ -1886,6 +1947,9 @@ mod tests {
         fail_execute_once: bool,
         loop_to_entry: bool,
         request_stop_once: bool,
+        request_event_once: bool,
+        stop_on_publish: Option<Rc<AtomicU8>>,
+        event_on_publish: Option<Rc<AtomicBool>>,
         allow_multiple_live: bool,
         capacity: usize,
     }
@@ -1923,6 +1987,12 @@ mod tests {
             tracker.published_ids.push(published_id);
             tracker.live += 1;
             tracker.max_live = tracker.max_live.max(tracker.live);
+            if let Some(stop) = tracker.stop_on_publish.take() {
+                stop.store(1, Ordering::Release);
+            }
+            if let Some(event) = tracker.event_on_publish.take() {
+                event.store(true, Ordering::Release);
+            }
             drop(tracker);
             Ok(MockPublished(self.0.clone(), published_id))
         }
@@ -1935,7 +2005,7 @@ mod tests {
             incoming_budget: u64,
             control: DispatchControl<'_>,
         ) -> Result<BlockExecutionReport, Self::Error> {
-            let (loop_to_entry, request_stop_once, fail_execute_once) = {
+            let (loop_to_entry, request_stop_once, request_event_once, fail_execute_once) = {
                 let mut tracker = self.0.borrow_mut();
                 tracker.executions += 1;
                 tracker.executed_ids.push(published.1);
@@ -1943,12 +2013,25 @@ mod tests {
                 tracker.live_during_execute.push(live_during_execute);
                 let request_stop = tracker.request_stop_once;
                 tracker.request_stop_once = false;
+                let request_event = tracker.request_event_once;
+                tracker.request_event_once = false;
                 let fail_execute = tracker.fail_execute_once;
                 tracker.fail_execute_once = false;
-                (tracker.loop_to_entry, request_stop, fail_execute)
+                (
+                    tracker.loop_to_entry,
+                    request_stop,
+                    request_event,
+                    fail_execute,
+                )
             };
             if request_stop_once {
                 control.stop_requested.store(1, Ordering::Release);
+            }
+            if request_event_once {
+                control
+                    .event_requested
+                    .expect("mock backend event request must be configured")
+                    .store(true, Ordering::Release);
             }
             if fail_execute_once {
                 return Err("execution failed");
@@ -2538,6 +2621,7 @@ mod tests {
                 DispatchControl {
                     stop_rip: None,
                     stop_requested: &stop,
+                    event_requested: None,
                 },
                 &mut executor,
             ),
@@ -2565,6 +2649,7 @@ mod tests {
         let control = DispatchControl {
             stop_rip: None,
             stop_requested: &stop,
+            event_requested: None,
         };
         let mut state = LongModeState {
             rip: view.base_rip(),
@@ -2629,6 +2714,7 @@ mod tests {
             DispatchControl {
                 stop_rip: Some(view.base_rip()),
                 stop_requested: &stop,
+                event_requested: None,
             },
             &mut executor,
         )
@@ -2648,6 +2734,7 @@ mod tests {
             DispatchControl {
                 stop_rip: None,
                 stop_requested: &stop,
+                event_requested: None,
             },
             &mut executor,
         )
@@ -2665,6 +2752,7 @@ mod tests {
             rax: Some(7),
             rflags: None,
             request_stop: false,
+            request_event: false,
         });
         let stopped_before_nop = run_with_nop_fallback(
             view,
@@ -2674,6 +2762,7 @@ mod tests {
             DispatchControl {
                 stop_rip: Some(view.base_rip() + 10),
                 stop_requested: &stop,
+                event_requested: None,
             },
             &mut executor,
         )
@@ -2695,6 +2784,7 @@ mod tests {
             rax: Some(7),
             rflags: None,
             request_stop: true,
+            request_event: false,
         });
         let stopped_by_shared_atomic = run_with_nop_fallback(
             view,
@@ -2704,6 +2794,7 @@ mod tests {
             DispatchControl {
                 stop_rip: None,
                 stop_requested: &stop,
+                event_requested: None,
             },
             &mut executor,
         )
@@ -2715,6 +2806,713 @@ mod tests {
         assert_eq!(stopped_by_shared_atomic.retired_native, 1);
         assert_eq!(stopped_by_shared_atomic.retired_interpreter, 0);
         assert_eq!(stop.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn event_pending_before_entry_preserves_state_budget_cache_and_nop_fallback() {
+        let code = [0x48, 0xB8, 7, 0, 0, 0, 0, 0, 0, 0];
+        let (view, admission) = cached_fixture(&code, 0x5488);
+        let dependencies = dependency(view, 1);
+        let stop = AtomicU8::new(0);
+        let event = AtomicBool::new(true);
+
+        let mut state = LongModeState {
+            rip: view.base_rip(),
+            rflags: 0xA55,
+            ..LongModeState::default()
+        };
+        state.gpr[3] = 0x1234;
+        let before = state.clone();
+        let tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let mut backend = MockCachedBackend(tracker.clone());
+        let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+
+        let result = run_cached_controlled(
+            view,
+            &admission,
+            test_context(),
+            &dependencies,
+            &mut state,
+            4,
+            DispatchControl {
+                stop_rip: None,
+                stop_requested: &stop,
+                event_requested: Some(&event),
+            },
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(result.exit, DispatchExit::EventPending);
+        assert_eq!(result.remaining_budget, 4);
+        assert_eq!(result.retired_instructions, 0);
+        assert_eq!(result.blocks_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(cache.resident_entries(), 0);
+        assert_eq!(tracker.borrow().publishes, 0);
+        assert_eq!(tracker.borrow().executions, 0);
+        assert!(event.load(Ordering::Acquire));
+
+        let mut multi_backend =
+            MockCachedBackend(Rc::new(RefCell::new(PublishedTracker::default())));
+        for capacity in [1, 2] {
+            let mut multi_cache = MultiEntryBlockCache::new(
+                capacity,
+                MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+                MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+            )
+            .unwrap();
+            let before = state.clone();
+            let result = run_multi_cached_controlled(
+                view,
+                &admission,
+                test_context(),
+                &dependencies,
+                &mut state,
+                3,
+                DispatchControl {
+                    stop_rip: None,
+                    stop_requested: &stop,
+                    event_requested: Some(&event),
+                },
+                &mut multi_cache,
+                &mut multi_backend,
+            )
+            .unwrap();
+            assert_eq!(result.exit, DispatchExit::EventPending);
+            assert_eq!(result.remaining_budget, 3);
+            assert_eq!(result.retired_instructions, 0);
+            assert_eq!(result.blocks_executed, 0);
+            assert_eq!(state, before);
+            assert_eq!(multi_cache.resident_entries(), 0);
+        }
+        assert_eq!(multi_backend.0.borrow().publishes, 0);
+        assert_eq!(multi_backend.0.borrow().executions, 0);
+
+        let (nop_view, nop_admission) = nop_admission(&[0x90], 0x5500);
+        let mut nop_state = LongModeState {
+            rip: nop_view.base_rip(),
+            rflags: 0xAD0F,
+            ..LongModeState::default()
+        };
+        let nop_before = nop_state.clone();
+        let mut executor = ScriptedControlledExecutor::default();
+        let result = run_with_nop_fallback(
+            nop_view,
+            &nop_admission,
+            &mut nop_state,
+            2,
+            DispatchControl {
+                stop_rip: None,
+                stop_requested: &stop,
+                event_requested: Some(&event),
+            },
+            &mut executor,
+        )
+        .unwrap();
+        assert_eq!(result.exit, DispatchExit::EventPending);
+        assert_eq!(result.remaining_budget, 2);
+        assert_eq!(result.retired_interpreter, 0);
+        assert_eq!(result.retired_native, 0);
+        assert_eq!(result.blocks_executed, 0);
+        assert_eq!(nop_state, nop_before);
+        assert_eq!(executor.calls, 0);
+        assert!(event.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn event_pending_after_native_cache_miss_and_hit_preserves_request_until_cleared() {
+        let code = [0x48, 0xB8, 7, 0, 0, 0, 0, 0, 0, 0];
+        let (view, admission) = cached_fixture(&code, 0x5580);
+        let dependencies = dependency(view, 1);
+        let stop = AtomicU8::new(0);
+        let event = AtomicBool::new(false);
+        let tracker = Rc::new(RefCell::new(PublishedTracker {
+            loop_to_entry: true,
+            request_event_once: true,
+            ..PublishedTracker::default()
+        }));
+        let mut backend = MockCachedBackend(tracker.clone());
+        let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let mut state = LongModeState {
+            rip: view.base_rip(),
+            ..LongModeState::default()
+        };
+
+        let first = run_cached_controlled(
+            view,
+            &admission,
+            test_context(),
+            &dependencies,
+            &mut state,
+            5,
+            DispatchControl {
+                stop_rip: None,
+                stop_requested: &stop,
+                event_requested: Some(&event),
+            },
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(first.exit, DispatchExit::EventPending);
+        assert_eq!(first.remaining_budget, 4);
+        assert_eq!(first.retired_instructions, 1);
+        assert_eq!(first.blocks_executed, 1);
+        assert_eq!(state.rip, view.base_rip());
+        assert_eq!(cache.resident_entries(), 1);
+        assert_eq!(tracker.borrow().publishes, 1);
+        assert_eq!(tracker.borrow().executions, 1);
+        assert!(event.load(Ordering::Acquire));
+
+        let stopped_state = state.clone();
+        let still_pending = run_cached_controlled(
+            view,
+            &admission,
+            test_context(),
+            &dependencies,
+            &mut state,
+            4,
+            DispatchControl {
+                stop_rip: None,
+                stop_requested: &stop,
+                event_requested: Some(&event),
+            },
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(still_pending.exit, DispatchExit::EventPending);
+        assert_eq!(still_pending.remaining_budget, 4);
+        assert_eq!(still_pending.retired_instructions, 0);
+        assert_eq!(still_pending.blocks_executed, 0);
+        assert_eq!(state, stopped_state);
+        assert_eq!(tracker.borrow().executions, 1);
+
+        event.store(false, Ordering::Release);
+        tracker.borrow_mut().request_event_once = true;
+        let hit = run_cached_controlled(
+            view,
+            &admission,
+            test_context(),
+            &dependencies,
+            &mut state,
+            4,
+            DispatchControl {
+                stop_rip: None,
+                stop_requested: &stop,
+                event_requested: Some(&event),
+            },
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(hit.exit, DispatchExit::EventPending);
+        assert_eq!(hit.remaining_budget, 3);
+        assert_eq!(hit.retired_instructions, 1);
+        assert_eq!(hit.blocks_executed, 1);
+        assert_eq!(cache.counters().hits, 1);
+        assert_eq!(tracker.borrow().publishes, 1);
+        assert_eq!(tracker.borrow().executions, 2);
+        assert!(event.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn event_set_during_publication_prevents_native_entry() {
+        let code = [0x48, 0xB8, 3, 0, 0, 0, 0, 0, 0, 0];
+        let (view, admission) = cached_fixture(&code, 0x55A0);
+        let dependencies = dependency(view, 1);
+        let stop = AtomicU8::new(0);
+        let event = Rc::new(AtomicBool::new(false));
+        let tracker = Rc::new(RefCell::new(PublishedTracker {
+            event_on_publish: Some(event.clone()),
+            ..PublishedTracker::default()
+        }));
+        let mut backend = MockCachedBackend(tracker.clone());
+        let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let mut state = LongModeState {
+            rip: view.base_rip(),
+            rflags: 0xA55,
+            ..LongModeState::default()
+        };
+        let before = state.clone();
+
+        let result = run_cached_controlled(
+            view,
+            &admission,
+            test_context(),
+            &dependencies,
+            &mut state,
+            4,
+            DispatchControl {
+                stop_rip: None,
+                stop_requested: &stop,
+                event_requested: Some(&event),
+            },
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+
+        assert_eq!(result.exit, DispatchExit::EventPending);
+        assert_eq!(result.remaining_budget, 4);
+        assert_eq!(result.retired_instructions, 0);
+        assert_eq!(result.blocks_executed, 0);
+        assert_eq!(state, before);
+        assert!(event.load(Ordering::Acquire));
+        assert_eq!(cache.resident_entries(), 1);
+        assert_eq!(tracker.borrow().publishes, 1);
+        assert_eq!(tracker.borrow().executions, 0);
+    }
+
+    #[test]
+    fn cached_publication_boundary_rechecks_stop_priority_before_event() {
+        let code = [0x48, 0xB8, 5, 0, 0, 0, 0, 0, 0, 0];
+        let (view, admission) = cached_fixture(&code, 0x55B0);
+        let dependencies = dependency(view, 1);
+
+        for (raise_stop, raise_event, expected_exit) in [
+            (false, true, DispatchExit::EventPending),
+            (
+                true,
+                false,
+                DispatchExit::Runtime(RuntimeExitTag::StopRequested),
+            ),
+            (
+                true,
+                true,
+                DispatchExit::Runtime(RuntimeExitTag::StopRequested),
+            ),
+        ] {
+            let stop = Rc::new(AtomicU8::new(0));
+            let event = Rc::new(AtomicBool::new(false));
+            let tracker = Rc::new(RefCell::new(PublishedTracker {
+                stop_on_publish: raise_stop.then(|| stop.clone()),
+                event_on_publish: raise_event.then(|| event.clone()),
+                ..PublishedTracker::default()
+            }));
+            let mut backend = MockCachedBackend(tracker.clone());
+            let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+            let mut state = LongModeState {
+                rip: view.base_rip(),
+                rflags: 0xA55,
+                ..LongModeState::default()
+            };
+            let before = state.clone();
+
+            let result = run_cached_controlled(
+                view,
+                &admission,
+                test_context(),
+                &dependencies,
+                &mut state,
+                4,
+                DispatchControl {
+                    stop_rip: None,
+                    stop_requested: &stop,
+                    event_requested: Some(&event),
+                },
+                &mut cache,
+                &mut backend,
+            )
+            .unwrap();
+
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(result.remaining_budget, 4);
+            assert_eq!(result.retired_instructions, 0);
+            assert_eq!(result.blocks_executed, 0);
+            assert_eq!(state, before);
+            assert_eq!(stop.load(Ordering::Acquire), u8::from(raise_stop));
+            assert_eq!(event.load(Ordering::Acquire), raise_event);
+            assert_eq!(cache.resident_entries(), 1);
+            assert_eq!(tracker.borrow().publishes, 1);
+            assert_eq!(tracker.borrow().executions, 0);
+        }
+    }
+
+    #[test]
+    fn event_pending_on_multi_cache_hit_and_miss_obeys_capacity() {
+        let code = [0x48, 0xB8, 9, 0, 0, 0, 0, 0, 0, 0];
+        let (view, admission) = cached_fixture(&code, 0x55C0);
+        let dependencies = dependency(view, 1);
+        let stop = AtomicU8::new(0);
+
+        for capacity in [1, 2] {
+            let event = AtomicBool::new(false);
+            let tracker = Rc::new(RefCell::new(PublishedTracker {
+                loop_to_entry: true,
+                request_event_once: true,
+                capacity: 16,
+                ..PublishedTracker::default()
+            }));
+            let mut backend = MockCachedBackend(tracker.clone());
+            let mut cache = MultiEntryBlockCache::new(
+                capacity,
+                MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+                MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+            )
+            .unwrap();
+            let mut state = LongModeState {
+                rip: view.base_rip(),
+                ..LongModeState::default()
+            };
+
+            let miss = run_multi_cached_controlled(
+                view,
+                &admission,
+                test_context(),
+                &dependencies,
+                &mut state,
+                4,
+                DispatchControl {
+                    stop_rip: None,
+                    stop_requested: &stop,
+                    event_requested: Some(&event),
+                },
+                &mut cache,
+                &mut backend,
+            )
+            .unwrap();
+            assert_eq!(miss.exit, DispatchExit::EventPending);
+            assert_eq!(miss.remaining_budget, 3);
+            assert_eq!(miss.retired_instructions, 1);
+            assert_eq!(miss.blocks_executed, 1);
+            assert_eq!(tracker.borrow().publishes, 1);
+            assert_eq!(tracker.borrow().executions, 1);
+            assert!(event.load(Ordering::Acquire));
+
+            event.store(false, Ordering::Release);
+            tracker.borrow_mut().request_event_once = true;
+            let hit = run_multi_cached_controlled(
+                view,
+                &admission,
+                test_context(),
+                &dependencies,
+                &mut state,
+                3,
+                DispatchControl {
+                    stop_rip: None,
+                    stop_requested: &stop,
+                    event_requested: Some(&event),
+                },
+                &mut cache,
+                &mut backend,
+            )
+            .unwrap();
+            assert_eq!(hit.exit, DispatchExit::EventPending);
+            assert_eq!(hit.remaining_budget, 2);
+            assert_eq!(hit.retired_instructions, 1);
+            assert_eq!(hit.blocks_executed, 1);
+            assert_eq!(cache.counters().hits, 1);
+            assert_eq!(tracker.borrow().publishes, 1);
+            assert_eq!(tracker.borrow().executions, 2);
+        }
+    }
+
+    #[test]
+    fn event_after_jcc_yields_before_nop_and_resumes_without_replaying_prefix() {
+        let mut code = vec![0x48, 0xB8]; // MOV RAX,7
+        code.extend_from_slice(&7_u64.to_le_bytes());
+        code.extend_from_slice(&[0x74, 0x00, 0x90, 0x48, 0xB8]);
+        code.extend_from_slice(&9_u64.to_le_bytes()); // MOV RAX,9 after NOP
+        let (view, admission) = nop_admission(&code, 0x5600);
+        let initial = LongModeState {
+            rip: view.base_rip(),
+            rflags: 0x242, // ZF is set, so the native JZ is taken.
+            ..LongModeState::default()
+        };
+        let mut expected_after_prefix = initial.clone();
+        let mut prefix_memory = CodeMemory::full_code(view);
+        for _ in 0..2 {
+            od_isa::execute::step(
+                &mut expected_after_prefix,
+                &mut prefix_memory,
+                AccessContext::default(),
+            )
+            .unwrap();
+        }
+        let mut expected_complete = expected_after_prefix.clone();
+        let mut suffix_memory = CodeMemory::full_code(view);
+        for _ in 0..2 {
+            od_isa::execute::step(
+                &mut expected_complete,
+                &mut suffix_memory,
+                AccessContext::default(),
+            )
+            .unwrap();
+        }
+        assert_eq!(expected_after_prefix.rip, view.base_rip() + 12);
+        assert_eq!(expected_complete.rip, view.code_end());
+        assert_eq!(expected_complete.gpr[0], 9);
+
+        let stop = AtomicU8::new(0);
+        let event = AtomicBool::new(false);
+        let mut state = initial;
+        let mut executor = ScriptedControlledExecutor {
+            replies: vec![ControlledReply {
+                report: report(RuntimeExitTag::DispatchCandidate, 8, 2),
+                next_rip: Some(view.base_rip() + 12),
+                rax: Some(7),
+                rflags: Some(expected_after_prefix.rflags),
+                request_stop: false,
+                request_event: true,
+            }],
+            ..ScriptedControlledExecutor::default()
+        };
+
+        let yielded = run_with_nop_fallback(
+            view,
+            &admission,
+            &mut state,
+            10,
+            DispatchControl {
+                stop_rip: None,
+                stop_requested: &stop,
+                event_requested: Some(&event),
+            },
+            &mut executor,
+        )
+        .unwrap();
+        assert_eq!(yielded.exit, DispatchExit::EventPending);
+        assert_eq!(yielded.remaining_budget, 8);
+        assert_eq!(yielded.retired_native, 2);
+        assert_eq!(yielded.retired_interpreter, 0);
+        assert_eq!(yielded.blocks_executed, 1);
+        assert_eq!(state, expected_after_prefix);
+        assert_eq!(executor.calls, 1);
+        assert!(event.load(Ordering::Acquire));
+
+        let held_state = state.clone();
+        let held = run_with_nop_fallback(
+            view,
+            &admission,
+            &mut state,
+            8,
+            DispatchControl {
+                stop_rip: None,
+                stop_requested: &stop,
+                event_requested: Some(&event),
+            },
+            &mut executor,
+        )
+        .unwrap();
+        assert_eq!(held.exit, DispatchExit::EventPending);
+        assert_eq!(held.retired_native + held.retired_interpreter, 0);
+        assert_eq!(state, held_state);
+        assert_eq!(executor.calls, 1);
+
+        event.store(false, Ordering::Release);
+        executor.replies.push(ControlledReply {
+            report: report(RuntimeExitTag::BlockComplete, 6, 1),
+            next_rip: Some(view.code_end()),
+            rax: Some(9),
+            rflags: None,
+            request_stop: false,
+            request_event: false,
+        });
+        let resumed = run_with_nop_fallback(
+            view,
+            &admission,
+            &mut state,
+            8,
+            DispatchControl {
+                stop_rip: None,
+                stop_requested: &stop,
+                event_requested: Some(&event),
+            },
+            &mut executor,
+        )
+        .unwrap();
+        assert_eq!(resumed.exit, DispatchExit::CodeEnd);
+        assert_eq!(resumed.remaining_budget, 6);
+        assert_eq!(resumed.retired_native, 1);
+        assert_eq!(resumed.retired_interpreter, 1);
+        assert_eq!(resumed.blocks_executed, 1);
+        assert_eq!(state, expected_complete);
+        assert_eq!(executor.calls, 2);
+        assert_eq!(executor.incoming_budgets, [10, 7]);
+        assert!(!event.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn event_request_obeys_stop_code_end_budget_and_error_priority() {
+        let code = [0x48, 0xB8, 7, 0, 0, 0, 0, 0, 0, 0, 0x90];
+        let (view, admission) = nop_admission(&code, 0x5680);
+        let event = AtomicBool::new(true);
+        let mut executor = ScriptedControlledExecutor::default();
+
+        let stop_rip = AtomicU8::new(0);
+        let mut at_entry = LongModeState {
+            rip: view.base_rip(),
+            ..LongModeState::default()
+        };
+        let stopped_by_rip = run_with_nop_fallback(
+            view,
+            &admission,
+            &mut at_entry,
+            3,
+            DispatchControl {
+                stop_rip: Some(view.base_rip()),
+                stop_requested: &stop_rip,
+                event_requested: Some(&event),
+            },
+            &mut executor,
+        )
+        .unwrap();
+        assert_eq!(
+            stopped_by_rip.exit,
+            DispatchExit::Runtime(RuntimeExitTag::StopAddress)
+        );
+
+        let stop_requested = AtomicU8::new(1);
+        let stopped_by_flag = run_with_nop_fallback(
+            view,
+            &admission,
+            &mut at_entry,
+            3,
+            DispatchControl {
+                stop_rip: None,
+                stop_requested: &stop_requested,
+                event_requested: Some(&event),
+            },
+            &mut executor,
+        )
+        .unwrap();
+        assert_eq!(
+            stopped_by_flag.exit,
+            DispatchExit::Runtime(RuntimeExitTag::StopRequested)
+        );
+
+        let no_stop = AtomicU8::new(0);
+        at_entry.rip = view.code_end();
+        let at_end = run_with_nop_fallback(
+            view,
+            &admission,
+            &mut at_entry,
+            0,
+            DispatchControl {
+                stop_rip: None,
+                stop_requested: &no_stop,
+                event_requested: Some(&event),
+            },
+            &mut executor,
+        )
+        .unwrap();
+        assert_eq!(at_end.exit, DispatchExit::CodeEnd);
+
+        at_entry.rip = view.base_rip();
+        let budget_first = run_with_nop_fallback(
+            view,
+            &admission,
+            &mut at_entry,
+            0,
+            DispatchControl {
+                stop_rip: None,
+                stop_requested: &no_stop,
+                event_requested: Some(&event),
+            },
+            &mut executor,
+        )
+        .unwrap();
+        assert_eq!(budget_first.exit, DispatchExit::BudgetExhausted);
+        assert_eq!(executor.calls, 0);
+
+        event.store(false, Ordering::Release);
+        let mut terminal_executor = ScriptedControlledExecutor {
+            replies: vec![ControlledReply {
+                report: report(RuntimeExitTag::StopRequested, 4, 1),
+                next_rip: Some(view.base_rip() + 10),
+                rax: Some(7),
+                rflags: None,
+                request_stop: false,
+                request_event: true,
+            }],
+            ..ScriptedControlledExecutor::default()
+        };
+        let terminal = run_with_nop_fallback(
+            view,
+            &admission,
+            &mut at_entry,
+            5,
+            DispatchControl {
+                stop_rip: None,
+                stop_requested: &no_stop,
+                event_requested: Some(&event),
+            },
+            &mut terminal_executor,
+        )
+        .unwrap();
+        assert_eq!(
+            terminal.exit,
+            DispatchExit::Runtime(RuntimeExitTag::StopRequested)
+        );
+        assert_eq!(terminal.retired_native, 1);
+        assert!(event.load(Ordering::Acquire));
+
+        let mut malformed_executor = ScriptedControlledExecutor {
+            replies: vec![ControlledReply {
+                report: report(RuntimeExitTag::BudgetExhausted, 4, 1),
+                next_rip: Some(view.base_rip() + 10),
+                rax: Some(7),
+                rflags: None,
+                request_stop: false,
+                request_event: true,
+            }],
+            ..ScriptedControlledExecutor::default()
+        };
+        event.store(false, Ordering::Release);
+        at_entry.rip = view.base_rip();
+        let malformed = run_with_nop_fallback(
+            view,
+            &admission,
+            &mut at_entry,
+            5,
+            DispatchControl {
+                stop_rip: None,
+                stop_requested: &no_stop,
+                event_requested: Some(&event),
+            },
+            &mut malformed_executor,
+        );
+        assert_eq!(
+            malformed,
+            Err(DispatchError::InvalidBudgetExit { remaining: 4 })
+        );
+        assert!(event.load(Ordering::Acquire));
+
+        event.store(false, Ordering::Release);
+        let failing_tracker = Rc::new(RefCell::new(PublishedTracker {
+            request_event_once: true,
+            fail_execute_once: true,
+            ..PublishedTracker::default()
+        }));
+        let mut failing_backend = MockCachedBackend(failing_tracker);
+        let (cached_view, cached_admission) = cached_fixture(&code[..10], 0x56C0);
+        let dependencies = dependency(cached_view, 1);
+        let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let mut cached_state = LongModeState {
+            rip: cached_view.base_rip(),
+            ..LongModeState::default()
+        };
+        let failure = run_cached_controlled(
+            cached_view,
+            &cached_admission,
+            test_context(),
+            &dependencies,
+            &mut cached_state,
+            3,
+            DispatchControl {
+                stop_rip: None,
+                stop_requested: &no_stop,
+                event_requested: Some(&event),
+            },
+            &mut cache,
+            &mut failing_backend,
+        );
+        assert!(matches!(
+            failure,
+            Err(DispatchError::CacheExecutor("execution failed"))
+        ));
     }
 
     #[test]
@@ -2738,6 +3536,7 @@ mod tests {
                 DispatchControl {
                     stop_rip: None,
                     stop_requested: &stop,
+                    event_requested: None,
                 },
                 &mut executor,
             ),
@@ -2770,6 +3569,7 @@ mod tests {
                     rax: Some(12),
                     rflags: Some(0x202),
                     request_stop: false,
+                    request_event: false,
                 },
                 ControlledReply {
                     report: report(RuntimeExitTag::DispatchCandidate, 5, 2),
@@ -2777,6 +3577,7 @@ mod tests {
                     rax: None,
                     rflags: Some(0x242),
                     request_stop: false,
+                    request_event: false,
                 },
             ],
             ..ScriptedControlledExecutor::default()
@@ -2790,6 +3591,7 @@ mod tests {
             DispatchControl {
                 stop_rip: None,
                 stop_requested: &stop,
+                event_requested: None,
             },
             &mut executor,
         )
@@ -2956,6 +3758,7 @@ mod tests {
             DispatchControl {
                 stop_rip: None,
                 stop_requested: &first_stop,
+                event_requested: None,
             },
             &mut cache,
             &mut backend,
@@ -2979,6 +3782,7 @@ mod tests {
             DispatchControl {
                 stop_rip: Some(view.base_rip() + 1),
                 stop_requested: &second_stop,
+                event_requested: None,
             },
             &mut cache,
             &mut backend,
@@ -3415,6 +4219,7 @@ mod tests {
             DispatchControl {
                 stop_rip: Some(view.code_end()),
                 stop_requested: &stop_requested,
+                event_requested: None,
             },
             &mut cache,
             &mut backend,
@@ -3591,6 +4396,7 @@ mod tests {
             DispatchControl {
                 stop_rip: None,
                 stop_requested: &stop,
+                event_requested: None,
             },
             &mut cache,
             &mut backend,
@@ -3619,6 +4425,7 @@ mod tests {
             DispatchControl {
                 stop_rip: None,
                 stop_requested: &stop,
+                event_requested: None,
             },
             &mut cache,
             &mut backend,

@@ -33763,6 +33763,37 @@ mod tests {
                 ..od_isa::LongModeState::default()
             };
             let before = state.clone();
+            let event = AtomicBool::new(true);
+            let counters_before_event = cache.counters();
+            let event_pending = od_jit::dispatch::run_multi_cached_controlled(
+                view,
+                &admission,
+                cached_test_context(),
+                &dependencies,
+                &mut state,
+                1,
+                od_jit::dispatch::DispatchControl {
+                    stop_rip: None,
+                    stop_requested: &AtomicU8::new(0),
+                    event_requested: Some(&event),
+                },
+                &mut cache,
+                &mut arena,
+            )
+            .unwrap();
+            assert_eq!(
+                event_pending.exit,
+                od_jit::dispatch::DispatchExit::EventPending
+            );
+            assert_eq!(event_pending.remaining_budget, 1);
+            assert_eq!(event_pending.retired_instructions, 0);
+            assert_eq!(event_pending.blocks_executed, 0);
+            assert_eq!(state, before);
+            assert_eq!(cache.counters(), counters_before_event);
+            assert_eq!(cache.resident_entries(), capacity);
+            assert_eq!(arena.available_slots(), 0);
+            assert!(event.load(Ordering::Acquire));
+
             let stop = AtomicU8::new(1);
             let stopped = od_jit::dispatch::run_multi_cached_controlled(
                 view,
@@ -33774,6 +33805,7 @@ mod tests {
                 od_jit::dispatch::DispatchControl {
                     stop_rip: None,
                     stop_requested: &stop,
+                    event_requested: None,
                 },
                 &mut cache,
                 &mut arena,
@@ -36778,6 +36810,7 @@ mod tests {
         let control = od_jit::dispatch::DispatchControl {
             stop_rip: None,
             stop_requested: &stop,
+            event_requested: None,
         };
         let mut executor = PublishedBlockExecutor;
 
@@ -36829,6 +36862,7 @@ mod tests {
             od_jit::dispatch::DispatchControl {
                 stop_rip: None,
                 stop_requested: &stop,
+                event_requested: None,
             },
             &mut executor,
         )
@@ -36849,6 +36883,7 @@ mod tests {
             od_jit::dispatch::DispatchControl {
                 stop_rip: None,
                 stop_requested: &stop,
+                event_requested: None,
             },
             &mut executor,
         )
@@ -36906,6 +36941,7 @@ mod tests {
             od_jit::dispatch::DispatchControl {
                 stop_rip: None,
                 stop_requested: &stop,
+                event_requested: None,
             },
             &mut executor,
         )
@@ -37470,6 +37506,7 @@ mod tests {
                 od_jit::dispatch::DispatchControl {
                     stop_rip: None,
                     stop_requested: &stop,
+                    event_requested: None,
                 },
             )
             .unwrap()
@@ -37611,6 +37648,7 @@ mod tests {
                 od_jit::dispatch::DispatchControl {
                     stop_rip: None,
                     stop_requested: &stop,
+                    event_requested: None,
                 },
             ),
             Err(PublishedArenaError::ForeignHandle)

@@ -243,6 +243,7 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-26 | Порядок side effects и memory classes | S3-19, S3-24 |
 | [ ] | S3-27 | Точные fault exits и восстановление state | S3-12, S3-21, S3-26 |
 | [ ] | S3-28 | STOP/events и безопасные точки | S3-15, S3-16, S3-27 |
+| [ ] | S3-28a | Cooperative event yield на границах register dispatcher | S3-15, S3-16, S3-27 |
 | [ ] | S3-29 | Flags по потребности и сравнение стратегий | S3-01, S3-27, S3-28 |
 | [ ] | S3-30 | Выбор allocator по измерениям | S3-01, S3-29 |
 | [ ] | S3-31 | Прямые связи блоков, если оправданы | S3-25, S3-28, S3-30 |
@@ -258,6 +259,12 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-41 | Документация и приёмка этапа | Все обязательные задачи |
 
 Первый вертикальный путь: `00 → 02 → 03 → 04 → 05`, затем `06 → 07 → 08 → 09 → 10 → 11 → 12 → 13 → 14`. Baseline S3-01 выполняется до выбора оптимизаций. Тесты добавляются в каждой задаче, S3-34 объединяет их и проверяет сам стенд.
+
+#### S3-28a. Cooperative event yield на границах register dispatcher
+
+Добавить invocation-local optional atomic event request в host `DispatchControl` и отдельный `DispatchExit::EventPending`; не использовать runtime exit tag и не менять `RuntimeContextV1`/generated ABI. Dispatcher проверяет запрос после stop-RIP → STOP → CodeEnd → budget guards и до следующего lookup/compile/native entry. В `run_with_nop_fallback` тот же порядок действует перед каждым interpreter NOP step. Запрос, выставленный во время native-вызова, становится виден после возврата текущего bounded блока; bare-NOP fallback ограничен одним interpreter step между проверками. Yield оставляет guest state, budget и retirement как их зафиксировал завершённый блок/шаг. Event flag не очищается автоматически: host очищает его и продолжает с фактического RIP.
+
+Приёмка: event до входа сохраняет CPU state/budget/retirement и не вызывает compile, publication или execution, включая NOP fallback; event из executor hook после bounded блока фиксирует ровно один блок и не запускает следующий; очистка и resume совпадают с uninterrupted interpreter без replay prefix/Jcc. Покрыть single-cache hit/miss, multi-cache capacity 1/multi, native→NOP→native, simultaneous guard priority, terminal runtime exits, backend errors и malformed accounting. Отдельный published-arena host test проверяет yield перед resident native entry. Guest-work bound формулируется только как один текущий bounded native block или один bare NOP step; wall-time latency/performance claims и Mini проверки отложены до конца Stage 3. Stage 2, owner/MMU и `od-machine` в этом срезе не меняются. См. [S3-28a report](../reports/STAGE_3_S3-28a_2026-10-29.md).
 
 ## 6. Первый блок: от IR до физического сравнения
 

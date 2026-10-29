@@ -803,6 +803,12 @@ fn execute_jit_ir_dispatch(
     let reason = match result.exit {
         DispatchExit::CodeEnd => od_isa::ExitReason::ReachedCodeEnd,
         DispatchExit::BudgetExhausted => od_isa::ExitReason::InstructionBudgetExhausted,
+        DispatchExit::EventPending => {
+            return Err(ExecutionFailure::Harness(format!(
+                "unexpected cooperative event at RIP 0x{:016x}",
+                architectural.rip
+            )));
+        }
         DispatchExit::Runtime(od_jit::runtime::RuntimeExitTag::Unsupported)
         | DispatchExit::Runtime(od_jit::runtime::RuntimeExitTag::NeedInterpreter) => {
             return Err(ExecutionFailure::Unsupported(format!(
