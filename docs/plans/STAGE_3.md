@@ -2139,6 +2139,16 @@ multi-block dispatcher remain open.
 
 **Готово:** работающая demand-driven стратегия восстанавливает точное состояние; выбранная конфигурация имеет замеры. Если отложена сама реализация flags по потребности, соответствующее обязательное требование roadmap остаётся открытым, даже при успешном eager baseline.
 
+Промежуточный результат S3-29a: добавлен отдельный uncached correctness candidate
+для существующего bounded W64 register-only ADD/SUB/CMP, flag-preserving MOV и
+JZ/JNZ. Native tests сравнивают его с eager и interpreter на проверяемых
+цепочках, проверяют descriptor/lifetime, spills, guard/terminal materialization
+и helper failure. Candidate не подключён к shared cache, не выбран default и не
+имеет performance claim. Mini и измерения отложены до конца Stage 3 по
+установленной методике; S3-29 остаётся незакрытой до оставшихся correctness
+gates и итогового сравнения стратегий. Подробности и фактические проверки — в
+[S3-29a report](../reports/STAGE_3_S3-29a_2026-10-29.md).
+
 ### S3-30. Выбрать register allocator
 
 1. На измеренных горячих workloads определить цену spills/reloads и helper clobbers текущего простого allocator.

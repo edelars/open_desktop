@@ -1273,6 +1273,51 @@ guest events. There are no memory effects or fault replay in this slice. Native
 ARM64 tests validate the generated register-only path and planned exits; they
 are not the S3-14 physical-x86 comparison.
 
+### S3-29a: bounded demand-driven flags correctness candidate
+
+`block_compile::compile_block_demand_flags_candidate`,
+`block_compile::compile_block_for_nop_fallback_demand_flags_candidate` and
+`block_emitter::emit_runtime_block_demand_flags_candidate` expose a separate,
+opt-in uncached path beside the eager production/reference path. Callers must
+not put this artifact into the shared translation cache under the eager
+compile identity. The API does not select a default or claim a speedup.
+
+The candidate is limited to the existing W64 register-only full arithmetic
+writers ADD/SUB/CMP and the already admitted flag-preserving operations and
+JZ/JNZ. It does not admit ADC/SBB, partial flag writers, or new guest forms.
+Each full writer saves its original lhs/rhs to dedicated frame slots at
+`SP+176` and `SP+184` and replaces the pending descriptor `{operation, W64,
+operand slots}`. The slots survive later guest GPR writes and allocator spills.
+The descriptor remains pending across MOV and other admitted non-writers; a
+later full writer replaces it without calling the flags helper for the older
+writer. The candidate frame prefix is 192 bytes; the eager 176-byte frame and
+its code path are unchanged.
+
+The guard fast path only checks stop-RIP, STOP, and budget. An out-of-line
+guard/terminal return stub materializes pending flags only if that exit is
+taken. A Jcc materializes before reading ZF and selecting its RIP. The shared
+`integer_flags` helper receives the last writer's saved operands and the
+unchanged staged pre-write RFLAGS, so it computes all defined arithmetic bits
+and preserves the other bits. Successful materialization updates staged and
+canonical RFLAGS. The guest commit omits RFLAGS while the descriptor is
+pending; `PcMap` ranges and committed boundaries use
+`InadmissiblePendingFlags` until the canonical RFLAGS store has completed.
+That inadmissible span includes the store instruction itself; a map point is
+canonical only at the following host PC. Pending helper-failure epilogues also
+remain inadmissible because the helper did not materialize the stale flags.
+Helper failure remains a mapped host-contract error and does not become a
+guest exit. STOP, budget, stop-RIP, block completion, unsupported tail and
+deferred decode exits all return canonical RFLAGS on success.
+
+Correctness checks currently cover native candidate/eager/interpreter parity
+for the tested bounded sequences, actual helper-call laziness, flag-preserving
+MOV with source-register clobber, replacement of ADD/CMP descriptors, alias
+inputs, both JZ/JNZ outcomes, register budgets 0..4, budget/stop-RIP exits,
+unsupported/deferred exits and mapped helper failure. This is a correctness
+candidate only. Partial writers, ADC/SBB consumers, memory/helper handoff,
+physical-x86 validation, the final eager-vs-candidate performance comparison,
+policy selection and overall S3-29 acceptance remain open.
+
 ### S3-13: opt-in one-block fixture CLI
 
 Fixture schema v1 accepts `--engine jit-block`, producing the distinct result

@@ -17,6 +17,7 @@ use crate::lowering::{self, LoweredProgram, LoweringError, LoweringOutcome};
 
 pub const MAX_EMITTED_BLOCK_BYTES: usize = 4096;
 const RUNTIME_FRAME_PREFIX_BYTES: u32 = 176;
+const DEMAND_FLAGS_RUNTIME_FRAME_PREFIX_BYTES: u32 = 192;
 const CHECKED_LOAD_FRAME_PREFIX_BYTES_V2: u32 = 176;
 const CHECKED_STORE_FRAME_PREFIX_BYTES_V2: u32 = 176;
 const REGISTER_HOME_BUDGET: u8 = 4;
@@ -77,7 +78,30 @@ pub fn compile_block(
     code: CodeView<'_>,
     entry_rip: u64,
 ) -> Result<BlockCompileOutcome, BlockCompileError> {
-    compile_block_inner(code, entry_rip, None, None)
+    compile_block_inner(
+        code,
+        entry_rip,
+        None,
+        None,
+        crate::block_emitter::FlagMaterializationStrategy::Eager,
+    )
+}
+
+/// Compile an uncached, opt-in demand-driven arithmetic-flags candidate for
+/// correctness comparison. Its result must not be inserted into the shared
+/// translation cache; eager remains the production/reference strategy until
+/// the final Stage 3 comparison is complete.
+pub fn compile_block_demand_flags_candidate(
+    code: CodeView<'_>,
+    entry_rip: u64,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    compile_block_inner(
+        code,
+        entry_rip,
+        None,
+        None,
+        crate::block_emitter::FlagMaterializationStrategy::DemandDrivenCandidate,
+    )
 }
 
 /// Compile only the exact checked qword-load profile through the shared block
@@ -269,7 +293,11 @@ pub(crate) fn compile_prepared_dispatch_block(
         }
         LoweringOutcome::Program(lowered) => lowered,
     };
-    compile_lowered(code_end, lowered)
+    compile_lowered(
+        code_end,
+        lowered,
+        crate::block_emitter::FlagMaterializationStrategy::Eager,
+    )
 }
 
 /// Compile one native prefix for the separately admitted S0-09-plus-NOP
@@ -291,6 +319,31 @@ pub fn compile_block_for_nop_fallback(
         entry_rip,
         Some(admission.boundaries()),
         Some(admission),
+        crate::block_emitter::FlagMaterializationStrategy::Eager,
+    )
+}
+
+/// Compile an uncached demand-flags candidate for the existing bounded
+/// register-only prefix followed by admitted bare NOP bytes. The candidate
+/// returns canonical state at the fallback boundary and is not wired to the
+/// shared translation cache.
+pub fn compile_block_for_nop_fallback_demand_flags_candidate(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopAdmission,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    if !admission.matches_code(code) {
+        return Err(BlockCompileError::NopAdmissionDoesNotMatchCode);
+    }
+    if !admission.contains(entry_rip) {
+        return Err(BlockCompileError::NopEntryNotAdmitted { entry_rip });
+    }
+    compile_block_inner(
+        code,
+        entry_rip,
+        Some(admission.boundaries()),
+        Some(admission),
+        crate::block_emitter::FlagMaterializationStrategy::DemandDrivenCandidate,
     )
 }
 
@@ -299,6 +352,7 @@ fn compile_block_inner(
     entry_rip: u64,
     admission: Option<&AdmittedInstructionBoundaries>,
     nop_admission: Option<&S0_09NopAdmission>,
+    flag_strategy: crate::block_emitter::FlagMaterializationStrategy,
 ) -> Result<BlockCompileOutcome, BlockCompileError> {
     let built = block::build_block(
         code,
@@ -340,16 +394,33 @@ fn compile_block_inner(
         }
         LoweringOutcome::Program(lowered) => lowered,
     };
-    compile_lowered(code.code_end(), lowered)
+    compile_lowered(code.code_end(), lowered, flag_strategy)
 }
 
 fn compile_lowered(
     code_end: u64,
     lowered: LoweredProgram,
+    flag_strategy: crate::block_emitter::FlagMaterializationStrategy,
 ) -> Result<BlockCompileOutcome, BlockCompileError> {
-    let allocation = allocate_block(&lowered, RUNTIME_FRAME_PREFIX_BYTES)?;
-    let emitted =
-        emit_runtime_block(&lowered.program, &allocation).map_err(BlockCompileError::Emitter)?;
+    let frame_prefix = match flag_strategy {
+        crate::block_emitter::FlagMaterializationStrategy::Eager => RUNTIME_FRAME_PREFIX_BYTES,
+        crate::block_emitter::FlagMaterializationStrategy::DemandDrivenCandidate => {
+            DEMAND_FLAGS_RUNTIME_FRAME_PREFIX_BYTES
+        }
+    };
+    let allocation = allocate_block(&lowered, frame_prefix)?;
+    let emitted = match flag_strategy {
+        crate::block_emitter::FlagMaterializationStrategy::Eager => {
+            emit_runtime_block(&lowered.program, &allocation)
+        }
+        crate::block_emitter::FlagMaterializationStrategy::DemandDrivenCandidate => {
+            crate::block_emitter::emit_runtime_block_demand_flags_candidate(
+                &lowered.program,
+                &allocation,
+            )
+        }
+    }
+    .map_err(BlockCompileError::Emitter)?;
     let actual = emitted
         .to_le_bytes()
         .map_err(|error| BlockCompileError::Emitter(BlockEmitterError::Encoding(error)))?
@@ -435,6 +506,111 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn demand_flags_candidate_is_opt_in_uncached_and_marks_pending_boundaries() {
+        use crate::statepoints::SnapshotAdmissibility;
+
+        let code = [0x48, 0x03, 0xC1]; // ADD RAX, RCX
+        let view = CodeView::new(0x8000, &code).unwrap();
+        let eager = compile_block(view, 0x8000).unwrap();
+        let candidate = compile_block_demand_flags_candidate(view, 0x8000).unwrap();
+        let BlockCompileOutcome::Compiled(eager) = eager else {
+            panic!("eager ADD should compile");
+        };
+        let BlockCompileOutcome::Compiled(candidate) = candidate else {
+            panic!("demand-flags ADD should compile");
+        };
+        assert!(eager.emitted().safe_entry_provenance());
+        assert!(candidate.emitted().safe_entry_provenance());
+        let map = candidate.emitted().pc_map();
+        assert!(
+            map.ranges()
+                .iter()
+                .any(|range| { range.snapshot == SnapshotAdmissibility::InadmissiblePendingFlags })
+        );
+        assert_eq!(map.boundaries().len(), 1);
+        assert_eq!(
+            map.boundaries()[0].snapshot,
+            SnapshotAdmissibility::InadmissiblePendingFlags
+        );
+        assert!(
+            map.boundaries()
+                .iter()
+                .all(|boundary| boundary.snapshot != SnapshotAdmissibility::CanonicalBoundary)
+        );
+
+        let add_mov = [0x48, 0x03, 0xC1, 0x48, 0x89, 0xC3]; // ADD RAX, RCX; MOV RBX, RAX
+        let BlockCompileOutcome::Compiled(add_mov) =
+            compile_block_demand_flags_candidate(CodeView::new(0x8800, &add_mov).unwrap(), 0x8800)
+                .unwrap()
+        else {
+            panic!("ADD/MOV candidate should compile");
+        };
+        let mov_ranges = add_mov
+            .emitted()
+            .pc_map()
+            .ranges()
+            .iter()
+            .filter(|range| {
+                range.guest_rip == crate::statepoints::GuestRipSource::Fixed(0x8803)
+                    && range.phase != crate::statepoints::StatePhase::Exit
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !mov_ranges.is_empty(),
+            "MOV should have native statepoint ranges"
+        );
+        assert!(
+            mov_ranges
+                .iter()
+                .all(|range| { range.snapshot == SnapshotAdmissibility::InadmissiblePendingFlags }),
+            "unexpected MOV ranges: {mov_ranges:#?}"
+        );
+        assert!(add_mov.emitted().pc_map().ranges().iter().any(|range| {
+            range.phase == crate::statepoints::StatePhase::Service
+                && range.snapshot == SnapshotAdmissibility::InadmissiblePendingFlags
+        }));
+
+        let deferred_tail = [0x48, 0x03, 0xC1, 0x48];
+        let BlockCompileOutcome::Compiled(deferred) = compile_block_demand_flags_candidate(
+            CodeView::new(0x9000, &deferred_tail).unwrap(),
+            0x9000,
+        )
+        .unwrap() else {
+            panic!("valid prefix before a truncated tail should compile");
+        };
+        assert!(deferred.deferred_error().is_some());
+        assert!(
+            deferred
+                .emitted()
+                .pc_map()
+                .ranges()
+                .iter()
+                .any(|range| { range.snapshot == SnapshotAdmissibility::InadmissiblePendingFlags })
+        );
+
+        let nop_tail = [0x48, 0x03, 0xC1, 0x90];
+        let nop_view = CodeView::new(0xA000, &nop_tail).unwrap();
+        let nop_admission = S0_09NopAdmission::from_code(nop_view).unwrap();
+        let BlockCompileOutcome::Compiled(nop_candidate) =
+            compile_block_for_nop_fallback_demand_flags_candidate(nop_view, 0xA000, &nop_admission)
+                .unwrap()
+        else {
+            panic!("ADD prefix before admitted NOP should compile");
+        };
+        assert!(
+            nop_candidate
+                .emitted()
+                .pc_map()
+                .ranges()
+                .iter()
+                .any(|range| {
+                    range.phase == crate::statepoints::StatePhase::Exit
+                        && range.snapshot == SnapshotAdmissibility::CanonicalBoundary
+                })
+        );
     }
 
     #[test]

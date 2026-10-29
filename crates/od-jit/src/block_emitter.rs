@@ -36,6 +36,9 @@ const FRAME_STAGING_FLAGS: u32 = 120;
 const FRAME_STAGING_RIP: u32 = 128;
 const FRAME_SAVED_X19_X20: i32 = 144;
 const FRAME_SAVED_X21_X22: i32 = 160;
+const FRAME_PENDING_FLAGS_LHS: u32 = 176;
+const FRAME_PENDING_FLAGS_RHS: u32 = 184;
+pub const DEMAND_FLAGS_FRAME_PREFIX_BYTES: u32 = 192;
 const MAX_BLOCK_INSTRUCTIONS: usize = 32;
 
 /// An emitted block entry with private code/map provenance. Only blocks made
@@ -192,7 +195,30 @@ pub fn emit_runtime_block(
     program: &Program,
     allocation: &Allocation<'_>,
 ) -> Result<EmittedRuntimeBlock, BlockEmitterError> {
-    emit_runtime_block_inner(program, allocation, arithmetic_flags_helper_adapter, true)
+    emit_runtime_block_inner(
+        program,
+        allocation,
+        arithmetic_flags_helper_adapter,
+        true,
+        FlagMaterializationStrategy::Eager,
+    )
+}
+
+/// Emit an uncached correctness candidate that keeps only the latest full
+/// arithmetic-flags writer's operation and original operands until flags are
+/// observed or the block returns. Callers must keep this entry out of shared
+/// block caches until the Stage 3 performance decision is complete.
+pub fn emit_runtime_block_demand_flags_candidate(
+    program: &Program,
+    allocation: &Allocation<'_>,
+) -> Result<EmittedRuntimeBlock, BlockEmitterError> {
+    emit_runtime_block_inner(
+        program,
+        allocation,
+        arithmetic_flags_helper_adapter,
+        true,
+        FlagMaterializationStrategy::DemandDrivenCandidate,
+    )
 }
 
 /// Emit the one-instruction checked-load IR profile through the common IR,
@@ -292,7 +318,7 @@ pub fn emit_checked_load_runtime_block_v2(
     );
 
     let guard_start = code_offset(&encoder)?;
-    emit_instruction_guards(&mut encoder, &mut returns, instruction.guest_rip, 0)?;
+    emit_instruction_guards(&mut encoder, &mut returns, instruction.guest_rip, 0, None)?;
     push_range(
         &mut ranges,
         guard_start,
@@ -395,7 +421,7 @@ pub fn emit_checked_load_runtime_block_v2(
     emit_u64(&mut encoder, xreg(13)?, instruction.next_rip)?;
     emit_saved_pointer_load(&mut encoder, FRAME_STAGING_RIP_POINTER, xreg(16)?)?;
     encoder.str_x(XRegOrZero::Reg(xreg(13)?), AddressBase::Reg(xreg(16)?), 0)?;
-    emit_commit(&mut encoder, 0, pair_count)?;
+    emit_commit(&mut encoder, 0, pair_count, true)?;
     push_range(
         &mut ranges,
         commit_start,
@@ -411,6 +437,7 @@ pub fn emit_checked_load_runtime_block_v2(
         instruction_index: 0,
         committed_instructions: 1,
         phase: StatePhase::Committed,
+        snapshot: SnapshotAdmissibility::CanonicalBoundary,
     });
 
     let terminal_start = code_offset(&encoder)?;
@@ -422,6 +449,7 @@ pub fn emit_checked_load_runtime_block_v2(
         guest_rip: GuestRipSource::CanonicalState,
         instruction_index: Some(0),
         snapshot: SnapshotAdmissibility::CanonicalBoundary,
+        pending_flags: None,
     });
     push_range(
         &mut ranges,
@@ -440,6 +468,7 @@ pub fn emit_checked_load_runtime_block_v2(
         guest_rip: GuestRipSource::Fixed(instruction.guest_rip),
         instruction_index: Some(0),
         snapshot: SnapshotAdmissibility::ReplayCurrentInstruction,
+        pending_flags: None,
     });
     for stub in returns.iter().chain(failures.iter()) {
         let start = code_offset(&encoder)?;
@@ -572,7 +601,13 @@ pub fn emit_checked_store_runtime_block_v2(
         SnapshotAdmissibility::CanonicalBoundary,
     );
     let guard_start = code_offset(&encoder)?;
-    emit_instruction_guards(&mut encoder, &mut guard_returns, instruction.guest_rip, 0)?;
+    emit_instruction_guards(
+        &mut encoder,
+        &mut guard_returns,
+        instruction.guest_rip,
+        0,
+        None,
+    )?;
     push_range(
         &mut ranges,
         guard_start,
@@ -628,7 +663,7 @@ pub fn emit_checked_store_runtime_block_v2(
     emit_u64(&mut encoder, xreg(13)?, instruction.next_rip)?;
     emit_saved_pointer_load(&mut encoder, FRAME_STAGING_RIP_POINTER, xreg(16)?)?;
     encoder.str_x(XRegOrZero::Reg(xreg(13)?), AddressBase::Reg(xreg(16)?), 0)?;
-    emit_commit(&mut encoder, 0, pair_count)?;
+    emit_commit(&mut encoder, 0, pair_count, true)?;
     push_range(
         &mut ranges,
         commit_start,
@@ -644,6 +679,7 @@ pub fn emit_checked_store_runtime_block_v2(
         instruction_index: 0,
         committed_instructions: 1,
         phase: StatePhase::Committed,
+        snapshot: SnapshotAdmissibility::CanonicalBoundary,
     });
     let post_commit_start = code_offset(&encoder)?;
     encoder.ldr_x(
@@ -857,6 +893,7 @@ pub fn emit_two_memory_runtime_block_v2(
         first.guest_rip,
         None,
         SnapshotAdmissibility::CanonicalBoundary,
+        None,
     )?;
     encoder.b(bad_entry)?;
     push_range_with_source(
@@ -871,7 +908,7 @@ pub fn emit_two_memory_runtime_block_v2(
 
     encoder.bind(run_store)?;
     let store_guard = code_offset(&encoder)?;
-    emit_instruction_guards(&mut encoder, &mut returns, first.guest_rip, 0)?;
+    emit_instruction_guards(&mut encoder, &mut returns, first.guest_rip, 0, None)?;
     push_range(
         &mut ranges,
         store_guard,
@@ -907,7 +944,7 @@ pub fn emit_two_memory_runtime_block_v2(
     emit_u64(&mut encoder, xreg(13)?, first.next_rip)?;
     emit_saved_pointer_load(&mut encoder, FRAME_STAGING_RIP_POINTER, xreg(16)?)?;
     encoder.str_x(XRegOrZero::Reg(xreg(13)?), AddressBase::Reg(xreg(16)?), 0)?;
-    emit_commit(&mut encoder, 0, pair_count)?;
+    emit_commit(&mut encoder, 0, pair_count, true)?;
     push_range(
         &mut ranges,
         store_commit,
@@ -923,6 +960,7 @@ pub fn emit_two_memory_runtime_block_v2(
         instruction_index: 0,
         committed_instructions: 1,
         phase: StatePhase::Committed,
+        snapshot: SnapshotAdmissibility::CanonicalBoundary,
     });
     let after_store = code_offset(&encoder)?;
     encoder.b(run_load)?;
@@ -938,7 +976,7 @@ pub fn emit_two_memory_runtime_block_v2(
 
     encoder.bind(run_load)?;
     let load_guard = code_offset(&encoder)?;
-    emit_instruction_guards(&mut encoder, &mut returns, second.guest_rip, 1)?;
+    emit_instruction_guards(&mut encoder, &mut returns, second.guest_rip, 1, None)?;
     push_range(
         &mut ranges,
         load_guard,
@@ -974,7 +1012,7 @@ pub fn emit_two_memory_runtime_block_v2(
     emit_u64(&mut encoder, xreg(13)?, second.next_rip)?;
     emit_saved_pointer_load(&mut encoder, FRAME_STAGING_RIP_POINTER, xreg(16)?)?;
     encoder.str_x(XRegOrZero::Reg(xreg(13)?), AddressBase::Reg(xreg(16)?), 0)?;
-    emit_commit(&mut encoder, 1, pair_count)?;
+    emit_commit(&mut encoder, 1, pair_count, true)?;
     push_range(
         &mut ranges,
         load_commit,
@@ -990,6 +1028,7 @@ pub fn emit_two_memory_runtime_block_v2(
         instruction_index: 1,
         committed_instructions: 2,
         phase: StatePhase::Committed,
+        snapshot: SnapshotAdmissibility::CanonicalBoundary,
     });
     let skip_stubs = code_offset(&encoder)?;
     encoder.b(success)?;
@@ -1199,7 +1238,41 @@ pub unsafe fn emit_runtime_block_with_helper(
     allocation: &Allocation<'_>,
     helper: ArithmeticFlagsHelper,
 ) -> Result<EmittedRuntimeBlock, BlockEmitterError> {
-    emit_runtime_block_inner(program, allocation, helper, false)
+    emit_runtime_block_inner(
+        program,
+        allocation,
+        helper,
+        false,
+        FlagMaterializationStrategy::Eager,
+    )
+}
+
+/// Emit a demand-driven candidate with an injected scalar helper. This is
+/// reserved for host-side correctness instrumentation and is never a safe
+/// entry unless invoked through the regular adapter above.
+///
+/// # Safety
+/// `helper` must implement the same non-unwinding scalar ABI as
+/// `emit_runtime_block_with_helper`.
+#[doc(hidden)]
+pub unsafe fn emit_runtime_block_demand_flags_candidate_with_helper(
+    program: &Program,
+    allocation: &Allocation<'_>,
+    helper: ArithmeticFlagsHelper,
+) -> Result<EmittedRuntimeBlock, BlockEmitterError> {
+    emit_runtime_block_inner(
+        program,
+        allocation,
+        helper,
+        false,
+        FlagMaterializationStrategy::DemandDrivenCandidate,
+    )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FlagMaterializationStrategy {
+    Eager,
+    DemandDrivenCandidate,
 }
 
 #[derive(Clone, Copy)]
@@ -1209,6 +1282,29 @@ struct ReturnStub {
     guest_rip: GuestRipSource,
     instruction_index: Option<u32>,
     snapshot: SnapshotAdmissibility,
+    pending_flags: Option<PendingFlagsDescriptor>,
+}
+
+/// Compile-time metadata plus dedicated frame locations for a durable pending
+/// flags write. The guest operands are copied to these slots when installed,
+/// so later architectural/host GPR reuse cannot change their meaning.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingFlagsDescriptor {
+    kind: IntegerKind,
+    width: IntWidth,
+    lhs_slot: u32,
+    rhs_slot: u32,
+}
+
+impl PendingFlagsDescriptor {
+    const fn w64(kind: IntegerKind) -> Self {
+        Self {
+            kind,
+            width: IntWidth::W64,
+            lhs_slot: FRAME_PENDING_FLAGS_LHS,
+            rhs_slot: FRAME_PENDING_FLAGS_RHS,
+        }
+    }
 }
 
 fn emit_runtime_block_inner(
@@ -1216,14 +1312,19 @@ fn emit_runtime_block_inner(
     allocation: &Allocation<'_>,
     helper: ArithmeticFlagsHelper,
     safe_entry: bool,
+    flag_strategy: FlagMaterializationStrategy,
 ) -> Result<EmittedRuntimeBlock, BlockEmitterError> {
     ir::verify(program).map_err(BlockEmitterError::InvalidProgram)?;
     if !std::ptr::eq(program, allocation.program()) {
         return Err(BlockEmitterError::AllocationProgramMismatch);
     }
-    if allocation.frame().reserved_prefix_bytes < MIN_RUNTIME_PREFIX_BYTES {
+    let required_prefix = match flag_strategy {
+        FlagMaterializationStrategy::Eager => MIN_RUNTIME_PREFIX_BYTES,
+        FlagMaterializationStrategy::DemandDrivenCandidate => DEMAND_FLAGS_FRAME_PREFIX_BYTES,
+    };
+    if allocation.frame().reserved_prefix_bytes < required_prefix {
         return Err(BlockEmitterError::InsufficientFramePrefix {
-            required: MIN_RUNTIME_PREFIX_BYTES,
+            required: required_prefix,
             actual: allocation.frame().reserved_prefix_bytes,
         });
     }
@@ -1276,6 +1377,7 @@ fn emit_runtime_block_inner(
     );
 
     let mut active_instruction = None;
+    let mut pending_flags = None;
     for (operation_index, operation) in program.operations.iter().enumerate() {
         match operation {
             Operation::BeginInstruction { index } => {
@@ -1287,6 +1389,7 @@ fn emit_runtime_block_inner(
                     &mut return_stubs,
                     instruction.guest_rip,
                     *index,
+                    pending_flags,
                 )?;
                 push_range(
                     &mut ranges,
@@ -1295,7 +1398,9 @@ fn emit_runtime_block_inner(
                     instruction.guest_rip,
                     Some(to_u32(*index)?),
                     StatePhase::BeforeInstruction,
-                    SnapshotAdmissibility::CanonicalBoundary,
+                    pending_flags.map_or(SnapshotAdmissibility::CanonicalBoundary, |_| {
+                        SnapshotAdmissibility::InadmissiblePendingFlags
+                    }),
                 );
             }
             Operation::Constant { dst, width, value } => {
@@ -1310,7 +1415,10 @@ fn emit_runtime_block_inner(
                     rip,
                     Some(to_u32(index)?),
                     StatePhase::PendingEffects,
-                    SnapshotAdmissibility::ReplayCurrentInstruction,
+                    pending_snapshot(
+                        pending_flags,
+                        SnapshotAdmissibility::ReplayCurrentInstruction,
+                    ),
                 );
             }
             Operation::ReadGpr {
@@ -1345,7 +1453,10 @@ fn emit_runtime_block_inner(
                     rip,
                     Some(to_u32(index)?),
                     StatePhase::PendingEffects,
-                    SnapshotAdmissibility::ReplayCurrentInstruction,
+                    pending_snapshot(
+                        pending_flags,
+                        SnapshotAdmissibility::ReplayCurrentInstruction,
+                    ),
                 );
             }
             Operation::CheckedLoad { .. } => {
@@ -1374,76 +1485,88 @@ fn emit_runtime_block_inner(
                     });
                 }
                 let (rip, index) = active_guest(program, active_instruction)?;
-                let boundary = HelperBoundaryPosition::BeforeOperation(operation_index);
-                allocation.helper_boundary(boundary).map_err(|_| {
-                    BlockEmitterError::MissingHelperBoundary {
-                        operation: operation_index,
-                    }
-                })?;
                 let pending_start = code_offset(&encoder)?;
-                allocation.emit_save_before_helper(&mut encoder, boundary)?;
-                allocation.emit_load_scratch(&mut encoder, *lhs, xreg(13)?)?;
-                allocation.emit_load_scratch(&mut encoder, *rhs, xreg(14)?)?;
-                encoder.mov_x(xreg(1)?, XRegOrZero::Reg(xreg(13)?));
-                encoder.mov_x(xreg(2)?, XRegOrZero::Reg(xreg(14)?));
-                encoder.movz_x(xreg(0)?, helper_operation_tag(*kind) as u16, 0)?;
-                emit_saved_pointer_load(&mut encoder, FRAME_STAGING_FLAGS_POINTER, xreg(16)?)?;
-                encoder.ldr_x(XRegOrZero::Reg(xreg(3)?), AddressBase::Reg(xreg(16)?), 0)?;
-                encoder.adds_imm_x(
-                    XRegOrZero::Reg(xreg(4)?),
-                    XRegOrSp::Sp,
-                    FRAME_HELPER_FLAGS_OUTPUT as u16,
-                )?;
-                emit_u64(&mut encoder, xreg(16)?, helper as usize as u64)?;
-                let helper_start = code_offset(&encoder)?;
-                push_range(
-                    &mut ranges,
-                    pending_start,
-                    helper_start,
-                    rip,
-                    Some(to_u32(index)?),
-                    StatePhase::PendingEffects,
-                    SnapshotAdmissibility::ReplayCurrentInstruction,
-                );
-                push_range(
-                    &mut ranges,
-                    helper_start,
-                    helper_start
+                let mut integer_effect_start = pending_start;
+                if flag_strategy == FlagMaterializationStrategy::Eager {
+                    let boundary = HelperBoundaryPosition::BeforeOperation(operation_index);
+                    allocation.helper_boundary(boundary).map_err(|_| {
+                        BlockEmitterError::MissingHelperBoundary {
+                            operation: operation_index,
+                        }
+                    })?;
+                    allocation.emit_save_before_helper(&mut encoder, boundary)?;
+                    allocation.emit_load_scratch(&mut encoder, *lhs, xreg(13)?)?;
+                    allocation.emit_load_scratch(&mut encoder, *rhs, xreg(14)?)?;
+                    emit_flags_helper_call(&mut encoder, helper, *kind)?;
+                    let helper_start = code_offset(&encoder)?;
+                    push_range(
+                        &mut ranges,
+                        pending_start,
+                        helper_start,
+                        rip,
+                        Some(to_u32(index)?),
+                        StatePhase::PendingEffects,
+                        SnapshotAdmissibility::ReplayCurrentInstruction,
+                    );
+                    let call_pc = helper_start
                         .checked_add(4)
-                        .ok_or(BlockEmitterError::CodeRangeOverflow)?,
-                    rip,
-                    Some(to_u32(index)?),
-                    StatePhase::HelperCall,
-                    SnapshotAdmissibility::ReplayCurrentInstruction,
-                );
-                encoder.blr(xreg(16)?);
-                let failure = encoder.new_label()?;
-                let success = encoder.new_label()?;
-                encoder.cbz_w(crate::arm64::WReg::new(0)?, success)?;
-                encoder.b(failure)?;
-                let before_success = code_offset(&encoder)?;
-                push_range(
-                    &mut ranges,
-                    before_success
-                        .checked_sub(8)
-                        .ok_or(BlockEmitterError::CodeRangeOverflow)?,
-                    before_success,
-                    rip,
-                    Some(to_u32(index)?),
-                    StatePhase::AfterHelper,
-                    SnapshotAdmissibility::ReplayCurrentInstruction,
-                );
-                encoder.bind(success)?;
-                allocation.emit_restore_after_helper(&mut encoder, boundary)?;
-                encoder.ldr_x(
-                    XRegOrZero::Reg(xreg(13)?),
-                    AddressBase::Sp,
-                    FRAME_HELPER_FLAGS_OUTPUT,
-                )?;
-                emit_saved_pointer_load(&mut encoder, FRAME_STAGING_FLAGS_POINTER, xreg(16)?)?;
-                encoder.str_x(XRegOrZero::Reg(xreg(13)?), AddressBase::Reg(xreg(16)?), 0)?;
-                allocation.emit_load_scratch(&mut encoder, *lhs, xreg(13)?)?;
-                allocation.emit_load_scratch(&mut encoder, *rhs, xreg(14)?)?;
+                        .ok_or(BlockEmitterError::CodeRangeOverflow)?;
+                    push_range(
+                        &mut ranges,
+                        helper_start,
+                        call_pc,
+                        rip,
+                        Some(to_u32(index)?),
+                        StatePhase::HelperCall,
+                        SnapshotAdmissibility::ReplayCurrentInstruction,
+                    );
+                    encoder.blr(xreg(16)?);
+                    let failure = encoder.new_label()?;
+                    let success = encoder.new_label()?;
+                    encoder.cbz_w(crate::arm64::WReg::new(0)?, success)?;
+                    encoder.b(failure)?;
+                    let before_success = code_offset(&encoder)?;
+                    integer_effect_start = before_success;
+                    push_range(
+                        &mut ranges,
+                        before_success
+                            .checked_sub(8)
+                            .ok_or(BlockEmitterError::CodeRangeOverflow)?,
+                        before_success,
+                        rip,
+                        Some(to_u32(index)?),
+                        StatePhase::AfterHelper,
+                        SnapshotAdmissibility::ReplayCurrentInstruction,
+                    );
+                    encoder.bind(success)?;
+                    allocation.emit_restore_after_helper(&mut encoder, boundary)?;
+                    emit_store_helper_flags(&mut encoder)?;
+                    helper_failures.push(ReturnStub {
+                        label: failure,
+                        raw_tag: RAW_HELPER_CONTRACT_FAILURE_V1,
+                        guest_rip: GuestRipSource::Fixed(rip),
+                        instruction_index: Some(to_u32(index)?),
+                        snapshot: SnapshotAdmissibility::ReplayCurrentInstruction,
+                        pending_flags: None,
+                    });
+                } else {
+                    allocation.emit_load_scratch(&mut encoder, *lhs, xreg(13)?)?;
+                    allocation.emit_load_scratch(&mut encoder, *rhs, xreg(14)?)?;
+                    encoder.str_x(
+                        XRegOrZero::Reg(xreg(13)?),
+                        AddressBase::Sp,
+                        FRAME_PENDING_FLAGS_LHS,
+                    )?;
+                    encoder.str_x(
+                        XRegOrZero::Reg(xreg(14)?),
+                        AddressBase::Sp,
+                        FRAME_PENDING_FLAGS_RHS,
+                    )?;
+                }
+                if flag_strategy == FlagMaterializationStrategy::Eager {
+                    allocation.emit_load_scratch(&mut encoder, *lhs, xreg(13)?)?;
+                    allocation.emit_load_scratch(&mut encoder, *rhs, xreg(14)?)?;
+                }
                 match (kind, result) {
                     (IntegerKind::Add, Some(dst)) => {
                         encoder.add_x(xreg(15)?, xreg(13)?, XRegOrZero::Reg(xreg(14)?));
@@ -1462,22 +1585,30 @@ fn emit_runtime_block_inner(
                         });
                     }
                 }
+                let integer_snapshot =
+                    if flag_strategy == FlagMaterializationStrategy::DemandDrivenCandidate {
+                        SnapshotAdmissibility::InadmissiblePendingFlags
+                    } else {
+                        SnapshotAdmissibility::ReplayCurrentInstruction
+                    };
+                let integer_phase =
+                    if flag_strategy == FlagMaterializationStrategy::DemandDrivenCandidate {
+                        StatePhase::PendingEffects
+                    } else {
+                        StatePhase::AfterHelper
+                    };
                 push_range(
                     &mut ranges,
-                    before_success,
+                    integer_effect_start,
                     code_offset(&encoder)?,
                     rip,
                     Some(to_u32(index)?),
-                    StatePhase::AfterHelper,
-                    SnapshotAdmissibility::ReplayCurrentInstruction,
+                    integer_phase,
+                    integer_snapshot,
                 );
-                helper_failures.push(ReturnStub {
-                    label: failure,
-                    raw_tag: RAW_HELPER_CONTRACT_FAILURE_V1,
-                    guest_rip: GuestRipSource::Fixed(rip),
-                    instruction_index: Some(to_u32(index)?),
-                    snapshot: SnapshotAdmissibility::ReplayCurrentInstruction,
-                });
+                if flag_strategy == FlagMaterializationStrategy::DemandDrivenCandidate {
+                    pending_flags = Some(PendingFlagsDescriptor::w64(*kind));
+                }
             }
             Operation::WriteGpr {
                 register,
@@ -1502,7 +1633,10 @@ fn emit_runtime_block_inner(
                     rip,
                     Some(to_u32(index)?),
                     StatePhase::PendingEffects,
-                    SnapshotAdmissibility::ReplayCurrentInstruction,
+                    pending_snapshot(
+                        pending_flags,
+                        SnapshotAdmissibility::ReplayCurrentInstruction,
+                    ),
                 );
             }
             Operation::CommitInstruction { index } => {
@@ -1521,15 +1655,38 @@ fn emit_runtime_block_inner(
                     }) => Some((*condition, *target_rip, *fallthrough_rip)),
                     _ => None,
                 };
-                let start = code_offset(&encoder)?;
+                let mut start = code_offset(&encoder)?;
                 if let Some((condition, target, fallthrough)) = branch {
+                    if let Some(descriptor) = pending_flags {
+                        emit_materialize_pending_flags(
+                            &mut encoder,
+                            &mut ranges,
+                            &mut helper_failures,
+                            helper,
+                            descriptor,
+                            instruction.guest_rip,
+                            to_u32(*index)?,
+                        )?;
+                        pending_flags = None;
+                        start = code_offset(&encoder)?;
+                    }
                     emit_branch_rip_candidate(&mut encoder, condition, target, fallthrough)?;
                 } else {
                     emit_u64(&mut encoder, xreg(13)?, instruction.next_rip)?;
                     emit_saved_pointer_load(&mut encoder, FRAME_STAGING_RIP_POINTER, xreg(16)?)?;
                     encoder.str_x(XRegOrZero::Reg(xreg(13)?), AddressBase::Reg(xreg(16)?), 0)?;
                 }
-                emit_commit(&mut encoder, *index, pair_count)?;
+                emit_commit(
+                    &mut encoder,
+                    *index,
+                    pair_count,
+                    flag_strategy == FlagMaterializationStrategy::Eager || pending_flags.is_none(),
+                )?;
+                let commit_snapshot = if pending_flags.is_some() {
+                    SnapshotAdmissibility::InadmissiblePendingFlags
+                } else {
+                    SnapshotAdmissibility::InadmissibleDuringCommit
+                };
                 push_range(
                     &mut ranges,
                     start,
@@ -1537,7 +1694,7 @@ fn emit_runtime_block_inner(
                     instruction.guest_rip,
                     Some(to_u32(*index)?),
                     StatePhase::CommitInProgress,
-                    SnapshotAdmissibility::InadmissibleDuringCommit,
+                    commit_snapshot,
                 );
                 boundaries.push(GuestBoundaryPoint {
                     host_offset: code_offset(&encoder)?,
@@ -1552,6 +1709,11 @@ fn emit_runtime_block_inner(
                     instruction_index: to_u32(*index)?,
                     committed_instructions: to_u32(index + 1)?,
                     phase: StatePhase::Committed,
+                    snapshot: if pending_flags.is_some() {
+                        SnapshotAdmissibility::InadmissiblePendingFlags
+                    } else {
+                        SnapshotAdmissibility::CanonicalBoundary
+                    },
                 });
                 active_instruction = None;
             }
@@ -1567,7 +1729,9 @@ fn emit_runtime_block_inner(
                     GuestRipSource::CanonicalState,
                     Some(to_u32(index)?),
                     StatePhase::Exit,
-                    SnapshotAdmissibility::CanonicalBoundary,
+                    pending_flags.map_or(SnapshotAdmissibility::CanonicalBoundary, |_| {
+                        SnapshotAdmissibility::InadmissiblePendingFlags
+                    }),
                 );
                 return_stubs.push(ReturnStub {
                     label,
@@ -1578,13 +1742,17 @@ fn emit_runtime_block_inner(
                     },
                     guest_rip: GuestRipSource::CanonicalState,
                     instruction_index: Some(to_u32(index)?),
-                    snapshot: SnapshotAdmissibility::CanonicalBoundary,
+                    snapshot: pending_flags
+                        .map_or(SnapshotAdmissibility::CanonicalBoundary, |_| {
+                            SnapshotAdmissibility::InadmissiblePendingFlags
+                        }),
+                    pending_flags,
                 });
             }
             Operation::Exit { kind, target_rip } => {
                 if *kind != ExitKind::BlockComplete {
                     let start = code_offset(&encoder)?;
-                    emit_exit_guards(&mut encoder, &mut return_stubs, *target_rip)?;
+                    emit_exit_guards(&mut encoder, &mut return_stubs, *target_rip, pending_flags)?;
                     push_range(
                         &mut ranges,
                         start,
@@ -1592,7 +1760,9 @@ fn emit_runtime_block_inner(
                         *target_rip,
                         None,
                         StatePhase::BeforeInstruction,
-                        SnapshotAdmissibility::CanonicalBoundary,
+                        pending_flags.map_or(SnapshotAdmissibility::CanonicalBoundary, |_| {
+                            SnapshotAdmissibility::InadmissiblePendingFlags
+                        }),
                     );
                 }
                 let start = code_offset(&encoder)?;
@@ -1606,14 +1776,20 @@ fn emit_runtime_block_inner(
                     *target_rip,
                     Some(to_u32(index)?),
                     StatePhase::Exit,
-                    SnapshotAdmissibility::CanonicalBoundary,
+                    pending_flags.map_or(SnapshotAdmissibility::CanonicalBoundary, |_| {
+                        SnapshotAdmissibility::InadmissiblePendingFlags
+                    }),
                 );
                 return_stubs.push(ReturnStub {
                     label,
                     raw_tag: exit_tag(*kind),
                     guest_rip: GuestRipSource::Fixed(*target_rip),
                     instruction_index: Some(to_u32(index)?),
-                    snapshot: SnapshotAdmissibility::CanonicalBoundary,
+                    snapshot: pending_flags
+                        .map_or(SnapshotAdmissibility::CanonicalBoundary, |_| {
+                            SnapshotAdmissibility::InadmissiblePendingFlags
+                        }),
+                    pending_flags,
                 });
             }
         }
@@ -1621,11 +1797,54 @@ fn emit_runtime_block_inner(
 
     // Stubs are out of line and individually attributed. Canonical RIP still
     // identifies the first uncommitted instruction on helper failure.
-    for stub in return_stubs.iter().chain(helper_failures.iter()) {
+    for stub in return_stubs.iter() {
+        encoder.bind(stub.label)?;
+        if let Some(descriptor) = stub.pending_flags {
+            emit_materialize_pending_flags(
+                &mut encoder,
+                &mut ranges,
+                &mut helper_failures,
+                helper,
+                descriptor,
+                match stub.guest_rip {
+                    GuestRipSource::Fixed(rip) => rip,
+                    GuestRipSource::CanonicalState => entry_rip,
+                },
+                stub.instruction_index.unwrap_or(0),
+            )?;
+        }
+        let start = code_offset(&encoder)?;
+        emit_u64(&mut encoder, xreg(0)?, u64::from(stub.raw_tag))?;
+        encoder.b(epilogue)?;
+        push_range_with_source(
+            &mut ranges,
+            start,
+            code_offset(&encoder)?,
+            stub.guest_rip,
+            stub.instruction_index,
+            StatePhase::Exit,
+            if stub.pending_flags.is_some() {
+                SnapshotAdmissibility::CanonicalBoundary
+            } else {
+                stub.snapshot
+            },
+        );
+    }
+    let pending_failure_epilogue = helper_failures
+        .iter()
+        .any(|stub| stub.snapshot == SnapshotAdmissibility::InadmissiblePendingFlags)
+        .then(|| encoder.new_label())
+        .transpose()?;
+    for stub in helper_failures.iter() {
         let start = code_offset(&encoder)?;
         encoder.bind(stub.label)?;
         emit_u64(&mut encoder, xreg(0)?, u64::from(stub.raw_tag))?;
-        encoder.b(epilogue)?;
+        let target = if stub.snapshot == SnapshotAdmissibility::InadmissiblePendingFlags {
+            pending_failure_epilogue.unwrap()
+        } else {
+            epilogue
+        };
+        encoder.b(target)?;
         push_range_with_source(
             &mut ranges,
             start,
@@ -1648,6 +1867,20 @@ fn emit_runtime_block_inner(
         StatePhase::Service,
         SnapshotAdmissibility::CanonicalBoundary,
     );
+    if let Some(label) = pending_failure_epilogue {
+        let start = code_offset(&encoder)?;
+        encoder.bind(label)?;
+        emit_epilogue(&mut encoder, pair_count)?;
+        push_range_with_source(
+            &mut ranges,
+            start,
+            code_offset(&encoder)?,
+            GuestRipSource::CanonicalState,
+            None,
+            StatePhase::Service,
+            SnapshotAdmissibility::InadmissiblePendingFlags,
+        );
+    }
 
     let code = encoder.finish()?;
     let bytes = code.to_le_bytes()?;
@@ -1861,16 +2094,25 @@ fn emit_instruction_guards(
     stubs: &mut Vec<ReturnStub>,
     guest_rip: u64,
     instruction_index: usize,
+    pending_flags: Option<PendingFlagsDescriptor>,
 ) -> Result<(), BlockEmitterError> {
-    emit_boundary_guards(encoder, stubs, guest_rip, Some(instruction_index), true)
+    emit_boundary_guards(
+        encoder,
+        stubs,
+        guest_rip,
+        Some(instruction_index),
+        true,
+        pending_flags,
+    )
 }
 
 fn emit_exit_guards(
     encoder: &mut Encoder,
     stubs: &mut Vec<ReturnStub>,
     guest_rip: u64,
+    pending_flags: Option<PendingFlagsDescriptor>,
 ) -> Result<(), BlockEmitterError> {
-    emit_boundary_guards(encoder, stubs, guest_rip, None, false)
+    emit_boundary_guards(encoder, stubs, guest_rip, None, false, pending_flags)
 }
 
 fn emit_boundary_guards(
@@ -1879,6 +2121,7 @@ fn emit_boundary_guards(
     guest_rip: u64,
     instruction_index: Option<usize>,
     check_rip: bool,
+    pending_flags: Option<PendingFlagsDescriptor>,
 ) -> Result<(), BlockEmitterError> {
     let stop_disabled = encoder.new_label()?;
     let stop_address = new_exit_stub(
@@ -1888,6 +2131,7 @@ fn emit_boundary_guards(
         guest_rip,
         instruction_index,
         SnapshotAdmissibility::CanonicalBoundary,
+        pending_flags,
     )?;
     emit_context_load(
         encoder,
@@ -1909,6 +2153,7 @@ fn emit_boundary_guards(
         guest_rip,
         instruction_index,
         SnapshotAdmissibility::CanonicalBoundary,
+        pending_flags,
     )?;
     emit_context_load(
         encoder,
@@ -1927,6 +2172,7 @@ fn emit_boundary_guards(
         guest_rip,
         instruction_index,
         SnapshotAdmissibility::CanonicalBoundary,
+        pending_flags,
     )?;
     emit_context_load(
         encoder,
@@ -1944,6 +2190,7 @@ fn emit_boundary_guards(
             guest_rip,
             instruction_index,
             SnapshotAdmissibility::CanonicalBoundary,
+            pending_flags,
         )?;
         emit_state_load(encoder, LONG_MODE_RIP_OFFSET as u32, xreg(15)?)?;
         emit_u64(encoder, xreg(14)?, guest_rip)?;
@@ -1962,6 +2209,7 @@ fn new_exit_stub(
     guest_rip: u64,
     instruction_index: Option<usize>,
     snapshot: SnapshotAdmissibility,
+    pending_flags: Option<PendingFlagsDescriptor>,
 ) -> Result<crate::arm64::Label, BlockEmitterError> {
     let label = encoder.new_label()?;
     stubs.push(ReturnStub {
@@ -1970,14 +2218,143 @@ fn new_exit_stub(
         guest_rip: GuestRipSource::Fixed(guest_rip),
         instruction_index: instruction_index.map(to_u32).transpose()?,
         snapshot,
+        pending_flags,
     });
     Ok(label)
+}
+
+fn emit_flags_helper_call(
+    encoder: &mut Encoder,
+    helper: ArithmeticFlagsHelper,
+    kind: IntegerKind,
+) -> Result<(), BlockEmitterError> {
+    encoder.mov_x(xreg(1)?, XRegOrZero::Reg(xreg(13)?));
+    encoder.mov_x(xreg(2)?, XRegOrZero::Reg(xreg(14)?));
+    encoder.movz_x(xreg(0)?, helper_operation_tag(kind) as u16, 0)?;
+    emit_saved_pointer_load(encoder, FRAME_STAGING_FLAGS_POINTER, xreg(16)?)?;
+    encoder.ldr_x(XRegOrZero::Reg(xreg(3)?), AddressBase::Reg(xreg(16)?), 0)?;
+    encoder.adds_imm_x(
+        XRegOrZero::Reg(xreg(4)?),
+        XRegOrSp::Sp,
+        FRAME_HELPER_FLAGS_OUTPUT as u16,
+    )?;
+    emit_u64(encoder, xreg(16)?, helper as usize as u64)?;
+    Ok(())
+}
+
+fn emit_store_helper_flags(encoder: &mut Encoder) -> Result<(), BlockEmitterError> {
+    encoder.ldr_x(
+        XRegOrZero::Reg(xreg(13)?),
+        AddressBase::Sp,
+        FRAME_HELPER_FLAGS_OUTPUT,
+    )?;
+    emit_saved_pointer_load(encoder, FRAME_STAGING_FLAGS_POINTER, xreg(16)?)?;
+    encoder.str_x(XRegOrZero::Reg(xreg(13)?), AddressBase::Reg(xreg(16)?), 0)?;
+    Ok(())
+}
+
+fn emit_materialize_pending_flags(
+    encoder: &mut Encoder,
+    ranges: &mut Vec<StatePointRange>,
+    helper_failures: &mut Vec<ReturnStub>,
+    helper: ArithmeticFlagsHelper,
+    descriptor: PendingFlagsDescriptor,
+    guest_rip: u64,
+    instruction_index: u32,
+) -> Result<(), BlockEmitterError> {
+    if descriptor.width != IntWidth::W64 {
+        return Err(BlockEmitterError::UnsupportedShape {
+            instruction_index: instruction_index as usize,
+        });
+    }
+    let start = code_offset(encoder)?;
+    encoder.ldr_x(
+        XRegOrZero::Reg(xreg(13)?),
+        AddressBase::Sp,
+        descriptor.lhs_slot,
+    )?;
+    encoder.ldr_x(
+        XRegOrZero::Reg(xreg(14)?),
+        AddressBase::Sp,
+        descriptor.rhs_slot,
+    )?;
+    emit_flags_helper_call(encoder, helper, descriptor.kind)?;
+    let helper_start = code_offset(encoder)?;
+    push_range(
+        ranges,
+        start,
+        helper_start,
+        guest_rip,
+        Some(instruction_index),
+        StatePhase::PendingEffects,
+        SnapshotAdmissibility::InadmissiblePendingFlags,
+    );
+    encoder.blr(xreg(16)?);
+    let failure = encoder.new_label()?;
+    let success = encoder.new_label()?;
+    encoder.cbz_w(crate::arm64::WReg::new(0)?, success)?;
+    encoder.b(failure)?;
+    let after_call = code_offset(encoder)?;
+    push_range(
+        ranges,
+        helper_start,
+        helper_start
+            .checked_add(4)
+            .ok_or(BlockEmitterError::CodeRangeOverflow)?,
+        guest_rip,
+        Some(instruction_index),
+        StatePhase::HelperCall,
+        SnapshotAdmissibility::InadmissiblePendingFlags,
+    );
+    push_range(
+        ranges,
+        helper_start + 4,
+        after_call,
+        guest_rip,
+        Some(instruction_index),
+        StatePhase::AfterHelper,
+        SnapshotAdmissibility::InadmissiblePendingFlags,
+    );
+    encoder.bind(success)?;
+    let output_start = code_offset(encoder)?;
+    encoder.ldr_x(
+        XRegOrZero::Reg(xreg(13)?),
+        AddressBase::Sp,
+        FRAME_HELPER_FLAGS_OUTPUT,
+    )?;
+    emit_saved_pointer_load(encoder, FRAME_STAGING_FLAGS_POINTER, xreg(16)?)?;
+    encoder.str_x(XRegOrZero::Reg(xreg(13)?), AddressBase::Reg(xreg(16)?), 0)?;
+    emit_saved_pointer_load(encoder, FRAME_CANONICAL_STATE_POINTER, xreg(16)?)?;
+    encoder.str_x(
+        XRegOrZero::Reg(xreg(13)?),
+        AddressBase::Reg(xreg(16)?),
+        LONG_MODE_RFLAGS_OFFSET as u32,
+    )?;
+    push_range(
+        ranges,
+        output_start,
+        code_offset(encoder)?,
+        guest_rip,
+        Some(instruction_index),
+        StatePhase::AfterHelper,
+        SnapshotAdmissibility::InadmissiblePendingFlags,
+    );
+    helper_failures.push(ReturnStub {
+        label: failure,
+        raw_tag: RAW_HELPER_CONTRACT_FAILURE_V1,
+        guest_rip: GuestRipSource::Fixed(guest_rip),
+        instruction_index: Some(instruction_index),
+        snapshot: SnapshotAdmissibility::InadmissiblePendingFlags,
+        pending_flags: None,
+    });
+    Ok(())
 }
 
 fn emit_commit(
     encoder: &mut Encoder,
     instruction_index: usize,
     _pair_count: usize,
+    write_flags: bool,
 ) -> Result<(), BlockEmitterError> {
     // The canonical state pointer is stable through this commit. Load it once
     // before copying staged registers instead of reloading it for each GPR.
@@ -1994,17 +2371,19 @@ fn emit_commit(
             checked_offset(LONG_MODE_GPR_OFFSET, register * 8)?,
         )?;
     }
-    encoder.ldr_x(
-        XRegOrZero::Reg(xreg(13)?),
-        AddressBase::Sp,
-        FRAME_STAGING_FLAGS,
-    )?;
-    emit_saved_pointer_load(encoder, FRAME_CANONICAL_STATE_POINTER, xreg(16)?)?;
-    encoder.str_x(
-        XRegOrZero::Reg(xreg(13)?),
-        AddressBase::Reg(xreg(16)?),
-        LONG_MODE_RFLAGS_OFFSET as u32,
-    )?;
+    if write_flags {
+        encoder.ldr_x(
+            XRegOrZero::Reg(xreg(13)?),
+            AddressBase::Sp,
+            FRAME_STAGING_FLAGS,
+        )?;
+        emit_saved_pointer_load(encoder, FRAME_CANONICAL_STATE_POINTER, xreg(16)?)?;
+        encoder.str_x(
+            XRegOrZero::Reg(xreg(13)?),
+            AddressBase::Reg(xreg(16)?),
+            LONG_MODE_RFLAGS_OFFSET as u32,
+        )?;
+    }
     encoder.ldr_x(
         XRegOrZero::Reg(xreg(13)?),
         AddressBase::Sp,
@@ -2215,6 +2594,15 @@ fn push_range(
     );
 }
 
+fn pending_snapshot(
+    pending_flags: Option<PendingFlagsDescriptor>,
+    fallback: SnapshotAdmissibility,
+) -> SnapshotAdmissibility {
+    pending_flags.map_or(fallback, |_| {
+        SnapshotAdmissibility::InadmissiblePendingFlags
+    })
+}
+
 fn push_range_with_source(
     ranges: &mut Vec<StatePointRange>,
     start: u32,
@@ -2273,6 +2661,10 @@ mod tests {
         assert_eq!(FRAME_SAVED_X21_X22, 160);
         assert_eq!(MIN_RUNTIME_PREFIX_BYTES, 176);
         assert_eq!(MIN_RUNTIME_PREFIX_BYTES % 16, 0);
+        let descriptor = PendingFlagsDescriptor::w64(IntegerKind::Add);
+        assert_eq!(descriptor.width, IntWidth::W64);
+        assert_eq!((descriptor.lhs_slot, descriptor.rhs_slot), (176, 184));
+        assert!(descriptor.rhs_slot + 8 <= DEMAND_FLAGS_FRAME_PREFIX_BYTES);
     }
 
     fn mov_program() -> Program {
@@ -2335,6 +2727,27 @@ mod tests {
         assert_eq!(
             block.pc_map().boundaries()[0].rip,
             GuestRipBoundary::Fixed(0x100A)
+        );
+    }
+
+    #[test]
+    fn demand_flags_candidate_rejects_the_eager_frame_prefix() {
+        let program = mov_program();
+        let allocation = Allocation::build(
+            &program,
+            AllocatorConfig {
+                register_homes: 1,
+                reserved_prefix_bytes: MIN_RUNTIME_PREFIX_BYTES,
+            },
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            emit_runtime_block_demand_flags_candidate(&program, &allocation),
+            Err(BlockEmitterError::InsufficientFramePrefix {
+                required: DEMAND_FLAGS_FRAME_PREFIX_BYTES,
+                actual: MIN_RUNTIME_PREFIX_BYTES,
+            })
         );
     }
 }

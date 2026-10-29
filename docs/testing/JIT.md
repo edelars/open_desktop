@@ -4,6 +4,36 @@
 из [BENCHMARKS](BENCHMARKS.md). Она описывает проверки, которые будут включаться
 по мере готовности задач S3; не все пути реализованы сейчас.
 
+## S3-29a: bounded demand-driven flags correctness candidate
+
+Run `cargo test -p od-jit --lib demand_flags_candidate --offline` and
+`cargo test -p od-host --lib demand_flags_candidate --offline`. The opt-in
+candidate compile API is separate from the eager/default compile path and is
+not inserted into the shared translation cache. It only covers the existing
+W64 register-only ADD/SUB/CMP profile with flag-preserving MOV and JZ/JNZ; it
+does not add instructions or select a production policy.
+
+The native host tests compare candidate and eager CPU state, RIP, defined
+arithmetic flags, preserved non-arithmetic RFLAGS, retirement and remaining
+budget. One arithmetic chain is also stepped through `od_isa::execute::step`.
+Cases include ADD→SUB, CMP→ADD, alias/equal operands, ADD→MOV that overwrites
+the original destination, arithmetic→MOV→JZ/JNZ with both outcomes, register
+homes 0..4 (including forced spills), zero/exhausted budgets, stop-RIP before
+the next instruction, unsupported and deferred-decode exits, and a mapped
+helper contract failure, plus the canonical `NeedInterpreter` boundary before
+the existing bare-NOP fallback. The instrumented helper must run once at the
+final observer/exit for two uninterrupted full writers (with the call operands from
+the last writer), and once for an exit between writers (with the earlier
+writer's saved operands); budget zero runs it zero times. PC-map tests require
+pending ranges/boundaries to remain inadmissible until the PC after the final
+RFLAGS store. The ADD→MOV map case checks all non-exit MOV ranges, and helper
+failure epilogues must remain inadmissible.
+
+These tests establish a bounded correctness candidate only. They do not cover
+partial flag writers, ADC/SBB, memory/helper handoff, physical x86, Mini, or
+performance. Eager remains the reference/default; S3-29 remains open until the
+remaining correctness gates and final performance comparison determine policy.
+
 ## Срез A: один register-only блок
 
 1. Использовать только точные S0-09 формы из JIT contract и fixtures с

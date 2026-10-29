@@ -3201,7 +3201,10 @@ mod tests {
         AddressBase, Condition, Encoder, PairIndexMode, WReg, XReg, XRegOrSp, XRegOrZero,
     };
     use od_jit::block::{self, AdmittedInstructionBoundaries, BlockLimits, CodeView};
-    use od_jit::block_compile::{BlockCompileOutcome, compile_block, compile_block_for_dispatch};
+    use od_jit::block_compile::{
+        BlockCompileOutcome, compile_block, compile_block_for_dispatch,
+        compile_block_for_nop_fallback, compile_block_for_nop_fallback_demand_flags_candidate,
+    };
     use od_jit::dispatch::CachedBlockBackend;
     use od_jit::emitter::{
         self, DATA_EFFECTS_UNCOMMITTED_V1, DataEffectContextV2, DataEffectEntry,
@@ -3224,6 +3227,7 @@ mod tests {
     static RUNTIME_HELPER_FAILURE_STATUS: AtomicU32 = AtomicU32::new(2);
     static RUNTIME_HELPER_STOP_ON_CALL: AtomicUsize = AtomicUsize::new(0);
     static RUNTIME_HELPER_STOP_BYTE: AtomicPtr<AtomicU8> = AtomicPtr::new(std::ptr::null_mut());
+    static RUNTIME_HELPER_LAST_CALL: Mutex<Option<(u32, u64, u64, u64)>> = Mutex::new(None);
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     struct TrackedBackingFixture {
@@ -32751,6 +32755,43 @@ mod tests {
         .unwrap()
     }
 
+    unsafe fn emit_runtime_block_for_code_demand_flags_candidate_with_helper(
+        code: &[u8],
+        base_rip: u64,
+        register_homes: u8,
+        helper: ArithmeticFlagsHelper,
+    ) -> od_jit::block_emitter::EmittedRuntimeBlock {
+        let view = CodeView::new(base_rip, code).unwrap();
+        let built = block::build_block(
+            view,
+            base_rip,
+            od_isa::memory::AccessContext::default(),
+            BlockLimits::default(),
+        )
+        .unwrap();
+        let LoweringOutcome::Program(lowered) = lowering::lower(&built).unwrap() else {
+            panic!("runtime demand-flags test requires an admitted block");
+        };
+        let allocation = Allocation::build(
+            &lowered.program,
+            AllocatorConfig {
+                register_homes,
+                reserved_prefix_bytes: od_jit::block_emitter::DEMAND_FLAGS_FRAME_PREFIX_BYTES,
+            },
+            &[],
+        )
+        .unwrap();
+        // SAFETY: the test helper meets the emitter's documented scalar ABI.
+        unsafe {
+            od_jit::block_emitter::emit_runtime_block_demand_flags_candidate_with_helper(
+                &lowered.program,
+                &allocation,
+                helper,
+            )
+        }
+        .unwrap()
+    }
+
     unsafe extern "C" fn runtime_test_helper(
         operation: u32,
         lhs: u64,
@@ -32759,6 +32800,9 @@ mod tests {
         output: *mut u64,
     ) -> u32 {
         let call = RUNTIME_HELPER_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Ok(mut last_call) = RUNTIME_HELPER_LAST_CALL.lock() {
+            *last_call = Some((operation, lhs, rhs, old_rflags));
+        }
         if call == RUNTIME_HELPER_FAIL_AT.load(Ordering::Relaxed) {
             return RUNTIME_HELPER_FAILURE_STATUS.load(Ordering::Relaxed);
         }
@@ -33114,6 +33158,102 @@ mod tests {
     }
 
     #[test]
+    fn demand_flags_candidate_handles_alias_inputs_and_cmp_add_replacement() {
+        let _guard = jit_test_lock();
+        let base_rip = 0x7D00;
+        let stop = AtomicU8::new(0);
+        for (
+            bytes,
+            initial_rax,
+            initial_rcx,
+            initial_rdx,
+            initial_rbx,
+            expected_lhs,
+            expected_rhs,
+        ) in [
+            (
+                vec![0x48, 0x03, 0xC0], // ADD RAX, RAX
+                0x8000_0000_0000_0000,
+                0,
+                0,
+                0,
+                0x8000_0000_0000_0000,
+                0x8000_0000_0000_0000,
+            ),
+            (
+                vec![0x48, 0x3B, 0xC1, 0x48, 0x03, 0xD3], // CMP; ADD RDX, RBX
+                0,
+                u64::MAX,
+                0x7FFF_FFFF_FFFF_FFFF,
+                1,
+                0x7FFF_FFFF_FFFF_FFFF,
+                1,
+            ),
+        ] {
+            let eager_block = emit_runtime_block_for_code(&bytes, base_rip, 0);
+            let mut initial = od_isa::LongModeState::default();
+            initial.rip = base_rip;
+            initial.rflags = 0xA5A5_F0F0_5A5A_0A0A;
+            initial.gpr[0] = initial_rax;
+            initial.gpr[1] = initial_rcx;
+            initial.gpr[2] = initial_rdx;
+            initial.gpr[3] = initial_rbx;
+            RUNTIME_HELPER_CALLS.store(0, Ordering::Relaxed);
+            *RUNTIME_HELPER_LAST_CALL.lock().unwrap() = None;
+            let block = unsafe {
+                emit_runtime_block_for_code_demand_flags_candidate_with_helper(
+                    &bytes,
+                    base_rip,
+                    0,
+                    runtime_test_helper,
+                )
+            };
+            let mut candidate_state = initial.clone();
+            let (raw, remaining, retired) = {
+                let published = PublishedCode::publish_block(&block).unwrap();
+                let mut context = RuntimeContextV1 {
+                    state: &mut candidate_state,
+                    initial_budget: 8,
+                    stop_rip_enabled: 0,
+                    reserved: 0,
+                    stop_rip: 0,
+                    stop_requested: (&stop as *const AtomicU8).cast(),
+                    remaining_budget: u64::MAX,
+                    retired_instructions: u64::MAX,
+                };
+                let entry: BlockEntry = unsafe { std::mem::transmute(published.as_ptr()) };
+                // SAFETY: the injected helper obeys its scalar ABI contract.
+                let raw = unsafe { entry(&mut context) };
+                (raw, context.remaining_budget, context.retired_instructions)
+            };
+            let eager = PublishedCode::publish_block(&eager_block).unwrap();
+            let mut eager_state = initial;
+            let eager_result = eager
+                .execute_block(&mut eager_state, 8, None, &stop)
+                .unwrap();
+            assert_eq!(raw, eager_result.exit as u32);
+            assert_eq!(candidate_state, eager_state);
+            assert_eq!(
+                (remaining, retired),
+                (
+                    eager_result.remaining_budget,
+                    eager_result.retired_instructions
+                )
+            );
+            assert_eq!(RUNTIME_HELPER_CALLS.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                *RUNTIME_HELPER_LAST_CALL.lock().unwrap(),
+                Some((
+                    HelperOperationTag::Add as u32,
+                    expected_lhs,
+                    expected_rhs,
+                    0xA5A5_F0F0_5A5A_0A0A,
+                ))
+            );
+        }
+    }
+
+    #[test]
     fn runtime_entry_commits_instruction_and_published_code_owns_pc_map() {
         let _guard = jit_test_lock();
         let base_rip = 0x5000;
@@ -33291,6 +33431,576 @@ mod tests {
         }
         RUNTIME_HELPER_FAIL_AT.store(0, Ordering::Relaxed);
         RUNTIME_HELPER_FAILURE_STATUS.store(2, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn demand_flags_candidate_defers_replaced_writers_and_survives_clobbers_and_spills() {
+        let _guard = jit_test_lock();
+        use od_isa::memory::{AccessKind, GuestMemory, MemoryError};
+
+        struct CodeRam<'a> {
+            base: u64,
+            code: &'a [u8],
+        }
+        impl GuestMemory for CodeRam<'_> {
+            fn fetch(
+                &mut self,
+                address: u64,
+                _: od_isa::memory::AccessContext,
+            ) -> Result<u8, MemoryError> {
+                let index = address.saturating_sub(self.base) as usize;
+                self.code.get(index).copied().ok_or(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Fetch,
+                })
+            }
+
+            fn read(
+                &mut self,
+                address: u64,
+                _: od_isa::memory::AccessContext,
+                _: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+
+            fn write(
+                &mut self,
+                address: u64,
+                _: od_isa::memory::AccessContext,
+                _: &[u8],
+            ) -> Result<(), MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: od_isa::memory::AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: od_isa::memory::AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: od_isa::memory::AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn mfence(&mut self, _: od_isa::memory::AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+
+        let base_rip = 0x7A00;
+        let mut bytes = vec![0x48, 0x03, 0xC1]; // ADD RAX, RCX
+        bytes.extend_from_slice(&[0x48, 0xB8]); // MOV RAX, 7 (preserves flags)
+        bytes.extend_from_slice(&7_u64.to_le_bytes());
+        bytes.extend_from_slice(&[0x48, 0x2B, 0xC3]); // SUB RAX, RBX
+        let stop = AtomicU8::new(0);
+        let eager_block = emit_runtime_block_for_code(&bytes, base_rip, 4);
+
+        for (initial_rax, initial_rcx) in [
+            (u64::MAX, 1),
+            (0, 0),
+            (0, 1),
+            (0x7FFF_FFFF_FFFF_FFFF, 1),
+            (0x8000_0000_0000_0000, 0),
+        ] {
+            for register_homes in 0..=4 {
+                for (budget, expected_operation) in [
+                    (1, HelperOperationTag::Add as u32),
+                    (2, HelperOperationTag::Add as u32),
+                    (10, HelperOperationTag::Subtract as u32),
+                ] {
+                    let expected_lhs = if expected_operation == HelperOperationTag::Add as u32 {
+                        initial_rax
+                    } else {
+                        7
+                    };
+                    let expected_rhs = if expected_operation == HelperOperationTag::Add as u32 {
+                        initial_rcx
+                    } else {
+                        1
+                    };
+                    RUNTIME_HELPER_CALLS.store(0, Ordering::Relaxed);
+                    *RUNTIME_HELPER_LAST_CALL.lock().unwrap() = None;
+                    RUNTIME_HELPER_FAIL_AT.store(0, Ordering::Relaxed);
+                    let block = unsafe {
+                        emit_runtime_block_for_code_demand_flags_candidate_with_helper(
+                            &bytes,
+                            base_rip,
+                            register_homes,
+                            runtime_test_helper,
+                        )
+                    };
+                    assert!(!block.safe_entry_provenance());
+                    let mut initial = od_isa::LongModeState::default();
+                    initial.rip = base_rip;
+                    initial.rflags = 0xA5A5_F0F0_5A5A_0A0A;
+                    initial.gpr[0] = initial_rax;
+                    initial.gpr[1] = initial_rcx;
+                    initial.gpr[3] = 1;
+
+                    let mut candidate_state = initial.clone();
+                    let (candidate_raw, candidate_remaining, candidate_retired) = {
+                        let published = PublishedCode::publish_block(&block).unwrap();
+                        let mut context = RuntimeContextV1 {
+                            state: &mut candidate_state,
+                            initial_budget: budget,
+                            stop_rip_enabled: 0,
+                            reserved: 0,
+                            stop_rip: 0,
+                            stop_requested: (&stop as *const AtomicU8).cast(),
+                            remaining_budget: u64::MAX,
+                            retired_instructions: u64::MAX,
+                        };
+                        let entry: BlockEntry = unsafe { std::mem::transmute(published.as_ptr()) };
+                        // SAFETY: this helper obeys the scalar AAPCS64 contract and
+                        // the published entry belongs to this locked test invocation.
+                        let raw = unsafe { entry(&mut context) };
+                        (raw, context.remaining_budget, context.retired_instructions)
+                    };
+                    let eager = PublishedCode::publish_block(&eager_block).unwrap();
+                    let mut eager_state = initial.clone();
+                    let eager_result = eager
+                        .execute_block(&mut eager_state, budget, None, &stop)
+                        .unwrap();
+                    assert_eq!(candidate_raw, eager_result.exit as u32);
+                    assert_eq!(candidate_state, eager_state);
+                    assert_eq!(candidate_remaining, eager_result.remaining_budget);
+                    assert_eq!(candidate_retired, eager_result.retired_instructions);
+                    let mut interpreter_state = initial;
+                    let mut code_ram = CodeRam {
+                        base: base_rip,
+                        code: &bytes,
+                    };
+                    for _ in 0..eager_result.retired_instructions {
+                        assert_eq!(
+                            od_isa::execute::step(
+                                &mut interpreter_state,
+                                &mut code_ram,
+                                od_isa::memory::AccessContext::default(),
+                            )
+                            .unwrap(),
+                            od_isa::execute::StepOutcome::Advanced
+                        );
+                    }
+                    assert_eq!(candidate_state, interpreter_state);
+                    assert_eq!(RUNTIME_HELPER_CALLS.load(Ordering::Relaxed), 1);
+                    assert_eq!(
+                        *RUNTIME_HELPER_LAST_CALL.lock().unwrap(),
+                        Some((
+                            expected_operation,
+                            expected_lhs,
+                            expected_rhs,
+                            0xA5A5_F0F0_5A5A_0A0A,
+                        ))
+                    );
+                }
+            }
+        }
+
+        // With a zero budget the candidate must return without a helper call
+        // and without changing canonical flags or retiring an instruction.
+        let bytes = [0x48, 0x03, 0xC1];
+        let base_rip = 0x7A00;
+        let stop = AtomicU8::new(0);
+        RUNTIME_HELPER_CALLS.store(0, Ordering::Relaxed);
+        let zero_budget_block = unsafe {
+            emit_runtime_block_for_code_demand_flags_candidate_with_helper(
+                &bytes,
+                base_rip,
+                0,
+                runtime_test_helper,
+            )
+        };
+        let mut zero_budget_state = od_isa::LongModeState::default();
+        zero_budget_state.rip = base_rip;
+        zero_budget_state.rflags = 0xA5A5_F0F0_5A5A_0A0A;
+        let zero_budget_before = zero_budget_state.clone();
+        let (raw, remaining, retired) = {
+            let published = PublishedCode::publish_block(&zero_budget_block).unwrap();
+            let mut context = RuntimeContextV1 {
+                state: &mut zero_budget_state,
+                initial_budget: 0,
+                stop_rip_enabled: 0,
+                reserved: 0,
+                stop_rip: 0,
+                stop_requested: (&stop as *const AtomicU8).cast(),
+                remaining_budget: u64::MAX,
+                retired_instructions: u64::MAX,
+            };
+            let entry: BlockEntry = unsafe { std::mem::transmute(published.as_ptr()) };
+            // SAFETY: entry guards return before the injected helper can run.
+            let raw = unsafe { entry(&mut context) };
+            (raw, context.remaining_budget, context.retired_instructions)
+        };
+        assert_eq!(raw, RuntimeExitTag::BudgetExhausted as u32);
+        assert_eq!(zero_budget_state, zero_budget_before);
+        assert_eq!((remaining, retired), (0, 0));
+        assert_eq!(RUNTIME_HELPER_CALLS.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn demand_flags_candidate_materializes_before_jz_and_jnz_after_preserving_mov() {
+        let _guard = jit_test_lock();
+        let base_rip = 0x7B00;
+        let stop = AtomicU8::new(0);
+
+        for (branch_opcode, lhs, rhs, branch_taken) in [
+            (0x74, 0, 0, true),
+            (0x74, 1, 1, false),
+            (0x75, 0, 0, false),
+            (0x75, 1, 1, true),
+        ] {
+            let mut bytes = vec![0x48, 0x03, 0xC1]; // ADD RAX, RCX
+            bytes.extend_from_slice(&[0x48, 0xB8]); // MOV RAX, 7 (preserves flags)
+            bytes.extend_from_slice(&7_u64.to_le_bytes());
+            bytes.extend_from_slice(&[branch_opcode, 3]); // JZ/JNZ to code end
+            bytes.extend_from_slice(&[0x48, 0x89, 0xF0]); // fallthrough-only MOV
+            let eager_block = emit_runtime_block_for_code(&bytes, base_rip, 4);
+            let mut initial = od_isa::LongModeState::default();
+            initial.rip = base_rip;
+            initial.rflags = 0xA5A5_F0F0_5A5A_0A0A;
+            initial.gpr[0] = lhs;
+            initial.gpr[1] = rhs;
+            initial.gpr[2] = 0x1234;
+
+            RUNTIME_HELPER_CALLS.store(0, Ordering::Relaxed);
+            *RUNTIME_HELPER_LAST_CALL.lock().unwrap() = None;
+            let block = unsafe {
+                emit_runtime_block_for_code_demand_flags_candidate_with_helper(
+                    &bytes,
+                    base_rip,
+                    1,
+                    runtime_test_helper,
+                )
+            };
+            let mut candidate_state = initial.clone();
+            let candidate_raw = {
+                let published = PublishedCode::publish_block(&block).unwrap();
+                let mut context = RuntimeContextV1 {
+                    state: &mut candidate_state,
+                    initial_budget: 10,
+                    stop_rip_enabled: 0,
+                    reserved: 0,
+                    stop_rip: 0,
+                    stop_requested: (&stop as *const AtomicU8).cast(),
+                    remaining_budget: u64::MAX,
+                    retired_instructions: u64::MAX,
+                };
+                let entry: BlockEntry = unsafe { std::mem::transmute(published.as_ptr()) };
+                // SAFETY: the injected helper obeys its scalar ABI contract.
+                unsafe { entry(&mut context) }
+            };
+            let eager = PublishedCode::publish_block(&eager_block).unwrap();
+            let mut eager_state = initial;
+            let eager_result = eager
+                .execute_block(&mut eager_state, 10, None, &stop)
+                .unwrap();
+
+            assert_eq!(candidate_raw, eager_result.exit as u32);
+            assert_eq!(candidate_state, eager_state);
+            assert_eq!(
+                candidate_state.rip,
+                base_rip + if branch_taken { 18 } else { 15 }
+            );
+            assert_eq!(RUNTIME_HELPER_CALLS.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                *RUNTIME_HELPER_LAST_CALL.lock().unwrap(),
+                Some((
+                    HelperOperationTag::Add as u32,
+                    lhs,
+                    rhs,
+                    0xA5A5_F0F0_5A5A_0A0A,
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn demand_flags_candidate_materializes_on_stop_unsupported_and_helper_failure_exits() {
+        let _guard = jit_test_lock();
+        let base_rip = 0x7C00;
+        let mut bytes = vec![0x48, 0x03, 0xC1]; // ADD RAX, RCX
+        bytes.extend_from_slice(&[0x48, 0xB8]);
+        bytes.extend_from_slice(&7_u64.to_le_bytes()); // MOV RAX, 7
+        bytes.extend_from_slice(&[0x48, 0x2B, 0xC3]); // SUB RAX, RBX
+        let stop = AtomicU8::new(0);
+        let eager_block = emit_runtime_block_for_code(&bytes, base_rip, 4);
+        let mut initial = od_isa::LongModeState::default();
+        initial.rip = base_rip;
+        initial.rflags = 0xA5A5_F0F0_5A5A_0A0A;
+        initial.gpr[0] = u64::MAX;
+        initial.gpr[1] = 1;
+        initial.gpr[3] = 1;
+
+        RUNTIME_HELPER_CALLS.store(0, Ordering::Relaxed);
+        *RUNTIME_HELPER_LAST_CALL.lock().unwrap() = None;
+        let block = unsafe {
+            emit_runtime_block_for_code_demand_flags_candidate_with_helper(
+                &bytes,
+                base_rip,
+                0,
+                runtime_test_helper,
+            )
+        };
+        let mut candidate_state = initial.clone();
+        let (raw, candidate_remaining, candidate_retired) = {
+            let published = PublishedCode::publish_block(&block).unwrap();
+            let mut context = RuntimeContextV1 {
+                state: &mut candidate_state,
+                initial_budget: 10,
+                stop_rip_enabled: 1,
+                reserved: 0,
+                stop_rip: base_rip + 3,
+                stop_requested: (&stop as *const AtomicU8).cast(),
+                remaining_budget: u64::MAX,
+                retired_instructions: u64::MAX,
+            };
+            let entry: BlockEntry = unsafe { std::mem::transmute(published.as_ptr()) };
+            // SAFETY: the injected helper obeys its scalar ABI contract.
+            let raw = unsafe { entry(&mut context) };
+            (raw, context.remaining_budget, context.retired_instructions)
+        };
+        let eager = PublishedCode::publish_block(&eager_block).unwrap();
+        let mut eager_state = initial.clone();
+        let eager_result = eager
+            .execute_block(&mut eager_state, 10, Some(base_rip + 3), &stop)
+            .unwrap();
+        assert_eq!(raw, RuntimeExitTag::StopAddress as u32);
+        assert_eq!(raw, eager_result.exit as u32);
+        assert_eq!(candidate_state, eager_state);
+        assert_eq!(candidate_remaining, eager_result.remaining_budget);
+        assert_eq!(candidate_retired, eager_result.retired_instructions);
+        assert_eq!(RUNTIME_HELPER_CALLS.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            *RUNTIME_HELPER_LAST_CALL.lock().unwrap(),
+            Some((
+                HelperOperationTag::Add as u32,
+                u64::MAX,
+                1,
+                0xA5A5_F0F0_5A5A_0A0A,
+            ))
+        );
+        drop(eager);
+
+        // An unsupported tail still returns the committed native prefix with
+        // canonical flags before handing control back to the interpreter.
+        let unsupported = [0x48, 0x03, 0xC1, 0x90]; // ADD; unsupported NOP tail
+        let unsupported_eager_block = emit_runtime_block_for_code(&unsupported, base_rip, 0);
+        RUNTIME_HELPER_CALLS.store(0, Ordering::Relaxed);
+        let block = unsafe {
+            emit_runtime_block_for_code_demand_flags_candidate_with_helper(
+                &unsupported,
+                base_rip,
+                0,
+                runtime_test_helper,
+            )
+        };
+        let mut state = initial.clone();
+        let (raw, remaining, retired) = {
+            let published = PublishedCode::publish_block(&block).unwrap();
+            let mut context = RuntimeContextV1 {
+                state: &mut state,
+                initial_budget: 10,
+                stop_rip_enabled: 0,
+                reserved: 0,
+                stop_rip: 0,
+                stop_requested: (&stop as *const AtomicU8).cast(),
+                remaining_budget: u64::MAX,
+                retired_instructions: u64::MAX,
+            };
+            let entry: BlockEntry = unsafe { std::mem::transmute(published.as_ptr()) };
+            // SAFETY: the injected helper obeys its scalar ABI contract.
+            let raw = unsafe { entry(&mut context) };
+            (raw, context.remaining_budget, context.retired_instructions)
+        };
+        assert_eq!(raw, RuntimeExitTag::Unsupported as u32);
+        assert_eq!(state.rip, base_rip + 3);
+        assert_eq!(RUNTIME_HELPER_CALLS.load(Ordering::Relaxed), 1);
+        let unsupported_eager = PublishedCode::publish_block(&unsupported_eager_block).unwrap();
+        let mut unsupported_eager_state = initial.clone();
+        let unsupported_eager_result = unsupported_eager
+            .execute_block(&mut unsupported_eager_state, 10, None, &stop)
+            .unwrap();
+        assert_eq!(raw, unsupported_eager_result.exit as u32);
+        assert_eq!(state, unsupported_eager_state);
+        assert_eq!(remaining, unsupported_eager_result.remaining_budget);
+        assert_eq!(retired, unsupported_eager_result.retired_instructions);
+        drop(unsupported_eager);
+
+        // A truncated instruction after the committed prefix is a deferred
+        // decode handoff and must materialize the prefix's flags as well.
+        let deferred = [0x48, 0x03, 0xC1, 0x48]; // ADD; truncated REX prefix
+        let deferred_eager_block = emit_runtime_block_for_code(&deferred, base_rip, 0);
+        RUNTIME_HELPER_CALLS.store(0, Ordering::Relaxed);
+        let block = unsafe {
+            emit_runtime_block_for_code_demand_flags_candidate_with_helper(
+                &deferred,
+                base_rip,
+                0,
+                runtime_test_helper,
+            )
+        };
+        let mut state = initial.clone();
+        let raw = {
+            let published = PublishedCode::publish_block(&block).unwrap();
+            let mut context = RuntimeContextV1 {
+                state: &mut state,
+                initial_budget: 10,
+                stop_rip_enabled: 0,
+                reserved: 0,
+                stop_rip: 0,
+                stop_requested: (&stop as *const AtomicU8).cast(),
+                remaining_budget: u64::MAX,
+                retired_instructions: u64::MAX,
+            };
+            let entry: BlockEntry = unsafe { std::mem::transmute(published.as_ptr()) };
+            // SAFETY: the injected helper obeys its scalar ABI contract.
+            unsafe { entry(&mut context) }
+        };
+        assert_eq!(raw, RuntimeExitTag::NeedInterpreter as u32);
+        assert_eq!(state.rip, base_rip + 3);
+        assert_eq!(RUNTIME_HELPER_CALLS.load(Ordering::Relaxed), 1);
+        let deferred_eager = PublishedCode::publish_block(&deferred_eager_block).unwrap();
+        let mut deferred_eager_state = initial.clone();
+        let deferred_eager_result = deferred_eager
+            .execute_block(&mut deferred_eager_state, 10, None, &stop)
+            .unwrap();
+        assert_eq!(raw, deferred_eager_result.exit as u32);
+        assert_eq!(state, deferred_eager_state);
+        drop(deferred_eager);
+
+        // A helper contract failure during exit materialization remains a host
+        // error and is represented by a mapped failure site.
+        RUNTIME_HELPER_CALLS.store(0, Ordering::Relaxed);
+        RUNTIME_HELPER_FAIL_AT.store(1, Ordering::Relaxed);
+        let block = unsafe {
+            emit_runtime_block_for_code_demand_flags_candidate_with_helper(
+                &unsupported,
+                base_rip,
+                0,
+                runtime_test_helper,
+            )
+        };
+        let mut failed_state = initial;
+        let published = PublishedCode::publish_block(&block).unwrap();
+        let mut context = RuntimeContextV1 {
+            state: &mut failed_state,
+            initial_budget: 10,
+            stop_rip_enabled: 0,
+            reserved: 0,
+            stop_rip: 0,
+            stop_requested: (&stop as *const AtomicU8).cast(),
+            remaining_budget: u64::MAX,
+            retired_instructions: u64::MAX,
+        };
+        let entry: BlockEntry = unsafe { std::mem::transmute(published.as_ptr()) };
+        // SAFETY: the injected helper returns a failure status without unwind.
+        let failed_raw = unsafe { entry(&mut context) };
+        assert_eq!(failed_raw, RAW_HELPER_CONTRACT_FAILURE_V1);
+        assert_eq!(failed_state.rip, base_rip + 3);
+        assert!(
+            published
+                .pc_map()
+                .unwrap()
+                .has_helper_failure_site(failed_state.rip)
+        );
+        assert!(matches!(
+            published.decode_block_result(
+                failed_raw,
+                failed_state.rip,
+                context.remaining_budget,
+                context.retired_instructions,
+            ),
+            Err(BlockExecutionError::HelperContractFailure { .. })
+        ));
+        RUNTIME_HELPER_FAIL_AT.store(0, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn demand_flags_candidate_returns_canonical_state_at_bare_nop_fallback_boundary() {
+        let _guard = jit_test_lock();
+        let base_rip = 0x7E00;
+        let bytes = [0x48, 0x03, 0xC1, 0x90]; // ADD RAX, RCX; admitted bare NOP
+        let view = CodeView::new(base_rip, &bytes).unwrap();
+        let admission = od_jit::block::S0_09NopAdmission::from_code(view).unwrap();
+        let BlockCompileOutcome::Compiled(candidate) =
+            compile_block_for_nop_fallback_demand_flags_candidate(view, base_rip, &admission)
+                .unwrap()
+        else {
+            panic!("native ADD prefix before admitted NOP should compile");
+        };
+        let BlockCompileOutcome::Compiled(eager) =
+            compile_block_for_nop_fallback(view, base_rip, &admission).unwrap()
+        else {
+            panic!("eager ADD prefix before admitted NOP should compile");
+        };
+
+        let stop = AtomicU8::new(0);
+        let mut initial = od_isa::LongModeState::default();
+        initial.rip = base_rip;
+        initial.rflags = 0xA5A5_F0F0_5A5A_0A0A;
+        initial.gpr[0] = u64::MAX;
+        initial.gpr[1] = 1;
+        let mut candidate_state = initial.clone();
+        let (candidate_exit, candidate_remaining, candidate_retired) = {
+            let published = PublishedCode::publish_block(candidate.emitted()).unwrap();
+            let result = published
+                .execute_block(&mut candidate_state, 10, None, &stop)
+                .unwrap();
+            (
+                result.exit,
+                result.remaining_budget,
+                result.retired_instructions,
+            )
+        };
+        let published_eager = PublishedCode::publish_block(eager.emitted()).unwrap();
+        let mut eager_state = initial;
+        let eager_result = published_eager
+            .execute_block(&mut eager_state, 10, None, &stop)
+            .unwrap();
+
+        assert_eq!(candidate_exit, RuntimeExitTag::NeedInterpreter);
+        assert_eq!(candidate_exit, eager_result.exit);
+        assert_eq!(candidate_state, eager_state);
+        assert_eq!(candidate_state.rip, base_rip + 3);
+        assert_eq!(candidate_remaining, eager_result.remaining_budget);
+        assert_eq!(candidate_retired, eager_result.retired_instructions);
     }
 
     #[test]

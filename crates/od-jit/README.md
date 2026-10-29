@@ -147,6 +147,14 @@ crashes, memory faults, ABI violations, panic или asynchronous snapshots; э�
 исправлений прошёл без оставшихся замечаний; primary layout check остаётся за
 root task. См. подробности и evidence в JIT contract и плане этапа.
 
+S3-29a добавляет отдельный opt-in uncached correctness candidate для
+demand-driven W64 ADD/SUB/CMP flags. Он хранит последний operation и исходные
+operands в dedicated frame slots, материализует flags при JZ/JNZ или на
+взятом exit stub и помечает pending-RFLAGS ranges/boundaries как inadmissible
+для canonical snapshots. Eager остаётся default/reference; candidate не
+попадает в shared cache, не выбирает production policy и не заявляет speedup.
+S3-29 остаётся open до остальных correctness gates и итогового сравнения.
+
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).
 Проверки корректности и измерений по задачам этапа — в

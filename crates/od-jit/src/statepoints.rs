@@ -49,6 +49,9 @@ pub enum SnapshotAdmissibility {
     /// A checked write may already have reached guest memory; replaying this
     /// instruction from the snapshot could duplicate a side effect.
     InadmissibleAfterEffect,
+    /// Guest registers/RIP are canonical, but RFLAGS still represent the
+    /// previous materialization point while a full arithmetic writer is pending.
+    InadmissiblePendingFlags,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -85,6 +88,8 @@ pub struct GuestBoundaryPoint {
     pub instruction_index: u32,
     pub committed_instructions: u32,
     pub phase: StatePhase,
+    /// Whether the committed boundary has canonical RFLAGS.
+    pub snapshot: SnapshotAdmissibility,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -322,7 +327,11 @@ impl PcMap {
     pub fn has_helper_failure_site(&self, guest_rip: u64) -> bool {
         self.ranges.iter().any(|entry| {
             entry.phase == StatePhase::Exit
-                && entry.snapshot == SnapshotAdmissibility::ReplayCurrentInstruction
+                && matches!(
+                    entry.snapshot,
+                    SnapshotAdmissibility::ReplayCurrentInstruction
+                        | SnapshotAdmissibility::InadmissiblePendingFlags
+                )
                 && entry.guest_rip == GuestRipSource::Fixed(guest_rip)
         })
     }
@@ -359,6 +368,7 @@ mod tests {
                 instruction_index: 0,
                 committed_instructions: 1,
                 phase: StatePhase::Committed,
+                snapshot: SnapshotAdmissibility::CanonicalBoundary,
             }],
         )
         .unwrap();
@@ -368,6 +378,43 @@ mod tests {
         assert_eq!(map.lookup(16), None);
         assert_eq!(map.lookup(6), None);
         assert_eq!(map.boundary_at(12).count(), 1);
+    }
+
+    #[test]
+    fn pending_flags_ranges_are_not_canonical_but_remain_attributed_failure_sites() {
+        let map = PcMap::new(
+            8,
+            1,
+            vec![
+                StatePointRange {
+                    range: HostCodeRange { start: 0, end: 4 },
+                    guest_rip: GuestRipSource::Fixed(0x1000),
+                    instruction_index: Some(0),
+                    phase: StatePhase::Exit,
+                    snapshot: SnapshotAdmissibility::InadmissiblePendingFlags,
+                },
+                StatePointRange {
+                    range: HostCodeRange { start: 4, end: 8 },
+                    guest_rip: GuestRipSource::Fixed(0x1000),
+                    instruction_index: Some(0),
+                    phase: StatePhase::Exit,
+                    snapshot: SnapshotAdmissibility::CanonicalBoundary,
+                },
+            ],
+            vec![],
+        )
+        .unwrap();
+
+        assert_eq!(
+            map.snapshot_admissibility_at(0),
+            Some(SnapshotAdmissibility::InadmissiblePendingFlags)
+        );
+        assert_eq!(
+            map.snapshot_admissibility_at(4),
+            Some(SnapshotAdmissibility::CanonicalBoundary)
+        );
+        assert!(map.has_helper_failure_site(0x1000));
+        assert!(!map.has_helper_failure_site(0x2000));
     }
 
     #[test]
@@ -414,7 +461,8 @@ mod tests {
                     rip: GuestRipBoundary::Fixed(0x1001),
                     instruction_index: 0,
                     committed_instructions: 1,
-                    phase: StatePhase::Committed
+                    phase: StatePhase::Committed,
+                    snapshot: SnapshotAdmissibility::CanonicalBoundary
                 }]
             ),
             Err(PcMapError::UnalignedBoundary { .. })
