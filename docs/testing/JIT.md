@@ -154,6 +154,33 @@ observation as `StaleCodeResult` and a corrupted backing generation as
 `BackingGenerationMismatch`. This does not disable production validation or
 claim physical x86 equivalence.
 
+### S3-34e unified local Stage 3 correctness harness
+
+Run `python3 tests/cpu/stage3_harness.py --suite local`. It first runs its own
+validation self-tests, then the existing Stage 1 local dispatcher harness with
+the manual cases plus 1000 seeded generated cases twice, the complete
+`od-host/tests/memory_corpus.rs` integration suite, and seven exact `od-host`
+lifecycle test identities. The memory corpus includes its 2400-unique-input
+two-repeat run, named fault/STOP/budget/continuation cases, comparator self-check,
+versioned replay and reducer checks. Two environment-only saved-case replay and
+reducer tests remain ignored by design; all mandatory named tests must pass.
+
+The parent input manifest pins the expected Stage 1 source fingerprint and each
+manual fixture's case ID and SHA-256. The validator requires the child manifest
+and both interpreter/JIT build revisions to use that fingerprint, then binds
+each frozen manual input and result path/digest to the parent manifest. Harness
+self-tests require an exact list and count of passing test identities; zero
+matches, skipped tests and failures are rejected.
+
+The harness requires macOS ARM64, rejects zero-match/ignored mandatory tests,
+malformed child evidence, timeouts, signals, nonzero exits, partial suites and
+source-tree fingerprint changes. Every run creates a unique
+`work/stage3-harness/<run-id>/` with summary, input-manifest digest and logs;
+Stage 1 summary/manifest paths and hashes are linked from it. The result is
+`local_only`; physical x86/Mini, performance, Stage 2 and owner-backed suites
+are explicitly `not_run`. It does not claim complete Stage 3 acceptance. See
+[S3-34e report](../reports/STAGE_3_S3-34e_2026-10-29.md).
+
 Каждая новая строка support matrix получает literal positive/negative cases,
 точный сравниваемый state и внешний prerequisite. В отчёте сохранять git
 revision, build fingerprint, host/OS/toolchain, fixtures/corpus fingerprint,

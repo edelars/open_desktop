@@ -2246,6 +2246,37 @@ CPU state и байтам всех backing RAM, проверяет измене�
 validation. Не добавлять общий lifecycle framework. См.
 [S3-34d report](../reports/STAGE_3_S3-34d_2026-10-29.md).
 
+#### S3-34e. Единый локальный correctness harness
+
+Команда `python3 tests/cpu/stage3_harness.py --suite local` запускает
+fail-closed локальный профиль: Stage 1 dispatcher сравнение (10 ручных + 1000
+generated inputs, 2 повтора), двухоперационный memory corpus (2400 уникальных
+inputs ×2, named fault/STOP/budget/continuation и comparator/replay/reducer
+self-checks), затем exact host lifecycle tests для cache capacity/reuse,
+bare-NOP fallback, code-region invalidation, V3 dirty-prefix/fault/STOP и
+safe-slot lifetime. Каждый lifecycle test выбирается по точному Rust test
+identity; zero-match и ignored обязательные случаи являются ошибкой.
+
+Harness сохраняет immutable run directory под
+`work/stage3-harness/<run-id>/`: summary, input manifest с SHA-256, команды и
+логи; Stage 1 child summary и input manifest связываются своими digest. Он
+фиксирует revision и исходный fingerprint дерева, сверяет его после каждого
+шага и в конце, отклоняет
+malformed/missing child evidence, timeout/signal/nonzero exit и частичный suite.
+Self-tests требуют точные identities/count и успешный статус каждого теста;
+нулевой запуск и все пропущенные тесты завершаются ошибкой. Parent input manifest
+закрепляет Stage 1 source fingerprint и manual fixtures по `case_id`/SHA-256;
+child должен совпасть с этим fingerprint обоими build revisions, а frozen inputs
+и каждый manual result — с ожидаемыми digest и fixture path. Также проверяется
+отказ при подмене input-manifest digest, неполном run и ложном `passed` для
+невыбранных suites. Не ARM64 host завершается ошибкой; локальный результат
+маркируется только `local_only`.
+
+Mac mini/physical x86, performance, Stage 2 и owner-backed suites остаются
+`not_run`. Эта команда не закрывает весь S3-34 или Stage 3. Фактический запуск
+на 2026-10-29 и точные дочерние evidence указаны в
+[S3-34e report](../reports/STAGE_3_S3-34e_2026-10-29.md).
+
 ### S3-35. Измерить холодное исполнение
 
 1. Измерить полный первый запуск при пустом code cache: необходимые decode/IR/lowering/allocation/publication/lookup/execution, с явно указанной стоимостью initialization.
