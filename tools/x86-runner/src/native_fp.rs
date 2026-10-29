@@ -29,6 +29,7 @@ pub(crate) fn native_profile_local_only(profile: od_testkit::v2::Profile) -> boo
             | od_testkit::v2::Profile::LongX87SelectorsStateV1
             | od_testkit::v2::Profile::LongCr0FpInitV1
             | od_testkit::v2::Profile::LongCr4FpInitV1
+            | od_testkit::v2::Profile::LongCr0Cr4FpInitV1
             | od_testkit::v2::Profile::LongFxsaveRipV1
             | od_testkit::v2::Profile::LongFxsave64RaxV1
             | od_testkit::v2::Profile::LongFxrstor64RbxV1
@@ -276,6 +277,7 @@ mod tests {
             Profile::LongX87SseStateV1,
             Profile::LongCr0FpInitV1,
             Profile::LongCr4FpInitV1,
+            Profile::LongCr0Cr4FpInitV1,
             Profile::LongFxsaveRipV1,
         ] {
             assert!(super::native_profile_local_only(denied));

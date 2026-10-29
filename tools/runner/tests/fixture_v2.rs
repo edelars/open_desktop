@@ -1592,6 +1592,57 @@ const CR4_FP_INIT_FIXTURES: [&[u8]; 6] = [
     ),
 ];
 
+const CR0_CR4_FP_INIT_FIXTURES: [&[u8]; 16] = [
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_25c_clear_emts_set_cr4_emts_0_cr4_0.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_25c_clear_emts_set_cr4_emts_0_cr4_1.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_25c_clear_emts_set_cr4_emts_0_cr4_2.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_25c_clear_emts_set_cr4_emts_0_cr4_3.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_25c_clear_emts_set_cr4_emts_1_cr4_0.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_25c_clear_emts_set_cr4_emts_1_cr4_1.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_25c_clear_emts_set_cr4_emts_1_cr4_2.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_25c_clear_emts_set_cr4_emts_1_cr4_3.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_25c_clear_emts_set_cr4_emts_2_cr4_0.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_25c_clear_emts_set_cr4_emts_2_cr4_1.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_25c_clear_emts_set_cr4_emts_2_cr4_2.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_25c_clear_emts_set_cr4_emts_2_cr4_3.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_25c_clear_emts_set_cr4_emts_3_cr4_0.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_25c_clear_emts_set_cr4_emts_3_cr4_1.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_25c_clear_emts_set_cr4_emts_3_cr4_2.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_25c_clear_emts_set_cr4_emts_3_cr4_3.case.json"
+    ),
+];
+
 trait ResetFpInitSnapshot {
     fn reset_for_fp_init(&mut self);
 }
@@ -1779,6 +1830,76 @@ fn cr4_fp_init_fixtures_use_mutable_controls_and_reject_tampering() {
     invalid_composition.initial_state.cr0 =
         Some(HexU64(od_isa::execute::Cr0Profile::BASE | (1 << 3)));
     assert!(invalid_composition.validate().is_err());
+}
+
+#[test]
+fn cr0_cr4_fp_init_composition_covers_all_initial_control_combinations_and_denies_jit() {
+    use od_testkit::v2::Profile;
+
+    assert_eq!(CR0_CR4_FP_INIT_FIXTURES.len(), 16);
+    for bytes in CR0_CR4_FP_INIT_FIXTURES {
+        let (loaded, result) = run(bytes, "interpreter", 0);
+        assert_eq!(loaded.fixture.profile, Profile::LongCr0Cr4FpInitV1);
+        result.validate_for(&loaded).unwrap();
+        assert_eq!(count(&result), 8);
+        let output = snapshot(&result);
+        assert_eq!(
+            output.state.cr0,
+            Some(HexU64(od_isa::execute::Cr0Profile::BASE))
+        );
+        assert_eq!(
+            output.state.cr4,
+            Some(HexU64(
+                loaded.fixture.initial_state.cr4.unwrap().get() | 0x600
+            ))
+        );
+        assert_eq!(
+            output.state.rip,
+            HexU64(loaded.fixture.initial_state.rip.get() + 28)
+        );
+        assert_eq!(output.state.rflags, HexU64(0x0612));
+        assert_eq!(output.rflags_defined, HexU64(0x0402));
+        let (_, jit) = run(bytes, "jit", 4);
+        assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(jit.snapshot, Observation::Unavailable { .. }));
+
+        let mut tampered = result.clone();
+        if let Observation::Available { value } = &mut tampered.snapshot {
+            value.state.cr4 = Some(HexU64(value.state.cr4.unwrap().get() ^ (1 << 10)));
+        }
+        assert!(tampered.validate_for(&loaded).is_err());
+        assert!(od_testkit::v2::compare(&loaded, &tampered, &result).is_err());
+    }
+    let mut invalid = Fixture::from_json(CR0_CR4_FP_INIT_FIXTURES[0])
+        .unwrap()
+        .fixture;
+    invalid.cli_cpl = Some(od_testkit::v2::CliCpl::Cpl1);
+    invalid.expected_exit = ExpectedExit::Exception;
+    assert!(
+        invalid.validate().is_err(),
+        "fixtures reserve the success profile for CPL0"
+    );
+
+    let mut changed_code = Fixture::from_json(CR0_CR4_FP_INIT_FIXTURES[0])
+        .unwrap()
+        .fixture;
+    changed_code.memory[0].initial_bytes_hex.push_str("90");
+    changed_code.memory[0].length += 1;
+    changed_code.memory[0].comparison_mask_hex.push_str("ff");
+    changed_code.stop_rip = Some(HexU64(changed_code.initial_state.rip.get() + 29));
+    assert!(
+        changed_code.validate().is_err(),
+        "profile rejects trailing instructions"
+    );
+
+    let mut preserved_flags = Fixture::from_json(CR0_CR4_FP_INIT_FIXTURES[0])
+        .unwrap()
+        .fixture;
+    preserved_flags.initial_state.rflags = HexU64(2);
+    let bytes = preserved_flags.to_json().unwrap();
+    let (loaded, result) = run(&bytes, "interpreter", 0);
+    assert_eq!(snapshot(&result).state.rflags, HexU64(2));
+    od_testkit::v2::compare(&loaded, &result, &result).unwrap_or_else(|error| panic!("{error:?}"));
 }
 
 #[test]

@@ -6028,3 +6028,16 @@ dynamic gates; the fixtures do not carry duplicate immutable prerequisites.
 Testkit checks exact bytes, state, budget, stop, results and tampering. These
 are local synthetic fixtures; JIT/native/C/fragment and physical execution
 remain denied/not run. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-25b--mutable-cr4-osfxsrosxmmexcpt-in-bounded-fp-initialization).
+
+## S2-25c exact CR0/CR4 FP-init composition
+
+Sixteen `s2_25c_clear_emts_set_cr4_*.case.json` fixtures use
+`s2-long-cr0-cr4-fp-init-v1`. Each contains exactly
+`0F20C0 4883E0F3 0F22C0 DBE3 0F20E0 480D00060000 0F22E0 660F57C1`, budget 8,
+and stop RIP at byte 28. They cross all four initial CR0.EM/TS values with all
+four CR4.OSFXSR/OSXMMEXCPT values. Every case expects eight retirements and
+checks the cleared CR0 controls, enabled CR4 bits, FNINIT state and XORPD
+result. The interpreter executes each instruction independently; interruption
+or failure after a retirement preserves that earlier state. JIT/native/C/
+fragment execution remains denied, and these handwritten synthetic fixtures
+make no hardware or Ubuntu byte claim. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-25c--exact-cr0-clear-fninit-cr4-enable-and-xorpd-composition).

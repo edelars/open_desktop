@@ -95698,6 +95698,128 @@ mod swapgs_profile_tests {
     }
 
     #[test]
+    fn cr0_cr4_fp_init_composition_retires_instruction_by_instruction() {
+        const CODE: &[u8] = &[
+            0x0f, 0x20, 0xc0, 0x48, 0x83, 0xe0, 0xf3, 0x0f, 0x22, 0xc0, 0xdb, 0xe3, 0x0f, 0x20,
+            0xe0, 0x48, 0x0d, 0x00, 0x06, 0x00, 0x00, 0x0f, 0x22, 0xe0, 0x66, 0x0f, 0x57, 0xc1,
+        ];
+        let lengths = [3, 4, 3, 2, 3, 6, 3, 4];
+        let context = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        };
+        let mut boundary = 0;
+        for (index, length) in lengths.into_iter().enumerate() {
+            boundary += length;
+            let mut state = cr0_fp_init_state(Cr0Profile::BASE | 0xcu64);
+            state.cr4 = Some(Cr4Profile::BASE | (1 << 10));
+            let mut memory = Memory::new(CODE);
+            let result = run_with_cr4_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 8,
+                    stop_rip: Some(boundary),
+                    context,
+                },
+                Cr4Profile::FpInitLong64V1,
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::StopAddress);
+            assert_eq!(result.instructions_executed, (index + 1) as u64);
+            assert_eq!(state.rip, boundary);
+            if index >= 2 {
+                assert_eq!(state.cr0, Some(Cr0Profile::BASE));
+            }
+            if index >= 6 {
+                assert_eq!(state.cr4, Some(Cr4Profile::BASE | (1 << 9) | (1 << 10)));
+            }
+        }
+        for (index, privilege) in [
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let initial_cr0 = Cr0Profile::BASE | if index == 0 { 4 } else { 8 };
+            let mut state = cr0_fp_init_state(initial_cr0);
+            state.cr4 = Some(Cr4Profile::BASE);
+            let before = state.clone();
+            let mut memory = Memory::new(CODE);
+            let result = run_with_cr4_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 8,
+                    stop_rip: Some(CODE.len() as u64),
+                    context: AccessContext {
+                        privilege,
+                        ..context
+                    },
+                },
+                Cr4Profile::FpInitLong64V1,
+                || false,
+            );
+            assert!(matches!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    ..
+                })
+            ));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+        }
+        for budget in 0..8 {
+            let mut state = cr0_fp_init_state(Cr0Profile::BASE | 0xcu64);
+            state.cr4 = Some(Cr4Profile::BASE);
+            let mut memory = Memory::new(CODE);
+            let result = run_with_cr4_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip: None,
+                    context,
+                },
+                Cr4Profile::FpInitLong64V1,
+                || false,
+            );
+            assert_eq!(result.instructions_executed, budget);
+            if budget < 3 {
+                assert_eq!(state.cr0, Some(Cr0Profile::BASE | 0xcu64));
+            } else {
+                assert_eq!(state.cr0, Some(Cr0Profile::BASE));
+            }
+            if budget < 7 {
+                assert_eq!(state.cr4, Some(Cr4Profile::BASE));
+            } else {
+                assert_eq!(state.cr4, Some(Cr4Profile::BASE | 0x600));
+            }
+        }
+        let mut state = cr0_fp_init_state(Cr0Profile::BASE | 0xcu64);
+        state.cr4 = Some(Cr4Profile::BASE);
+        let mut truncated = Memory::new(&CODE[..4]);
+        let result = run_with_cr4_profile(
+            &mut state,
+            &mut truncated,
+            RunConfig {
+                instruction_budget: 8,
+                stop_rip: Some(CODE.len() as u64),
+                context,
+            },
+            Cr4Profile::FpInitLong64V1,
+            || false,
+        );
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.rip, 3);
+        assert_eq!(state.cr0, Some(Cr0Profile::BASE | 0xcu64));
+    }
+
+    #[test]
     fn cr0_fp_init_read_write_privilege_matrix_and_atomic_value_admission() {
         const BASE: u64 = Cr0Profile::BASE;
         let allowed = [BASE, BASE | 4, BASE | 8, BASE | 12];
@@ -95882,6 +96004,22 @@ mod swapgs_profile_tests {
         );
         assert_eq!(cr4_only_state, cr4_only_before);
         assert!(cr4_only_memory.fetches.is_empty());
+
+        let mut combined_legacy_state = cr0_fp_init_state(BASE | 0xcu64);
+        combined_legacy_state.cr4 = Some(Cr4Profile::BASE);
+        let combined_before = combined_legacy_state.clone();
+        let mut combined_memory = Memory::new(&[0x0f, 0x20, 0xc0]);
+        assert_eq!(
+            step(
+                &mut combined_legacy_state,
+                &mut combined_memory,
+                AccessContext::default()
+            )
+            .unwrap(),
+            StepOutcome::Unsupported { opcode: 0x0f }
+        );
+        assert_eq!(combined_legacy_state, combined_before);
+        assert!(combined_memory.fetches.is_empty());
 
         let ring3 = AccessContext {
             privilege: PrivilegeLevel::Ring3,

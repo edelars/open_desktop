@@ -1016,6 +1016,7 @@ fn execute_fixture_v2(
             | v2::Profile::LongLretqCpl0ValidV1
             | v2::Profile::LongCr0FpInitV1
             | v2::Profile::LongCr4FpInitV1
+            | v2::Profile::LongCr0Cr4FpInitV1
     ) {
         let privilege = match loaded.fixture.cli_cpl.expect("validated CLI CPL") {
             v2::CliCpl::Cpl0 => od_isa::memory::PrivilegeLevel::Ring0,
@@ -1143,7 +1144,10 @@ fn execute_fixture_v2(
             Cr0Profile::FpInitLong64V1,
             timeout,
         )
-    } else if loaded.fixture.profile == v2::Profile::LongCr4FpInitV1 {
+    } else if matches!(
+        loaded.fixture.profile,
+        v2::Profile::LongCr4FpInitV1 | v2::Profile::LongCr0Cr4FpInitV1
+    ) {
         od_isa::execute::run_with_cr4_profile(
             &mut state,
             memory,

@@ -11839,3 +11839,26 @@ Normative sources: Intel SDM Rev. 093 Vol. 2B, MOV to/from control registers,
 pp. 4-32–4-34 and XORPD; Vol. 2A, FNINIT, pp. 3-345–3-346; Vol. 3A
 §5.10.4.1 and Table 16-1 for the SSE2 `#UD/#NM` priority. [Official Intel SDM
 index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+
+## S2-25c — exact CR0 clear, FNINIT, CR4 enable and XORPD composition
+
+The local `s2-long-cr0-cr4-fp-init-v1` profile admits only the exact bytes
+`0F 20 C0 48 83 E0 F3 0F 22 C0 DB E3 0F 20 E0 48 0D 00 06 00 00 0F 22 E0 66 0F 57 C1`.
+Its initial state accepts the four S2-25a CR0 values crossed with the four
+S2-25b CR4 values. The first MOV CR0 requires CPL0; CPL1–3 raise #GP(0) before
+retirement. The exact successful path has eight retirements: read and clear
+CR0.EM/TS, write CR0, FNINIT, read CR4, set OSFXSR/OSXMMEXCPT, write CR4, and
+XORPD XMM0,XMM1. The result validator checks final CR0/CR4, RAX, RIP, x87
+reset, the bytewise XMM0 result, full unrelated state, and RFLAGS. The raw
+RFLAGS result is derived from the initial value: the final OR clears CF/PF/ZF/
+SF/OF, preserves the concrete AF bit as the existing local undefined-flag
+policy, and preserves other admitted bits. Definedness is checked separately.
+
+The sequence is not atomic. Each instruction commits under the existing
+interpreter rules, so stop, budget exhaustion, or a later fetch failure keeps
+earlier retirement effects. Schema-v2 fixtures are restricted to the full
+CPL0 success sequence; dedicated execution tests cover partial boundaries and
+nonzero CPL. JIT, native, C, fragment and legacy entry points remain denied.
+This establishes local interpreter behavior only; no hardware or physical
+execution claim is made. Normative instruction semantics use Intel SDM Rev.
+093 Vol. 2A FNINIT, Vol. 2B MOV CR/XORPD and Vol. 3A §5.10.4.1/Table 16-1.

@@ -16879,3 +16879,30 @@ targets linked from this report. No Linux runtime, Ubuntu bytes/runtime,
 hardware, SSH or physical execution is claimed. Normative semantics: Intel SDM
 Rev. 093 Vol. 2B MOV CR/XORPD, Vol. 2A FNINIT, and Vol. 3A §5.10.4.1/Table
 16-1 ([official Intel SDM index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)).
+
+## S2-25c — exact CR0-clear / FNINIT / CR4-enable composition
+
+Added a distinct strict fixture profile for the exact 28-byte sequence
+`0F20C0 4883E0F3 0F22C0 DBE3 0F20E0 480D00060000 0F22E0 660F57C1`.
+Sixteen handwritten schema-v2 fixtures cover every initial CR0.EM/TS ×
+CR4.OSFXSR/OSXMMEXCPT combination. The successful path retires eight
+instructions, clears CR0.EM/TS before FNINIT, sets CR4 bits 9/10, and executes
+XORPD. Testkit validates final control registers, GPRs, x87 reset, XMM result,
+raw RFLAGS derived from initial preserved bits, definedness, retirement count
+and stop RIP; a tampered CR4 result is rejected by both validation and
+comparison. An `RFLAGS=0x2` variant executes and self-compares to verify the
+validator does not assume default initial flags. The fixture runner denies JIT.
+Existing S2-25a/b byte allowlists remain separate.
+
+Partial progress follows ordinary per-instruction interpreter retirement and
+is not an atomic sequence. The focused executor test checks all eight STOP
+boundaries, budgets 0–7, a truncated next-instruction fetch after one
+retirement, and CPL1–3 #GP(0) before retirement. The 16-case runner test checks
+full results, raw RFLAGS, definedness, tampered CR4 rejection, and JIT denial. Native
+denial is covered by the profile deny predicate and target compile check; no
+physical run was performed. Legacy and fragment state rejection are inherited
+from the CR0/CR4 fail-closed adapters. Verification passed:
+`cargo fmt --all -- --check`, both focused tests, `cargo check --workspace
+--all-targets --offline`, Linux x86_64 runner `cargo check`, and
+`git diff --check`. Graphify update passed. This local evidence does not claim
+hardware behavior or guest exception delivery.

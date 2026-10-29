@@ -12108,3 +12108,16 @@ and [report](../reports/STAGE_2_REPORT.md#s2-25b--mutable-bounded-cr4-osfxsrosxm
 CPUID, paging/TLB/CR3, JIT/native/C/fragment admission or physical result is
 claimed. Normative source: Intel SDM Rev. 093 Vol. 2B MOV CR/XORPD, Vol. 2A
 FNINIT and Vol. 3A §5.10.4.1/Table 16-1 ([official SDM index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)).
+
+#### S2-25c — exact CR0 clear / FNINIT / CR4 enable composition
+
+Implement the exact 28-byte sequence `0F20C0 4883E0F3 0F22C0 DBE3
+0F20E0 480D00060000 0F22E0 660F57C1` under a distinct schema-v2 profile.
+Allow all 16 initial CR0.EM/TS × CR4.OSFXSR/OSXMMEXCPT combinations. CPL1–3
+must raise #GP(0) at the first MOV CR0 before any retirement. Validate eight
+retirements and final CR0/CR4, x87 reset, XMM0 XOR result and RFLAGS
+definedness. Cover STOP, instruction budget and fetch boundaries as partial
+progress that preserves earlier retirements; do not model the sequence as an
+atomic transaction. Keep JIT/native/C/fragment and legacy admission closed.
+This is local interpreter/profile evidence only; physical execution remains
+`not_run`.
