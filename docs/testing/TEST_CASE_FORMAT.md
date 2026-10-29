@@ -884,3 +884,20 @@ XMM0 bytes are literal test expectations written independently from the
 interpreter; native/interpreter comparison adds a second oracle check. See the
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-40b-native-xorpd-xmm0-xmm1)
 and [CPU contract](../specs/CPU_CONTRACT.md#s2-40b--bounded-sse-only-native-xorpd-oracle).
+
+## S2-38b exact XORPD prerequisite profile
+
+The local-only `s2-long-xorpd-prerequisites-v1` schema-v2 profile requires
+the complete x87/SSE snapshots plus a top-level `xorpd_prerequisites` object
+with all four explicit booleans: `sse2_available`, `cr0_em`, `cr0_ts`, and
+`cr4_osfxsr`. Missing object/fields are invalid; the fields are never inferred
+or defaulted. The code mapping must contain only `66 0F 57 C1`, be executable,
+and use budget 1 and `stop_rip = initial_state.rip + 4`. The expected outcome may
+be `exception` for a gate fault or `stop_address` for the successful path.
+Interpreter-only; JIT and native execution are denied. See the [fixture note](../../tests/fixtures/x86/stage2/README.md#s2-38b-local-xorpd-prerequisite-gates),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38b--точечные-sse2-prerequisite-gates-для-xorpd),
+and [plan](../plans/STAGE_2.md#s2-38b-exact-xorpd-sse2-prerequisite-gates).
+The v2 result repeats the same object at `snapshot.xorpd_prerequisites`; result
+validation requires it for this profile, and the comparator checks left and
+right values against each other and the bound fixture. Results for older
+profiles omit the field.

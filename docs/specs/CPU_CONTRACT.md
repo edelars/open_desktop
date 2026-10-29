@@ -11277,6 +11277,39 @@ Physical acceptance remains in the combined final Mac mini substage. Normative
 source: Intel SDM Rev. 093 Vol. 1 Appendix D Tables D-9/D-13/D-15 and Vol. 2B
 MAXPD. See the [plan](../plans/STAGE_2.md#s2-37l--local-long64-register-only-legacy-maxpd-with-masked-status).
 
+## S2-38b — точечные SSE2 prerequisite gates для XORPD
+
+Schema-v2 profile `s2-long-xorpd-prerequisites-v1` принимает ровно одну
+инструкцию `66 0F 57 C1` (`XORPD XMM0,XMM1`) в Long64. В профиле явно
+представлены четыре prerequisite поля: `sse2_available`, `cr0_em`, `cr0_ts`
+и `cr4_osfxsr`; отсутствие всего блока или любого поля отклоняется при
+валидации. Это узкая неизменяемая policy state, не общий CR framework.
+Интерпретатор повторяет все четыре значения в `snapshot.xorpd_prerequisites`;
+сравнение требует их наличия для этого профиля, обнаруживает расхождение
+между oracle results и сверяет значения с входной fixture. У старых профилей
+поле не сериализуется.
+
+После полного fetch выбранной формы выполняются gates в порядке Intel SDM
+Rev. 093 Vol. 3A Table 15-1: `!sse2_available || cr0_em || !cr4_osfxsr`
+возвращает CPU-side #UD; иначе `cr0_ts` возвращает CPU-side #NM; иначе
+исполняется существующий bytewise XORPD. Первая ветка имеет приоритет над TS.
+Правило одинаково для CPL0–3. Fault содержит вектор 6 или 7, не имеет error
+code и не retirement; RIP и полный `LongModeState` сохраняются. Нет data
+memory access. Входной STOP и нулевой budget завершают запуск до fetch; fetch
+fault/truncation происходит до gate. На успешной ветке меняются только XMM0
+и RIP обычным retirement, остальные XMM, x87/SSE auxiliary state, GPR,
+RFLAGS и memory неизменны.
+
+Схема и exact fixture ограничивают программу ровно четырьмя указанными
+байтами; соседние регистры, префиксы и кодеки остаются вне admission. Другие
+XORPD профили не наследуют эти gates. CPUID не изменён; OSXMMEXCPT/#XM не
+добавлены, так как выбранная форма не является арифметической. JIT, native и
+C adapter остаются закрыты. Открыты broader S2-38, Generic amd64 и S2-26/39/
+40/41/42. Физическое исполнение `not_run` до объединённого финального Mac mini
+substage. См. [план](../plans/STAGE_2.md#s2-38b-exact-xorpd-sse2-prerequisite-gates),
+[report](../reports/STAGE_2_REPORT.md#s2-38b--точечные-sse2-prerequisite-gates-для-xorpd)
+и [fixture](../../tests/fixtures/x86/stage2/s2_38b_xorpd_sse2_absent.case.json).
+
 ## S2-40b — bounded SSE-only native XORPD oracle
 
 The native-only schema-v2 profile `s2-long-native-xorpd-xmm0-xmm1-v1` admits

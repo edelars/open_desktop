@@ -59,6 +59,16 @@ pub struct RunConfig {
     pub context: AccessContext,
 }
 
+/// Explicit SSE2 execution controls for the one-instruction S2-38b XORPD slice.
+/// This is not a general control-register model.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct XorpdPrerequisiteState {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RunResult {
     pub exit: RunExit,
@@ -603,6 +613,27 @@ pub fn run(
     )
 }
 
+/// Execute the exact `66 0F 57 C1` profile with explicit SSE2/CR0/CR4 gates.
+pub fn run_with_xorpd_prerequisites(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    prerequisites: XorpdPrerequisiteState,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_execution_loop_with_profiles(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        None,
+        None,
+        None,
+        Some(prerequisites),
+        &mut stop_requested,
+    )
+}
+
 /// Execute with an explicitly selected CPUID profile. The legacy [`run`]
 /// entry point remains closed to CPUID.
 pub fn run_with_cpuid_profile(
@@ -639,6 +670,7 @@ pub fn run_with_msr_profile(
         None,
         Some(profile),
         None,
+        None,
         &mut stop_requested,
     )
 }
@@ -660,6 +692,7 @@ pub fn run_with_sep_profile(
         None,
         None,
         Some(profile),
+        None,
         &mut stop_requested,
     )
 }
@@ -771,6 +804,7 @@ fn run_execution_loop(
         None,
         None,
         None,
+        None,
         stop_requested,
     )
 }
@@ -791,6 +825,7 @@ fn run_execution_loop_with_cpuid_profile(
         cpuid_profile,
         None,
         None,
+        None,
         stop_requested,
     )
 }
@@ -803,6 +838,7 @@ fn run_execution_loop_with_profiles(
     cpuid_profile: Option<&CpuidProfile>,
     msr_profile: Option<&MsrProfile>,
     sep_profile: Option<&SepProfile>,
+    xorpd_prerequisites: Option<XorpdPrerequisiteState>,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> RunResult {
     let mut retired = 0;
@@ -824,6 +860,7 @@ fn run_execution_loop_with_profiles(
                 cpuid_profile,
                 msr_profile,
                 sep_profile,
+                xorpd_prerequisites,
                 stop_requested,
             ) {
                 Ok(StepOutcome::Advanced | StepOutcome::Branched) => {
@@ -894,6 +931,7 @@ pub fn step_with_msr_profile(
         None,
         Some(profile),
         None,
+        None,
         &mut || false,
     )
 }
@@ -915,6 +953,7 @@ pub fn step_with_sep_profile(
         None,
         None,
         Some(profile),
+        None,
         &mut || false,
     )
 }
@@ -943,6 +982,7 @@ fn step_tracked_with_stop(
         None,
         None,
         None,
+        None,
         stop_requested,
     )
 }
@@ -963,6 +1003,7 @@ fn step_tracked_with_cpuid_profile(
         cpuid_profile,
         None,
         None,
+        None,
         stop_requested,
     )
 }
@@ -975,6 +1016,7 @@ fn step_tracked_with_profiles(
     cpuid_profile: Option<&CpuidProfile>,
     msr_profile: Option<&MsrProfile>,
     sep_profile: Option<&SepProfile>,
+    xorpd_prerequisites: Option<XorpdPrerequisiteState>,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> Result<StepOutcome, MemoryError> {
     let instruction = match long_decode::decode(memory, state.rip, context) {
@@ -996,6 +1038,40 @@ fn step_tracked_with_profiles(
         }
         Err(DecodeError::Memory(error)) => return Err(error),
     };
+    if let Some(controls) = xorpd_prerequisites {
+        let exact_xorpd = instruction.operation
+            == (Operation::XorpdRegister {
+                destination: 0,
+                source: 1,
+            })
+            && instruction.length == 4
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x57
+            && instruction.prefixes.operand_override
+            && instruction.prefixes.rex.is_none();
+        if !exact_xorpd {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        {
+            let fault_vector =
+                if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+                    Some(6)
+                } else if controls.cr0_ts {
+                    Some(7)
+                } else {
+                    None
+                };
+            if let Some(vector) = fault_vector {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector,
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
+        }
+    }
     if instruction.opcode.map == long_decode::OpcodeMap::Primary
         && (0xd8..=0xdf).contains(&instruction.opcode.byte)
         && state
@@ -79130,6 +79206,194 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn xorpd_prerequisite_fault_priority_matrix_is_atomic_at_every_cpl() {
+        for privilege in [
+            PrivilegeLevel::Ring0,
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            for bits in 0..16u8 {
+                let controls = XorpdPrerequisiteState {
+                    sse2_available: bits & 1 != 0,
+                    cr0_em: bits & 2 != 0,
+                    cr0_ts: bits & 4 != 0,
+                    cr4_osfxsr: bits & 8 != 0,
+                };
+                let mut memory = Memory::at(&[0x66, 0x0f, 0x57, 0xc1], 0x2000);
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                state.rflags = 0x0cd7 | crate::DF;
+                state.x87 = Some(X87State::fixture_seed());
+                state.sse = Some(SseState {
+                    xmm: std::array::from_fn(|register| {
+                        std::array::from_fn(|byte| (register * 31 + byte * 7) as u8)
+                    }),
+                    mxcsr: 0xa5a5_1f80,
+                });
+                let before = state.clone();
+                let result = run_with_xorpd_prerequisites(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(0x2004),
+                        context: AccessContext {
+                            privilege,
+                            ..AccessContext::default()
+                        },
+                    },
+                    controls,
+                    || false,
+                );
+                let expected_vector =
+                    if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+                        Some(6)
+                    } else if controls.cr0_ts {
+                        Some(7)
+                    } else {
+                        None
+                    };
+                match expected_vector {
+                    Some(vector) => {
+                        assert_eq!(
+                            result.exit,
+                            RunExit::Fault(ArchitecturalFault {
+                                vector,
+                                error_code: None,
+                                linear_address: None,
+                            }),
+                            "CPL={privilege:?}, controls={controls:?}"
+                        );
+                        assert_eq!(result.instructions_executed, 0);
+                        assert_eq!(state, before);
+                    }
+                    None => {
+                        assert_eq!(result.exit, RunExit::StopAddress);
+                        assert_eq!(result.instructions_executed, 1);
+                        let mut expected = before.clone();
+                        expected.rip = 0x2004;
+                        expected.sse.as_mut().unwrap().xmm[0] = std::array::from_fn(|index| {
+                            before.sse.as_ref().unwrap().xmm[0][index]
+                                ^ before.sse.as_ref().unwrap().xmm[1][index]
+                        });
+                        assert_eq!(state, expected);
+                    }
+                }
+                assert_eq!(memory.fetches, [0x2000, 0x2001, 0x2002, 0x2003]);
+                assert!(memory.accesses.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn xorpd_prerequisite_profile_is_strict_and_honors_boundary_order() {
+        let controls = XorpdPrerequisiteState {
+            sse2_available: false,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: false,
+        };
+        for (code, budget, stop, expected) in [
+            (
+                &[0x66, 0x0f, 0x57, 0xc1][..],
+                1,
+                Some(0x2000),
+                RunExit::StopAddress,
+            ),
+            (
+                &[0x66, 0x0f, 0x57, 0xc1][..],
+                0,
+                None,
+                RunExit::InstructionBudgetExhausted,
+            ),
+            (
+                &[0x66, 0x0f, 0x57, 0xc1][..],
+                1,
+                None,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 6,
+                    error_code: None,
+                    linear_address: None,
+                }),
+            ),
+            (
+                &[0x66, 0x0f, 0x57][..],
+                1,
+                None,
+                RunExit::MemoryError(MemoryError::Unmapped {
+                    address: 0x2003,
+                    access: AccessKind::Fetch,
+                }),
+            ),
+            (
+                &[0x66, 0x0f, 0x57, 0xc2][..],
+                1,
+                None,
+                RunExit::Unsupported { opcode: 0x57 },
+            ),
+            (
+                &[0x66, 0x48, 0x0f, 0x57, 0xc1][..],
+                1,
+                None,
+                RunExit::Unsupported { opcode: 0x57 },
+            ),
+        ] {
+            let mut memory = Memory::at(code, 0x2000);
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run_with_xorpd_prerequisites(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip: stop,
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(result.exit, expected, "code={code:02x?}");
+            if !matches!(result.exit, RunExit::StopAddress) {
+                assert_eq!(state, before);
+            }
+            if stop == Some(0x2000) || budget == 0 {
+                assert!(memory.fetches.is_empty());
+            }
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut memory = Memory::at(&[0x66, 0x0f, 0x57, 0xc1], 0x2000);
+        let mut state = LongModeState {
+            rip: 0x2000,
+            ..LongModeState::default()
+        };
+        let result = run_with_xorpd_prerequisites(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            XorpdPrerequisiteState {
+                sse2_available: true,
+                cr0_em: false,
+                cr0_ts: false,
+                cr4_osfxsr: true,
+            },
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x57 });
+        assert_eq!(state.rip, 0x2000);
     }
 
     #[test]

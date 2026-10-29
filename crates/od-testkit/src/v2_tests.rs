@@ -34,6 +34,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                         bytes_hex: r.initial_bytes_hex.clone(),
                     })
                     .collect(),
+                xorpd_prerequisites: input.fixture.xorpd_prerequisites,
                 exception: Observation::Available { value: None },
             },
         },
@@ -603,6 +604,108 @@ fn xorpd_profile_is_exact_and_rejects_neighbors() {
         ));
         assert!(wrong.validate().is_err(), "{bytes}");
     }
+}
+
+#[test]
+fn xorpd_prerequisite_profile_requires_explicit_controls_and_exact_encoding() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_38b_xorpd_sse2_absent.case.json");
+    let loaded = Fixture::from_json(bytes).unwrap();
+    assert_eq!(loaded.fixture.profile, Profile::LongXorpdPrerequisitesV1);
+    assert_eq!(
+        loaded.fixture.xorpd_prerequisites,
+        Some(XorpdPrerequisiteSnapshot {
+            sse2_available: false,
+            cr0_em: false,
+            cr0_ts: true,
+            cr4_osfxsr: false,
+        })
+    );
+
+    let mut value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    value.as_object_mut().unwrap().remove("xorpd_prerequisites");
+    assert!(Fixture::from_json(&serde_json::to_vec(&value).unwrap()).is_err());
+
+    let mut missing_sse: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    missing_sse["initial_state"]
+        .as_object_mut()
+        .unwrap()
+        .remove("sse");
+    assert!(Fixture::from_json(&serde_json::to_vec(&missing_sse).unwrap()).is_err());
+
+    value["xorpd_prerequisites"] = serde_json::json!({
+        "sse2_available": true,
+        "cr0_em": false,
+        "cr0_ts": false
+    });
+    assert!(Fixture::from_json(&serde_json::to_vec(&value).unwrap()).is_err());
+
+    value["xorpd_prerequisites"]["cr4_osfxsr"] = serde_json::Value::Bool(true);
+    value["memory"][0]["initial_bytes_hex"] = serde_json::Value::String("660f57c0".into());
+    assert!(Fixture::from_json(&serde_json::to_vec(&value).unwrap()).is_err());
+
+    let mut old = loaded.fixture.clone();
+    old.profile = Profile::LongXorpdRegV1;
+    old.xorpd_prerequisites = Some(XorpdPrerequisiteSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+    });
+    assert!(old.validate().is_err());
+}
+
+#[test]
+fn xorpd_prerequisite_snapshot_roundtrips_and_control_mismatch_does_not_compare_equal() {
+    let mut fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38b_xorpd_sse2_absent.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    fixture.case_id = "s2_38b_xorpd_success_snapshot".into();
+    fixture.xorpd_prerequisites = Some(XorpdPrerequisiteSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+    });
+    fixture.expected_exit = ExpectedExit::StopAddress;
+    let input = Fixture::from_json(&fixture.to_json().unwrap()).unwrap();
+
+    let left = result(&input);
+    let encoded = left.to_json().unwrap();
+    let decoded = RunResult::from_json(&encoded).unwrap();
+    assert_eq!(
+        match decoded.snapshot {
+            Observation::Available { value } => value.xorpd_prerequisites,
+            _ => None,
+        },
+        input.fixture.xorpd_prerequisites
+    );
+
+    let mut right = left.clone();
+    snapshot(&mut right).xorpd_prerequisites = Some(XorpdPrerequisiteSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: true,
+        cr4_osfxsr: true,
+    });
+    let mismatches = compare(&input, &left, &right).unwrap();
+    assert!(mismatches.contains(&"xorpd_prerequisites".to_owned()));
+    assert!(mismatches.contains(&"right.xorpd_prerequisites".to_owned()));
+
+    let old = result(&loaded());
+    let old_bytes = old.to_json().unwrap();
+    let old_json: serde_json::Value = serde_json::from_slice(&old_bytes).unwrap();
+    assert!(
+        old_json["snapshot"]["value"]
+            .get("xorpd_prerequisites")
+            .is_none()
+    );
+    let old_roundtrip = RunResult::from_json(&old_bytes).unwrap();
+    assert!(
+        matches!(old_roundtrip.snapshot, Observation::Available { value } if value.xorpd_prerequisites.is_none())
+    );
 }
 
 #[test]

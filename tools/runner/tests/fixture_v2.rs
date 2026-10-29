@@ -6203,6 +6203,75 @@ fn local_xorpd_register_fixture_xors_raw_xmm_and_jit_denies_profile() {
 }
 
 #[test]
+fn xorpd_prerequisite_fixture_reports_ud_or_executes_and_jit_denies_profile() {
+    let source =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_38b_xorpd_sse2_absent.case.json");
+    let (input, fault) = run(source, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongXorpdPrerequisitesV1
+    );
+    assert!(matches!(fault.outcome, Outcome::Exception {}));
+    assert_eq!(count(&fault), 0);
+    let Observation::Available { value } = fault.snapshot else {
+        panic!("fault snapshot unavailable")
+    };
+    let Observation::Available {
+        value: Some(exception),
+    } = &value.exception
+    else {
+        panic!("expected architectural exception metadata")
+    };
+    assert_eq!(exception.vector, 6);
+    assert!(matches!(
+        exception.error_code,
+        Observation::Unavailable { .. }
+    ));
+    assert_eq!(value.state.rip, input.fixture.initial_state.rip);
+    assert_eq!(value.state.sse, input.fixture.initial_state.sse);
+    assert_eq!(value.state.x87, input.fixture.initial_state.x87);
+    assert_eq!(value.xorpd_prerequisites, input.fixture.xorpd_prerequisites);
+
+    let mut success_fixture = input.fixture;
+    success_fixture.xorpd_prerequisites = Some(od_testkit::v2::XorpdPrerequisiteSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+    });
+    success_fixture.expected_exit = od_testkit::v2::ExpectedExit::StopAddress;
+    let success_bytes = success_fixture.to_json().unwrap();
+    let (success_input, success) = run(&success_bytes, "interpreter", 0);
+    assert!(matches!(success.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&success), 1);
+    let Observation::Available { value } = success.snapshot else {
+        panic!("success snapshot unavailable")
+    };
+    let before = success_input.fixture.initial_state.sse.as_ref().unwrap();
+    let expected: Vec<String> = before.xmm[0]
+        .as_bytes()
+        .chunks_exact(2)
+        .zip(before.xmm[1].as_bytes().chunks_exact(2))
+        .map(|(left, right)| {
+            format!(
+                "{:02x}",
+                u8::from_str_radix(std::str::from_utf8(left).unwrap(), 16).unwrap()
+                    ^ u8::from_str_radix(std::str::from_utf8(right).unwrap(), 16).unwrap()
+            )
+        })
+        .collect();
+    assert_eq!(value.state.sse.as_ref().unwrap().xmm[0], expected.concat());
+    assert_eq!(value.state.x87, success_input.fixture.initial_state.x87);
+    assert_eq!(
+        value.xorpd_prerequisites,
+        success_input.fixture.xorpd_prerequisites
+    );
+
+    let (_, jit) = run(source, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
 fn local_andpd_register_fixture_ands_raw_xmm_and_jit_denies_profile() {
     let bytes =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_18_andpd_register.case.json");

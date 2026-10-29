@@ -5699,3 +5699,23 @@ and keeps integer and SSE observations separate. No physical result is claimed;
 hardware status is `not_run`. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-40b--bounded-sse-only-native-xorpd-oracle),
 [plan](../../../../docs/plans/STAGE_2.md#s2-40b-узкий-sse-only-native-xorpd-oracle),
 and [Linux profile report](../../../../docs/reports/STAGE_2_LINUX_PROFILE.md#s2-40b--ограниченный-sse-only-native-xorpd-oracle).
+
+### S2-38b local XORPD prerequisite gates
+
+`s2_38b_xorpd_sse2_absent.case.json` is a handwritten schema-v2 CPU fault
+fixture for the exact `66 0F 57 C1` form and profile
+`s2-long-xorpd-prerequisites-v1`. Its explicit control snapshot selects
+SSE2-unavailable and CR0.TS=1 together, demonstrating #UD priority over #NM.
+The fixture keeps complete x87 and SSE state sentinels so the CPU-side fault
+can be compared without partial-state assumptions. Core unit coverage runs all
+16 combinations of SSE2 availability, CR0.EM, CR0.TS and CR4.OSFXSR at CPL0–3;
+it checks #UD/#NM priority, the successful bytewise XOR, zero retirement and
+full state preservation on faults, and zero data callbacks. Neighboring
+encodings, truncation, missing SSE snapshot, STOP and zero-budget ordering are
+covered locally. JIT/native remain denied and no physical execution is claimed.
+The v2 result echoes all four controls in `snapshot.xorpd_prerequisites`; the
+comparator rejects differing oracle controls and checks them against the input
+fixture. Older profiles omit this optional result field.
+See [S2-38b plan](../../../../docs/plans/STAGE_2.md#s2-38b-exact-xorpd-sse2-prerequisite-gates),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38b--точечные-sse2-prerequisite-gates-для-xorpd),
+and [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-38b--точечные-sse2-prerequisite-gates-для-xorpd).

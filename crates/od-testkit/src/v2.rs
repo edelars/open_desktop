@@ -42,6 +42,7 @@ pub const PROFILE_MOVUPD_REGISTER: &str = "s2-long-movupd-reg-v1";
 pub const PROFILE_MOVUPD_REVERSE_REGISTER: &str = "s2-long-movupd-reg-reverse-v1";
 pub const PROFILE_XORPS_REGISTER: &str = "s2-long-xorps-reg-v1";
 pub const PROFILE_XORPD_REGISTER: &str = "s2-long-xorpd-reg-v1";
+pub const PROFILE_XORPD_PREREQUISITES: &str = "s2-long-xorpd-prerequisites-v1";
 pub const PROFILE_NATIVE_XORPD_XMM0_XMM1: &str = "s2-long-native-xorpd-xmm0-xmm1-v1";
 pub const PROFILE_ANDPD_REGISTER: &str = "s2-long-andpd-reg-v1";
 pub const PROFILE_PXOR_REGISTER: &str = "s2-long-pxor-reg-v1";
@@ -169,6 +170,8 @@ pub enum Profile {
     LongXorpsRegV1,
     #[serde(rename = "s2-long-xorpd-reg-v1")]
     LongXorpdRegV1,
+    #[serde(rename = "s2-long-xorpd-prerequisites-v1")]
+    LongXorpdPrerequisitesV1,
     #[serde(rename = "s2-long-native-xorpd-xmm0-xmm1-v1")]
     LongNativeXorpdXmm0Xmm1V1,
     #[serde(rename = "s2-long-andpd-reg-v1")]
@@ -843,6 +846,7 @@ impl IntegerState {
                     | Profile::LongMovapdReverseRegV1
                     | Profile::LongXorpsRegV1
                     | Profile::LongXorpdRegV1
+                    | Profile::LongXorpdPrerequisitesV1
                     | Profile::LongAndpdRegV1
                     | Profile::LongOrpdRegV1
                     | Profile::LongAndnpdRegV1
@@ -957,6 +961,7 @@ impl IntegerState {
                     | Profile::LongMovapdReverseRegV1
                     | Profile::LongXorpsRegV1
                     | Profile::LongXorpdRegV1
+                    | Profile::LongXorpdPrerequisitesV1
                     | Profile::LongNativeXorpdXmm0Xmm1V1
                     | Profile::LongAndpdRegV1
                     | Profile::LongOrpdRegV1
@@ -1092,6 +1097,7 @@ impl IntegerState {
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
+                | Profile::LongXorpdPrerequisitesV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
                 | Profile::LongAndnpdRegV1
@@ -1207,6 +1213,7 @@ impl IntegerState {
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
+                | Profile::LongXorpdPrerequisitesV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -1389,6 +1396,7 @@ impl IntegerState {
             | Profile::LongMovapdReverseRegV1
             | Profile::LongXorpsRegV1
             | Profile::LongXorpdRegV1
+            | Profile::LongXorpdPrerequisitesV1
             | Profile::LongNativeXorpdXmm0Xmm1V1
             | Profile::LongAndpdRegV1
             | Profile::LongOrpdRegV1
@@ -1506,6 +1514,7 @@ impl IntegerState {
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
+                | Profile::LongXorpdPrerequisitesV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -1630,6 +1639,7 @@ impl IntegerState {
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
+                | Profile::LongXorpdPrerequisitesV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -1757,6 +1767,7 @@ impl IntegerState {
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
+                | Profile::LongXorpdPrerequisitesV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -1887,6 +1898,7 @@ impl IntegerState {
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
+                | Profile::LongXorpdPrerequisitesV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -2167,6 +2179,7 @@ impl IntegerState {
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
+                | Profile::LongXorpdPrerequisitesV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
                 | Profile::LongAndnpdRegV1
@@ -2281,6 +2294,7 @@ impl IntegerState {
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
+                | Profile::LongXorpdPrerequisitesV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
                 | Profile::LongAndnpdRegV1
@@ -2419,6 +2433,7 @@ impl IntegerState {
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
+                | Profile::LongXorpdPrerequisitesV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -2531,6 +2546,7 @@ impl IntegerState {
                 | Profile::LongMovapdReverseRegV1
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
+                | Profile::LongXorpdPrerequisitesV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -2685,6 +2701,9 @@ pub struct Fixture {
     /// Set only by explicit conversion; never reuse the old input digest as this fixture's digest.
     pub converted_from_v1_sha256: Option<String>,
     pub initial_state: IntegerState,
+    /// Explicit controls required only by the local S2-38b exact XORPD profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xorpd_prerequisites: Option<XorpdPrerequisiteSnapshot>,
     /// Code and data share the same guest address space. No implicit host buffer.
     pub memory: Vec<MemoryRegionSpec>,
     /// Optional external harness boundary, checked before fetch, not an x86 opcode.
@@ -2693,6 +2712,15 @@ pub struct Fixture {
     pub wall_timeout_ms: u32,
     pub rflags_mask: HexU64,
     pub expected_exit: ExpectedExit,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct XorpdPrerequisiteSnapshot {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2840,6 +2868,45 @@ impl Fixture {
                 ));
             }
         }
+        if self.profile == Profile::LongXorpdPrerequisitesV1 {
+            let controls = self.xorpd_prerequisites.ok_or_else(|| {
+                invalid(
+                    "xorpd_prerequisites",
+                    "required by the XORPD prerequisite profile",
+                )
+            })?;
+            let _ = controls;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| {
+                    invalid("memory.code", "required by the XORPD prerequisite profile")
+                })?;
+            let start = self.initial_state.rip.get();
+            if code.guest_address.get() != start
+                || code.length != 4
+                || !code.permissions.execute
+                || code.initial_bytes_hex.to_ascii_lowercase() != "660f57c1"
+                || self.memory.len() != 1
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(4)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "XORPD prerequisite fixtures require exactly 66 0F 57 C1, one executable code mapping, budget 1, and stop RIP entry+4",
+                ));
+            }
+        } else if self.xorpd_prerequisites.is_some() {
+            return Err(invalid(
+                "xorpd_prerequisites",
+                "only valid for the XORPD prerequisite profile",
+            ));
+        }
         if matches!(
             self.profile,
             Profile::LongXorpsRegV1
@@ -2934,9 +3001,9 @@ impl Fixture {
             let code_bytes = code.initial_bytes_hex.to_ascii_lowercase();
             let length = match self.profile {
                 Profile::LongXorpsRegV1 => xorps_register_length(&code_bytes),
-                Profile::LongXorpdRegV1 | Profile::LongNativeXorpdXmm0Xmm1V1 => {
-                    xorpd_register_length(&code_bytes)
-                }
+                Profile::LongXorpdRegV1
+                | Profile::LongXorpdPrerequisitesV1
+                | Profile::LongNativeXorpdXmm0Xmm1V1 => xorpd_register_length(&code_bytes),
                 Profile::LongAndpdRegV1 => andpd_register_length(&code_bytes),
                 Profile::LongOrpdRegV1 => orpd_register_length(&code_bytes),
                 Profile::LongAndnpdRegV1 => andnpd_register_length(&code_bytes),
@@ -4884,6 +4951,7 @@ impl Fixture {
             seed: source.seed.map(HexU64),
             converted_from_v1_sha256: Some(old.input_sha256.clone()),
             initial_state: IntegerState::try_from(&state)?,
+            xorpd_prerequisites: None,
             memory: vec![MemoryRegionSpec {
                 region_id: "code".into(),
                 guest_address: HexU64(0),
@@ -4945,6 +5013,9 @@ pub struct Snapshot {
     pub state: IntegerState,
     pub rflags_defined: HexU64,
     pub memory: Vec<MemoryRegionSnapshot>,
+    /// Immutable XORPD gate inputs, echoed into results only for S2-38b.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xorpd_prerequisites: Option<XorpdPrerequisiteSnapshot>,
     /// Available(None) means observed no exception; unavailable is not an empty result.
     pub exception: Observation<Option<ExceptionSnapshot>>,
 }
@@ -5022,6 +5093,22 @@ impl RunResult {
                 return Ok(());
             }
         };
+        match (self.profile, snapshot.xorpd_prerequisites) {
+            (Profile::LongXorpdPrerequisitesV1, Some(_)) => {}
+            (Profile::LongXorpdPrerequisitesV1, None) => {
+                return Err(invalid(
+                    "snapshot.xorpd_prerequisites",
+                    "required by the XORPD prerequisite profile",
+                ));
+            }
+            (_, Some(_)) => {
+                return Err(invalid(
+                    "snapshot.xorpd_prerequisites",
+                    "only valid for the XORPD prerequisite profile",
+                ));
+            }
+            (_, None) => {}
+        }
         snapshot.state.validate_for(self.profile)?;
         if snapshot.rflags_defined.get() & !INTEGER_FLAGS != 0 {
             return Err(invalid("snapshot.rflags_defined", "outside profile"));
@@ -5345,6 +5432,15 @@ pub fn compare(
     }
     if a.state.sse != b.state.sse {
         differences.push("sse".into());
+    }
+    if a.xorpd_prerequisites != b.xorpd_prerequisites {
+        differences.push("xorpd_prerequisites".into());
+    }
+    if a.xorpd_prerequisites != loaded.fixture.xorpd_prerequisites {
+        differences.push("left.xorpd_prerequisites".into());
+    }
+    if b.xorpd_prerequisites != loaded.fixture.xorpd_prerequisites {
+        differences.push("right.xorpd_prerequisites".into());
     }
     if (a.state.rflags.get() ^ b.state.rflags.get()) & mask != 0 {
         differences.push("rflags".into());

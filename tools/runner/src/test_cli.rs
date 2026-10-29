@@ -346,7 +346,8 @@ fn execute_fixture_v2(
     memory: &mut od_testkit::memory::FlatMemory,
 ) -> od_testkit::v2::RunResult {
     use od_isa::execute::{
-        RunConfig, RunExit, run, run_with_rep_continuation, run_with_sep_profile,
+        RunConfig, RunExit, XorpdPrerequisiteState, run, run_with_rep_continuation,
+        run_with_sep_profile, run_with_xorpd_prerequisites,
     };
     use od_testkit::v2;
     use std::time::{Duration, Instant};
@@ -422,6 +423,23 @@ fn execute_fixture_v2(
             &od_isa::sep::SepProfile::SepDisabledV1,
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongXorpdPrerequisitesV1 {
+        let controls = loaded
+            .fixture
+            .xorpd_prerequisites
+            .expect("validated XORPD profile has explicit prerequisite state");
+        run_with_xorpd_prerequisites(
+            &mut state,
+            memory,
+            config,
+            XorpdPrerequisiteState {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            timeout,
+        )
     } else {
         run(&mut state, memory, config, timeout)
     };
@@ -472,6 +490,7 @@ fn execute_fixture_v2(
                 // after logical operations.
                 rflags_defined: HexU64(execution.rflags_defined),
                 memory: memory.snapshot(),
+                xorpd_prerequisites: loaded.fixture.xorpd_prerequisites,
                 exception: Observation::Available { value: exception },
             },
         },
@@ -1469,6 +1488,7 @@ mod tests {
                     memory: od_testkit::memory::FlatMemory::from_fixture(&input.fixture)
                         .unwrap()
                         .snapshot(),
+                    xorpd_prerequisites: input.fixture.xorpd_prerequisites,
                     exception: Observation::Available { value: None },
                 },
             },

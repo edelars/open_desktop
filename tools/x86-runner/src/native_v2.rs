@@ -6582,10 +6582,12 @@ mod tests {
 
         for path in [
             "../../../tests/fixtures/x86/stage2/s2_34_17_xorpd_register.case.json",
+            "../../../tests/fixtures/x86/stage2/s2_38b_xorpd_sse2_absent.case.json",
             "../../../tests/fixtures/x86/stage2/s2_34_1_x87_sse_raw_state_snapshot.case.json",
         ] {
             let bytes = match path {
                 "../../../tests/fixtures/x86/stage2/s2_34_17_xorpd_register.case.json" => include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_17_xorpd_register.case.json").as_slice(),
+                "../../../tests/fixtures/x86/stage2/s2_38b_xorpd_sse2_absent.case.json" => include_bytes!("../../../tests/fixtures/x86/stage2/s2_38b_xorpd_sse2_absent.case.json").as_slice(),
                 _ => include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_1_x87_sse_raw_state_snapshot.case.json").as_slice(),
             };
             let old = Fixture::from_json(bytes).unwrap();

@@ -16151,3 +16151,43 @@ and S2-42 remain open. See [CPU contract](../specs/CPU_CONTRACT.md#s2-40b--bound
 [Linux profile report](STAGE_2_LINUX_PROFILE.md#s2-40b--ограниченный-sse-only-native-xorpd-oracle),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-40b-native-xorpd-xmm0-xmm1),
 and [test format](../testing/TEST_CASE_FORMAT.md#s2-40b-native-sse-only-xorpd-profile).
+
+## S2-38b — точечные SSE2 prerequisite gates для XORPD
+
+Добавлен отдельный schema-v2 profile `s2-long-xorpd-prerequisites-v1` для
+строго `66 0F 57 C1` (`XORPD XMM0,XMM1`). Он требует явный блок неизменяемых
+SSE2/CR0.EM/CR0.TS/CR4.OSFXSR inputs. Decoder завершает полный instruction
+fetch до проверки: `!SSE2 || CR0.EM || !CR4.OSFXSR` даёт CPU-side #UD, затем
+`CR0.TS` даёт #NM, иначе работает прежняя bytewise XORPD реализация.
+Стандартная проверка CPL0–3 × 16 комбинаций даёт 14 #UD, 1 #NM и 1 success;
+faults без error code не retire и сохраняют полный CPU snapshot. Данные
+memory callbacks отсутствуют. Boundary tests покрывают fetch truncation,
+STOP, zero budget, отсутствующее SSE snapshot и neighboring encoding.
+
+`s2_38b_xorpd_sse2_absent.case.json` — рукописная literal fault fixture.
+Схема отклоняет missing profile controls и посторонние формы. JIT остаётся
+отклонён, а native runner относит профиль к local-only set. CPUID и C ABI не
+менялись; OSXMMEXCPT/#XM не добавлены. Отдельные старые XORPD и S2-40b
+profiles не перенастроены. Runner повторяет control inputs в result snapshot;
+`v2::compare` сверяет обе oracle observations и input fixture, а старые result
+snapshots сохраняют прежнюю JSON форму, поскольку поле пропускается для иных
+profiles.
+
+**Проверки:** `cargo test -p od-isa --offline xorpd -- --nocapture` прошёл
+(5 tests), `cargo test -p od-testkit --offline
+xorpd_prerequisite_profile -- --nocapture` (1), `cargo test -p od-runner
+--test fixture_v2 xorpd_prerequisite_fixture --offline -- --nocapture` (1), и
+`cargo test -p od-testkit --offline
+xorpd_prerequisite_snapshot_roundtrips_and_control_mismatch_does_not_compare_equal
+-- --nocapture` (1), и
+`cargo test -p od-x86-runner --bin od-x86-runner
+native_fp::tests::narrow_xorpd_is_not_blocked_with_existing_sse_and_x87_profiles_denied
+--offline -- --nocapture` (1). Отдельно прошли legacy XORPD fixture, S2-40b
+XORPD fixtures и `diagnostic_v1_returns_fixed_identity_and_zero_feature_masks`
+(CPUID mask regression). Также прошли `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `git diff --check` и
+`graphify update .`. Физическое исполнение и Mac mini acceptance не
+запускались (`not_run` до объединённого заключительного hardware substage).
+S2-38, Generic amd64 и S2-26/39/40/41/42 остаются открытыми. См. [CPU contract](../specs/CPU_CONTRACT.md#s2-38b--точечные-sse2-prerequisite-gates-для-xorpd),
+[plan](../plans/STAGE_2.md#s2-38b-exact-xorpd-sse2-prerequisite-gates)
+и [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38b-local-xorpd-prerequisite-gates).

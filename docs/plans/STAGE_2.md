@@ -6219,6 +6219,29 @@ physical acceptance remain separate dependencies.
 
 **Готово:** фиксируются правильные values, flags, RIP и доступное exception metadata. CPUID SSE/SSE2 не включён до готовности обязательных state/exceptions/operations.
 
+#### S2-38b. Exact XORPD SSE2 prerequisite gates
+
+Локальный CPU-side срез принимает только schema-v2 profile
+`s2-long-xorpd-prerequisites-v1` и байты `66 0F 57 C1` (XORPD XMM0,XMM1).
+После полного fetch приоритет соответствует Intel SDM Rev. 093 Vol. 3A
+Table 15-1: отсутствующий SSE2, CR0.EM=1 или CR4.OSFXSR=0 дают #UD; только
+при разрешённых предыдущих условиях CR0.TS=1 даёт #NM; иначе XORPD
+исполняется обычной локальной семантикой. #UD приоритетен над #NM. Все 16
+комбинаций проверяются при CPL0–3: 14 #UD, один #NM, один успешный результат.
+
+Профиль требует явно заданные неизменяемые поля SSE2 availability, CR0.EM,
+CR0.TS и CR4.OSFXSR. Гейты CPU-side, без error code и retirement; fault
+сохраняет полный CPU snapshot и не обращается к data memory. Бюджет/STOP
+проверяются до fetch, а gate — после полного fetch. Политика локальна ровно
+этой форме: универсальных CR state/write и CPUID изменений нет. OSXMMEXCPT и
+#XM не моделируются для этой неарифметической формы. Старые XORPD профили,
+S2-40b native profile, JIT/native/C adapter не расширены. S2-38, Generic
+amd64 и S2-26/39/40/41/42 остаются открытыми; Mac mini physical stage —
+`not_run` до общего заключительного hardware substage. Детали — в
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38b--точечные-sse2-prerequisite-gates-для-xorpd),
+[report](../reports/STAGE_2_REPORT.md#s2-38b--точечные-sse2-prerequisite-gates-для-xorpd)
+и [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38b-local-xorpd-prerequisite-gates).
+
 ### S2-39. Сохранение и восстановление FP/SIMD
 
 #### S2-39a. Нормативное evidence legacy FXSAVE/FXRSTOR (evidence only)
