@@ -2558,6 +2558,46 @@ no findings remain. Layout validation reports only the known worktree pointer
 and two absent historical oracle manifests. No native runtime or physical checks
 were run; they remain in the combined final hardware batch.
 
+#### S2-27j — exact Long64 HLT and persistent activity
+
+Implement `HaltProfile::Long64V1` for bare `F4`, with optional
+`LongModeState::activity` (`None` for legacy contracts, `Some(Running)` for
+this profile). Require the explicit STI shadow and reject Halted plus Blocking.
+Under the bounded one-vCPU/private-synchronous-RAM assumptions and with
+VMX/SMM/debug/NMI/MOV-SS inhibition absent, CPL0 HLT retires once, advances
+RIP, preserves all other modeled architectural state, consumes a Blocking STI
+shadow, records Halted and returns `RunExit::Halted` immediately. CPL1–3 raise
+#GP(0) atomically. Exact LOCK HLT raises #UD after full fetch; other prefixes
+remain unsupported. Re-entry through all public run, step and REP continuation
+paths must not fetch or retire while Halted. The existing entry boundary may
+still honor host stop/budget ordering but cannot wake the CPU.
+
+With IF=1 and shadow Clear, the caller-owned maskable-request API may report
+eligibility without changing Halted or consuming the request; IF=0 remains
+Halted. Existing successful bounded delivery transitions Halted to Running
+only after all frame writes commit and saves the post-HLT RIP. Aborted delivery
+retains S2-27f's terminal no-retry policy. Do not add asynchronous arrivals,
+scheduler/APIC/timer behavior, IRETQ, or other wake sources. Schema profile
+`s2-long-hlt-v1` compares activity, STI shadow and `INTEGER_FLAGS|IF|IOPL`;
+literal fixtures cover F4 privilege cases and bounded `FB F4`, `FA F4`, and
+`FA FB F4` composition. JIT/native/C/fragment paths remain denied. Architecture
+source: Intel SDM Rev. 093 Vol. 2A, HLT p. 3-439.
+
+**Checks:** five focused `od-isa` HLT tests and thirteen bounded interrupt
+delivery tests passed. The 16-case interpreter matrix confirms four CPL0
+halts and twelve CPL1–3 #GP(0) faults; three compound CLI/STI/HLT fixtures and
+JIT denial passed. `cargo check --workspace --all-targets --offline`,
+`cargo fmt --all -- --check`, and `graphify update .` passed. Layout validation
+reports the existing linked-worktree `.git` pointer and two missing local
+oracle manifests. Independent Sol-medium review found and verified fixes for
+the native preflight, single-step admission and IF=1 bounded-sequence edge; final
+review passed clean. Linux runtime, native/JIT/C execution and physical checks
+were not run. See the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-27j--exact-long64-hlt-and-synchronous-maskable-wake).
+
+See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27j--exact-long64-hlt-and-synchronous-maskable-wake),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-27j-exact-long64-hlt-fixture-profile),
+and [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-27j--exact-long64-hlt-and-synchronous-maskable-wake).
+
 Architecture source: Intel SDM Rev. 093, Vol. 2A, CLI pp. 3-148–3-149,
 Table 3-7. Independent Sol-medium review found and verified a missing native
 local-only preflight fix; no findings remain. Local checks do not establish

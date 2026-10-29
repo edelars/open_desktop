@@ -8,7 +8,9 @@ use crate::long_decode::{
     MemoryOperand, OpcodeMap, Operand, Operation, Prefixes, ShiftKind, canonical,
     general_protection,
 };
-use crate::memory::{AccessContext, ArchitecturalFault, GuestMemory, MemoryError, PrivilegeLevel};
+use crate::memory::{
+    AccessContext, ArchitecturalFault, GuestMemory, InstructionMode, MemoryError, PrivilegeLevel,
+};
 use crate::msr::MsrProfile;
 use crate::sep::SepProfile;
 use crate::state::X87Tag;
@@ -48,6 +50,7 @@ const fn minss_unmasked_denormal_mxcsr_supported(mxcsr: u32) -> bool {
 pub enum StepOutcome {
     Advanced,
     Branched,
+    Halted,
     RepIterationBudgetExhausted,
     StopRequested,
     Fault(ArchitecturalFault),
@@ -57,6 +60,7 @@ pub enum StepOutcome {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RunExit {
     StopAddress,
+    Halted,
     InstructionBudgetExhausted,
     RepIterationBudgetExhausted,
     StopRequested,
@@ -139,6 +143,7 @@ pub enum MaskableRequestRunInputError {
     InvalidRflagsDefined { value: u64 },
     IncompatibleEntryFlags { value: u64 },
     InterruptInhibitionActive,
+    InvalidHaltedState,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -169,10 +174,34 @@ impl StiSequenceProgress {
         }
     }
 
-    fn admit(&mut self, instruction: &long_decode::Instruction) -> bool {
+    fn admit(&mut self, instruction: &long_decode::Instruction, hlt_profile: bool) -> bool {
         let operation = instruction.operation;
         let sti = operation == Operation::Sti;
         let cli = operation == Operation::Cli;
+        let hlt = operation == Operation::Hlt
+            && instruction.length == 1
+            && instruction.prefixes == Prefixes::default();
+        if hlt_profile {
+            let next = match self {
+                Self::StartIfClear if hlt => Some(Self::Done),
+                Self::StartIfClear if sti => Some(Self::AfterSti),
+                Self::StartIfClear if cli => Some(Self::AfterCli),
+                Self::StartIfSet if hlt => Some(Self::Done),
+                Self::StartIfSet if sti => Some(Self::AfterSti),
+                Self::StartIfSet if cli => Some(Self::AfterCli),
+                Self::AfterSti if hlt => Some(Self::Done),
+                Self::AfterCli if hlt => Some(Self::Done),
+                Self::AfterCli if sti => Some(Self::AfterCliSti),
+                Self::AfterCliSti if hlt => Some(Self::Done),
+                Self::AfterShadow if hlt => Some(Self::Done),
+                _ => None,
+            };
+            let Some(next) = next else {
+                return false;
+            };
+            *self = next;
+            return true;
+        }
         let nop = operation == Operation::Nop
             && instruction.length == 1
             && instruction.prefixes == Prefixes::default();
@@ -272,6 +301,9 @@ pub fn run_with_rep_continuation(
                 defined,
             ));
         }
+        if state.activity == Some(crate::CpuActivity::Halted) {
+            return Ok(rep_run_result(RunExit::Halted, retired, defined));
+        }
         let target_instruction;
         if continuation.is_some() {
             let instruction = match long_decode::decode(memory, state.rip, config.context) {
@@ -323,6 +355,9 @@ pub fn run_with_rep_continuation(
                 }
                 Ok(StepOutcome::StopRequested) => {
                     return Ok(rep_run_result(RunExit::StopRequested, retired, defined));
+                }
+                Ok(StepOutcome::Halted) => {
+                    return Ok(rep_run_result(RunExit::Halted, retired, defined));
                 }
                 Ok(StepOutcome::Unsupported { opcode })
                     if matches!(opcode, 0xae | 0xaf | 0xa6 | 0xa7) =>
@@ -441,6 +476,9 @@ pub fn run_with_rep_continuation(
                 }
                 Ok(StepOutcome::StopRequested) => {
                     return Ok(rep_run_result(RunExit::StopRequested, retired, defined));
+                }
+                Ok(StepOutcome::Halted) => {
+                    return Ok(rep_run_result(RunExit::Halted, retired, defined));
                 }
                 Ok(StepOutcome::Unsupported { opcode }) => {
                     return Ok(rep_run_result(
@@ -1017,6 +1055,44 @@ pub fn run_with_sti_profile(
         None,
         None,
         Some(profile),
+        None,
+        &mut stop_requested,
+    )
+}
+
+/// Execute with the explicit exact Long64 bare-HLT profile.
+///
+/// The caller certifies one vCPU, private synchronous RAM, and disabled
+/// VMX/SMM/debug/NMI/MOV-SS inhibition. State must carry explicit activity and
+/// STI-shadow values; halted state can only be resumed by the bounded
+/// synchronous maskable-delivery API.
+pub fn run_with_halt_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    profile: &crate::HaltProfile,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    let cli_profile = crate::CliProfile::NonPviLong64V1;
+    let sti_profile = crate::StiProfile::NonPviLong64V1;
+    run_execution_loop_with_profiles_and_rdtsc_and_sti(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        Some(&cli_profile),
+        Some(&sti_profile),
+        Some(profile),
         &mut stop_requested,
     )
 }
@@ -1105,7 +1181,11 @@ pub fn run_with_maskable_request(
     if state.sti_shadow == Some(crate::StiShadow::Blocking) {
         return Err(MaskableRequestRunInputError::InterruptInhibitionActive);
     }
-
+    if state.activity == Some(crate::CpuActivity::Halted)
+        && state.sti_shadow != Some(crate::StiShadow::Clear)
+    {
+        return Err(MaskableRequestRunInputError::InvalidHaltedState);
+    }
     const IF: u64 = 1 << 9;
     const TF_RF_VM: u64 = (1 << 8) | (1 << 16) | (1 << 17);
     let Some(vector) = request.filter(|_| state.rflags & IF != 0) else {
@@ -1261,6 +1341,7 @@ fn run_execution_loop_with_profiles_and_rdtsc(
         swapgs_profile,
         cli_profile,
         None,
+        None,
         stop_requested,
     )
 }
@@ -1282,8 +1363,22 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
     swapgs_profile: Option<&SwapgsProfile>,
     cli_profile: Option<&crate::CliProfile>,
     sti_profile: Option<&crate::StiProfile>,
+    halt_profile: Option<&crate::HaltProfile>,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> RunResult {
+    if halt_profile.is_some()
+        && (config.context.mode != InstructionMode::Long64
+            || state.activity.is_none()
+            || state.sti_shadow.is_none()
+            || (state.activity == Some(crate::CpuActivity::Halted)
+                && state.sti_shadow == Some(crate::StiShadow::Blocking)))
+    {
+        return RunResult {
+            exit: RunExit::Unsupported { opcode: 0xf4 },
+            instructions_executed: 0,
+            rflags_defined,
+        };
+    }
     if sti_profile.is_some() && state.sti_shadow.is_none() {
         return RunResult {
             exit: RunExit::Unsupported { opcode: 0xfb },
@@ -1319,6 +1414,8 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             Some(RunExit::StopRequested)
         } else if retired == config.instruction_budget {
             Some(RunExit::InstructionBudgetExhausted)
+        } else if state.activity == Some(crate::CpuActivity::Halted) {
+            Some(RunExit::Halted)
         } else {
             let old_shadow = state.sti_shadow;
             let outcome = if let Some(source) = rdtsc_source.take() {
@@ -1339,7 +1436,9 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
                     swapgs_profile,
                     cli_profile,
                     sti_profile,
+                    halt_profile,
                     sti_sequence.as_mut(),
+                    false,
                     stop_requested,
                 );
                 rdtsc_source = Some(source);
@@ -1362,7 +1461,9 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
                     swapgs_profile,
                     cli_profile,
                     sti_profile,
+                    halt_profile,
                     sti_sequence.as_mut(),
+                    false,
                     stop_requested,
                 )
             };
@@ -1372,8 +1473,16 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
                         state.sti_shadow = Some(crate::StiShadow::Clear);
                     }
                     retired += 1;
+                    if state.activity == Some(crate::CpuActivity::Halted) {
+                        return RunResult {
+                            exit: RunExit::Halted,
+                            instructions_executed: retired,
+                            rflags_defined,
+                        };
+                    }
                     None
                 }
+                Ok(StepOutcome::Halted) => Some(RunExit::Halted),
                 Ok(StepOutcome::Fault(fault)) => Some(RunExit::Fault(fault)),
                 Ok(StepOutcome::RepIterationBudgetExhausted) => {
                     Some(RunExit::RepIterationBudgetExhausted)
@@ -1497,6 +1606,42 @@ pub fn step_with_swapgs_profile(
         None,
         None,
         None,
+        None,
+        false,
+        &mut || false,
+    )
+}
+
+/// Execute one instruction with the explicit exact Long64 bare-HLT profile.
+/// The caller certifies the same bounded machine assumptions as
+/// [`run_with_halt_profile`].
+pub fn step_with_halt_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    profile: &crate::HaltProfile,
+) -> Result<StepOutcome, MemoryError> {
+    let mut rflags_defined = crate::INTEGER_FLAGS;
+    step_tracked_with_profiles_and_rdtsc(
+        state,
+        memory,
+        context,
+        &mut rflags_defined,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(profile),
+        None,
+        true,
         &mut || false,
     )
 }
@@ -1589,6 +1734,8 @@ fn step_tracked_with_profiles(
         None,
         None,
         None,
+        None,
+        false,
         stop_requested,
     )
 }
@@ -1610,11 +1757,33 @@ fn step_tracked_with_profiles_and_rdtsc(
     swapgs_profile: Option<&SwapgsProfile>,
     cli_profile: Option<&crate::CliProfile>,
     sti_profile: Option<&crate::StiProfile>,
+    halt_profile: Option<&crate::HaltProfile>,
     sti_sequence: Option<&mut StiSequenceProgress>,
+    exact_hlt_only: bool,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> Result<StepOutcome, MemoryError> {
-    if state.sti_shadow == Some(crate::StiShadow::Blocking) && sti_profile.is_none() {
+    if halt_profile.is_some()
+        && (context.mode != InstructionMode::Long64
+            || state.activity.is_none()
+            || state.sti_shadow.is_none()
+            || (state.activity == Some(crate::CpuActivity::Halted)
+                && state.sti_shadow == Some(crate::StiShadow::Blocking)))
+    {
+        return Ok(StepOutcome::Unsupported { opcode: 0xf4 });
+    }
+    if state.activity == Some(crate::CpuActivity::Halted) {
+        return Ok(StepOutcome::Halted);
+    }
+    if state.sti_shadow == Some(crate::StiShadow::Blocking)
+        && sti_profile.is_none()
+        && halt_profile.is_none()
+    {
         return Ok(StepOutcome::Unsupported { opcode: 0xfb });
+    }
+    if halt_profile.is_some()
+        && (state.activity != Some(crate::CpuActivity::Running) || state.sti_shadow.is_none())
+    {
+        return Ok(StepOutcome::Unsupported { opcode: 0xf4 });
     }
     let instruction = match long_decode::decode(memory, state.rip, context) {
         Ok(instruction) => instruction,
@@ -1635,10 +1804,15 @@ fn step_tracked_with_profiles_and_rdtsc(
         }
         Err(DecodeError::Memory(error)) => return Err(error),
     };
+    if exact_hlt_only && instruction.operation != Operation::Hlt {
+        return Ok(StepOutcome::Unsupported {
+            opcode: instruction.opcode.byte,
+        });
+    }
     if sti_profile.is_some()
         && !sti_sequence
             .expect("STI profile carries its bounded sequence state")
-            .admit(&instruction)
+            .admit(&instruction, halt_profile.is_some())
     {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
@@ -1770,6 +1944,27 @@ fn step_tracked_with_profiles_and_rdtsc(
         });
     }
     let next_rip = state.rip.wrapping_add(u64::from(instruction.length));
+    if instruction.operation == Operation::Hlt {
+        if halt_profile.is_none()
+            || instruction.prefixes != Prefixes::default()
+            || instruction.length != 1
+        {
+            return Ok(StepOutcome::Unsupported { opcode: 0xf4 });
+        }
+        if context.privilege != PrivilegeLevel::Ring0 {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }));
+        }
+        state.rip = next_rip;
+        state.activity = Some(crate::CpuActivity::Halted);
+        if state.sti_shadow == Some(crate::StiShadow::Blocking) {
+            state.sti_shadow = Some(crate::StiShadow::Clear);
+        }
+        return Ok(StepOutcome::Advanced);
+    }
     if instruction.operation == Operation::Cli || instruction.operation == Operation::Sti {
         let has_cli = cli_profile.is_some() || sti_profile.is_some();
         if !has_cli {
@@ -2525,7 +2720,9 @@ fn step_tracked_with_profiles_and_rdtsc(
     // Direct control flow uses the decoded condition/displacement; integer
     // operations below use normalized operands at each accepted width.
     let executable = match instruction.operation {
-        Operation::Cpuid | Operation::Rdtsc | Operation::Cli | Operation::Sti => false,
+        Operation::Cpuid | Operation::Rdtsc | Operation::Cli | Operation::Sti | Operation::Hlt => {
+            false
+        }
         Operation::Swapgs => true,
         Operation::ReadMsr | Operation::WriteMsr => false,
         Operation::Sysenter | Operation::Sysexit => false,
@@ -4154,6 +4351,7 @@ fn step_tracked_with_profiles_and_rdtsc(
         return Ok(StepOutcome::Advanced);
     }
     match instruction.operation {
+        Operation::Hlt => unreachable!("HLT commits in its profile-gated state path"),
         Operation::Cpuid => unreachable!("CPUID is executed before transfer dispatch"),
         Operation::Rdtsc => unreachable!("RDTSC is handled by its explicit source profile"),
         Operation::Cli => unreachable!("CLI commits in its profile-gated state path"),
@@ -12574,6 +12772,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         let mut defined = crate::ARITHMETIC_FLAGS;
         let mut memory = Memory::new(&[0x74, 0x02]); // JZ +2, target 4
@@ -12649,6 +12849,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::R8 as usize] = 0xffff_8000_0000_1234;
         let before_flags = state.rflags;
@@ -12694,6 +12896,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         let mut state = before.clone();
         state.gpr[Register::Rax as usize] = 0x0000_8000_0000_0000;
@@ -12747,6 +12951,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rax as usize] = 0x1008;
         let target = 0xffff_8000_0000_1234u64;
@@ -12786,6 +12992,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rax as usize] = 0x1000;
         let before = state.clone();
@@ -12849,6 +13057,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rax as usize] = 0x1008;
         state.gpr[Register::Rsp as usize] = 0x1018;
@@ -12921,6 +13131,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             state.gpr[Register::Rax as usize] = 0x1008;
             state.gpr[Register::Rsp as usize] = 0x1018;
@@ -12963,6 +13175,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rax as usize] = 0x1008;
         state.gpr[Register::Rsp as usize] = 0x1018;
@@ -13010,6 +13224,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rsp as usize] = 0x1008;
         let mut memory = Memory::at(&[0x9d], 0x1000);
@@ -13066,6 +13282,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rsp as usize] = 0x1008;
         let before = state.clone();
@@ -13178,6 +13396,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rsp as usize] = 0x1010;
         let mut memory = Memory::at(&[0x9c], 0x1000);
@@ -13225,6 +13445,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rsp as usize] = 0x1010;
         let before = state.clone();
@@ -13275,6 +13497,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rsp as usize] = 0x1010;
         let mut memory = Memory::at(&[0x66, 0x9c], 0x1000);
@@ -13319,6 +13543,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rsp as usize] = 0x1010;
         let before = state.clone();
@@ -13370,6 +13596,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             state.gpr[Register::Rsp as usize] = 0x1000;
             let mut memory = Memory::at(&[0xc2, immediate as u8, (immediate >> 8) as u8], 0x2000);
@@ -13414,6 +13642,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rsp as usize] = 0x1000;
         let before = state.clone();
@@ -13490,6 +13720,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         let mut memory = Memory::at(&[0x74, 0x01], base); // next RIP wraps to zero, target one
         assert_eq!(
@@ -13526,6 +13758,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         let mut state = before.clone();
         let mut defined = 0x8d7;
@@ -13581,6 +13815,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             let before = state.clone();
             let mut memory = Memory::new(code);
@@ -13618,6 +13854,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         let before = state.clone();
         let mut memory = Memory::new(&[0x0f, 0x84, 0, 0, 0, 0]);
@@ -13696,6 +13934,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             if register == Register::R15 {
                 state.gpr[Register::R15 as usize] = 0x1122_3344_5566_77ff;
@@ -13750,6 +13990,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rbp as usize] = 0x1000;
         let before = state.clone();
@@ -13845,6 +14087,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rbx as usize] = 0x1_0000_1000;
         let mut memory = Memory::new(&[0x67, 0x0f, 0x94, 0x03]); // [EBX]
@@ -13887,6 +14131,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             let before = state.clone();
             let mut memory = Memory::new(code);
@@ -13929,6 +14175,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rbx as usize] = 0x1000;
         let flags = state.rflags;
@@ -13977,6 +14225,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rbx as usize] = 0x1000;
         let mut memory = Memory::new(&code);
@@ -14021,6 +14271,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rbp as usize] = 0x1000;
         let before = state.clone();
@@ -14096,6 +14348,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rbx as usize] = 0x1_0000_1000;
         let mut memory = Memory::new(&[0x67, 0x66, 0x0f, 0x44, 0x03]); // CMOVE AX, [EBX]
@@ -14140,6 +14394,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             let before = state.clone();
             let mut memory = Memory::new(code);
@@ -14207,6 +14463,8 @@ mod tests {
                         sse: None,
                         ds_cache: None,
                         es_cache: None,
+
+                        activity: None,
                     };
                     state.gpr[3] = 0x1000;
                     let before = state.clone();
@@ -14288,6 +14546,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[0] = 0x1122_3344_5566_7788;
         state.gpr[3] = 0x1000;
@@ -14357,6 +14617,8 @@ mod tests {
                     sse: None,
                     ds_cache: None,
                     es_cache: None,
+
+                    activity: None,
                 };
                 let mut memory = Memory::new(&code);
                 assert_eq!(
@@ -14430,6 +14692,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rax as usize] = 0x1122_3344_5566_00f0;
         state.gpr[Register::Rbx as usize] = 2;
@@ -14568,6 +14832,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             state.gpr[Register::Rax as usize] = initial_rax;
             if target != Register::Rax {
@@ -14709,6 +14975,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rax as usize] = 0x100;
         state.gpr[Register::Rbx as usize] = 1;
@@ -14751,6 +15019,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rax as usize] = 0xff80; // signed AX dividend = -128
         state.gpr[Register::Rbx as usize] = 0xff; // signed BL divisor = -1
@@ -14792,6 +15062,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rax as usize] = 0x100;
         state.gpr[Register::Rbx as usize] = 1;
@@ -14843,6 +15115,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rax as usize] = 0;
         state.gpr[Register::Rdx as usize] = 0x8000_0000_0000_0000;
@@ -14884,6 +15158,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rcx as usize] = 0;
         let before = state.clone();
@@ -14954,6 +15230,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rbx as usize] = 0x1000;
         let before = state.clone();
@@ -15047,6 +15325,8 @@ mod tests {
                     sse: None,
                     ds_cache: None,
                     es_cache: None,
+
+                    activity: None,
                 };
                 state.gpr[3] = 0x1000;
                 let before = state.clone();
@@ -15190,6 +15470,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             state.gpr[0] = 0x1122_3344_5566_7788;
             let mut memory = Memory::new(code);
@@ -15280,6 +15562,8 @@ mod tests {
                         sse: None,
                         ds_cache: None,
                         es_cache: None,
+
+                        activity: None,
                     };
                     state.gpr[0] = 0x8877_6655_4433_2211;
                     let mut memory = Memory::new(&code);
@@ -15368,6 +15652,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             state.gpr[0] = 0x1122_3344_5566_7788;
             state.gpr[3] = source;
@@ -15441,6 +15727,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             state.gpr[0] = 0x1122_3344_5566_7788;
             state.gpr[3] = base;
@@ -15488,6 +15776,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             let before = state.clone();
             assert_eq!(
@@ -15546,6 +15836,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             state.gpr[0] = 0x1122_3344_5566_7788;
             let mut memory = Memory::new(code);
@@ -15590,6 +15882,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rax as usize] = 0x1008;
         let mut memory = Memory::new(&code);
@@ -15657,6 +15951,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             state.gpr[Register::Rax as usize] = 0x1008;
             let before_state = state.clone();
@@ -15720,6 +16016,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rax as usize] = 0x1007;
         let mut memory = Memory::new(&code);
@@ -15784,6 +16082,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             state.gpr[Register::Rax as usize] = 0x1007;
             let before_state = state.clone();
@@ -15848,6 +16148,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rax as usize] = 0x1007;
         let mut memory = Memory::new(&code);
@@ -15912,6 +16214,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             state.gpr[Register::Rax as usize] = 0x1007;
             let before_state = state.clone();
@@ -15976,6 +16280,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rax as usize] = 0x1007;
         let mut memory = Memory::new(&code);
@@ -16040,6 +16346,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             state.gpr[Register::Rax as usize] = 0x1007;
             let before_state = state.clone();
@@ -16104,6 +16412,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[Register::Rax as usize] = 0x7fff_ffff_ffff_ffff;
         let before = state.clone();
@@ -16157,6 +16467,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         extended_state.gpr[Register::R8 as usize] = 2;
         extended_state.gpr[Register::R9 as usize] = 3;
@@ -16209,6 +16521,8 @@ mod tests {
                         sse: None,
                         ds_cache: None,
                         es_cache: None,
+
+                        activity: None,
                     };
                     let before = state.clone();
                     let mut memory = Memory::new(if architectural { code } else { &code[..cut] });
@@ -16277,6 +16591,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             let before = state.clone();
             let mut memory = Memory::new(code);
@@ -16492,6 +16808,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             state.gpr[0] = initial;
             state.gpr[1] = other;
@@ -16581,6 +16899,8 @@ mod tests {
                         sse: None,
                         ds_cache: None,
                         es_cache: None,
+
+                        activity: None,
                     };
                     state.gpr[3] = 0x1000;
                     let before = state.clone();
@@ -16649,6 +16969,8 @@ mod tests {
                         sse: None,
                         ds_cache: None,
                         es_cache: None,
+
+                        activity: None,
                     };
                     let before = state.clone();
                     let mut memory = Memory::new(if architectural { code } else { &code[..cut] });
@@ -16820,6 +17142,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             state.gpr[0] = input;
             state.gpr[1] = source;
@@ -16859,6 +17183,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[4] = 0x1122_3344_5566_77f0;
         state.gpr[1] = 0xff;
@@ -16909,6 +17235,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             state.gpr[3] = 0x1000;
             let before = state.gpr;
@@ -16964,6 +17292,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             state.gpr[0] = 0x8000_0000_0000_0000;
             assert_eq!(
@@ -17019,6 +17349,8 @@ mod tests {
                     sse: None,
                     ds_cache: None,
                     es_cache: None,
+
+                    activity: None,
                 };
                 state.gpr[3] = 0x1000;
                 let before = state.clone();
@@ -17067,6 +17399,8 @@ mod tests {
                     sse: None,
                     ds_cache: None,
                     es_cache: None,
+
+                    activity: None,
                 };
                 let before = state.clone();
                 let mut memory = Memory::new(&code[..cut]);
@@ -17137,6 +17471,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             let mut memory = Memory::new(code);
             let result = run(
@@ -17209,6 +17545,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             state.gpr[0] = initial;
             let mut memory = Memory::new(code);
@@ -17260,6 +17598,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[0] = 1;
         let mut flags_defined = 0;
@@ -17307,6 +17647,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[0] = 0x80;
         let mut flags_defined = 0;
@@ -17354,6 +17696,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[0] = 0x8000_0000_0000_0081;
         let mut flags_defined = 0;
@@ -17401,6 +17745,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             state.gpr[index] = 0xabcd_ef01_1234_5678;
             assert_eq!(
@@ -17439,6 +17785,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             state.gpr[3] = 0x1000;
             let before = state.clone();
@@ -17486,6 +17834,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[0] = 0x80;
         assert_eq!(
@@ -17527,6 +17877,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[0] = 0x8000_0000_0000_0001;
         state.gpr[1] = 0x8000_0000_0000_0000;
@@ -17575,6 +17927,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             state.gpr[0] = 0x8001;
             state.gpr[1] = 0x4003;
@@ -17623,6 +17977,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         state.gpr[0] = 0x1234;
         let before = state.clone();
@@ -17669,6 +18025,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             state.gpr[3] = 0x1000;
             let before = state.clone();
@@ -17791,6 +18149,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         let before = state.clone();
         assert!(matches!(
@@ -17999,6 +18359,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         let before = state.clone();
         let mut truncated = Memory::new(&[0x0f, 0xba, 0xe0]); // BT EAX, imm8 missing
@@ -18764,6 +19126,8 @@ mod tests {
                 sse: None,
                 ds_cache: None,
                 es_cache: None,
+
+                activity: None,
             };
             state.gpr[dst as usize] = old_dst;
             state.gpr[src as usize] = source;
@@ -18829,6 +19193,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         let mut memory = Memory::new(&[0x48, 0x8c, 0xe0]);
         let before = state.clone();
@@ -18871,6 +19237,8 @@ mod tests {
             sse: None,
             ds_cache: None,
             es_cache: None,
+
+            activity: None,
         };
         let mut memory = Memory::new(&[0x48, 0x8c, 0xe8]);
         assert_eq!(

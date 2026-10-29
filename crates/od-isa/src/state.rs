@@ -251,6 +251,14 @@ pub struct LongModeState {
     /// Maskable-interrupt inhibition state carried only by explicit profiles.
     /// `None` means the selected legacy contract does not model this state.
     pub sti_shadow: Option<StiShadow>,
+    /// CPU activity carried only by profiles that model HLT.
+    pub activity: Option<CpuActivity>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CpuActivity {
+    Running,
+    Halted,
 }
 
 /// One-instruction interrupt inhibition after STI; `Clear` records a modeled
@@ -337,6 +345,7 @@ impl Default for LongModeState {
             x87: None,
             sse: None,
             sti_shadow: None,
+            activity: None,
         }
     }
 }
@@ -380,6 +389,7 @@ pub enum FragmentAdapterError {
     UnsupportedX87,
     UnsupportedSse,
     UnsupportedStiShadow(StiShadow),
+    UnsupportedActivity(CpuActivity),
     InstructionPointerOutOfRange(u64),
     UnsupportedFlags(u64),
     ReservedFlagMissing,
@@ -407,6 +417,9 @@ impl TryFrom<&LongModeState> for FragmentState {
         }
         if let Some(shadow) = state.sti_shadow {
             return Err(FragmentAdapterError::UnsupportedStiShadow(shadow));
+        }
+        if let Some(activity) = state.activity {
+            return Err(FragmentAdapterError::UnsupportedActivity(activity));
         }
         if state.fs_base != 0 {
             return Err(FragmentAdapterError::UnsupportedFsBase(state.fs_base));
@@ -584,6 +597,20 @@ mod tests {
     }
 
     #[test]
+    fn fragment_adapter_rejects_any_modeled_cpu_activity() {
+        for activity in [CpuActivity::Running, CpuActivity::Halted] {
+            let state = LongModeState {
+                activity: Some(activity),
+                ..LongModeState::default()
+            };
+            assert_eq!(
+                FragmentState::try_from(&state),
+                Err(FragmentAdapterError::UnsupportedActivity(activity))
+            );
+        }
+    }
+
+    #[test]
     fn fragment_adapter_rejects_present_cs_ss_selectors_and_caches_even_when_zero() {
         let mut state = LongModeState::default();
         state.cs_selector = Some(0);
@@ -659,6 +686,8 @@ mod tests {
                         x87: None,
                         sse: None,
                         es_cache: None,
+
+                        activity: None,
                     };
                     let before = state.clone();
                     let view = RegisterView::low(register, size);

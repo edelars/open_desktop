@@ -11641,3 +11641,37 @@ ordering and scheduler integration are excluded.
 
 The local instruction contract follows Intel SDM Rev. 093, Vol. 2B, STI
 pp. 4-674–4-675, Table 4-22; [official Intel SDM](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+
+### S2-27j — exact Long64 HLT and synchronous maskable wake
+
+`HaltProfile::Long64V1` admits bare `F4` in Long64 with an explicit
+`LongModeState::activity`. `None` means a legacy caller does not model CPU
+activity; the HLT profile requires `Some(Running)` at entry and a modeled STI
+shadow (`Some(Clear)` or `Some(Blocking)`). Halted plus Blocking is invalid.
+The bounded assumptions are one vCPU, private synchronous RAM, VMX/SMM/debug/
+NMI disabled, and no MOV-SS inhibition. CPL is `AccessContext::privilege`.
+
+CPL0 HLT retires once, advances RIP by one, preserves GPR/RFLAGS/definedness
+and memory, records `Halted`, consumes an STI Blocking shadow, and returns
+`RunExit::Halted` immediately after the instruction. CPL1–3 raise #GP(0)
+without retirement or state change. Exact `F0 F4` raises #UD only after both
+bytes are fetched; other prefixed forms remain outside this profile. Existing
+fetch, STOP and budget order is retained before instruction execution.
+
+Re-entry while Halted does not fetch or retire instructions or access data.
+Host stop/budget checks may still win at the entry boundary, but never change
+activity. A caller-owned maskable request with IF=1 and shadow Clear may return
+`InterruptEligible` while leaving the CPU Halted and request unconsumed; IF=0
+remains Halted without fetch. The existing `deliver_maskable_interrupt` API
+wakes only after it returns `Delivered`, committing `Running` after all frame
+stores succeed. Its frame saves the post-HLT RIP. `DeliveryAborted` keeps the
+existing terminal policy; callers must stop and must not retry. This adds no
+asynchronous arrival, scheduler, APIC/timer, IRETQ, or other wake source.
+
+The `s2-long-hlt-v1` fixture profile compares `INTEGER_FLAGS|IF|IOPL`, activity
+and STI shadow, and represents the terminal outcome as `Halted` without a
+`stop_rip`. Literal coverage is four CPL0 success cases and twelve CPL1–3
+#GP(0) cases over IF=0/1 and IOPL=0/3, plus bounded CPL0 `FB F4`, `FA F4`, and
+`FA FB F4` compositions. JIT, native and C/fragment paths reject the new state
+or profile. Architecture source: Intel SDM Rev. 093, Vol. 2A, HLT p. 3-439;
+[official Intel SDM](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).

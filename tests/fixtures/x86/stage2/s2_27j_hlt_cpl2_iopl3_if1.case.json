@@ -1,0 +1,58 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_27j_hlt_cpl2_iopl3_if1",
+  "profile": "s2-long-hlt-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten bare HLT (F4); explicit CPL=2, IOPL=3, and IF=1.",
+    "specification": "Intel SDM Rev. 093, Vol. 2A, HLT p. 3-439.",
+    "specification_version": "Intel SDM Rev. 093; Long64, one vCPU/private synchronous RAM, no VMX/SMM/debug/NMI/MOV-SS inhibition; S2-27j."
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x1122334455667788",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200004",
+      "0x0000000000200010",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000003ad7",
+    "sti_shadow": "clear",
+    "activity": "running"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 1,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "f4",
+      "comparison_mask_hex": "ff"
+    }
+  ],
+  "stop_rip": null,
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000003ed7",
+  "expected_exit": "exception",
+  "cli_cpl": 2
+}

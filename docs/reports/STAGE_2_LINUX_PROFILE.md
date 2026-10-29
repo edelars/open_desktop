@@ -825,3 +825,18 @@ preservation. This is not evidence of Ubuntu STI execution, event delivery,
 Linux boot or native/physical behavior. JIT, native and C/fragment execution
 remain denied. Source: Intel SDM Rev. 093, Vol. 2B, STI pp. 4-674–4-675,
 Table 4-22. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27i--exact-long64-sti-and-maskable-interrupt-inhibition) and [Stage 2 plan](../plans/STAGE_2.md#s2-27i--exact-long64-sti-and-one-instruction-maskable-interrupt-shadow).
+
+### S2-27j local HLT matrix entry
+
+The interpreter-only `s2-long-hlt-v1` profile admits bare Long64 `F4` under
+explicit Running/activity and STI-shadow state. Its sixteen literal cases
+cross IF=0/1, CPL0–3 and IOPL=0/3: CPL0 halts and advances once, while CPL1–3
+produce CPU-side #GP(0). Three CPL0 compound cases exercise HLT after CLI/STI
+and confirm that HLT consumes an active STI shadow. Core tests verify halted
+re-entry, non-waking request eligibility, and the existing synchronous
+maskable delivery transition back to Running with post-HLT RIP in the frame.
+This is local interpreter and API composition coverage, not Ubuntu HLT
+execution, asynchronous wake behavior, Linux boot, or native/physical behavior.
+JIT, native and C/fragment execution remain denied. Source: Intel SDM Rev. 093,
+Vol. 2A, HLT p. 3-439. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27j--exact-long64-hlt-and-synchronous-maskable-wake)
+and [Stage 2 plan](../plans/STAGE_2.md#s2-27j--exact-long64-hlt-and-persistent-activity).

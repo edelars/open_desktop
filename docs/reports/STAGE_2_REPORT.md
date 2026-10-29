@@ -6440,6 +6440,7 @@ rebuilt the graph (3475 nodes, 7438 edges); its existing parser warning for
 `include/open_desktop/host_abi.h` remains. Native deny vectors compile on this
 arm64 macOS host but were not executed on Linux; no SSH or physical-hardware
 checks were run.
+
 Independent gpt-6.1-sol medium review completed with no findings.
 
 Full x87 architectural behavior, special values, exception delivery, native
@@ -16692,3 +16693,40 @@ Independent Sol-medium review found three issues—native preflight, REP
 continuation bypass, and compound fixture terminal-boundary validation. All
 were fixed and re-reviewed clean. No Linux runtime, SSH, physical or Mac mini
 checks were run.
+
+## S2-27j — exact Long64 HLT and synchronous maskable wake
+
+Added `HaltProfile::Long64V1`, explicit optional `LongModeState::activity`,
+and `RunExit::Halted`. Bare `F4` is admitted only under the bounded Long64
+profile. CPL0 HLT retires once, advances RIP, preserves other modeled state,
+consumes an active STI Blocking shadow and returns Halted immediately. CPL1–3
+fault with #GP(0) atomically. Exact `F0 F4` fetches both bytes before #UD;
+other prefixes stay unsupported.
+
+Every public run, step and REP continuation boundary respects persistent
+Halted state without fetching or retiring. IF=1 plus Clear shadow allows an
+eligible caller-owned maskable request to be reported without waking or
+consuming it; IF=0 stays Halted without fetch. Successful existing bounded
+interrupt delivery transitions to Running after the complete frame stores
+and saves the post-HLT RIP. Legacy `None` activity remains accepted, while
+schema snapshots distinguish Running and Halted and fragment/native/C paths
+deny the profile.
+
+The `s2-long-hlt-v1` literal matrix covers 16 CPL/IF/IOPL combinations (four
+Halted and twelve #GP(0)), plus `FB F4`, `FA F4`, and `FA FB F4`. Focused
+coverage includes STI shadow consumption, atomic faults, fetch boundaries,
+halted re-entry through run/step/REP, request eligibility, and interrupt frame
+commit/wake composition.
+
+**Checks:** `cargo test -p od-isa --offline hlt::tests` passed 8/8;
+`cargo test -p od-isa --offline interrupt::tests` passed 13/13; the runner HLT
+fixture integration passed 1/1; the `native_fp` local-only helper and fragment
+activity-denial tests passed. Workspace all-target offline check, Linux x86-64
+all-target compile check, formatting, diff check and `graphify update .` passed.
+The Linux-only early-denial test compiled but was not run on macOS.
+`tools/check_layout.py` reports the existing linked-worktree `.git` pointer and
+two missing local oracle manifests. Independent Sol-medium review found and
+verified fixes for missing native preflight, a non-HLT single-step bypass, and
+the IF=1/repeated-STI allowlist boundary; final re-review was clean. No Linux
+runtime, SSH, physical or Mac mini checks were run. Sources: Intel SDM Rev. 093, Vol. 2A, HLT p.
+3-439; Vol. 2B, STI pp. 4-674–4-675, Table 4-22. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27j--exact-long64-hlt-and-synchronous-maskable-wake), [plan](../plans/STAGE_2.md#s2-27j--exact-long64-hlt-and-persistent-activity), [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-27j-exact-long64-hlt-fixture-profile), and [Linux matrix](STAGE_2_LINUX_PROFILE.md#s2-27j-local-hlt-matrix-entry).

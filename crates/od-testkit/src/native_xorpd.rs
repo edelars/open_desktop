@@ -631,6 +631,8 @@ pub fn generate_native_xorpd_fixture(seed: u64, sequence: u32) -> Fixture {
                 diagnostic_mxcsr_mask: HexU64(0x0000_ffbf),
             }),
             sti_shadow: None,
+
+            activity: None,
         },
         xorpd_prerequisites: None,
         minss_invalid_controls: None,

@@ -63,6 +63,29 @@ const STI_FIXTURES: [&[u8]; 16] = [
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_27i_sti_cpl3_iopl2_if0.case.json"),
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_27i_sti_cpl3_iopl3_if0.case.json"),
 ];
+const HLT_FIXTURES: [&[u8]; 16] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27j_hlt_cpl0_iopl0_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27j_hlt_cpl0_iopl0_if1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27j_hlt_cpl0_iopl3_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27j_hlt_cpl0_iopl3_if1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27j_hlt_cpl1_iopl0_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27j_hlt_cpl1_iopl0_if1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27j_hlt_cpl1_iopl3_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27j_hlt_cpl1_iopl3_if1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27j_hlt_cpl2_iopl0_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27j_hlt_cpl2_iopl0_if1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27j_hlt_cpl2_iopl3_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27j_hlt_cpl2_iopl3_if1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27j_hlt_cpl3_iopl0_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27j_hlt_cpl3_iopl0_if1.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27j_hlt_cpl3_iopl3_if0.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27j_hlt_cpl3_iopl3_if1.case.json"),
+];
+const HLT_COMPOUND_FIXTURES: [&[u8]; 3] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27j_hlt_compound_fbf4.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27j_hlt_compound_faf4.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_27j_hlt_compound_fafbf4.case.json"),
+];
 const FSTP_INVALID_SOURCE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30w_fstp_invalid_source.case.json");
 const FST_INVALID_SOURCE: &[u8] =
@@ -1937,6 +1960,80 @@ fn sti_fixtures_preserve_shadow_and_cover_the_cpl_iopl_matrix() {
             assert_eq!(snapshot(&result).state, input.fixture.initial_state);
         }
     }
+}
+
+#[test]
+fn hlt_fixtures_preserve_activity_and_enforce_cpl_zero() {
+    assert_eq!(HLT_FIXTURES.len(), 16);
+    let mut halted = 0;
+    let mut faults = 0;
+    for fixture in HLT_FIXTURES {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert_eq!(input.fixture.profile, od_testkit::v2::Profile::LongHltV1);
+        let cpl: u8 = input.fixture.cli_cpl.unwrap().into();
+        let observed = snapshot(&result);
+        if cpl == 0 {
+            halted += 1;
+            assert!(matches!(result.outcome, Outcome::Halted {}));
+            assert_eq!(count(&result), 1);
+            assert_eq!(
+                observed.state.rip,
+                HexU64(input.fixture.initial_state.rip.get() + 1)
+            );
+            assert_eq!(
+                observed.state.activity,
+                Some(od_testkit::v2::CpuActivitySnapshot::Halted)
+            );
+            assert_eq!(
+                observed.state.sti_shadow,
+                Some(od_testkit::v2::StiShadowSnapshot::Clear)
+            );
+            assert_eq!(
+                od_testkit::v2::compare(&input, &result, &result).unwrap(),
+                Vec::<String>::new()
+            );
+            let mut tampered = result.clone();
+            if let Observation::Available { value } = &mut tampered.snapshot {
+                value.state.activity = Some(od_testkit::v2::CpuActivitySnapshot::Running);
+            }
+            assert!(
+                od_testkit::v2::compare(&input, &result, &tampered)
+                    .unwrap()
+                    .contains(&"state.activity".to_owned())
+            );
+        } else {
+            faults += 1;
+            assert!(matches!(result.outcome, Outcome::Exception {}));
+            assert_eq!(count(&result), 0);
+            assert_eq!(observed.state, input.fixture.initial_state);
+        }
+    }
+    assert_eq!((halted, faults), (4, 12));
+
+    for fixture in HLT_COMPOUND_FIXTURES {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::Halted {}));
+        assert_eq!(count(&result), input.fixture.instruction_budget);
+        assert_eq!(
+            snapshot(&result).state.activity,
+            Some(od_testkit::v2::CpuActivitySnapshot::Halted)
+        );
+        assert_eq!(
+            snapshot(&result).state.sti_shadow,
+            Some(od_testkit::v2::StiShadowSnapshot::Clear)
+        );
+        assert_eq!(
+            od_testkit::v2::compare(&input, &result, &result).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+    let (_, jit) = run(HLT_FIXTURES[0], "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+
+    let mut invalid = Fixture::from_json(HLT_FIXTURES[0]).unwrap().fixture;
+    invalid.initial_state.activity = Some(od_testkit::v2::CpuActivitySnapshot::Halted);
+    invalid.initial_state.sti_shadow = Some(od_testkit::v2::StiShadowSnapshot::Blocking);
+    assert!(invalid.to_json().is_err());
 }
 
 #[test]

@@ -421,6 +421,7 @@ fn state(regs: &libc::user_regs_struct) -> LongModeState {
         ],
         rip: regs.rip,
         rflags: (regs.eflags & v2::INTEGER_FLAGS) | 2,
+        activity: None,
         fs_base: 0,
         gs_base: 0,
         kernel_gs_base: None,
@@ -590,8 +591,12 @@ fn admission_with_tracee_memory(
     {
         return Err("SWAPGS is denied by the native runner profile".into());
     }
-    if fixture.profile == v2::Profile::LongStiV1 || instruction.operation == Operation::Sti {
-        return Err("STI is denied by the native runner profile".into());
+    if matches!(
+        fixture.profile,
+        v2::Profile::LongStiV1 | v2::Profile::LongHltV1
+    ) || matches!(instruction.operation, Operation::Sti | Operation::Hlt)
+    {
+        return Err("STI/HLT is denied by the native runner profile".into());
     }
     if fixture.profile == v2::Profile::LongNativeXorpdXmm0Xmm1V1 {
         let exact = instruction.length == 4
@@ -6702,6 +6707,22 @@ mod tests {
             admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
             "STI is denied by the native runner profile"
         );
+    }
+
+    #[test]
+    fn hlt_fixture_is_rejected_by_preflight_before_trace() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/x86/stage2/s2_27j_hlt_cpl0_iopl0_if0.case.json");
+        let loaded = Fixture::from_json(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(loaded.fixture.memory[0].initial_bytes_hex, "f4");
+        assert!(crate::native_fp::native_profile_local_only(
+            loaded.fixture.profile
+        ));
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { ref reason }
+                if reason == "this profile is local-only; native state does not observe every profile field"
+        ));
     }
 
     #[test]

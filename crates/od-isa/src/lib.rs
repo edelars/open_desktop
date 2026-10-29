@@ -9,6 +9,7 @@ pub mod binary_float;
 pub mod cli;
 pub mod cpuid;
 pub mod execute;
+pub mod hlt;
 pub mod interrupt;
 pub mod long_decode;
 pub mod memory;
@@ -20,12 +21,13 @@ pub mod sti;
 pub mod swapgs;
 pub mod x87;
 pub use cli::CliProfile;
+pub use hlt::HaltProfile;
 pub use interrupt::{
     InterruptDeliveryPhase, InterruptDeliveryResult, InterruptFrameSlot, InterruptOutsideProfile,
     deliver_maskable_interrupt,
 };
 pub use state::{
-    CodeSegmentDescriptorCache, DataSegmentDescriptorCache, DsDescriptorCache,
+    CodeSegmentDescriptorCache, CpuActivity, DataSegmentDescriptorCache, DsDescriptorCache,
     FragmentAdapterError, FsDescriptorCache, LongModeState, OperandSize, RegisterError,
     RegisterView, StackSegmentDescriptorCache, StiShadow,
 };

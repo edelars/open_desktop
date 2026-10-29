@@ -29,6 +29,7 @@ pub enum InterruptOutsideProfile {
     NotRing0Long64,
     InterruptsMasked,
     InterruptsInhibited,
+    HaltedWithoutClearShadow,
     IncompatibleEntryFlags(u64),
     MissingIdtr,
     MissingVisibleCsOrSs,
@@ -77,6 +78,11 @@ pub fn deliver_maskable_interrupt(
 ) -> InterruptDeliveryResult {
     if state.sti_shadow == Some(crate::StiShadow::Blocking) {
         return outside(InterruptOutsideProfile::InterruptsInhibited);
+    }
+    if state.activity == Some(crate::CpuActivity::Halted)
+        && state.sti_shadow != Some(crate::StiShadow::Clear)
+    {
+        return outside(InterruptOutsideProfile::HaltedWithoutClearShadow);
     }
     if rflags_defined & !INTEGER_FLAGS != 0 {
         return outside(InterruptOutsideProfile::InvalidRflagsDefined(
@@ -248,6 +254,9 @@ pub fn deliver_maskable_interrupt(
     state.gpr[crate::Register::Rsp as usize] = new_rsp;
     state.rip = target_rip;
     state.rflags &= !((1 << 9) | (1 << 8) | (1 << 17) | (1 << 16) | (1 << 14));
+    if state.activity == Some(crate::CpuActivity::Halted) {
+        state.activity = Some(crate::CpuActivity::Running);
+    }
     InterruptDeliveryResult::Delivered {
         vector,
         target_rip,
@@ -460,6 +469,62 @@ mod tests {
         assert_eq!(state, before);
         assert!(ram.reads.is_empty());
         assert!(ram.writes.is_empty());
+    }
+
+    #[test]
+    fn halted_delivery_requires_the_profiled_clear_shadow() {
+        let mut state = ready_state(0x8000);
+        state.activity = Some(crate::CpuActivity::Halted);
+        let mut ram = Ram::new();
+        assert_eq!(
+            deliver(&mut state, &mut ram, 0x20),
+            InterruptDeliveryResult::OutsideProfile(
+                InterruptOutsideProfile::HaltedWithoutClearShadow
+            )
+        );
+        assert!(ram.reads.is_empty());
+        assert!(ram.writes.is_empty());
+    }
+
+    #[test]
+    fn successful_delivery_from_halted_state_saves_post_hlt_rip_and_wakes() {
+        let mut state = ready_state(0x8000);
+        let post_hlt_rip = state.rip + 1;
+        state.rip = post_hlt_rip;
+        state.activity = Some(crate::CpuActivity::Halted);
+        state.sti_shadow = Some(crate::StiShadow::Clear);
+        let mut ram = Ram::new();
+        let handler = 0x3000;
+        ram.configure(0x20, handler, 0x9b, 0x2);
+        ram.bytes[handler as usize] = 0x90;
+        assert!(matches!(
+            deliver(&mut state, &mut ram, 0x20),
+            InterruptDeliveryResult::Delivered { target_rip, .. } if target_rip == handler
+        ));
+        assert_eq!(state.activity, Some(crate::CpuActivity::Running));
+        let old_rip_slot = (0x8000 & !15) - 40;
+        assert_eq!(
+            u64::from_le_bytes(
+                ram.bytes[old_rip_slot as usize..old_rip_slot as usize + 8]
+                    .try_into()
+                    .unwrap()
+            ),
+            post_hlt_rip
+        );
+        assert_eq!(
+            crate::execute::step(
+                &mut state,
+                &mut ram,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                }
+            )
+            .unwrap(),
+            crate::execute::StepOutcome::Advanced
+        );
+        assert_eq!(state.rip, handler + 1);
+        assert_eq!(state.activity, Some(crate::CpuActivity::Running));
     }
 
     #[test]

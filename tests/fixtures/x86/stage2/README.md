@@ -5951,3 +5951,23 @@ STOP/budget, request eligibility and shadow preservation. JIT/native/C/fragment
 paths remain closed. The source is Intel SDM Rev. 093, Vol. 2B, STI
 pp. 4-674–4-675, Table 4-22. NMI/SMI delivery, scheduling, HLT, MOV SS and REP
 boundaries are excluded.
+
+## S2-27j exact Long64 HLT fixture profile
+
+The `s2-long-hlt-v1` profile carries both `CpuActivitySnapshot` and
+`StiShadowSnapshot`; initial fixtures require `running` plus `clear`, and the
+post-HLT result records `halted` plus `clear`. It compares
+`INTEGER_FLAGS|IF|IOPL`, while arithmetic `rflags_defined` stays unchanged.
+The sixteen literal bare-F4 cases cross CPL0–3, IF=0/1 and IOPL=0/3: four CPL0
+cases halt and advance one byte; twelve CPL1–3 cases produce atomic #GP(0).
+Three additional CPL0 cases cover `FB F4`, `FA F4`, and `FA FB F4`, including
+successful HLT consumption of the STI Blocking shadow. Halted outcomes have no
+`stop_rip`.
+
+Core API checks cover exact `F4`, `F0 F4` full-fetch #UD, unsupported prefixes,
+zero-fetch run/step/REP re-entry, IF=1 request eligibility without wake, IF=0
+remaining halted, and successful delivery saving post-HLT RIP before returning
+to Running. JIT/native/C/fragment adapters remain denied. The local slice assumes
+one vCPU and private synchronous RAM, with VMX/SMM/debug/NMI/MOV-SS inhibition
+absent. Source: Intel SDM Rev. 093 Vol. 2A, HLT p. 3-439. This does not add
+asynchronous wake sources or establish Linux/physical execution.
