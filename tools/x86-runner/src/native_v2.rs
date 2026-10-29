@@ -6725,6 +6725,30 @@ mod tests {
         ));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn iretq_fixture_is_rejected_by_preflight_before_trace() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_27k_iretq_if0_iopl0.case.json"
+        ))
+        .unwrap();
+        assert_eq!(loaded.fixture.memory[0].initial_bytes_hex, "48cf");
+        assert!(crate::native_fp::native_profile_local_only(
+            loaded.fixture.profile
+        ));
+        let result = execute(&loaded);
+        assert!(matches!(
+            result.outcome,
+            Outcome::Unsupported { ref reason }
+                if reason == "this profile is local-only; native state does not observe every profile field"
+        ));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+        assert!(matches!(
+            result.instructions_executed,
+            Observation::Unavailable { .. }
+        ));
+    }
+
     #[test]
     fn native_xorpd_is_the_only_new_sse_profile_admitted() {
         let native = Fixture::from_json(include_bytes!(

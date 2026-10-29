@@ -5971,3 +5971,21 @@ to Running. JIT/native/C/fragment adapters remain denied. The local slice assume
 one vCPU and private synchronous RAM, with VMX/SMM/debug/NMI/MOV-SS inhibition
 absent. Source: Intel SDM Rev. 093 Vol. 2A, HLT p. 3-439. This does not add
 asynchronous wake sources or establish Linux/physical execution.
+
+## S2-27k exact same-CPL0 IRETQ fixture profile
+
+The four `s2_27k_iretq_if*_iopl*.case.json` cases use
+`s2-long-iretq-cpl0-valid-v1`, exact code `48 CF`, budget 1, and stop at the
+RIP saved in the 40-byte frame. Code, frame and GDT are separate regions. The
+matrix crosses restored IF=0/1 and IOPL=0/3; one case sets high 48 bits in the
+CS/SS frame qwords to show that only their low selectors are consumed. The
+restored RSP is intentionally unaligned.
+
+The profile compares RIP/RSP/RFLAGS, CS/SS selectors and complete hidden-cache
+fields, Running activity, Clear STI shadow, and arithmetic `rflags_defined`.
+The descriptors are exact bounded ring-0 Long64 code/data entries with
+accessed bits already set. Frame and GDT remain byte-for-byte unchanged.
+Selector/cache fields are omitted from older profile wire forms and rejected
+there. Interpreter-only; JIT/native/C/fragment execution is denied. This is
+local bounded coverage, not general IRET exception behavior or Linux/physical
+execution. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-27k--exact-long64-same-cpl0-iretq).

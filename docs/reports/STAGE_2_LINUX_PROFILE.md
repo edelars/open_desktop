@@ -840,3 +840,15 @@ execution, asynchronous wake behavior, Linux boot, or native/physical behavior.
 JIT, native and C/fragment execution remain denied. Source: Intel SDM Rev. 093,
 Vol. 2A, HLT p. 3-439. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27j--exact-long64-hlt-and-synchronous-maskable-wake)
 and [Stage 2 plan](../plans/STAGE_2.md#s2-27j--exact-long64-hlt-and-persistent-activity).
+
+### S2-27k local IRETQ matrix entry
+
+The local interpreter profile admits only `48 CF` at Long64/CPL0 with a
+validated same-CPL five-qword frame and exact accessed GDT descriptors. Four
+fixtures cross restored IF=0/1 and IOPL=0/3; core composition tests cover the
+existing STI/HLT and synchronous delivery APIs plus all 16 prior-RSP low-bit
+alignments. This establishes local interpreter/API behavior only. It does not
+show that Ubuntu executes this path, establish IRET fault delivery or priority,
+or constitute Linux boot/native/physical evidence. JIT/native/C/fragment paths
+remain denied. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27k--exact-long64-same-cpl0-iretq)
+and [Stage 2 plan](../plans/STAGE_2.md#s2-27k--exact-long64-same-cpl0-iretq).

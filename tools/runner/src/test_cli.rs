@@ -1009,7 +1009,10 @@ fn execute_fixture_v2(
     // STOP, before budget/fetch. It cannot interrupt a stalled backend call.
     let context = if matches!(
         loaded.fixture.profile,
-        v2::Profile::LongCliV1 | v2::Profile::LongStiV1 | v2::Profile::LongHltV1
+        v2::Profile::LongCliV1
+            | v2::Profile::LongStiV1
+            | v2::Profile::LongHltV1
+            | v2::Profile::LongIretqCpl0ValidV1
     ) {
         let privilege = match loaded.fixture.cli_cpl.expect("validated CLI CPL") {
             v2::CliCpl::Cpl0 => od_isa::memory::PrivilegeLevel::Ring0,
@@ -1129,6 +1132,33 @@ fn execute_fixture_v2(
             &od_isa::HaltProfile::Long64V1,
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongIretqCpl0ValidV1 {
+        use od_isa::execute::RunResult as CpuRunResult;
+        let execution = od_isa::run_with_iretq_profile(
+            &mut state,
+            memory,
+            config,
+            od_isa::INTEGER_FLAGS,
+            od_isa::IretqProfile::SameCpl0ValidFrameV1,
+            timeout,
+        );
+        let exit = match execution.exit {
+            od_isa::IretqRunExit::StopAddress => RunExit::StopAddress,
+            od_isa::IretqRunExit::StopRequested => RunExit::StopRequested,
+            od_isa::IretqRunExit::InstructionBudgetExhausted => RunExit::InstructionBudgetExhausted,
+            od_isa::IretqRunExit::Unsupported => RunExit::Unsupported { opcode: 0xcf },
+            od_isa::IretqRunExit::Fault(fault) => RunExit::Fault(fault),
+            od_isa::IretqRunExit::ReadAborted { phase, cause } => {
+                RunExit::MemoryError(od_isa::memory::MemoryError::Backend(format!(
+                    "IRETQ {phase:?} read abort: {cause:?}"
+                )))
+            }
+        };
+        CpuRunResult {
+            exit,
+            instructions_executed: execution.instructions_executed,
+            rflags_defined: execution.rflags_defined,
+        }
     } else if loaded.fixture.profile == v2::Profile::LongKernelGsBaseV1 {
         run_with_kernel_gs_base_profile(&mut state, memory, config, timeout)
     } else if loaded.fixture.profile == v2::Profile::LongRdtscV1 {

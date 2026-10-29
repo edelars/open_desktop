@@ -16730,3 +16730,40 @@ verified fixes for missing native preflight, a non-HLT single-step bypass, and
 the IF=1/repeated-STI allowlist boundary; final re-review was clean. No Linux
 runtime, SSH, physical or Mac mini checks were run. Sources: Intel SDM Rev. 093, Vol. 2A, HLT p.
 3-439; Vol. 2B, STI pp. 4-674–4-675, Table 4-22. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27j--exact-long64-hlt-and-synchronous-maskable-wake), [plan](../plans/STAGE_2.md#s2-27j--exact-long64-hlt-and-persistent-activity), [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-27j-exact-long64-hlt-fixture-profile), and [Linux matrix](STAGE_2_LINUX_PROFILE.md#s2-27j-local-hlt-matrix-entry).
+
+## S2-27k — exact Long64 same-CPL0 IRETQ
+
+Added the opt-in `IretqProfile::SameCpl0ValidFrameV1` core API for exact
+`48 CF`. It reads the five-qword frame, then reads both bounded GDT descriptors
+and commits the restored RIP, CS/cache, RFLAGS, RSP, and SS/cache together only
+after validation. Callback failures retain phase and cause as terminal
+read-aborts. The profile does not assert architectural fault priority or guest
+exception delivery. `F0 48 CF` produces #UD after the complete three-byte
+fetch. Generic execution, JIT, native, C and fragment paths remain closed.
+
+Added `s2-long-iretq-cpl0-valid-v1` with four literal cases crossing IF=0/1
+and IOPL=0/3, separate code/frame/GDT regions, stop RIP from the frame, and
+profile-local CS/SS cache fields. Schema validation checks the selected GDT
+entries against the profile's exact CS/SS descriptor encodings. Old fixture
+wire shapes omit these optional fields. Native execution is classified as
+local-only before tracing, with a Linux-gated literal-fixture preflight check.
+A core composition test exercises `STI; HLT`, S2-27f synchronous delivery,
+IRETQ, post-HLT return state, execution of the post-HLT NOP, all 16 original
+RSP low-bit alignments, and immediate IF=1 request eligibility. The runner
+fixture test confirms the four serialized result cases.
+
+**Checks:** eight focused `od-isa` tests, three `od-testkit` schema/adapter
+tests, the `od-runner` four-case fixture integration, and the native local-only
+helper test passed. Eight malformed GDT byte mutations are rejected. Linux
+all-target compilation of `od-x86-runner` passed, including its Linux-gated
+pre-trace test. The complete `cargo test --workspace --offline` passed before
+the review fixes; after those fixes the focused tests above and
+`cargo check --workspace --all-targets --offline` passed. Formatting and
+`git diff --check` passed. `graphify update .` passed after code changes.
+`tools/check_layout.py` reported only the existing unmapped `.git` worktree
+pointer and absent historical `work/stage2-oracle` / `work/stage1-oracle`
+manifests. Independent Sol-medium re-review is clean. No Linux runtime,
+native/JIT/C execution, physical x86, SSH or Mac mini checks were run. Intel SDM Rev. 093,
+Vol. 2A IRET and Vol. 3A §7.14.3 are the normative source; the accepted
+descriptor bytes are an explicit local profile restriction, not a general
+descriptor allowlist. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27k--exact-long64-same-cpl0-iretq), [plan](../plans/STAGE_2.md#s2-27k--exact-long64-same-cpl0-iretq), [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-27k-exact-same-cpl0-iretq-fixture-profile), and [Linux matrix](STAGE_2_LINUX_PROFILE.md#s2-27k-local-iretq-matrix-entry).

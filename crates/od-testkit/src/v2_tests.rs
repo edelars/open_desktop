@@ -32,6 +32,102 @@ fn cli_rflags_comparison_includes_if_and_iopl_without_expanding_definedness() {
 }
 
 #[test]
+fn iretq_cs_ss_snapshot_fields_are_opt_in_and_lossless() {
+    let cpu = od_isa::LongModeState {
+        cs_selector: Some(8),
+        cs_cache: Some(od_isa::CodeSegmentDescriptorCache {
+            base: 0,
+            limit: u32::MAX,
+            access: 0x9b,
+            flags: 0xa,
+        }),
+        ss_selector: Some(0x10),
+        ss_cache: Some(od_isa::DataSegmentDescriptorCache {
+            base: 0,
+            limit: u32::MAX,
+            access: 0x93,
+            flags: 0xc,
+        }),
+        gdtr: Some(od_isa::state::Gdtr {
+            base: 0x200000,
+            limit: 0x17,
+        }),
+        sti_shadow: Some(od_isa::StiShadow::Clear),
+        activity: Some(od_isa::CpuActivity::Running),
+        ..od_isa::LongModeState::default()
+    };
+    assert!(IntegerState::try_from(&cpu).is_err());
+    assert!(IntegerState::from_cpu_for(&cpu, Profile::LongIntegerV1).is_err());
+    assert!(od_isa::CpuState::try_from(&cpu).is_err());
+    let projected = IntegerState::from_cpu_for(&cpu, Profile::LongIretqCpl0ValidV1).unwrap();
+    let wire = serde_json::to_value(&projected).unwrap();
+    assert_eq!(wire["cs_selector"], "0x0000000000000008");
+    assert_eq!(wire["ss_cache_access"], "0x0000000000000093");
+    let restored = projected.to_cpu_for(Profile::LongIretqCpl0ValidV1).unwrap();
+    assert_eq!(restored.cs_cache, cpu.cs_cache);
+    assert_eq!(restored.ss_cache, cpu.ss_cache);
+    assert_eq!(restored.gdtr, cpu.gdtr);
+}
+
+#[test]
+fn iretq_literal_fixture_matrix_is_schema_bounded() {
+    for fixture in [
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_27k_iretq_if0_iopl0.case.json")
+            .as_slice(),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_27k_iretq_if0_iopl3.case.json")
+            .as_slice(),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_27k_iretq_if1_iopl0.case.json")
+            .as_slice(),
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_27k_iretq_if1_iopl3.case.json")
+            .as_slice(),
+    ] {
+        let loaded = Fixture::from_json(fixture).unwrap();
+        assert_eq!(loaded.fixture.profile, Profile::LongIretqCpl0ValidV1);
+    }
+    let mut old = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_27j_hlt_cpl0_iopl0_if1.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    old.initial_state.cs_selector = Some(HexU64(8));
+    assert!(old.to_json().is_err());
+}
+
+#[test]
+fn iretq_fixture_requires_exact_selected_cs_and_ss_descriptors() {
+    let base = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_27k_iretq_if0_iopl0.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mutations = [
+        (13, 0x99), // CS data instead of code
+        (13, 0x1b), // CS not present
+        (13, 0x9a), // CS accessed bit clear
+        (14, 0x8f), // CS L bit clear
+        (21, 0x9b), // SS code instead of writable data
+        (21, 0x13), // SS not present
+        (21, 0x92), // SS accessed bit clear
+        (22, 0x8f), // SS D/B bit clear
+    ];
+    for (offset, byte) in mutations {
+        let mut fixture = base.clone();
+        let gdt = fixture
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "gdt")
+            .unwrap();
+        let mut bytes = decode_bytes(&gdt.initial_bytes_hex).unwrap();
+        bytes[offset] = byte;
+        gdt.initial_bytes_hex = bytes.iter().map(|value| format!("{value:02x}")).collect();
+        assert!(
+            fixture.validate().is_err(),
+            "accepted GDT mutation at {offset}"
+        );
+    }
+}
+
+#[test]
 fn cli_fixture_cpl_and_system_flag_mask_are_profile_local() {
     let bytes =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_27h_cli_cpl0_iopl0_if0.case.json");

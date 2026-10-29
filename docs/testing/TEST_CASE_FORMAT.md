@@ -1096,3 +1096,19 @@ deletion, branches, memory/REP, FP faults and physical comparison requirements
 remain open. See [plan](../plans/STAGE_2.md#s2-42b-bounded-xmm-input-reducer),
 [report](../reports/STAGE_2_REPORT.md#s2-42b--bounded-native-xorpd-xmm-input-reducer),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42b-native-xorpd-xmm-input-reducer).
+
+## S2-27k `s2-long-iretq-cpl0-valid-v1`
+
+This profile admits exactly `48 CF`, one instruction and budget 1. It requires
+three distinct mappings: executable code, a readable 40-byte frame at initial
+RSP, and a readable GDT matching explicit GDTR base/limit. The expected stop
+address is the saved RIP. Initial activity and STI shadow are Running/Clear;
+the profile-specific CPL input is zero. `rflags_mask` is
+`INTEGER_FLAGS|IF|IOPL`, while expected definedness remains `INTEGER_FLAGS`.
+
+CS/SS selector and cache fields (base, limit, access and flags) may appear only
+in this profile and are required as complete pairs. Older fixture formats keep
+omitting those optional fields. Result snapshots compare both complete caches,
+selectors, RIP/RSP/RFLAGS, activity, shadow and unchanged frame/GDT bytes. The
+literal matrix covers IF=0/1 × IOPL=0/3. No profile fields authorize JIT,
+native or C/fragment execution.

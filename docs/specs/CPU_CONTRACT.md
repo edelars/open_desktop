@@ -11642,6 +11642,48 @@ ordering and scheduler integration are excluded.
 The local instruction contract follows Intel SDM Rev. 093, Vol. 2B, STI
 pp. 4-674–4-675, Table 4-22; [official Intel SDM](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
 
+### S2-27k — exact Long64 same-CPL0 `IRETQ`
+
+`IretqProfile::SameCpl0ValidFrameV1` admits only exact bytes `48 CF` with
+Long64/CPL0, `activity=Running`, `sti_shadow=Clear`, and
+`rflags_defined=INTEGER_FLAGS`. The caller certifies private synchronous RAM,
+FRED/CET/shadow stacks/VMX/SMM disabled, no blocked or pending NMI/debug event,
+and `NT=0`. Current and restored RFLAGS contain only
+`INTEGER_FLAGS|IF|IOPL`, with bit 1 set; this local profile does not model a
+broader privilege or exception path.
+
+At the old RSP, read exactly five little-endian qwords: RIP, CS, RFLAGS, RSP,
+SS. Use only low 16 bits of CS/SS. Require canonical48 return RIP/RSP and
+non-null GDT selectors with TI=0/RPL=0 whose descriptor bytes fit within GDTR.
+Read both descriptors without writes. The only accepted CS descriptor is
+present/accessed nonconforming ring-0 readable code with base 0, effective
+limit 4 GiB, L=1/D=0 (access `9B`, flags `A`). The only accepted SS descriptor
+is present/accessed writable expand-up ring-0 data with base 0, effective
+limit 4 GiB (access `93`, flags `C`).
+
+Only after both reads and all checks succeed, commit restored RIP, CS selector
+and cache, RFLAGS, RSP, SS selector and cache; return `Retired` once with
+activity Running and shadow Clear. Both caches come from the descriptors.
+Preserve the frame, descriptor bytes and every other modeled state field.
+Restoring IF does not create an STI shadow. Unsupported mode/state/selectors,
+descriptor attributes or flags return Unsupported without CPU commit. A memory
+callback failure returns terminal `ReadAborted { phase, cause }`; this is a
+local harness abort, not an architectural IRET fault, fault-priority result or
+delivered guest exception. Exact `F0 48 CF` returns source-backed #UD only
+after all three bytes fetch; other prefix forms remain unsupported. JIT,
+native and C/fragment adapters remain closed. Normative source: Intel SDM Rev.
+093, Vol. 2A, IRET/IRETD/IRETQ pp. 3-490–3-498, and Vol. 3A §7.14.3;
+[official Vol. 2A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199),
+[official Vol. 3A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190).
+
+The `s2-long-iretq-cpl0-valid-v1` fixture profile admits one instruction and
+budget 1, with distinct code/frame/GDT regions and stop RIP equal to saved RIP.
+CS/SS selector/cache fields are present only in this profile; old wire shapes
+omit them. Four literal cases cross restored IF=0/1 and IOPL=0/3. The local
+core composition test covers `STI; HLT`, successful S2-27f delivery, IRETQ,
+post-HLT continuation and all 16 old-RSP low-bit alignments. This synthetic
+composition is not Linux boot, hardware, or general event-delivery evidence.
+
 ### S2-27j — exact Long64 HLT and synchronous maskable wake
 
 `HaltProfile::Long64V1` admits bare `F4` in Long64 with an explicit

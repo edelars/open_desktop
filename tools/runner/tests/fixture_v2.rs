@@ -2037,6 +2037,75 @@ fn hlt_fixtures_preserve_activity_and_enforce_cpl_zero() {
 }
 
 #[test]
+fn iretq_cpl0_fixtures_restore_frame_and_both_descriptor_caches() {
+    for (if_enabled, iopl) in [(0u64, 0u64), (0, 3), (1, 0), (1, 3)] {
+        let bytes: &[u8] = match (if_enabled, iopl) {
+            (0, 0) => include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_27k_iretq_if0_iopl0.case.json"
+            ),
+            (0, 3) => include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_27k_iretq_if0_iopl3.case.json"
+            ),
+            (1, 0) => include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_27k_iretq_if1_iopl0.case.json"
+            ),
+            _ => include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_27k_iretq_if1_iopl3.case.json"
+            ),
+        };
+        let (input, result) = run(bytes, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), 1);
+        let observed = snapshot(&result);
+        let frame = od_testkit::v2::decode_bytes(
+            &input
+                .fixture
+                .memory
+                .iter()
+                .find(|r| r.region_id == "frame")
+                .unwrap()
+                .initial_bytes_hex,
+        )
+        .unwrap();
+        let saved =
+            |slot: usize| u64::from_le_bytes(frame[slot * 8..slot * 8 + 8].try_into().unwrap());
+        assert_eq!(observed.state.rip, HexU64(saved(0)));
+        assert_eq!(
+            observed.state.cs_selector,
+            Some(HexU64(saved(1) as u16 as u64))
+        );
+        assert_eq!(observed.state.rflags, HexU64(saved(2)));
+        assert_eq!(observed.state.gpr[4], HexU64(saved(3)));
+        assert_eq!(
+            observed.state.ss_selector,
+            Some(HexU64(saved(4) as u16 as u64))
+        );
+        assert_eq!(observed.state.cs_cache_access, Some(HexU64(0x9b)));
+        assert_eq!(observed.state.cs_cache_flags, Some(HexU64(0xa)));
+        assert_eq!(observed.state.ss_cache_access, Some(HexU64(0x93)));
+        assert_eq!(observed.state.ss_cache_flags, Some(HexU64(0xc)));
+        assert_eq!(
+            observed.state.activity,
+            Some(od_testkit::v2::CpuActivitySnapshot::Running)
+        );
+        assert_eq!(
+            observed.state.sti_shadow,
+            Some(od_testkit::v2::StiShadowSnapshot::Clear)
+        );
+        assert_eq!(
+            observed.rflags_defined,
+            HexU64(od_testkit::v2::INTEGER_FLAGS)
+        );
+    }
+    let fixture =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_27k_iretq_if1_iopl3.case.json");
+    for engine in ["jit", "native"] {
+        let (_, result) = run(fixture, engine, 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    }
+}
+
+#[test]
 fn sti_compound_fixture_requires_exact_success_boundary() {
     let mut input = Fixture::from_json(STI_FIXTURES[0]).unwrap();
     let code = input

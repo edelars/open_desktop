@@ -2598,12 +2598,46 @@ See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27j--exact-long64-hlt-and-syn
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-27j-exact-long64-hlt-fixture-profile),
 and [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-27j--exact-long64-hlt-and-synchronous-maskable-wake).
 
-Architecture source: Intel SDM Rev. 093, Vol. 2A, CLI pp. 3-148–3-149,
-Table 3-7. Independent Sol-medium review found and verified a missing native
-local-only preflight fix; no findings remain. Local checks do not establish
-exception delivery, JIT/native/C execution, Linux behavior or physical
-execution. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27h--exact-long64-cli)
-and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-27h-exact-long64-cli-fixture-profile).
+#### S2-27k — exact Long64 same-CPL0 `IRETQ`
+
+Add only exact `48 CF` behind `IretqProfile::SameCpl0ValidFrameV1`. Require
+Long64/CPL0, Running activity, Clear STI shadow, `rflags_defined=INTEGER_FLAGS`,
+current and saved RFLAGS restricted to `INTEGER_FLAGS|IF|IOPL` with bit 1 set,
+and caller-certified FRED/CET/shadow-stack/VMX/SMM off, no pending debug/NMI,
+NMI unblocked, and NT=0. Do not add general IRET fault delivery or privilege
+transitions.
+
+Read five qwords at old RSP in order: RIP, CS, RFLAGS, RSP, SS. Ignore the high
+48 bits of CS/SS. Require canonical48 restored RIP/RSP and non-null GDT
+selectors with TI=RPL=0 inside GDTR. Read both descriptors and accept only
+exact bounded attributes: CS `access=0x9b, flags=0xa`, SS
+`access=0x93, flags=0xc`, both base 0/effective limit 4 GiB. Accessed bits are
+already set; descriptor bytes are never written. Commit both selectors/caches
+from those descriptors together with RIP/RFLAGS/RSP only after every callback
+and validation succeeds. Success retires once, returns to Running, keeps the
+shadow Clear and preserves all other CPU/frame/memory state. IF restoration
+does not add a shadow.
+
+Malformed input returns Unsupported with no CPU commit. Callback errors retain
+cause and read phase as terminal read-aborts, not architectural IRET faults or
+fault-priority claims. `F0 48 CF` may #UD after full fetch; broad prefixes are
+unsupported. Add schema `s2-long-iretq-cpl0-valid-v1` with exact `48cf`, budget
+1, stop at saved RIP and separate code/frame/GDT regions. CS/SS schema fields
+are opt-in for this profile; preserve old fixture wire forms. Cover IF0/1 ×
+IOPL0/3, high selector bits, misaligned saved RSP, malformed selector/
+descriptor/flags, callbacks, fetch/STOP/budget, and legacy/JIT/native/C denial.
+Compose `FB F4` → successful S2-27f delivery → IRETQ → execute the post-HLT
+NOP at the restored RIP and verify normal advancement while activity stays
+Running; also verify immediate request eligibility, including all 16 original
+RSP low-bit alignments.
+
+Update CPU contract, fixture format/README, Linux matrix and report with actual
+checks. Do not claim Linux boot, physical execution or general exception
+semantics. Independent Sol-medium review completed clean after the native
+preflight and exact descriptor schema fixes. Local checks do not establish
+exception delivery, native/JIT/C execution, Linux runtime behavior or physical
+execution. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-27k--exact-long64-same-cpl0-iretq)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-27k-exact-same-cpl0-iretq-fixture-profile).
 
 ## 9. x87, MMX и SSE/SSE2
 

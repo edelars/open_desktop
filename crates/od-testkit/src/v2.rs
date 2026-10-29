@@ -120,6 +120,7 @@ pub const PROFILE_SWAPGS: &str = "s2-long-swapgs-v1";
 pub const PROFILE_CLI: &str = "s2-long-cli-v1";
 pub const PROFILE_STI: &str = "s2-long-sti-v1";
 pub const PROFILE_HLT: &str = "s2-long-hlt-v1";
+pub const PROFILE_IRETQ_CPL0_VALID: &str = "s2-long-iretq-cpl0-valid-v1";
 pub const PROFILE_KERNEL_GS_BASE: &str = "s2-long-msr-kernel-gs-base-v1";
 /// Diagnostic mask for this bounded local fixture profile only. It is not a
 /// universal hardware CPUID mask and does not model guest #GP behavior.
@@ -147,6 +148,8 @@ pub enum Profile {
     LongStiV1,
     #[serde(rename = "s2-long-hlt-v1")]
     LongHltV1,
+    #[serde(rename = "s2-long-iretq-cpl0-valid-v1")]
+    LongIretqCpl0ValidV1,
     #[serde(rename = "s2-long-msr-kernel-gs-base-v1")]
     LongKernelGsBaseV1,
     #[serde(rename = "s2-long-fs-base-msr-v1")]
@@ -483,6 +486,67 @@ pub struct IntegerState {
         skip_serializing_if = "Option::is_none"
     )]
     pub gdtr_limit: Option<HexU64>,
+    /// CS/SS selectors and hidden caches exist only in the exact IRETQ profile.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_hex_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cs_selector: Option<HexU64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_hex_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cs_cache_base: Option<HexU64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_hex_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cs_cache_limit: Option<HexU64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_hex_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cs_cache_access: Option<HexU64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_hex_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cs_cache_flags: Option<HexU64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_hex_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ss_selector: Option<HexU64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_hex_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ss_cache_base: Option<HexU64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_hex_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ss_cache_limit: Option<HexU64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_hex_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ss_cache_access: Option<HexU64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_hex_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ss_cache_flags: Option<HexU64>,
     /// Present only in the local descriptor-loading profile; effective hidden limit.
     #[serde(
         default,
@@ -815,6 +879,16 @@ impl TryFrom<&LongModeState> for IntegerState {
             es_unusable: None,
             gdtr_base: None,
             gdtr_limit: None,
+            cs_selector: None,
+            cs_cache_base: None,
+            cs_cache_limit: None,
+            cs_cache_access: None,
+            cs_cache_flags: None,
+            ss_selector: None,
+            ss_cache_base: None,
+            ss_cache_limit: None,
+            ss_cache_access: None,
+            ss_cache_flags: None,
             fs_cache_limit: None,
             fs_cache_access: None,
             fs_cache_flags: None,
@@ -861,10 +935,40 @@ impl IntegerState {
             gs_selector: self.gs_selector.map_or(0, |selector| selector.get() as u16),
             ds_selector: self.ds_selector.map_or(0, |selector| selector.get() as u16),
             es_selector: self.es_selector.map_or(0, |selector| selector.get() as u16),
-            cs_selector: None,
-            cs_cache: None,
-            ss_selector: None,
-            ss_cache: None,
+            cs_selector: self.cs_selector.map(|v| v.get() as u16),
+            cs_cache: match (
+                self.cs_cache_base,
+                self.cs_cache_limit,
+                self.cs_cache_access,
+                self.cs_cache_flags,
+            ) {
+                (Some(base), Some(limit), Some(access), Some(flags)) => {
+                    Some(od_isa::state::CodeSegmentDescriptorCache {
+                        base: base.get(),
+                        limit: limit.get() as u32,
+                        access: access.get() as u8,
+                        flags: flags.get() as u8,
+                    })
+                }
+                _ => None,
+            },
+            ss_selector: self.ss_selector.map(|v| v.get() as u16),
+            ss_cache: match (
+                self.ss_cache_base,
+                self.ss_cache_limit,
+                self.ss_cache_access,
+                self.ss_cache_flags,
+            ) {
+                (Some(base), Some(limit), Some(access), Some(flags)) => {
+                    Some(od_isa::state::DataSegmentDescriptorCache {
+                        base: base.get() as u32,
+                        limit: limit.get() as u32,
+                        access: access.get() as u8,
+                        flags: flags.get() as u8,
+                    })
+                }
+                _ => None,
+            },
             ds_unusable: self.ds_unusable.unwrap_or(false),
             es_unusable: self.es_unusable.unwrap_or(false),
             ds_cache: None,
@@ -1179,7 +1283,16 @@ impl IntegerState {
                 "selectors are not part of this profile",
             ));
         }
-        let mut result = Self::try_from(state)?;
+        let mut result = if profile == Profile::LongIretqCpl0ValidV1 {
+            let mut projected = state.clone();
+            projected.cs_selector = None;
+            projected.cs_cache = None;
+            projected.ss_selector = None;
+            projected.ss_cache = None;
+            Self::try_from(&projected)?
+        } else {
+            Self::try_from(state)?
+        };
         result.x87 = if profile == Profile::LongX87StateV1 {
             state.x87.as_ref().map(X87Snapshot::from)
         } else if matches!(
@@ -1470,14 +1583,29 @@ impl IntegerState {
             result.es_selector = Some(HexU64(u64::from(state.es_selector)));
             result.ds_unusable = Some(state.ds_unusable);
             result.es_unusable = Some(state.es_unusable);
+        } else if profile == Profile::LongIretqCpl0ValidV1 {
+            if let Some(gdtr) = state.gdtr {
+                result.gdtr_base = Some(HexU64(gdtr.base));
+                result.gdtr_limit = Some(HexU64(u64::from(gdtr.limit)));
+            }
+            result.cs_selector = state.cs_selector.map(|v| HexU64(u64::from(v)));
+            result.cs_cache_base = state.cs_cache.map(|v| HexU64(v.base));
+            result.cs_cache_limit = state.cs_cache.map(|v| HexU64(u64::from(v.limit)));
+            result.cs_cache_access = state.cs_cache.map(|v| HexU64(u64::from(v.access)));
+            result.cs_cache_flags = state.cs_cache.map(|v| HexU64(u64::from(v.flags)));
+            result.ss_selector = state.ss_selector.map(|v| HexU64(u64::from(v)));
+            result.ss_cache_base = state.ss_cache.map(|v| HexU64(u64::from(v.base)));
+            result.ss_cache_limit = state.ss_cache.map(|v| HexU64(u64::from(v.limit)));
+            result.ss_cache_access = state.ss_cache.map(|v| HexU64(u64::from(v.access)));
+            result.ss_cache_flags = state.ss_cache.map(|v| HexU64(u64::from(v.flags)));
         }
         Ok(result)
     }
 
     fn validate_for(&self, profile: Profile) -> Result<(), FormatError> {
         match (profile, self.sti_shadow) {
-            (Profile::LongStiV1 | Profile::LongHltV1, Some(_)) => {}
-            (Profile::LongStiV1 | Profile::LongHltV1, None) => {
+            (Profile::LongStiV1 | Profile::LongHltV1 | Profile::LongIretqCpl0ValidV1, Some(_)) => {}
+            (Profile::LongStiV1 | Profile::LongHltV1 | Profile::LongIretqCpl0ValidV1, None) => {
                 return Err(invalid(
                     "state.sti_shadow",
                     "required by the STI/HLT profile",
@@ -1487,14 +1615,14 @@ impl IntegerState {
             (_, None) => {}
         }
         match (profile, self.activity) {
-            (Profile::LongHltV1, Some(_)) => {}
-            (Profile::LongHltV1, None) => {
+            (Profile::LongHltV1 | Profile::LongIretqCpl0ValidV1, Some(_)) => {}
+            (Profile::LongHltV1 | Profile::LongIretqCpl0ValidV1, None) => {
                 return Err(invalid("state.activity", "required by the HLT profile"));
             }
             (_, Some(_)) => return Err(invalid("state.activity", "not part of this profile")),
             (_, None) => {}
         }
-        if profile == Profile::LongHltV1
+        if matches!(profile, Profile::LongHltV1 | Profile::LongIretqCpl0ValidV1)
             && self.activity == Some(CpuActivitySnapshot::Halted)
             && self.sti_shadow == Some(StiShadowSnapshot::Blocking)
         {
@@ -1503,7 +1631,7 @@ impl IntegerState {
                 "halted state cannot carry Blocking STI shadow",
             ));
         }
-        if profile == Profile::LongStiV1
+        if matches!(profile, Profile::LongStiV1 | Profile::LongIretqCpl0ValidV1)
             && self.sti_shadow == Some(StiShadowSnapshot::Blocking)
             && self.rflags.get() & (1 << 9) == 0
         {
@@ -1654,6 +1782,7 @@ impl IntegerState {
                 | Profile::LongCliV1
                 | Profile::LongStiV1
                 | Profile::LongHltV1
+                | Profile::LongIretqCpl0ValidV1
                 | Profile::LongSepDisabledV1
                 | Profile::LongRdtscV1
                 | Profile::LongX87StateV1
@@ -1791,6 +1920,7 @@ impl IntegerState {
                 | Profile::LongCliV1
                 | Profile::LongStiV1
                 | Profile::LongHltV1
+                | Profile::LongIretqCpl0ValidV1
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
@@ -1933,6 +2063,7 @@ impl IntegerState {
                 | Profile::LongCliV1
                 | Profile::LongStiV1
                 | Profile::LongHltV1
+                | Profile::LongIretqCpl0ValidV1
                 | Profile::LongSepDisabledV1
                 | Profile::LongRdtscV1
                 | Profile::LongX87StateV1
@@ -2084,6 +2215,7 @@ impl IntegerState {
                 | Profile::LongCliV1
                 | Profile::LongStiV1
                 | Profile::LongHltV1
+                | Profile::LongIretqCpl0ValidV1
                 | Profile::LongSepDisabledV1
                 | Profile::LongRdtscV1
                 | Profile::LongX87StateV1
@@ -2264,13 +2396,77 @@ impl IntegerState {
             (_, None, None, None, None) => {}
             _ => return Err(invalid("state.ds_es", "not part of this profile")),
         }
+        let cs_fields = [
+            self.cs_selector,
+            self.cs_cache_base,
+            self.cs_cache_limit,
+            self.cs_cache_access,
+            self.cs_cache_flags,
+        ];
+        let ss_fields = [
+            self.ss_selector,
+            self.ss_cache_base,
+            self.ss_cache_limit,
+            self.ss_cache_access,
+            self.ss_cache_flags,
+        ];
+        if state_profile != Profile::LongIretqCpl0ValidV1 {
+            if cs_fields.iter().any(Option::is_some) || ss_fields.iter().any(Option::is_some) {
+                return Err(invalid(
+                    "state.cs_ss",
+                    "CS/SS state is only part of the IRETQ profile",
+                ));
+            }
+        } else {
+            if cs_fields.iter().any(Option::is_none) || ss_fields.iter().any(Option::is_none) {
+                return Err(invalid(
+                    "state.cs_ss",
+                    "selectors and complete hidden caches are required by this profile",
+                ));
+            }
+            if self.cs_selector.is_some_and(|v| v.get() > u16::MAX as u64)
+                || self.ss_selector.is_some_and(|v| v.get() > u16::MAX as u64)
+                || self
+                    .cs_cache_limit
+                    .is_some_and(|v| v.get() > u32::MAX as u64)
+                || self
+                    .cs_cache_access
+                    .is_some_and(|v| v.get() > u8::MAX as u64)
+                || self.cs_cache_flags.is_some_and(|v| v.get() > 0x0f)
+                || self
+                    .ss_cache_base
+                    .is_some_and(|v| v.get() > u32::MAX as u64)
+                || self
+                    .ss_cache_limit
+                    .is_some_and(|v| v.get() > u32::MAX as u64)
+                || self
+                    .ss_cache_access
+                    .is_some_and(|v| v.get() > u8::MAX as u64)
+                || self.ss_cache_flags.is_some_and(|v| v.get() > 0x0f)
+            {
+                return Err(invalid(
+                    "state.cs_ss",
+                    "selector/cache field exceeds its architectural width",
+                ));
+            }
+        }
         match (state_profile, self.gdtr_base, self.gdtr_limit) {
             (
-                Profile::LongVerwGdtV1 | Profile::LongFsLoadV1 | Profile::LongGsLoadV1,
+                Profile::LongVerwGdtV1
+                | Profile::LongFsLoadV1
+                | Profile::LongGsLoadV1
+                | Profile::LongIretqCpl0ValidV1,
                 Some(_),
                 Some(_),
             ) => {}
-            (Profile::LongVerwGdtV1 | Profile::LongFsLoadV1 | Profile::LongGsLoadV1, _, _) => {
+            (
+                Profile::LongVerwGdtV1
+                | Profile::LongFsLoadV1
+                | Profile::LongGsLoadV1
+                | Profile::LongIretqCpl0ValidV1,
+                _,
+                _,
+            ) => {
                 return Err(invalid(
                     "state.gdtr",
                     "base and limit are required by this profile",
@@ -2383,7 +2579,10 @@ impl IntegerState {
         }
         let system_flags = if matches!(
             profile,
-            Profile::LongCliV1 | Profile::LongStiV1 | Profile::LongHltV1
+            Profile::LongCliV1
+                | Profile::LongStiV1
+                | Profile::LongHltV1
+                | Profile::LongIretqCpl0ValidV1
         ) {
             (1 << 9) | (3 << 12)
         } else {
@@ -3113,7 +3312,10 @@ impl Fixture {
         let cli_flags_mask = INTEGER_FLAGS | IF_IOPL;
         if matches!(
             self.profile,
-            Profile::LongCliV1 | Profile::LongStiV1 | Profile::LongHltV1
+            Profile::LongCliV1
+                | Profile::LongStiV1
+                | Profile::LongHltV1
+                | Profile::LongIretqCpl0ValidV1
         ) {
             if self.rflags_mask.get() != cli_flags_mask {
                 return Err(invalid(
@@ -3125,8 +3327,20 @@ impl Fixture {
             return Err(invalid("rflags_mask", "outside the integer profile"));
         }
         match (self.profile, self.cli_cpl) {
-            (Profile::LongCliV1 | Profile::LongStiV1 | Profile::LongHltV1, Some(_)) => {}
-            (Profile::LongCliV1 | Profile::LongStiV1 | Profile::LongHltV1, None) => {
+            (
+                Profile::LongCliV1
+                | Profile::LongStiV1
+                | Profile::LongHltV1
+                | Profile::LongIretqCpl0ValidV1,
+                Some(_),
+            ) => {}
+            (
+                Profile::LongCliV1
+                | Profile::LongStiV1
+                | Profile::LongHltV1
+                | Profile::LongIretqCpl0ValidV1,
+                None,
+            ) => {
                 return Err(invalid("cli_cpl", "required by the CLI/STI/HLT profile"));
             }
             (_, Some(_)) => return Err(invalid("cli_cpl", "not part of this profile")),
@@ -3299,6 +3513,80 @@ impl Fixture {
                 return Err(invalid(
                     "memory.code",
                     "HLT fixtures require Running activity, Clear shadow, exact code/budget, CPL0 Halted or CPL1-3 #GP, and no stop_rip",
+                ));
+            }
+        }
+        if self.profile == Profile::LongIretqCpl0ValidV1 {
+            let Some(code) = self.memory.iter().find(|region| region.region_id == "code") else {
+                return Err(invalid("memory.code", "required by the IRETQ profile"));
+            };
+            let Some(frame) = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "frame")
+            else {
+                return Err(invalid("memory.frame", "required by the IRETQ profile"));
+            };
+            let Some(gdt) = self.memory.iter().find(|region| region.region_id == "gdt") else {
+                return Err(invalid("memory.gdt", "required by the IRETQ profile"));
+            };
+            let frame_bytes = decode_bytes(&frame.initial_bytes_hex)
+                .map_err(|_| invalid("memory.frame", "invalid frame bytes"))?;
+            let gdt_bytes = decode_bytes(&gdt.initial_bytes_hex)
+                .map_err(|_| invalid("memory.gdt", "invalid GDT bytes"))?;
+            if frame_bytes.len() != 40 {
+                return Err(invalid("memory.frame", "must contain exactly five qwords"));
+            }
+            let saved_rip = u64::from_le_bytes(frame_bytes[0..8].try_into().unwrap());
+            let saved_cs = u64::from_le_bytes(frame_bytes[8..16].try_into().unwrap()) as u16;
+            let saved_flags = u64::from_le_bytes(frame_bytes[16..24].try_into().unwrap());
+            let saved_rsp = u64::from_le_bytes(frame_bytes[24..32].try_into().unwrap());
+            let saved_ss = u64::from_le_bytes(frame_bytes[32..40].try_into().unwrap()) as u16;
+            let gdtr_base = self.initial_state.gdtr_base.expect("required GDTR").get();
+            let gdtr_limit = self
+                .initial_state
+                .gdtr_limit
+                .expect("required GDTR limit")
+                .get();
+            let iret_flags_mask = INTEGER_FLAGS | (1 << 9) | (3 << 12);
+            let cpl = self.cli_cpl.expect("validated IRETQ CPL");
+            let descriptor_matches = |selector: u16, expected: [u8; 8]| {
+                let start = usize::from(selector & !7);
+                gdt_bytes.get(start..start + 8) == Some(expected.as_slice())
+            };
+            if cpl != CliCpl::Cpl0
+                || code.guest_address != self.initial_state.rip
+                || code.initial_bytes_hex.to_ascii_lowercase() != "48cf"
+                || code.length != 2
+                || !code.permissions.execute
+                || self.instruction_budget != 1
+                || self.expected_exit != ExpectedExit::StopAddress
+                || self.stop_rip != Some(HexU64(saved_rip))
+                || self.rflags_mask.get() != iret_flags_mask
+                || self.initial_state.activity != Some(CpuActivitySnapshot::Running)
+                || self.initial_state.sti_shadow != Some(StiShadowSnapshot::Clear)
+                || frame.guest_address.get() != self.initial_state.gpr[4].get()
+                || frame.length != 40
+                || !frame.permissions.read
+                || gdt.guest_address.get() != gdtr_base
+                || u64::from(gdt.length) <= gdtr_limit
+                || !gdt.permissions.read
+                || saved_flags & 2 == 0
+                || saved_flags & !iret_flags_mask != 0
+                || saved_rsp >> 47 != 0 && saved_rsp >> 47 != 0x1ffff
+                || saved_rip >> 47 != 0 && saved_rip >> 47 != 0x1ffff
+                || saved_cs & 7 != 0
+                || saved_ss & 7 != 0
+                || saved_cs == 0
+                || saved_ss == 0
+                || u64::from(saved_cs & !7) + 7 > gdtr_limit
+                || u64::from(saved_ss & !7) + 7 > gdtr_limit
+                || !descriptor_matches(saved_cs, [0xff, 0xff, 0, 0, 0, 0x9b, 0xaf, 0])
+                || !descriptor_matches(saved_ss, [0xff, 0xff, 0, 0, 0, 0x93, 0xcf, 0])
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "IRETQ requires exact 48 CF, one retirement, CPL0, a separate 40-byte frame, exact bounded CS/SS descriptors, valid saved flags/selectors, and stop at saved RIP",
                 ));
             }
         }
@@ -6140,6 +6428,75 @@ impl RunResult {
                     return Err(FormatError::CaseMismatch("state.ds_es"));
                 }
             }
+            if loaded.fixture.profile == Profile::LongIretqCpl0ValidV1 {
+                let frame = loaded
+                    .fixture
+                    .memory
+                    .iter()
+                    .find(|r| r.region_id == "frame")
+                    .unwrap();
+                let frame_bytes = decode_bytes(&frame.initial_bytes_hex).unwrap();
+                let saved_rip = HexU64(u64::from_le_bytes(frame_bytes[0..8].try_into().unwrap()));
+                let saved_cs = HexU64(u64::from(u64::from_le_bytes(
+                    frame_bytes[8..16].try_into().unwrap(),
+                ) as u16));
+                let saved_flags =
+                    HexU64(u64::from_le_bytes(frame_bytes[16..24].try_into().unwrap()));
+                let saved_rsp = HexU64(u64::from_le_bytes(frame_bytes[24..32].try_into().unwrap()));
+                let saved_ss = HexU64(u64::from(u64::from_le_bytes(
+                    frame_bytes[32..40].try_into().unwrap(),
+                ) as u16));
+                let expected = [
+                    ("state.rip", value.state.rip, saved_rip),
+                    ("state.rflags", value.state.rflags, saved_flags),
+                    (
+                        "state.cs_selector",
+                        value.state.cs_selector.unwrap_or(HexU64(u64::MAX)),
+                        saved_cs,
+                    ),
+                    (
+                        "state.ss_selector",
+                        value.state.ss_selector.unwrap_or(HexU64(u64::MAX)),
+                        saved_ss,
+                    ),
+                ];
+                if expected.iter().any(|(_, actual, wanted)| actual != wanted)
+                    || (0..16).any(|i| {
+                        i != 4 && value.state.gpr[i] != loaded.fixture.initial_state.gpr[i]
+                    })
+                    || value.state.gpr[4] != saved_rsp
+                    || value.state.cs_cache_base != Some(HexU64(0))
+                    || value.state.cs_cache_limit != Some(HexU64(u32::MAX as u64))
+                    || value.state.cs_cache_access != Some(HexU64(0x9b))
+                    || value.state.cs_cache_flags != Some(HexU64(0xa))
+                    || value.state.ss_cache_base != Some(HexU64(0))
+                    || value.state.ss_cache_limit != Some(HexU64(u32::MAX as u64))
+                    || value.state.ss_cache_access != Some(HexU64(0x93))
+                    || value.state.ss_cache_flags != Some(HexU64(0xc))
+                    || value.state.activity != Some(CpuActivitySnapshot::Running)
+                    || value.state.sti_shadow != Some(StiShadowSnapshot::Clear)
+                    || retired != 1
+                    || self.outcome != (Outcome::StopAddress {})
+                {
+                    return Err(FormatError::CaseMismatch("state.iretq"));
+                }
+                for id in ["frame", "gdt"] {
+                    let input = loaded
+                        .fixture
+                        .memory
+                        .iter()
+                        .find(|r| r.region_id == id)
+                        .unwrap();
+                    let output = value
+                        .memory
+                        .iter()
+                        .find(|r| r.region_id == id)
+                        .ok_or(FormatError::CaseMismatch("memory.region_id"))?;
+                    if output.bytes_hex != input.initial_bytes_hex {
+                        return Err(FormatError::CaseMismatch("memory.iretq_preserved"));
+                    }
+                }
+            }
             if value.memory.len() != loaded.fixture.memory.len() {
                 return Err(FormatError::CaseMismatch("memory"));
             }
@@ -6187,7 +6544,10 @@ pub fn compare(
     let mask = loaded.fixture.rflags_mask.get();
     let defined_mask = if matches!(
         loaded.fixture.profile,
-        Profile::LongCliV1 | Profile::LongStiV1 | Profile::LongHltV1
+        Profile::LongCliV1
+            | Profile::LongStiV1
+            | Profile::LongHltV1
+            | Profile::LongIretqCpl0ValidV1
     ) {
         mask & INTEGER_FLAGS
     } else {
@@ -6273,6 +6633,54 @@ pub fn compare(
     }
     if a.state.gdtr_limit != b.state.gdtr_limit {
         differences.push("gdtr_limit".into());
+    }
+    for (name, left, right) in [
+        ("cs_selector", a.state.cs_selector, b.state.cs_selector),
+        (
+            "cs_cache_base",
+            a.state.cs_cache_base,
+            b.state.cs_cache_base,
+        ),
+        (
+            "cs_cache_limit",
+            a.state.cs_cache_limit,
+            b.state.cs_cache_limit,
+        ),
+        (
+            "cs_cache_access",
+            a.state.cs_cache_access,
+            b.state.cs_cache_access,
+        ),
+        (
+            "cs_cache_flags",
+            a.state.cs_cache_flags,
+            b.state.cs_cache_flags,
+        ),
+        ("ss_selector", a.state.ss_selector, b.state.ss_selector),
+        (
+            "ss_cache_base",
+            a.state.ss_cache_base,
+            b.state.ss_cache_base,
+        ),
+        (
+            "ss_cache_limit",
+            a.state.ss_cache_limit,
+            b.state.ss_cache_limit,
+        ),
+        (
+            "ss_cache_access",
+            a.state.ss_cache_access,
+            b.state.ss_cache_access,
+        ),
+        (
+            "ss_cache_flags",
+            a.state.ss_cache_flags,
+            b.state.ss_cache_flags,
+        ),
+    ] {
+        if left != right {
+            differences.push(name.into());
+        }
     }
     if a.state.fs_cache_limit != b.state.fs_cache_limit {
         differences.push("fs_cache_limit".into());
@@ -6406,7 +6814,10 @@ pub fn compare(
 fn rflags_differ(profile: Profile, mask: u64, left: u64, right: u64) -> bool {
     let allowed = if matches!(
         profile,
-        Profile::LongCliV1 | Profile::LongStiV1 | Profile::LongHltV1
+        Profile::LongCliV1
+            | Profile::LongStiV1
+            | Profile::LongHltV1
+            | Profile::LongIretqCpl0ValidV1
     ) {
         INTEGER_FLAGS | (1 << 9) | (3 << 12)
     } else {

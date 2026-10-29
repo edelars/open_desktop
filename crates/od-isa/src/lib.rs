@@ -11,6 +11,7 @@ pub mod cpuid;
 pub mod execute;
 pub mod hlt;
 pub mod interrupt;
+pub mod iretq;
 pub mod long_decode;
 pub mod memory;
 pub mod msr;
@@ -25,6 +26,10 @@ pub use hlt::HaltProfile;
 pub use interrupt::{
     InterruptDeliveryPhase, InterruptDeliveryResult, InterruptFrameSlot, InterruptOutsideProfile,
     deliver_maskable_interrupt,
+};
+pub use iretq::{
+    IretqProfile, IretqReadPhase, IretqResult, IretqRunExit, IretqRunResult,
+    run_with_iretq_profile, step_with_iretq_profile,
 };
 pub use state::{
     CodeSegmentDescriptorCache, CpuActivity, DataSegmentDescriptorCache, DsDescriptorCache,
