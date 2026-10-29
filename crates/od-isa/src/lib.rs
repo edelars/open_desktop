@@ -38,6 +38,9 @@ const ARITHMETIC_FLAGS: u64 = CF | PF | AF | ZF | SF | OF;
 pub const INTEGER_FLAGS: u64 = ARITHMETIC_FLAGS | DF | 2;
 /// Profile flags writable by the implemented long-mode `POPFQ` slice.
 pub const POPFQ_INTEGER_FLAGS: u64 = ARITHMETIC_FLAGS | DF;
+/// Selected synthetic Generic amd64 target capability used in plain FXSAVE
+/// images. This is intentionally distinct from testkit diagnostic metadata.
+pub const TARGET_FXSAVE_MXCSR_MASK: u32 = 0x0000_ffbf;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]

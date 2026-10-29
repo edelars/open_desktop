@@ -29,6 +29,7 @@ pub const PROFILE_NULL_DS_ES: &str = "s2-long-null-ds-es-v1";
 pub const PROFILE_X87_STATE: &str = "s2-long-x87-state-v1";
 pub const PROFILE_X87_SSE_STATE: &str = "s2-long-x87-sse-state-v1";
 pub const PROFILE_X87_SELECTORS_STATE: &str = "s2-long-x87-selectors-state-v1";
+pub const PROFILE_FXSAVE_RIP: &str = "s2-long-fxsave-rip-v1";
 pub const PROFILE_MOVUPS_REGISTER: &str = "s2-long-movups-reg-v1";
 pub const PROFILE_MOVAPS_REGISTER: &str = "s2-long-movaps-reg-v1";
 pub const PROFILE_MOVAPS_REVERSE_REGISTER: &str = "s2-long-movaps-reg-reverse-v1";
@@ -138,6 +139,8 @@ pub enum Profile {
     LongX87SseStateV1,
     #[serde(rename = "s2-long-x87-selectors-state-v1")]
     LongX87SelectorsStateV1,
+    #[serde(rename = "s2-long-fxsave-rip-v1")]
+    LongFxsaveRipV1,
     #[serde(rename = "s2-long-movups-reg-v1")]
     LongMovupsRegV1,
     #[serde(rename = "s2-long-movaps-reg-v1")]
@@ -803,6 +806,7 @@ impl IntegerState {
                 (
                     Profile::LongX87SseStateV1
                     | Profile::LongX87SelectorsStateV1
+                    | Profile::LongFxsaveRipV1
                     | Profile::LongMovupsRegV1
                     | Profile::LongMovapsRegV1
                     | Profile::LongMovapsReverseRegV1
@@ -914,6 +918,7 @@ impl IntegerState {
                 (
                     Profile::LongX87SseStateV1
                     | Profile::LongX87SelectorsStateV1
+                    | Profile::LongFxsaveRipV1
                     | Profile::LongMovupsRegV1
                     | Profile::LongMovapsRegV1
                     | Profile::LongMovapsReverseRegV1
@@ -1026,6 +1031,7 @@ impl IntegerState {
 
     pub fn from_cpu_for(state: &LongModeState, profile: Profile) -> Result<Self, FormatError> {
         if profile != Profile::LongX87SelectorsStateV1
+            && profile != Profile::LongFxsaveRipV1
             && state.x87.as_ref().is_some_and(|x87| {
                 x87.instruction_selector.is_some() || x87.data_selector.is_some()
             })
@@ -1042,6 +1048,7 @@ impl IntegerState {
             profile,
             Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
+                | Profile::LongFxsaveRipV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
@@ -1154,6 +1161,7 @@ impl IntegerState {
             profile,
             Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
+                | Profile::LongFxsaveRipV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
@@ -1315,6 +1323,7 @@ impl IntegerState {
             Profile::LongX87StateV1
             | Profile::LongX87SseStateV1
             | Profile::LongX87SelectorsStateV1
+            | Profile::LongFxsaveRipV1
             | Profile::LongMovupsRegV1
             | Profile::LongMovapsRegV1
             | Profile::LongMovapsReverseRegV1
@@ -1426,6 +1435,7 @@ impl IntegerState {
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
+                | Profile::LongFxsaveRipV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
@@ -1543,6 +1553,7 @@ impl IntegerState {
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
+                | Profile::LongFxsaveRipV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
@@ -1665,6 +1676,7 @@ impl IntegerState {
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
+                | Profile::LongFxsaveRipV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
@@ -1790,6 +1802,7 @@ impl IntegerState {
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
+                | Profile::LongFxsaveRipV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
@@ -2066,6 +2079,7 @@ impl IntegerState {
             (
                 Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
+                | Profile::LongFxsaveRipV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
@@ -2177,6 +2191,7 @@ impl IntegerState {
             (
                 Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
+                | Profile::LongFxsaveRipV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
@@ -2288,7 +2303,10 @@ impl IntegerState {
             (_, Some(_)) => return Err(invalid("state.x87", "not part of this profile")),
         }
         if let Some(x87) = &self.x87 {
-            if profile == Profile::LongX87SelectorsStateV1 {
+            if matches!(
+                profile,
+                Profile::LongX87SelectorsStateV1 | Profile::LongFxsaveRipV1
+            ) {
                 if x87.instruction_selector.is_none() || x87.data_selector.is_none() {
                     return Err(invalid(
                         "state.x87.selectors",
@@ -2306,6 +2324,7 @@ impl IntegerState {
             (
                 Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
+                | Profile::LongFxsaveRipV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
@@ -2414,6 +2433,7 @@ impl IntegerState {
             (
                 Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
+                | Profile::LongFxsaveRipV1
                 | Profile::LongMovupsRegV1
                 | Profile::LongMovapsRegV1
                 | Profile::LongMovapsReverseRegV1
@@ -3377,6 +3397,50 @@ impl Fixture {
                 return Err(invalid(
                     "memory",
                     "MOVUPS base profile requires one code instruction and one direction-appropriate data region covering the effective 16-byte range",
+                ));
+            }
+        }
+        if self.profile == Profile::LongFxsaveRipV1 {
+            let code = self.memory.iter().find(|region| region.region_id == "code");
+            let data = self.memory.iter().find(|region| region.region_id == "data");
+            let (Some(code), Some(data)) = (code, data) else {
+                return Err(invalid("memory", "FXSAVE requires code and data regions"));
+            };
+            let code_bytes = decode_bytes(&code.initial_bytes_hex)?;
+            let rip = self.initial_state.rip.get();
+            let Some(next_rip) = rip.checked_add(7) else {
+                return Err(invalid("initial_state.rip", "instruction end overflows"));
+            };
+            if code_bytes.len() != 7 || code_bytes[..3] != [0x0f, 0xae, 0x05] {
+                return Err(invalid(
+                    "memory.code",
+                    "FXSAVE profile admits exactly unprefixed 0F AE 05 disp32",
+                ));
+            }
+            let displacement = i32::from_le_bytes(code_bytes[3..7].try_into().unwrap());
+            let area = next_rip.wrapping_add_signed(i64::from(displacement));
+            let area_end = area.checked_add(511);
+            let is_canonical = |address: u64| {
+                let sign = (address >> 47) & 1;
+                address >> 48 == if sign == 0 { 0 } else { 0xffff }
+            };
+            if code.guest_address.get() != rip
+                || !code.permissions.execute
+                || code.permissions.write
+                || data.guest_address.get() != area
+                || data.length != 512
+                || !data.permissions.write
+                || data.permissions.execute
+                || area & 0xf != 0
+                || !is_canonical(area)
+                || area_end.is_none_or(|end| !is_canonical(end))
+                || self.stop_rip.map(HexU64::get) != Some(next_rip)
+                || self.instruction_budget != 1
+                || self.expected_exit != ExpectedExit::StopAddress
+            {
+                return Err(invalid(
+                    "memory",
+                    "FXSAVE profile requires one aligned canonical 512-byte writable area, budget 1, and stop immediately after the seven-byte instruction",
                 ));
             }
         }

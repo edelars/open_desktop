@@ -5617,3 +5617,19 @@ older profiles continue to omit selector fields and reject them if supplied.
 See the [S2-39b plan](../../../../docs/plans/STAGE_2.md#s2-39b-lossless-selector-state-representation-no-fxsave-execution),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-39b--selector-state-representation-only),
 and [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-39b--selector-state-representation-only).
+
+### S2-39c plain Long64 RIP-relative FXSAVE
+
+`s2_39c_fxsave_rip_relative_literal.case.json` is a handwritten schema-v2
+fixture for `s2-long-fxsave-rip-v1`. It carries the observed Linux bytes
+`0F AE 05 6B F9 17 00`, both known selectors, raw x87/SSE state, and an aligned
+512-byte destination prefilled with `A5` sentinels. The profile writes only the
+13 defined-field slices; holes and reserved/software bytes retain their input
+sentinels. The local interpreter test checks the literal output and unchanged
+CPU state apart from normal RIP retirement. A separate core test executes a
+different disp32, covers all TOP positions, exact callbacks and injected write
+failures. This is local interpreter/profile evidence only; no physical CPU,
+Mac mini, guest exception delivery, FXRSTOR, or JIT/native result is claimed.
+See the [S2-39c plan](../../../../docs/plans/STAGE_2.md#s2-39c-exact-plain-long64-rip-relative-fxsave),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-39c--plain-long64-rip-relative-fxsave),
+and [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-39c--plain-long64-rip-relative-fxsave).

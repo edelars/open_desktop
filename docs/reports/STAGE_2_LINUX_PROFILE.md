@@ -587,13 +587,12 @@ instruction operand can fault on address/alignment/page conditions; neither
 this static evidence nor the cited instruction summary supports claiming a
 whole-area atomic commit or arbitrary memory-backend rollback.
 
-S2-39a closes only the normative evidence/contract subtask. S2-39b has since
-resolved the selector state representation gap as a local state/snapshot change
-only; this does not make the S2-34.1 snapshot an FXSAVE memory image and does
-not implement the plain Long64 form. The exact RIP-relative FXSAVE mask-probe
-remains the recommended first execution candidate after defined-field memory
-behavior is implemented, including preservation of bytes 464–511. See the
-[S2-39b implementation report](STAGE_2_REPORT.md#s2-39b--selector-state-representation-only).
+S2-39a closes only the normative evidence/contract subtask. S2-39b resolved
+selector state representation without making the S2-34.1 snapshot an FXSAVE
+memory image. The exact RIP-relative FXSAVE mask-probe was selected and is
+implemented under S2-39c, including defined-field writes and preservation of
+bytes 464–511. See the [S2-39b implementation report](STAGE_2_REPORT.md#s2-39b--selector-state-representation-only)
+and [S2-39c local implementation report](STAGE_2_REPORT.md#s2-39c--plain-long64-rip-relative-fxsave).
 No runtime boot, native oracle execution, C/D acceptance, or physical/Mac mini
 result is claimed; physical checks remain in the combined final hardware
 substage.
@@ -608,3 +607,30 @@ an FXSAVE/FXRSTOR implementation or observation. Plain REX.W=0 forms remain
 unsupported, while S2-39 remains open. The bounded fixture and local verification
 are recorded in the [Stage 2 report](STAGE_2_REPORT.md#s2-39b--selector-state-representation-only)
 and [S2-39b plan](../plans/STAGE_2.md#s2-39b-lossless-selector-state-representation-no-fxsave-execution).
+
+## S2-39c — plain Long64 RIP-relative FXSAVE
+
+The observed Ubuntu bytes `0F AE 05 6B F9 17 00` now have a local
+`s2-long-fxsave-rip-v1` interpreter profile. It admits only unprefixed
+Long64 `0F AE 05 disp32`; the statically mapped `48 0F AE 40 40` FXSAVE64 and
+`48 0F AE 4B 40` FXRSTOR64 remain outside the profile, as do other addressing
+forms and neighboring selectors. This implements the image needed by the
+statically identified MXCSR-mask probe but does not constitute observed
+execution of that Linux path.
+
+The implementation preflights its local aligned canonical 512-byte range and
+issues exactly 13 ascending write-only callbacks for defined image slices.
+Bytes 464–511 are preserved as Intel specifies; preservation of reserved
+bytes is an explicit local policy. The immutable selected-target mask is
+`0x0000_ffbf`; this is a synthetic Generic amd64 capability policy and is not
+derived from testkit diagnostic metadata. The local fixture and direct tests
+exercise another disp32, state serialization, sentinel preservation and the
+callback-failure matrix. No #NM/#UD/#GP delivery, whole-area atomicity, MMIO,
+shared-memory, DMA, SMP, hardware, boot, or physical result is asserted.
+
+S2-39 remains open for FXRSTOR, other FXSAVE forms, broader state validation,
+and save/restore round-trip requirements. Physical validation is deferred to
+the combined final Mac mini substage. Details are in the [S2-39c plan](../plans/STAGE_2.md#s2-39c-exact-plain-long64-rip-relative-fxsave),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-39c--plain-long64-rip-relative-fxsave),
+[Stage 2 report](STAGE_2_REPORT.md#s2-39c--plain-long64-rip-relative-fxsave),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39c-plain-long64-rip-relative-fxsave).

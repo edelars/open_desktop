@@ -253,6 +253,65 @@ fn x87_selector_profile_requires_both_selectors_and_rejects_them_in_old_profiles
 }
 
 #[test]
+fn fxsave_rip_profile_is_exact_and_requires_geometry_and_both_selectors() {
+    let raw = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_39c_fxsave_rip_relative_literal.case.json"
+    );
+    let base = Fixture::from_json(raw).unwrap().fixture;
+    assert_eq!(base.profile, Profile::LongFxsaveRipV1);
+    let state = base
+        .initial_state
+        .to_cpu_for(Profile::LongFxsaveRipV1)
+        .unwrap();
+    assert_eq!(state.x87.as_ref().unwrap().instruction_selector, Some(0x2b));
+    assert_eq!(state.x87.as_ref().unwrap().data_selector, Some(0x53));
+
+    for code in [
+        "480fae056bf91700",
+        "660fae056bf91700",
+        "670fae056bf91700",
+        "f30fae056bf91700",
+        "0fae006bf91700",
+        "0fae046bf91700",
+        "0fae0d6bf91700",
+        "0fae4d00",
+    ] {
+        let mut invalid = base.clone();
+        invalid.memory[0].initial_bytes_hex = code.into();
+        invalid.memory[0].length = (code.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(code.len() / 2);
+        assert!(invalid.validate().is_err(), "{code}");
+    }
+
+    let mut unaligned = base.clone();
+    unaligned.memory[1].guest_address = HexU64(0x200001);
+    assert!(unaligned.validate().is_err());
+    let mut wrong_length = base.clone();
+    wrong_length.memory[1].length = 511;
+    wrong_length.memory[1].initial_bytes_hex.truncate(1022);
+    wrong_length.memory[1].comparison_mask_hex.truncate(1022);
+    assert!(wrong_length.validate().is_err());
+    let mut read_only = base.clone();
+    read_only.memory[1].permissions.write = false;
+    assert!(read_only.validate().is_err());
+    let mut no_x87_selector = base.clone();
+    no_x87_selector
+        .initial_state
+        .x87
+        .as_mut()
+        .unwrap()
+        .instruction_selector = None;
+    assert!(no_x87_selector.validate().is_err());
+    let mut no_sse = base.clone();
+    no_sse.initial_state.sse = None;
+    assert!(no_sse.validate().is_err());
+
+    let mut legacy_profile = base;
+    legacy_profile.profile = Profile::LongX87SseStateV1;
+    assert!(legacy_profile.validate().is_err());
+}
+
+#[test]
 fn integer_snapshot_export_rejects_ds_hidden_cache() {
     let mut state = od_isa::LongModeState::default();
     state.ds_cache = Some(od_isa::state::DsDescriptorCache {

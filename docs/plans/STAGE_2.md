@@ -501,6 +501,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
 | [x] | S2-39b | Представление FCS/FDS в X87State/schema-v2; точечный selector profile; x87 transition fail-closed | S2-39a; FXSAVE/FXRSTOR execution remains open |
+| [x] | S2-39c | Один plain Long64 RIP-relative FXSAVE profile | S2-39a/b; broader save/restore remains open |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
 | [ ] | S2-41 | Независимо проверить системный профиль | S2-27; machine backend по сценариям |
 | [ ] | S2-42 | Расширить corpus/reducer/harness | S2-21, S2-39, S2-40 |
@@ -6213,15 +6214,15 @@ image остаются нереализованными.
 
 | Observed form | Long64 layout | Main relevance | Local gate/evidence |
 |---|---|---|---|
-| `0F AE 05 6B F9 17 00` | `FXSAVE`, REX.W=0; RIP+disp32; 32-bit pointer offsets plus selector fields | Exact Ubuntu MXCSR-mask initialization probe | Best first executable slice after state and defined field writes are supported; it writes architectural state beyond the mask, while preserving bytes 464–511. |
+| `0F AE 05 6B F9 17 00` | `FXSAVE`, REX.W=0; RIP+disp32; 32-bit pointer offsets plus selector fields | Exact Ubuntu MXCSR-mask initialization probe | Implemented as the local S2-39c profile; it stores architectural state beyond the mask and preserves bytes 464–511. This static Linux mapping is not observed runtime execution. |
 | `48 0F AE 40 40` | `FXSAVE64`, REX.W=1; `[RAX+0x40]`; 64-bit FIP/FDP | Exact Ubuntu legacy state-save path | Later save form; do not alias it to `FXSAVE` format. |
 | `48 0F AE 4B 40` | `FXRSTOR64`, REX.W=1; `[RBX+0x40]`; 64-bit FIP/FDP | Exact Ubuntu legacy state-restore path | Later restore form; requires full image validation and target MXCSR policy. |
 
 Prerequisites include CPUID.01H:EDX.FXSR[24], CR0.EM=0 and CR0.TS=0; CR4.OSFXSR=1 is needed for defined SSE-state behavior. Target CPUID also advertises SSE/SSE2, while OSXSAVE/XSAVE remain disabled. The selected MXCSR policy must use the FXSAVE mask, with Intel's specified `0x0000ffbf` fallback only when the saved `MXCSR_MASK` field is zero. That policy is distinct from testkit's existing `diagnostic_mxcsr_mask` metadata, even though its current numeric value is also `0x0000ffbf`.
 
-Fault handling must account for 16-byte alignment, noncanonical addresses, page faults, and #NM/#UD gates. The memory area is 512 bytes, but this does not mean every byte is written: FXSAVE preserves software-available bytes 464–511, while bytes 416–463 are reserved and their write behavior is not asserted here. No whole-area atomic commit or backend rollback guarantee is asserted. Physical x86/Mac mini validation belongs to the combined final substage; no boot, runtime execution, C/D coverage or physical result is claimed. S2-39b closes selector representation; next implementation work is the defined memory writes and one exact end-to-end form, with the Linux RIP-relative `FXSAVE` mask probe as the recommended first candidate.
+Fault handling must account for 16-byte alignment, noncanonical addresses, page faults, and #NM/#UD gates. The memory area is 512 bytes, but this does not mean every byte is written: FXSAVE preserves software-available bytes 464–511, while bytes 416–463 are reserved and their write behavior is not asserted here. No whole-area atomic commit or backend rollback guarantee is asserted. Physical x86/Mac mini validation belongs to the combined final substage; no boot, C/D coverage or physical result is claimed. S2-39b closed selector representation, and S2-39c implemented one local save form. Remaining S2-39 work includes restore semantics, other save forms and physical acceptance.
 
-ISSUE-026 закрыта для representation-only; сам plain FXSAVE/FXRSTOR остаётся unsupported.
+ISSUE-026 закрыта для selector representation и одного plain Long64 FXSAVE form; FXRSTOR и остальные формы остаются unsupported.
 
 S2-39 overall remains open until implementation covers the selected forms and
 tests save → modify → restore with raw mixed x87/MMX/XMM state and invalid-image
@@ -6254,12 +6255,50 @@ C fragment adapter, JIT и native path остаются закрыты для se
 
 Это не реализует FNINIT, FXSAVE/FXRSTOR, wire image, guest exception delivery
 или hardware observation. ISSUE-026 закрыта только для state representation;
-S2-39 остаётся открытой, plain Long64 REX.W=0 FXSAVE/FXRSTOR остаются
-unsupported, а физические/Mac mini проверки относятся к combined final
-hardware substage. См. [CPU contract](../specs/CPU_CONTRACT.md#s2-39b--selector-state-representation-only),
+S2-39 остаётся открытой. См. [CPU contract](../specs/CPU_CONTRACT.md#s2-39b--selector-state-representation-only),
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-39b--selector-state-representation-only),
 [Linux evidence](../reports/STAGE_2_LINUX_PROFILE.md#s2-39b--selector-state-representation-only)
 и [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39b-selector-state-snapshot).
+
+#### S2-39c. Exact plain Long64 RIP-relative FXSAVE
+
+**Статус:** локальная реализация и проверка завершены для одного strict
+profile `s2-long-fxsave-rip-v1`. Он принимает только one-instruction Long64
+encoding `0F AE 05 disp32`, без prefix/REX, с `/0`, `mod=00`, `r/m=101` и
+RIP-relative address. Это plain FXSAVE с 32-bit FIP/FDP и независимыми FCS/FDS;
+FXSAVE64, FXRSTOR, соседние `/r` forms и другие addressing modes отвергаются.
+Нужны x87/SSE state и оба известных selectors, включая `Some(0)`. CPUID.FXSR,
+CR0.EM=0, CR0.TS=0 и CR4.OSFXSR=1 — preconditions выбранной цели; текущая
+модель не превращает их в runtime gates.
+
+Образ хранит FCW/FSW, abridged FTW в physical order, FOP в 11 bits, low 32-bit
+FIP/FDP, раздельные selectors, raw MXCSR, выбранный target `MXCSR_MASK`
+`0x0000_ffbf`, 80-bit ST payloads в TOP-rotated order и raw XMM0–15. В образе
+`state.mxcsr` не маскируется. Константа маски принадлежит immutable `od-isa`
+Synthetic Generic amd64 target; она отдельна от testkit diagnostic metadata
+с совпадающим numeric value.
+
+Перед первым callback локально проверяются 16-byte alignment и canonical,
+non-overflowing полный 512-byte range. Это ограничение данного профиля и не
+заявляет аппаратное чтение или probe неиспользованного хвоста. Выполняются
+ровно 13 возрастающих write-only callbacks для определённых участков:
+`[0,5)`, `[6,14)`, `[16,22)`, `[24,32)`, восемь 10-byte stack slots и
+`[160,416)`. Все holes/reserved/software bytes сохраняются. Сохранение
+`[464,512)` следует Intel; сохранение reserved bytes — локальная политика.
+При ошибке callback предыдущие private synchronous RAM slices остаются
+записанными, текущий slice остаётся неизменённым по контракту GuestMemory,
+последующие callbacks не вызываются, RIP/CPU state/retirement не commit-ятся.
+Это не обещает общего rollback, MMIO behavior, shared-DMA или SMP guarantees.
+
+Ручной observed-byte fixture содержит исходное `0F AE 05 6B F9 17 00`; тесты
+отдельно исполняют ещё один disp32, все TOP values, mixed physical tags,
+selectors, truncation, XMM matrix, callbacks/failures и memory sentinels.
+JIT/native/CPUID остаются закрыты. Проверки Mac mini/physical oracle отложены
+до combined final hardware substage. Результат и ограничения — в
+[S2-39c report](../reports/STAGE_2_REPORT.md#s2-39c--plain-long64-rip-relative-fxsave),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-39c--plain-long64-rip-relative-fxsave),
+[Linux evidence](../reports/STAGE_2_LINUX_PROFILE.md#s2-39c--plain-long64-rip-relative-fxsave)
+и [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39c-plain-long64-rip-relative-fxsave).
 
 ### S2-40. Дополнительные обязательные расширения
 

@@ -1777,6 +1777,20 @@ fn step_tracked_with_profiles(
                 && instruction.length == 3
                 && instruction.prefixes == Prefixes::default()
         }
+        Operation::FxsaveRipRelative(area) => {
+            instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0xae
+                && instruction.length == 7
+                && instruction.prefixes == Prefixes::default()
+                && instruction.address_size == OperandSize::Qword
+                && area.base == AddressBase::NextRip
+                && area.index.is_none()
+                && area.size == OperandSize::Qword
+                && state.x87.as_ref().is_some_and(|x87| {
+                    x87.instruction_selector.is_some() && x87.data_selector.is_some()
+                })
+                && state.sse.is_some()
+        }
         Operation::FaddSt0St { source } => {
             instruction.opcode.map == OpcodeMap::Primary
                 && instruction.opcode.byte == 0xd8
@@ -2473,6 +2487,14 @@ fn step_tracked_with_profiles(
             opcode: instruction.opcode.byte,
         });
     }
+    if let Operation::FxsaveRipRelative(area) = instruction.operation {
+        let address = area.effective_address(state, next_rip);
+        if let Err(error) = fxsave_rip_relative(state, memory, context, address) {
+            return report_memory_error(error);
+        }
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
     if let Operation::MovupsLoadMemory {
         destination,
         source,
@@ -3112,6 +3134,9 @@ fn step_tracked_with_profiles(
     }
     match instruction.operation {
         Operation::Cpuid => unreachable!("CPUID is executed before transfer dispatch"),
+        Operation::FxsaveRipRelative(_) => {
+            unreachable!("FXSAVE commits in its prevalidated field-store path")
+        }
         Operation::ReadMsr | Operation::WriteMsr => {
             unreachable!("MSR probe policy resolves before state commit")
         }
@@ -8916,6 +8941,87 @@ fn report_memory_error(error: MemoryError) -> Result<StepOutcome, MemoryError> {
     }
 }
 
+/// Store the defined fields of the exact bounded plain-Long64 FXSAVE profile.
+/// The callback granularity is deliberately field-driven: failures keep prior
+/// successful private-RAM slices, and no reads or global rollback are implied.
+fn fxsave_rip_relative(
+    state: &LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    address: u64,
+) -> Result<(), MemoryError> {
+    const IMAGE_BYTES: u64 = 512;
+
+    let last = address.checked_add(IMAGE_BYTES - 1);
+    if address & 0xf != 0 || !canonical(address) || last.is_none_or(|last| !canonical(last)) {
+        return Err(general_protection().into());
+    }
+
+    let x87 = state
+        .x87
+        .as_ref()
+        .expect("FXSAVE x87 state was prevalidated");
+    let sse = state
+        .sse
+        .as_ref()
+        .expect("FXSAVE SSE state was prevalidated");
+    let mut environment_0 = [0u8; 5];
+    environment_0[0..2].copy_from_slice(&x87.control_word.to_le_bytes());
+    environment_0[2..4].copy_from_slice(&x87.status_word.to_le_bytes());
+    let mut abridged_tag = 0u8;
+    for physical in 0..8 {
+        if (x87.tag_word >> (physical * 2)) & 0b11 != 0b11 {
+            abridged_tag |= 1 << physical;
+        }
+    }
+    environment_0[4] = abridged_tag;
+
+    let mut environment_1 = [0u8; 8];
+    environment_1[0..2].copy_from_slice(&(x87.last_opcode & 0x07ff).to_le_bytes());
+    environment_1[2..6].copy_from_slice(&(x87.instruction_pointer as u32).to_le_bytes());
+    environment_1[6..8].copy_from_slice(
+        &x87.instruction_selector
+            .expect("FXSAVE selector state was prevalidated")
+            .to_le_bytes(),
+    );
+
+    let mut environment_2 = [0u8; 6];
+    environment_2[0..4].copy_from_slice(&(x87.data_pointer as u32).to_le_bytes());
+    environment_2[4..6].copy_from_slice(
+        &x87.data_selector
+            .expect("FXSAVE selector state was prevalidated")
+            .to_le_bytes(),
+    );
+
+    let mut mxcsr_fields = [0u8; 8];
+    mxcsr_fields[0..4].copy_from_slice(&sse.mxcsr.to_le_bytes());
+    mxcsr_fields[4..8].copy_from_slice(&crate::TARGET_FXSAVE_MXCSR_MASK.to_le_bytes());
+
+    // Precompute all source bytes before the first callback. This keeps CPU
+    // state independent of backend progress and makes the callbacks write-only.
+    let top = usize::from(x87.top());
+    let mut x87_stack = [[0u8; 10]; 8];
+    for (logical, slot) in x87_stack.iter_mut().enumerate() {
+        *slot = x87.registers[(top + logical) & 7];
+    }
+    let mut xmm = [0u8; 16 * 16];
+    for (register, bytes) in sse.xmm.iter().enumerate() {
+        xmm[register * 16..(register + 1) * 16].copy_from_slice(bytes);
+    }
+
+    // These are exactly the 13 ascending writes required by this local
+    // profile. Reserved and software-available bytes remain untouched.
+    memory.write(address, context, &environment_0)?;
+    memory.write(address + 6, context, &environment_1)?;
+    memory.write(address + 16, context, &environment_2)?;
+    memory.write(address + 24, context, &mxcsr_fields)?;
+    for (logical, slot) in x87_stack.iter().enumerate() {
+        memory.write(address + 32 + (logical as u64) * 16, context, slot)?;
+    }
+    memory.write(address + 160, context, &xmm)?;
+    Ok(())
+}
+
 fn transfer(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -8926,6 +9032,9 @@ fn transfer(
     match operation {
         Operation::ReadMsr | Operation::WriteMsr => {
             unreachable!("MSR probe policy resolves before transfer dispatch")
+        }
+        Operation::FxsaveRipRelative(_) => {
+            unreachable!("FXSAVE commits before generic transfer dispatch")
         }
         Operation::MovImmediate { dst, value } => {
             write_operand(state, memory, context, next_rip, dst, value)?
@@ -89279,6 +89388,367 @@ mod tests {
             assert_eq!(state, before);
             assert!(memory.fetches.is_empty());
             assert!(memory.accesses.is_empty());
+        }
+    }
+}
+
+#[cfg(test)]
+mod fxsave_rip_tests {
+    use super::*;
+    use crate::memory::AccessKind;
+    use crate::state::{SseState, X87State};
+
+    const RIP: u64 = 0x1000;
+    const AREA: u64 = 0x3000;
+    const CODE: [u8; 7] = [0x0f, 0xae, 0x05, 0xf9, 0x1f, 0, 0];
+
+    struct TraceMemory {
+        area: Vec<u8>,
+        code: [u8; 7],
+        writes: Vec<(u64, usize, bool)>,
+        reads: usize,
+        fail_write: Option<usize>,
+    }
+
+    impl TraceMemory {
+        fn new(fail_write: Option<usize>) -> Self {
+            Self {
+                area: vec![0xa5; 512],
+                code: CODE,
+                writes: Vec::new(),
+                reads: 0,
+                fail_write,
+            }
+        }
+    }
+
+    impl GuestMemory for TraceMemory {
+        fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+            let offset = address.wrapping_sub(RIP) as usize;
+            self.code.get(offset).copied().ok_or(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Fetch,
+            })
+        }
+
+        fn read(&mut self, _: u64, _: AccessContext, _: &mut [u8]) -> Result<(), MemoryError> {
+            self.reads += 1;
+            panic!("FXSAVE must not read data memory")
+        }
+
+        fn write(
+            &mut self,
+            address: u64,
+            _: AccessContext,
+            source: &[u8],
+        ) -> Result<(), MemoryError> {
+            let call = self.writes.len() + 1;
+            let offset = address.checked_sub(AREA).ok_or(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Write,
+            })? as usize;
+            let end = offset
+                .checked_add(source.len())
+                .ok_or(MemoryError::AddressOverflow {
+                    address,
+                    length: source.len(),
+                })?;
+            if end > self.area.len() {
+                return Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                });
+            }
+            let fail = self.fail_write == Some(call);
+            self.writes.push((address, source.len(), fail));
+            if fail {
+                return Err(MemoryError::Backend("injected callback failure".into()));
+            }
+            self.area[offset..end].copy_from_slice(source);
+            Ok(())
+        }
+
+        fn atomic_exchange_integer(
+            &mut self,
+            _: u64,
+            _: AccessContext,
+            _: OperandSize,
+            _: u64,
+        ) -> Result<u64, MemoryError> {
+            panic!("FXSAVE must not use atomic exchange")
+        }
+
+        fn atomic_fetch_add_integer(
+            &mut self,
+            _: u64,
+            _: AccessContext,
+            _: OperandSize,
+            _: u64,
+        ) -> Result<u64, MemoryError> {
+            panic!("FXSAVE must not use atomic add")
+        }
+
+        fn atomic_compare_exchange_integer(
+            &mut self,
+            _: u64,
+            _: AccessContext,
+            _: OperandSize,
+            _: u64,
+            _: u64,
+        ) -> Result<u64, MemoryError> {
+            panic!("FXSAVE must not use atomic compare-exchange")
+        }
+
+        fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+            panic!("FXSAVE is not MFENCE")
+        }
+    }
+
+    fn fixture_state(top: u8, instruction_selector: u16, data_selector: u16) -> LongModeState {
+        let mut state = LongModeState::default();
+        state.rip = RIP;
+        let mut x87 = X87State::fixture_seed();
+        x87.status_word = (x87.status_word & !(7 << 11)) | (u16::from(top) << 11);
+        x87.tag_word = 0b11_10_01_00_11_10_01_00;
+        for physical in 0..8 {
+            x87.registers[physical] = [physical as u8; 10];
+        }
+        x87.control_word = 0xa55a;
+        x87.last_opcode = 0xffff;
+        x87.instruction_pointer = 0x1234_5678_89ab_cdef;
+        x87.data_pointer = 0xfedc_ba98_7654_3210;
+        x87.instruction_selector = Some(instruction_selector);
+        x87.data_selector = Some(data_selector);
+        state.x87 = Some(x87);
+        let mut sse = SseState {
+            xmm: [[0; 16]; 16],
+            mxcsr: 0xa5a5_1234,
+        };
+        for register in 0..16 {
+            for byte in 0..16 {
+                sse.xmm[register][byte] = (register * 16 + byte) as u8;
+            }
+        }
+        state.sse = Some(sse);
+        state
+    }
+
+    fn expected_image(state: &LongModeState) -> [u8; 512] {
+        let x87 = state.x87.as_ref().unwrap();
+        let sse = state.sse.as_ref().unwrap();
+        let mut image = [0xa5; 512];
+        image[0..2].copy_from_slice(&x87.control_word.to_le_bytes());
+        image[2..4].copy_from_slice(&x87.status_word.to_le_bytes());
+        let mut tag = 0;
+        for physical in 0..8 {
+            if (x87.tag_word >> (physical * 2)) & 3 != 3 {
+                tag |= 1 << physical;
+            }
+        }
+        image[4] = tag;
+        image[6..8].copy_from_slice(&0x07ffu16.to_le_bytes());
+        image[8..12].copy_from_slice(&(x87.instruction_pointer as u32).to_le_bytes());
+        image[12..14].copy_from_slice(&x87.instruction_selector.unwrap().to_le_bytes());
+        image[16..20].copy_from_slice(&(x87.data_pointer as u32).to_le_bytes());
+        image[20..22].copy_from_slice(&x87.data_selector.unwrap().to_le_bytes());
+        image[24..28].copy_from_slice(&sse.mxcsr.to_le_bytes());
+        image[28..32].copy_from_slice(&0x0000_ffbfu32.to_le_bytes());
+        for logical in 0..8 {
+            let physical = (usize::from(x87.top()) + logical) & 7;
+            image[32 + 16 * logical..42 + 16 * logical].copy_from_slice(&x87.registers[physical]);
+        }
+        for register in 0..16 {
+            image[160 + register * 16..176 + register * 16].copy_from_slice(&sse.xmm[register]);
+        }
+        image
+    }
+
+    #[test]
+    fn literal_fxsave_image_covers_all_tops_selectors_and_preserved_bytes() {
+        for top in 0..8 {
+            let state = fixture_state(top, if top == 0 { 0 } else { 0x2b }, 0x53);
+            let before = state.clone();
+            let mut memory = TraceMemory::new(None);
+            let result = run(
+                &mut state.clone(),
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(RIP + 7),
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::StopAddress);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(memory.area, expected_image(&before));
+            assert_eq!(memory.reads, 0);
+            assert_eq!(
+                memory
+                    .writes
+                    .iter()
+                    .map(|(address, len, _)| (*address, *len))
+                    .collect::<Vec<_>>(),
+                std::iter::once((AREA, 5))
+                    .chain(std::iter::once((AREA + 6, 8)))
+                    .chain(std::iter::once((AREA + 16, 6)))
+                    .chain(std::iter::once((AREA + 24, 8)))
+                    .chain((0..8).map(|i| (AREA + 32 + i * 16, 10)))
+                    .chain(std::iter::once((AREA + 160, 256)))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(memory.writes.len(), 13);
+        }
+
+        // Independent direct literal bytes for the observed Linux instruction's
+        // wire fields, including selector positions, truncation, and mask policy.
+        let state = fixture_state(0, 0, 0x53);
+        let image = expected_image(&state);
+        assert_eq!(&image[0..5], &[0x5a, 0xa5, 0x05, 0x00, 0b0111_0111]);
+        assert_eq!(&image[6..14], &[0xff, 0x07, 0xef, 0xcd, 0xab, 0x89, 0, 0]);
+        assert_eq!(&image[16..22], &[0x10, 0x32, 0x54, 0x76, 0x53, 0]);
+        assert_eq!(&image[24..32], &[0x34, 0x12, 0xa5, 0xa5, 0xbf, 0xff, 0, 0]);
+        assert_eq!(&image[464..], &[0xa5; 48]);
+    }
+
+    #[test]
+    fn every_fxsave_write_failure_stops_at_that_slice_without_cpu_commit() {
+        let expected_ranges = [
+            (AREA, 5),
+            (AREA + 6, 8),
+            (AREA + 16, 6),
+            (AREA + 24, 8),
+            (AREA + 32, 10),
+            (AREA + 48, 10),
+            (AREA + 64, 10),
+            (AREA + 80, 10),
+            (AREA + 96, 10),
+            (AREA + 112, 10),
+            (AREA + 128, 10),
+            (AREA + 144, 10),
+            (AREA + 160, 256),
+        ];
+        for failed_call in 1..=13 {
+            let mut state = fixture_state(5, 0, 0x53);
+            let before = state.clone();
+            let expected = expected_image(&before);
+            let mut memory = TraceMemory::new(Some(failed_call));
+            let result = run(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(RIP + 7),
+                    context: AccessContext::default(),
+                },
+                || false,
+            );
+            assert!(matches!(
+                result.exit,
+                RunExit::MemoryError(MemoryError::Backend(_))
+            ));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert_eq!(memory.writes.len(), failed_call);
+            assert_eq!(
+                memory.writes[failed_call - 1],
+                (
+                    expected_ranges[failed_call - 1].0,
+                    expected_ranges[failed_call - 1].1,
+                    true
+                )
+            );
+            for (call, &(address, length)) in expected_ranges.iter().enumerate() {
+                let offset = (address - AREA) as usize;
+                let range = offset..offset + length;
+                if call + 1 < failed_call {
+                    assert_eq!(&memory.area[range.clone()], &expected[range]);
+                } else {
+                    assert_eq!(&memory.area[range], &[0xa5; 256][..length]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fxsave_alignment_canonical_range_state_gates_and_zero_budget_are_preflighted() {
+        for (top, selectors, sse_present, area) in [
+            (0, (None, Some(0x53)), true, AREA),
+            (0, (Some(0), None), true, AREA),
+            (0, (Some(0), Some(0)), false, AREA),
+            (0, (Some(0), Some(0)), true, AREA + 1),
+        ] {
+            let mut state = fixture_state(top, selectors.0.unwrap_or(0), selectors.1.unwrap_or(0));
+            state.x87.as_mut().unwrap().instruction_selector = selectors.0;
+            state.x87.as_mut().unwrap().data_selector = selectors.1;
+            if !sse_present {
+                state.sse = None;
+            }
+            let before = state.clone();
+            let mut memory = TraceMemory::new(None);
+            let displacement = (area as i64 - (RIP + 7) as i64) as i32;
+            memory.code[3..7].copy_from_slice(&displacement.to_le_bytes());
+            let result = step(&mut state, &mut memory, AccessContext::default());
+            assert!(matches!(
+                result,
+                Ok(StepOutcome::Unsupported { .. }) | Ok(StepOutcome::Fault(_))
+            ));
+            assert_eq!(state, before);
+            assert!(memory.writes.is_empty());
+        }
+
+        let mut state = fixture_state(0, 0, 0);
+        let before = state.clone();
+        let mut memory = TraceMemory::new(None);
+        let result = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 0,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
+        assert_eq!(state, before);
+        assert!(memory.writes.is_empty());
+
+        let mut memory = TraceMemory::new(None);
+        let result = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(RIP),
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.writes.is_empty());
+
+        let state = fixture_state(0, 0, 0);
+        for invalid_start in [
+            AREA + 1,
+            0x0000_8000_0000_0000,
+            0x0000_7fff_ffff_ffe0,
+            0xffff_ffff_ffff_ff00,
+        ] {
+            let mut memory = TraceMemory::new(None);
+            let result =
+                fxsave_rip_relative(&state, &mut memory, AccessContext::default(), invalid_start);
+            assert!(matches!(
+                result,
+                Err(MemoryError::Architectural(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    ..
+                }))
+            ));
+            assert!(memory.writes.is_empty());
         }
     }
 }

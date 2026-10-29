@@ -15878,3 +15878,64 @@ remaining findings after fixing the native early-denial list and strict null
 handling. The independent documentation review verified the added
 [TEST_CASE_FORMAT](../testing/TEST_CASE_FORMAT.md) wire-format rules, mixed-tag
 fixture evidence, and all new links; no findings remain.
+
+## S2-39c — plain Long64 RIP-relative FXSAVE
+
+Added the strict local profile `s2-long-fxsave-rip-v1` for exactly one
+unprefixed `0F AE 05 disp32` Long64 instruction. It requires x87/SSE state and
+both selectors, including explicit `Some(0)`. FXSAVE64, FXRSTOR, other ModRM or
+addressing forms, prefixes and REX remain unsupported. CPUID FXSR, CR0.EM/TS=0
+and CR4.OSFXSR=1 are selected-target preconditions, not runtime gates in the
+current state model. CPUID execution, JIT and native admission remain closed.
+
+The interpreter writes FCW/FSW, abridged physical FTW, masked 11-bit FOP,
+low 32-bit FIP/FDP plus independent selectors, raw MXCSR, the immutable target
+mask `0x0000_ffbf`, TOP-rotated raw 80-bit stack payloads and raw XMM0–15.
+The target mask is a deliberate conservative DAZ-clear policy for the
+synthetic Generic amd64 target and remains separate from the testkit diagnostic
+mask despite equal current values. `state.mxcsr` is not masked.
+
+The local preflight checks alignment and the complete canonical48 512-byte
+range before writes; it is a local profile constraint and does not claim
+hardware probes the unused tail. Exactly 13 ascending write-only callbacks
+cover `[0,5)`, `[6,14)`, `[16,22)`, `[24,32)`, eight 10-byte stack slots, and
+`[160,416)`. All holes remain intact. Intel explicitly requires preservation
+of bytes 464–511; preserving reserved bytes is a local policy. On callback
+failure, prior private synchronous RAM writes remain, the failed slice is
+unchanged under the GuestMemory callback contract, later callbacks stop, and
+CPU/RIP/retirement do not commit. This does not promise whole-area rollback,
+MMIO behavior, or shared-DMA/SMP guarantees.
+
+The observed literal fixture `0F AE 05 6B F9 17 00` and an independent second
+disp32 are covered. Local tests cover all TOP values, mixed physical tags,
+both selectors including zero, high pointer truncation, raw MXCSR and target
+mask, XMM0–15, sentinel holes, exactly 13 ordered writes, no data reads,
+every write-failure boundary, address preconditions, strict decoder/profile
+negatives, fetch truncation, STOP/zero-budget, runner JIT rejection and native
+denial. Existing MFENCE coverage remains unchanged. S2-39 remains open for
+FXRSTOR and other save forms. Physical/Mac mini checks are deferred to the
+combined final hardware substage; no physical result is claimed.
+
+**Checks:** focused `od-isa` FXSAVE tests passed (4/4); focused `od-testkit`
+fixture/profile tests passed (2/2); the runner interpreter/JIT-denial fixture
+passed (1/1); and the existing MFENCE decoder regression passed (1/1).
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`,
+`git diff --check`, and `graphify update .` passed. The Linux-target check
+compiled the Linux-only native-denial profile code; it did not execute the
+physical runner. `tools/check_layout.py` reports the existing unmapped `.git`
+root entry and two pre-existing missing Stage 1/2 oracle-manifest links in the
+Stage 2 report; no directory structure changed. Graphify retained its existing
+unsupported-header warning for `include/open_desktop/host_abi.h`.
+
+**Review:** Sol-medium implementation review found no concrete code findings;
+its independent test invocation timed out, while the focused runs above
+completed successfully. Sol-medium documentation review caught the reserved
+ST-slot range wording and a Linux heading-anchor mismatch; both were corrected
+and re-reviewed with no remaining findings. No Mac mini, SSH, physical CPU,
+guest boot, or hardware results are claimed.
+
+See the [S2-39c CPU contract](../specs/CPU_CONTRACT.md#s2-39c--plain-long64-rip-relative-fxsave),
+[plan](../plans/STAGE_2.md#s2-39c-exact-plain-long64-rip-relative-fxsave),
+[Linux evidence](STAGE_2_LINUX_PROFILE.md#s2-39c--plain-long64-rip-relative-fxsave),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39c-plain-long64-rip-relative-fxsave).

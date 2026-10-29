@@ -11662,6 +11662,65 @@ fn truncated_push_immediates_fault_during_fetch_without_state_commit() {
     }
 }
 
+#[test]
+fn s2_39c_literal_fxsave_fixture_writes_the_observed_rip_relative_image() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_39c_fxsave_rip_relative_literal.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+    let before = state.clone();
+    let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+    let result = run(
+        &mut state,
+        &mut memory,
+        RunConfig {
+            instruction_budget: fixture.instruction_budget,
+            stop_rip: fixture.stop_rip.map(HexU64::get),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.rip, 0x80695);
+    assert_eq!(state.x87, before.x87);
+    assert_eq!(state.sse, before.sse);
+
+    let area = memory
+        .snapshot()
+        .into_iter()
+        .find(|region| region.region_id == "data")
+        .unwrap();
+    let bytes = decode_bytes(&area.bytes_hex).unwrap();
+    assert_eq!(&bytes[0..5], &[0x7f, 0x03, 0x00, 0x18, 0x77]);
+    assert_eq!(
+        &bytes[6..14],
+        &[0xaa, 0x05, 0xef, 0xcd, 0xab, 0x89, 0x2b, 0]
+    );
+    assert_eq!(&bytes[16..22], &[0x10, 0x32, 0x54, 0x76, 0x53, 0]);
+    assert_eq!(&bytes[24..32], &[0x80, 0x1f, 0, 0, 0xbf, 0xff, 0, 0]);
+    let x87 = before.x87.as_ref().unwrap();
+    for logical in 0..8 {
+        let physical = (usize::from(x87.top()) + logical) & 7;
+        assert_eq!(
+            &bytes[32 + 16 * logical..42 + 16 * logical],
+            &x87.registers[physical]
+        );
+    }
+    let sse = before.sse.as_ref().unwrap();
+    for register in 0..16 {
+        assert_eq!(
+            &bytes[160 + 16 * register..176 + 16 * register],
+            &sse.xmm[register]
+        );
+    }
+    for range in [5..6, 14..16, 22..24, 32 + 10..32 + 16, 416..512] {
+        assert_eq!(&bytes[range.clone()], &vec![0xa5; range.len()]);
+    }
+}
+
 fn assert_literal_fixture_answers(sidecar: &str, count: usize) {
     let directory = arithmetic_fixture_directory();
     let answers: std::collections::BTreeMap<String, ArithmeticExpected> =

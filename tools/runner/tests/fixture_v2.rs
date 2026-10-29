@@ -4526,6 +4526,29 @@ fn local_x87_selector_snapshot_fixture_preserves_selectors_pointers_and_sse() {
 }
 
 #[test]
+fn local_fxsave_rip_literal_fixture_runs_only_in_the_interpreter() {
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_39c_fxsave_rip_relative_literal.case.json"
+    );
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongFxsaveRipV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    assert_eq!(snapshot(&result).state, expected);
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.instructions_executed,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
 fn local_xorps_register_fixture_xors_raw_xmm_and_keeps_native_closed() {
     let bytes =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_7a_xorps_register.case.json");

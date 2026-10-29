@@ -475,6 +475,8 @@ pub enum Operation {
     },
     /// Bare `0F AE F0` completion fence for explicitly opted-in memory backends.
     Mfence,
+    /// Exact S2-39c plain Long64 `0F AE 05 disp32` FXSAVE form.
+    FxsaveRipRelative(MemoryOperand),
     /// Local-only legacy `0F 10/11 /r` MOVUPS XMM-to-XMM register form.
     MovupsRegister {
         destination: u8,
@@ -4598,10 +4600,19 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 if prefixes != Prefixes::default() {
                     return Err(self.unsupported(opcode));
                 }
-                if self.byte()? != 0xf0 {
-                    return Err(self.unsupported(opcode));
+                let modrm = self.byte()?;
+                match modrm {
+                    0xf0 => Operation::Mfence,
+                    0x05 => {
+                        let Operand::Memory(area) =
+                            self.rm_operand(modrm, prefixes, OperandSize::Qword)?
+                        else {
+                            unreachable!("ModRM 05 is a memory operand");
+                        };
+                        Operation::FxsaveRipRelative(area)
+                    }
+                    _ => return Err(self.unsupported(opcode)),
                 }
-                Operation::Mfence
             }
             (OpcodeMap::Escape0f, 0xc1) => {
                 if size != OperandSize::Qword
@@ -14193,6 +14204,62 @@ mod tests {
         ] {
             let instruction = Memory::new(bytes).decode().unwrap();
             assert_eq!(instruction.operand_size, expected_size, "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn fxsave_rip_profile_decodes_only_plain_exact_form_and_fetches_disp32_on_demand() {
+        let observed = [0x0f, 0xae, 0x05, 0x6b, 0xf9, 0x17, 0x00];
+        let mut decoded = Memory::new(&observed);
+        let instruction = decoded.decode().unwrap();
+        assert_eq!(instruction.length, 7);
+        assert_eq!(instruction.prefixes, Prefixes::default());
+        assert_eq!(
+            instruction.operation,
+            Operation::FxsaveRipRelative(MemoryOperand {
+                base: AddressBase::NextRip,
+                index: None,
+                scale: 1,
+                displacement: 0x17_f96b,
+                address_size: OperandSize::Qword,
+                size: OperandSize::Qword,
+            })
+        );
+        for bytes in [
+            &[0x48, 0x0f, 0xae, 0x05, 0, 0, 0, 0][..],
+            &[0x66, 0x0f, 0xae, 0x05, 0, 0, 0, 0][..],
+            &[0x67, 0x0f, 0xae, 0x05, 0, 0, 0, 0][..],
+            &[0xf3, 0x0f, 0xae, 0x05, 0, 0, 0, 0][..],
+            &[0x0f, 0xae, 0x00, 0, 0, 0, 0][..],
+            &[0x0f, 0xae, 0x04, 0x25, 0, 0, 0, 0][..],
+            &[0x0f, 0xae, 0x0d, 0, 0, 0, 0][..],
+            &[0x0f, 0xae, 0x15, 0, 0, 0, 0][..],
+            &[0x0f, 0xae, 0x1d, 0, 0, 0, 0][..],
+            &[0x0f, 0xae, 0x25, 0, 0, 0, 0][..],
+            &[0x0f, 0xae, 0x2d, 0, 0, 0, 0][..],
+            &[0x0f, 0xae, 0x35, 0, 0, 0, 0][..],
+            &[0x0f, 0xae, 0x3d, 0, 0, 0, 0][..],
+            &[0x0f, 0xae, 0x45, 0][..],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. }) | Err(DecodeError::Memory(_))
+                ),
+                "{bytes:02x?}"
+            );
+        }
+
+        for available in 3..7 {
+            let mut truncated = Memory::new(&observed[..available]);
+            assert!(matches!(
+                truncated.decode(),
+                Err(DecodeError::Memory(MemoryError::Unmapped {
+                    access: AccessKind::Fetch,
+                    ..
+                }))
+            ));
+            assert_eq!(truncated.fetched.len(), available + 1);
         }
     }
 

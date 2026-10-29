@@ -200,11 +200,13 @@ every byte is written or read. Intel's cited description does not establish an
 all-area atomic write or a general rollback guarantee for external memory
 backends; the interpreter must not claim either. The Linux exact forms and
 recommended order are recorded in [S2-39a plan](../plans/STAGE_2.md#s2-39a-нормативное-evidence-legacy-fxsavefxrstor-evidence-only).
-S2-39a is evidence-only. The first implementation candidate is the plain
-Long64 RIP-relative FXSAVE mask-init probe, now that FCS/FDS are representable,
-but only after its defined field writes are implemented. It stores architectural state beyond
-MXCSR_MASK, while preserving bytes 464–511; it is not a mask-only store. The
-selector representation was resolved by [S2-39b](#s2-39b--selector-state-representation-only); plain FXSAVE/FXRSTOR execution remains unsupported.
+S2-39a is evidence-only. Its first implementation candidate was the plain
+Long64 RIP-relative FXSAVE mask-init probe, which is now implemented under
+[S2-39c](#s2-39c--plain-long64-rip-relative-fxsave). It stores architectural
+state beyond MXCSR_MASK while preserving bytes 464–511; it is not a mask-only
+store. Selector representation was resolved by
+[S2-39b](#s2-39b--selector-state-representation-only). FXRSTOR and other
+forms remain unsupported.
 
 ### S2-39b — Selector state representation only
 
@@ -237,6 +239,57 @@ observation. Plain Long64 REX.W=0 FXSAVE/FXRSTOR remain unsupported and S2-39
 remains open. Hardware/Mac mini checks are deferred to the combined final
 hardware substage. See the [S2-39b plan](../plans/STAGE_2.md#s2-39b-lossless-selector-state-representation-no-fxsave-execution)
 and [implementation report](../reports/STAGE_2_REPORT.md#s2-39b--selector-state-representation-only).
+
+### S2-39c — Plain Long64 RIP-relative FXSAVE
+
+The local profile `s2-long-fxsave-rip-v1` accepts exactly one unprefixed
+Long64 instruction, `0F AE 05 disp32` (`/0`, ModRM.mod=00, r/m=101,
+RIP-relative). REX.W is zero. The decoder rejects prefixes/REX, other ModRM
+forms, FXSAVE64, FXRSTOR, and neighboring `0F AE` operations except the
+existing independent MFENCE encoding. Execution requires x87/SSE state and
+both known FCS/FDS selectors; `Some(0)` is known zero. CPUID FXSR=1,
+CR0.EM=0, CR0.TS=0 and CR4.OSFXSR=1 are profile preconditions, not runtime
+gates in the current state model. CPUID dispatch, JIT and native execution do
+not admit this operation.
+
+For the 512-byte destination, the interpreter preflights 16-byte alignment
+and the complete non-overflowing canonical48 area before any write callback.
+This full-range geometry check is bounded local profile policy; it does not
+claim hardware probes the unused tail. It performs exactly 13 ascending,
+write-only `GuestMemory::write` calls over `[0,5)`, `[6,14)`, `[16,22)`,
+`[24,32)`, eight 10-byte slots at `[32+16*i,42+16*i)`, and `[160,416)`.
+There are no data reads and no read/modify/write callbacks.
+
+The image stores FCW/FSW raw little-endian; FTW is abridged with one bit per
+physical register and 1 for every nonempty full tag; FOP is low 11 bits with
+upper five bits zero; FIP/FDP are low 32-bit offsets with independent FCS/FDS
+selectors. MXCSR is copied raw and `state.mxcsr` is never masked. The immutable
+`od-isa::TARGET_FXSAVE_MXCSR_MASK` is `0x0000_ffbf`, a conservative DAZ-clear
+capability policy for the synthetic Generic amd64 target. It is intentionally
+separate from the testkit diagnostic mask constant, even though their current
+numeric values match. x87 slots i contain `registers[(TOP+i)&7]` low 10 raw
+bytes; XMM0–15 are copied raw.
+
+All holes/reserved/software bytes remain unchanged. Intel explicitly preserves
+bytes 464–511; preservation of reserved bytes 5, 14–15, 22–23,
+`[42+16*i,48+16*i)` for `i=0..7`, and 416–463 is a local policy, not a claim
+about their hardware write behavior.
+The writes are not an all-area transaction: if callback k fails, successful
+earlier slices remain written, callback k itself is unchanged under the
+GuestMemory contract, and later callbacks are skipped. CPU state, RIP and
+retirement do not commit. This is restricted to the current private synchronous
+RAM model and makes no MMIO, shared-DMA, SMP, or global rollback claim.
+
+The fixture preserves the observed Linux bytes `0F AE 05 6B F9 17 00`; a
+separate direct execution uses another disp32. Tests cover all TOP values,
+tag routing, selectors, raw pointers/MXCSR, all XMM registers, sentinel holes,
+write order/count, callback fault matrix, preflight gates, strict decode and
+fetch truncation. They establish local interpreter/profile behavior only;
+they do not establish hardware behavior, guest exception delivery, boot, or
+physical execution. FXRSTOR, other FXSAVE addressing forms, and complete S2-39
+remain open. Physical validation is deferred to the combined final Mac mini
+substage. See the [S2-39c plan](../plans/STAGE_2.md#s2-39c-exact-plain-long64-rip-relative-fxsave)
+and [implementation report](../reports/STAGE_2_REPORT.md#s2-39c--plain-long64-rip-relative-fxsave).
 
 ## Предлагаемый профиль тестового прототипа S0-09
 
