@@ -6272,6 +6272,45 @@ fn xorpd_prerequisite_fixture_reports_ud_or_executes_and_jit_denies_profile() {
 }
 
 #[test]
+fn minss_unmasked_invalid_commits_ie_without_retiring_and_jit_native_deny_profile() {
+    let source = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38c_minss_unmasked_invalid.case.json"
+    );
+    let (input, result) = run(source, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMinssInvalidControlsV1
+    );
+    assert!(matches!(result.outcome, Outcome::Exception {}));
+    assert_eq!(count(&result), 0);
+    let Observation::Available { value } = result.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    let Observation::Available {
+        value: Some(exception),
+    } = &value.exception
+    else {
+        panic!("missing exception")
+    };
+    assert_eq!(exception.vector, 6);
+    assert_eq!(value.state.rip, input.fixture.initial_state.rip);
+    let initial_sse = input.fixture.initial_state.sse.as_ref().unwrap();
+    let final_sse = value.state.sse.as_ref().unwrap();
+    assert_eq!(final_sse.xmm[0], initial_sse.xmm[0]);
+    assert_eq!(final_sse.xmm[1..], initial_sse.xmm[1..]);
+    assert_eq!(final_sse.mxcsr.get(), initial_sse.mxcsr.get() | 1);
+    assert_eq!(
+        value.minss_invalid_controls,
+        input.fixture.minss_invalid_controls
+    );
+
+    let (_, jit) = run(source, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    let (_, native) = run(source, "native", 4);
+    assert!(matches!(native.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
 fn local_andpd_register_fixture_ands_raw_xmm_and_jit_denies_profile() {
     let bytes =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_18_andpd_register.case.json");

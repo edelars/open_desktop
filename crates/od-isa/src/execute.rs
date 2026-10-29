@@ -31,6 +31,12 @@ const fn min_max_mxcsr_supported(mxcsr: u32) -> bool {
         && mxcsr & MIN_MAX_MXCSR_DAZ_FTZ == 0
 }
 
+const fn minss_invalid_mxcsr_supported(mxcsr: u32) -> bool {
+    mxcsr & 0xffff_0000 == 0
+        && mxcsr & 0x0000_1f00 == 0x0000_1f00
+        && mxcsr & MIN_MAX_MXCSR_DAZ_FTZ == 0
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StepOutcome {
     Advanced,
@@ -67,6 +73,16 @@ pub struct XorpdPrerequisiteState {
     pub cr0_em: bool,
     pub cr0_ts: bool,
     pub cr4_osfxsr: bool,
+}
+
+/// Explicit SSE and exception-delivery controls for exact S2-38c MINSS.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MinssInvalidControls {
+    pub sse_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -630,6 +646,29 @@ pub fn run_with_xorpd_prerequisites(
         None,
         None,
         Some(prerequisites),
+        None,
+        &mut stop_requested,
+    )
+}
+
+/// Execute the exact `F3 0F 5D C1` profile with explicit SSE and fault controls.
+pub fn run_with_minss_invalid_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: MinssInvalidControls,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_execution_loop_with_profiles(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        None,
+        None,
+        None,
+        None,
+        Some(controls),
         &mut stop_requested,
     )
 }
@@ -671,6 +710,7 @@ pub fn run_with_msr_profile(
         Some(profile),
         None,
         None,
+        None,
         &mut stop_requested,
     )
 }
@@ -692,6 +732,7 @@ pub fn run_with_sep_profile(
         None,
         None,
         Some(profile),
+        None,
         None,
         &mut stop_requested,
     )
@@ -805,6 +846,7 @@ fn run_execution_loop(
         None,
         None,
         None,
+        None,
         stop_requested,
     )
 }
@@ -826,6 +868,7 @@ fn run_execution_loop_with_cpuid_profile(
         None,
         None,
         None,
+        None,
         stop_requested,
     )
 }
@@ -839,6 +882,7 @@ fn run_execution_loop_with_profiles(
     msr_profile: Option<&MsrProfile>,
     sep_profile: Option<&SepProfile>,
     xorpd_prerequisites: Option<XorpdPrerequisiteState>,
+    minss_invalid_controls: Option<MinssInvalidControls>,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> RunResult {
     let mut retired = 0;
@@ -861,6 +905,7 @@ fn run_execution_loop_with_profiles(
                 msr_profile,
                 sep_profile,
                 xorpd_prerequisites,
+                minss_invalid_controls,
                 stop_requested,
             ) {
                 Ok(StepOutcome::Advanced | StepOutcome::Branched) => {
@@ -932,6 +977,7 @@ pub fn step_with_msr_profile(
         Some(profile),
         None,
         None,
+        None,
         &mut || false,
     )
 }
@@ -953,6 +999,7 @@ pub fn step_with_sep_profile(
         None,
         None,
         Some(profile),
+        None,
         None,
         &mut || false,
     )
@@ -983,6 +1030,7 @@ fn step_tracked_with_stop(
         None,
         None,
         None,
+        None,
         stop_requested,
     )
 }
@@ -1004,6 +1052,7 @@ fn step_tracked_with_cpuid_profile(
         None,
         None,
         None,
+        None,
         stop_requested,
     )
 }
@@ -1017,6 +1066,7 @@ fn step_tracked_with_profiles(
     msr_profile: Option<&MsrProfile>,
     sep_profile: Option<&SepProfile>,
     xorpd_prerequisites: Option<XorpdPrerequisiteState>,
+    minss_invalid_controls: Option<MinssInvalidControls>,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> Result<StepOutcome, MemoryError> {
     let instruction = match long_decode::decode(memory, state.rip, context) {
@@ -1070,6 +1120,37 @@ fn step_tracked_with_profiles(
                     linear_address: None,
                 }));
             }
+        }
+    }
+    if let Some(controls) = minss_invalid_controls {
+        let exact_minss = instruction.operation
+            == (Operation::MinssRegisterMasked {
+                destination: 0,
+                source: 1,
+            })
+            && instruction.length == 4
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x5d
+            && instruction.prefixes.group1 == Some(0xf3)
+            && instruction.prefixes.rex.is_none();
+        if !exact_minss {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        let fault_vector = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+            Some(6)
+        } else if controls.cr0_ts {
+            Some(7)
+        } else {
+            None
+        };
+        if let Some(vector) = fault_vector {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector,
+                error_code: None,
+                linear_address: None,
+            }));
         }
     }
     if instruction.opcode.map == long_decode::OpcodeMap::Primary
@@ -1357,11 +1438,19 @@ fn step_tracked_with_profiles(
             | Operation::MaxpdRegisterMasked { .. }
             | Operation::MinpsRegisterMasked { .. }
             | Operation::MaxpsRegisterMasked { .. }
-    ) && !state
-        .sse
-        .as_ref()
-        .is_some_and(|sse| min_max_mxcsr_supported(sse.mxcsr))
-    {
+    ) && !state.sse.as_ref().is_some_and(|sse| {
+        if minss_invalid_controls.is_some()
+            && instruction.operation
+                == (Operation::MinssRegisterMasked {
+                    destination: 0,
+                    source: 1,
+                })
+        {
+            minss_invalid_mxcsr_supported(sse.mxcsr)
+        } else {
+            min_max_mxcsr_supported(sse.mxcsr)
+        }
+    }) {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
         });
@@ -4964,6 +5053,26 @@ fn step_tracked_with_profiles(
                 .sse
                 .as_mut()
                 .expect("MINSS/MAXSS local profile state was prevalidated");
+            let unmasked_invalid = minss_invalid_controls.is_some()
+                && !maximum
+                && invalid_operation
+                && old_mxcsr & (1 << 7) == 0;
+            if unmasked_invalid {
+                sse.mxcsr = old_mxcsr | 1;
+                let vector = if minss_invalid_controls
+                    .expect("MINSS controls were selected for this instruction")
+                    .cr4_osxmmexcpt
+                {
+                    19
+                } else {
+                    6
+                };
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector,
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
             sse.xmm[usize::from(destination)][..4].copy_from_slice(&result_bits.to_le_bytes());
             sse.mxcsr =
                 old_mxcsr | u32::from(invalid_operation) | (u32::from(denormal_operand) << 1);
@@ -79285,6 +79394,311 @@ mod tests {
                 }
                 assert_eq!(memory.fetches, [0x2000, 0x2001, 0x2002, 0x2003]);
                 assert!(memory.accesses.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn minss_invalid_prerequisites_and_arithmetic_exits_have_distinct_state_effects() {
+        for privilege in [
+            PrivilegeLevel::Ring0,
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            for bits in 0..32u8 {
+                let controls = MinssInvalidControls {
+                    sse_available: bits & 1 != 0,
+                    cr0_em: bits & 2 != 0,
+                    cr0_ts: bits & 4 != 0,
+                    cr4_osfxsr: bits & 8 != 0,
+                    cr4_osxmmexcpt: bits & 16 != 0,
+                };
+                let code = [0xf3, 0x0f, 0x5d, 0xc1];
+                let mut memory = Memory::at(&code, 0x2000);
+                let mut state = LongModeState::default();
+                state.rip = 0x2000;
+                state.x87 = Some(X87State::fixture_seed());
+                state.sse = Some(SseState {
+                    xmm: [[0x5a; 16]; 16],
+                    mxcsr: 0x1f80,
+                });
+                let before = state.clone();
+                let result = run_with_minss_invalid_controls(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(0x2004),
+                        context: AccessContext {
+                            privilege,
+                            ..AccessContext::default()
+                        },
+                    },
+                    controls,
+                    || false,
+                );
+                let expected = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr
+                {
+                    Some(6)
+                } else if controls.cr0_ts {
+                    Some(7)
+                } else {
+                    None
+                };
+                if let Some(vector) = expected {
+                    assert_eq!(
+                        result.exit,
+                        RunExit::Fault(ArchitecturalFault {
+                            vector,
+                            error_code: None,
+                            linear_address: None
+                        })
+                    );
+                    assert_eq!(result.instructions_executed, 0);
+                    assert_eq!(state, before, "CPL={privilege:?}, controls={controls:?}");
+                } else {
+                    assert_eq!(result.exit, RunExit::StopAddress);
+                    assert_eq!(result.instructions_executed, 1);
+                    assert_eq!(state.rip, 0x2004);
+                    assert_eq!(
+                        state.sse.as_ref().unwrap().xmm[0][..4],
+                        before.sse.as_ref().unwrap().xmm[0][..4]
+                    );
+                    assert_eq!(
+                        state.sse.as_ref().unwrap().mxcsr,
+                        before.sse.as_ref().unwrap().mxcsr
+                    );
+                    assert_eq!(
+                        &state.sse.as_ref().unwrap().xmm[0][4..],
+                        &before.sse.as_ref().unwrap().xmm[0][4..]
+                    );
+                }
+                assert!(memory.accesses.is_empty());
+            }
+        }
+
+        let nans = [0x7fc1_2345u32, 0xffc5_4321, 0x7f81_2345, 0xff80_0001];
+        for lhs in nans {
+            for rhs in nans {
+                for rc in 0..4u32 {
+                    for prior_sticky in [0, 0x3f] {
+                        for (osxmmexcpt, vector) in [(false, 6), (true, 19)] {
+                            let code = [0xf3, 0x0f, 0x5d, 0xc1];
+                            let mut memory = Memory::at(&code, 0x3000);
+                            let mut state = LongModeState::default();
+                            state.rip = 0x3000;
+                            state.x87 = Some(X87State::fixture_seed());
+                            let mut xmm = [[0x5a; 16]; 16];
+                            xmm[0][..4].copy_from_slice(&lhs.to_le_bytes());
+                            xmm[1][..4].copy_from_slice(&rhs.to_le_bytes());
+                            let mxcsr = 0x1f00 | (rc << 13) | prior_sticky;
+                            state.sse = Some(SseState { xmm, mxcsr });
+                            let before = state.clone();
+                            let controls = MinssInvalidControls {
+                                sse_available: true,
+                                cr0_em: false,
+                                cr0_ts: false,
+                                cr4_osfxsr: true,
+                                cr4_osxmmexcpt: osxmmexcpt,
+                            };
+                            let result = run_with_minss_invalid_controls(
+                                &mut state,
+                                &mut memory,
+                                RunConfig {
+                                    instruction_budget: 1,
+                                    stop_rip: Some(0x3004),
+                                    context: AccessContext::default(),
+                                },
+                                controls,
+                                || false,
+                            );
+                            assert_eq!(
+                                result.exit,
+                                RunExit::Fault(ArchitecturalFault {
+                                    vector,
+                                    error_code: None,
+                                    linear_address: None
+                                })
+                            );
+                            assert_eq!(result.instructions_executed, 0);
+                            assert_eq!(state.rip, before.rip);
+                            assert_eq!(state.sse.as_ref().unwrap().mxcsr, mxcsr | 1);
+                            assert_eq!(
+                                state.sse.as_ref().unwrap().xmm,
+                                before.sse.as_ref().unwrap().xmm
+                            );
+                            assert_eq!(state.x87, before.x87);
+                            assert!(memory.accesses.is_empty());
+                        }
+                    }
+                }
+            }
+        }
+
+        // A sticky IE from an earlier instruction is not a new invalid event.
+        for rc in 0..4u32 {
+            let code = [0xf3, 0x0f, 0x5d, 0xc1];
+            let mut memory = Memory::at(&code, 0x4000);
+            let mut state = LongModeState::default();
+            state.rip = 0x4000;
+            state.x87 = Some(X87State::fixture_seed());
+            let mut xmm = [[0x5a; 16]; 16];
+            xmm[0][..4].copy_from_slice(&1.0f32.to_bits().to_le_bytes());
+            xmm[1][..4].copy_from_slice(&2.0f32.to_bits().to_le_bytes());
+            state.sse = Some(SseState {
+                xmm,
+                mxcsr: 0x1f81 | (rc << 13),
+            });
+            let controls = MinssInvalidControls {
+                sse_available: true,
+                cr0_em: false,
+                cr0_ts: false,
+                cr4_osfxsr: true,
+                cr4_osxmmexcpt: false,
+            };
+            let result = run_with_minss_invalid_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x4004),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::StopAddress);
+            assert_eq!(state.sse.as_ref().unwrap().mxcsr, 0x1f81 | (rc << 13));
+        }
+    }
+
+    #[test]
+    fn minss_invalid_controls_preserve_stop_budget_fetch_and_exact_form_order() {
+        let controls = MinssInvalidControls {
+            sse_available: false,
+            cr0_em: false,
+            cr0_ts: true,
+            cr4_osfxsr: false,
+            cr4_osxmmexcpt: false,
+        };
+        for (code, budget, stop, expected) in [
+            (
+                &[0xf3, 0x0f, 0x5d, 0xc1][..],
+                1,
+                Some(0x2000),
+                RunExit::StopAddress,
+            ),
+            (
+                &[0xf3, 0x0f, 0x5d, 0xc1][..],
+                0,
+                None,
+                RunExit::InstructionBudgetExhausted,
+            ),
+            (
+                &[0xf3, 0x0f, 0x5d][..],
+                1,
+                None,
+                RunExit::MemoryError(MemoryError::Unmapped {
+                    address: 0x2003,
+                    access: AccessKind::Fetch,
+                }),
+            ),
+            (
+                &[0xf3, 0x0f, 0x5d, 0xc0][..],
+                1,
+                None,
+                RunExit::Unsupported { opcode: 0x5d },
+            ),
+            (
+                &[0xf3, 0x45, 0x0f, 0x5d, 0xc1][..],
+                1,
+                None,
+                RunExit::Unsupported { opcode: 0x5d },
+            ),
+        ] {
+            let mut memory = Memory::at(code, 0x2000);
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.x87 = Some(X87State::fixture_seed());
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f00,
+            });
+            let before = state.clone();
+            let result = run_with_minss_invalid_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip: stop,
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(result.exit, expected);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn minss_invalid_controls_reuse_masked_result_for_noninvalid_scalar_classes() {
+        use crate::binary_float::{Binary32, BinaryClass};
+
+        for (lhs, rhs) in [
+            (0x3f80_0000u32, 0x4000_0000u32), // finite
+            (0x0000_0000, 0x8000_0000),       // signed zero
+            (0x7f80_0000, 0xff80_0000),       // infinities
+            (0x0000_0001, 0x3f80_0000),       // masked denormal operand
+        ] {
+            for rc in 0..4u32 {
+                let code = [0xf3, 0x0f, 0x5d, 0xc1];
+                let mut memory = Memory::at(&code, 0x5000);
+                let mut state = LongModeState::default();
+                state.rip = 0x5000;
+                state.x87 = Some(X87State::fixture_seed());
+                let mut xmm = [[0x5a; 16]; 16];
+                xmm[0][..4].copy_from_slice(&lhs.to_le_bytes());
+                xmm[1][..4].copy_from_slice(&rhs.to_le_bytes());
+                let mxcsr = 0x1f00 | (rc << 13);
+                state.sse = Some(SseState { xmm, mxcsr });
+                let expected = Binary32::min_sse_raw_result(
+                    Binary32::from_bits(lhs),
+                    Binary32::from_bits(rhs),
+                );
+                assert!(!expected.invalid_operation());
+                let expected_de = (Binary32::from_bits(lhs).class() == BinaryClass::Subnormal
+                    || Binary32::from_bits(rhs).class() == BinaryClass::Subnormal)
+                    as u32;
+                let controls = MinssInvalidControls {
+                    sse_available: true,
+                    cr0_em: false,
+                    cr0_ts: false,
+                    cr4_osfxsr: true,
+                    cr4_osxmmexcpt: false,
+                };
+                let result = run_with_minss_invalid_controls(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(0x5004),
+                        context: AccessContext::default(),
+                    },
+                    controls,
+                    || false,
+                );
+                assert_eq!(result.exit, RunExit::StopAddress);
+                assert_eq!(
+                    state.sse.as_ref().unwrap().xmm[0][..4],
+                    expected.value().to_bits().to_le_bytes()
+                );
+                assert_eq!(
+                    state.sse.as_ref().unwrap().mxcsr,
+                    mxcsr | (expected_de << 1)
+                );
             }
         }
     }

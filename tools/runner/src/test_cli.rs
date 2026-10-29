@@ -346,8 +346,9 @@ fn execute_fixture_v2(
     memory: &mut od_testkit::memory::FlatMemory,
 ) -> od_testkit::v2::RunResult {
     use od_isa::execute::{
-        RunConfig, RunExit, XorpdPrerequisiteState, run, run_with_rep_continuation,
-        run_with_sep_profile, run_with_xorpd_prerequisites,
+        MinssInvalidControls, RunConfig, RunExit, XorpdPrerequisiteState, run,
+        run_with_minss_invalid_controls, run_with_rep_continuation, run_with_sep_profile,
+        run_with_xorpd_prerequisites,
     };
     use od_testkit::v2;
     use std::time::{Duration, Instant};
@@ -440,6 +441,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongMinssInvalidControlsV1 {
+        let controls = loaded
+            .fixture
+            .minss_invalid_controls
+            .expect("validated MINSS profile has explicit controls");
+        run_with_minss_invalid_controls(
+            &mut state,
+            memory,
+            config,
+            MinssInvalidControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else {
         run(&mut state, memory, config, timeout)
     };
@@ -491,6 +510,7 @@ fn execute_fixture_v2(
                 rflags_defined: HexU64(execution.rflags_defined),
                 memory: memory.snapshot(),
                 xorpd_prerequisites: loaded.fixture.xorpd_prerequisites,
+                minss_invalid_controls: loaded.fixture.minss_invalid_controls,
                 exception: Observation::Available { value: exception },
             },
         },
@@ -1489,6 +1509,7 @@ mod tests {
                         .unwrap()
                         .snapshot(),
                     xorpd_prerequisites: input.fixture.xorpd_prerequisites,
+                    minss_invalid_controls: input.fixture.minss_invalid_controls,
                     exception: Observation::Available { value: None },
                 },
             },

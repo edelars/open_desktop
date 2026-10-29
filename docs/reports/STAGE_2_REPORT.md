@@ -16191,3 +16191,41 @@ XORPD fixtures и `diagnostic_v1_returns_fixed_identity_and_zero_feature_masks`
 S2-38, Generic amd64 и S2-26/39/40/41/42 остаются открытыми. См. [CPU contract](../specs/CPU_CONTRACT.md#s2-38b--точечные-sse2-prerequisite-gates-для-xorpd),
 [plan](../plans/STAGE_2.md#s2-38b-exact-xorpd-sse2-prerequisite-gates)
 и [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38b-local-xorpd-prerequisite-gates).
+
+## S2-38c — exact MINSS unmasked invalid-operation exit
+
+Added the local interpreter profile `s2-long-minss-invalid-controls-v1` for
+only `F3 0F 5D C1` (`MINSS XMM0,XMM1`). The profile requires explicit immutable
+SSE availability, CR0.EM/TS, CR4.OSFXSR and CR4.OSXMMEXCPT controls; full fetch
+precedes gates. SSE unavailable, EM=1 or OSFXSR=0 raises CPU-side #UD before
+TS=#NM. When a newly detected invalid condition is unmasked, IE is committed
+to MXCSR before arithmetic #UD/#XM, while full XMM0, RIP and retirement remain
+unchanged. Existing masked MINSS semantics are reused. The profile rejects
+all forms except the one exact encoding, remains JIT/native/C-adapter denied,
+and does not add generic CR writes or CPUID changes.
+
+The fixture and result schema echo the explicit controls, compare them against
+the bound fixture, and omit the new optional field for old profiles. The
+handwritten literal fixture combines QNaN and subnormal with IM=0 and
+OSXMMEXCPT=0 to verify arithmetic #UD, sticky IE and invalid priority. Unit
+coverage includes all 32 gate/OSXMMEXCPT control combinations at CPL0–3, all
+QNaN/SNaN source-class combinations across RC values, and both arithmetic
+delivery vectors. No physical/Mac mini execution was run; its status remains
+`not_run` until the combined final hardware substage. Broader S2-38, parent
+S2-37, guest exception delivery, and Generic amd64 acceptance remain open.
+
+**Verification:** `cargo test -p od-isa minss_invalid_ --offline` passed
+(3 tests); the schema/result compatibility test passed (1); the runner fixture
+with JIT/native denial passed (1); existing masked MINSS tests passed (4).
+The S2-38b decoder/fixture/runner regressions passed (5 total), and the S2-40b
+native XORPD regression passed (1). `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `git diff --check`, and
+`graphify update .` passed. No physical/Mac mini, hardware, guest exception
+delivery, or parent acceptance was run. Intel SDM Rev. 093
+sources: [official SDM index (version 093)](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html),
+[Vol. 1 §§11.5.3.2–3 and Table 11-1](https://cdrdv2.intel.com/v1/dl/getContent/671436),
+[Vol. 3A Table 16-1](https://cdrdv2.intel.com/v1/dl/getContent/671190),
+[Vol. 2B MINSS](https://cdrdv2.intel.com/929354/253667-sdm-vol-2b.pdf).
+See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38c--exact-minss-unmasked-invalid-operation-exit),
+[plan](../plans/STAGE_2.md#s2-38c-exact-long64-minss-xmm0xmm1-unmasked-invalid-operation-exit),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38c-local-minss-unmasked-invalid-operation).

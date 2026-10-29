@@ -6244,6 +6244,32 @@ amd64 и S2-26/39/40/41/42 остаются открытыми; Mac mini physica
 [report](../reports/STAGE_2_REPORT.md#s2-38b--точечные-sse2-prerequisite-gates-для-xorpd)
 и [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38b-local-xorpd-prerequisite-gates).
 
+#### S2-38c. Exact Long64 MINSS XMM0,XMM1 unmasked invalid-operation exit
+
+The local profile admits only `F3 0F 5D C1`. Its immutable explicit controls
+are SSE availability, CR0.EM/TS, CR4.OSFXSR and CR4.OSXMMEXCPT; CR0.MP=1 is a
+fixed prerequisite. Full fetch precedes gates: unavailable SSE, EM=1 or
+OSFXSR=0 raises CPU-side #UD; then TS=1 raises #NM. Only the exact MINSS
+operation is admitted. The MXCSR slice requires reserved bits clear, DE/ZE/OE/
+UE/PE masks set, DAZ/FTZ clear, and allows either IM value and every RC.
+
+When a newly detected MINSS invalid condition is unmasked, IE is committed to
+MXCSR while the full destination XMM0, RIP, and retirement remain unchanged.
+OSXMMEXCPT=0 selects arithmetic #UD; =1 selects #XM. Prior IE alone does not
+fault. Masked invalid and non-invalid operations retain the existing S2-37e
+MINSS behavior. The exact profile remains interpreter-only; no CPUID, JIT,
+native, C adapter, generic CR-register model, memory operand, other MINSS form,
+or other arithmetic exception is admitted.
+
+Local tests cover all 32 gate/OSXMMEXCPT control combinations at CPL0–3,
+arithmetic #UD/#XM snapshots, invalid versus denormal priority, the exact
+fixture and result control echo. This is not full S2-38, generic amd64 acceptance, parent S2-37
+coverage, guest exception delivery, or physical acceptance. Mac mini status
+remains `not_run` until the combined final hardware substage. See the
+[S2-38c CPU contract](../specs/CPU_CONTRACT.md#s2-38c--exact-minss-unmasked-invalid-operation-exit),
+[report](../reports/STAGE_2_REPORT.md#s2-38c--exact-minss-unmasked-invalid-operation-exit),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38c-local-minss-unmasked-invalid-operation).
+
 ### S2-39. Сохранение и восстановление FP/SIMD
 
 #### S2-39a. Нормативное evidence legacy FXSAVE/FXRSTOR (evidence only)

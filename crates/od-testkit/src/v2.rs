@@ -96,6 +96,7 @@ pub const PROFILE_RCPSS_REGISTER: &str = "s2-long-rcpss-reg-v1";
 pub const PROFILE_RSQRTPS_REGISTER: &str = "s2-long-rsqrtps-reg-v1";
 pub const PROFILE_RCPPS_REGISTER: &str = "s2-long-rcpps-reg-v1";
 pub const PROFILE_MINSS_MASKED_REGISTER: &str = "s2-long-minss-reg-masked-v1";
+pub const PROFILE_MINSS_INVALID_CONTROLS: &str = "s2-long-minss-invalid-controls-v1";
 pub const PROFILE_MINSD_MASKED_REGISTER: &str = "s2-long-minsd-reg-masked-v1";
 pub const PROFILE_MAXSD_MASKED_REGISTER: &str = "s2-long-maxsd-reg-masked-v1";
 pub const PROFILE_MINPD_MASKED_REGISTER: &str = "s2-long-minpd-reg-masked-v1";
@@ -172,6 +173,8 @@ pub enum Profile {
     LongXorpdRegV1,
     #[serde(rename = "s2-long-xorpd-prerequisites-v1")]
     LongXorpdPrerequisitesV1,
+    #[serde(rename = "s2-long-minss-invalid-controls-v1")]
+    LongMinssInvalidControlsV1,
     #[serde(rename = "s2-long-native-xorpd-xmm0-xmm1-v1")]
     LongNativeXorpdXmm0Xmm1V1,
     #[serde(rename = "s2-long-andpd-reg-v1")]
@@ -847,6 +850,7 @@ impl IntegerState {
                     | Profile::LongXorpsRegV1
                     | Profile::LongXorpdRegV1
                     | Profile::LongXorpdPrerequisitesV1
+                    | Profile::LongMinssInvalidControlsV1
                     | Profile::LongAndpdRegV1
                     | Profile::LongOrpdRegV1
                     | Profile::LongAndnpdRegV1
@@ -962,6 +966,7 @@ impl IntegerState {
                     | Profile::LongXorpsRegV1
                     | Profile::LongXorpdRegV1
                     | Profile::LongXorpdPrerequisitesV1
+                    | Profile::LongMinssInvalidControlsV1
                     | Profile::LongNativeXorpdXmm0Xmm1V1
                     | Profile::LongAndpdRegV1
                     | Profile::LongOrpdRegV1
@@ -1098,6 +1103,7 @@ impl IntegerState {
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
                 | Profile::LongXorpdPrerequisitesV1
+                | Profile::LongMinssInvalidControlsV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
                 | Profile::LongAndnpdRegV1
@@ -1214,6 +1220,7 @@ impl IntegerState {
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
                 | Profile::LongXorpdPrerequisitesV1
+                | Profile::LongMinssInvalidControlsV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -1397,6 +1404,7 @@ impl IntegerState {
             | Profile::LongXorpsRegV1
             | Profile::LongXorpdRegV1
             | Profile::LongXorpdPrerequisitesV1
+            | Profile::LongMinssInvalidControlsV1
             | Profile::LongNativeXorpdXmm0Xmm1V1
             | Profile::LongAndpdRegV1
             | Profile::LongOrpdRegV1
@@ -1515,6 +1523,7 @@ impl IntegerState {
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
                 | Profile::LongXorpdPrerequisitesV1
+                | Profile::LongMinssInvalidControlsV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -1640,6 +1649,7 @@ impl IntegerState {
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
                 | Profile::LongXorpdPrerequisitesV1
+                | Profile::LongMinssInvalidControlsV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -1768,6 +1778,7 @@ impl IntegerState {
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
                 | Profile::LongXorpdPrerequisitesV1
+                | Profile::LongMinssInvalidControlsV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -1899,6 +1910,7 @@ impl IntegerState {
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
                 | Profile::LongXorpdPrerequisitesV1
+                | Profile::LongMinssInvalidControlsV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -2180,6 +2192,7 @@ impl IntegerState {
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
                 | Profile::LongXorpdPrerequisitesV1
+                | Profile::LongMinssInvalidControlsV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
                 | Profile::LongAndnpdRegV1
@@ -2295,6 +2308,7 @@ impl IntegerState {
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
                 | Profile::LongXorpdPrerequisitesV1
+                | Profile::LongMinssInvalidControlsV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
                 | Profile::LongAndnpdRegV1
@@ -2434,6 +2448,7 @@ impl IntegerState {
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
                 | Profile::LongXorpdPrerequisitesV1
+                | Profile::LongMinssInvalidControlsV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -2547,6 +2562,7 @@ impl IntegerState {
                 | Profile::LongXorpsRegV1
                 | Profile::LongXorpdRegV1
                 | Profile::LongXorpdPrerequisitesV1
+                | Profile::LongMinssInvalidControlsV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -2704,6 +2720,9 @@ pub struct Fixture {
     /// Explicit controls required only by the local S2-38b exact XORPD profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xorpd_prerequisites: Option<XorpdPrerequisiteSnapshot>,
+    /// Explicit controls required only by the exact S2-38c MINSS profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minss_invalid_controls: Option<MinssInvalidControlSnapshot>,
     /// Code and data share the same guest address space. No implicit host buffer.
     pub memory: Vec<MemoryRegionSpec>,
     /// Optional external harness boundary, checked before fetch, not an x86 opcode.
@@ -2721,6 +2740,16 @@ pub struct XorpdPrerequisiteSnapshot {
     pub cr0_em: bool,
     pub cr0_ts: bool,
     pub cr4_osfxsr: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MinssInvalidControlSnapshot {
+    pub sse_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2907,6 +2936,62 @@ impl Fixture {
                 "only valid for the XORPD prerequisite profile",
             ));
         }
+        if self.profile == Profile::LongMinssInvalidControlsV1 {
+            let controls = self.minss_invalid_controls.ok_or_else(|| {
+                invalid(
+                    "minss_invalid_controls",
+                    "required by the MINSS invalid-controls profile",
+                )
+            })?;
+            let _ = controls;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| {
+                    invalid(
+                        "memory.code",
+                        "required by the MINSS invalid-controls profile",
+                    )
+                })?;
+            let start = self.initial_state.rip.get();
+            if code.guest_address.get() != start
+                || code.length != 4
+                || !code.permissions.execute
+                || code.initial_bytes_hex.to_ascii_lowercase() != "f30f5dc1"
+                || self.memory.len() != 1
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(4)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "MINSS invalid-controls fixtures require exactly F3 0F 5D C1, one executable code mapping, budget 1, and stop RIP entry+4",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .expect("MINSS SSE state required above")
+                .mxcsr
+                .get();
+            let masks = 0x0000_1f00;
+            if mxcsr & 0xffff_0000 != 0 || mxcsr & masks != masks || mxcsr & 0x0000_8040 != 0 {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "MINSS invalid-controls requires reserved bits clear, DE/ZE/OE/UE/PE masks set, DAZ/FTZ clear, and permits either IM value and any RC",
+                ));
+            }
+        } else if self.minss_invalid_controls.is_some() {
+            return Err(invalid(
+                "minss_invalid_controls",
+                "only valid for the MINSS invalid-controls profile",
+            ));
+        }
         if matches!(
             self.profile,
             Profile::LongXorpsRegV1
@@ -3075,7 +3160,9 @@ impl Fixture {
                 Profile::LongRcpssRegV1 => rcpss_register_length(&code_bytes),
                 Profile::LongRsqrtpsRegV1 => rsqrtps_register_length(&code_bytes),
                 Profile::LongRcppsRegV1 => rcpps_register_length(&code_bytes),
-                Profile::LongMinssMaskedRegV1 => minss_register_masked_length(&code_bytes),
+                Profile::LongMinssMaskedRegV1 | Profile::LongMinssInvalidControlsV1 => {
+                    minss_register_masked_length(&code_bytes)
+                }
                 Profile::LongMinsdMaskedRegV1 => minsd_register_masked_length(&code_bytes),
                 Profile::LongMaxsdMaskedRegV1 => maxsd_register_masked_length(&code_bytes),
                 Profile::LongMinpdMaskedRegV1 => minpd_register_masked_length(&code_bytes),
@@ -4952,6 +5039,7 @@ impl Fixture {
             converted_from_v1_sha256: Some(old.input_sha256.clone()),
             initial_state: IntegerState::try_from(&state)?,
             xorpd_prerequisites: None,
+            minss_invalid_controls: None,
             memory: vec![MemoryRegionSpec {
                 region_id: "code".into(),
                 guest_address: HexU64(0),
@@ -5016,6 +5104,9 @@ pub struct Snapshot {
     /// Immutable XORPD gate inputs, echoed into results only for S2-38b.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xorpd_prerequisites: Option<XorpdPrerequisiteSnapshot>,
+    /// Immutable MINSS gate inputs, echoed into results only for S2-38c.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minss_invalid_controls: Option<MinssInvalidControlSnapshot>,
     /// Available(None) means observed no exception; unavailable is not an empty result.
     pub exception: Observation<Option<ExceptionSnapshot>>,
 }
@@ -5108,6 +5199,19 @@ impl RunResult {
                 ));
             }
             (_, None) => {}
+        }
+        if self.profile == Profile::LongMinssInvalidControlsV1 {
+            if snapshot.minss_invalid_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.minss_invalid_controls",
+                    "required by the MINSS invalid-controls profile",
+                ));
+            }
+        } else if snapshot.minss_invalid_controls.is_some() {
+            return Err(invalid(
+                "snapshot.minss_invalid_controls",
+                "only valid for the MINSS invalid-controls profile",
+            ));
         }
         snapshot.state.validate_for(self.profile)?;
         if snapshot.rflags_defined.get() & !INTEGER_FLAGS != 0 {
@@ -5441,6 +5545,15 @@ pub fn compare(
     }
     if b.xorpd_prerequisites != loaded.fixture.xorpd_prerequisites {
         differences.push("right.xorpd_prerequisites".into());
+    }
+    if a.minss_invalid_controls != b.minss_invalid_controls {
+        differences.push("minss_invalid_controls".into());
+    }
+    if a.minss_invalid_controls != loaded.fixture.minss_invalid_controls {
+        differences.push("left.minss_invalid_controls".into());
+    }
+    if b.minss_invalid_controls != loaded.fixture.minss_invalid_controls {
+        differences.push("right.minss_invalid_controls".into());
     }
     if (a.state.rflags.get() ^ b.state.rflags.get()) & mask != 0 {
         differences.push("rflags".into());

@@ -11311,6 +11311,37 @@ substage. См. [план](../plans/STAGE_2.md#s2-38b-exact-xorpd-sse2-prerequis
 [report](../reports/STAGE_2_REPORT.md#s2-38b--точечные-sse2-prerequisite-gates-для-xorpd)
 и [fixture](../../tests/fixtures/x86/stage2/s2_38b_xorpd_sse2_absent.case.json).
 
+## S2-38c — exact MINSS unmasked invalid-operation exit
+
+The interpreter-only profile `s2-long-minss-invalid-controls-v1` admits only
+Long64 bytes `F3 0F 5D C1` (`MINSS XMM0,XMM1`) with one executable code
+mapping, budget 1 and stop RIP `entry+4`. It requires the ordinary x87/SSE
+state snapshots and explicit immutable controls `sse_available`, `cr0_em`,
+`cr0_ts`, `cr4_osfxsr`, and `cr4_osxmmexcpt`; missing or extra fields fail
+closed. CR0.MP=1 is a fixed prerequisite. No generic CR state/write, CPUID,
+memory operand or other MINSS form is implied.
+
+After complete instruction fetch, unavailable SSE, CR0.EM=1, or CR4.OSFXSR=0
+raises CPU-side #UD; if those pass, CR0.TS=1 raises #NM. These gates precede
+operand inspection, are CPL-independent, have no error code, and do not
+retire. An unmasked invalid-operation condition updates only sticky MXCSR.IE
+and then faults with #UD when OSXMMEXCPT=0 or #XM when it is 1. The complete
+destination XMM0, RIP and retirement remain unchanged on that arithmetic
+exit. A prior IE bit alone is not a new exception. With IM=1, existing masked
+MINSS response and sticky-status behavior is reused.
+
+The strict MXCSR input subset has reserved bits clear, DE/ZE/OE/UE/PE masks
+set, DAZ/FTZ clear; IM may be either value and any RC is accepted. Other
+arithmetic exception classes and mixed unmasked exceptions are not admitted.
+This exact profile does not close broader S2-38, generic amd64, parent S2-37,
+guest exception delivery, or final physical acceptance. JIT, native and C
+adapter remain denied; physical/Mac mini is `not_run` until the combined final
+hardware substage. Behavior follows Intel SDM Rev. 093, Vol. 1 §§11.5.3.2–3
+and Table 11-1; Vol. 3A Table 16-1; Vol. 2B MINSS:
+[Vol. 1](https://cdrdv2.intel.com/v1/dl/getContent/671436),
+[Vol. 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190),
+[Vol. 2B MINSS](https://cdrdv2.intel.com/929354/253667-sdm-vol-2b.pdf).
+
 ## S2-40b — bounded SSE-only native XORPD oracle
 
 The native-only schema-v2 profile `s2-long-native-xorpd-xmm0-xmm1-v1` admits

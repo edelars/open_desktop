@@ -885,6 +885,24 @@ interpreter; native/interpreter comparison adds a second oracle check. See the
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-40b-native-xorpd-xmm0-xmm1)
 and [CPU contract](../specs/CPU_CONTRACT.md#s2-40b--bounded-sse-only-native-xorpd-oracle).
 
+## S2-38c exact MINSS invalid-controls profile
+
+The schema-v2 profile `s2-long-minss-invalid-controls-v1` requires all five
+explicit booleans in `minss_invalid_controls`: `sse_available`, `cr0_em`,
+`cr0_ts`, `cr4_osfxsr`, and `cr4_osxmmexcpt`. They are immutable inputs and
+are repeated in `snapshot.minss_invalid_controls`; validation requires the
+result field for this profile, and comparison checks both outputs against each
+other and the bound input fixture. Older profiles omit this optional field.
+Unknown or missing controls fail closed.
+
+Only exact bytes `f30f5dc1`, one executable code mapping, budget 1, and
+`stop_rip = entry+4` are admitted. The fixture requires complete x87/SSE
+snapshots. Its MXCSR has reserved bits clear, DE/ZE/OE/UE/PE masks set and
+DAZ/FTZ clear; IM may be set or clear and any RC is accepted. Expected exit is
+`exception` for an entry gate or arithmetic invalid exit, or `stop_address`
+for completion. This fixture profile does not broaden the decoder's other
+forms or permit memory access. JIT and native execution are denied.
+
 ## S2-38b exact XORPD prerequisite profile
 
 The local-only `s2-long-xorpd-prerequisites-v1` schema-v2 profile requires

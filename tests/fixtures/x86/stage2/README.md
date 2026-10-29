@@ -5719,3 +5719,18 @@ fixture. Older profiles omit this optional result field.
 See [S2-38b plan](../../../../docs/plans/STAGE_2.md#s2-38b-exact-xorpd-sse2-prerequisite-gates),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38b--точечные-sse2-prerequisite-gates-для-xorpd),
 and [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-38b--точечные-sse2-prerequisite-gates-для-xorpd).
+
+### S2-38c local MINSS unmasked invalid operation
+
+`s2_38c_minss_unmasked_invalid.case.json` is a handwritten schema-v2 fixture
+for exact bytes `F3 0F 5D C1` and profile
+`s2-long-minss-invalid-controls-v1`. XMM0 contains a QNaN, XMM1 a positive
+subnormal, IM is clear and OSXMMEXCPT is clear. The expected arithmetic #UD
+sets MXCSR.IE while preserving the complete XMM0 destination, RIP and
+retirement count; invalid takes priority over denormal. Controls are explicit
+and echoed by the result snapshot. Local unit coverage checks prerequisite
+gates at CPL0–3 and both arithmetic #UD/#XM routes. JIT/native remain denied.
+Physical/Mac mini remains `not_run` until the combined final hardware stage.
+See the [S2-38c plan](../../../../docs/plans/STAGE_2.md#s2-38c-exact-long64-minss-xmm0xmm1-unmasked-invalid-operation-exit),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38c--exact-minss-unmasked-invalid-operation-exit),
+and [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-38c--exact-minss-unmasked-invalid-operation-exit).

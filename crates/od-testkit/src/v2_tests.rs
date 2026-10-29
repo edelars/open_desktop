@@ -35,6 +35,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                     })
                     .collect(),
                 xorpd_prerequisites: input.fixture.xorpd_prerequisites,
+                minss_invalid_controls: input.fixture.minss_invalid_controls,
                 exception: Observation::Available { value: None },
             },
         },
@@ -705,6 +706,78 @@ fn xorpd_prerequisite_snapshot_roundtrips_and_control_mismatch_does_not_compare_
     let old_roundtrip = RunResult::from_json(&old_bytes).unwrap();
     assert!(
         matches!(old_roundtrip.snapshot, Observation::Available { value } if value.xorpd_prerequisites.is_none())
+    );
+}
+
+#[test]
+fn minss_invalid_controls_fixture_and_result_are_strict_and_backward_compatible() {
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38c_minss_unmasked_invalid.case.json"
+    );
+    let input = Fixture::from_json(bytes).unwrap();
+    assert_eq!(input.fixture.profile, Profile::LongMinssInvalidControlsV1);
+    let mut missing: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    missing
+        .as_object_mut()
+        .unwrap()
+        .remove("minss_invalid_controls");
+    assert!(Fixture::from_json(&serde_json::to_vec(&missing).unwrap()).is_err());
+    for field in [
+        "sse_available",
+        "cr0_em",
+        "cr0_ts",
+        "cr4_osfxsr",
+        "cr4_osxmmexcpt",
+    ] {
+        let mut missing_field: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        missing_field["minss_invalid_controls"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(Fixture::from_json(&serde_json::to_vec(&missing_field).unwrap()).is_err());
+    }
+    let mut missing_sse: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    missing_sse["initial_state"]
+        .as_object_mut()
+        .unwrap()
+        .remove("sse");
+    assert!(Fixture::from_json(&serde_json::to_vec(&missing_sse).unwrap()).is_err());
+    let mut wrong_code: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    wrong_code["memory"][0]["initial_bytes_hex"] = serde_json::Value::String("f30f5dc0".into());
+    assert!(Fixture::from_json(&serde_json::to_vec(&wrong_code).unwrap()).is_err());
+    for mxcsr in [
+        "0x0000000000001e00", // missing precision mask
+        "0x0000000000001f40", // DAZ
+        "0x0000000100001f00", // reserved bit
+    ] {
+        let mut invalid_mxcsr: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        invalid_mxcsr["initial_state"]["sse"]["mxcsr"] = serde_json::Value::String(mxcsr.into());
+        assert!(Fixture::from_json(&serde_json::to_vec(&invalid_mxcsr).unwrap()).is_err());
+    }
+
+    let mut left = result(&input);
+    snapshot(&mut left).state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f01);
+    let encoded = left.to_json().unwrap();
+    assert_eq!(RunResult::from_json(&encoded).unwrap(), left);
+    let mut missing_result_control = left.clone();
+    snapshot(&mut missing_result_control).minss_invalid_controls = None;
+    assert!(missing_result_control.to_json().is_err());
+    let mut right = left.clone();
+    snapshot(&mut right)
+        .minss_invalid_controls
+        .as_mut()
+        .unwrap()
+        .cr4_osxmmexcpt = true;
+    let mismatch = compare(&input, &left, &right).unwrap();
+    assert!(mismatch.contains(&"minss_invalid_controls".to_owned()));
+    assert!(mismatch.contains(&"right.minss_invalid_controls".to_owned()));
+
+    let older = result(&loaded());
+    let json: serde_json::Value = serde_json::from_slice(&older.to_json().unwrap()).unwrap();
+    assert!(
+        json["snapshot"]["value"]
+            .get("minss_invalid_controls")
+            .is_none()
     );
 }
 
