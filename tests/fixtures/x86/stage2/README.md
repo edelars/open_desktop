@@ -5503,3 +5503,14 @@ DAZ/FTZ clear and reserved MXCSR bits clear. Normative references are Intel SDM
 Rev. 093 Vol. 1 §11.5, Appendix D Tables D-9/D-15 and Vol. 2B MINSS. This fixture
 does not claim unmasked exception or fault-ordering behavior; JIT/native remain
 closed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37e--local-long64-register-only-legacy-minss-with-masked-status).
+
+### S2-37f local masked-status MAXSS register profile
+
+`s2_37f_maxss_masked_register.case.json` is a handwritten schema-v2 XMM8←XMM9
+fixture for `F3 45 0F 5F C1`. The source low lanes are 1.0 and 2.0; MAXSS
+selects operand 2 while MXCSR and all other state remain unchanged. The local
+contract requires all six MXCSR exception masks, DAZ/FTZ
+clear and reserved MXCSR bits clear. Normative references are Intel SDM Rev.
+093 Vol. 1 §11.5, Appendix D Tables D-9/D-13/D-15 and Vol. 2B MAXSS. Unmasked
+exception and fault-ordering behavior is not claimed; JIT/native remain closed.
+See the [plan](../../../../docs/plans/STAGE_2.md#s2-37f--local-long64-register-only-legacy-maxss-with-masked-status).

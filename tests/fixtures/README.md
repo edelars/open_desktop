@@ -4,3 +4,6 @@
 
 The bounded S2-35.7 PSUBW example is documented in the
 [Stage 2 fixture index](x86/stage2/README.md#s2-357-local-register-psubw-diagnostic-profile).
+
+The local masked-status MAXSS fixture is documented in the
+[Stage 2 fixture index](x86/stage2/README.md#s2-37f-local-masked-status-maxss-register-profile).

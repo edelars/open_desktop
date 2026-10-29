@@ -89,6 +89,7 @@ pub const PROFILE_RCPSS_REGISTER: &str = "s2-long-rcpss-reg-v1";
 pub const PROFILE_RSQRTPS_REGISTER: &str = "s2-long-rsqrtps-reg-v1";
 pub const PROFILE_RCPPS_REGISTER: &str = "s2-long-rcpps-reg-v1";
 pub const PROFILE_MINSS_MASKED_REGISTER: &str = "s2-long-minss-reg-masked-v1";
+pub const PROFILE_MAXSS_MASKED_REGISTER: &str = "s2-long-maxss-reg-masked-v1";
 pub const PROFILE_MOVSD_REGISTER: &str = "s2-long-movsd-reg-v1";
 pub const PROFILE_MOVSD_STORE_REGISTER: &str = "s2-long-movsd-store-reg-v1";
 pub const PROFILE_MOVSD_MEMORY_LOAD: &str = "s2-long-movsd-mem-load-v1";
@@ -292,6 +293,8 @@ pub enum Profile {
     LongRcppsRegV1,
     #[serde(rename = "s2-long-minss-reg-masked-v1")]
     LongMinssMaskedRegV1,
+    #[serde(rename = "s2-long-maxss-reg-masked-v1")]
+    LongMaxssMaskedRegV1,
     #[serde(rename = "s2-long-movsd-reg-v1")]
     LongMovsdRegV1,
     #[serde(rename = "s2-long-movsd-store-reg-v1")]
@@ -835,6 +838,7 @@ impl IntegerState {
                     | Profile::LongRsqrtpsRegV1
                     | Profile::LongRcppsRegV1
                     | Profile::LongMinssMaskedRegV1
+                    | Profile::LongMaxssMaskedRegV1
                     | Profile::LongRsqrtssRegV1
                     | Profile::LongMovssRegV1
                     | Profile::LongMovssMemLoadV1
@@ -938,6 +942,7 @@ impl IntegerState {
                     | Profile::LongRsqrtpsRegV1
                     | Profile::LongRcppsRegV1
                     | Profile::LongMinssMaskedRegV1
+                    | Profile::LongMaxssMaskedRegV1
                     | Profile::LongRsqrtssRegV1
                     | Profile::LongMovssRegV1
                     | Profile::LongMovssMemLoadV1
@@ -1048,6 +1053,7 @@ impl IntegerState {
                 | Profile::LongRsqrtpsRegV1
                 | Profile::LongRcppsRegV1
                 | Profile::LongMinssMaskedRegV1
+                | Profile::LongMaxssMaskedRegV1
                 | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssMemLoadV1
@@ -1152,6 +1158,7 @@ impl IntegerState {
                 | Profile::LongRsqrtpsRegV1
                 | Profile::LongRcppsRegV1
                 | Profile::LongMinssMaskedRegV1
+                | Profile::LongMaxssMaskedRegV1
                 | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssMemLoadV1
@@ -1305,6 +1312,7 @@ impl IntegerState {
             | Profile::LongRsqrtpsRegV1
             | Profile::LongRcppsRegV1
             | Profile::LongMinssMaskedRegV1
+            | Profile::LongMaxssMaskedRegV1
             | Profile::LongRsqrtssRegV1
             | Profile::LongMovssRegV1
             | Profile::LongMovssMemLoadV1
@@ -1408,6 +1416,7 @@ impl IntegerState {
                 | Profile::LongRsqrtpsRegV1
                 | Profile::LongRcppsRegV1
                 | Profile::LongMinssMaskedRegV1
+                | Profile::LongMaxssMaskedRegV1
                 | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssMemLoadV1
@@ -1517,6 +1526,7 @@ impl IntegerState {
                 | Profile::LongRsqrtpsRegV1
                 | Profile::LongRcppsRegV1
                 | Profile::LongMinssMaskedRegV1
+                | Profile::LongMaxssMaskedRegV1
                 | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssMemLoadV1
@@ -1631,6 +1641,7 @@ impl IntegerState {
                 | Profile::LongRsqrtpsRegV1
                 | Profile::LongRcppsRegV1
                 | Profile::LongMinssMaskedRegV1
+                | Profile::LongMaxssMaskedRegV1
                 | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssMemLoadV1
@@ -1748,6 +1759,7 @@ impl IntegerState {
                 | Profile::LongRsqrtpsRegV1
                 | Profile::LongRcppsRegV1
                 | Profile::LongMinssMaskedRegV1
+                | Profile::LongMaxssMaskedRegV1
                 | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssMemLoadV1
@@ -2016,6 +2028,7 @@ impl IntegerState {
                 | Profile::LongRsqrtpsRegV1
                 | Profile::LongRcppsRegV1
                 | Profile::LongMinssMaskedRegV1
+                | Profile::LongMaxssMaskedRegV1
                 | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssMemLoadV1
@@ -2119,6 +2132,7 @@ impl IntegerState {
                 | Profile::LongRsqrtpsRegV1
                 | Profile::LongRcppsRegV1
                 | Profile::LongMinssMaskedRegV1
+                | Profile::LongMaxssMaskedRegV1
                 | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssMemLoadV1
@@ -2225,6 +2239,7 @@ impl IntegerState {
                 | Profile::LongRsqrtpsRegV1
                 | Profile::LongRcppsRegV1
                 | Profile::LongMinssMaskedRegV1
+                | Profile::LongMaxssMaskedRegV1
                 | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssMemLoadV1
@@ -2325,6 +2340,7 @@ impl IntegerState {
                 | Profile::LongRsqrtpsRegV1
                 | Profile::LongRcppsRegV1
                 | Profile::LongMinssMaskedRegV1
+                | Profile::LongMaxssMaskedRegV1
                 | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssMemLoadV1
@@ -2347,17 +2363,20 @@ impl IntegerState {
             (_, None) => {}
             (_, Some(_)) => return Err(invalid("state.sse", "not part of this profile")),
         }
-        if profile == Profile::LongMinssMaskedRegV1 {
+        if matches!(
+            profile,
+            Profile::LongMinssMaskedRegV1 | Profile::LongMaxssMaskedRegV1
+        ) {
             let mxcsr = self
                 .sse
                 .as_ref()
-                .expect("MINSS profile requires SSE state above")
+                .expect("MINSS/MAXSS profile requires SSE state above")
                 .mxcsr
                 .get();
-            if !minss_masked_mxcsr_supported(mxcsr) {
+            if !min_max_ss_masked_mxcsr_supported(mxcsr) {
                 return Err(invalid(
                     "state.sse.mxcsr",
-                    "MINSS masked profile requires reserved bits clear, all exception masks set, and DAZ/FTZ disabled",
+                    "MINSS/MAXSS masked profile requires reserved bits clear, all exception masks set, and DAZ/FTZ disabled",
                 ));
             }
         }
@@ -2570,6 +2589,7 @@ impl Fixture {
                 | Profile::LongRsqrtpsRegV1
                 | Profile::LongRcppsRegV1
                 | Profile::LongMinssMaskedRegV1
+                | Profile::LongMaxssMaskedRegV1
                 | Profile::LongRsqrtssRegV1
                 | Profile::LongMovssRegV1
                 | Profile::LongMovssStoreRegV1
@@ -2653,6 +2673,7 @@ impl Fixture {
                 Profile::LongRsqrtpsRegV1 => rsqrtps_register_length(&code_bytes),
                 Profile::LongRcppsRegV1 => rcpps_register_length(&code_bytes),
                 Profile::LongMinssMaskedRegV1 => minss_register_masked_length(&code_bytes),
+                Profile::LongMaxssMaskedRegV1 => maxss_register_masked_length(&code_bytes),
                 Profile::LongMovsdRegV1 => movsd_register_length(&code_bytes),
                 Profile::LongMovsdStoreRegV1 => movsd_store_register_length(&code_bytes),
                 Profile::LongMovssStoreRegV1 => movss_store_register_length(&code_bytes),
@@ -6295,7 +6316,20 @@ fn minss_register_masked_length(code_bytes: &str) -> Option<u32> {
     }
 }
 
-fn minss_masked_mxcsr_supported(mxcsr: u64) -> bool {
+fn maxss_register_masked_length(code_bytes: &str) -> Option<u32> {
+    let bytes = decode_bytes(code_bytes).ok()?;
+    match bytes.as_slice() {
+        [0xf3, 0x0f, 0x5f, modrm] if modrm >> 6 == 3 => Some(4),
+        [0xf3, rex, 0x0f, 0x5f, modrm]
+            if (0x40..=0x4f).contains(rex) && rex & 0x0a == 0 && modrm >> 6 == 3 =>
+        {
+            Some(5)
+        }
+        _ => None,
+    }
+}
+
+fn min_max_ss_masked_mxcsr_supported(mxcsr: u64) -> bool {
     let Ok(mxcsr) = u32::try_from(mxcsr) else {
         return false;
     };

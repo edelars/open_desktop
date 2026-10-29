@@ -489,7 +489,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37c | Local-only Long64 legacy register RSQRTPS profile `s2-long-rsqrtps-reg-v1`, using S2-36ac per lane; JIT/native closed | S2-34.1, S2-36ac; independent review |
 | [x] | S2-37d | Local-only Long64 legacy register RCPPS profile `s2-long-rcpps-reg-v1`, using S2-36ab per lane; JIT/native closed | S2-34.1, S2-36ab; ISSUE-025; independent review |
 | [x] | S2-37e | Local-only Long64 legacy register MINSS profile `s2-long-minss-reg-masked-v1`; bounded masked IE/DE status only; JIT/native closed | S2-36z; independent review |
-| [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e: masked MINSS invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e; independent review |
+| [x] | S2-37f | Local-only Long64 legacy register MAXSS profile `s2-long-maxss-reg-masked-v1`; reuses bounded masked IE/DE status; JIT/native closed | S2-37e, S2-38a; independent review |
+| [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f: masked MINSS/MAXSS invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f; independent review |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
@@ -5975,9 +5976,31 @@ Tables D-9/D-15 (masked floating-point exceptions and denormal status); MINSS
 operand selection is Intel SDM Rev. 093, Vol. 2B, `MINSS`. A literal schema-v2
 fixture and pairwise/state/encoding tests cover the bounded profile.
 
-#### S2-38a — consumed masked MINSS status subset
+#### S2-37f — local Long64 register-only legacy MAXSS with masked status
 
-Only masked IE/DE sticky-status updates used by S2-37e are implemented. Full
+Add schema-v2 diagnostic profile `s2-long-maxss-reg-masked-v1` for exactly
+`F3 [optional one adjacent REX.R/B] 0F 5F /r`, ModR/M.mod=3, XMM0–15, in
+Long64. Reuse the S2-37e MXCSR preconditions: all six exception masks set;
+DAZ/FTZ clear; reserved high bits 16–31 zero; any RC and pre-existing sticky
+flags accepted and preserved. Unsupported state is a local profile refusal,
+not an architectural fault claim.
+
+Snapshot both low dwords before writing. A QNaN/SNaN in either operand selects
+operand 2 unchanged and sets IE sticky. A subnormal in either operand sets DE
+sticky when DAZ is clear; IE and DE accumulate independently, including
+NaN-plus-subnormal inputs. Otherwise use `Binary32::max_sse_raw_result`,
+including operand-2 selection for equal values and signed zeros. Update only
+the destination low dword and IE/DE sticky bits; preserve destination upper
+96 bits and all other state. Aliasing is supported; no data-memory callbacks,
+JIT/native/CPUID admission or unmasked exception delivery are added.
+
+Intel SDM Rev. 093 Vol. 1 §11.5 and Appendix D Tables D-9/D-13/D-15 group
+MAXSS with MINSS for masked NaN and denormal exceptions; Vol. 2B `MAXSS`
+defines operand selection. Full unmasked fault processing remains open.
+
+#### S2-38a — consumed masked MINSS/MAXSS status subset
+
+Only masked IE/DE sticky-status updates used by S2-37e/f are implemented. Full
 S2-38 remains open: unmasked exception delivery, #XM behavior, CR0/CR4 and
 OSXMMEXCPT gating, memory/alignment/FP fault priority, precise fault ordering,
 and the remaining MXCSR/SSE exception surface are not implemented or claimed.

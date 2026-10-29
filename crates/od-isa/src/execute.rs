@@ -21,13 +21,13 @@ use crate::{FsDescriptorCache, LongModeState, OperandSize, Register, RegisterVie
 /// Maximum successful string iterations processed by one instruction invocation.
 pub const REP_ITERATION_WORK_LIMIT: u64 = 1024;
 
-const MINSS_MXCSR_EXCEPTION_MASKS: u32 = 0x0000_1f80;
-const MINSS_MXCSR_DAZ_FTZ: u32 = 0x0000_8040;
+const MIN_MAX_SS_MXCSR_EXCEPTION_MASKS: u32 = 0x0000_1f80;
+const MIN_MAX_SS_MXCSR_DAZ_FTZ: u32 = 0x0000_8040;
 
-const fn minss_mxcsr_supported(mxcsr: u32) -> bool {
+const fn min_max_ss_mxcsr_supported(mxcsr: u32) -> bool {
     mxcsr & 0xffff_0000 == 0
-        && mxcsr & MINSS_MXCSR_EXCEPTION_MASKS == MINSS_MXCSR_EXCEPTION_MASKS
-        && mxcsr & MINSS_MXCSR_DAZ_FTZ == 0
+        && mxcsr & MIN_MAX_SS_MXCSR_EXCEPTION_MASKS == MIN_MAX_SS_MXCSR_EXCEPTION_MASKS
+        && mxcsr & MIN_MAX_SS_MXCSR_DAZ_FTZ == 0
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1179,17 +1179,20 @@ fn step_tracked_with_profiles(
             | Operation::RcpssRegister { .. }
             | Operation::RcppsRegister { .. }
             | Operation::MinssRegisterMasked { .. }
+            | Operation::MaxssRegisterMasked { .. }
     ) && state.sse.is_none()
     {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
         });
     }
-    if matches!(instruction.operation, Operation::MinssRegisterMasked { .. })
-        && !state
-            .sse
-            .as_ref()
-            .is_some_and(|sse| minss_mxcsr_supported(sse.mxcsr))
+    if matches!(
+        instruction.operation,
+        Operation::MinssRegisterMasked { .. } | Operation::MaxssRegisterMasked { .. }
+    ) && !state
+        .sse
+        .as_ref()
+        .is_some_and(|sse| min_max_ss_mxcsr_supported(sse.mxcsr))
     {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
@@ -1727,6 +1730,7 @@ fn step_tracked_with_profiles(
         | Operation::RcpssRegister { .. }
         | Operation::RcppsRegister { .. }
         | Operation::MinssRegisterMasked { .. }
+        | Operation::MaxssRegisterMasked { .. }
         | Operation::MovsdRegister { .. }
         | Operation::MovsdStoreRegister { .. }
         | Operation::MovsdLoadMemory { .. }
@@ -4653,7 +4657,12 @@ fn step_tracked_with_profiles(
         Operation::MinssRegisterMasked {
             destination,
             source,
+        }
+        | Operation::MaxssRegisterMasked {
+            destination,
+            source,
         } => {
+            let maximum = matches!(instruction.operation, Operation::MaxssRegisterMasked { .. });
             let (result_bits, invalid_operation, denormal_operand, old_mxcsr) = {
                 let sse = state
                     .sse
@@ -4673,7 +4682,11 @@ fn step_tracked_with_profiles(
                 let rhs = Binary32::from_bits(rhs_bits);
                 let denormal_operand =
                     lhs.class() == BinaryClass::Subnormal || rhs.class() == BinaryClass::Subnormal;
-                let result = Binary32::min_sse_raw_result(lhs, rhs);
+                let result = if maximum {
+                    Binary32::max_sse_raw_result(lhs, rhs)
+                } else {
+                    Binary32::min_sse_raw_result(lhs, rhs)
+                };
                 (
                     result.value().to_bits(),
                     result.invalid_operation(),
@@ -4684,7 +4697,7 @@ fn step_tracked_with_profiles(
             let sse = state
                 .sse
                 .as_mut()
-                .expect("MINSS local profile state was prevalidated");
+                .expect("MINSS/MAXSS local profile state was prevalidated");
             sse.xmm[usize::from(destination)][..4].copy_from_slice(&result_bits.to_le_bytes());
             sse.mxcsr =
                 old_mxcsr | u32::from(invalid_operation) | (u32::from(denormal_operand) << 1);
@@ -76625,6 +76638,178 @@ mod tests {
         assert_eq!(
             step(&mut state, &mut memory, AccessContext::default()).unwrap(),
             StepOutcome::Unsupported { opcode: 0x5d }
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn maxss_register_masked_updates_ie_de_and_preserves_every_other_state_for_all_pairs() {
+        let values: [u32; 16] = [
+            0x3f80_0000,
+            0x4000_0000,
+            0xbf80_0000,
+            0xc000_0000,
+            0x0000_0000,
+            0x8000_0000,
+            0x7fc1_2345,
+            0xff81_2345,
+            0x0000_0001,
+            0x8000_0001,
+            0x007f_ffff,
+            0x807f_ffff,
+            0x7f80_0000,
+            0xff80_0000,
+            0x3f00_0000,
+            0xbf00_0000,
+        ];
+
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let code = [0xf3, rex, 0x0f, 0x5f, modrm];
+                let mut memory = Memory::at(&code, 0x1000);
+                let mut state = LongModeState::default();
+                state.rip = 0x1000;
+                state.rflags = crate::DF | 2;
+                state.gpr[Register::Rcx as usize] = 0x0123_4567_89ab_cdef;
+                state.x87 = Some(X87State::fixture_seed());
+                let mut xmm = std::array::from_fn(|register| {
+                    std::array::from_fn(|byte| (register * 16 + byte) as u8)
+                });
+                for (register, bits) in values.iter().copied().enumerate() {
+                    xmm[register][..4].copy_from_slice(&bits.to_le_bytes());
+                }
+                let mxcsr = 0x0000_1fa0; // all masks; sticky PE already set
+                state.sse = Some(SseState { xmm, mxcsr });
+                let before = state.clone();
+
+                let lhs = Binary32::from_bits(values[usize::from(destination)]);
+                let rhs = Binary32::from_bits(values[usize::from(source)]);
+                let selection = Binary32::max_sse_raw_result(lhs, rhs);
+                let denormal =
+                    lhs.class() == BinaryClass::Subnormal || rhs.class() == BinaryClass::Subnormal;
+                let expected_mxcsr =
+                    mxcsr | u32::from(selection.invalid_operation()) | (u32::from(denormal) << 1);
+
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                    StepOutcome::Advanced,
+                    "destination={destination}, source={source}"
+                );
+                let mut expected = before.clone();
+                expected.rip = 0x1005;
+                expected.sse.as_mut().unwrap().xmm[usize::from(destination)][..4]
+                    .copy_from_slice(&selection.value().to_bits().to_le_bytes());
+                expected.sse.as_mut().unwrap().mxcsr = expected_mxcsr;
+                assert_eq!(
+                    state, expected,
+                    "destination={destination}, source={source}"
+                );
+                assert_eq!(state.rflags, before.rflags);
+                assert_eq!(state.x87, before.x87);
+                assert_eq!(memory.accesses, []);
+                assert_eq!(memory.fetches, (0x1000..0x1005).collect::<Vec<_>>());
+            }
+        }
+    }
+
+    #[test]
+    fn maxss_register_masked_matches_literal_nan_zero_and_denormal_behavior() {
+        let code = [0xf3, 0x0f, 0x5f, 0xc1]; // MAXSS XMM0, XMM1
+        let vectors: [(u32, u32, u32, u32); 11] = [
+            (0x3f80_0000, 0x4000_0000, 0x4000_0000, 0),    // 1, 2 -> 2
+            (0xc000_0000, 0xbf80_0000, 0xbf80_0000, 0),    // -2, -1 -> -1
+            (0x0000_0000, 0x8000_0000, 0x8000_0000, 0),    // equal signed zeros choose RHS
+            (0x8000_0000, 0x0000_0000, 0x0000_0000, 0),    // reverse zero order
+            (0x7fc1_2345, 0xc040_0000, 0xc040_0000, 0x01), // QNaN lhs selects raw rhs, IE
+            (0x3f80_0000, 0xff81_2345, 0xff81_2345, 0x01), // SNaN rhs selected raw, IE
+            (0x0000_0001, 0x3f80_0000, 0x3f80_0000, 0x02), // positive subnormal lhs, DE
+            (0x3f80_0000, 0x8000_0001, 0x3f80_0000, 0x02), // negative subnormal rhs, DE
+            (0x7fc1_2345, 0x8000_0001, 0x8000_0001, 0x03), // QNaN + denormal => IE | DE
+            (0xff81_2345, 0x0000_0001, 0x0000_0001, 0x03), // SNaN + denormal => IE | DE
+            (0x3f80_0000, 0xffc2_3456, 0xffc2_3456, 0x01), // QNaN rhs selected raw, IE
+        ];
+        for (lhs_bits, rhs_bits, expected_bits, new_flags) in vectors {
+            let mut memory = Memory::at(&code, 0x2000);
+            let mut state = LongModeState::default();
+            state.rip = 0x2000;
+            state.rflags = crate::DF | 2;
+            state.x87 = Some(X87State::fixture_seed());
+            let mut xmm = [[0x5a; 16]; 16];
+            xmm[0][..4].copy_from_slice(&lhs_bits.to_le_bytes());
+            xmm[1][..4].copy_from_slice(&rhs_bits.to_le_bytes());
+            let mxcsr = 0x0000_1fa0; // masks set, old PE sticky
+            state.sse = Some(SseState { xmm, mxcsr });
+            let before = state.clone();
+
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                StepOutcome::Advanced
+            );
+            let mut expected = before.clone();
+            expected.rip = 0x2004;
+            expected.sse.as_mut().unwrap().xmm[0][..4]
+                .copy_from_slice(&expected_bits.to_le_bytes());
+            expected.sse.as_mut().unwrap().mxcsr = mxcsr | u32::from(new_flags);
+            assert_eq!(state, expected, "lhs={lhs_bits:08x} rhs={rhs_bits:08x}");
+            assert!(memory.accesses.is_empty());
+        }
+
+        for rc in 0..4u32 {
+            let mxcsr = 0x0000_1fa0 | (rc << 13);
+            let mut memory = Memory::at(&code, 0x3000);
+            let mut state = LongModeState::default();
+            state.rip = 0x3000;
+            state.x87 = Some(X87State::fixture_seed());
+            let mut xmm = [[0x33; 16]; 16];
+            xmm[0][..4].copy_from_slice(&0x7fc1_2345u32.to_le_bytes());
+            xmm[1][..4].copy_from_slice(&0x8000_0001u32.to_le_bytes());
+            state.sse = Some(SseState { xmm, mxcsr });
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                StepOutcome::Advanced
+            );
+            assert_eq!(state.sse.as_ref().unwrap().mxcsr, mxcsr | 3, "RC={rc}");
+        }
+    }
+
+    #[test]
+    fn maxss_register_masked_preflights_mxcsr_and_missing_sse_atomically() {
+        let code = [0xf3, 0x45, 0x0f, 0x5f, 0xc1]; // MAXSS XMM8, XMM9
+        for mxcsr in [
+            0x0000_1f00, // IE mask clear
+            0x0000_1fc0, // DAZ set
+            0x0000_9f80, // FTZ set
+            0x0001_1f80, // reserved bit set
+        ] {
+            let mut memory = Memory::at(&code, 0x4000);
+            let mut state = LongModeState::default();
+            state.rip = 0x4000;
+            state.x87 = Some(X87State::fixture_seed());
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr,
+            });
+            let before = state.clone();
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+                StepOutcome::Unsupported { opcode: 0x5f },
+                "MXCSR={mxcsr:08x}"
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut memory = Memory::at(&code, 0x4000);
+        let mut state = LongModeState::default();
+        state.rip = 0x4000;
+        state.x87 = Some(X87State::fixture_seed());
+        let before = state.clone();
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()).unwrap(),
+            StepOutcome::Unsupported { opcode: 0x5f }
         );
         assert_eq!(state, before);
         assert!(memory.accesses.is_empty());

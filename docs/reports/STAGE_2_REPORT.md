@@ -15504,3 +15504,44 @@ all-target check for `x86_64-unknown-linux-gnu`, `git diff --check`, and
 `graphify update .` passed. Independent `gpt-6.1-sol` medium-effort code and
 documentation reviews found no actionable findings; the documentation reviewer
 also verified all eight added local links and anchors.
+
+## S2-37f / bounded S2-38a — local MAXSS masked IE/DE status
+
+Added schema-v2 profile `s2-long-maxss-reg-masked-v1` for exactly one Long64
+`F3 [optional adjacent REX.R/B] 0F 5F /r`, ModR/M.mod=3, XMM0–15. It reuses
+the bounded S2-37e preconditions: SSE state present, all six MXCSR exception
+masks set, DAZ/FTZ clear and reserved bits 16–31 clear. Any RC and existing
+sticky flags are accepted. The existing pure
+`Binary32::max_sse_raw_result()` supplies the selected raw value; no numeric
+helper or global SSE snapshot contract changed.
+
+Either QNaN or SNaN operand selects the raw RHS and sets IE sticky. A
+subnormal input sets DE with DAZ clear. IE and DE accumulate independently,
+including NaN plus subnormal. Execution snapshots operands before mutation,
+updates only the destination low dword and IE/DE status bits, preserves upper
+destination bits and all unrelated state, supports aliasing, and has no data
+memory callback. Missing SSE or unsupported MXCSR refuses before commit. JIT,
+native and CPUID admission remain closed; the implementation does not claim
+unmasked #XM, control-state delivery or fault ordering.
+
+The handwritten fixture `s2_37f_maxss_masked_register.case.json` runs
+MAXSS XMM8,XMM9 with 1.0 and 2.0, selecting literal 2.0 while preserving
+MXCSR. Tests cover all 256 register pairs, extended registers, aliasing,
+QNaN/SNaN positions, signed-zero ties, subnormals, combined IE/DE sticky
+updates, all RC values, state preservation, unsupported MXCSR/missing-SSE
+atomic refusal, malformed encodings, fixture mutations and JIT/native denial.
+
+Normative sources: Intel SDM Rev. 093 Vol. 1 §11.5 and Appendix D Tables
+D-9/D-13/D-15, and Vol. 2B `MAXSS`. S2-38a now covers only the masked IE/DE
+subset consumed by MINSS/MAXSS; the remainder of S2-38 and final Mac mini
+physical validation remain open.
+
+**Checks:** `cargo test -p od-isa --offline maxss_register_masked` passed
+(4 tests); MINSS regression passed (4 tests); the raw binary32 MIN/MAX helper
+test passed (1 test); `cargo test -p od-testkit --offline` passed (369 tests);
+the MAXSS runner fixture/JIT-denial test passed (1 test). The formatting check
+`cargo fmt --all -- --check`, the workspace offline all-target check, the Linux
+`od-x86-runner` all-target cross-check, `git diff --check`, and Graphify refresh
+passed. The Linux-only native-denial path was compile-checked, not executed on
+hardware. Independent Sol medium code and documentation reviews found no
+actionable findings; the docs reviewer verified all eight added links/anchors.

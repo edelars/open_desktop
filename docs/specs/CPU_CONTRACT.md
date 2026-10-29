@@ -10826,3 +10826,27 @@ D-15, plus Vol. 2B `MINSS`. This is only the masked IE/DE subset consumed by
 S2-37e. Unmasked exception delivery, #XM, CR0/CR4/OSXMMEXCPT, memory and
 alignment fault ordering, and the rest of S2-38 remain open. Physical
 validation is deferred to the combined final Mac mini substage.
+
+## Local S2-37f register-only MAXSS with masked status
+
+The schema-v2 profile `s2-long-maxss-reg-masked-v1` admits exactly one Long64
+legacy `F3 [optional adjacent REX.R/B] 0F 5F /r` register instruction with
+ModR/M.mod=3 and XMM0–15. It requires SSE state, all six MXCSR exception masks
+set, DAZ/FTZ clear and reserved MXCSR bits 16–31 clear. Any RC and prior sticky
+status bits are accepted; unsupported state is refused without asserting
+architectural fault delivery.
+
+MAXSS selects operand 2 if either operand is QNaN or SNaN and sets IE sticky.
+With DAZ clear, a subnormal in either operand sets DE sticky. These bits are
+accumulated independently. Otherwise value selection uses the existing raw
+MAXSS helper, including operand-2 selection for equal values and signed zeros.
+The executor snapshots both low dwords before writing and updates only the
+destination low dword and IE/DE bits, preserving the upper 96 destination bits,
+other state, and every other MXCSR bit. Aliasing is supported. No data-memory
+access occurs; JIT/native remain closed.
+
+Normative source: Intel SDM Rev. 093 Vol. 1 §11.5 and Appendix D Tables D-9,
+D-13 and D-15, plus Vol. 2B `MAXSS`. This extends only the masked IE/DE subset
+of S2-38a. Unmasked exception delivery, #XM, CR0/CR4/OSXMMEXCPT, memory and
+alignment fault ordering, and the rest of S2-38 remain open. Physical
+validation is deferred to the combined final Mac mini substage.

@@ -2236,3 +2236,25 @@ unmasked exception delivery and the remaining S2-38 fault ordering are open.
 See [the plan](../plans/STAGE_2.md#s2-37e--local-long64-register-only-legacy-minss-with-masked-status),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37e-register-only-minss-with-masked-status),
 and [literal fixture](../../tests/fixtures/x86/stage2/s2_37e_minss_masked_register.case.json).
+
+## Local scalar MAXSS register profile — S2-37f
+
+`s2-long-maxss-reg-masked-v1` admits only Long64
+`F3 [optional adjacent REX.R/B] 0F 5F /r`, ModR/M.mod=3, XMM0–15. The local
+profile requires SSE state, all six MXCSR exception masks set, DAZ/FTZ clear
+and MXCSR reserved bits clear. Any RC and existing sticky flags are allowed.
+
+Either QNaN or SNaN selects the raw second operand and sets IE sticky; a
+subnormal input sets DE sticky, independently of IE. For non-NaNs, the
+existing `Binary32::max_sse_raw_result` helper selects the greater value and
+uses operand 2 for equal values and signed-zero ties. Only the destination low
+dword and IE/DE status bits are updated; all other state is preserved. Missing
+SSE, unsupported MXCSR, and invalid encodings refuse before mutation. The
+profile makes no data-memory access and remains unavailable to JIT/native.
+These are masked-status semantics only; unmasked #XM and wider S2-38 fault
+handling remain open.
+
+Normative source: Intel SDM Rev. 093 Vol. 1 §11.5, Appendix D Tables D-9/D-13/
+D-15, and Vol. 2B `MAXSS`. See the [plan](../plans/STAGE_2.md#s2-37f--local-long64-register-only-legacy-maxss-with-masked-status),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-37f-register-only-maxss-with-masked-status),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37f-local-masked-status-maxss-register-profile).

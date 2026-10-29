@@ -695,3 +695,15 @@ allowed. No fixture fields are added. The expected low dword and IE/DE sticky
 bits are literal; the profile is local-only and JIT/native remain denied. See
 [the S2-37e fixture](../../tests/fixtures/x86/stage2/s2_37e_minss_masked_register.case.json)
 and [the bounded plan](../plans/STAGE_2.md#s2-37e--local-long64-register-only-legacy-minss-with-masked-status).
+
+## Local MAXSS masked-status profile — S2-37f
+
+The schema-v2 profile `s2-long-maxss-reg-masked-v1` requires the full Long64
+state and exactly one `F3 [optional adjacent REX.R/B] 0F 5F /r` instruction,
+ModR/M.mod=3, no memory operand or trailing bytes. Destination/source register
+extensions follow REX.R/B. The profile rejects all extra prefixes, REX.W/X,
+memory, truncation, VEX/EVEX and neighboring opcodes. MXCSR must have all six
+exception masks set, DAZ/FTZ clear and reserved bits 16–31 clear; any RC and
+prior sticky flags are permitted. Fixture expectations are literal; JIT and
+native admission remain denied. See [the S2-37f fixture](../../tests/fixtures/x86/stage2/s2_37f_maxss_masked_register.case.json)
+and [the bounded plan](../plans/STAGE_2.md#s2-37f--local-long64-register-only-legacy-maxss-with-masked-status).

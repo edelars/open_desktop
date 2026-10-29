@@ -5277,6 +5277,63 @@ fn local_minss_masked_register_selects_rhs_and_sets_sticky_ie_de() {
 }
 
 #[test]
+fn local_maxss_masked_register_selects_rhs_and_denies_other_forms() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_37f_maxss_masked_register.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMaxssMaskedRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8].replace_range(..8, "00000040");
+    expected.sse.as_mut().unwrap().mxcsr = HexU64(0x0000_1f80);
+    assert_eq!(snapshot(&result).state, expected);
+
+    for bytes_hex in [
+        "f3450f5f01",   // memory operand
+        "f3450f5fc190", // trailing byte
+        "f3450f5dc1",   // MINSS neighbor
+        "f3450f53c1",   // scalar RCPSS neighbor
+        "450f5fc1",     // packed form without scalar prefix
+        "f3660f5fc1",   // duplicate/operand-size prefix
+        "f3480f5fc1",   // REX.W
+        "f3420f5fc1",   // REX.X
+        "f340410f5fc1", // repeated REX
+        "f3450f5f",     // truncated ModR/M
+    ] {
+        let mut invalid = input.fixture.clone();
+        let code = invalid
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = bytes_hex.to_owned();
+        code.length = (bytes_hex.len() / 2) as u32;
+        code.comparison_mask_hex = "ff".repeat(bytes_hex.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (bytes_hex.len() / 2) as u64,
+        ));
+        assert!(invalid.to_json().is_err(), "accepted {bytes_hex}");
+    }
+
+    for mxcsr in [0x0000_1f00, 0x0000_1fc0, 0x0000_9f80, 0x0001_1f80] {
+        let mut invalid = input.fixture.clone();
+        invalid.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(invalid.to_json().is_err(), "accepted MXCSR={mxcsr:08x}");
+    }
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
 fn local_movsd_register_copies_only_scalar_low_qword_and_keeps_native_closed() {
     let bytes =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_34_9a_movsd_register.case.json");

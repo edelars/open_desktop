@@ -162,3 +162,8 @@ and sticky state. Literal expected outputs include operand-2 NaN selection and
 masked IE/DE sticky bits. No fixture schema fields are added, and JIT/native
 remain unsupported. Full S2-38 exception delivery/order is still open. See the
 [plan](../../docs/plans/STAGE_2.md#s2-37e--local-long64-register-only-legacy-minss-with-masked-status).
+
+S2-37f adds `s2-long-maxss-reg-masked-v1` under the same supported MXCSR
+preconditions. MAXSS’s literal result is paired with independently accumulated
+masked IE/DE sticky bits; unsupported MXCSR values are rejected during fixture
+validation. The fixture schema remains unchanged and JIT/native remain closed.

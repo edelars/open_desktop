@@ -489,3 +489,12 @@ NaN/subnormal inputs. It preserves upper destination bits and unrelated state;
 JIT/native remain closed. Full unmasked FP exception delivery and fault ordering
 remain open. Normative source: Intel SDM Rev. 093 Vol. 1 §11.5, Appendix D
 Tables D-9/D-15, and Vol. 2B MINSS. See [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-37e-register-only-minss-with-masked-status).
+
+S2-37f adds local-only register MAXSS profile
+`s2-long-maxss-reg-masked-v1`, reusing the same masked-status constraints.
+Either NaN selects the raw RHS and sets IE; any subnormal operand sets DE;
+these sticky bits accumulate independently. The result and non-status state
+follow `Binary32::max_sse_raw_result`; unmasked exceptions, fault ordering,
+JIT/native and physical admission remain open. Normative source: Intel SDM
+Rev. 093 Vol. 1 §11.5, Appendix D Tables D-9/D-13/D-15 and Vol. 2B MAXSS.
+See [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-37f-register-only-maxss-with-masked-status).
