@@ -5560,3 +5560,17 @@ about unmasked exception delivery, memory forms, JIT/native or physical CPU
 acceptance. Normative references are Intel SDM Rev. 093 Vol. 1 §§4.9.2, 11.5, Appendix
 D Tables D-9/D-15, and Vol. 2B MINSD. See the
 [plan](../../../../docs/plans/STAGE_2.md#s2-37i--local-long64-register-only-legacy-minsd-with-masked-status).
+
+
+### S2-37j local masked-status MAXSD register profile
+
+`s2_37j_maxsd_masked_register.case.json` is a handwritten schema-v2 XMM8←XMM9
+fixture for `F2 45 0F 5F C1`. It pairs a low-qword QNaN destination with a
+minimum positive subnormal source, requiring raw RHS selection and IE-only
+status because same-operation invalid has priority over denormal. Upper-qword
+SNaN/subnormal sentinels are ignored and preserved. All MXCSR exception masks
+are set, DAZ/FTZ and reserved bits are clear. JIT/native and physical execution
+are not claimed; physical acceptance is deferred to the combined final Mac mini
+substage. Normative references: Intel SDM Rev. 093 Vol. 1 §§4.9.2, 11.5.2 and
+Appendix D Tables D-9/D-13/D-15, and Vol. 2B MAXSD. See the
+[plan](../../../../docs/plans/STAGE_2.md#s2-37j--local-long64-register-only-legacy-maxsd-with-masked-status).

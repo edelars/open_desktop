@@ -5467,6 +5467,71 @@ fn local_minsd_masked_register_updates_only_low_qword_and_keeps_jit_closed() {
 }
 
 #[test]
+fn local_maxsd_masked_register_updates_only_low_qword_and_keeps_jit_closed() {
+    let bytes =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_37j_maxsd_masked_register.case.json");
+    let (input, result) = run(bytes, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMaxsdMaskedRegV1
+    );
+    assert_eq!(count(&result), 1);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    expected.sse.as_mut().unwrap().xmm[8] = "0100000000000000010000000000f07f".to_owned();
+    expected.sse.as_mut().unwrap().mxcsr = HexU64(0x0000_1f81);
+    assert_eq!(snapshot(&result).state, expected);
+
+    for bytes_hex in [
+        "f2450f5f01",     // memory operand
+        "f2450f5fc190",   // trailing byte
+        "f3450f5fc1",     // MAXSS prefix
+        "450f5fc1",       // MAXPS form
+        "f2480f5fc1",     // REX.W
+        "f2420f5fc1",     // REX.X
+        "f240410f5fc1",   // repeated REX
+        "40f20f5fc1",     // nonadjacent REX
+        "f2f20f5fc1",     // repeated mandatory prefix
+        "f2660f5fc1",     // extra operand-size prefix
+        "66f20f5fc1",     // wrong prefix order
+        "2ef20f5fc1",     // segment override
+        "67f20f5fc1",     // address-size override
+        "f0f20f5fc1",     // LOCK prefix
+        "f2450f5f",       // truncated ModR/M
+        "f2c5fb5fc1",     // VEX
+        "f262f1ff085fc1", // EVEX
+    ] {
+        let mut invalid = input.fixture.clone();
+        let code = invalid
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = bytes_hex.to_owned();
+        code.length = (bytes_hex.len() / 2) as u32;
+        code.comparison_mask_hex = "ff".repeat(bytes_hex.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (bytes_hex.len() / 2) as u64,
+        ));
+        assert!(invalid.to_json().is_err(), "accepted {bytes_hex}");
+    }
+
+    let mut maxss_profile = input.fixture.clone();
+    maxss_profile.profile = od_testkit::v2::Profile::LongMaxssMaskedRegV1;
+    assert!(maxss_profile.to_json().is_err());
+    let mut maxps_profile = input.fixture.clone();
+    maxps_profile.profile = od_testkit::v2::Profile::LongMaxpsMaskedRegV1;
+    assert!(maxps_profile.to_json().is_err());
+
+    let (_, jit_result) = run(bytes, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
+}
+
+#[test]
 fn local_maxps_masked_register_aggregates_ie_de_across_lanes() {
     let bytes =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_37h_maxps_masked_register.case.json");

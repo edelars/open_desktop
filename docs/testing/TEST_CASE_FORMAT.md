@@ -753,3 +753,14 @@ fixture checks low-qword RHS selection and masked IE priority over
 same-operation DE, with upper-qword SNaN/subnormal sentinels. The profile is
 local-only, with JIT/native denied. See [the S2-37i fixture](../../tests/fixtures/x86/stage2/s2_37i_minsd_masked_register.case.json)
 and [the bounded plan](../plans/STAGE_2.md#s2-37i--local-long64-register-only-legacy-minsd-with-masked-status).
+
+
+## Local MAXSD masked-status profile — S2-37j
+
+The schema-v2 profile `s2-long-maxsd-reg-masked-v1` accepts exactly one
+Long64 `F2 [optional adjacent REX.R/B] 0F 5F /r` instruction with ModR/M.mod=3.
+F3 MAXSS and bare MAXPS remain distinct decoder operations and are rejected by
+this profile. MXCSR requires all exception masks, DAZ/FTZ clear and reserved
+bits 16–31 clear. See [fixture](../../tests/fixtures/x86/stage2/s2_37j_maxsd_masked_register.case.json),
+[plan](../plans/STAGE_2.md#s2-37j--local-long64-register-only-legacy-maxsd-with-masked-status),
+and [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37j-register-only-maxsd-with-masked-status).

@@ -15720,3 +15720,50 @@ MOVSD test. Documentation review found and corrected fixture-coverage overclaims
 stale signed-zero description; independent follow-up review is clean.
 No physical Mac mini result is claimed; those checks remain grouped in the final
 hardware substage. The work is not committed in this handoff.
+
+## S2-37j / bounded S2-38a — local MAXSD masked IE/DE status
+
+Added local-only schema-v2 profile `s2-long-maxsd-reg-masked-v1` for exactly
+one Long64 `F2 [optional adjacent REX.R/B] 0F 5F /r` instruction, ModR/M.mod=3,
+XMM0–15. The decoder now globally distinguishes F2 MAXSD from F3 MAXSS and
+bare MAXPS. Strict profile validation accepts only this MAXSD shape, and the
+existing MINSD profile continues to reject it at the profile layer. Memory,
+repeated/misplaced prefixes, REX.W/X, trailing bytes, VEX and EVEX remain closed.
+
+Execution snapshots only source and destination low qwords and calls the
+existing `Binary64::max_sse_raw_result`. The result commits only the
+destination low qword; the upper qword and unrelated state are preserved.
+Same-operation priority is `lane_ie = result.invalid_operation()` followed by
+`lane_de = !lane_ie && (either low operand is subnormal)`, then OR into the old
+MXCSR sticky status. Thus same-lane NaN plus subnormal adds IE without new DE;
+old DE remains set, and old IE does not suppress a new DE. High-qword NaN and
+subnormal sentinels are ignored. SSE presence and masked MXCSR preconditions
+are enforced before mutation; JIT/native/CPUID, memory and unmasked fault paths
+remain closed.
+
+The handwritten XMM8←XMM9 fixture exercises low-qword QNaN and minimum
+subnormal, upper-qword SNaN/subnormal sentinels, raw RHS selection, IE-only
+status and upper-qword preservation. Decoder and executor tests cover all 256
+XMM pairs, aliasing, NaN/zero/infinity/subnormal literals, all four RC values,
+old IE/DE sticky combinations, upper-qword isolation and atomic refusals. Runner
+tests check strict neighboring-form rejection and JIT denial; the native runner
+fixture-denial list includes MAXSD. No physical or Mac mini execution was run;
+it remains in the combined final hardware substage.
+
+**Checks:** `cargo test -p od-isa --offline maxsd_register_masked -- --nocapture`
+passed (5 tests); `cargo test -p od-isa --offline register_masked` passed (25
+tests); `cargo test -p od-testkit --offline` passed (369 tests); and
+`cargo test -p od-runner --test fixture_v2 masked_register --offline` passed
+(6 tests). `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`,
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline`,
+`git diff --check` and `graphify update .` passed. The Linux-only native-denial
+test is compiled by the Linux all-target check; native execution was not run on
+this macOS host and remains with the combined final Mac mini substage.
+
+**Review:** independent documentation review found no content or scope findings;
+all eight added relative links and anchors resolve. Independent Sol medium code review found no remaining implementation or test
+findings; the reviewer reran the five MAXSD ISA tests and `git diff --check`.
+The documentation review found no content/scope findings and verified all eight
+new relative links and anchors. The Linux-only native-denial list includes the
+MAXSD fixture; native execution was not run here because this host is macOS.

@@ -2322,3 +2322,20 @@ unmasked exception delivery and S2-38 fault ordering remain open. See the
 [plan](../plans/STAGE_2.md#s2-37i--local-long64-register-only-legacy-minsd-with-masked-status),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37i-register-only-minsd-with-masked-status),
 and [literal fixture](../../tests/fixtures/x86/stage2/s2_37i_minsd_masked_register.case.json).
+
+
+## Local scalar MAXSD register profile — S2-37j
+
+`s2-long-maxsd-reg-masked-v1` admits one Long64 `F2 [optional adjacent
+REX.R/B] 0F 5F /r` register instruction (ModR/M.mod=3, XMM0–15); F3 remains
+MAXSS and the bare form remains MAXPS. The profile requires SSE state, all six
+MXCSR exception masks, DAZ/FTZ clear and reserved bits 16–31 clear.
+
+Only low qwords are read. The raw MAX selector chooses RHS for NaN, equal-value
+and signed-zero cases. New DE is suppressed by same-operation IE, while old
+sticky flags remain set. Only destination low qword and MXCSR sticky IE/DE are
+updated; upper qwords and unrelated state are preserved. Tests exercise all 256
+pairs, literal edge cases, state refusal and closed JIT/native paths. Full
+unmasked delivery remains open. See [plan](../plans/STAGE_2.md#s2-37j--local-long64-register-only-legacy-maxsd-with-masked-status),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-37j-register-only-maxsd-with-masked-status),
+and [fixture](../../tests/fixtures/x86/stage2/s2_37j_maxsd_masked_register.case.json).

@@ -901,6 +901,11 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only legacy `F2 0F 5F /r` XMM-register form with masked IE/DE status.
+    MaxsdRegisterMasked {
+        destination: u8,
+        source: u8,
+    },
     /// Local-only legacy `0F 5D /r` XMM-register form with masked IE/DE status.
     MinpsRegisterMasked {
         destination: u8,
@@ -2958,6 +2963,18 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     && prefix_bytes[0] == 0xf2
                     && prefix_bytes[1] == prefixes.rex.unwrap()
                     && prefixes.rex.unwrap() & 0x0a == 0);
+        let maxsd_register_masked = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x5f
+            && prefixes.group1 == Some(0xf2)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 1 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && prefixes.rex.is_some()
+                    && prefix_bytes[0] == 0xf2
+                    && prefix_bytes[1] == prefixes.rex.unwrap()
+                    && prefixes.rex.unwrap() & 0x0a == 0);
         let maxss_register_masked = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x5f
             && prefixes.group1 == Some(0xf3)
@@ -3018,6 +3035,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && opcode.byte == 0x5f
             && !maxss_register_masked
             && !maxps_register_masked
+            && !maxsd_register_masked
         {
             return Err(self.unsupported(opcode));
         }
@@ -3112,6 +3130,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !minss_register_masked
                 && !minsd_register_masked
                 && !maxss_register_masked
+                && !maxsd_register_masked
                 && !movsd_register
                 && !movsd_store_register
                 && !movsd_memory_load
@@ -3241,6 +3260,16 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 Operation::MinsdRegisterMasked {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x5f) if maxsd_register_masked => {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::MaxsdRegisterMasked {
                     destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                     source: (modrm & 7) | ((rex & 1) << 3),
                 }
@@ -9368,7 +9397,6 @@ mod tests {
             &[0x40, 0xf3, 0x0f, 0x5f, 0xc1][..],       // nonadjacent REX
             &[0xf3, 0x66, 0x0f, 0x5f, 0xc1][..],       // duplicate mandatory prefix
             &[0x66, 0xf3, 0x0f, 0x5f, 0xc1][..],       // wrong prefix order
-            &[0xf2, 0x0f, 0x5f, 0xc1][..],             // wrong mandatory prefix
             &[0x2e, 0xf3, 0x0f, 0x5f, 0xc1][..],       // segment override
             &[0x67, 0xf3, 0x0f, 0x5f, 0xc1][..],       // address-size override
             &[0xf0, 0xf3, 0x0f, 0x5f, 0xc1][..],       // LOCK prefix
@@ -9502,6 +9530,63 @@ mod tests {
     }
 
     #[test]
+    fn maxsd_register_masked_decodes_all_xmm_pairs_and_rejects_other_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let bytes = if rex == 0x40 {
+                    vec![0xf2, 0x0f, 0x5f, modrm]
+                } else {
+                    vec![0xf2, rex, 0x0f, 0x5f, modrm]
+                };
+                let mut memory = Memory::new(&bytes);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::MaxsdRegisterMasked {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, bytes.len() as u8);
+                if destination < 8 && source < 8 {
+                    let mut bare_rex = Memory::new(&[0xf2, 0x40, 0x0f, 0x5f, modrm]);
+                    assert_eq!(bare_rex.decode().unwrap().operation, decoded.operation);
+                    let mut scalar_maxss = Memory::new(&[0xf3, 0x0f, 0x5f, modrm]);
+                    assert!(matches!(
+                        scalar_maxss.decode().unwrap().operation,
+                        Operation::MaxssRegisterMasked { .. }
+                    ));
+                }
+            }
+        }
+
+        for bytes in [
+            &[0xf2, 0x0f, 0x5f, 0x01][..],             // memory operand
+            &[0xf2, 0x48, 0x0f, 0x5f, 0xc1][..],       // REX.W
+            &[0xf2, 0x42, 0x0f, 0x5f, 0xc1][..],       // REX.X
+            &[0xf2, 0x40, 0x41, 0x0f, 0x5f, 0xc1][..], // repeated REX
+            &[0x40, 0xf2, 0x0f, 0x5f, 0xc1][..],       // nonadjacent REX
+            &[0xf2, 0xf2, 0x0f, 0x5f, 0xc1][..],       // repeated mandatory prefix
+            &[0xf2, 0x66, 0x0f, 0x5f, 0xc1][..],       // operand-size prefix
+            &[0x66, 0xf2, 0x0f, 0x5f, 0xc1][..],       // wrong prefix order
+            &[0x2e, 0xf2, 0x0f, 0x5f, 0xc1][..],       // segment override
+            &[0x67, 0xf2, 0x0f, 0x5f, 0xc1][..],       // address-size override
+            &[0xf0, 0xf2, 0x0f, 0x5f, 0xc1][..],       // LOCK prefix
+            &[0xf2, 0x0f, 0x5c, 0xc1][..],             // neighboring SUBSD opcode
+            &[0xf2, 0x0f, 0x5f][..],                   // truncated ModR/M
+            &[0xf2, 0x45, 0x0f, 0x5f][..],             // truncated REX form
+            &[0xc5, 0xfb, 0x5f, 0xc1][..],             // VEX
+            &[0xc4, 0xe1, 0x7b, 0x5f, 0xc1][..],       // VEX
+            &[0x62, 0xf1, 0xff, 0x08, 0x5f, 0xc1][..], // EVEX
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn maxps_register_masked_decodes_all_xmm_pairs_and_rejects_other_encodings() {
         for destination in 0..16u8 {
             for source in 0..16u8 {
@@ -9547,7 +9632,6 @@ mod tests {
             &[0x40, 0x41, 0x0f, 0x5f, 0xc1][..],       // multiple REX
             &[0x40, 0x66, 0x0f, 0x5f, 0xc1][..],       // nonadjacent REX
             &[0x66, 0x0f, 0x5f, 0xc1][..],             // operand-size prefix
-            &[0xf2, 0x0f, 0x5f, 0xc1][..],             // wrong mandatory prefix
             &[0xf3, 0x0f, 0x5f, 0x01][..],             // scalar memory operand
             &[0x0f, 0x5f][..],                         // truncated ModR/M
             &[0x40, 0x0f, 0x5f][..],                   // truncated extended form

@@ -493,7 +493,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37g | Local-only Long64 legacy register MINPS profile `s2-long-minps-reg-masked-v1`; aggregates masked IE/DE sticky status across four lanes; JIT/native closed | S2-37e/f, S2-38a; independent review |
 | [x] | S2-37h | Local-only Long64 legacy register MAXPS profile `s2-long-maxps-reg-masked-v1`; aggregates masked IE/DE sticky status across four lanes; JIT/native closed | S2-37g, S2-38a; independent review |
 | [x] | S2-37i | Local-only Long64 legacy register MINSD profile `s2-long-minsd-reg-masked-v1`; masked IE/DE status from low qwords only; JIT/native closed | S2-36z, S2-38a; independent review |
-| [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i: masked MINSS/MAXSS/MINPS/MAXPS/MINSD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i; independent review |
+| [x] | S2-37j | Local-only Long64 legacy register MAXSD profile `s2-long-maxsd-reg-masked-v1`; masked IE/DE status from low qwords only; JIT/native closed | S2-37i, S2-38a; independent review |
+| [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j; independent review |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
@@ -6082,10 +6083,30 @@ ordering remain out of scope. The handwritten XMM8←XMM9 fixture checks a low
 QNaN plus a minimum subnormal alongside upper-qword SNaN/subnormal sentinels;
 physical acceptance remains in the combined final Mac mini substage.
 
-#### S2-38a — consumed masked MINSS/MAXSS/MINPS/MAXPS/MINSD status subset
+#### S2-37j — local Long64 register-only legacy MAXSD with masked status
 
-Only masked IE/DE sticky-status updates used by S2-37e/f/g/h/i are implemented.
-MINSS/MAXSS/MINSD apply invalid-over-denormal priority within their scalar
+Add schema-v2 profile `s2-long-maxsd-reg-masked-v1` for exactly one
+`F2 [optional one adjacent REX.R/B] 0F 5F /r` instruction, ModR/M.mod=3 and
+XMM0–15. F2 globally selects MAXSD; F3 continues to select MAXSS and bare
+`0F 5F /r` remains MAXPS. Keep the variants distinct in decoder semantics and
+strict profile validation. Require SSE state, all six MXCSR exception masks,
+DAZ/FTZ clear and reserved bits 16–31 clear; permit any RC and sticky bits.
+
+Snapshot only both low qwords and use `Binary64::max_sse_raw_result`; QNaN or
+SNaN selects raw operand 2 and contributes IE. Same-operation IE suppresses
+only new DE for a low-qword subnormal, while prior DE remains sticky. Commit
+only the destination low qword and effective IE/DE; preserve upper qword and
+all unrelated state. Upper-qword NaN/subnormal values are ignored. Alias is
+supported and no memory callback occurs. Missing SSE or unsupported MXCSR
+refuses atomically. JIT/native/CPUID, memory forms and unmasked delivery remain
+closed. Add all 256 register-pair, literal edge-case, sticky-status, refusal,
+fixture, native-denial and JIT-denial checks. Physical validation stays in the
+combined final Mac mini substage.
+
+#### S2-38a — consumed masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD status subset
+
+Only masked IE/DE sticky-status updates used by S2-37e/f/g/h/i/j are implemented.
+MINSS/MAXSS/MINSD/MAXSD apply invalid-over-denormal priority within their scalar
 operation. MINPS/MAXPS first apply that priority per lane, then OR effective
 IE/DE across lanes before the single atomic destination and MXCSR commit;
 pre-existing sticky status is preserved. Full S2-38 remains open: unmasked exception delivery, #XM

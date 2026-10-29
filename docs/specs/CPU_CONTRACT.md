@@ -10937,3 +10937,27 @@ only the bounded S2-38a subset. Unmasked exceptions, #XM delivery/suppression,
 control-state gating, memory/fault ordering and the rest of S2-38 remain open.
 JIT/native/CPUID admission remain closed. Physical validation is deferred to
 the combined final Mac mini substage.
+
+
+## Local S2-37j register-only MAXSD with masked status
+
+The schema-v2 profile `s2-long-maxsd-reg-masked-v1` admits exactly one Long64
+legacy `F2 [optional adjacent REX.R/B] 0F 5F /r` instruction, ModR/M.mod=3,
+XMM0–15. F2 selects MAXSD globally; F3 remains MAXSS and bare `0F 5F /r`
+remains MAXPS. Profile validation accepts only its own exact form. SSE state,
+all six MXCSR exception masks, DAZ/FTZ clear and reserved bits 16–31 zero are
+required; any RC and prior sticky bits are allowed.
+
+The operation snapshots both low qwords and uses `Binary64::max_sse_raw_result`.
+A QNaN or SNaN selects raw operand 2 and contributes IE. A subnormal contributes
+new DE only if that same operation does not raise IE; prior DE remains sticky.
+Only destination low qword and effective IE/DE are committed. Upper destination
+qword and unrelated state are preserved; high-qword values do not affect result
+or flags. Aliasing is supported and no memory access occurs. Unsupported state
+refuses before mutation. JIT/native/CPUID, memory and unmasked exception paths
+remain closed; physical validation is deferred to the combined final Mac mini
+substage.
+
+This extends only bounded S2-38a masked status. Sources: Intel SDM Rev. 093
+Vol. 1 §§4.9.2, 11.5.2 and Appendix D Tables D-9/D-13/D-15; Vol. 2B MAXSD.
+See the [plan](../plans/STAGE_2.md#s2-37j--local-long64-register-only-legacy-maxsd-with-masked-status).
