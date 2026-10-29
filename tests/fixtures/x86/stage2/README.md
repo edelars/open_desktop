@@ -1,5 +1,23 @@
 # Собственные schema v2 fixtures этапа 2
 
+## S2-26e RDTSC with injected source
+
+`s2_26e_rdtsc_source.case.json` and `s2_26e_rdtsc_tsd_fault.case.json` are
+handwritten schema-v2 fixtures for exact bare Long64 `0F 31` under
+`s2-long-rdtsc-v1`. Each fixes a deterministic 64-bit source value and an
+expected source-call count. The first case uses `CR4.TSD=0` at the runner's
+ring-3 CPL and checks zero-extended EAX/EDX output plus one call. The second
+uses `CR4.TSD=1` and checks atomic `#GP(0)` with zero source calls. Core unit
+tests cover TSD both ways at CPL0–3, legacy `Unsupported`, prefix rejection,
+and stop/budget ordering. JIT/native runner admission is denied; the C ABI
+fragment-create path rejects RDTSC because it has no explicit profile/source
+inputs. No host clock, physical execution, or `#GP` delivery is modeled. Source: Intel SDM
+revision 093, Vol. 2B, RDTSC, pp. 4-559–560
+([official Intel PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf)).
+See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#локальный-профиль-rdtscsourcev1-s2-26e),
+[plan](../../../../docs/plans/STAGE_2.md#s2-26e--точный-rdtsc-с-явным-tsc-источником),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-26e--точный-rdtsc-с-явным-tsc-источником).
+
 ## S2-26d SEP-disabled SYSENTER/SYSEXIT
 
 `s2_26d_sysenter_sep_disabled.case.json` and

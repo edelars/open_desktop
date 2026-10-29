@@ -506,6 +506,7 @@ fn expected_native_xorpd_oracle(
                 minss_invalid_controls: None,
                 fxsave64_cr0_controls: None,
                 fxrstor64_cr0_controls: None,
+                rdtsc_source_calls: None,
                 exception: Observation::Available { value: None },
             },
         },
@@ -985,11 +986,11 @@ fn execute_fixture_v2(
     memory: &mut od_testkit::memory::FlatMemory,
 ) -> od_testkit::v2::RunResult {
     use od_isa::execute::{
-        Fxrstor64Cr0Controls, Fxsave64Cr0Controls, MinssInvalidControls, RunConfig, RunExit,
-        XorpdPrerequisiteState, run, run_with_fxrstor64_cr0_controls,
+        Fxrstor64Cr0Controls, Fxsave64Cr0Controls, MinssInvalidControls, RdtscControls, RunConfig,
+        RunExit, XorpdPrerequisiteState, run, run_with_fxrstor64_cr0_controls,
         run_with_fxsave64_cr0_controls, run_with_minss_invalid_controls,
-        run_with_minss_unmasked_denormal_controls, run_with_rep_continuation, run_with_sep_profile,
-        run_with_xorpd_prerequisites,
+        run_with_minss_unmasked_denormal_controls, run_with_rdtsc_source,
+        run_with_rep_continuation, run_with_sep_profile, run_with_xorpd_prerequisites,
     };
     use od_testkit::v2;
     use std::time::{Duration, Instant};
@@ -1021,6 +1022,7 @@ fn execute_fixture_v2(
         timed_out = start.elapsed() >= limit;
         timed_out
     };
+    let mut rdtsc_source_calls = None;
     let entry_bytes = {
         let mut bytes = Vec::with_capacity(5);
         for offset in 0..5u64 {
@@ -1065,6 +1067,29 @@ fn execute_fixture_v2(
             &od_isa::sep::SepProfile::SepDisabledV1,
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongRdtscV1 {
+        let controls = loaded
+            .fixture
+            .rdtsc_controls
+            .expect("validated RDTSC profile has explicit source and control state");
+        let mut calls = 0u64;
+        let value = controls.source_value.get();
+        let mut source = || {
+            calls += 1;
+            value
+        };
+        let execution = run_with_rdtsc_source(
+            &mut state,
+            memory,
+            config,
+            RdtscControls {
+                cr4_tsd: controls.cr4_tsd,
+            },
+            &mut source,
+            timeout,
+        );
+        rdtsc_source_calls = Some(calls);
+        execution
     } else if loaded.fixture.profile == v2::Profile::LongXorpdPrerequisitesV1 {
         let controls = loaded
             .fixture
@@ -1202,6 +1227,7 @@ fn execute_fixture_v2(
                 minss_invalid_controls: loaded.fixture.minss_invalid_controls,
                 fxsave64_cr0_controls: loaded.fixture.fxsave64_cr0_controls,
                 fxrstor64_cr0_controls: loaded.fixture.fxrstor64_cr0_controls,
+                rdtsc_source_calls,
                 exception: Observation::Available { value: exception },
             },
         },
@@ -2356,6 +2382,7 @@ mod tests {
                     minss_invalid_controls: input.fixture.minss_invalid_controls,
                     fxsave64_cr0_controls: input.fixture.fxsave64_cr0_controls,
                     fxrstor64_cr0_controls: input.fixture.fxrstor64_cr0_controls,
+                    rdtsc_source_calls: None,
                     exception: Observation::Available { value: None },
                 },
             },

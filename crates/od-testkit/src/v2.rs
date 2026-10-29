@@ -127,6 +127,8 @@ pub enum Profile {
     LongIntegerV1,
     #[serde(rename = "s2-long-sep-disabled-v1")]
     LongSepDisabledV1,
+    #[serde(rename = "s2-long-rdtsc-v1")]
+    LongRdtscV1,
     #[serde(rename = "s2-long-fs-base-v1")]
     LongFsBaseV1,
     #[serde(rename = "s2-long-gs-base-v1")]
@@ -1525,13 +1527,15 @@ impl IntegerState {
             | Profile::LongMovupdMemBaseV1
             | Profile::LongMovupdMemRipV1
             | Profile::LongMovupdMemSibV1
-            | Profile::LongSepDisabledV1 => Profile::LongIntegerV1,
+            | Profile::LongSepDisabledV1
+            | Profile::LongRdtscV1 => Profile::LongIntegerV1,
             other => other,
         };
         match (state_profile, self.fs_base) {
             (
                 Profile::LongIntegerV1
                 | Profile::LongSepDisabledV1
+                | Profile::LongRdtscV1
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
@@ -1656,7 +1660,7 @@ impl IntegerState {
             )
             | (Profile::LongFsBaseV1 | Profile::LongFsLoadV1, Some(_)) => {}
             (Profile::LongFsSelectorV1, Some(_)) => {}
-            (Profile::LongSepDisabledV1, Some(_)) => {
+            (Profile::LongSepDisabledV1 | Profile::LongRdtscV1, Some(_)) => {
                 return Err(invalid("state.fs_base", "not part of this profile"));
             }
             (
@@ -1793,6 +1797,7 @@ impl IntegerState {
             (
                 Profile::LongIntegerV1
                 | Profile::LongSepDisabledV1
+                | Profile::LongRdtscV1
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
@@ -1928,6 +1933,7 @@ impl IntegerState {
             (
                 Profile::LongIntegerV1
                 | Profile::LongSepDisabledV1
+                | Profile::LongRdtscV1
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
@@ -2780,6 +2786,9 @@ pub struct Fixture {
     /// Explicit CR0 inputs required only by the exact S2-39g FXRSTOR64 profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fxrstor64_cr0_controls: Option<Fxrstor64Cr0Snapshot>,
+    /// Explicit TSC source and CR4.TSD input required only by S2-26e.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rdtsc_controls: Option<RdtscSnapshot>,
     /// Code and data share the same guest address space. No implicit host buffer.
     pub memory: Vec<MemoryRegionSpec>,
     /// Optional external harness boundary, checked before fetch, not an x86 opcode.
@@ -2821,6 +2830,14 @@ pub struct Fxsave64Cr0Snapshot {
 pub struct Fxrstor64Cr0Snapshot {
     pub cr0_em: bool,
     pub cr0_ts: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RdtscSnapshot {
+    pub cr4_tsd: bool,
+    pub source_value: HexU64,
+    pub expected_source_calls: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2903,6 +2920,44 @@ impl Fixture {
                     "SEP-disabled fixtures require one exact bare instruction, one instruction of budget, its following stop_rip, and an exception result",
                 ));
             }
+        }
+        match (self.profile, self.rdtsc_controls) {
+            (Profile::LongRdtscV1, Some(controls)) => {
+                let Some(code) = self.memory.iter().find(|region| region.region_id == "code")
+                else {
+                    return Err(invalid("memory.code", "required by the RDTSC profile"));
+                };
+                let expected_exit = if controls.cr4_tsd {
+                    ExpectedExit::Exception
+                } else {
+                    ExpectedExit::StopAddress
+                };
+                let expected_calls = u64::from(!controls.cr4_tsd);
+                if code.initial_bytes_hex.to_ascii_lowercase() != "0f31"
+                    || code.guest_address.get() != self.initial_state.rip.get()
+                    || code.length != 2
+                    || !code.permissions.execute
+                    || self.instruction_budget != 1
+                    || self.stop_rip.map(HexU64::get) != self.initial_state.rip.get().checked_add(2)
+                    || self.expected_exit != expected_exit
+                    || controls.expected_source_calls != expected_calls
+                {
+                    return Err(invalid(
+                        "memory.code",
+                        "RDTSC fixtures require exact bare 0F 31, budget 1, stop RIP entry+2, and source-call/exit expectations consistent with the ring-3 CR4.TSD gate",
+                    ));
+                }
+            }
+            (Profile::LongRdtscV1, None) => {
+                return Err(invalid("rdtsc_controls", "required by the RDTSC profile"));
+            }
+            (_, Some(_)) => {
+                return Err(invalid(
+                    "rdtsc_controls",
+                    "only valid for the RDTSC profile",
+                ));
+            }
+            (_, None) => {}
         }
         if matches!(
             self.profile,
@@ -5176,6 +5231,7 @@ impl Fixture {
             minss_invalid_controls: None,
             fxsave64_cr0_controls: None,
             fxrstor64_cr0_controls: None,
+            rdtsc_controls: None,
             memory: vec![MemoryRegionSpec {
                 region_id: "code".into(),
                 guest_address: HexU64(0),
@@ -5249,6 +5305,9 @@ pub struct Snapshot {
     /// Immutable FXRSTOR64 CR0 gate inputs, echoed only for S2-39g.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fxrstor64_cr0_controls: Option<Fxrstor64Cr0Snapshot>,
+    /// Number of calls made to the deterministic source, only for S2-26e.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rdtsc_source_calls: Option<u64>,
     /// Available(None) means observed no exception; unavailable is not an empty result.
     pub exception: Observation<Option<ExceptionSnapshot>>,
 }
@@ -5374,6 +5433,22 @@ impl RunResult {
             }
             (_, None) => {}
         }
+        match (self.profile, snapshot.rdtsc_source_calls) {
+            (Profile::LongRdtscV1, Some(_)) => {}
+            (Profile::LongRdtscV1, None) => {
+                return Err(invalid(
+                    "snapshot.rdtsc_source_calls",
+                    "required by the RDTSC profile",
+                ));
+            }
+            (_, Some(_)) => {
+                return Err(invalid(
+                    "snapshot.rdtsc_source_calls",
+                    "only valid for the RDTSC profile",
+                ));
+            }
+            (_, None) => {}
+        }
         if matches!(
             self.profile,
             Profile::LongMinssInvalidControlsV1 | Profile::LongMinssUnmaskedDenormalV1
@@ -5484,6 +5559,15 @@ impl RunResult {
             return Err(FormatError::CaseMismatch("profile"));
         }
         if let Observation::Available { value } = &self.snapshot {
+            if loaded.fixture.profile == Profile::LongRdtscV1
+                && value.rdtsc_source_calls
+                    != loaded
+                        .fixture
+                        .rdtsc_controls
+                        .map(|controls| controls.expected_source_calls)
+            {
+                return Err(FormatError::CaseMismatch("snapshot.rdtsc_source_calls"));
+            }
             // A terminal outcome describes why execution stopped, not whether
             // earlier instructions committed. MOV FS may retire before a later
             // exception, unsupported instruction, or harness/backend error.

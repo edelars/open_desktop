@@ -107,6 +107,12 @@ pub struct Fxrstor64Cr0Controls {
     pub cr0_ts: bool,
 }
 
+/// Explicit CR4.TSD input for the exact local RDTSC form.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RdtscControls {
+    pub cr4_tsd: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FxCr0GateControls {
     Save(Fxsave64Cr0Controls),
@@ -846,6 +852,33 @@ pub fn run_with_sep_profile(
     )
 }
 
+/// Execute exact bare Long64 RDTSC with explicit CR4.TSD and an injected source.
+pub fn run_with_rdtsc_source(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: RdtscControls,
+    source: &mut impl FnMut() -> u64,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_execution_loop_with_profiles_and_rdtsc(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        Some(controls),
+        Some(source),
+        &mut stop_requested,
+    )
+}
+
 /// Continue an execution while carrying the caller's explicit RFLAGS
 /// definedness snapshot. Use the `rflags_defined` value returned by the prior
 /// call; this function does not infer execution history from guest state.
@@ -989,6 +1022,38 @@ fn run_execution_loop_with_profiles(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     config: RunConfig,
+    rflags_defined: u64,
+    cpuid_profile: Option<&CpuidProfile>,
+    msr_profile: Option<&MsrProfile>,
+    sep_profile: Option<&SepProfile>,
+    xorpd_prerequisites: Option<XorpdPrerequisiteState>,
+    minss_invalid_controls: Option<MinssInvalidControls>,
+    fx_cr0_gate_controls: Option<FxCr0GateControls>,
+    unmasked_minss_denormal: bool,
+    stop_requested: &mut impl FnMut() -> bool,
+) -> RunResult {
+    run_execution_loop_with_profiles_and_rdtsc(
+        state,
+        memory,
+        config,
+        rflags_defined,
+        cpuid_profile,
+        msr_profile,
+        sep_profile,
+        xorpd_prerequisites,
+        minss_invalid_controls,
+        fx_cr0_gate_controls,
+        unmasked_minss_denormal,
+        None,
+        None,
+        stop_requested,
+    )
+}
+
+fn run_execution_loop_with_profiles_and_rdtsc(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
     mut rflags_defined: u64,
     cpuid_profile: Option<&CpuidProfile>,
     msr_profile: Option<&MsrProfile>,
@@ -997,6 +1062,8 @@ fn run_execution_loop_with_profiles(
     minss_invalid_controls: Option<MinssInvalidControls>,
     fx_cr0_gate_controls: Option<FxCr0GateControls>,
     unmasked_minss_denormal: bool,
+    rdtsc_controls: Option<RdtscControls>,
+    mut rdtsc_source: Option<&mut dyn FnMut() -> u64>,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> RunResult {
     let mut retired = 0;
@@ -1010,20 +1077,44 @@ fn run_execution_loop_with_profiles(
         } else if retired == config.instruction_budget {
             Some(RunExit::InstructionBudgetExhausted)
         } else {
-            match step_tracked_with_profiles(
-                state,
-                memory,
-                config.context,
-                &mut rflags_defined,
-                cpuid_profile,
-                msr_profile,
-                sep_profile,
-                xorpd_prerequisites,
-                minss_invalid_controls,
-                fx_cr0_gate_controls,
-                unmasked_minss_denormal,
-                stop_requested,
-            ) {
+            let outcome = if let Some(source) = rdtsc_source.take() {
+                let outcome = step_tracked_with_profiles_and_rdtsc(
+                    state,
+                    memory,
+                    config.context,
+                    &mut rflags_defined,
+                    cpuid_profile,
+                    msr_profile,
+                    sep_profile,
+                    xorpd_prerequisites,
+                    minss_invalid_controls,
+                    fx_cr0_gate_controls,
+                    unmasked_minss_denormal,
+                    rdtsc_controls,
+                    Some(&mut *source),
+                    stop_requested,
+                );
+                rdtsc_source = Some(source);
+                outcome
+            } else {
+                step_tracked_with_profiles_and_rdtsc(
+                    state,
+                    memory,
+                    config.context,
+                    &mut rflags_defined,
+                    cpuid_profile,
+                    msr_profile,
+                    sep_profile,
+                    xorpd_prerequisites,
+                    minss_invalid_controls,
+                    fx_cr0_gate_controls,
+                    unmasked_minss_denormal,
+                    rdtsc_controls,
+                    None,
+                    stop_requested,
+                )
+            };
+            match outcome {
                 Ok(StepOutcome::Advanced | StepOutcome::Branched) => {
                     retired += 1;
                     None
@@ -1195,6 +1286,40 @@ fn step_tracked_with_profiles(
     unmasked_minss_denormal: bool,
     stop_requested: &mut impl FnMut() -> bool,
 ) -> Result<StepOutcome, MemoryError> {
+    step_tracked_with_profiles_and_rdtsc(
+        state,
+        memory,
+        context,
+        rflags_defined,
+        cpuid_profile,
+        msr_profile,
+        sep_profile,
+        xorpd_prerequisites,
+        minss_invalid_controls,
+        fx_cr0_gate_controls,
+        unmasked_minss_denormal,
+        None,
+        None,
+        stop_requested,
+    )
+}
+
+fn step_tracked_with_profiles_and_rdtsc(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    rflags_defined: &mut u64,
+    cpuid_profile: Option<&CpuidProfile>,
+    msr_profile: Option<&MsrProfile>,
+    sep_profile: Option<&SepProfile>,
+    xorpd_prerequisites: Option<XorpdPrerequisiteState>,
+    minss_invalid_controls: Option<MinssInvalidControls>,
+    fx_cr0_gate_controls: Option<FxCr0GateControls>,
+    unmasked_minss_denormal: bool,
+    rdtsc_controls: Option<RdtscControls>,
+    rdtsc_source: Option<&mut dyn FnMut() -> u64>,
+    stop_requested: &mut impl FnMut() -> bool,
+) -> Result<StepOutcome, MemoryError> {
     let instruction = match long_decode::decode(memory, state.rip, context) {
         Ok(instruction) => instruction,
         Err(DecodeError::Unsupported { opcode, .. }) => {
@@ -1340,6 +1465,25 @@ fn step_tracked_with_profiles(
         });
     }
     let next_rip = state.rip.wrapping_add(u64::from(instruction.length));
+    if instruction.operation == Operation::Rdtsc {
+        let (Some(controls), Some(source)) = (rdtsc_controls, rdtsc_source) else {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        };
+        if controls.cr4_tsd && context.privilege != PrivilegeLevel::Ring0 {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }));
+        }
+        let value = source();
+        state.gpr[Register::Rax as usize] = u64::from(value as u32);
+        state.gpr[Register::Rdx as usize] = u64::from((value >> 32) as u32);
+        state.rip = next_rip;
+        return Ok(StepOutcome::Advanced);
+    }
     if instruction.operation == Operation::Cpuid {
         let Some(profile) = cpuid_profile else {
             return Ok(StepOutcome::Unsupported {
@@ -1996,7 +2140,7 @@ fn step_tracked_with_profiles(
     // Direct control flow uses the decoded condition/displacement; integer
     // operations below use normalized operands at each accepted width.
     let executable = match instruction.operation {
-        Operation::Cpuid => false,
+        Operation::Cpuid | Operation::Rdtsc => false,
         Operation::ReadMsr | Operation::WriteMsr => false,
         Operation::Sysenter | Operation::Sysexit => false,
         Operation::MovImmediate { .. }
@@ -3602,6 +3746,7 @@ fn step_tracked_with_profiles(
     }
     match instruction.operation {
         Operation::Cpuid => unreachable!("CPUID is executed before transfer dispatch"),
+        Operation::Rdtsc => unreachable!("RDTSC is handled by its explicit source profile"),
         Operation::FxsaveRipRelative(_) => {
             unreachable!("FXSAVE commits in its prevalidated field-store path")
         }
@@ -92386,6 +92531,199 @@ mod fxsave_rip_tests {
                 assert!(memory.data_accesses == 0);
             }
         }
+    }
+
+    #[test]
+    fn rdtsc_uses_injected_value_and_cr4_tsd_gates_source_atomically() {
+        let value = 0xfedc_ba98_7654_3210;
+        for privilege in [
+            PrivilegeLevel::Ring0,
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            for cr4_tsd in [false, true] {
+                let mut state = LongModeState {
+                    rip: 0x1000,
+                    rflags: 0x0cd7,
+                    ..LongModeState::default()
+                };
+                for (index, register) in state.gpr.iter_mut().enumerate() {
+                    *register = 0xdead_0000_0000_0000 | index as u64;
+                }
+                let before = state.clone();
+                let mut memory = SepMemory::new(&[0x0f, 0x31], 0x1000);
+                let mut calls = 0;
+                let mut source = || {
+                    calls += 1;
+                    value
+                };
+                let result = run_with_rdtsc_source(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(0x1002),
+                        context: AccessContext {
+                            privilege,
+                            ..AccessContext::default()
+                        },
+                    },
+                    RdtscControls { cr4_tsd },
+                    &mut source,
+                    || false,
+                );
+                if cr4_tsd && privilege != PrivilegeLevel::Ring0 {
+                    assert_eq!(
+                        result.exit,
+                        RunExit::Fault(ArchitecturalFault {
+                            vector: 13,
+                            error_code: Some(0),
+                            linear_address: None,
+                        })
+                    );
+                    assert_eq!(result.instructions_executed, 0);
+                    assert_eq!(calls, 0);
+                    assert_eq!(state, before);
+                } else {
+                    let mut expected = before;
+                    expected.gpr[Register::Rax as usize] = 0x7654_3210;
+                    expected.gpr[Register::Rdx as usize] = 0xfedc_ba98;
+                    expected.rip = 0x1002;
+                    assert_eq!(result.exit, RunExit::StopAddress);
+                    assert_eq!(result.instructions_executed, 1);
+                    assert_eq!(calls, 1);
+                    assert_eq!(state, expected);
+                }
+                assert_eq!(memory.fetches, [0x1000, 0x1001]);
+                assert_eq!(memory.data_accesses, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn rdtsc_legacy_prefix_and_boundary_paths_do_not_read_the_source() {
+        let mut state = LongModeState {
+            rip: 0x1000,
+            ..LongModeState::default()
+        };
+        let before = state.clone();
+        let mut memory = SepMemory::new(&[0x0f, 0x31], 0x1000);
+        let legacy = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(legacy.exit, RunExit::Unsupported { opcode: 0x31 });
+        assert_eq!(legacy.instructions_executed, 0);
+        assert_eq!(state, before);
+
+        for (config, expected_exit) in [
+            (
+                RunConfig {
+                    instruction_budget: 0,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                RunExit::InstructionBudgetExhausted,
+            ),
+            (
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x1000),
+                    context: AccessContext::default(),
+                },
+                RunExit::StopAddress,
+            ),
+        ] {
+            let mut calls = 0;
+            let mut source = || {
+                calls += 1;
+                7
+            };
+            let mut memory = SepMemory::new(&[0x0f, 0x31], 0x1000);
+            let result = run_with_rdtsc_source(
+                &mut state,
+                &mut memory,
+                config,
+                RdtscControls { cr4_tsd: false },
+                &mut source,
+                || false,
+            );
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(calls, 0);
+            assert_eq!(state, before);
+            assert!(memory.fetches.is_empty());
+        }
+
+        for code in [&[0x48, 0x0f, 0x31][..], &[0xf3, 0x0f, 0x31][..]] {
+            let mut state = LongModeState {
+                rip: 0x1000,
+                ..LongModeState::default()
+            };
+            let before = state.clone();
+            let mut memory = SepMemory::new(code, 0x1000);
+            let mut calls = 0;
+            let mut source = || {
+                calls += 1;
+                7
+            };
+            let result = run_with_rdtsc_source(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                RdtscControls { cr4_tsd: false },
+                &mut source,
+                || false,
+            );
+            assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x31 }));
+            assert_eq!(calls, 0);
+            assert_eq!(state, before);
+        }
+
+        let mut truncated_state = LongModeState {
+            rip: 0x1000,
+            ..LongModeState::default()
+        };
+        let before = truncated_state.clone();
+        let mut truncated = SepMemory::new(&[0x0f], 0x1000);
+        let mut calls = 0;
+        let mut source = || {
+            calls += 1;
+            7
+        };
+        let result = run_with_rdtsc_source(
+            &mut truncated_state,
+            &mut truncated,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            RdtscControls { cr4_tsd: false },
+            &mut source,
+            || false,
+        );
+        assert!(matches!(
+            result.exit,
+            RunExit::MemoryError(MemoryError::Unmapped {
+                access: AccessKind::Fetch,
+                ..
+            })
+        ));
+        assert_eq!(calls, 0);
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(truncated_state, before);
+        assert_eq!(truncated.fetches, [0x1000, 0x1001]);
     }
 
     #[test]

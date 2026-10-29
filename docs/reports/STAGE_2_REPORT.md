@@ -1774,6 +1774,44 @@ See the [CPU contract](../specs/CPU_CONTRACT.md#локальная-полити�
 [plan](../plans/STAGE_2.md#s2-26d--local-sepdisabledv1-sysentersysexit-policy),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-26d-sep-disabled-sysentersysexit).
 
+## S2-26e — точный RDTSC с явным TSC-источником
+
+Implemented exact bare Long64 RDTSC (`0F 31`) under explicit
+`s2-long-rdtsc-v1`. The interpreter receives immutable CR4.TSD controls and an
+injected 64-bit source; CPL comes from the existing access context. CR4.TSD at
+CPL1–3 returns CPU-side `#GP(0)` after fetch with zero retirement, no state
+change and no source read. Otherwise one source call supplies zero-extended
+EAX=low32 and EDX=high32, advances RIP by two, and preserves all remaining
+state and memory. The legacy interpreter API is Unsupported; fixtures record
+the configured value and expected call count, while result snapshots expose
+the observed call count. Generic amd64 and CPUID masks are unchanged. JIT,
+native admission remains closed; the C ABI fragment-creation path rejects the
+opcode because it has no profile/source inputs. No host clock or guest
+exception delivery is modeled.
+
+Two handwritten schema-v2 fixtures cover ring-3 success with one call and
+CR4.TSD ring-3 `#GP(0)` with zero calls. Core tests cover CR4.TSD on/off at
+CPL0–3, exact writes and preservation, legacy Unsupported, prefixes, truncated
+fetch, stop and zero-budget ordering. The runner verifies source-call evidence
+and denies JIT/native.
+
+**Local checks:** `cargo test -p od-isa rdtsc --offline` (2 passed);
+`cargo test -p od-runner --test fixture_v2 s2_26e --offline` (1 passed);
+`cargo test -p od-host c_abi_rejects_rdtsc --offline` (1 passed);
+`cargo test -p od-testkit --offline` (396 passed); `cargo fmt --all -- --check`;
+`cargo check --workspace --all-targets --offline`; `graphify update .`.
+`python3 tools/check_layout.py` still reports `.git` as an unmapped linked
+worktree root and two broken links in unrelated historical report entries to
+absent work manifests. Independent Sol-medium review found no defects. No
+physical, SSH or Mac mini checks were run.
+
+Normative basis: Intel SDM revision 093, Vol. 2B, RDTSC, pp. 4-559–560
+([official Intel PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf)).
+See the [CPU contract](../specs/CPU_CONTRACT.md#локальный-профиль-rdtscsourcev1-s2-26e),
+[plan](../plans/STAGE_2.md#s2-26e--точный-rdtsc-с-явным-tsc-источником),
+[fixture format](../testing/TEST_CASE_FORMAT.md#version-2-long-mode-integer-states),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-26e-rdtsc-with-injected-source).
+
 ## S2-26b — локальный `SysenterProbeV1` MSR probe
 
 Реализованы immutable `MsrProfile::SysenterProbeV1` и явные

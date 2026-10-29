@@ -6,7 +6,8 @@
 `s2-long-fs-base-v1`, `s2-long-gs-base-v1`, `s2-long-fs-selector-v1` and
 `s2-long-gs-selector-v1`, `s2-long-verw-gdt-v1`, and local-only
 `s2-long-fs-load-v1`, `s2-long-x87-state-v1`, `s2-long-x87-sse-state-v1`, and
-`s2-long-x87-selectors-state-v1`, local-only `s2-long-sep-disabled-v1`,
+`s2-long-x87-selectors-state-v1`, local-only `s2-long-sep-disabled-v1` and
+`s2-long-rdtsc-v1`,
 `s2-long-fxsave-rip-v1`, and
 `s2-long-fxsave64-rax-disp8-v1`.
 V1 readers, bytes and historical digests remain unchanged. Segment profiles are
@@ -23,6 +24,21 @@ state/definedness or memory change, and no data-memory access. Its unit and
 runner tests assert those outcomes. These fixture examples do not add general
 schema restrictions on other mappings or comparator guarantees for other
 profiles.
+
+The local-only `s2-long-rdtsc-v1` fixtures describe exactly one bare Long64
+`0F 31`, budget 1, and stop RIP at entry+2. They require `rdtsc_controls` with
+immutable `cr4_tsd`, a literal `source_value` and `expected_source_calls`. The
+current runner CPL is ring 3: `cr4_tsd: false` expects one source call, EAX/EDX
+zero-extension and `stop_address`; `cr4_tsd: true` expects `#GP(0)`, no
+retirement and zero calls. The observed call count is recorded as
+`snapshot.rdtsc_source_calls` and result validation checks it against the
+fixture. Unit tests separately cover CPL0–3. This profile injects no host clock,
+does not model exception delivery or physical TSC behavior, and is admitted
+only by the interpreter; JIT/native are denied and the C ABI fragment-create
+path rejects RDTSC because it has no explicit profile/source inputs. See the [fixture
+notes](../../tests/fixtures/x86/stage2/README.md#s2-26e-rdtsc-with-injected-source),
+[CPU contract](../specs/CPU_CONTRACT.md#локальный-профиль-rdtscsourcev1-s2-26e)
+and [plan](../plans/STAGE_2.md#s2-26e--точный-rdtsc-с-явным-tsc-источником).
 
 Fixture fields: `schema_version`, `case_id`, `profile`, `provenance`, optional
 HexU64 `seed`, `converted_from_v1_sha256`, `initial_state`, `memory`, optional

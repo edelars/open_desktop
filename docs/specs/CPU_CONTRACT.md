@@ -134,6 +134,33 @@ Implementation evidence и
 границы проверок: [план S2-26d](../plans/STAGE_2.md#s2-26d--local-sepdisabledv1-sysentersysexit-policy),
 [отчёт](../reports/STAGE_2_REPORT.md#s2-26d--local-sepdisabledv1-sysentersysexit-policy).
 
+### Локальный профиль `RdtscSourceV1` (S2-26e)
+
+`RDTSC` исполняется только для точной bare Long64 кодировки `0F 31` в
+явном профиле `s2-long-rdtsc-v1`. Ни prefixes, ни соседние инструкции,
+режимы или implicit/default API этим профилем не принимаются. `CR4.TSD` —
+неизменяемый явный вход профиля; CPL берётся из существующего
+`AccessContext`. При `CR4.TSD=1` и CPL1–3 операция даёт CPU-side `#GP(0)` после
+полного fetch без retirement, изменения CPU state или вызова источника. В
+остальных разрешённых случаях injected TSC source вызывается ровно один раз;
+его младшие 32 бита zero-extend в EAX, старшие 32 — в EDX. RIP продвигается на
+два байта; остальные архитектурные регистры, flags и память сохраняются.
+
+Host clock не читается и не выбирается автоматически: caller обязан передать
+источник. Fixture profile фиксирует исходное 64-bit значение и ожидаемое число
+вызовов; результат отражает фактическое число вызовов. Legacy APIs без
+одновременно явных controls/source остаются fail-closed (`Unsupported`).
+JIT, native runner, C adapter и physical execution остаются закрытыми.
+Generic amd64 target и существующие CPUID masks этим локальным контрактом не
+меняются. Это CPU-side decision, не доставка `#GP`, не claim о синхронизации
+или физическом измерении TSC.
+
+Нормативный источник — Intel SDM revision 093, Vol. 2B, RDTSC,
+pp. 4-559–560 ([официальный Intel PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf)).
+Реализация, fixtures и local checks описаны в
+[плане S2-26e](../plans/STAGE_2.md#s2-26e--точный-rdtsc-с-явным-tsc-источником) и
+[отчёте этапа](../reports/STAGE_2_REPORT.md#s2-26e--точный-rdtsc-с-явным-tsc-источником).
+
 ### Ubuntu Generic `amd64`: `od-x86-64-v1-neutral-v0.1`
 
 Это выбранная синтетическая reference-цель для последующего CPU контракта и diagnostic Linux boot analysis. Она задаёт x86-64-v1 ABI/ISA floor и перечисленные дополнительные machine capabilities; она не является обещанием, что движок уже реализует эти функции, и не подтверждает совместимость или загрузку Ubuntu. Общий ABI floor остаётся x86-64-v1; v2/v3/v4 исключены. `PSE`, `TSC`, `MSR`, `PAE`, `CX8`, `APIC`, `PGE`, `PAT`, `NX` и `SYSCALL` ниже выбраны для этой project target отдельно и не выводятся все из одного psABI floor.
@@ -146,6 +173,11 @@ Implementation evidence и
 | `CPUID(0x80000001)` | 0 | 0 | 0 | `0x20100800` |
 | `CPUID(0x80000002..0x80000007)` | 0 | 0 | 0 | 0 |
 | `CPUID(0x80000008)` | `0x00003024` | 0 | 0 | 0 |
+
+The Generic amd64 CPUID target advertises TSC as selected above; that target
+capability is separate from local execution support. S2-26e implements only
+the exact interpreter profile and caller-injected source described above; it
+does not provide a machine-wide clock or alter CPUID advertisement.
 
 The CPUID.0 vendor bytes in architectural EBX/EDX/ECX order form `OpenDesktop ` (12 ASCII bytes). CPUID.1 EDX advertises FPU, PSE, TSC, MSR, PAE, CX8, APIC, PGE, CMOV, PAT, MMX, FXSR, SSE and SSE2; SEP is clear. CPUID.1 ECX is zero (including no XSAVE, OSXSAVE, AVX, or hypervisor-present bit). CPUID.80000001 EDX advertises SYSCALL, NX and long mode. CPUID.80000008 reports physical-address width 36 and linear-address width 48. Any unlisted EAX function returns four zero registers. This table is the selected project target, not a claim that these values came from an existing physical CPU.
 

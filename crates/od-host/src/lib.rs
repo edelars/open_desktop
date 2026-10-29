@@ -589,4 +589,17 @@ mod tests {
         assert_eq!(result.instructions_executed, 1);
         assert_eq!(unsafe { od_fragment_destroy(raw_handle) }, STATUS_OK);
     }
+
+    #[test]
+    fn c_abi_rejects_rdtsc_without_profile_controls_or_source() {
+        use std::ffi::c_void;
+
+        let code = [0x0f, 0x31];
+        let mut raw_handle: *mut c_void = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { od_fragment_create(code.as_ptr(), code.len(), &mut raw_handle) },
+            STATUS_INVALID_CODE
+        );
+        assert!(raw_handle.is_null());
+    }
 }

@@ -2112,6 +2112,43 @@ Local results are in the
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-26d--local-sepdisabledv1-sysentersysexit-policy).
 S2-26d does not close parent S2-26.
 
+#### S2-26e — точный RDTSC с явным TSC-источником
+
+**Статус:** implementation and listed local checks complete; independent review
+pending. Physical checks remain deferred; parent S2-26 remains open.
+
+Implement only exact bare Long64 `0F 31` under explicit
+`s2-long-rdtsc-v1`, with budget 1 and stop RIP at entry+2 in the fixture
+profile. Pass immutable `CR4.TSD` explicitly and use the existing execution
+CPL. If TSD is set at CPL1–3, return CPU-side `#GP(0)` after full fetch without
+retirement, state change, or a source call. Otherwise call the injected
+deterministic 64-bit source once, write EAX=`low32` and EDX=`high32` with
+zero-extension, advance RIP by two, and preserve all other state and memory.
+Do not read a host clock. Existing APIs without both explicit controls and a
+source remain `Unsupported`; JIT/native/C adapter/physical admission remains
+closed. Do not change Generic amd64 or CPUID feature masks.
+
+Handwritten schema-v2 fixtures carry the source value, CR4.TSD input and
+expected source-call count. Core coverage spans TSD on/off at CPL0–3, exact
+register writes and preservation, legacy API, prefixes/neighbours, fetch,
+budget and STOP. Runner coverage checks deterministic output and source-call
+evidence and denies JIT/native; the C ABI create path rejects RDTSC without an
+explicit profile/source. Official basis: Intel SDM revision 093, Vol. 2B,
+RDTSC, pp. 4-559–560 ([official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf)).
+See the [CPU contract](../specs/CPU_CONTRACT.md#локальный-профиль-rdtscsourcev1-s2-26e)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-26e-rdtsc-with-injected-source).
+Parent S2-26 remains open; physical checks remain in the final combined substage.
+Local checks passed: `cargo test -p od-isa rdtsc --offline` (2 tests),
+`cargo test -p od-runner --test fixture_v2 s2_26e --offline` (1 test),
+`cargo test -p od-host c_abi_rejects_rdtsc --offline` (1 test),
+`cargo test -p od-testkit --offline` (396 tests), `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, and `graphify update .`.
+`python3 tools/check_layout.py` reports the linked-worktree `.git` pointer and
+two pre-existing broken historical report links to absent work manifests;
+it does not report a link introduced by S2-26e. No physical, SSH, Mac mini,
+or native checks were run; the C ABI test only verified create-time rejection.
+Independent Sol-medium review completed with no findings.
+
 ### S2-27. Descriptors, события и системные переходы
 
 The bounded CPL3 GDT-only `VERW AX` form is tracked in S2-22e and is excluded

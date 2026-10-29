@@ -389,6 +389,8 @@ fn flags_stack_size(prefixes: Prefixes) -> Option<OperandSize> {
 pub enum Operation {
     /// Bare long-mode `0F A2` CPUID. A caller-selected profile is required to execute it.
     Cpuid,
+    /// Bare long-mode `0F 31` RDTSC. A caller-selected source and controls are required.
+    Rdtsc,
     /// Bare long-mode `0F 32` RDMSR. A caller-selected MSR profile is required.
     ReadMsr,
     /// Bare long-mode `0F 30` WRMSR. A caller-selected MSR profile is required.
@@ -1778,6 +1780,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
         }
         let modeled_system_operation = match (opcode.map, opcode.byte) {
             (OpcodeMap::Escape0f, 0xa2) => Some(Operation::Cpuid),
+            (OpcodeMap::Escape0f, 0x31) => Some(Operation::Rdtsc),
             (OpcodeMap::Escape0f, 0x32) => Some(Operation::ReadMsr),
             (OpcodeMap::Escape0f, 0x30) => Some(Operation::WriteMsr),
             (OpcodeMap::Escape0f, 0x34) => Some(Operation::Sysenter),

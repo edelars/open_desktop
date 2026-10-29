@@ -633,6 +633,7 @@ pub fn generate_native_xorpd_fixture(seed: u64, sequence: u32) -> Fixture {
         minss_invalid_controls: None,
         fxsave64_cr0_controls: None,
         fxrstor64_cr0_controls: None,
+        rdtsc_controls: None,
         memory: vec![MemoryRegionSpec {
             region_id: "code".into(),
             guest_address: HexU64(rip),
@@ -863,6 +864,7 @@ mod tests {
                     minss_invalid_controls: None,
                     fxsave64_cr0_controls: None,
                     fxrstor64_cr0_controls: None,
+                    rdtsc_source_calls: None,
                     exception: Observation::Available { value: None },
                 },
             },

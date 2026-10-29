@@ -1,0 +1,44 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_26e_rdtsc_source",
+  "profile": "s2-long-rdtsc-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten literal opcode bytes, TSC source value, CR4.TSD input, and source-call expectation.",
+    "specification": "Intel SDM revision 093, Vol. 2B, RDTSC, pp. 4-559–560; project S2-26e exact local profile.",
+    "specification_version": "Intel SDM Vol. 2B revision 093 (253667-093US); project S2-26e"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x1122334455667788", "0xaabbccddeeff0011", "0xdeadbeeffedcba98", "0x0000000000200000",
+      "0x0000000000300080", "0x0000000000300080", "0x0000000000200004", "0x0000000000200010",
+      "0x0123456789abcdef", "0xfedcba9876543210", "0x8877665544332211", "0xaabbccddeeff0011",
+      "0x1122112211221122", "0x3344334433443344", "0x778899aabbccddee", "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x00000000000008d7"
+  },
+  "rdtsc_controls": {
+    "cr4_tsd": false,
+    "source_value": "0xfedcba9876543210",
+    "expected_source_calls": 1
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 2,
+      "permissions": {"read": false, "write": false, "execute": true},
+      "initial_bytes_hex": "0f31",
+      "comparison_mask_hex": "ffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100002",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}
