@@ -17766,3 +17766,48 @@ Vol. 1 Tables D-6/D-7, §4.9.2 and §§11.5.2.2/11.5.3
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37v--canonical-long64-comiss-and-ucomiss-xmm-register-pairs),
 [plan](../plans/STAGE_2.md#s2-37v--canonical-long64-comiss-and-ucomiss-xmm-register-pairs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37v-canonical-comiss-and-ucomiss-register-pairs).
+
+## S2-37w — canonical Long64 COMISD and UCOMISD register pairs
+
+Implemented the schema-v2 interpreter-only profile
+`s2-long-comisd-ucomisd-registers-v1` for COMISD/UCOMISD across all 256 XMM
+pairs. Low-register forms use `66 0F 2F/2E /r` (4 bytes); extended forms use
+`66 41/44/45 0F 2F/2E /r` (5 bytes). The independent fixture parser derives
+opcode, registers and length. The independent result oracle classifies raw
+binary64 values and computes signed-magnitude order without using
+`Binary64::compare_raw`. It checks low64-only reads, complete XMM preservation,
+comparison flags, sticky IE/DE, NaN-before-denormal priority and unmasked
+atomic exit. JIT is rejected by the fixture runner and the native-x86 profile
+filter explicitly marks the new profile local-only.
+
+The runner test covers all 512 opcode/register-pair encodings, cross-products
+of signed zero, adjacent normals, subnormal edges, infinities, QNaNs and SNaNs,
+selected IE/DE unmasking, gate priority inputs, all four CPLs, malformed prefix,
+REX, memory, trailing-byte, VEX and EVEX forms, MXCSR DAZ/reserved-bit
+refusals, flag/control tampering, fabricated fault-metadata tampering, and JIT
+refusal. A direct interpreter test
+checks truncated fetch taking priority over a configured #UD gate. A direct interpreter test confirms execution at CPL0–3. Physical Mac
+mini acceptance remains deferred to the final combined stage; no memory form,
+generic CPUID admission, or parent S2-37/S2-38 closure is claimed.
+
+Checks run:
+
+- `cargo test -p od-runner --test fixture_v2 comisd_ucomisd_register_pairs_raw_u64_and_backend_denial --offline` — passed.
+- `cargo test -p od-isa comisd_ucomisd_register_profile_runs_at_all_cpls_and_gates --offline` — passed.
+- `cargo test -p od-x86-runner native_fp::tests::narrow_xorpd_is_not_blocked_with_existing_sse_and_x87_profiles_denied --offline` — passed.
+- `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, and `git diff --check` — passed.
+- `python3 tools/check_layout.py` — reports the pre-existing unmapped root `.git` entry and two missing historical oracle manifests in `STAGE_2_REPORT.md` (S0/S1 paths); no new layout issue was reported.
+- `graphify update .` — completed and refreshed the graph.
+
+Independent Sol-medium review found and the author fixed one oracle defect:
+fault observations now reject fabricated error-code and fault-address metadata;
+dedicated tampering assertions call `validate_for` directly. Targeted re-review
+confirmed the fix and found no remaining issues. Normative sources: Intel SDM Rev. 093
+Vol. 2A COMISD pp. 3-199–3-200
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 2B
+UCOMISD pp. 4-733–4-734 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241));
+Vol. 1 Tables D-6/D-7, §4.9.2 and §§11.5.2.2/11.5.3
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37w--canonical-long64-comisd-and-ucomisd-xmm-register-pairs),
+[plan](../plans/STAGE_2.md#s2-37w--canonical-long64-comisd-and-ucomisd-xmm-register-pairs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37w-canonical-comisd-and-ucomisd-register-pairs).

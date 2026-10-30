@@ -19474,3 +19474,186 @@ fn comiss_ucomiss_register_pairs_raw_classes_exceptions_and_backend_denial() {
         Outcome::Unsupported { .. }
     ));
 }
+
+#[test]
+fn comisd_ucomisd_register_pairs_raw_u64_and_backend_denial() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_37w_comisd_ucomisd_baseline.case.json");
+    let fixture = Fixture::from_json(&fs::read(path).unwrap())
+        .unwrap()
+        .fixture;
+    let xmm = |raw: u64, high: u64| {
+        let bytes = [raw.to_le_bytes(), high.to_le_bytes()].concat();
+        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    };
+    for opcode in [0x2f, 0x2e] {
+        for destination in 0u8..16 {
+            for source in 0u8..16 {
+                let rex = match (destination >= 8, source >= 8) {
+                    (false, false) => None,
+                    (true, false) => Some(0x44),
+                    (false, true) => Some(0x41),
+                    (true, true) => Some(0x45),
+                };
+                let mut code = vec![0x66];
+                if let Some(rex) = rex {
+                    code.push(rex);
+                }
+                code.extend([0x0f, opcode, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+                let mut case = fixture.clone();
+                case.memory[0].initial_bytes_hex =
+                    code.iter().map(|b| format!("{b:02x}")).collect();
+                case.memory[0].length = code.len() as u32;
+                case.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+                case.stop_rip = Some(HexU64(case.initial_state.rip.get() + code.len() as u64));
+                case.case_id = format!("s2_37w_pair_{opcode:02x}_{destination}_{source}");
+                let state = case.initial_state.sse.as_mut().unwrap();
+                state.xmm = std::array::from_fn(|r| {
+                    xmm(0x3ff0_0000_0000_0000 + r as u64, 0x7ff0_0000_0000_0001)
+                });
+                state.xmm[usize::from(destination)] =
+                    xmm(0x3ff0_0000_0000_0000, 0x7ff0_0000_0000_0001);
+                state.xmm[usize::from(source)] = xmm(0x4000_0000_0000_0000, 0x0000_0000_0000_0001);
+                let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                od_testkit::v2::compare(&input, &result, &result).unwrap();
+            }
+        }
+    }
+    let classes = [
+        0x0000_0000_0000_0000,
+        0x8000_0000_0000_0000,
+        0x3ff0_0000_0000_0000,
+        0x3ff0_0000_0000_0001,
+        0x000f_ffff_ffff_ffff,
+        0x0000_0000_0000_0001,
+        0x7ff0_0000_0000_0000,
+        0xfff0_0000_0000_0000,
+        0x7ff8_1234_5678_9abc,
+        0xfff8_1234_5678_9abc,
+        0x7ff0_1234_5678_9abc,
+        0xfff0_0000_0000_0001,
+    ];
+    for opcode in [0x2f, 0x2e] {
+        for (i, left) in classes.iter().copied().enumerate() {
+            for (j, right) in classes.iter().copied().enumerate() {
+                let mut case = fixture.clone();
+                case.memory[0].initial_bytes_hex = format!("660f{opcode:02x}c1");
+                case.memory[0].length = 4;
+                case.memory[0].comparison_mask_hex = "ffffffff".into();
+                case.stop_rip = Some(HexU64(case.initial_state.rip.get() + 4));
+                case.case_id = format!("s2_37w_class_{opcode:02x}_{i}_{j}");
+                let state = case.initial_state.sse.as_mut().unwrap();
+                state.xmm[0] = xmm(left, 0x7ff0_0000_0000_0001);
+                state.xmm[1] = xmm(right, 0x0000_0000_0000_0001);
+                let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                od_testkit::v2::compare(&input, &result, &result).unwrap();
+            }
+        }
+    }
+    for bad in [
+        vec![0x0f, 0x2f, 0xc1],
+        vec![0x66, 0x40, 0x0f, 0x2f, 0xc1],
+        vec![0x41, 0x66, 0x0f, 0x2f, 0xc1],
+        vec![0x66, 0x66, 0x0f, 0x2f, 0xc1],
+        vec![0x66, 0x48, 0x0f, 0x2f, 0xc1],
+        vec![0x66, 0x0f, 0x2f, 0x01],
+        vec![0x66, 0x0f, 0x2f, 0xc1, 0x90],
+        vec![0xc5, 0xf9, 0x2f, 0xc1],
+        vec![0x62, 0xf1, 0xfd, 0x08, 0x2f, 0xc1],
+    ] {
+        let mut bad_case = fixture.clone();
+        bad_case.memory[0].initial_bytes_hex = bad.iter().map(|b| format!("{b:02x}")).collect();
+        bad_case.memory[0].length = bad.len() as u32;
+        bad_case.memory[0].comparison_mask_hex = "ff".repeat(bad.len());
+        bad_case.stop_rip = Some(HexU64(bad_case.initial_state.rip.get() + bad.len() as u64));
+        assert!(
+            bad_case.validate().is_err(),
+            "accepted malformed {bad:02x?}"
+        );
+    }
+    for (lhs, rhs, opcode, unmask) in [
+        (0x7ff8_1234_5678_9abc, 0x3ff0_0000_0000_0000, 0x2f, 7),
+        (0x7ff0_1234_5678_9abc, 0x3ff0_0000_0000_0000, 0x2e, 7),
+        (0x0000_0000_0000_0001, 0x3ff0_0000_0000_0000, 0x2f, 8),
+    ] {
+        let mut case = fixture.clone();
+        case.memory[0].initial_bytes_hex = format!("660f{opcode:02x}c1");
+        case.initial_state.sse.as_mut().unwrap().xmm[0] = xmm(lhs, 0);
+        case.initial_state.sse.as_mut().unwrap().xmm[1] = xmm(rhs, 0);
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 & !(1 << unmask));
+        case.initial_state.rflags = HexU64(0x8d7);
+        case.expected_exit = ExpectedExit::Exception;
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        assert_eq!(snapshot(&result).state.rflags, case.initial_state.rflags);
+    }
+    let mut fault_case = fixture.clone();
+    fault_case.initial_state.sse.as_mut().unwrap().xmm[0] = xmm(0x7ff8_1234_5678_9abc, 0);
+    fault_case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f00);
+    fault_case.expected_exit = ExpectedExit::Exception;
+    let (fault_input, fault_result) = run(&fault_case.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&fault_input, &fault_result, &fault_result).unwrap();
+    let mut fabricated_error_code = fault_result.clone();
+    if let Observation::Available { value: snapshot } = &mut fabricated_error_code.snapshot {
+        if let Observation::Available {
+            value: Some(exception),
+        } = &mut snapshot.exception
+        {
+            exception.error_code = Observation::Available { value: HexU64(0) };
+        }
+    }
+    assert!(fabricated_error_code.validate_for(&fault_input).is_err());
+    let mut fabricated_fault_address = fault_result.clone();
+    if let Observation::Available { value: snapshot } = &mut fabricated_fault_address.snapshot {
+        if let Observation::Available {
+            value: Some(exception),
+        } = &mut snapshot.exception
+        {
+            exception.fault_address = Observation::Available {
+                value: HexU64(0x1000),
+            };
+        }
+    }
+    assert!(fabricated_fault_address.validate_for(&fault_input).is_err());
+    for (sse2, em, osfxsr, ts) in [
+        (false, false, true, true),
+        (true, true, true, false),
+        (true, false, false, false),
+        (true, false, true, true),
+    ] {
+        let mut case = fixture.clone();
+        let controls = case.comisd_ucomisd_controls.as_mut().unwrap();
+        controls.sse2_available = sse2;
+        controls.cr0_em = em;
+        controls.cr4_osfxsr = osfxsr;
+        controls.cr0_ts = ts;
+        case.expected_exit = ExpectedExit::Exception;
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+    }
+    for mxcsr in [0x1fc0, 0x0001_0000] {
+        let mut invalid = fixture.clone();
+        invalid.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(
+            invalid.validate().is_err(),
+            "accepted unsupported MXCSR {mxcsr:#x}"
+        );
+    }
+    let (_, result) = run(&fixture.to_json().unwrap(), "jit", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    let (input, success) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+    let mut changed = success.clone();
+    if let Observation::Available { value } = &mut changed.snapshot {
+        value.state.rflags = HexU64(value.state.rflags.get() ^ 1);
+    }
+    assert!(od_testkit::v2::compare(&input, &success, &changed).is_err());
+    let mut changed_controls = success.clone();
+    if let Observation::Available { value } = &mut changed_controls.snapshot {
+        value
+            .comisd_ucomisd_controls
+            .as_mut()
+            .unwrap()
+            .sse2_available = false;
+    }
+    assert!(od_testkit::v2::compare(&input, &success, &changed_controls).is_err());
+}

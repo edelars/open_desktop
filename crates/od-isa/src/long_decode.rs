@@ -3206,6 +3206,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 || prefix_count == 1
                     && matches!(prefixes.rex, Some(0x41 | 0x44 | 0x45))
                     && prefix_bytes[0] == prefixes.rex.unwrap());
+        let comisd_ucomisd_register = opcode.map == OpcodeMap::Escape0f
+            && matches!(opcode.byte, 0x2e | 0x2f)
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 1 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && matches!(prefixes.rex, Some(0x41 | 0x44 | 0x45))
+                    && prefix_bytes[0] == 0x66
+                    && prefix_bytes[1] == prefixes.rex.unwrap());
         let cvtss2sd_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x5a
             && prefixes.group1 == Some(0xf3)
@@ -3617,6 +3628,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 Operation::Cvtps2pdRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x2e | 0x2f) if comisd_ucomisd_register => {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::ComissUcomissRegister {
+                    unordered_quiet: opcode.byte == 0x2e,
                     destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                     source: (modrm & 7) | ((rex & 1) << 3),
                 }

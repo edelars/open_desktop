@@ -6405,3 +6405,18 @@ status and exception masks. Gate/fetch/CPL/no-callback, malformed encoding,
 result tampering and JIT/native denial are covered. This local profile does not
 claim memory forms, generic CPUID admission, physical acceptance, or closure
 of parent S2-37/S2-38. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37v--canonical-long64-comiss-and-ucomiss-xmm-register-pairs), [plan](../../../../docs/plans/STAGE_2.md#s2-37v--canonical-long64-comiss-and-ucomiss-xmm-register-pairs), and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37v--canonical-long64-comiss-and-ucomiss-xmm-register-pairs).
+
+### S2-37w canonical COMISD and UCOMISD register pairs
+
+`s2_37w_comisd_ucomisd_baseline.case.json` is the handwritten schema-v2
+`s2-long-comisd-ucomisd-registers-v1` anchor with canonical `66 0F 2F C1`.
+The independent fixture oracle classifies raw binary64 values and computes
+signed-magnitude ordering without calling `Binary64::compare_raw`. Runner
+coverage builds both opcodes for all 256 XMM pairs, checks QNaN/SNaN, subnormal,
+infinity, signed-zero and adjacent-normal relations, and rejects malformed
+prefix, memory, trailing-byte, VEX and EVEX forms. The interpreter-only profile
+keeps JIT/native admission closed; memory forms, generic CPUID admission,
+physical acceptance and parent S2-37/S2-38 remain out of scope. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37w--canonical-long64-comisd-and-ucomisd-xmm-register-pairs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37w--canonical-long64-comisd-and-ucomisd-xmm-register-pairs),
+and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37w--canonical-long64-comisd-and-ucomisd-xmm-register-pairs).

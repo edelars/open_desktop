@@ -12677,3 +12677,39 @@ Normative sources: Intel SDM Rev. 093 Vol. 2A COMISS pp. 3-201–3-202
 UCOMISS pp. 4-735–4-736 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241));
 Vol. 1 Tables D-6/D-7, §4.9.2 NaN-before-denormal priority, and
 §§11.5.2.2/11.5.3 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+
+## S2-37w — canonical Long64 COMISD and UCOMISD XMM register pairs
+
+The bounded schema-v2 interpreter-only profile is
+`s2-long-comisd-ucomisd-registers-v1`. It admits COMISD `66 0F 2F /r` and
+UCOMISD `66 0F 2E /r`, all 256 XMM destination/source pairs, and ModR/M.mod=3.
+Low pairs use the canonical 4-byte form; extended operands require the exact
+prefix order `66 41/44/45 0F opcode /r` and length 5. The independent parser
+derives opcode, operand indices and length. One executable mapping, budget one
+and checked stop RIP `entry+length` are required. Other or duplicate prefixes,
+REX.W/X, reordered prefixes, memory, trailing bytes, VEX and EVEX are profile
+refusals.
+
+Both operands are snapshotted, only their low64 values are read, and the full
+XMM file is preserved. Raw binary64 comparison treats signed zeros as equal
+and orders finite values and infinities by sign and magnitude. COMISD raises
+new IE for QNaN or SNaN; UCOMISD raises it only for SNaN. If either operand is
+NaN, new DE is suppressed; otherwise either subnormal raises DE. New sticky IE
+and DE are ORed into MXCSR. Only newly raised unmasked events fault. Sticky
+status is committed before #XM when CR4.OSXMMEXCPT=1 or SIMD-generated #UD
+otherwise. An unmasked fault preserves full RFLAGS, RIP and retirement.
+Completion sets ZF/PF/CF for unordered, ZF for equal, CF for less, and clears
+OF/SF/AF while preserving all other RFLAGS bits and definedness.
+
+Full fetch precedes SSE2 availability/CR0.EM/CR4.OSFXSR #UD then CR0.TS #NM,
+at CPL0–3. MXCSR accepts supported bits only, DAZ is refused, and RC/FTZ are
+irrelevant. The control inputs including OSXMMEXCPT are echoed. JIT, native,
+C ABI, fragment and generic CPUID admission remain closed. Memory forms, other
+modes, physical acceptance, and parent S2-37/S2-38 remain open. The final
+combined Mac mini acceptance stage is deferred.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A COMISD pp. 3-199–3-200
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 2B
+UCOMISD pp. 4-733–4-734 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241));
+Vol. 1 Tables D-6/D-7, §4.9.2 NaN-before-denormal priority, and
+§§11.5.2.2/11.5.3 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).

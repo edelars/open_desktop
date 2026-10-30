@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последние локальные подзадания S2-37s/t/u/v добавляют canonical Long64 CVTDQ2PS/CVTSS2SD/CVTPS2PD/COMISS/UCOMISS register-space schema-v2 interpreter-only profiles; это не закрывает общий S2-37, CPUID admission или physical acceptance. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последние локальные подзадания S2-37s/t/u/v/w добавляют canonical Long64 CVTDQ2PS/CVTSS2SD/CVTPS2PD/COMISS/UCOMISS/COMISD/UCOMISD register-space schema-v2 interpreter-only profiles; это не закрывает общий S2-37, CPUID admission или physical acceptance. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -497,9 +497,10 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37k | Local-only Long64 legacy register MINPD profile `s2-long-minpd-reg-masked-v1`; aggregates masked IE/DE sticky status across two lanes; JIT/native closed | S2-36z, S2-38a; independent review |
 | [x] | S2-37l | Local-only Long64 legacy register MAXPD profile `s2-long-maxpd-reg-masked-v1`; aggregates masked IE/DE sticky status across two lanes; JIT/native closed | S2-36z, S2-37j/k, bounded S2-38a; independent review |
 | [x] | S2-37s | Local-only canonical Long64 CVTDQ2PS register-space profile; aggregates four-lane Precision and suppresses the full destination on unmasked PE; JIT/native closed | S2-36 rounding, S2-38 PE policy; independent review |
-| [ ] | S2-37t | Local-only canonical Long64 CVTSS2SD XMM register-pair profile; raw binary32 widening with sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-38 IE/DE policy; independent review pending |
-| [ ] | S2-37u | Local-only canonical Long64 CVTPS2PD XMM register-pair profile; two-lane raw widening with aggregate sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-37t, S2-38 IE/DE policy; independent review pending |
+| [x] | S2-37t | Local-only canonical Long64 CVTSS2SD XMM register-pair profile; raw binary32 widening with sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
+| [x] | S2-37u | Local-only canonical Long64 CVTPS2PD XMM register-pair profile; two-lane raw widening with aggregate sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-37t, S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37v | Local-only canonical Long64 COMISS/UCOMISS XMM register-pair profile; NaN-priority IE/DE, unordered flags, unmasked atomic flag exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
+| [x] | S2-37w | Local-only canonical Long64 COMISD/UCOMISD XMM register-pair profile; raw binary64 relation, NaN-priority IE/DE, unmasked atomic flag exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean after oracle metadata fix |
 | [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j/k/l: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j/k/l; independent review |
 | [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
@@ -6763,10 +6764,10 @@ inventory.
 | CMPPS | `NP 0F C2 /r ib` | SSE | XMM, m128; 4×32-bit masks | 3-175 | missing |
 | CMPSD | `F2 0F C2 /r ib` | SSE2 | XMM, m64; low 64-bit mask | 3-185 | missing |
 | CMPSS | `F3 0F C2 /r ib` | SSE | XMM, m32; low 32-bit mask | 3-189 | missing |
-| COMISD | `66 0F 2F /r` | SSE2 | XMM, m64; EFLAGS | 3-199 | missing |
-| COMISS | `NP 0F 2F /r` | SSE | XMM, m32; EFLAGS | 3-201 | missing |
+| COMISD | `66 0F 2F /r` | SSE2 | XMM, m64; EFLAGS | 3-199 | S2-37w, bounded register-only |
+| COMISS | `NP 0F 2F /r` | SSE | XMM, m32; EFLAGS | 3-201 | S2-37v, bounded register-only |
 | CVTDQ2PD | `F3 0F E6 /r` | SSE2 | m64 / low 2×i32 → 2×f64 | 3-208 | S2-37m exact XMM0/XMM1; S2-37p canonical 256 XMM register pairs |
-| CVTDQ2PS | `NP 0F 5B /r` | SSE2 | XMM, m128; 4×i32 → 4×f32 | 3-211 | missing |
+| CVTDQ2PS | `NP 0F 5B /r` | SSE2 | XMM, m128; 4×i32 → 4×f32 | 3-211 | S2-37s, bounded register-only |
 | CVTPD2DQ | `F2 0F E6 /r` | SSE2 | XMM, m128; 2×f64 → low 2×i32 | 3-214 | missing |
 | CVTPD2PI | `66 0F 2D /r` | SSE2 | XMM, m128 → mm; 2×f64 → 2×i32 | 3-218 | missing |
 | CVTPD2PS | `66 0F 5A /r` | SSE2 | XMM, m128; 2×f64 → low 2×f32 | 3-219 | missing |
@@ -6779,7 +6780,7 @@ inventory.
 | CVTSD2SS | `F2 0F 5A /r` | SSE2 | XMM, m64; f64 → low f32 | 3-234 | missing |
 | CVTSI2SD | `F2 0F 2A /r`; `F2 REX.W 0F 2A /r` | SSE2 | r32/m32 or r64/m64 → low f64 | 3-236 | S2-37n/o exact forms; S2-37q canonical 512 register forms |
 | CVTSI2SS | `F3 0F 2A /r`; `F3 REX.W 0F 2A /r` | SSE | r32/m32 or r64/m64 → low f32 | 3-238 | S2-37r canonical 512 Long64 register forms |
-| CVTSS2SD | `F3 0F 5A /r` | SSE2 | XMM, m32; f32 → low f64 | 3-240 | missing |
+| CVTSS2SD | `F3 0F 5A /r` | SSE2 | XMM, m32; f32 → low f64 | 3-240 | S2-37t, bounded register-only |
 | CVTSS2SI | `F3 0F 2D /r`; `F3 REX.W 0F 2D /r` | SSE | m32 → r32 / r64 | 3-242 | missing |
 | CVTTPD2DQ | `66 0F E6 /r` | SSE2 | XMM, m128; 2×f64 → low 2×i32 | 3-244 | missing |
 | CVTTPD2PI | `66 0F 2C /r` | SSE2 | XMM, m128 → mm; 2×f64 → 2×i32 | 3-248 | missing |
@@ -6815,8 +6816,8 @@ inventory.
 | SUBPS | `NP 0F 5C /r` | SSE | XMM, m128; 4×f32 | 4-690 | missing |
 | SUBSD | `F2 0F 5C /r` | SSE2 | XMM, m64; low f64 | 4-693 | missing |
 | SUBSS | `F3 0F 5C /r` | SSE | XMM, m32; low f32 | 4-695 | missing |
-| UCOMISD | `66 0F 2E /r` | SSE2 | XMM, m64; EFLAGS | 4-733 | missing |
-| UCOMISS | `NP 0F 2E /r` | SSE | XMM, m32; EFLAGS | 4-735 | missing |
+| UCOMISD | `66 0F 2E /r` | SSE2 | XMM, m64; EFLAGS | 4-733 | S2-37w, bounded register-only |
+| UCOMISS | `NP 0F 2E /r` | SSE | XMM, m32; EFLAGS | 4-735 | S2-37v, bounded register-only |
 
 This is 62 instruction mnemonics (36 A–L, 26 M–Z); the integer conversion
 forms with `REX.W` are separately required r64 subforms. `REX.W` does not
@@ -12971,3 +12972,8 @@ gates, fetch, CPL, tampering and backend denial. Do not claim memory forms,
 generic CPUID admission, physical validation, or completion of parent S2-37.
 Sources: Intel SDM Rev. 093 Vol. 2A COMISS pp. 3-201–3-202; Vol. 2B UCOMISS
 pp. 4-735–4-736; Vol. 1 Tables D-6/D-7, §4.9.2, §§11.5.2.2/11.5.3.
+
+
+#### S2-37w — canonical Long64 COMISD and UCOMISD XMM register pairs
+
+Implement schema-v2 interpreter-only profile `s2-long-comisd-ucomisd-registers-v1` for `66 0F 2F /r` COMISD and `66 0F 2E /r` UCOMISD across all 256 XMM pairs. Low pairs use canonical 4-byte encodings; extended pairs use `66 41/44/45 0F opcode`, ModR/M.mod=3 and length 5. Reject REX.W/X, redundant or reordered prefixes, memory, trailing bytes, VEX and EVEX. Snapshot both registers and read low64 only; preserve all XMM state. COMISD signals IE for QNaN/SNaN, UCOMISD for SNaN only. NaNs suppress new DE from the other operand; absent NaNs either subnormal raises DE. Apply sticky status before #XM or SIMD #UD; only new unmasked events fault. Faults preserve full RFLAGS/RIP and retirement; success sets ZF/PF/CF by comparison and clears OF/SF/AF while preserving other bits. Require SSE2, !EM, OSFXSR before TS; CPL0–3. Refuse DAZ/reserved MXCSR bits; RC/FTZ are irrelevant. JIT/native/generic/C/fragment admission remains closed. The macOS hardware acceptance portion remains deferred to the final combined stage.
