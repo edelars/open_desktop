@@ -40284,6 +40284,127 @@ mod tests {
     }
 
     #[test]
+    fn c_abi_idle_handle_runs_sequentially_on_host_threads_and_releases_mapping() {
+        let _guard = jit_test_lock();
+        use std::ffi::c_void;
+        use std::sync::mpsc;
+        use std::thread;
+
+        let first_code = [0x48, 0xB8, 0x11, 0, 0, 0, 0, 0, 0, 0];
+        let second_code = [0x48, 0xB9, 0x22, 0, 0, 0, 0, 0, 0, 0];
+        let mut first: *mut c_void = std::ptr::null_mut();
+        let mut second: *mut c_void = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { od_fragment_create(first_code.as_ptr(), first_code.len(), &mut first) },
+            STATUS_OK
+        );
+        assert_eq!(
+            unsafe { od_fragment_create(second_code.as_ptr(), second_code.len(), &mut second) },
+            STATUS_OK
+        );
+
+        let spawn_worker = || {
+            let (commands, command_rx) = mpsc::channel::<(usize, OdCpuStateV0)>();
+            let (response_tx, responses) =
+                mpsc::channel::<(thread::ThreadId, u32, OdExecutionResultV0)>();
+            let worker = thread::spawn(move || {
+                while let Ok((handle, state)) = command_rx.recv() {
+                    let mut result = OdExecutionResultV0::default();
+                    let status = unsafe {
+                        od_fragment_execute(handle as *mut c_void, &state, 1, &mut result)
+                    };
+                    response_tx
+                        .send((thread::current().id(), status, result))
+                        .unwrap();
+                }
+            });
+            (commands, responses, worker)
+        };
+        let (first_thread, first_responses, first_worker) = spawn_worker();
+        let (second_thread, second_responses, second_worker) = spawn_worker();
+        let execute = |commands: &mpsc::Sender<(usize, OdCpuStateV0)>,
+                       responses: &mpsc::Receiver<(thread::ThreadId, u32, OdExecutionResultV0)>,
+                       handle: *mut c_void,
+                       state: OdCpuStateV0| {
+            commands.send((handle as usize, state)).unwrap();
+            responses.recv().unwrap()
+        };
+
+        let initial = OdCpuStateV0 {
+            gpr: [7, 8, 9, 10],
+            rip: 0,
+            rflags: 0xA5A5_F0F0_5A5A_0A02,
+        };
+        let check_first = |status: u32, result: OdExecutionResultV0| {
+            assert_eq!(status, STATUS_OK);
+            assert_eq!(
+                result.state,
+                OdCpuStateV0 {
+                    gpr: [0x11, 8, 9, 10],
+                    rip: first_code.len() as u64,
+                    rflags: initial.rflags,
+                }
+            );
+            assert_eq!(result.reason, 0);
+            assert_eq!(result.reserved, 0);
+            assert_eq!(result.instructions_executed, 1);
+        };
+        let check_second = |status: u32, result: OdExecutionResultV0| {
+            assert_eq!(status, STATUS_OK);
+            assert_eq!(
+                result.state,
+                OdCpuStateV0 {
+                    gpr: [7, 0x22, 9, 10],
+                    rip: second_code.len() as u64,
+                    rflags: initial.rflags,
+                }
+            );
+            assert_eq!(result.reason, 0);
+            assert_eq!(result.reserved, 0);
+            assert_eq!(result.instructions_executed, 1);
+        };
+
+        let (first_thread_id, status, result) =
+            execute(&first_thread, &first_responses, first, initial);
+        check_first(status, result);
+        let (second_thread_id, status, result) =
+            execute(&second_thread, &second_responses, second, initial);
+        check_second(status, result);
+        assert_ne!(first_thread_id, second_thread_id);
+
+        let (thread_b_id, status, result) =
+            execute(&second_thread, &second_responses, first, initial);
+        assert_eq!(thread_b_id, second_thread_id);
+        check_first(status, result);
+        let (thread_a_id, status, result) =
+            execute(&first_thread, &first_responses, second, initial);
+        assert_eq!(thread_a_id, first_thread_id);
+        check_second(status, result);
+
+        assert_eq!(unsafe { od_fragment_request_stop(first) }, STATUS_OK);
+        let (stop_thread_id, status, stopped) =
+            execute(&second_thread, &second_responses, first, initial);
+        assert_eq!(stop_thread_id, second_thread_id);
+        assert_eq!(status, STATUS_OK);
+        assert_eq!(stopped.state, initial);
+        assert_eq!(stopped.reason, 2);
+        assert_eq!(stopped.reserved, 0);
+        assert_eq!(stopped.instructions_executed, 0);
+
+        let (_, status, result) = execute(&first_thread, &first_responses, second, initial);
+        check_second(status, result);
+        let (_, status, result) = execute(&first_thread, &first_responses, first, initial);
+        check_first(status, result);
+
+        drop(first_thread);
+        drop(second_thread);
+        first_worker.join().unwrap();
+        second_worker.join().unwrap();
+        assert_eq!(unsafe { od_fragment_destroy(first) }, STATUS_OK);
+        assert_eq!(unsafe { od_fragment_destroy(second) }, STATUS_OK);
+    }
+
+    #[test]
     fn publication_rejects_second_live_mapping_and_reuses_slot_after_drop() {
         let _guard = jit_test_lock();
         let first = PublishedCode::publish(&[0xC0, 0x03, 0x5F, 0xD6]).unwrap(); // ret

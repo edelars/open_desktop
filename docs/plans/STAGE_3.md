@@ -261,6 +261,7 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-37 | Cache churn и ресурсы | S3-25, S3-34 |
 | [ ] | S3-38 | Интеграция VMHost и ABI | S3-28, S3-34 |
 | [partial] | S3-38a | Register-only S0-09 V0 C ABI through run-local eager block dispatcher | Immutable fragment, per-call arena/cache, C ABI lifecycle and local VMHost process regressions; full cache/request ownership and all S3-38 gates remain open |
+| [partial] | S3-38c | Sequential cross-thread V0 handle lifecycle | One idle handle called sequentially from two host threads, second-handle interleaving, pre-run STOP and per-call mapping release; persistent cache and full S3-38 remain open |
 | [ ] | S3-39 | Повторить macOS/ARM smoke на M1 Pro | S3-38 |
 | [ ] | S3-40 | Зафиксировать решения по данным | S3-35–S3-39 |
 | [ ] | S3-41 | Документация и приёмка этапа | Все обязательные задачи |
@@ -2607,6 +2608,17 @@ remain separate and `not_run` in process-only evidence. See the
 This bounded process suite does not establish persistent cache reuse across
 requests, a whole VM session, general memory execution through the C ABI,
 owner/MMU integration, Mini support, or performance benefit.
+
+#### S3-38c. Sequential cross-thread V0 handle lifecycle
+
+The focused `od-host` C ABI regression executes the same idle handle
+sequentially on two distinct host threads, interleaves a second handle after
+each synchronous call, and verifies state/RIP/retirement plus pre-run STOP
+consumption. The successful second-handle calls also verify that the per-call
+MAP_JIT mapping was released before return. It does not test simultaneous
+execution, persistent cache reuse, or parallel MAP_JIT mappings. This is a
+partial lifecycle slice; see the
+[S3-38c report](../reports/STAGE_3_S3-38c_2026-10-30.md).
 
 ### S3-39. Повторить ARM64 smoke на M1 Pro
 
