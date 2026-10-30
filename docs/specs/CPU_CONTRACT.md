@@ -13587,3 +13587,48 @@ unmasked OE/UE behavior and parent S2-37/S2-38 remain open. Sources: Intel SDM
 Rev. 093 Vol. 2B MULSS pp. 4-150–4-151; Vol. 2A Type 3/Table 2-20; Vol. 1
 §§4.9.1.4–.6, 11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel
 Floating-Point Reference Sheet v2.13.
+
+## S2-37av — bounded masked-range Long64 DIVPD XMM register pairs
+
+The local schema-v2 profile `s2-long-divpd-registers-v1` admits only canonical
+Long64 `66 0F 5E /r` with ModR/M.mod=3 and all 16×16 XMM pairs. Low forms are
+four bytes; extended registers use exactly `66 41/44/45 0F 5E /r`. Memory,
+F2/F3, reordered/repeated/redundant prefixes, REX.W/X/40, trailing bytes, VEX
+and EVEX are rejected. Fetch precedes SSE2/CR0.EM/CR4.OSFXSR #UD and then CR0.TS
+#NM, at CPL0–3; the profile does no data callbacks. It is interpreter-only;
+JIT, native, C ABI, fragment and generic paths remain closed.
+
+Admission requires MXCSR.OM=1 and UM=1, rejects DAZ and reserved MXCSR bits,
+and accepts RC, FTZ, IM/DM/ZM/PM and prior sticky flags. The interpreter takes
+both source and destination XMM snapshots and computes old destination/source
+for both binary64 lanes. NaNs select the first original operand; selected SNaNs
+are quieted and any SNaN raises IE. NaNs suppress same-lane ZE and DE. `0/0`
+and `∞/∞` raise IE and produce the masked indefinite. Finite or subnormal
+numerator over zero raises ZE; `∞/0` does not. Outside those cases, a subnormal
+operand raises precompute DE. IE/ZE/DE aggregate across lanes before arithmetic;
+unmasked pre-events commit the generated status and fault without XMM/RIP/
+retirement changes. With pre-events masked, `Binary64::divide_raw_result`
+provides the raw result under MXCSR.RC. Masked overflow records OE|PE. Underflow
+tininess uses the precision-rounded unbounded exponent (WPR), not the encoded
+exponent. Tiny inexact results raise UE|PE; FTZ flushes tiny nonzero values to
+signed zero with UE|PE. Post flags aggregate across lanes before unmasked PM;
+old sticky bits alone do not fault.
+
+The independent schema oracle performs raw-u64 quotient/remainder arithmetic
+with u128 and no host FP or production helpers. It avoids overflow for large
+exponent gaps and rounds only once. The fixture covers `1/3`, the
+minimum-normal/2^53 half-minsub tie, exact minimum-normal/2, the `maxsub/2`
+half-minsub tie, and `minnormal/nextafter(1,+)` across RC/FTZ. The half-minsub
+ties are inexact and raise UE|PE. The additional `subnormal/0` case with ZM=1
+and DM=0 raises ZE only because zero-divisor classification precedes DE in that
+lane. Focused tests cover all register pairs and aliases, IE/ZE/DE aggregation,
+NaN suppression, masks/stickies, atomicity, gates/fetch/CPL, malformed inputs,
+tampering and JIT/native denial. These local checks do not establish physical
+acceptance. Memory forms, other modes, full unmasked OE/UE behavior and parent
+S2-37/S2-38 remain open.
+
+Sources: Intel SDM Rev. 093 Vol. 2B DIVPD pp. 3-267–3-269; Vol. 2A legacy SSE
+rows in Table 2-19. The explicit Type 2/Table 2-19 cross-reference on p. 3-269
+is for VEX forms and is not applied to legacy DIVPD. Vol. 1 §§4.9.1.4–.6,
+11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel Floating-Point
+Reference Sheet v2.13.

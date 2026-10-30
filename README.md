@@ -90,5 +90,12 @@ generic/JIT/native execution is closed, and physical acceptance remains in the
 combined final stage. See the [CPU contract](docs/specs/CPU_CONTRACT.md#s2-37ae--canonical-long64-cvttsd2si-register-space)
 and [Stage 2 report](docs/reports/STAGE_2_REPORT.md#s2-37ae--canonical-long64-cvttsd2si-register-space).
 
+The local-only S2-37av `DIVPD` profile admits canonical Long64 register-pair
+forms and performs two binary64 lanes with MXCSR exception ordering. Its
+independent raw-u64 oracle, literal fixture and 256-pair interpreter coverage
+are in place; JIT/native and physical execution remain closed. See the [CPU
+contract](docs/specs/CPU_CONTRACT.md#s2-37av--bounded-masked-range-long64-divpd-xmm-register-pairs)
+and [Stage 2 report](docs/reports/STAGE_2_REPORT.md#s2-37av--divpd-register-pair-interpreter-profile).
+
 
 The local-only S2-34.20 ANDNPD profile supports long-mode register `66 [REX.R/B] 0F 55 /r` as `(~destination) & source` across raw 128-bit XMM values; ANDNPS remains separate. JIT/native and physical execution remain outside the profile. See the [CPU contract](docs/specs/CPU_CONTRACT.md#local-profile-s2-3420-s2-long-andnpd-reg-v1).

@@ -18749,3 +18749,47 @@ Vol. 1 §§4.9.1.4–.6, 11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel
 Floating-Point Reference Sheet v2.13. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37au--bounded-masked-range-long64-mulss-xmm-register-pairs),
 [plan](../plans/STAGE_2.md#s2-37au--bounded-masked-range-long64-mulss-xmm-register-pairs), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37au-bounded-masked-range-mulss-register-pair-profile).
+
+## S2-37av — DIVPD register-pair interpreter profile (2026-10-30)
+
+Implemented strict schema-v2 profile `s2-long-divpd-registers-v1` for canonical
+Long64 `66 0F 5E /r`, ModR/M.mod=3, across all 256 XMM pairs. The decoder and
+runtime reject noncanonical, memory, trailing, VEX and EVEX forms. The runtime
+fetches before SSE2/EM/OSFXSR #UD then TS #NM at CPL0–3 and makes no data
+callbacks. JIT/native/C ABI/fragment/generic execution remains closed.
+
+The instruction computes two destination/source binary64 lanes from snapshots.
+The implementation classifies NaNs, zero divisors and subnormal operands before
+computation, aggregates IE/ZE/DE before arithmetic, and commits pre-event flags
+atomically. With pre-events masked it uses the production raw binary64 divide
+helper, MXCSR.RC, WPR-based tininess and FTZ. Overflow records OE|PE; tiny
+inexact results record UE|PE. An independent raw-u64 rational oracle uses
+integer quotient/remainder arithmetic and does not call host FP or production
+helpers. The hand-written fixture covers 1/3 and a tiny half-minsub lane.
+
+Validation passed:
+
+- `cargo test -p od-isa --offline divpd_` — 3 passed, covering all 256 register
+  pairs, malformed encodings, fetch/gate priority and CPL0–3.
+- `cargo test -p od-testkit --offline divpd_` — 1 independent raw-integer oracle
+  boundary test passed.
+- `cargo test -p od-runner --offline --test fixture_v2 divpd_register_pairs_and_lane_exception_order_are_interpreter_only` — passed, including all 256 pairs, 1/3 RC, cross-lane IE+ZE/DE aggregation, NaN suppression, ZM=1/DM=0 subnormal/zero, signed zero/infinity cases, malformed schema, result tampering and JIT/native denial.
+- Related runner arithmetic regressions: `mul` — 11 passed; `sub` — 35 passed.
+- The 426-test fixture suite passed before the new DIVPD matrix was added.
+- `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+  `python3 tools/check_layout.py`, `git diff --check` and `graphify update .` passed.
+
+An implementation defect found by that runner matrix initially dropped ZE on
+the successful MXCSR status path; the sticky bit was added and the focused test
+then passed. One proposed shorthand test vector, `maxsub/2` rounding to
+minnormal/maxsub, is mathematically inconsistent: it is a half-minsub tie and
+raises UE|PE. The oracle tests that tie separately; the neighboring
+`minnormal/nextafter(1,+)` vector exercises maxsub versus minnormal rounding.
+
+Sources: Intel SDM Rev. 093 Vol. 2B DIVPD pp. 3-267–3-269; Vol. 2A legacy SSE
+rows in Table 2-19. The explicit Type 2 reference on p. 3-269 is for VEX forms,
+not legacy DIVPD. Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A
+Event 19/Table 7-8; Intel Floating-Point Reference Sheet v2.13. See the [CPU
+contract](../specs/CPU_CONTRACT.md#s2-37av--bounded-masked-range-long64-divpd-xmm-register-pairs),
+[plan](../plans/STAGE_2.md#s2-37av--bounded-masked-range-long64-divpd-xmm-register-pairs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37av-bounded-masked-range-divpd-register-pair-profile).

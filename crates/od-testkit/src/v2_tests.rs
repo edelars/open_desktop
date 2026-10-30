@@ -302,6 +302,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 sqrtpd_controls: input.fixture.sqrtpd_controls,
                 subpd_controls: input.fixture.subpd_controls,
                 mulpd_controls: input.fixture.mulpd_controls,
+                divpd_controls: input.fixture.divpd_controls,
                 mulsd_controls: input.fixture.mulsd_controls,
                 mulss_controls: input.fixture.mulss_controls,
                 mulps_controls: input.fixture.mulps_controls,
@@ -9331,4 +9332,79 @@ fn cvttss2si_oracle_always_truncates_toward_zero() {
         independent_binary32_to_integer(0x4f00_0000, 3, false),
         (0x8000_0000, true, false)
     );
+}
+
+#[test]
+fn divpd_independent_integer_oracle_covers_rounding_and_exception_boundaries() {
+    use super::independent_divpd_lane;
+
+    let one = 0x3ff0_0000_0000_0000;
+    let three = 0x4008_0000_0000_0000;
+    for (rc, expected) in [
+        (0, 0x3fd5_5555_5555_5555),
+        (1, 0x3fd5_5555_5555_5555),
+        (2, 0x3fd5_5555_5555_5556),
+        (3, 0x3fd5_5555_5555_5555),
+    ] {
+        let lane = independent_divpd_lane(one, three, 0x1f80 | (rc << 13));
+        assert_eq!(lane.0, expected);
+        assert_eq!(
+            (lane.1, lane.2, lane.3, lane.4, lane.5, lane.6),
+            (false, false, false, false, false, true)
+        );
+    }
+
+    let min_normal = 0x0010_0000_0000_0000;
+    let min_subnormal = 1;
+    let two_to_53 = 0x4340_0000_0000_0000;
+    for rc in [0, 1, 3] {
+        let lane = independent_divpd_lane(min_normal, two_to_53, 0x1f80 | (rc << 13));
+        assert_eq!(lane.0, 0);
+        assert_eq!(
+            (lane.1, lane.2, lane.3, lane.4, lane.5, lane.6),
+            (false, false, false, false, true, true)
+        );
+    }
+    let round_up = independent_divpd_lane(min_normal, two_to_53, 0x1f80 | (2 << 13));
+    assert_eq!(round_up.0, min_subnormal);
+    assert_eq!((round_up.5, round_up.6), (true, true));
+    let ftz = independent_divpd_lane(min_normal, two_to_53, 0x9f80);
+    assert_eq!(ftz.0, 0);
+    assert_eq!((ftz.5, ftz.6), (true, true));
+
+    let max_subnormal = min_normal - 1;
+    let half_max_subnormal = independent_divpd_lane(max_subnormal, 0x4000_0000_0000_0000, 0x1f80);
+    assert_eq!(half_max_subnormal.0, 0x0008_0000_0000_0000);
+    assert!(half_max_subnormal.5 && half_max_subnormal.6);
+    for (rc, expected) in [
+        (0, max_subnormal),
+        (1, max_subnormal),
+        (2, min_normal),
+        (3, max_subnormal),
+    ] {
+        let lane = independent_divpd_lane(min_normal, 0x3ff0_0000_0000_0001, 0x1f80 | (rc << 13));
+        assert_eq!(lane.0, expected);
+        assert!(lane.5 && lane.6);
+    }
+    let exact_subnormal = independent_divpd_lane(min_normal, 0x4000_0000_0000_0000, 0x1f80);
+    assert_eq!(exact_subnormal.0, min_normal >> 1);
+    assert_eq!((exact_subnormal.5, exact_subnormal.6), (false, false));
+    let flushed_exact = independent_divpd_lane(min_normal, 0x4000_0000_0000_0000, 0x9f80);
+    assert_eq!(flushed_exact.0, 0);
+    assert_eq!((flushed_exact.5, flushed_exact.6), (true, true));
+
+    let subnormal_over_zero = independent_divpd_lane(1, 0, 0x1f80 & !(1 << 8));
+    assert_eq!(
+        (
+            subnormal_over_zero.1,
+            subnormal_over_zero.2,
+            subnormal_over_zero.3
+        ),
+        (false, false, true)
+    );
+    let invalid = independent_divpd_lane(0, 0, 0x1f80);
+    assert!(invalid.1);
+    assert!(!invalid.3);
+    let inf_over_zero = independent_divpd_lane(0x7ff0_0000_0000_0000, 0, 0x1f80);
+    assert_eq!(inf_over_zero.3, false);
 }

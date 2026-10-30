@@ -6796,3 +6796,23 @@ Rev. 093 Vol. 2B MULSS pp. 4-150–4-151; Vol. 2A Type 3/Table 2-20; Vol. 1
 Reference Sheet v2.13. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37au--bounded-masked-range-long64-mulss-xmm-register-pairs),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37au--bounded-masked-range-long64-mulss-xmm-register-pairs), and
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37au--mulss-register-pair-interpreter-profile).
+
+### S2-37av bounded masked-range DIVPD register-pair profile
+
+`s2_37av_divpd_xmm0_xmm1.case.json` is a literal canonical `66 0F 5E /r`
+Long64 packed binary64 divide. Lane 0 checks 1/3; lane 1 checks minimum-normal
+/ 2^53, which is a half-minsub tie. The strict schema-v2 oracle uses raw-u64
+integer quotient/remainder arithmetic with no host FP or production helper. It
+covers all 256 register pairs, masks OM/UM on, rejects DAZ/reserved MXCSR bits,
+and accepts RC, FTZ, IM/DM/ZM/PM and old stickies. Runtime checks include
+NaN/invalid/divide-by-zero/subnormal ordering, cross-lane pre-event aggregation,
+WPR tininess, FTZ, exact and inexact subnormal results, gates/fetch/CPL0–3,
+no data callbacks, malformed encodings, result tampering and backend denial.
+
+`maxsub/2` is exactly halfway between two subnormal encodings and raises UE|PE;
+minimum-normal/2 is an exact subnormal unless FTZ flushes it. A subnormal
+numerator divided by zero with ZM=1 and DM=0 raises ZE only. The profile remains
+interpreter-only and does not claim memory forms or physical acceptance. Sources
+and limits are recorded in the [plan](../../../../docs/plans/STAGE_2.md#s2-37av--bounded-masked-range-long64-divpd-xmm-register-pairs),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37av--bounded-masked-range-long64-divpd-xmm-register-pairs),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37av--divpd-register-pair-interpreter-profile).

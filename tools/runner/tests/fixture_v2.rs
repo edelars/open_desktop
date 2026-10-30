@@ -25797,8 +25797,14 @@ fn mulpd_nan_priority_pre_events_post_atomicity_and_tamper() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/x86/stage2/s2_37ar_mulpd_xmm0_xmm1.case.json");
     let bytes = fs::read(path).unwrap();
-    let (base, _) = run(&bytes, "interpreter", 0);
+    let (base, base_result) = run(&bytes, "interpreter", 0);
     let fixture = base.fixture.clone();
+    let mut tampered = base_result.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0] = "00".repeat(16);
+    }
+    assert!(tampered.validate_for(&base).is_err());
+
     let write_lane = |case: &mut Fixture, xmm: usize, lane: usize, raw: u64| {
         let encoded = raw
             .to_le_bytes()
@@ -26636,4 +26642,273 @@ fn mulss_register_profile_covers_pairs_boundaries_and_event_order() {
         value.state.sse.as_mut().unwrap().xmm[0].replace_range(0..8, "00000000");
     }
     assert!(tampered.validate_for(&loaded).is_err());
+}
+
+#[test]
+fn divpd_register_pairs_and_lane_exception_order_are_interpreter_only() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_37av_divpd_xmm0_xmm1.case.json");
+    let bytes = fs::read(path).unwrap();
+    let (base, base_result) = run(&bytes, "interpreter", 0);
+    let fixture = base.fixture.clone();
+    let mut tampered = base_result.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0] = "00".repeat(16);
+    }
+    assert!(tampered.validate_for(&base).is_err());
+
+    let mut malformed = fixture.clone();
+    malformed.memory[0].initial_bytes_hex = "66400f5ec1".into();
+    malformed.memory[0].comparison_mask_hex = "ff".repeat(5);
+    malformed.memory[0].length = 5;
+    malformed.stop_rip = Some(HexU64(malformed.initial_state.rip.get() + 5));
+    assert!(Fixture::from_json(&serde_json::to_vec(&malformed).unwrap()).is_err());
+    let encode = |raw: u64| {
+        raw.to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let write_lane = |case: &mut Fixture, register: usize, lane: usize, raw: u64| {
+        case.initial_state.sse.as_mut().unwrap().xmm[register]
+            .replace_range(lane * 16..lane * 16 + 16, &encode(raw));
+    };
+    let execute = |case: Fixture| {
+        let input = serde_json::to_vec(&case).unwrap();
+        let (loaded, result) = run(&input, "interpreter", 0);
+        od_testkit::v2::compare(&loaded, &result, &result)
+            .unwrap_or_else(|error| panic!("{}: {error:?}", loaded.fixture.case_id));
+        (loaded, result)
+    };
+    let read_lane = |result: &RunResult, register: usize, lane: usize| {
+        let xmm = &snapshot(result).state.sse.as_ref().unwrap().xmm[register];
+        u64::from_le_bytes(
+            (0..8)
+                .map(|i| {
+                    u8::from_str_radix(&xmm[lane * 16 + i * 2..lane * 16 + i * 2 + 2], 16).unwrap()
+                })
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        )
+    };
+
+    // Exercise every ModR/M pair, including aliases, from immutable source and
+    // destination snapshots. Every register contains finite 1.0 values.
+    for destination in 0u8..16 {
+        for source in 0u8..16 {
+            let mut case = fixture.clone();
+            case.case_id = format!("s2_37av_pair_{destination}_{source}");
+            let rex = 0x40 | ((destination >> 1) & 4) | (source >> 3);
+            let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+            let mut code = vec![0x66];
+            if destination >= 8 || source >= 8 {
+                code.push(rex);
+            }
+            code.extend([0x0f, 0x5e, modrm]);
+            let region = &mut case.memory[0];
+            region.initial_bytes_hex = code.iter().map(|byte| format!("{byte:02x}")).collect();
+            region.comparison_mask_hex = "ff".repeat(code.len());
+            region.length = code.len() as u32;
+            case.stop_rip = Some(HexU64(case.initial_state.rip.get() + code.len() as u64));
+            write_lane(&mut case, destination as usize, 0, 0x3ff0_0000_0000_0000);
+            write_lane(&mut case, source as usize, 0, 0x3ff0_0000_0000_0000);
+            write_lane(&mut case, destination as usize, 1, 0x4000_0000_0000_0000);
+            write_lane(&mut case, source as usize, 1, 0x4000_0000_0000_0000);
+            let (_, result) = execute(case);
+            assert_eq!(
+                read_lane(&result, destination as usize, 0),
+                0x3ff0_0000_0000_0000,
+                "{destination},{source}"
+            );
+            assert_eq!(
+                read_lane(&result, destination as usize, 1),
+                0x3ff0_0000_0000_0000,
+                "{destination},{source}"
+            );
+        }
+    }
+
+    // The specified 1/3 vector checks all RC directions in the real runtime.
+    for (rc, expected) in [
+        (0, 0x3fd5_5555_5555_5555),
+        (1, 0x3fd5_5555_5555_5555),
+        (2, 0x3fd5_5555_5555_5556),
+        (3, 0x3fd5_5555_5555_5555),
+    ] {
+        let mut case = fixture.clone();
+        case.case_id = format!("s2_37av_one_third_rc{rc}");
+        write_lane(&mut case, 0, 0, 0x3ff0_0000_0000_0000);
+        write_lane(&mut case, 1, 0, 0x4008_0000_0000_0000);
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (rc << 13));
+        let (_, result) = execute(case);
+        assert_eq!(read_lane(&result, 0, 0), expected);
+        assert_eq!(
+            snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x20,
+            0x20
+        );
+    }
+
+    // An invalid lane aggregates with a divide-by-zero in the other lane.
+    let mut invalid_and_zero = fixture.clone();
+    invalid_and_zero.case_id = "s2_37av_ie_and_ze_priority".into();
+    invalid_and_zero.expected_exit = ExpectedExit::Exception;
+    invalid_and_zero.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1c00);
+    write_lane(&mut invalid_and_zero, 0, 0, 0);
+    write_lane(&mut invalid_and_zero, 1, 0, 0);
+    write_lane(&mut invalid_and_zero, 0, 1, 0x3ff0_0000_0000_0000);
+    write_lane(&mut invalid_and_zero, 1, 1, 0);
+    let old_destination = invalid_and_zero.initial_state.sse.as_ref().unwrap().xmm[0].clone();
+    let (_, result) = execute(invalid_and_zero);
+    let output = snapshot(&result).state.sse.as_ref().unwrap();
+    assert_eq!(output.mxcsr.get() & 0x3f, 5);
+    assert_eq!(output.xmm[0], old_destination);
+
+    // Cross-lane IE and DE aggregate before the fault without adding post flags.
+    let mut invalid_and_denormal = fixture.clone();
+    invalid_and_denormal.case_id = "s2_37av_ie_and_de_cross_lane".into();
+    invalid_and_denormal.expected_exit = ExpectedExit::Exception;
+    invalid_and_denormal
+        .initial_state
+        .sse
+        .as_mut()
+        .unwrap()
+        .mxcsr = HexU64(0x1e00);
+    write_lane(&mut invalid_and_denormal, 0, 0, 0);
+    write_lane(&mut invalid_and_denormal, 1, 0, 0);
+    write_lane(&mut invalid_and_denormal, 0, 1, 1);
+    write_lane(&mut invalid_and_denormal, 1, 1, 0x3ff0_0000_0000_0000);
+    let before = invalid_and_denormal.initial_state.sse.as_ref().unwrap().xmm[0].clone();
+    let (_, result) = execute(invalid_and_denormal);
+    let output = snapshot(&result).state.sse.as_ref().unwrap();
+    assert_eq!(output.mxcsr.get() & 0x3f, 3);
+    assert_eq!(output.xmm[0], before);
+
+    // Cross-lane ZE and DE aggregate before the fault; the destination remains atomic.
+    let mut zero_and_denormal = fixture.clone();
+    zero_and_denormal.case_id = "s2_37av_ze_and_de_cross_lane".into();
+    zero_and_denormal.expected_exit = ExpectedExit::Exception;
+    zero_and_denormal.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1c80);
+    write_lane(&mut zero_and_denormal, 0, 0, 0x3ff0_0000_0000_0000);
+    write_lane(&mut zero_and_denormal, 1, 0, 0);
+    write_lane(&mut zero_and_denormal, 0, 1, 1);
+    write_lane(&mut zero_and_denormal, 1, 1, 0x3ff0_0000_0000_0000);
+    let before = zero_and_denormal.initial_state.sse.as_ref().unwrap().xmm[0].clone();
+    let (_, result) = execute(zero_and_denormal);
+    let output = snapshot(&result).state.sse.as_ref().unwrap();
+    assert_eq!(output.mxcsr.get() & 0x3f, 6);
+    assert_eq!(output.xmm[0], before);
+
+    // A signaling NaN suppresses a same-lane zero divisor and denormal check.
+    let mut nan_suppression = fixture.clone();
+    nan_suppression.case_id = "s2_37av_snan_suppresses_ze".into();
+    write_lane(&mut nan_suppression, 0, 0, 0x7ff0_0000_0000_0001);
+    write_lane(&mut nan_suppression, 1, 0, 0);
+    write_lane(&mut nan_suppression, 0, 1, 0x3ff0_0000_0000_0000);
+    write_lane(&mut nan_suppression, 1, 1, 0x3ff0_0000_0000_0000);
+    let (_, result) = execute(nan_suppression);
+    assert_eq!(
+        snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+        1
+    );
+
+    // A subnormal dividend over zero reports ZE only; the zero-divisor path
+    // precedes the subnormal-input DE classification for that lane.
+    let mut subnormal_by_zero = fixture.clone();
+    subnormal_by_zero.case_id = "s2_37av_subnormal_over_zero_is_ze_only".into();
+    write_lane(&mut subnormal_by_zero, 0, 0, 1);
+    write_lane(&mut subnormal_by_zero, 1, 0, 0);
+    write_lane(&mut subnormal_by_zero, 0, 1, 0x3ff0_0000_0000_0000);
+    write_lane(&mut subnormal_by_zero, 1, 1, 0x3ff0_0000_0000_0000);
+    subnormal_by_zero.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1e80); // DM=0, ZM=1
+    let (_, result) = execute(subnormal_by_zero);
+    assert_eq!(
+        snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+        4
+    );
+
+    // Signed zero/infinity, NaN and remaining subnormal combinations keep
+    // their lane-specific outputs while the independent schema oracle checks flags.
+    for (name, lhs, rhs, expected, status) in [
+        ("zero_over_finite", 0, 0x3ff0_0000_0000_0000, 0, 0),
+        (
+            "negative_zero_over_negative",
+            1 << 63,
+            0xbff0_0000_0000_0000,
+            0,
+            0,
+        ),
+        (
+            "one_over_negative_zero",
+            0x3ff0_0000_0000_0000,
+            1 << 63,
+            0xfff0_0000_0000_0000,
+            4,
+        ),
+        (
+            "infinity_over_zero",
+            0x7ff0_0000_0000_0000,
+            0,
+            0x7ff0_0000_0000_0000,
+            0,
+        ),
+        (
+            "infinity_over_finite",
+            0x7ff0_0000_0000_0000,
+            0x4000_0000_0000_0000,
+            0x7ff0_0000_0000_0000,
+            0,
+        ),
+        (
+            "finite_over_infinity",
+            0x4000_0000_0000_0000,
+            0x7ff0_0000_0000_0000,
+            0,
+            0,
+        ),
+        ("zero_over_infinity", 0, 0x7ff0_0000_0000_0000, 0, 0),
+        ("zero_over_zero", 0, 0, 0xfff8_0000_0000_0000, 1),
+        (
+            "infinity_over_infinity",
+            0x7ff0_0000_0000_0000,
+            0x7ff0_0000_0000_0000,
+            0xfff8_0000_0000_0000,
+            1,
+        ),
+        (
+            "snan_over_zero",
+            0x7ff0_0000_0000_0001,
+            0,
+            0x7ff8_0000_0000_0001,
+            1,
+        ),
+        ("subnormal_over_infinity", 1, 0x7ff0_0000_0000_0000, 0, 2),
+        (
+            "infinity_over_subnormal",
+            0x7ff0_0000_0000_0000,
+            1,
+            0x7ff0_0000_0000_0000,
+            2,
+        ),
+        ("zero_over_subnormal", 0, 1, 0, 2),
+    ] {
+        let mut case = fixture.clone();
+        case.case_id = format!("s2_37av_special_{name}");
+        write_lane(&mut case, 0, 0, lhs);
+        write_lane(&mut case, 1, 0, rhs);
+        write_lane(&mut case, 0, 1, 0x3ff0_0000_0000_0000);
+        write_lane(&mut case, 1, 1, 0x3ff0_0000_0000_0000);
+        let (_, result) = execute(case);
+        assert_eq!(read_lane(&result, 0, 0), expected, "{name}");
+        assert_eq!(
+            snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+            status,
+            "{name}"
+        );
+    }
+
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(&bytes, backend, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+    }
 }

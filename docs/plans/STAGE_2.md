@@ -6810,7 +6810,7 @@ inventory.
 | CVTTPS2DQ | `F3 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-249 | S2-37ag, bounded register-only |
 | CVTTPS2PI | `NP 0F 2C /r` | SSE | XMM, m64 → mm; 2×f32 → 2×i32 | 3-252 | missing |
 | CVTTSD2SI | `F2 0F 2C /r`; `F2 REX.W 0F 2C /r` | SSE2 | m64 → r32 / r64 | 3-253 | S2-37ae, bounded register-only |
-| DIVPD | `66 0F 5E /r` | SSE2 | XMM, m128; 2×f64 | 3-267 | missing |
+| DIVPD | `66 0F 5E /r` | SSE2 | XMM, m128; 2×f64 | 3-267 | S2-37av register-only masked-range; memory and full unmasked OE/UE missing |
 | DIVPS | `NP 0F 5E /r` | SSE | XMM, m128; 4×f32 | 3-270 | missing |
 | DIVSD | `F2 0F 5E /r` | SSE2 | XMM, m64; low f64 | 3-273 | missing |
 | DIVSS | `F3 0F 5E /r` | SSE | XMM, m32; low f32 | 3-275 | missing |
@@ -13830,3 +13830,58 @@ forms, other modes, full unmasked OE/UE behavior and parent S2-37/S2-38 remain
 open. See [CPU contract](../specs/CPU_CONTRACT.md#s2-37au--bounded-masked-range-long64-mulss-xmm-register-pairs),
 [report](../reports/STAGE_2_REPORT.md#s2-37au--mulss-register-pair-interpreter-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37au-bounded-masked-range-mulss-register-pair-profile).
+
+#### S2-37av — bounded masked-range Long64 DIVPD XMM register pairs
+
+Implement strict schema-v2 interpreter-only profile
+`s2-long-divpd-registers-v1` for canonical Long64 `66 0F 5E /r`, ModR/M.mod=3,
+covering all 256 XMM pairs. Low forms are four bytes; extended indices require
+exactly one REX `41`, `44`, or `45` after `66`, for five bytes. Reject memory,
+F2/F3, reordered/repeated/redundant prefixes, REX.W/X/40, trailing bytes, VEX
+and EVEX. Fetch the full encoding before SSE2/EM/OSFXSR #UD then TS #NM at
+CPL0–3; issue no data callbacks. Keep JIT/native/C ABI/fragment/generic paths
+closed.
+
+Require MXCSR.OM=1 and MXCSR.UM=1 in schema and runtime. Reject DAZ and reserved
+MXCSR bits; accept all RC modes, FTZ, IM/DM/ZM/PM and old sticky flags. Snapshot
+both XMM operands and compute two binary64 lanes as old destination divided by
+source. A NaN selects the first original NaN, quiets a selected SNaN and raises
+IE for any SNaN; NaN suppresses same-lane ZE/DE. `0/0` and `∞/∞` raise IE and
+return the masked indefinite. A finite or subnormal numerator divided by zero
+raises ZE; `∞/0` does not. Otherwise a subnormal operand raises precompute DE,
+including `0/subnormal`, `∞/subnormal` and `subnormal/∞`. Aggregate IE/ZE/DE
+from all lanes before computation; an unmasked pre-event commits those status
+bits and preserves XMM/RIP/retirement. With pre-events masked, use the
+production `Binary64::divide_raw_result` and MXCSR.RC. Masked overflow records
+OE|PE. Tininess is classified after precision rounding using the unbounded WPR
+exponent, never the final encoding exponent. A tiny inexact result raises
+UE|PE; FTZ flushes a tiny nonzero result to its signed zero with UE|PE. Aggregate
+post flags and deliver unmasked PM atomically. Old sticky flags alone never
+fault.
+
+The fixture vector covers `1/3` (`3ff0/4008`): RN/RD/RZ produce
+`3fd5555555555555`, RU produces `3fd5555555555556`, PE. It also covers
+minimum-normal divided by `2^53`: RN/RD/RZ produce zero, RU produces
+minimum-subnormal, UE|PE and no DE; FTZ produces signed zero with UE|PE. Exact
+minimum-normal/2 produces an exact subnormal without flags unless FTZ is on,
+which produces signed zero with UE|PE. `maxsub/2` is a half-minsub tie and is
+inexact (RN returns `0x0008000000000000`, UE|PE); the adjacent boundary vector
+`minnormal/nextafter(1,+)` returns maxsub except RU returns minnormal, UE|PE.
+These examples are independently calculated from raw integer ratios.
+
+Use an independent raw-u64 integer quotient/remainder oracle, with no host FP or
+production helpers. It must bound large exponent gaps without overflowing u128
+or introducing double rounding. Cover all pairs/aliases; NaN selection and
+quieting; zeros, infinities and subnormals; IE+ZE/DE and ZE+DE cross-lane
+priority; SNaN suppression of same-lane ZE/DE; RC and FTZ; pre/post exception
+atomicity; stickies and masks; full fetch/gates/CPL/STOP/budget/no-callback;
+malformed/tampered inputs; and backend denial. Sources: Intel SDM Rev. 093
+Vol. 2B DIVPD pp. 3-267–3-269; Vol. 2A legacy SSE instruction rows in Table
+2-19 (the explicit Type 2 reference on p. 3-269 concerns VEX forms, not legacy
+DIVPD); Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19 and
+Table 7-8; Intel Floating-Point Reference Sheet v2.13. This local profile does
+not claim memory forms, physical acceptance, other modes, complete unmasked
+OE/UE behavior, or closure of parent S2-37/S2-38. See the [CPU
+contract](../specs/CPU_CONTRACT.md#s2-37av--bounded-masked-range-long64-divpd-xmm-register-pairs),
+[report](../reports/STAGE_2_REPORT.md#s2-37av--divpd-register-pair-interpreter-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37av-bounded-masked-range-divpd-register-pair-profile).
