@@ -12492,3 +12492,55 @@ Normative sources: Intel SDM Rev. 093 Vol. 2B MAXPS pp. 4-8–4-10
 Table 2-19 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199));
 Vol. 1 §§4.9.2, 11.5.3.1–3
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+
+## S2-37s — canonical Long64 CVTDQ2PS XMM register pairs
+
+The interpreter-only schema-v2 profile `s2-long-cvtdq2ps-registers-v1` accepts
+all 256 XMM0–15 destination/source register pairs, including self-aliases.
+Canonical bytes are `0F 5B /r` with ModR/M.mod=3; when either register is high,
+the stream uses exactly one REX byte: `41` for a high source, `44` for a high
+destination, or `45` for both. The independent schema parser derives both
+indices and instruction length from the full stream and requires one executable
+code mapping, budget one, and checked stop RIP `entry+length`. It refuses
+REX40/W/X, memory, mandatory/repeated/reordered prefixes, trailing bytes,
+VEX and EVEX as profile exclusions only. In particular, `66 0F 5B` and
+`F3 0F 5B` are not treated as CVTDQ2PS. These refusals make no broad
+architectural #UD claim. Earlier conversion profiles retain their original
+bounds.
+
+After complete fetch, missing SSE2, CR0.EM, or CR4.OSFXSR produces #UD; CR0.TS
+then produces #NM. The prerequisite gates apply at CPL0–3 and preserve full
+state with no data-memory callback or retirement. The profile echoes SSE2,
+EM, TS, OSFXSR and OSXMMEXCPT controls. It accepts MXCSR bits under mask
+`0x0000ffbf`; FTZ is irrelevant. It models newly generated Precision only.
+
+Execution snapshots the complete source XMM before any destination write, sign
+extends its four dwords, and converts each directly to binary32 using MXCSR.RC
+through `Binary32::from_i64`. All four converted lanes replace the full
+destination. Inexactness is ORed across lanes and sets only sticky MXCSR.PE;
+all other MXCSR bits remain unchanged. If any lane is inexact and PM=0, PE is
+committed before #XM when OSXMMEXCPT=1 or SIMD-generated #UD when it is zero.
+That fault suppresses every destination lane, RIP advance and retirement. A
+masked or exact conversion commits the complete destination and retires once;
+old PE by itself does not fault.
+
+The independent result validator derives binary32 bits with an integer-only
+oracle and computes per-lane inexactness separately before aggregating PE.
+Tests execute all 256 pairs with distinct XMM sentinels and all 16 aliases; the
+16 lane-inexact masks cross RC, PM, OSXMMEXCPT and old PE (512 cases). Literal
+vectors include signed values around 2^24, ties, directed rounding, i32
+endpoints and zero. The lane-3-only inexact case checks whole-destination
+suppression. Gate/CPL and truncated-fetch tests verify full fetch order and no
+data callbacks; malformed encodings, stop/schema/result/control tampering and
+JIT/native denial are covered. No JIT, native, C ABI, fragment or generic CPUID
+admission is provided.
+
+This is register-only and bounded: m128 memory forms (including alignment
+#GP and address/page faults), other modes/encodings, physical acceptance, and
+the parent S2-37/S2-38 requirements remain open. Sources: Intel SDM Rev. 093
+Vol. 2A CVTDQ2PS pp. 3-211–3-213; §2.5.2 and Table 2-19 p. 2-27; Vol. 1
+§§11.5.3.1–3; REX §2.2.1.2/Table 2-4
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)). See the
+[plan](../plans/STAGE_2.md#s2-37s--canonical-long64-cvtdq2ps-xmm-register-pairs),
+[report](../reports/STAGE_2_REPORT.md#s2-37s--canonical-long64-cvtdq2ps-xmm-register-pairs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37s-canonical-cvtdq2ps-register-pairs).

@@ -4,11 +4,15 @@ use crate::case::MemoryPermissions;
 use crate::memory::{FlatMemory, encode_bytes};
 use crate::v2::{ExpectedExit, Fixture, decode_bytes};
 use od_isa::execute::{
-    Fxrstor64Cr0Controls, Fxsave64Cr0Controls, REP_ITERATION_WORK_LIMIT, RunConfig, RunExit,
-    StepOutcome, run, run_with_fxrstor64_cr0_controls, run_with_fxsave64_cr0_controls,
-    run_with_rep_continuation, run_with_rflags_defined, step,
+    Cvtdq2psControls, Fxrstor64Cr0Controls, Fxsave64Cr0Controls, REP_ITERATION_WORK_LIMIT,
+    RunConfig, RunExit, StepOutcome, run, run_with_cvtdq2ps_register_controls,
+    run_with_fxrstor64_cr0_controls, run_with_fxsave64_cr0_controls, run_with_rep_continuation,
+    run_with_rflags_defined, step,
 };
-use od_isa::memory::{AccessContext, AccessKind, ArchitecturalFault, GuestMemory, MemoryError};
+use od_isa::memory::{
+    AccessContext, AccessKind, ArchitecturalFault, GuestMemory, MemoryError, PrivilegeLevel,
+};
+use od_isa::state::SseState;
 use od_isa::{LongModeState, OperandSize, Register, RegisterView};
 
 fn memory(code: &[u8], base: u64) -> FlatMemory {
@@ -15853,4 +15857,144 @@ fn movupd_memory_base_uses_one_data_callback_and_commits_only_after_success() {
             }
         }
     }
+}
+
+#[test]
+fn cvtdq2ps_prerequisites_fetch_order_and_cpl_matrix_make_no_data_callbacks() {
+    let code = [0x0f, 0x5b, 0xc1];
+    let address = 0x9a00;
+    for privilege in [
+        PrivilegeLevel::Ring0,
+        PrivilegeLevel::Ring1,
+        PrivilegeLevel::Ring2,
+        PrivilegeLevel::Ring3,
+    ] {
+        for bits in 0u8..16 {
+            let controls = Cvtdq2psControls {
+                sse2_available: bits & 1 != 0,
+                cr0_em: bits & 2 != 0,
+                cr0_ts: bits & 4 != 0,
+                cr4_osfxsr: bits & 8 != 0,
+                cr4_osxmmexcpt: bits & 16 != 0,
+            };
+            let mut state = LongModeState::default();
+            state.rip = address;
+            let mut xmm = [[0x5a; 16]; 16];
+            xmm[1] = [
+                0xff, 0xff, 0xff, 0xff, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x80,
+            ];
+            state.sse = Some(SseState { xmm, mxcsr: 0x1f80 });
+            let before = state.clone();
+            let mut trace = AccessTraceMemory {
+                inner: memory(&code, address),
+                accesses: Vec::new(),
+                fetch_limit: None,
+            };
+            let result = run_with_cvtdq2ps_register_controls(
+                &mut state,
+                &mut trace,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(address + code.len() as u64),
+                    context: AccessContext {
+                        privilege,
+                        ..AccessContext::default()
+                    },
+                },
+                controls,
+                || false,
+            );
+            let vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+                Some(6)
+            } else if controls.cr0_ts {
+                Some(7)
+            } else {
+                None
+            };
+            if let Some(vector) = vector {
+                assert_eq!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector,
+                        error_code: None,
+                        linear_address: None
+                    })
+                );
+                assert_eq!(state, before);
+                assert_eq!(result.instructions_executed, 0);
+            } else {
+                assert_eq!(result.exit, RunExit::StopAddress);
+                assert_eq!(result.instructions_executed, 1);
+                assert_eq!(state.rip, address + 3);
+                assert_eq!(
+                    state.sse.as_ref().unwrap().xmm[0][..4],
+                    0xbf80_0000u32.to_le_bytes()
+                );
+                assert_eq!(
+                    state.sse.as_ref().unwrap().xmm[0][4..8],
+                    0x4000_0000u32.to_le_bytes()
+                );
+                assert_eq!(
+                    state.sse.as_ref().unwrap().xmm[0][8..12],
+                    0u32.to_le_bytes()
+                );
+                assert_eq!(
+                    state.sse.as_ref().unwrap().xmm[0][12..],
+                    0xcf00_0000u32.to_le_bytes()
+                );
+            }
+            assert!(
+                trace
+                    .accesses
+                    .iter()
+                    .all(|(kind, _, _, _)| *kind == AccessKind::Fetch)
+            );
+        }
+    }
+
+    // Even when a prerequisite would fault, the complete instruction fetch is first.
+    let mut state = LongModeState::default();
+    state.rip = address;
+    state.sse = Some(SseState {
+        xmm: [[0x3c; 16]; 16],
+        mxcsr: 0x1f80,
+    });
+    let before = state.clone();
+    let mut trace = AccessTraceMemory {
+        inner: memory(&code, address),
+        accesses: Vec::new(),
+        fetch_limit: Some(address + 2),
+    };
+    let result = run_with_cvtdq2ps_register_controls(
+        &mut state,
+        &mut trace,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: Some(address + 3),
+            context: AccessContext::default(),
+        },
+        Cvtdq2psControls {
+            sse2_available: false,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        },
+        || false,
+    );
+    assert!(matches!(
+        result.exit,
+        RunExit::MemoryError(MemoryError::Unmapped {
+            access: AccessKind::Fetch,
+            ..
+        })
+    ));
+    assert_eq!(state, before);
+    assert_eq!(result.instructions_executed, 0);
+    assert!(
+        trace
+            .accesses
+            .iter()
+            .all(|(kind, _, _, _)| *kind == AccessKind::Fetch)
+    );
 }

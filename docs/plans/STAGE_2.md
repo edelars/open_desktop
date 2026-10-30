@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последнее локальное подзадание S2-37r добавляет canonical Long64 CVTSI2SS register-space schema-v2 interpreter-only profile; это не закрывает общий S2-37, CPUID admission или physical acceptance. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последнее локальное подзадание S2-37s добавляет canonical Long64 CVTDQ2PS register-space schema-v2 interpreter-only profile with packed Precision semantics; это не закрывает общий S2-37, CPUID admission или physical acceptance. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -496,6 +496,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37j | Local-only Long64 legacy register MAXSD profile `s2-long-maxsd-reg-masked-v1`; masked IE/DE status from low qwords only; JIT/native closed | S2-37i, S2-38a; independent review |
 | [x] | S2-37k | Local-only Long64 legacy register MINPD profile `s2-long-minpd-reg-masked-v1`; aggregates masked IE/DE sticky status across two lanes; JIT/native closed | S2-36z, S2-38a; independent review |
 | [x] | S2-37l | Local-only Long64 legacy register MAXPD profile `s2-long-maxpd-reg-masked-v1`; aggregates masked IE/DE sticky status across two lanes; JIT/native closed | S2-36z, S2-37j/k, bounded S2-38a; independent review |
+| [x] | S2-37s | Local-only canonical Long64 CVTDQ2PS register-space profile; aggregates four-lane Precision and suppresses the full destination on unmasked PE; JIT/native closed | S2-36 rounding, S2-38 PE policy; independent review |
 | [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j/k/l: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j/k/l; independent review |
 | [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
@@ -6702,6 +6703,31 @@ See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37r--canonical-long64-cvtsi2s
 [report](../reports/STAGE_2_REPORT.md#s2-37r--canonical-long64-cvtsi2ss-register-operand-space),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37r-canonical-cvtsi2ss-register-space).
 
+#### S2-37s — canonical Long64 CVTDQ2PS XMM register pairs
+
+Implement a separate strict schema-v2 interpreter profile for all 256
+destination/source pairs XMM0–15, including aliases. Canonical legacy bytes are
+`0F 5B /r` for low registers and exactly `41`, `44`, or `45` REX for an
+extended source and/or destination. Require ModR/M.mod=3, one executable code
+mapping, budget one and checked stop RIP `entry+length`. Reject other prefixes,
+memory forms, trailing bytes, VEX and EVEX as profile refusals; do not broaden
+architectural #UD claims or alter the prior profiles.
+
+Snapshot all four signed i32 source lanes before writing and convert directly
+to binary32 with MXCSR.RC. Aggregate lane inexactness into PE. Preserve all
+other MXCSR bits. Unmasked new PE commits sticky PE first and suppresses the
+whole destination, RIP advance and retirement before #XM/#UD selection by
+OSXMMEXCPT; masked or exact completion commits all lanes. Old PE alone does
+not fault. Gates follow full fetch: missing SSE2, CR0.EM and CR4.OSFXSR produce
+#UD, then CR0.TS produces #NM, independent of CPL; no data callbacks occur.
+
+Tests must validate every register pair, aliases, all 16 lane-inexact masks ×
+RC × PM × OSXMMEXCPT × prior PE, rounding anchors, gate/fetch ordering and
+strict encoding refusals. Keep JIT/native/C/fragment and generic CPUID admission
+closed. Memory m128, its alignment/fault behavior, other modes and physical
+acceptance remain open; this bounded register slice does not close parent S2-37
+or Stage 2.
+
 #### S2-37 required legacy SSE/SSE2 arithmetic, comparison and conversion inventory
 
 **Profile decision (2026-10-29):** the selected synthetic CPU target is Generic
@@ -12807,3 +12833,43 @@ Sources: Intel SDM Rev. 093 Vol. 2B MINPS pp. 4-19–4-21
 contract](../specs/CPU_CONTRACT.md#s2-38k--exact-minps-unmasked-invalid-and-denormal-exit),
 [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38k-exact-minps-unmasked-imdm-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38k-local-minps-unmasked-invalid-and-denormal).
+
+#### S2-37s — canonical Long64 CVTDQ2PS XMM register pairs
+
+The local profile `s2-long-cvtdq2ps-registers-v1` implements all 256 canonical
+Long64 XMM destination/source pairs. It accepts `0F 5B /r`, ModR/M.mod=3, and uses
+exactly REX `41`/`44`/`45` for the high source/destination extensions. An
+independent parser derives the operands and variable length, checks a single
+executable mapping, budget one, and overflow-checked stop RIP. Other prefixes,
+REX classes, memory, trailing bytes, VEX and EVEX are local profile refusals.
+The earlier conversion profiles remain separate and unchanged.
+
+The interpreter snapshots the whole source XMM, converts its four signed dword
+lanes directly to binary32 under MXCSR.RC, aggregates only new Precision into
+sticky PE, and preserves all other MXCSR bits. Unmasked inexactness commits PE
+before #XM/#UD and suppresses all destination lanes, RIP advancement and
+retirement. Masked/exact operations commit all lanes; old PE alone does not
+fault. Full fetch precedes SSE2/EM/OSFXSR #UD gates and the TS #NM gate at
+CPL0–3; no data memory callbacks occur. MXCSR input is restricted to
+`0x0000ffbf`; FTZ has no effect. JIT/native/C/fragment/generic CPUID
+admission remain denied.
+
+The independent validator computes lane bits with an integer oracle and
+separately aggregates each lane's inexact flag. The runner exercises 256 pairs,
+all aliases and 512 cases spanning all lane masks × RC × PM × OSXMMEXCPT × old
+PE. Literal vectors include signed 2^24 neighborhoods, ties, directed rounding,
+i32 endpoints and zero; lane 3 alone inexact verifies atomic destination
+suppression. Prerequisite/CPL/fetch/no-callback, malformed/stop/tampering and
+JIT/native denial checks passed. Focused checks passed:
+`cargo test -p od-testkit cvtdq2ps_prerequisites_fetch_order_and_cpl_matrix_make_no_data_callbacks --offline` and
+`cargo test -p od-runner cvtdq2ps_register_pairs_and_precision_exception_matrix --offline`.
+Other checks and review status are recorded in the stage report. This bounded
+register profile leaves m128 alignment/address/page faults, other modes,
+physical acceptance, and the S2-37/S2-38 parents open.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTDQ2PS pp. 3-211–3-213; §2.5.2,
+Table 2-19 p. 2-27; Vol. 1 §§11.5.3.1–3; REX §2.2.1.2/Table 2-4
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37s--canonical-long64-cvtdq2ps-xmm-register-pairs),
+[report](../reports/STAGE_2_REPORT.md#s2-37s--canonical-long64-cvtdq2ps-xmm-register-pairs), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37s-canonical-cvtdq2ps-register-pairs).

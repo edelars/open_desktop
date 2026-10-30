@@ -291,6 +291,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 maxps_unmasked_controls: input.fixture.maxps_unmasked_controls,
                 maxpd_unmasked_controls: input.fixture.maxpd_unmasked_controls,
                 cvtdq2pd_controls: input.fixture.cvtdq2pd_controls,
+                cvtdq2ps_controls: input.fixture.cvtdq2ps_controls,
                 cvtsi2sd_r32_controls: input.fixture.cvtsi2sd_r32_controls,
                 cvtsi2sd_r64_controls: input.fixture.cvtsi2sd_r64_controls,
                 cvtsi2ss_controls: input.fixture.cvtsi2ss_controls,

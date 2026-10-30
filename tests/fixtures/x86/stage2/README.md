@@ -6347,3 +6347,22 @@ native, C and fragment paths remain closed. m32/m64, other modes/prefixes and
 physical acceptance remain open. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37r--canonical-long64-cvtsi2ss-register-operand-space)
 and [plan](../../../../docs/plans/STAGE_2.md#s2-37r--canonical-long64-cvtsi2ss-register-operand-space).
+
+### S2-37s canonical CVTDQ2PS register pairs
+
+`s2_37s_cvtdq2ps_asymmetric_register_pair.case.json` is a handwritten
+schema-v2 `s2-long-cvtdq2ps-registers-v1` fixture. It records a mixed-sign four-lane
+source and checks direct signed-i32 to binary32 conversion, sticky PE aggregation,
+full destination replacement and unrelated-state preservation. The independent
+validator derives canonical bytes, XMM indices and length; runner coverage
+constructs all 256 register pairs and covers the 512 lane-inexactness/RC/PM/
+OSXMMEXCPT/old-PE cases, including lane-3-only inexactness for atomic
+suppression. Literal vectors include signed 2^24 boundaries, ties, directed
+rounding, i32 endpoints and zero. Prerequisite gates, CPL0–3 and fetch ordering
+make no data-memory callbacks. Prefix/memory/trailing/VEX/EVEX forms are profile
+refusals only. JIT/native/C/fragment/generic CPUID paths remain closed. Memory
+m128 and its alignment/address/page faults, other modes, physical acceptance,
+and parent S2-37/S2-38 requirements remain open. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37s--canonical-long64-cvtdq2ps-xmm-register-pairs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37s--canonical-long64-cvtdq2ps-xmm-register-pairs), and
+[stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37s--canonical-long64-cvtdq2ps-xmm-register-pairs).

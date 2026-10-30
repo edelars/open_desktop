@@ -17578,3 +17578,52 @@ pp. 3-238–3-239, Type 3 Tables 2-15/2-20; Vol. 1 §§11.5.2.6/11.5.3; REX
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37r--canonical-long64-cvtsi2ss-register-operand-space),
 [plan](../plans/STAGE_2.md#s2-37r--canonical-long64-cvtsi2ss-register-operand-space), and
 [fixtures](../../tests/fixtures/x86/stage2/README.md#s2-37r-canonical-cvtsi2ss-register-space).
+
+## S2-37s — canonical Long64 CVTDQ2PS register pairs
+
+Implemented schema-v2 interpreter profile `s2-long-cvtdq2ps-registers-v1` for all 256
+XMM destination/source pairs, including self-aliasing. Canonical encodings are
+`0F 5B /r` with ModR/M.mod=3 and no REX for low registers; REX `41`, `44`, or
+`45` is required when the source, destination, or both are extended. The independent
+schema parser derives register indices and instruction length from bytes,
+requires one executable mapping, budget one and checked stop RIP, and rejects
+all excluded prefixes, memory, trailing bytes, VEX and EVEX as profile
+refusals. Existing conversion profiles retain their previous limits.
+
+Execution snapshots all of the source XMM before writing. It sign-extends four
+i32 lanes and uses Binary32 conversion with MXCSR.RC. New lane inexactness is
+ORed into sticky PE only; the other MXCSR bits remain intact. For unmasked
+inexact conversion, the executor commits PE then reports #XM/#UD according to
+OSXMMEXCPT while suppressing the full destination, RIP and retirement. Masked
+or exact conversion commits the full XMM result; old PE alone does not fault.
+The explicit SSE2/EM/TS/OSFXSR gates run after complete fetch at CPL0–3 and make
+no data-memory callbacks. FTZ is irrelevant; accepted MXCSR bits are
+`0x0000ffbf`. JIT/native/C ABI/fragment/generic CPUID admission remain closed.
+
+The independent validator computes lane result bits from integer input and
+separately aggregates per-lane inexactness. Runner tests exercise all 256 pairs,
+all self-aliases, distinct XMM sentinels, 512 cases across all lane masks × RC ×
+PM × OSXMMEXCPT × prior PE, literal signed 2^24 neighborhoods, ties, directed
+rounding, i32 endpoints and zero, malformed encodings, tampering, and JIT/native
+denial. The lane-3-only case verifies atomic whole-destination suppression.
+Focused checks passed:
+
+- `cargo test -p od-isa cvtdq2ps_register_precision_fault_is_sticky_and_destination_atomic --offline`
+- `cargo test -p od-testkit cvtdq2ps_prerequisites_fetch_order_and_cpl_matrix_make_no_data_callbacks --offline`
+- `cargo test -p od-runner cvtdq2ps_register_pairs_and_precision_exception_matrix --offline`
+
+Also passed `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, and `git diff --check`;
+`graphify update .` completed. `python3 tools/check_layout.py` did not pass: it
+reported `.git` as an unmapped root item and two pre-existing report links into
+ignored `work/` oracle manifests that are absent from this checkout. No
+directories were added. No physical, SSH, Mac mini or hardware execution was
+run.
+The m128 memory form and its alignment #GP/address/page fault handling, other
+modes/encodings, physical acceptance, and parent S2-37/S2-38 remain open.
+Sources: Intel SDM Rev. 093 Vol. 2A CVTDQ2PS pp. 3-211–3-213; §2.5.2/Table
+2-19 p. 2-27; Vol. 1 §§11.5.3.1–3; REX §2.2.1.2/Table 2-4
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37s--canonical-long64-cvtdq2ps-xmm-register-pairs),
+[plan](../plans/STAGE_2.md#s2-37s--canonical-long64-cvtdq2ps-xmm-register-pairs), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37s-canonical-cvtdq2ps-register-pairs).

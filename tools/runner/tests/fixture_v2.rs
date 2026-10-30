@@ -18594,3 +18594,223 @@ fn cvtsi2sd_r64_exact_literals_validate_precision_exits_and_deny_other_backends(
         HexU64(value.state.sse.as_ref().unwrap().mxcsr.get() ^ 0x20);
     assert!(od_testkit::v2::compare(&input, &result, &wrong_output).is_err());
 }
+
+#[test]
+fn cvtdq2ps_register_pairs_and_precision_exception_matrix() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_37s_cvtdq2ps_asymmetric_register_pair.case.json");
+    let mut fixture = Fixture::from_json(&fs::read(path).unwrap())
+        .unwrap()
+        .fixture;
+    fixture.profile = od_testkit::v2::Profile::LongCvtdq2psRegistersV1;
+    fixture.cvtdq2ps_controls = Some(od_testkit::v2::Cvtdq2psControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: true,
+    });
+    let mut pair_template = fixture.clone();
+    for destination in 0u8..16 {
+        for source in 0u8..16 {
+            let rex = match (destination >= 8, source >= 8) {
+                (false, false) => None,
+                (true, false) => Some(0x44),
+                (false, true) => Some(0x41),
+                (true, true) => Some(0x45),
+            };
+            let mut code = Vec::new();
+            if let Some(rex) = rex {
+                code.push(rex);
+            }
+            code.extend([0x0f, 0x5b, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+            pair_template.memory[0].initial_bytes_hex =
+                code.iter().map(|byte| format!("{byte:02x}")).collect();
+            pair_template.memory[0].length = code.len() as u32;
+            pair_template.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+            pair_template.stop_rip = Some(HexU64(
+                pair_template.initial_state.rip.get() + code.len() as u64,
+            ));
+            pair_template.case_id = format!("s2_37s_pair_{destination}_{source}");
+            pair_template.expected_exit = ExpectedExit::StopAddress;
+            pair_template.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+            pair_template.initial_state.sse.as_mut().unwrap().xmm =
+                std::array::from_fn(|register| {
+                    std::array::from_fn::<_, 16, _>(|byte| {
+                        (register as u8)
+                            .wrapping_mul(17)
+                            .wrapping_add(byte as u8)
+                            .wrapping_add(1)
+                    })
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect()
+                });
+            let source_xmm =
+                &mut pair_template.initial_state.sse.as_mut().unwrap().xmm[usize::from(source)];
+            let lanes = [0x0100_0001u32, 0xffff_ffff, 0x0080_0001, 0x8000_0000];
+            *source_xmm = lanes
+                .iter()
+                .flat_map(|lane| lane.to_le_bytes())
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            let input_bytes = pair_template.to_json().unwrap();
+            let (input, result) = run(&input_bytes, "interpreter", 0);
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+        }
+    }
+
+    // Exhaust every lane-inexactness mask × RC × PE mask × OSXMMEXCPT × old PE.
+    // Mask 0b1000 makes lane 3 the sole inexact lane and verifies whole-register suppression.
+    let mut matrix = fixture;
+    let source = 13u8;
+    matrix.memory[0].initial_bytes_hex = "450f5be5".into();
+    matrix.memory[0].length = 4;
+    matrix.memory[0].comparison_mask_hex = "ffffffff".into();
+    matrix.stop_rip = Some(HexU64(matrix.initial_state.rip.get() + 4));
+    matrix.initial_state.sse.as_mut().unwrap().xmm = std::array::from_fn(|register| {
+        std::array::from_fn::<_, 16, _>(|byte| {
+            (register as u8)
+                .wrapping_mul(19)
+                .wrapping_add(byte as u8)
+                .wrapping_add(7)
+        })
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+    });
+    for inexact_mask in 0u8..16 {
+        for rc in 0u32..4 {
+            for pm in [false, true] {
+                for osxmmexcpt in [false, true] {
+                    for old_pe in [false, true] {
+                        let lanes: [i32; 4] = std::array::from_fn(|lane| {
+                            if inexact_mask & (1 << lane) != 0 {
+                                if lane % 2 == 0 {
+                                    (1 << 24) + 1
+                                } else {
+                                    -((1 << 24) + 1)
+                                }
+                            } else if lane % 2 == 0 {
+                                1 << 24
+                            } else {
+                                -1
+                            }
+                        });
+                        matrix.initial_state.sse.as_mut().unwrap().xmm[usize::from(source)] = lanes
+                            .iter()
+                            .flat_map(|lane| lane.to_le_bytes())
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect();
+                        matrix.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(u64::from(
+                            (0x1f80u32 & !(3 << 13) & !(1 << 12))
+                                | (rc << 13)
+                                | (u32::from(pm) << 12)
+                                | (u32::from(old_pe) << 5),
+                        ));
+                        let controls = matrix.cvtdq2ps_controls.as_mut().unwrap();
+                        controls.cr4_osxmmexcpt = osxmmexcpt;
+                        let faults = inexact_mask != 0 && !pm;
+                        matrix.expected_exit = if faults {
+                            ExpectedExit::Exception
+                        } else {
+                            ExpectedExit::StopAddress
+                        };
+                        matrix.case_id =
+                            format!("s2_37s_matrix_{inexact_mask}_{rc}_{pm}_{osxmmexcpt}_{old_pe}");
+                        let (input, result) = run(&matrix.to_json().unwrap(), "interpreter", 0);
+                        od_testkit::v2::compare(&input, &result, &result).unwrap();
+                        assert_eq!(matches!(result.outcome, Outcome::Exception {}), faults);
+                    }
+                }
+            }
+        }
+    }
+
+    let literal_rows = [
+        [-(1 << 24) + 1, (1 << 24) - 1, 1 << 24, -(1 << 24)],
+        [
+            (1 << 24) + 1,
+            -((1 << 24) + 1),
+            (1 << 24) + 3,
+            -((1 << 24) + 3),
+        ],
+        [i32::MIN, i32::MAX, 0, -1],
+    ];
+    for rc in 0u32..4 {
+        for (row, lanes) in literal_rows.iter().enumerate() {
+            matrix.initial_state.sse.as_mut().unwrap().xmm[13] = lanes
+                .iter()
+                .flat_map(|lane| lane.to_le_bytes())
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            matrix.initial_state.sse.as_mut().unwrap().mxcsr =
+                HexU64(u64::from(0x1f80u32 | (rc << 13)));
+            matrix.expected_exit = ExpectedExit::StopAddress;
+            matrix.case_id = format!("s2_37s_literal_rc{rc}_{row}");
+            let (input, result) = run(&matrix.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+        }
+    }
+
+    matrix.initial_state.sse.as_mut().unwrap().xmm[13] = [1i32, 2, 3, 4]
+        .iter()
+        .flat_map(|lane| lane.to_le_bytes())
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    matrix.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+    matrix.expected_exit = ExpectedExit::StopAddress;
+    matrix.case_id = "s2_37s_echo_tamper".into();
+    let (input, result) = run(&matrix.to_json().unwrap(), "interpreter", 0);
+    let mut wrong_echo = result.clone();
+    let Observation::Available { value: snapshot } = &mut wrong_echo.snapshot else {
+        panic!("snapshot available")
+    };
+    snapshot.cvtdq2ps_controls.as_mut().unwrap().cr4_osxmmexcpt = false;
+    assert!(od_testkit::v2::compare(&input, &result, &wrong_echo).is_err());
+    let mut wrong_state = result.clone();
+    let Observation::Available { value: snapshot } = &mut wrong_state.snapshot else {
+        panic!("snapshot available")
+    };
+    snapshot.state.sse.as_mut().unwrap().xmm[12].replace_range(..2, "ff");
+    assert!(od_testkit::v2::compare(&input, &result, &wrong_state).is_err());
+    let mut wrong_stop = matrix.clone();
+    wrong_stop.stop_rip = Some(HexU64(wrong_stop.initial_state.rip.get() + 3));
+    assert!(wrong_stop.validate().is_err());
+
+    let jit = run(&matrix.to_json().unwrap(), "jit", 4).1;
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    let native = run(&matrix.to_json().unwrap(), "native", 4).1;
+    assert!(matches!(native.outcome, Outcome::Unsupported { .. }));
+
+    let mut malformed = matrix;
+    for code in [
+        vec![0x40, 0x0f, 0x5b, 0xc0],
+        vec![0x42, 0x0f, 0x5b, 0xc0],
+        vec![0x48, 0x0f, 0x5b, 0xc0],
+        vec![0x49, 0x0f, 0x5b, 0xc0],
+        vec![0x4c, 0x0f, 0x5b, 0xc0],
+        vec![0x4d, 0x0f, 0x5b, 0xc0],
+        vec![0x0f, 0x5b, 0xc0, 0x41],
+        vec![0x0f, 0x5b],
+        vec![0x41, 0x0f, 0x5b],
+        vec![0xf2, 0x0f, 0x5b, 0xc0],
+        vec![0xf3, 0x0f, 0x5b, 0xc0],
+        vec![0x66, 0x0f, 0x5b, 0xc0],
+        vec![0x67, 0x0f, 0x5b, 0xc0],
+        vec![0x0f, 0x5b],
+        vec![0x0f, 0x5b, 0x00],
+        vec![0x0f, 0x5b, 0xc0, 0x90],
+        vec![0xc5, 0xf8, 0x5b, 0xc0],
+        vec![0x62, 0xf1, 0x7c, 0x08, 0x5b, 0xc0],
+    ] {
+        malformed.memory[0].initial_bytes_hex =
+            code.iter().map(|byte| format!("{byte:02x}")).collect();
+        malformed.memory[0].length = code.len() as u32;
+        malformed.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+        malformed.stop_rip = Some(HexU64(
+            malformed.initial_state.rip.get() + code.len() as u64,
+        ));
+        assert!(malformed.validate().is_err(), "accepted {code:02x?}");
+    }
+}
