@@ -5,11 +5,11 @@ use std::process::{Command, ExitCode};
 
 use od_isa::execute::{
     Cvttpd2dqControls, Cvttps2dqControls, Cvttss2siRegistersControls, SqrtpdControls,
-    SqrtpsControls, SqrtssControls, run_with_cvtpd2dq_register_controls,
+    SqrtpsControls, SqrtsdControls, SqrtssControls, run_with_cvtpd2dq_register_controls,
     run_with_cvttpd2dq_register_controls, run_with_cvttps2dq_register_controls,
     run_with_cvttsd2si_registers_controls, run_with_cvttss2si_registers_controls,
     run_with_sqrtpd_register_controls, run_with_sqrtps_register_controls,
-    run_with_sqrtss_register_controls,
+    run_with_sqrtsd_register_controls, run_with_sqrtss_register_controls,
 };
 use od_isa::{CpuState, ExecutionResult, interpret};
 use od_testkit::case::{Fixture, LoadedFixture};
@@ -526,6 +526,7 @@ fn expected_native_xorpd_oracle(
                 cvtpd2dq_controls: None,
                 cvttpd2dq_controls: None,
                 sqrtss_controls: None,
+                sqrtsd_controls: None,
                 sqrtps_controls: None,
                 sqrtpd_controls: None,
                 cvtss2sd_controls: None,
@@ -1662,6 +1663,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongSqrtsdRegistersV1 {
+        let controls = loaded
+            .fixture
+            .sqrtsd_controls
+            .expect("validated SQRTSD controls");
+        run_with_sqrtsd_register_controls(
+            &mut state,
+            memory,
+            config,
+            SqrtsdControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongSqrtpsRegistersV1 {
         let controls = loaded
             .fixture
@@ -2053,6 +2072,7 @@ fn execute_fixture_v2(
                 cvtpd2dq_controls: loaded.fixture.cvtpd2dq_controls,
                 cvttpd2dq_controls: loaded.fixture.cvttpd2dq_controls,
                 sqrtss_controls: loaded.fixture.sqrtss_controls,
+                sqrtsd_controls: loaded.fixture.sqrtsd_controls,
                 sqrtps_controls: loaded.fixture.sqrtps_controls,
                 sqrtpd_controls: loaded.fixture.sqrtpd_controls,
                 cvtss2sd_controls: loaded.fixture.cvtss2sd_controls,
@@ -3237,6 +3257,7 @@ mod tests {
                     cvtpd2dq_controls: input.fixture.cvtpd2dq_controls,
                     cvttpd2dq_controls: input.fixture.cvttpd2dq_controls,
                     sqrtss_controls: input.fixture.sqrtss_controls,
+                    sqrtsd_controls: input.fixture.sqrtsd_controls,
                     sqrtps_controls: input.fixture.sqrtps_controls,
                     sqrtpd_controls: input.fixture.sqrtpd_controls,
                     cvtss2sd_controls: input.fixture.cvtss2sd_controls,

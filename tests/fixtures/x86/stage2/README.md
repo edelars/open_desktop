@@ -6613,3 +6613,20 @@ Table 2-19); Vol. 1 §§11.5.3.1–.3; Vol. 3A Event 19/Table 7-8; Floating-Poin
 Reference Sheet v2.13 pp. 1–2. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37al--canonical-long64-sqrtpd-xmm-register-pairs),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37al--canonical-long64-sqrtpd-xmm-register-pairs),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37al--sqrtpd-register-pair-interpreter-profile-2026-10-30).
+
+### S2-37am canonical SQRTSD register-pair profile
+
+`s2_37am_sqrtsd_xmm0_xmm1.case.json` is a literal `F2 0F 51 /r` Long64
+XMM0,XMM1 fixture. Source low64 is 2.0; source high64 is a negative QNaN poison
+that must not be examined; destination high64 is a sentinel that must survive.
+The result checks low64 binary64 square root and MXCSR.PE while preserving that
+high half. The strict schema-v2 profile covers all 256 pairs and canonical
+four-/five-byte forms. DAZ/reserved MXCSR, memory forms, other modes and
+physical acceptance are out of scope. Local tests exercise scalar IE/DE/PE
+ordering, high-half preservation and aliasing, min-subnormal DE-only versus
+DE+PE, RC/FTZ, masks/stickies, gate/fetch behavior and JIT/native denial.
+Sources: Intel SDM Rev. 093 Vol. 2B SQRTSD pp. 4-667–4-668 (Type 3, Table 2-20);
+Vol. 1 §§11.5.3.1–.3; Vol. 3A Event 19/Table 7-8; Floating-Point Reference
+Sheet v2.13 pp. 1–2. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37am--canonical-long64-sqrtsd-xmm-register-pairs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37am--canonical-long64-sqrtsd-xmm-register-pairs),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37am--sqrtsd-register-pair-interpreter-profile-2026-10-30).

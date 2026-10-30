@@ -20794,6 +20794,192 @@ fn sqrtpd_literal_fixture_and_all_register_pairs_are_interpreter_only() {
 }
 
 #[test]
+fn sqrtsd_literal_all_pairs_and_scalar_exception_matrix() {
+    use od_testkit::v2::{Profile, SqrtsdControlSnapshot};
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_37am_sqrtsd_xmm0_xmm1.case.json");
+    let bytes = fs::read(path).unwrap();
+    let (literal_input, literal_output) = run(&bytes, "interpreter", 0);
+    od_testkit::v2::compare(&literal_input, &literal_output, &literal_output).unwrap();
+    let Observation::Available {
+        value: ref snapshot,
+    } = literal_output.snapshot
+    else {
+        panic!("snapshot available")
+    };
+    assert_eq!(
+        snapshot.state.sse.as_ref().unwrap().xmm[0],
+        "cd3b7f669ea0f63f15161718191a1b1c"
+    );
+    assert_eq!(snapshot.state.sse.as_ref().unwrap().mxcsr.get(), 0x1fa0);
+    for backend in ["jit", "native"] {
+        let (_, result) = run(&bytes, backend, 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    }
+    let mut bad_echo = literal_output.clone();
+    if let Observation::Available { value } = &mut bad_echo.snapshot {
+        value.sqrtsd_controls = None;
+    }
+    assert!(bad_echo.validate_for(&literal_input).is_err());
+    let mut bad_state = literal_output.clone();
+    if let Observation::Available { value } = &mut bad_state.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(16..32, "0000000000000000");
+    }
+    assert!(bad_state.validate_for(&literal_input).is_err());
+    for mxcsr in [0x1fc0, 0x11f80] {
+        let mut invalid = literal_input.fixture.clone();
+        invalid.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(invalid.to_json().is_err(), "MXCSR={mxcsr:#x}");
+    }
+
+    let mut fixture = literal_input.fixture.clone();
+    fixture.profile = Profile::LongSqrtsdRegistersV1;
+    fixture.sqrtsd_controls = Some(SqrtsdControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: true,
+    });
+    let rip = fixture.initial_state.rip.get();
+    for destination in 0u8..16 {
+        for source in 0u8..16 {
+            let mut code = vec![0xf2];
+            if destination >= 8 || source >= 8 {
+                code.push(0x40 | ((destination >> 1) & 4) | (source >> 3));
+            }
+            code.extend([0x0f, 0x51, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+            fixture.memory[0].initial_bytes_hex = code.iter().map(|b| format!("{b:02x}")).collect();
+            fixture.memory[0].length = code.len() as u32;
+            fixture.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+            fixture.stop_rip = Some(HexU64(rip + code.len() as u64));
+            fixture.case_id = format!("s2_37am_pair_{destination}_{source}");
+            fixture.expected_exit = ExpectedExit::StopAddress;
+            let sse = fixture.initial_state.sse.as_mut().unwrap();
+            sse.mxcsr = HexU64(0x1f80);
+            sse.xmm = std::array::from_fn(|_| "aa".repeat(16));
+            sse.xmm[usize::from(source)] = "0000000000000040010000000000f07f".into(); // low 2.0, high SNaN poison
+            let old_high = if destination == source {
+                "010000000000f07f".to_string()
+            } else {
+                "55".repeat(8)
+            };
+            if destination != source {
+                let mut dest = "22".repeat(16);
+                dest.replace_range(16..32, &"55".repeat(8));
+                sse.xmm[usize::from(destination)] = dest;
+            }
+            let expected = format!("cd3b7f669ea0f63f{old_high}");
+            let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+            let Observation::Available { value } = result.snapshot else {
+                panic!("snapshot available")
+            };
+            assert_eq!(
+                value.state.sse.unwrap().xmm[usize::from(destination)],
+                expected,
+                "{destination}/{source}"
+            );
+        }
+    }
+
+    for rc in 0..4u32 {
+        for ftz in [false, true] {
+            let mut case = fixture.clone();
+            case.case_id = format!("s2_37am_rc{rc}_ftz{ftz}");
+            case.memory[0].initial_bytes_hex = "f20f51c1".into();
+            case.memory[0].length = 4;
+            case.memory[0].comparison_mask_hex = "ffffffff".into();
+            case.stop_rip = Some(HexU64(rip + 4));
+            case.expected_exit = ExpectedExit::StopAddress;
+            let sse = case.initial_state.sse.as_mut().unwrap();
+            sse.xmm[0] = "deadbeef1112131415161718191a1b1c".into();
+            sse.xmm[1] = "0000000000000040bc9a78563412f8ff".into();
+            sse.mxcsr = HexU64(u64::from(0x1f80 | (rc << 13) | (u32::from(ftz) << 15)));
+            let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+        }
+    }
+    // Prior IE/DE/PE status does not fault when their masks are clear if this
+    // scalar operation itself produces no new event.
+    let mut old_sticky = fixture.clone();
+    old_sticky.case_id = "s2_37am_old_sticky_unmasked".into();
+    old_sticky.memory[0].initial_bytes_hex = "f20f51c1".into();
+    old_sticky.memory[0].length = 4;
+    old_sticky.memory[0].comparison_mask_hex = "ffffffff".into();
+    old_sticky.stop_rip = Some(HexU64(rip + 4));
+    old_sticky.expected_exit = ExpectedExit::StopAddress;
+    let sse = old_sticky.initial_state.sse.as_mut().unwrap();
+    sse.mxcsr = HexU64((0x1f80 & !((1 << 7) | (1 << 8) | (1 << 12))) | 0x23);
+    sse.xmm[1] = "0000000000001040bc9a78563412f8ff".into();
+    let (input, result) = run(&old_sticky.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+
+    for (raw, masks, os, expected) in [
+        (1u64, 0x1f80, true, ExpectedExit::StopAddress),
+        (1, 0x1f80 & !(1 << 8), true, ExpectedExit::Exception),
+        (2, 0x1f80, true, ExpectedExit::StopAddress),
+        (2, 0x1f80 & !(1 << 8), true, ExpectedExit::Exception),
+        (
+            0x8000_0000_0000_0001,
+            0x1f80,
+            true,
+            ExpectedExit::StopAddress,
+        ),
+        (
+            0x8000_0000_0000_0001,
+            0x1f80 & !(1 << 7),
+            false,
+            ExpectedExit::Exception,
+        ),
+        (
+            0x8000_0000_0000_0001,
+            0x1f80 & !(1 << 8),
+            true,
+            ExpectedExit::StopAddress,
+        ),
+        (
+            0x8000_0000_0000_0001,
+            0x1f80 & !((1 << 7) | (1 << 8)),
+            true,
+            ExpectedExit::Exception,
+        ),
+        (
+            0xfff8_1234_5678_9abc,
+            0x1f80,
+            true,
+            ExpectedExit::StopAddress,
+        ),
+        (
+            0x7ff0_0000_0000_1234,
+            0x1f80,
+            true,
+            ExpectedExit::StopAddress,
+        ),
+    ] {
+        let mut case = fixture.clone();
+        case.case_id = format!("s2_37am_event_{raw:x}_{masks:x}_{os}");
+        case.memory[0].initial_bytes_hex = "f20f51c1".into();
+        case.memory[0].length = 4;
+        case.memory[0].comparison_mask_hex = "ffffffff".into();
+        case.stop_rip = Some(HexU64(rip + 4));
+        case.expected_exit = expected;
+        case.sqrtsd_controls.as_mut().unwrap().cr4_osxmmexcpt = os;
+        let sse = case.initial_state.sse.as_mut().unwrap();
+        sse.mxcsr = HexU64(masks);
+        sse.xmm[1] = format!(
+            "{}bc9a78563412f8ff",
+            raw.to_le_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+    }
+}
+
+#[test]
 fn cvtss2sd_register_pairs_raw_classes_and_exception_matrix() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/x86/stage2/s2_37t_cvtss2sd_asymmetric_register_pair.case.json");

@@ -272,6 +272,8 @@ pub enum Profile {
     LongCvttpd2dqRegistersV1,
     #[serde(rename = "s2-long-sqrtss-registers-v1")]
     LongSqrtssRegistersV1,
+    #[serde(rename = "s2-long-sqrtsd-registers-v1")]
+    LongSqrtsdRegistersV1,
     #[serde(rename = "s2-long-sqrtps-registers-v1")]
     LongSqrtpsRegistersV1,
     #[serde(rename = "s2-long-sqrtpd-registers-v1")]
@@ -1307,6 +1309,7 @@ impl IntegerState {
                     | Profile::LongCvtpd2dqRegistersV1
                     | Profile::LongCvttpd2dqRegistersV1
                     | Profile::LongSqrtssRegistersV1
+                    | Profile::LongSqrtsdRegistersV1
                     | Profile::LongSqrtpsRegistersV1
                     | Profile::LongSqrtpdRegistersV1
                     | Profile::LongCvtss2sdRegistersV1
@@ -1515,6 +1518,7 @@ impl IntegerState {
                 | Profile::LongCvtpd2dqRegistersV1
                 | Profile::LongCvttpd2dqRegistersV1
                 | Profile::LongSqrtssRegistersV1
+                | Profile::LongSqrtsdRegistersV1
                 | Profile::LongSqrtpsRegistersV1
                 | Profile::LongSqrtpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
@@ -1674,6 +1678,7 @@ impl IntegerState {
                 | Profile::LongCvtpd2dqRegistersV1
                 | Profile::LongCvttpd2dqRegistersV1
                 | Profile::LongSqrtssRegistersV1
+                | Profile::LongSqrtsdRegistersV1
                 | Profile::LongSqrtpsRegistersV1
                 | Profile::LongSqrtpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
@@ -2015,6 +2020,7 @@ impl IntegerState {
             | Profile::LongCvtpd2dqRegistersV1
             | Profile::LongCvttpd2dqRegistersV1
             | Profile::LongSqrtssRegistersV1
+            | Profile::LongSqrtsdRegistersV1
             | Profile::LongSqrtpsRegistersV1
             | Profile::LongSqrtpdRegistersV1
             | Profile::LongCvtss2sdRegistersV1
@@ -2180,6 +2186,7 @@ impl IntegerState {
                 | Profile::LongCvtpd2dqRegistersV1
                 | Profile::LongCvttpd2dqRegistersV1
                 | Profile::LongSqrtssRegistersV1
+                | Profile::LongSqrtsdRegistersV1
                 | Profile::LongSqrtpsRegistersV1
                 | Profile::LongSqrtpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
@@ -2357,6 +2364,7 @@ impl IntegerState {
                 | Profile::LongCvtpd2dqRegistersV1
                 | Profile::LongCvttpd2dqRegistersV1
                 | Profile::LongSqrtssRegistersV1
+                | Profile::LongSqrtsdRegistersV1
                 | Profile::LongSqrtpsRegistersV1
                 | Profile::LongSqrtpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
@@ -2543,6 +2551,7 @@ impl IntegerState {
                 | Profile::LongCvtpd2dqRegistersV1
                 | Profile::LongCvttpd2dqRegistersV1
                 | Profile::LongSqrtssRegistersV1
+                | Profile::LongSqrtsdRegistersV1
                 | Profile::LongSqrtpsRegistersV1
                 | Profile::LongSqrtpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
@@ -2736,6 +2745,7 @@ impl IntegerState {
                 | Profile::LongCvtpd2dqRegistersV1
                 | Profile::LongCvttpd2dqRegistersV1
                 | Profile::LongSqrtssRegistersV1
+                | Profile::LongSqrtsdRegistersV1
                 | Profile::LongSqrtpsRegistersV1
                 | Profile::LongSqrtpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
@@ -3559,6 +3569,7 @@ impl IntegerState {
                 | Profile::LongCvtpd2dqRegistersV1
                 | Profile::LongCvttpd2dqRegistersV1
                 | Profile::LongSqrtssRegistersV1
+                | Profile::LongSqrtsdRegistersV1
                 | Profile::LongSqrtpsRegistersV1
                 | Profile::LongSqrtpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
@@ -3709,6 +3720,7 @@ impl IntegerState {
                 | Profile::LongCvtpd2dqRegistersV1
                 | Profile::LongCvttpd2dqRegistersV1
                 | Profile::LongSqrtssRegistersV1
+                | Profile::LongSqrtsdRegistersV1
                 | Profile::LongSqrtpsRegistersV1
                 | Profile::LongSqrtpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
@@ -3972,6 +3984,8 @@ pub struct Fixture {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqrtss_controls: Option<SqrtssControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqrtsd_controls: Option<SqrtsdControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqrtps_controls: Option<SqrtpsControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqrtpd_controls: Option<SqrtpdControlSnapshot>,
@@ -4148,6 +4162,7 @@ pub struct SqrtssControlSnapshot {
 }
 pub type SqrtpsControlSnapshot = SqrtssControlSnapshot;
 pub type SqrtpdControlSnapshot = Cvtdq2psControlSnapshot;
+pub type SqrtsdControlSnapshot = Cvtdq2psControlSnapshot;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -6042,6 +6057,55 @@ impl Fixture {
                 "only valid for SQRTSS register-space profile",
             ));
         }
+        if self.profile == Profile::LongSqrtsdRegistersV1 {
+            let _ = self
+                .sqrtsd_controls
+                .ok_or_else(|| invalid("sqrtsd_controls", "required by the SQRTSD profile"))?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by the SQRTSD profile"))?;
+            let (_, _, length) =
+                sqrtsd_register_encoding(&code.initial_bytes_hex).ok_or_else(|| {
+                    invalid("memory.code", "outside canonical SQRTSD register profile")
+                })?;
+            let start = self.initial_state.rip.get();
+            if code.guest_address.get() != start
+                || code.length != length
+                || !code.permissions.execute
+                || self.memory.len() != 1
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(u64::from(length))
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "SQRTSD requires one canonical executable encoding, budget 1, and stop RIP entry+length",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .expect("SSE2 required by SQRTSD")
+                .mxcsr
+                .get();
+            if mxcsr & !0x0000_ffbf != 0 || mxcsr & (1 << 6) != 0 {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "SQRTSD requires supported MXCSR bits and rejects DAZ",
+                ));
+            }
+        } else if self.sqrtsd_controls.is_some() {
+            return Err(invalid(
+                "sqrtsd_controls",
+                "only valid for SQRTSD register-space profile",
+            ));
+        }
         if self.profile == Profile::LongSqrtpsRegistersV1 {
             let _ = self
                 .sqrtps_controls
@@ -7242,6 +7306,9 @@ impl Fixture {
                 }
                 Profile::LongSqrtpsRegistersV1 => {
                     sqrtps_register_encoding(&code_bytes).map(|(_, _, length)| length)
+                }
+                Profile::LongSqrtsdRegistersV1 => {
+                    sqrtsd_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
                 Profile::LongSqrtpdRegistersV1 => {
                     sqrtpd_register_encoding(&code_bytes).map(|(_, _, length)| length)
@@ -9205,6 +9272,7 @@ impl Fixture {
             cvtpd2dq_controls: None,
             cvttpd2dq_controls: None,
             sqrtss_controls: None,
+            sqrtsd_controls: None,
             sqrtps_controls: None,
             sqrtpd_controls: None,
             cvtss2sd_controls: None,
@@ -9326,6 +9394,8 @@ pub struct Snapshot {
     pub cvttpd2dq_controls: Option<Cvttpd2dqControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqrtss_controls: Option<SqrtssControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqrtsd_controls: Option<SqrtsdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqrtps_controls: Option<SqrtpsControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -9677,6 +9747,19 @@ impl RunResult {
             return Err(invalid(
                 "snapshot.sqrtss_controls",
                 "only valid for the SQRTSS profile",
+            ));
+        }
+        if self.profile == Profile::LongSqrtsdRegistersV1 {
+            if snapshot.sqrtsd_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.sqrtsd_controls",
+                    "required by the SQRTSD profile",
+                ));
+            }
+        } else if snapshot.sqrtsd_controls.is_some() {
+            return Err(invalid(
+                "snapshot.sqrtsd_controls",
+                "only valid for the SQRTSD profile",
             ));
         }
         if self.profile == Profile::LongSqrtpsRegistersV1 {
@@ -10232,6 +10315,21 @@ impl RunResult {
             }
             if loaded.fixture.profile == Profile::LongSqrtssRegistersV1 {
                 validate_sqrtss_registers_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.sqrtsd_controls,
+                value.sqrtsd_controls,
+            ) {
+                (Profile::LongSqrtsdRegistersV1, Some(input), Some(output)) if input == output => {}
+                (Profile::LongSqrtsdRegistersV1, _, _) => {
+                    return Err(FormatError::CaseMismatch("sqrtsd_controls"));
+                }
+                (_, None, None) => {}
+                _ => return Err(FormatError::CaseMismatch("sqrtsd_controls")),
+            }
+            if loaded.fixture.profile == Profile::LongSqrtsdRegistersV1 {
+                validate_sqrtsd_registers_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
@@ -13371,6 +13469,129 @@ fn validate_sqrtps_registers_result(
             && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
         (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
         _ => return Err(FormatError::CaseMismatch("SQRTPS outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_sqrtsd_registers_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .sqrtsd_controls
+        .ok_or(FormatError::CaseMismatch("sqrtsd_controls"))?;
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    let (destination, source, length) = sqrtsd_register_encoding(&code.initial_bytes_hex)
+        .ok_or(FormatError::CaseMismatch("SQRTSD encoding"))?;
+    let source_bytes = decode_bytes(&initial_sse.xmm[usize::from(source)])?;
+    let raw = u64::from_le_bytes(
+        source_bytes[..8]
+            .try_into()
+            .map_err(|_| FormatError::CaseMismatch("state.sse.xmm"))?,
+    );
+    let old_mxcsr = initial_sse.mxcsr.get() as u32;
+    let (value, new_ie, new_de, computed_pe) = independent_sqrtpd_lane(raw, old_mxcsr);
+    let unmasked_ie = new_ie && old_mxcsr & (1 << 7) == 0;
+    let unmasked_de = new_de && old_mxcsr & (1 << 8) == 0;
+    let new_pe = computed_pe && !unmasked_ie && !unmasked_de;
+    let unmasked_pe = new_pe && old_mxcsr & (1 << 12) == 0;
+    let gate_vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let fault_vector = gate_vector.or_else(|| {
+        if unmasked_ie || unmasked_de || unmasked_pe {
+            Some(if controls.cr4_osxmmexcpt { 19 } else { 6 })
+        } else {
+            None
+        }
+    });
+    if !matches!(
+        (fault_vector.is_some(), fixture.expected_exit),
+        (true, ExpectedExit::Exception) | (false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("SQRTSD expected exit"));
+    }
+    let mut expected_state = fixture.initial_state.clone();
+    if gate_vector.is_none() {
+        let sse = expected_state
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        sse.mxcsr = HexU64(u64::from(
+            old_mxcsr | u32::from(new_ie) | (u32::from(new_de) << 1) | (u32::from(new_pe) << 5),
+        ));
+        if !unmasked_ie && !unmasked_de && !unmasked_pe {
+            let mut expected_destination =
+                decode_bytes(&initial_sse.xmm[usize::from(destination)])?;
+            expected_destination[..8].copy_from_slice(&value.to_le_bytes());
+            sse.xmm[usize::from(destination)] = crate::memory::encode_bytes(&expected_destination);
+            expected_state.rip = HexU64(
+                fixture
+                    .initial_state
+                    .rip
+                    .get()
+                    .checked_add(u64::from(length))
+                    .ok_or(FormatError::CaseMismatch("SQRTSD stop overflow"))?,
+            );
+        }
+    }
+    let expected_memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected_state {
+        return Err(FormatError::CaseMismatch("SQRTSD state"));
+    }
+    if snapshot.rflags_defined != HexU64(INTEGER_FLAGS) {
+        return Err(FormatError::CaseMismatch("SQRTSD defined flags"));
+    }
+    if snapshot.memory != expected_memory {
+        return Err(FormatError::CaseMismatch("SQRTSD memory"));
+    }
+    let expected_count = u64::from(fault_vector.is_none());
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(expected_count),
+        })
+    {
+        return Err(FormatError::CaseMismatch("SQRTSD retirement count"));
+    }
+    match (fault_vector, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == Observation::Unavailable {
+                    reason: "exception has no architectural error code".into(),
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("SQRTSD outcome/exception")),
     }
     Ok(())
 }
@@ -16805,6 +17026,34 @@ fn sqrtpd_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
     let (rex, modrm) = match bytes.as_slice() {
         [0x66, 0x0f, 0x51, modrm] => (0u8, *modrm),
         [0x66, rex, 0x0f, 0x51, modrm] if matches!(*rex, 0x41 | 0x44 | 0x45) => (*rex, *modrm),
+        _ => return None,
+    };
+    if modrm >> 6 != 3 {
+        return None;
+    }
+    let destination = ((modrm >> 3) & 7) | (((rex >> 2) & 1) << 3);
+    let source = (modrm & 7) | ((rex & 1) << 3);
+    if (destination >= 8 || source >= 8) != (bytes.len() == 5)
+        || (rex & 4 != 0) != (destination >= 8)
+        || (rex & 1 != 0) != (source >= 8)
+        || rex & 0x0a != 0
+    {
+        return None;
+    }
+    Some((destination, source, bytes.len() as u32))
+}
+
+fn sqrtsd_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (rex, modrm) = match bytes.as_slice() {
+        [0xf2, 0x0f, 0x51, modrm] => (0u8, *modrm),
+        [0xf2, rex, 0x0f, 0x51, modrm] if matches!(*rex, 0x41 | 0x44 | 0x45) => (*rex, *modrm),
         _ => return None,
     };
     if modrm >> 6 != 3 {

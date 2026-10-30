@@ -18372,3 +18372,35 @@ SQRTPD execution, memory operands, other modes and parent S2-37/S2-38 remain
 open. Sources: Intel SDM Rev. 093 Vol. 2B SQRTPD pp. 4-661–4-663 (Type 2,
 Table 2-19); Vol. 1 §§11.5.3.1–.3; Vol. 3A Event 19/Table 7-8; Floating-Point
 Reference Sheet v2.13 pp. 1–2.
+
+### S2-37am — SQRTSD register-pair interpreter profile (2026-10-30)
+
+Implemented strict schema-v2 profile `s2-long-sqrtsd-registers-v1` for all 256
+canonical Long64 XMM register pairs using `F2 0F 51 /r`, ModR/M.mod=3, and exact
+four-/five-byte forms. Noncanonical prefixes, memory, REX.W/X/40, trailing
+bytes, VEX and EVEX are refused. Runtime requires SSE2/EM/OSFXSR before TS
+ordering after full fetch, with no data-memory callbacks. JIT/native/C ABI/
+fragment/generic paths remain closed.
+
+This scalar Type 3 operation snapshots only source low64 and the complete
+previous destination XMM. Success replaces destination low64 and preserves the
+old high64, including when operands alias; source high64 is never classified.
+Scalar IE/DE pre-events precede PE; negative subnormal is terminal IE-only,
+while positive subnormal raises DE and can produce PE if DE is masked. Unmasked
+exceptions commit generated status and suppress destination/RIP/retirement.
+QNaN/SNaN outputs follow the local `Binary64::sqrt_raw_result` policy; no
+hardware-specific payload claim is made. DAZ and reserved MXCSR encodings are
+rejected in both fixture and public runtime paths.
+
+Focused local evidence: `od-isa sqrtsd_` tests pass (decoder encodings, all 256
+runtime pairs, poisoned source-high and destination-high preservation, scalar
+exception/RC atomicity, DAZ/reserved admission, SSE2 gates and full-fetch order);
+the `od-testkit` parser/oracle test passes, including exact sqrt(min subnormal)
+with DE only and sqrt(0x2)/sqrt(0x3) with DE+PE; the runner literal/all-pair and
+scalar event matrix passes, including IM/DM independence for negative
+subnormals, FTZ/RC/sticky checks, metadata tampering and backend denial. These
+are local tests, not physical acceptance. Full workspace checks pass; independent
+review remains pending. SQRTSD memory forms, physical acceptance, other modes and
+parent S2-37/S2-38 remain open. Sources: Intel SDM Rev. 093 Vol. 2B SQRTSD
+pp. 4-667–4-668 (Type 3, Table 2-20); Vol. 1 §§11.5.3.1–.3; Vol. 3A Event 19
+and Table 7-8; Floating-Point Reference Sheet v2.13 pp. 1–2.

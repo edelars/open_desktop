@@ -297,6 +297,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 cvtpd2dq_controls: input.fixture.cvtpd2dq_controls,
                 cvttpd2dq_controls: input.fixture.cvttpd2dq_controls,
                 sqrtss_controls: input.fixture.sqrtss_controls,
+                sqrtsd_controls: input.fixture.sqrtsd_controls,
                 sqrtps_controls: input.fixture.sqrtps_controls,
                 sqrtpd_controls: input.fixture.sqrtpd_controls,
                 cvtss2sd_controls: input.fixture.cvtss2sd_controls,
@@ -8879,6 +8880,85 @@ fn sqrtpd_parser_and_independent_binary64_oracle_cover_pairs_and_aggregate_event
         let (v, _, _, pe) = independent_sqrtpd_lane(0x4000_0000_0000_0000, 0x1f80 | (rc << 13));
         assert_eq!(v, expected);
         assert!(pe);
+    }
+}
+
+#[test]
+fn sqrtsd_parser_and_scalar_raw_u64_oracle_cover_only_low_lane_semantics() {
+    for destination in 0u8..16 {
+        for source in 0u8..16 {
+            let mut bytes = vec![0xf2];
+            if destination >= 8 || source >= 8 {
+                bytes.push(0x40 | ((destination >> 1) & 4) | (source >> 3));
+            }
+            bytes.extend([0x0f, 0x51, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+            let code = bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            assert_eq!(
+                sqrtsd_register_encoding(&code),
+                Some((destination, source, bytes.len() as u32)),
+                "{code}"
+            );
+        }
+    }
+    for code in ["f20f51c1", "f2410f51c1", "f2440f51c1", "f2450f51c1"] {
+        assert!(sqrtsd_register_encoding(code).is_some(), "{code}");
+    }
+    for code in [
+        "660f51c1",
+        "f30f51c1",
+        "f2660f51c1",
+        "66f20f51c1",
+        "f2f20f51c1",
+        "f2400f51c1",
+        "f2480f51c1",
+        "f2420f51c1",
+        "40f20f51c1",
+        "f20f5100",
+        "f20f51c190",
+        "c5fb51c1",
+        "62f1ff0851c1",
+    ] {
+        assert_eq!(sqrtsd_register_encoding(code), None, "{code}");
+    }
+    let (minimum, ie, de, pe) = independent_sqrtpd_lane(1, 0x1f80);
+    assert_eq!(minimum, 0x1e60_0000_0000_0000);
+    assert!(
+        !ie && de && !pe,
+        "sqrt(min subnormal) is exact with DE only"
+    );
+    for raw in [2u64, 3] {
+        let (_, ie, de, pe) = independent_sqrtpd_lane(raw, 0x1f80);
+        assert!(!ie && de && pe, "{raw:#x} has DE and PE");
+    }
+    assert_eq!(
+        independent_sqrtpd_lane(0x8000_0000_0000_0001, 0x1f80),
+        (0xfff8_0000_0000_0000, true, false, false)
+    );
+    assert_eq!(
+        independent_sqrtpd_lane(0xfff8_1234_5678_9abc, 0x1f80),
+        (0xfff8_1234_5678_9abc, false, false, false)
+    );
+    assert_eq!(
+        independent_sqrtpd_lane(0x7ff0_0000_0000_1234, 0x1f80),
+        (0x7ff8_0000_0000_1234, true, false, false)
+    );
+    assert_eq!(
+        independent_sqrtpd_lane(0x8000_0000_0000_0000, 0x1f80).0,
+        0x8000_0000_0000_0000
+    );
+    for (rc, expected) in [
+        (0, 0x3ff6_a09e_667f_3bcd),
+        (1, 0x3ff6_a09e_667f_3bcc),
+        (2, 0x3ff6_a09e_667f_3bcd),
+        (3, 0x3ff6_a09e_667f_3bcc),
+    ] {
+        assert_eq!(
+            independent_sqrtpd_lane(0x4000_0000_0000_0000, 0x1f80 | (rc << 13)).0,
+            expected
+        );
     }
 }
 

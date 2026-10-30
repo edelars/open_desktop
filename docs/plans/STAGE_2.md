@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последнее локальное подзадание S2-37ak добавляет строгий schema-v2 SQRTPS XMM register-pair interpreter profile рядом с S2-37aj SQRTSS, S2-37ai CVTTPD2DQ и соседними S2-37s/t/u/v/w register-space profiles. Локальные проверки охватывают пары, RC, межlane IE/DE/PE priority и controls; это не закрывает общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последнее локальное подзадание S2-37am добавляет строгий schema-v2 scalar SQRTSD XMM register-pair interpreter profile рядом с S2-37al SQRTPD, S2-37ak SQRTPS и соседними S2-37s/t/u/v/w register-space profiles. Локальные проверки охватывают пары, RC, скалярную IE/DE/PE priority и controls; это не закрывает общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -516,6 +516,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37aj | Strict schema-v2 canonical Long64 SQRTSS XMM register-pair profile; MXCSR.RC, low32 result/high96 preservation, ordered IE/DE/PE and atomic unmasked exit; JIT/native closed | S2-36aa, S2-38 exception policy; independent review clean after runtime MXCSR admission and negative-subnormal documentation fixes; physical acceptance remains in combined final stage |
 | [x] | S2-37ak | Strict schema-v2 canonical Long64 SQRTPS XMM register-pair profile; MXCSR.RC, four-lane pre-IE/DE aggregation before PE and whole-XMM atomic unmasked exit; JIT/native closed | S2-37aj raw sqrt reference and S2-38 exception policy; independent review clean; physical acceptance remains open |
 | [x] | S2-37al | Strict schema-v2 canonical Long64 SQRTPD XMM register-pair profile; binary64 two-lane IE/DE pre-event aggregation before PE and whole-XMM atomic exit; independent review clean; physical acceptance remains open | S2-37aj raw sqrt reference and S2-38 exception policy |
+| [x] | S2-37am | Strict schema-v2 canonical Long64 SQRTSD XMM register-pair profile; low64-only binary64 result with high64 preservation, scalar IE/DE/PE ordering; independent review clean; physical acceptance remains open | S2-37aj raw sqrt reference and S2-38 exception policy |
 | [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j/k/l: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j/k/l; independent review |
 | [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
@@ -6825,7 +6826,7 @@ inventory.
 | RSQRTSS | `F3 0F 52 /r` | SSE | XMM, m32; low f32 | 4-596 | S2-37a, bounded |
 | SQRTPD | `66 0F 51 /r` | SSE2 | XMM, m128; 2×f64 | 4-661 | missing |
 | SQRTPS | `NP 0F 51 /r` | SSE | XMM, m128; 4×f32 | 4-664 | missing |
-| SQRTSD | `F2 0F 51 /r` | SSE2 | XMM, m64; low f64 | 4-667 | missing |
+| SQRTSD | `F2 0F 51 /r` | SSE2 | XMM, m64; low f64 | 4-667 | S2-37am register-only; memory missing |
 | SQRTSS | `F3 0F 51 /r` | SSE | XMM, m32; low f32 | 4-669 | missing |
 | SUBPD | `66 0F 5C /r` | SSE2 | XMM, m128; 2×f64 | 4-687 | missing |
 | SUBPS | `NP 0F 5C /r` | SSE | XMM, m128; 4×f32 | 4-690 | missing |
@@ -13440,4 +13441,45 @@ independent review are tracked in the report before marking this inventory
 item complete. Physical acceptance, memory forms, other execution modes and
 parent S2-37/S2-38 remain open. Sources: Intel SDM Rev. 093 Vol. 2B SQRTPD
 pp. 4-661–4-663 (Type 2, Table 2-19); Vol. 1 §§11.5.3.1–.3; Vol. 3A Event 19
+and Table 7-8; Intel Floating-Point Reference Sheet v2.13 pp. 1–2.
+
+#### S2-37am — canonical Long64 SQRTSD XMM register pairs
+
+Implement strict schema-v2 interpreter-only profile `s2-long-sqrtsd-registers-v1`
+for all 256 canonical Long64 XMM destination/source pairs using `F2 0F 51 /r`,
+ModR/M.mod=3. Low-register forms are four bytes; an extended destination or
+source requires exactly one REX `41`, `44`, or `45` immediately after F2 and
+has length five. Refuse memory, 66/F3, reordered/repeated/other prefixes,
+REX.W/X/40, trailing bytes, VEX and EVEX. Keep generic, JIT, native, C ABI and
+fragment paths closed. SQRTSD uses SSE2/EM/OSFXSR #UD after full fetch, followed
+by TS #NM at CPL0–3, without data callbacks. This is the scalar SQRTSD Type 3
+form (Vol. 2A §2.5.3, Table 2-20), not the packed SQRTPD Type 2 form.
+
+Snapshot source XMM low64 and destination full XMM before execution. MXCSR.RC
+controls the binary64 result. On success write only destination low64; preserve
+its previous high64 even when source aliases destination, and never inspect the
+source high64. The strict profile rejects DAZ and reserved MXCSR bits while
+accepting all RC modes, FTZ, masks and existing sticky flags. QNaN passes without
+IE; SNaN raises IE and is quieted preserving source sign/payload under the local
+helper policy. Negative nonzero non-NaNs, including negative infinity and
+negative subnormal, take terminal IE-only invalid behavior; when masked the
+result is `0xfff8000000000000`. Positive subnormal DAZ=0 raises precompute DE;
+masked DE permits calculation and possible PE. Negative subnormal is IE only
+regardless of DM. An unmasked pre-event commits its new sticky flag and faults
+before PE; an unmasked DE does not compute. If pre-events are masked, compute
+and then apply PE. Every unmasked exit suppresses destination, RIP and
+retirement while committing generated status; old sticky bits alone never
+fault. FTZ has no effect because nonzero positive square-root results are
+normal.
+
+Use the independent raw-u64 integer-square-root oracle (no host FP or production
+helper). Local tests cover all 256 pairs, aliasing, poisoned source high64 and
+preserved destination high64, min-subnormal `0x1` exact DE-only versus `0x2`/`0x3`
+DE+PE, RC, NaN/negative/subnormal classes, IM/DM/PM/OSXMMEXCPT interactions,
+stickies, atomic faults, SSE2 gates/fetch/CPL/no callbacks, malformed forms,
+metadata tampering and backend denial. The literal fixture and focused checks
+are local evidence only; independent review and full checks remain in the
+report. Physical acceptance, memory source and other modes remain open; parent
+S2-37/S2-38 are not closed. Sources: Intel SDM Rev. 093 Vol. 2B SQRTSD
+pp. 4-667–4-668; Vol. 2A §2.5.3, Table 2-20; Vol. 1 §§11.5.3.1–.3; Vol. 3A Event 19
 and Table 7-8; Intel Floating-Point Reference Sheet v2.13 pp. 1–2.

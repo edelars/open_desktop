@@ -13171,3 +13171,50 @@ Intel Floating-Point Reference Sheet v2.13 pp. 1–2
 See the [plan](../plans/STAGE_2.md#s2-37al--canonical-long64-sqrtpd-xmm-register-pairs),
 [report](../reports/STAGE_2_REPORT.md#s2-37al--sqrtpd-register-pair-interpreter-profile-2026-10-30),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37al-canonical-sqrtpd-register-pair).
+
+## S2-37am — canonical Long64 SQRTSD XMM register pairs
+
+The strict schema-v2 interpreter-only profile `s2-long-sqrtsd-registers-v1`
+admits all 256 canonical Long64 XMM register pairs for `F2 0F 51 /r` with
+ModR/M.mod=3. Low forms are four bytes; extended indices require one REX
+`41`/`44`/`45` immediately after F2, for five bytes. It refuses memory, 66/F3,
+REX.W/X/40, reordered/repeated/other prefixes, trailing bytes, VEX and EVEX.
+JIT/native/C ABI/fragment/generic paths are closed. Full fetch precedes SSE2,
+CR0.EM and CR4.OSFXSR #UD, followed by CR0.TS #NM at CPL0–3; no data callbacks
+are made. This is SQRTSD Type 3 (Vol. 2A §2.5.3, Table 2-20), not packed
+SQRTPD Type 2.
+
+The implementation snapshots the source low64 and destination full XMM before
+execution. On success it writes only destination low64, preserving the old
+high64 even when the source and destination alias. Source high64 is not
+classified or consumed. The profile rejects DAZ and reserved MXCSR bits, and
+accepts all RC modes, FTZ, masks and old sticky flags. QNaN passes without IE;
+SNaN raises IE and is quieted under the local raw helper policy. Negative
+nonzero non-NaNs, including negative subnormal and negative infinity, take the
+terminal invalid branch: IE only, and masked result `0xfff8000000000000`.
+Positive subnormal input raises precompute DE; masked DE permits computation
+and may add PE. Negative subnormal never raises DE regardless of DM. A newly
+unmasked pre-event commits its sticky flag before fault and prevents PE; an
+unmasked DE stops before computation. If pre-events are masked, compute then
+apply PE. Every unmasked exception suppresses destination, RIP and retirement;
+existing sticky flags alone never fault. FTZ is irrelevant to the normal
+nonzero square-root result domain.
+
+The schema oracle uses independent raw-u64 integer square root and no host FP
+or production helper. Local tests cover all pairs, aliasing and high-half
+preservation with poisoned source high64, binary64 minimum subnormal exact DE
+versus 0x2/0x3 DE+PE, scalar NaN/negative/zero/infinity cases, all RCs, IE/DE/PE
+masks and sticky status, unmasked #XM/#UD atomicity, public runtime MXCSR
+denial, SSE2 gate/fetch/CPL behavior, strict malformed encoding, metadata
+tampering and JIT/native denial. This evidence is local, not physical
+acceptance. Memory forms and other modes are out of profile; parent S2-37/S2-38
+remain open. Sources: Intel SDM Rev. 093 Vol. 2B SQRTSD pp. 4-667–4-668
+([Vol. 2B](https://cdrdv2.intel.com/v1/dl/getContent/671241)); Vol. 2A §2.5.3,
+Table 2-20 ([official PDF](https://cdrdv2-public.intel.com/782150/253666-sdm-vol-2a.pdf)); Vol. 1
+§§11.5.3.1–.3 ([Vol. 1](https://cdrdv2.intel.com/v1/dl/getContent/671436)); Vol.
+3A Event 19 and Table 7-8 ([Vol. 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190));
+Intel Floating-Point Reference Sheet v2.13 pp. 1–2
+([PDF](https://cdrdv2-public.intel.com/786447/floating-point-reference-sheet-for-intel-architecture.pdf)).
+See the [plan](../plans/STAGE_2.md#s2-37am--canonical-long64-sqrtsd-xmm-register-pairs),
+[report](../reports/STAGE_2_REPORT.md#s2-37am--sqrtsd-register-pair-interpreter-profile-2026-10-30),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37am-canonical-sqrtsd-register-pair).
