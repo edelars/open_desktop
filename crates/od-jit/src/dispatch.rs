@@ -14,6 +14,7 @@ use crate::block_compile::{
     BlockCompileError, BlockCompileOutcome, build_dispatch_block, compile_block_for_dispatch,
     compile_block_for_native_dec_rax, compile_block_for_native_dec_rax_demand_flags_candidate,
     compile_block_for_native_inc_rax, compile_block_for_native_inc_rax_demand_flags_candidate,
+    compile_block_for_native_neg_rax, compile_block_for_native_neg_rax_demand_flags_candidate,
     compile_block_for_nop_fallback, compile_block_for_nop_fallback_demand_flags_candidate,
     compile_block_for_nop_inc_rax_fallback,
     compile_block_for_nop_inc_rax_fallback_demand_flags_candidate, compile_prepared_dispatch_block,
@@ -91,6 +92,7 @@ pub struct BlockExecutionReport {
 pub use crate::block::S0_09NopAdmission as InterpreterFallbackAdmission;
 pub use crate::block::S0_09NopDecRaxAdmission as DecRaxInterpreterFallbackAdmission;
 pub use crate::block::S0_09NopIncRaxAdmission as IncRaxInterpreterFallbackAdmission;
+pub use crate::block::S0_09NopNegRaxAdmission as NegRaxInterpreterFallbackAdmission;
 
 /// One cooperative control context is shared for the full dispatch invocation.
 /// STOP fields are forwarded to generated guards; an event request is sampled
@@ -1645,6 +1647,46 @@ pub fn run_with_native_dec_rax_demand_flags_candidate<E: ControlledBlockExecutor
     )
 }
 
+/// Opt-in uncached native NEG RAX dispatcher with its own exact admission.
+pub fn run_with_native_neg_rax<E: ControlledBlockExecutor>(
+    code: CodeView<'_>,
+    admission: &NegRaxInterpreterFallbackAdmission,
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    executor: &mut E,
+) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
+    run_with_nop_fallback_strategy(
+        code,
+        FallbackAdmission::NopNegRax(admission),
+        state,
+        total_budget,
+        control,
+        executor,
+        NopFallbackCompilation::NativeNegRax,
+    )
+}
+
+/// Demand-flags candidate for exact NEG RAX; it overwrites the full pending flags descriptor.
+pub fn run_with_native_neg_rax_demand_flags_candidate<E: ControlledBlockExecutor>(
+    code: CodeView<'_>,
+    admission: &NegRaxInterpreterFallbackAdmission,
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    executor: &mut E,
+) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
+    run_with_nop_fallback_strategy(
+        code,
+        FallbackAdmission::NopNegRax(admission),
+        state,
+        total_budget,
+        control,
+        executor,
+        NopFallbackCompilation::NativeNegRaxDemandFlagsCandidate,
+    )
+}
+
 #[derive(Clone, Copy)]
 enum NopFallbackCompilation {
     Eager,
@@ -1653,6 +1695,8 @@ enum NopFallbackCompilation {
     NativeIncRaxDemandFlagsCandidate,
     NativeDecRax,
     NativeDecRaxDemandFlagsCandidate,
+    NativeNegRax,
+    NativeNegRaxDemandFlagsCandidate,
 }
 
 #[derive(Clone, Copy)]
@@ -1660,6 +1704,7 @@ enum FallbackAdmission<'a> {
     Nop(&'a InterpreterFallbackAdmission),
     NopIncRax(&'a IncRaxInterpreterFallbackAdmission),
     NopDecRax(&'a DecRaxInterpreterFallbackAdmission),
+    NopNegRax(&'a NegRaxInterpreterFallbackAdmission),
 }
 
 impl FallbackAdmission<'_> {
@@ -1668,6 +1713,7 @@ impl FallbackAdmission<'_> {
             Self::Nop(admission) => admission.matches_code(code),
             Self::NopIncRax(admission) => admission.matches_code(code),
             Self::NopDecRax(admission) => admission.matches_code(code),
+            Self::NopNegRax(admission) => admission.matches_code(code),
         }
     }
     fn contains(self, rip: u64) -> bool {
@@ -1675,6 +1721,7 @@ impl FallbackAdmission<'_> {
             Self::Nop(admission) => admission.contains(rip),
             Self::NopIncRax(admission) => admission.contains(rip),
             Self::NopDecRax(admission) => admission.contains(rip),
+            Self::NopNegRax(admission) => admission.contains(rip),
         }
     }
     fn admits_nop(self, rip: u64) -> bool {
@@ -1682,18 +1729,25 @@ impl FallbackAdmission<'_> {
             Self::Nop(admission) => admission.admits_nop(rip),
             Self::NopIncRax(admission) => admission.admits_nop(rip),
             Self::NopDecRax(admission) => admission.admits_nop(rip),
+            Self::NopNegRax(admission) => admission.admits_nop(rip),
         }
     }
     fn admits_inc_rax(self, rip: u64) -> bool {
         match self {
-            Self::Nop(_) | Self::NopDecRax(_) => false,
+            Self::Nop(_) | Self::NopDecRax(_) | Self::NopNegRax(_) => false,
             Self::NopIncRax(admission) => admission.admits_inc_rax(rip),
         }
     }
     fn admits_dec_rax(self, rip: u64) -> bool {
         match self {
-            Self::Nop(_) | Self::NopIncRax(_) => false,
+            Self::Nop(_) | Self::NopIncRax(_) | Self::NopNegRax(_) => false,
             Self::NopDecRax(admission) => admission.admits_dec_rax(rip),
+        }
+    }
+    fn admits_neg_rax(self, rip: u64) -> bool {
+        match self {
+            Self::NopNegRax(admission) => admission.admits_neg_rax(rip),
+            _ => false,
         }
     }
 }
@@ -1779,17 +1833,39 @@ fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
             ) => {
                 compile_block_for_native_dec_rax_demand_flags_candidate(code, state.rip, admission)
             }
+            (FallbackAdmission::NopNegRax(_), NopFallbackCompilation::Eager)
+            | (FallbackAdmission::NopNegRax(_), NopFallbackCompilation::DemandFlagsCandidate) => {
+                unreachable!("NEG admission is native-only")
+            }
+            (FallbackAdmission::NopNegRax(admission), NopFallbackCompilation::NativeNegRax) => {
+                compile_block_for_native_neg_rax(code, state.rip, admission)
+            }
+            (
+                FallbackAdmission::NopNegRax(admission),
+                NopFallbackCompilation::NativeNegRaxDemandFlagsCandidate,
+            ) => {
+                compile_block_for_native_neg_rax_demand_flags_candidate(code, state.rip, admission)
+            }
             (FallbackAdmission::Nop(_), NopFallbackCompilation::NativeIncRax)
+            | (FallbackAdmission::NopNegRax(_), NopFallbackCompilation::NativeIncRax)
             | (
                 FallbackAdmission::Nop(_),
                 NopFallbackCompilation::NativeIncRaxDemandFlagsCandidate,
             ) => unreachable!("native INC RAX requires its dedicated admission"),
             (
-                FallbackAdmission::Nop(_) | FallbackAdmission::NopIncRax(_),
+                FallbackAdmission::NopNegRax(_),
+                NopFallbackCompilation::NativeIncRaxDemandFlagsCandidate,
+            ) => unreachable!("native INC RAX requires its dedicated admission"),
+            (
+                FallbackAdmission::Nop(_)
+                | FallbackAdmission::NopIncRax(_)
+                | FallbackAdmission::NopNegRax(_),
                 NopFallbackCompilation::NativeDecRax,
             )
             | (
-                FallbackAdmission::Nop(_) | FallbackAdmission::NopIncRax(_),
+                FallbackAdmission::Nop(_)
+                | FallbackAdmission::NopIncRax(_)
+                | FallbackAdmission::NopNegRax(_),
                 NopFallbackCompilation::NativeDecRaxDemandFlagsCandidate,
             ) => unreachable!("native DEC RAX requires its dedicated admission"),
             (FallbackAdmission::NopDecRax(_), NopFallbackCompilation::NativeIncRax)
@@ -1797,6 +1873,18 @@ fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
                 FallbackAdmission::NopDecRax(_),
                 NopFallbackCompilation::NativeIncRaxDemandFlagsCandidate,
             ) => unreachable!("native INC RAX requires its dedicated admission"),
+            (
+                FallbackAdmission::Nop(_)
+                | FallbackAdmission::NopIncRax(_)
+                | FallbackAdmission::NopDecRax(_),
+                NopFallbackCompilation::NativeNegRax,
+            )
+            | (
+                FallbackAdmission::Nop(_)
+                | FallbackAdmission::NopIncRax(_)
+                | FallbackAdmission::NopDecRax(_),
+                NopFallbackCompilation::NativeNegRaxDemandFlagsCandidate,
+            ) => unreachable!("native NEG RAX requires its dedicated admission"),
         }
         .map_err(DispatchError::Compile)?;
         let block = match compiled {
@@ -1804,7 +1892,8 @@ fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
             BlockCompileOutcome::NoNativePrefix { rip, .. } => {
                 if !(admission.admits_nop(rip)
                     || admission.admits_inc_rax(rip)
-                    || admission.admits_dec_rax(rip))
+                    || admission.admits_dec_rax(rip)
+                    || admission.admits_neg_rax(rip))
                     || rip != state.rip
                 {
                     return Err(DispatchError::NoNativePrefix { rip });
@@ -1869,7 +1958,8 @@ fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
                 }
                 if !(admission.admits_nop(rip)
                     || admission.admits_inc_rax(rip)
-                    || admission.admits_dec_rax(rip))
+                    || admission.admits_dec_rax(rip)
+                    || admission.admits_neg_rax(rip))
                 {
                     return Err(DispatchError::InterpreterInstructionNotAdmitted { rip });
                 }
@@ -1993,7 +2083,8 @@ fn step_admitted_fallback<E>(
     let is_nop = admission.admits_nop(rip);
     let is_inc_rax = admission.admits_inc_rax(rip);
     let is_dec_rax = admission.admits_dec_rax(rip);
-    if !admission.matches_code(code) || !(is_nop || is_inc_rax || is_dec_rax) {
+    let is_neg_rax = admission.admits_neg_rax(rip);
+    if !admission.matches_code(code) || !(is_nop || is_inc_rax || is_dec_rax || is_neg_rax) {
         return Err(DispatchError::InterpreterInstructionNotAdmitted { rip });
     }
     if let Some(exit) = control_exit(rip, code.code_end(), *remaining, control) {
@@ -2003,7 +2094,11 @@ fn step_admitted_fallback<E>(
         return Ok(Some(exit));
     }
 
-    let length = if is_inc_rax || is_dec_rax { 3 } else { 1 };
+    let length = if is_inc_rax || is_dec_rax || is_neg_rax {
+        3
+    } else {
+        1
+    };
     let end_rip = rip
         .checked_add(length)
         .ok_or(DispatchError::InterpreterInstructionNotAdmitted { rip })?;

@@ -90,6 +90,12 @@ Run `cargo test -p od-jit --lib dec_rax_admission_is_exact_and_separate_from_inc
 
 The host differential test compares complete CPU state and retirement with `od_isa::execute::step` for both CF values, 0/1/`u64::MAX`/signed extrema/AF-PF edges, and both JZ/JNZ outcomes. It covers eager/candidate execution, candidate budgets 0..6, STOP at entry and immediately before DEC after the pending CMP, pending-flags PC-map evidence, and negative exact-form admission (truncation, prefixes, INC, other registers, immediate SUB, memory DEC, and branches into DEC). This remains partial uncached correctness evidence with no performance claim; Mini and performance checks remain deferred until Stage 3 ends.
 
+## S3-33c: exact native NEG RAX
+
+Run `cargo test -p od-jit --offline neg_rax_admission_is_exact_and_separate_from_inc_dec_profiles`, `cargo test -p od-jit --offline native_neg_rax_is_opt_in_and_compiles_following_branch_consumers`, `cargo test -p od-jit --offline native_neg_rax_lowers_to_zero_minus_rax_with_full_arithmetic_flags`, and `cargo test -p od-host --offline native_neg_rax_replaces_full_pending_flags_and_matches_interpreter`. Only `S0_09NopNegRaxAdmission` and the separate eager/demand-candidate APIs admit exact bare `48 F7 D8`; S0-09 NOP behavior and INC/DEC admissions remain unchanged. Reject wrong registers (including R8), memory, narrow width, extra prefixes, truncation, NOT, and branches into the encoding.
+
+The lowering test asserts the exact Read RAX -> Const 0 -> W64 Subtract(0,RAX) with full `FlagEffect::Arithmetic` -> Write RAX -> Commit sequence. The compiler test covers eager and demand-candidate compilation with the following branch mapped in the PC map. Host parity covers `0`, `1`, `u64::MAX`, signed extrema and `0x10/0x11/0x100`, both incoming CF values, CF=0 only for zero, OF at `i64::MIN`, DF/non-arithmetic preservation, both JZ/JNZ paths, and complete state/retirement parity. Exercise pending CMP->NEG->JZ/JNZ, NEG->ADD, terminal NEG, candidate budgets 0..5, STOP before NEG after CMP, and budget/STOP immediately after NEG. The candidate PC-map witness must see pending flags before the branch. Generic helper-failure behavior remains covered by `demand_flags_candidate_materializes_on_stop_unsupported_and_helper_failure_exits`; host failures must not become guest exits. Mini and performance checks remain deferred to the end of Stage 3. See the [S3-33c report](../reports/STAGE_3_S3-33c_2026-10-30.md).
+
 ## Срез A: один register-only блок
 
 1. Использовать только точные S0-09 формы из JIT contract и fixtures с

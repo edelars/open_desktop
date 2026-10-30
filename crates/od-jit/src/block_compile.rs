@@ -6,6 +6,7 @@ use crate::allocator::{Allocation, AllocatorConfig, AllocatorError, HelperBounda
 use crate::block::{
     self, AdmittedInstructionBoundaries, BlockLimits, BlockStopReason, BuildError, BuildOutcome,
     CodeView, DecodeBoundary, S0_09NopAdmission, S0_09NopDecRaxAdmission, S0_09NopIncRaxAdmission,
+    S0_09NopNegRaxAdmission,
 };
 use crate::block_emitter::{
     BlockEmitterError, EmittedCheckedLoadBlockV2, EmittedCheckedStoreBlockV2, EmittedRuntimeBlock,
@@ -497,6 +498,81 @@ pub fn compile_block_for_native_dec_rax_demand_flags_candidate(
     )
 }
 
+/// Compile exact bare W64 NEG RAX as a separate opt-in uncached candidate.
+pub fn compile_block_for_native_neg_rax(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopNegRaxAdmission,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    compile_native_neg_rax_inner(
+        code,
+        entry_rip,
+        admission,
+        crate::block_emitter::FlagMaterializationStrategy::Eager,
+    )
+}
+
+/// Compile the demand-flags variant of the exact native NEG RAX candidate.
+pub fn compile_block_for_native_neg_rax_demand_flags_candidate(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopNegRaxAdmission,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    compile_native_neg_rax_inner(
+        code,
+        entry_rip,
+        admission,
+        crate::block_emitter::FlagMaterializationStrategy::DemandDrivenCandidate,
+    )
+}
+
+fn compile_native_neg_rax_inner(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopNegRaxAdmission,
+    strategy: crate::block_emitter::FlagMaterializationStrategy,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    if !admission.matches_code(code) {
+        return Err(BlockCompileError::NopAdmissionDoesNotMatchCode);
+    }
+    if !admission.contains(entry_rip) {
+        return Err(BlockCompileError::NopEntryNotAdmitted { entry_rip });
+    }
+    let built = block::build_block_for_native_neg_rax(
+        code,
+        entry_rip,
+        AccessContext::default(),
+        BlockLimits::default(),
+    )
+    .map_err(BlockCompileError::Build)?;
+    let lowered = match lowering::lower_for_native_neg_rax(&built, admission)
+        .map_err(BlockCompileError::Lowering)?
+    {
+        LoweringOutcome::Program(lowered) => lowered,
+        LoweringOutcome::NoNativePrefix {
+            rip,
+            reason,
+            deferred_error,
+        } => {
+            return Ok(BlockCompileOutcome::NoNativePrefix {
+                rip,
+                reason,
+                deferred_error,
+            });
+        }
+    };
+    if let BuildOutcome::Block(block) = &built {
+        for instruction in &block.instructions {
+            for rip in [instruction.guest_rip, instruction.next_rip] {
+                if !admission.contains(rip) {
+                    return Err(BlockCompileError::DispatchBlockBoundaryNotAdmitted { rip });
+                }
+            }
+        }
+    }
+    compile_lowered(code.code_end(), lowered, strategy)
+}
+
 fn compile_native_dec_rax_inner(
     code: CodeView<'_>,
     entry_rip: u64,
@@ -888,6 +964,37 @@ mod tests {
             })
         );
         assert!(compiled.emitted().safe_entry_provenance());
+    }
+
+    #[test]
+    fn native_neg_rax_is_opt_in_and_compiles_following_branch_consumers() {
+        let code = [0x48, 0xf7, 0xd8, 0x74, 0x00]; // NEG RAX; JZ to code end
+        let view = CodeView::new(0xB200, &code).unwrap();
+        let admission = S0_09NopNegRaxAdmission::from_code(view).unwrap();
+        for candidate in [false, true] {
+            let outcome = if candidate {
+                compile_block_for_native_neg_rax_demand_flags_candidate(view, 0xB200, &admission)
+            } else {
+                compile_block_for_native_neg_rax(view, 0xB200, &admission)
+            }
+            .unwrap();
+            let BlockCompileOutcome::Compiled(compiled) = outcome else {
+                panic!("native NEG/JZ should compile")
+            };
+            assert_eq!(compiled.code_end(), 0xB205);
+            let ranges = compiled.emitted().pc_map().ranges();
+            assert!(
+                ranges
+                    .iter()
+                    .any(|r| r.guest_rip == crate::statepoints::GuestRipSource::Fixed(0xB200))
+            );
+            assert!(
+                ranges
+                    .iter()
+                    .any(|r| r.guest_rip == crate::statepoints::GuestRipSource::Fixed(0xB203))
+            );
+            assert!(compiled.emitted().safe_entry_provenance());
+        }
     }
 
     #[test]

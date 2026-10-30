@@ -39957,6 +39957,357 @@ mod tests {
     }
 
     #[test]
+    fn native_neg_rax_replaces_full_pending_flags_and_matches_interpreter() {
+        let _guard = jit_test_lock();
+        use od_isa::memory::{AccessKind, GuestMemory};
+        use od_jit::statepoints::{SnapshotAdmissibility, StatePhase};
+        struct CodeOnly<'a> {
+            base: u64,
+            bytes: &'a [u8],
+        }
+        impl GuestMemory for CodeOnly<'_> {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                address
+                    .checked_sub(self.base)
+                    .and_then(|n| self.bytes.get(n as usize))
+                    .copied()
+                    .ok_or(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Fetch,
+                    })
+            }
+            fn read(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: &[u8],
+            ) -> Result<(), MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+        fn interpret(
+            code: &[u8],
+            base: u64,
+            state: &mut od_isa::LongModeState,
+            budget: u64,
+        ) -> u64 {
+            let mut memory = CodeOnly { base, bytes: code };
+            let mut retired = 0;
+            while retired < budget && state.rip < base + code.len() as u64 {
+                assert!(matches!(
+                    od_isa::execute::step(state, &mut memory, AccessContext::default()).unwrap(),
+                    od_isa::execute::StepOutcome::Advanced | od_isa::execute::StepOutcome::Branched
+                ));
+                retired += 1;
+            }
+            retired
+        }
+        struct CandidateWitness {
+            executor: PublishedBlockExecutor,
+            pending_seen: bool,
+            pending_branch_seen: bool,
+            branch_rip: u64,
+        }
+        impl od_jit::dispatch::ControlledBlockExecutor for CandidateWitness {
+            type Error = PublishedBlockExecutionError;
+            fn execute_one_block_controlled(
+                &mut self,
+                block: &od_jit::block_compile::CompiledBlock,
+                state: &mut od_isa::LongModeState,
+                budget: u64,
+                control: od_jit::dispatch::DispatchControl<'_>,
+            ) -> Result<od_jit::dispatch::BlockExecutionReport, Self::Error> {
+                self.pending_seen |= block.emitted().pc_map().ranges().iter().any(|range| {
+                    range.phase != StatePhase::Exit
+                        && range.snapshot == SnapshotAdmissibility::InadmissiblePendingFlags
+                });
+                self.pending_branch_seen |= block.emitted().pc_map().ranges().iter().any(|range| {
+                    range.guest_rip == od_jit::statepoints::GuestRipSource::Fixed(self.branch_rip)
+                        && range.phase != StatePhase::Exit
+                        && range.snapshot == SnapshotAdmissibility::InadmissiblePendingFlags
+                });
+                od_jit::dispatch::ControlledBlockExecutor::execute_one_block_controlled(
+                    &mut self.executor,
+                    block,
+                    state,
+                    budget,
+                    control,
+                )
+            }
+        }
+
+        let base = 0x8F00;
+        let neg_rip = base + 3;
+        let branch_rip = base + 6;
+        let mut code = vec![0x48, 0x3B, 0xC1]; // CMP RAX,RCX (pending full flags)
+        code.extend_from_slice(&[0x48, 0xF7, 0xD8]); // NEG RAX (replaces all arithmetic flags)
+        code.extend_from_slice(&[0x74, 0x0a]); // JZ over MOV RBX,1
+        code.extend_from_slice(&[0x48, 0xBB]);
+        code.extend_from_slice(&1_u64.to_le_bytes());
+        code.extend_from_slice(&[0x75, 0x0a]); // JNZ over MOV RCX,2
+        code.extend_from_slice(&[0x48, 0xB9]);
+        code.extend_from_slice(&2_u64.to_le_bytes());
+        let view = CodeView::new(base, &code).unwrap();
+        let admission =
+            od_jit::dispatch::NegRaxInterpreterFallbackAdmission::from_code(view).unwrap();
+        let stop = AtomicU8::new(0);
+        let control = od_jit::dispatch::DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let values = [
+            0_u64,
+            1,
+            u64::MAX,
+            i64::MIN as u64,
+            i64::MAX as u64,
+            0x10,
+            0x11,
+            0x100,
+        ];
+        for value in values {
+            for carry in [false, true] {
+                let mut initial = od_isa::LongModeState::default();
+                initial.rip = base;
+                initial.rflags = 0x202 | (1 << 10) | (1 << 21) | u64::from(carry);
+                initial.gpr[0] = value;
+                initial.gpr[1] = 1;
+                initial.gpr[2] = 0x1234;
+                initial.gpr[3] = 0x5678;
+                let mut expected = initial.clone();
+                assert_eq!(interpret(&code, base, &mut expected, 6), 5);
+                assert_eq!(expected.gpr[0], value.wrapping_neg());
+                assert_eq!(expected.rflags & 1, u64::from(value != 0));
+                assert_eq!(
+                    expected.rflags & (1 << 11),
+                    u64::from(value == i64::MIN as u64) << 11
+                );
+                assert_eq!(
+                    expected.rflags & ((1 << 10) | (1 << 21)),
+                    (1 << 10) | (1 << 21)
+                );
+                assert_eq!(expected.gpr[3], if value == 0 { 0x5678 } else { 1 });
+                assert_eq!(expected.gpr[1], if value == 0 { 2 } else { 1 });
+
+                let mut candidate = initial.clone();
+                let mut witness = CandidateWitness {
+                    executor: PublishedBlockExecutor,
+                    pending_seen: false,
+                    pending_branch_seen: false,
+                    branch_rip,
+                };
+                let result = od_jit::dispatch::run_with_native_neg_rax_demand_flags_candidate(
+                    view,
+                    &admission,
+                    &mut candidate,
+                    6,
+                    control,
+                    &mut witness,
+                )
+                .unwrap();
+                assert_eq!(candidate, expected, "candidate value={value:#x} CF={carry}");
+                assert_eq!(result.retired_native, 5);
+                assert_eq!(result.retired_interpreter, 0);
+                assert!(
+                    witness.pending_seen,
+                    "NEG/Jcc candidate must expose pending statepoint"
+                );
+                assert!(
+                    witness.pending_branch_seen,
+                    "JZ/JNZ PC map must expose pending flags"
+                );
+
+                let mut eager = initial.clone();
+                let result = od_jit::dispatch::run_with_native_neg_rax(
+                    view,
+                    &admission,
+                    &mut eager,
+                    6,
+                    control,
+                    &mut PublishedBlockExecutor,
+                )
+                .unwrap();
+                assert_eq!(eager, expected, "eager value={value:#x} CF={carry}");
+                assert_eq!(result.retired_native, 5);
+                assert_eq!(result.retired_interpreter, 0);
+
+                for budget in 0..=5 {
+                    let mut actual = initial.clone();
+                    let result = od_jit::dispatch::run_with_native_neg_rax_demand_flags_candidate(
+                        view,
+                        &admission,
+                        &mut actual,
+                        budget,
+                        control,
+                        &mut PublishedBlockExecutor,
+                    )
+                    .unwrap();
+                    let mut oracle = initial.clone();
+                    let retired = interpret(&code, base, &mut oracle, budget);
+                    assert_eq!(
+                        actual, oracle,
+                        "budget={budget} value={value:#x} CF={carry}"
+                    );
+                    assert_eq!(result.retired_native + result.retired_interpreter, retired);
+                    assert_eq!(result.retired_interpreter, 0);
+                }
+
+                for (stop_rip, retired_before_stop) in [(neg_rip, 1), (branch_rip, 2)] {
+                    let stop_control = od_jit::dispatch::DispatchControl {
+                        stop_rip: Some(stop_rip),
+                        stop_requested: &stop,
+                        event_requested: None,
+                    };
+                    let mut actual = initial.clone();
+                    let result = od_jit::dispatch::run_with_native_neg_rax_demand_flags_candidate(
+                        view,
+                        &admission,
+                        &mut actual,
+                        6,
+                        stop_control,
+                        &mut PublishedBlockExecutor,
+                    )
+                    .unwrap();
+                    let mut oracle = initial.clone();
+                    assert_eq!(
+                        interpret(&code, base, &mut oracle, retired_before_stop),
+                        retired_before_stop
+                    );
+                    assert_eq!(actual, oracle);
+                    assert_eq!(actual.rip, stop_rip);
+                    assert_eq!(result.retired_native, retired_before_stop);
+                    assert_eq!(result.retired_interpreter, 0);
+                    assert_eq!(
+                        result.exit,
+                        od_jit::dispatch::DispatchExit::Runtime(RuntimeExitTag::StopAddress)
+                    );
+                }
+                // Budget one stops after CMP with its pending flags; two stops after NEG.
+                for (budget, retired_before_stop) in [(1, 1), (2, 2)] {
+                    let mut actual = initial.clone();
+                    let result = od_jit::dispatch::run_with_native_neg_rax_demand_flags_candidate(
+                        view,
+                        &admission,
+                        &mut actual,
+                        budget,
+                        control,
+                        &mut PublishedBlockExecutor,
+                    )
+                    .unwrap();
+                    let mut oracle = initial.clone();
+                    assert_eq!(
+                        interpret(&code, base, &mut oracle, retired_before_stop),
+                        retired_before_stop
+                    );
+                    assert_eq!(actual, oracle);
+                    assert_eq!(result.retired_native, retired_before_stop);
+                }
+            }
+        }
+
+        // A terminal NEG and NEG followed by another full arithmetic writer.
+        for suffix in [&[][..], &[0x48, 0x03, 0xC1][..]] {
+            let mut bytes = vec![0x48, 0xF7, 0xD8];
+            bytes.extend_from_slice(suffix);
+            let terminal_view = CodeView::new(base + 0x100, &bytes).unwrap();
+            let terminal_admission =
+                od_jit::dispatch::NegRaxInterpreterFallbackAdmission::from_code(terminal_view)
+                    .unwrap();
+            for value in [0_u64, 0x11, 0x10, 0x100, i64::MIN as u64] {
+                let mut probe = od_isa::LongModeState::default();
+                probe.rip = base + 0x100;
+                probe.rflags = 0x202 | (1 << 10) | (1 << 21);
+                probe.gpr[0] = value;
+                probe.gpr[1] = 0x10;
+                assert_eq!(interpret(&bytes[..3], probe.rip, &mut probe, 1), 1);
+                let arithmetic_mask = 0x8d5;
+                let old_arithmetic = (!probe.rflags) & arithmetic_mask;
+                let mut initial = od_isa::LongModeState::default();
+                initial.rip = base + 0x100;
+                initial.rflags =
+                    (0x202 | (1 << 10) | (1 << 21)) & !arithmetic_mask | old_arithmetic;
+                initial.gpr[0] = value;
+                initial.gpr[1] = 0x10;
+                let mut expected = initial.clone();
+                let count = if suffix.is_empty() { 1 } else { 2 };
+                assert_eq!(interpret(&bytes, initial.rip, &mut expected, count), count);
+                assert_eq!(
+                    (initial.rflags ^ probe.rflags) & arithmetic_mask,
+                    arithmetic_mask
+                );
+                let mut actual = initial;
+                let result = od_jit::dispatch::run_with_native_neg_rax_demand_flags_candidate(
+                    terminal_view,
+                    &terminal_admission,
+                    &mut actual,
+                    count,
+                    control,
+                    &mut PublishedBlockExecutor,
+                )
+                .unwrap();
+                assert_eq!(actual, expected);
+                assert_eq!(result.retired_native, count);
+                assert_eq!(result.retired_interpreter, 0);
+            }
+        }
+    }
+
+    #[test]
     fn native_fallback_nop_preserves_preceding_arithmetic_flags() {
         let _guard = jit_test_lock();
         let base_rip = 0x7BC0;

@@ -1434,6 +1434,26 @@ Stage 3 correctness evidence only; no performance claim is made, and Mini and
 performance checks remain deferred to the end of Stage 3. See
 [S3-33b report](../reports/STAGE_3_S3-33b_2026-10-30.md).
 
+### S3-33c: opt-in exact native NEG RAX
+
+The separate uncached `compile_block_for_native_neg_rax*` and
+`dispatch::run_with_native_neg_rax*` APIs use their own
+`S0_09NopNegRaxAdmission`. They admit only exact bare `48 F7 D8` in addition
+to S0-09 forms and bare NOP; INC-only and DEC-only admissions remain unchanged.
+Lowering emits Read RAX, W64 constant zero, W64 `Subtract(0, RAX)` with full
+`FlagEffect::Arithmetic`, Write RAX, then Commit. NEG does not consume old CF,
+and the demand-flags candidate replaces any pending full flags result without
+adding a descriptor or helper ABI. The path is uncached and opt-in; it changes
+no shared cache, default policy, IR kind, emitter ABI, or flags mask.
+
+Compiler and host coverage checks exact bytes and rejected neighboring forms,
+full-state and retirement parity for both incoming CF values, arithmetic and
+AF/PF edges, JZ/JNZ consumers, candidate budget/STOP boundaries, terminal NEG,
+and NEG followed by arithmetic. The PC-map witness checks a pending statepoint
+at the branch consumer. This is partial correctness evidence only; Mini and
+performance checks remain deferred until Stage 3 ends. See
+[S3-33c report](../reports/STAGE_3_S3-33c_2026-10-30.md).
+
 ### S3-29d: uncached arithmetic-to-checked-load handoff
 
 The bounded host fixture composes existing eager and demand-flags native

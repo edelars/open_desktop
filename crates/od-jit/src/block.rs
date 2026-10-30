@@ -17,6 +17,7 @@ enum BlockBuildProfile {
     S0_09,
     S0_09NativeIncRax,
     S0_09NativeDecRax,
+    S0_09NativeNegRax,
     CheckedQwordLoad,
     CheckedQwordStore,
     CheckedQwordMemoryPair,
@@ -152,6 +153,15 @@ pub struct S0_09NopDecRaxAdmission {
     boundaries: AdmittedInstructionBoundaries,
     nop_rips: Vec<u64>,
     dec_rax_rips: Vec<u64>,
+}
+
+/// Separate bounded admission for S0-09 plus bare NOP and exact `NEG RAX`.
+/// Neither INC-only nor DEC-only admission is widened by this profile.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct S0_09NopNegRaxAdmission {
+    boundaries: AdmittedInstructionBoundaries,
+    nop_rips: Vec<u64>,
+    neg_rax_rips: Vec<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -437,6 +447,108 @@ impl S0_09NopDecRaxAdmission {
     }
 }
 
+impl S0_09NopNegRaxAdmission {
+    /// Decode the full immutable view, admitting only S0-09, exact bare NOP,
+    /// and exact `48 F7 D8` (`NEG RAX`).
+    pub fn from_code(code: CodeView<'_>) -> Result<Self, S0_09NopAdmissionError> {
+        let mut rip = code.base_rip();
+        let mut boundaries = Vec::new();
+        let mut instructions = Vec::new();
+        let mut nop_rips = Vec::new();
+        let mut neg_rax_rips = Vec::new();
+        while rip < code.code_end() {
+            let offset = usize::try_from(rip - code.base_rip())
+                .map_err(|_| S0_09NopAdmissionError::RangeOverflow { rip, length: 0 })?;
+            let mut memory = CodeMemory::full_code(code);
+            let instruction = long_decode::decode(&mut memory, rip, AccessContext::default())
+                .map_err(|error| S0_09NopAdmissionError::Decode { rip, error })?;
+            if !(1..=15).contains(&instruction.length) {
+                return Err(S0_09NopAdmissionError::InvalidLength {
+                    rip,
+                    length: instruction.length,
+                });
+            }
+            let next_rip = rip.checked_add(u64::from(instruction.length)).ok_or(
+                S0_09NopAdmissionError::RangeOverflow {
+                    rip,
+                    length: instruction.length,
+                },
+            )?;
+            if next_rip > code.code_end() {
+                return Err(S0_09NopAdmissionError::RangeOverflow {
+                    rip,
+                    length: instruction.length,
+                });
+            }
+            if is_exact_bare_nop(instruction, code.bytes()[offset]) {
+                nop_rips.push(rip);
+            } else if is_exact_neg_rax(instruction, &code.bytes()[offset..]) {
+                neg_rax_rips.push(rip);
+            } else if !is_s0_09_form(instruction) {
+                return Err(S0_09NopAdmissionError::UnsupportedInstruction { rip });
+            }
+            boundaries.push(rip);
+            instructions.push((rip, next_rip, instruction));
+            rip = next_rip;
+        }
+        boundaries.push(code.code_end());
+        for (branch_rip, next_rip, instruction) in &instructions {
+            let Operation::Branch { displacement, .. } = instruction.operation else {
+                continue;
+            };
+            let target = next_rip.wrapping_add_signed(i64::from(displacement));
+            if !boundaries.contains(&target) {
+                return Err(S0_09NopAdmissionError::BranchTargetNotBoundary {
+                    rip: *branch_rip,
+                    target,
+                });
+            }
+        }
+        Ok(Self {
+            boundaries: AdmittedInstructionBoundaries {
+                code_base: code.base_rip(),
+                code_end: code.code_end(),
+                code_bytes: code.bytes().to_vec(),
+                boundaries,
+            },
+            nop_rips,
+            neg_rax_rips,
+        })
+    }
+    pub(crate) fn boundaries(&self) -> &AdmittedInstructionBoundaries {
+        &self.boundaries
+    }
+    pub(crate) fn matches_code(&self, code: CodeView<'_>) -> bool {
+        self.boundaries.matches_code(code)
+    }
+    pub(crate) fn contains(&self, rip: u64) -> bool {
+        self.boundaries.contains(rip)
+    }
+    pub(crate) fn admits_nop(&self, rip: u64) -> bool {
+        self.nop_rips.contains(&rip)
+    }
+    pub(crate) fn admits_neg_rax(&self, rip: u64) -> bool {
+        self.neg_rax_rips.contains(&rip)
+    }
+}
+
+pub(crate) fn is_exact_neg_rax(instruction: Instruction, bytes: &[u8]) -> bool {
+    matches!(instruction.operation,
+        Operation::Arithmetic { kind: ArithmeticKind::Neg, dst: Operand::Register(dst), src: Operand::Immediate(0) }
+        if dst.register() == od_isa::Register::Rax && dst.size() == OperandSize::Qword)
+        && instruction.opcode.map == OpcodeMap::Primary
+        && instruction.opcode.byte == 0xf7
+        && instruction.prefixes.rex == Some(0x48)
+        && instruction.prefixes.group1.is_none()
+        && instruction.prefixes.segment.is_none()
+        && !instruction.prefixes.operand_override
+        && !instruction.prefixes.address_override
+        && instruction.operand_size == OperandSize::Qword
+        && instruction.address_size == OperandSize::Qword
+        && instruction.length == 3
+        && bytes.get(..3) == Some(&[0x48, 0xf7, 0xd8])
+}
+
 pub(crate) fn is_exact_inc_rax(instruction: Instruction, bytes: &[u8]) -> bool {
     matches!(instruction.operation,
         Operation::Arithmetic { kind: ArithmeticKind::Inc, dst: Operand::Register(dst), src: Operand::Immediate(1) }
@@ -710,6 +822,21 @@ pub(crate) fn build_block_for_native_dec_rax(
         context,
         limits,
         BlockBuildProfile::S0_09NativeDecRax,
+    )
+}
+
+pub(crate) fn build_block_for_native_neg_rax(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    context: AccessContext,
+    limits: BlockLimits,
+) -> Result<BuildOutcome, BuildError> {
+    build_block_with_profile(
+        code,
+        entry_rip,
+        context,
+        limits,
+        BlockBuildProfile::S0_09NativeNegRax,
     )
 }
 
@@ -1330,6 +1457,8 @@ fn build_block_with_profile(
             is_s0_09_form(decoded) || is_exact_inc_rax(decoded, &code.bytes[guest_offset..])
         } else if profile == BlockBuildProfile::S0_09NativeDecRax {
             is_s0_09_form(decoded) || is_exact_dec_rax(decoded, &code.bytes[guest_offset..])
+        } else if profile == BlockBuildProfile::S0_09NativeNegRax {
+            is_s0_09_form(decoded) || is_exact_neg_rax(decoded, &code.bytes[guest_offset..])
         } else {
             is_s0_09_form(decoded)
         };
@@ -1409,7 +1538,8 @@ fn build_block_with_profile(
             BlockBuildProfile::CheckedQwordLoad | BlockBuildProfile::CheckedQwordStore => true,
             BlockBuildProfile::S0_09
             | BlockBuildProfile::S0_09NativeIncRax
-            | BlockBuildProfile::S0_09NativeDecRax => false,
+            | BlockBuildProfile::S0_09NativeDecRax
+            | BlockBuildProfile::S0_09NativeNegRax => false,
         };
         if complete_bounded_profile {
             return Ok(finish(
@@ -1572,6 +1702,43 @@ mod tests {
         assert!(matches!(
             S0_09NopDecRaxAdmission::from_code(view),
             Err(S0_09NopAdmissionError::BranchTargetNotBoundary { target: 0x3803, .. })
+        ));
+    }
+
+    #[test]
+    fn neg_rax_admission_is_exact_and_separate_from_inc_dec_profiles() {
+        let neg = [0x48, 0xf7, 0xd8];
+        let view = CodeView::new(0x1900, &neg).unwrap();
+        let admitted = S0_09NopNegRaxAdmission::from_code(view).unwrap();
+        assert!(admitted.admits_neg_rax(0x1900));
+        assert!(!admitted.admits_nop(0x1900));
+        assert!(S0_09NopIncRaxAdmission::from_code(view).is_err());
+        assert!(S0_09NopDecRaxAdmission::from_code(view).is_err());
+        assert!(S0_09NopAdmission::from_code(view).is_err());
+
+        for bytes in [
+            &[0x48, 0xf7][..],
+            &[0xf3, 0x48, 0xf7, 0xd8][..],
+            &[0x66, 0x48, 0xf7, 0xd8][..],
+            &[0x48, 0x40, 0xf7, 0xd8][..],
+            &[0x49, 0xf7, 0xd8][..],
+            &[0x48, 0xf7, 0xd9][..],
+            &[0x48, 0xf7, 0xdb][..],
+            &[0x48, 0xf7, 0x18][..],
+            &[0xf7, 0xd8][..],
+            &[0x48, 0xf7, 0xd0][..],
+        ] {
+            let view = CodeView::new(0x2900, bytes).unwrap();
+            assert!(
+                S0_09NopNegRaxAdmission::from_code(view).is_err(),
+                "{bytes:02x?}"
+            );
+        }
+        let branch_into_neg = [0x74, 0x01, 0x48, 0xf7, 0xd8];
+        let view = CodeView::new(0x3900, &branch_into_neg).unwrap();
+        assert!(matches!(
+            S0_09NopNegRaxAdmission::from_code(view),
+            Err(S0_09NopAdmissionError::BranchTargetNotBoundary { target: 0x3903, .. })
         ));
     }
 

@@ -2353,6 +2353,18 @@ edges, JZ/JNZ, candidate budgets и STOP на entry/перед DEC после pe
 performance claim. Mini и замеры отложены до конца Stage 3. См.
 [S3-33b report](../reports/STAGE_3_S3-33b_2026-10-30.md).
 
+#### S3-33c. Exact native qword NEG RAX
+
+Добавлен отдельный uncached opt-in путь только для bare `48 F7 D8` (`NEG RAX`)
+через собственный `S0_09NopNegRaxAdmission` и eager/demand-flags compile и
+dispatch API. Admission для INC/DEC не расширяется. Lowering читает RAX,
+создаёт W64 ноль и вычисляет `Subtract(0, RAX)` с полным `FlagEffect::Arithmetic`,
+записывает RAX и коммитит инструкцию. NEG не потребляет старый CF; candidate
+заменяет ожидающие полные flags новым полным результатом без нового descriptor
+или helper ABI. Проверены boundary, branch, retirement и statepoint случаи;
+Mini/performance отложены до конца Stage 3. См.
+[S3-33c report](../reports/STAGE_3_S3-33c_2026-10-30.md).
+
 ## 9. Проверка, производительность и интеграция
 
 ### S3-34. Собрать corpus и проверить сам harness

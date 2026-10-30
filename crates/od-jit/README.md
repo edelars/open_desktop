@@ -188,6 +188,17 @@ slice is uncached and makes no performance claim; Mini and performance checks
 remain deferred to the end of Stage 3. See
 [S3-33b report](../../docs/reports/STAGE_3_S3-33b_2026-10-30.md).
 
+S3-33c adds a separate uncached opt-in `S0_09NopNegRaxAdmission` and eager /
+demand-flags `compile_block_for_native_neg_rax*` and
+`dispatch::run_with_native_neg_rax*` APIs for exact bare `48 F7 D8`. Lowering
+uses Read RAX, constant zero and W64 `Subtract(0, RAX)` with full arithmetic
+flags, then writes RAX and commits. NEG consumes no old CF; demand-flags replaces
+the pending full writer without new IR, descriptor, or helper ABI. INC and DEC
+admissions remain operation-specific. This is uncached partial correctness
+evidence with no performance claim; Mini and performance checks remain deferred
+until Stage 3 ends. See
+[S3-33c report](../../docs/reports/STAGE_3_S3-33c_2026-10-30.md).
+
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).
 Проверки корректности и измерений по задачам этапа — в
