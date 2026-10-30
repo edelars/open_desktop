@@ -2625,6 +2625,18 @@ owner/MMU integration, Mini support, or performance benefit.
 
 **Готово:** окончательные решения критичных участков основаны на данных. Усложнения без подтверждённой пользы удалены либо не внедрены; ограничения производительности видимы.
 
+#### S3-40a. Предварительная сводка измерений и решений
+
+Сопоставлены S3-17 lookup, S3-18d1 dispatch/cache, S3-35a cold, S3-36a
+resident warm и S3-37a churn evidence. Зафиксированы текущие baseline/candidate
+границы для allocator, flags, cache, linking и IR transformations, а также
+необходимые сравнения. Общего production winner или нового default нет:
+prepared-key lookup не заменяет runtime A/B, cold 1,010-case и warm 14-case
+workloads не дают общего break-even, high-water не доказывает RSS/lifecycle.
+Архитектура и код не менялись; ADR не требуется для этого предварительного
+реестра. S3-40 и итоговая приёмка остаются открытыми. См.
+[S3-40a report](../reports/STAGE_3_S3-40a_2026-10-30.md).
+
 ### S3-41. Оформить приёмку этапа
 
 1. Создать STAGE_3_REPORT: exact profiles/forms, native/helper/fallback границы, revision/fingerprint, машины/toolchains, correctness counts, commands/seeds, cold/warm/resource результаты.
