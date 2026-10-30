@@ -296,6 +296,23 @@ the [S3-36a report](../reports/STAGE_3_S3-36a_2026-10-30.md). This path covers
 only a bounded register-only resident slice and does not complete the
 branch/helper/memory or resource portions of S3-36.
 
+### S3-36b: bounded branch/helper warm profile
+
+`od-bench warm-branch-helper` is an opt-in Apple Silicon macOS release
+benchmark bound to the exact case-list and trace digests for the five accepted
+S3-14 fixtures: four conditional-branch boundary cases and
+`s3_14_live_through_helpers`. It validates interpreter/JIT outcomes and
+retirements before timing, selects a deterministic prefix that fits FIFO(16),
+prewarms one retained FIFO runtime, and rejects timed dispatcher samples unless
+they contain hits with zero miss/compile/publication/eviction deltas. Calibrated
+interpreter and dispatcher samples alternate over the same reset inputs. Raw
+sample durations, paired ratios, counters, input hashes and timer boundaries
+are recorded. The fixed list and captured trace provenance, command and
+current no-measurement status are in the
+[S3-36b report](../reports/STAGE_3_S3-36b_2026-10-30.md). This is bounded
+branch/helper evidence; it does not cover memory, fallback or invalidation
+workloads and does not complete S3-36.
+
 ### S3-37a: bounded production FIFO16 corpus churn observation
 
 `od-bench cache-churn` is an opt-in Apple Silicon macOS release command. It

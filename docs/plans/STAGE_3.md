@@ -2507,6 +2507,22 @@ calls. Three release runs measured 12.129–12.343 µs per warm FIFO sweep and
 It covers register-only cases and does not complete S3-36's branch/helper/memory
 workload matrix. See the [S3-36a report](../reports/STAGE_3_S3-36a_2026-10-30.md).
 
+#### S3-36b: bounded S3-14 branch/helper warm profile
+
+Added the explicitly named `od-bench warm-branch-helper` profile over the
+fixed five-case list of accepted S3-14 conditional-branch and live-through
+helper fixtures. It is bound to exact case-list and recorded-trace SHA-256
+values, validates the recorded interpreter/JIT outcomes and retirements before
+timing, selects a deterministic resident subset that fits FIFO(16), warms one
+retained FIFO runtime, and admits only hit-only timed FIFO samples. Calibrated
+interpreter/dispatcher samples alternate, with raw durations, counters,
+timer-scope metadata, and input hashes in the report. The earlier
+`warm-first-run` remains bound to the full S3-17 register-only corpus and keeps
+its existing behavior. The S3-36b profile has not been timed yet; see the
+[S3-36b report](../reports/STAGE_3_S3-36b_2026-10-30.md). This is branch/helper
+evidence only and does not cover memory workloads or close the full S3-36
+matrix.
+
 1. Прогреть cache вне timed samples и подтвердить hit/compile counters. Повторять одинаковую гостевую работу с корректным reset initial state.
 2. Измерять полный steady-state runtime path с lookup/dispatcher/helpers/flags и exits, а не только одну ARM64 arithmetic instruction.
 3. Чередовать варианты, применять повторные calibrated samples, сохранять raw elapsed/work counts, median и разброс; при пересекающемся шуме не утверждать speedup.

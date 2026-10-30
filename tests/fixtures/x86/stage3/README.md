@@ -29,3 +29,9 @@ The S3-14 physical comparison selection is
 It contains eight historical single-block cases and five boundary cases;
 it also records one local-only budget case. The two historical cases needing
 a dispatcher are listed there with reasons.
+
+The fixed five-case list in `s3_14_branch_helper_case_list.txt` selects the
+four conditional-branch boundary fixtures and `s3_14_live_through_helpers`
+for the bounded S3-36b warm profile. It deliberately excludes the
+budget-only control case. This profile covers branch/helper behavior only; it
+does not represent memory, fallback, or invalidation workloads.

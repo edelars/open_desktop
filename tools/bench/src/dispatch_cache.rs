@@ -37,6 +37,12 @@ const FROZEN_CASE_LIST_SHA256: &str =
     "b9276b52556b3692552de074e83cd8aef0c777f29861bd19ab09c188e41615d3";
 const FROZEN_TRACE_SHA256: &str =
     "bf8d5efe0c52a47cbb4682f67ea73a82e684d463733aff3be60fed0b280bd5b3";
+const BRANCH_HELPER_CASE_LIST_SHA256: &str =
+    "dd590c6c8f8ae1a09f2192e47c1d019f7449c814212c87e06194bf7425dd0881";
+const BRANCH_HELPER_TRACE_SHA256: &str =
+    "272eb80c3283e71962f1bc2a2e6d847723164d48f56dd3970134a814df57d2c8";
+const BRANCH_HELPER_INPUTS: usize = 5;
+const BRANCH_HELPER_VISITS: usize = 5;
 
 #[derive(Debug)]
 pub struct BenchError(String);
@@ -367,6 +373,8 @@ struct FirstRunReport {
 #[derive(Serialize)]
 struct WarmRunReport {
     schema: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workload_profile: Option<&'static str>,
     process_run: u8,
     case_list_sha256: String,
     trace_sha256: String,
@@ -708,6 +716,50 @@ pub fn run_warm_first_execution(
     trace_path: &Path,
     process_run: u8,
 ) -> Result<serde_json::Value, BenchError> {
+    run_warm_profile(
+        case_list,
+        trace_path,
+        process_run,
+        None,
+        FROZEN_CASE_LIST_SHA256,
+        FROZEN_TRACE_SHA256,
+        MAX_INPUTS,
+        1_322,
+        "S3-17",
+    )
+}
+
+/// Measures the checked S3-14 branch/helper fixtures on a resident FIFO16
+/// runtime. The exact fixture list and captured trace are frozen by digest.
+pub fn run_warm_branch_helper(
+    case_list: &Path,
+    trace_path: &Path,
+    process_run: u8,
+) -> Result<serde_json::Value, BenchError> {
+    run_warm_profile(
+        case_list,
+        trace_path,
+        process_run,
+        Some("s3-14-branch-helper"),
+        BRANCH_HELPER_CASE_LIST_SHA256,
+        BRANCH_HELPER_TRACE_SHA256,
+        BRANCH_HELPER_INPUTS,
+        BRANCH_HELPER_VISITS,
+        "S3-14 branch/helper",
+    )
+}
+
+fn run_warm_profile(
+    case_list: &Path,
+    trace_path: &Path,
+    process_run: u8,
+    workload_profile: Option<&'static str>,
+    expected_case_list_sha256: &str,
+    expected_trace_sha256: &str,
+    expected_inputs: usize,
+    expected_visits: usize,
+    profile_label: &str,
+) -> Result<serde_json::Value, BenchError> {
     if cfg!(debug_assertions) {
         return Err(err("warm-first-run measurement requires a release build"));
     }
@@ -717,21 +769,26 @@ pub fn run_warm_first_execution(
     let started = Instant::now();
     let list = read_bounded(case_list, MAX_CASE_LIST_BYTES, "case list")?;
     let trace_raw = read_bounded(trace_path, crate::MAX_LOGICAL_BYTES, "trace")?;
-    if od_testkit::sha256_hex(&list) != FROZEN_CASE_LIST_SHA256
-        || od_testkit::sha256_hex(&trace_raw) != FROZEN_TRACE_SHA256
+    if od_testkit::sha256_hex(&list) != expected_case_list_sha256
+        || od_testkit::sha256_hex(&trace_raw) != expected_trace_sha256
     {
-        return Err(err(
-            "case list or trace does not match the frozen S3-17 corpus",
-        ));
+        return Err(err(format!(
+            "case list or trace does not match the frozen {profile_label} profile"
+        )));
     }
     let trace: RecordedTrace =
         serde_json::from_slice(&trace_raw).map_err(|e| err(format!("trace JSON: {e}")))?;
-    if trace.visits.len() != 1_322 || trace.visits.len() > MAX_TOTAL_TRACE_VISITS {
-        return Err(err("frozen trace visit count mismatch"));
+    if trace.inputs.len() != expected_inputs
+        || trace.visits.len() != expected_visits
+        || trace.visits.len() > MAX_TOTAL_TRACE_VISITS
+    {
+        return Err(err(format!("frozen {profile_label} trace count mismatch")));
     }
     let all_cases = prepare_cases(&list, &trace, started)?;
-    if all_cases.len() != MAX_INPUTS {
-        return Err(err("warm-first-run requires the complete frozen corpus"));
+    if all_cases.len() != expected_inputs {
+        return Err(err(format!(
+            "warm profile requires {expected_inputs} frozen inputs"
+        )));
     }
     let (selected_case_count, selected_entry_budget) = select_resident_case_count(&all_cases)?;
     let cases = &all_cases[..selected_case_count];
@@ -835,6 +892,7 @@ pub fn run_warm_first_execution(
         .collect();
     let report = WarmRunReport {
         schema: 1,
+        workload_profile,
         process_run,
         case_list_sha256: od_testkit::sha256_hex(&list),
         trace_sha256: od_testkit::sha256_hex(&trace_raw),
@@ -1615,9 +1673,9 @@ fn prepare_cases(
     trace: &RecordedTrace,
     started: Instant,
 ) -> Result<Vec<Case>, BenchError> {
-    if trace.schema != 2 || trace.inputs.len() != MAX_INPUTS {
+    if trace.schema != 2 || trace.inputs.is_empty() || trace.inputs.len() > MAX_INPUTS {
         return Err(err(format!(
-            "expected frozen schema 2 corpus with {MAX_INPUTS} inputs"
+            "expected nonempty frozen schema 2 corpus with at most {MAX_INPUTS} inputs"
         )));
     }
     let text = std::str::from_utf8(list).map_err(|e| err(e.to_string()))?;
