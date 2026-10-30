@@ -532,3 +532,12 @@ and unrelated state. Upper-qword sentinels do not contribute flags. F2 is now
 globally decoded as MINSD; MINSS/MINPS profile validation remains prefix-exact.
 JIT/native/CPUID remain closed. The bounded behavior is documented in the
 [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-37i-register-only-minsd-with-masked-status).
+
+S2-37aw adds bounded interpreter-only Long64 `DIVPS XMM,XMM` register pairs
+(`NP [REX.R/B] 0F 5E /r`). It executes four raw Binary32 lanes with MXCSR
+rounding, WPR/FTZ handling, and aggregate pre/post exception flags. The strict
+schema-v2 profile, independent raw-rational oracle, tests, and scope limits are
+recorded in the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37aw--bounded-masked-range-long64-divps-xmm-register-pairs)
+and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-37aw--divps-register-pair-interpreter-profile).
+Memory forms, JIT/native execution, and physical acceptance remain outside this
+profile.

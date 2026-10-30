@@ -303,6 +303,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 subpd_controls: input.fixture.subpd_controls,
                 mulpd_controls: input.fixture.mulpd_controls,
                 divpd_controls: input.fixture.divpd_controls,
+                divps_controls: input.fixture.divps_controls,
                 mulsd_controls: input.fixture.mulsd_controls,
                 mulss_controls: input.fixture.mulss_controls,
                 mulps_controls: input.fixture.mulps_controls,
@@ -9407,4 +9408,106 @@ fn divpd_independent_integer_oracle_covers_rounding_and_exception_boundaries() {
     assert!(!invalid.3);
     let inf_over_zero = independent_divpd_lane(0x7ff0_0000_0000_0000, 0, 0x1f80);
     assert_eq!(inf_over_zero.3, false);
+}
+
+#[test]
+fn divps_independent_integer_oracle_covers_rounding_and_exception_boundaries() {
+    use super::independent_divps_lane;
+
+    for (rc, expected) in [
+        (0, 0x3eaa_aaab),
+        (1, 0x3eaa_aaaa),
+        (2, 0x3eaa_aaab),
+        (3, 0x3eaa_aaaa),
+    ] {
+        let lane = independent_divps_lane(0x3f80_0000, 0x4040_0000, 0x1f80 | (rc << 13));
+        assert_eq!(lane.0, expected);
+        assert!(lane.6);
+    }
+
+    for (rc, expected) in [(0, 0), (1, 0), (3, 0), (2, 1)] {
+        let lane = independent_divps_lane(0x0080_0000, 0x4b80_0000, 0x1f80 | (rc << 13));
+        assert_eq!(lane.0, expected);
+        assert_eq!((lane.2, lane.5, lane.6), (false, true, true));
+    }
+    for (rc, expected) in [
+        (0, 0x0080_0000),
+        (1, 0x007f_ffff),
+        (2, 0x0080_0000),
+        (3, 0x007f_ffff),
+    ] {
+        let lane = independent_divps_lane(0x00ff_ffff, 0x4000_0000, 0x1f80 | (rc << 13));
+        assert_eq!(lane.0, expected);
+        assert_eq!((lane.5, lane.6), (true, true));
+    }
+    for (rc, expected) in [
+        (0, 0x007f_ffff),
+        (1, 0x007f_ffff),
+        (2, 0x0080_0000),
+        (3, 0x007f_ffff),
+    ] {
+        let lane = independent_divps_lane(0x0080_0000, 0x3f80_0001, 0x1f80 | (rc << 13));
+        assert_eq!(lane.0, expected);
+        assert_eq!((lane.5, lane.6), (true, true));
+    }
+    let exact_tiny = independent_divps_lane(0x0080_0000, 0x4000_0000, 0x1f80);
+    assert_eq!(exact_tiny.0, 0x0040_0000);
+    assert_eq!(
+        (exact_tiny.2, exact_tiny.5, exact_tiny.6),
+        (false, false, false)
+    );
+    let ftz_exact_tiny = independent_divps_lane(0x0080_0000, 0x4000_0000, 0x9f80);
+    assert_eq!(ftz_exact_tiny.0, 0);
+    assert_eq!((ftz_exact_tiny.5, ftz_exact_tiny.6), (true, true));
+    let ftz_half_min_subnormal =
+        independent_divps_lane(0x0080_0000, 0x4b80_0000, 0x9f80 | (2 << 13));
+    assert_eq!(ftz_half_min_subnormal.0, 0);
+    assert_eq!(
+        (ftz_half_min_subnormal.5, ftz_half_min_subnormal.6),
+        (true, true)
+    );
+    for (rc, expected) in [
+        (0, 0x7f80_0000),
+        (1, 0x7f7f_ffff),
+        (2, 0x7f80_0000),
+        (3, 0x7f7f_ffff),
+    ] {
+        let overflow = independent_divps_lane(0x7f7f_ffff, 0x0080_0000, 0x1f80 | (rc << 13));
+        assert_eq!(overflow.0, expected);
+        assert_eq!((overflow.4, overflow.6), (true, true));
+    }
+
+    let huge_shift_up = independent_divps_lane(1, 0x7f7f_ffff, 0x1f80 | (2 << 13));
+    assert_eq!(huge_shift_up.0, 1);
+    assert_eq!(
+        (huge_shift_up.2, huge_shift_up.5, huge_shift_up.6),
+        (true, true, true)
+    );
+    for (lhs, rhs, expected_flags) in [
+        (0, 0, (true, false, false)),
+        (0x3f80_0000, 0, (false, false, true)),
+        (1, 0, (false, false, true)),
+    ] {
+        let lane = independent_divps_lane(lhs, rhs, 0x1f80);
+        assert_eq!((lane.1, lane.2, lane.3), expected_flags);
+    }
+
+    // All pre-rounding exceptions are accumulated across four independent
+    // lanes before arithmetic; a first-lane invalid suppresses later PE.
+    let (values, ie, de, ze, oe, ue, pe) = super::independent_divps(
+        [0, 0x3f80_0000, 1, 0x3f80_0000],
+        [0, 0, 0x3f80_0000, 0x4040_0000],
+        0x1f80 & !(1 << 7) & !(1 << 8) & !(1 << 9),
+    );
+    assert_eq!(
+        (ie, de, ze, oe, ue, pe),
+        (true, true, true, false, false, false)
+    );
+    assert_eq!(values[3], 0x3eaa_aaab);
+    let (_, ie, de, ze, _, _, _) = super::independent_divps(
+        [0, 0x3f80_0000, 1, 0x3f80_0000],
+        [0, 0, 0x3f80_0000, 0x4040_0000],
+        0x1f80,
+    );
+    assert_eq!((ie, de, ze), (true, true, true));
 }

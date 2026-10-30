@@ -6816,3 +6816,24 @@ interpreter-only and does not claim memory forms or physical acceptance. Sources
 and limits are recorded in the [plan](../../../../docs/plans/STAGE_2.md#s2-37av--bounded-masked-range-long64-divpd-xmm-register-pairs),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37av--bounded-masked-range-long64-divpd-xmm-register-pairs),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37av--divpd-register-pair-interpreter-profile).
+
+### S2-37aw bounded masked-range DIVPS register-pair profile
+
+`s2_37aw_divps_xmm0_xmm1.case.json` is a literal canonical `0F 5E /r`
+Long64 packed binary32 divide. Its four lanes cover 1/3, the minnormal/2^24
+half-minsub tie, the `00ffffff/40000000` midpoint below minnormal, and
+minnormal/nextafter(1,+). The strict schema-v2
+oracle uses raw-u32 exact-rational integer arithmetic without host FP or
+production helpers. It covers all 256 XMM pairs, requires OM/UM=1, rejects DAZ
+and reserved MXCSR bits, and accepts RC, FTZ, IM/DM/ZM/PM and prior stickies.
+Runtime checks cover NaN payload and SNaN handling, invalid/divide-by-zero/
+denormal priority, cross-lane IE/ZE/DE pre-event aggregation, four-lane WPR
+underflow/overflow and FTZ, pre/post atomicity, gates/fetch/CPL0–3, no data
+callbacks, malformed encodings, result tampering and backend denial.
+
+The profile is interpreter-only and makes no memory-form, memory-alignment or
+physical-acceptance claim. The p. 3-272 Type 2/Table 2-19 cross-reference in
+Intel SDM Rev. 093 is for VEX forms; the legacy SSE rows are the source for this
+encoding. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37aw--bounded-masked-range-long64-divps-xmm-register-pairs),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37aw--bounded-masked-range-long64-divps-xmm-register-pairs),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37aw--divps-register-pair-interpreter-profile).

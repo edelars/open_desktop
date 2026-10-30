@@ -304,6 +304,16 @@ pub struct DivpdControls {
     pub cr4_osxmmexcpt: bool,
 }
 
+/// Explicit SSE and SIMD exception-delivery controls for bounded DIVPS.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DivpsControls {
+    pub sse_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
 /// Explicit SSE2 and SIMD exception-delivery controls for bounded MULSD.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MulsdControls {
@@ -583,6 +593,7 @@ struct ExecutionProfiles<'a> {
     subpd_registers: Option<SubpdControls>,
     mulpd_registers: Option<MulpdControls>,
     divpd_registers: Option<DivpdControls>,
+    divps_registers: Option<DivpsControls>,
     mulsd_registers: Option<MulsdControls>,
     mulss_registers: Option<MulssControls>,
     mulps_registers: Option<MulpsControls>,
@@ -1418,6 +1429,7 @@ pub fn run_with_maxss_unmasked_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -1499,6 +1511,7 @@ pub fn run_with_minsd_unmasked_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -1580,6 +1593,7 @@ pub fn run_with_maxsd_unmasked_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -1661,6 +1675,7 @@ pub fn run_with_minpd_unmasked_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -1742,6 +1757,7 @@ pub fn run_with_minps_unmasked_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -1823,6 +1839,7 @@ pub fn run_with_maxps_unmasked_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -1904,6 +1921,7 @@ pub fn run_with_maxpd_unmasked_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -1985,6 +2003,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -2066,6 +2085,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -2147,6 +2167,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -2228,6 +2249,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -2309,6 +2331,7 @@ pub fn run_with_cvtss2si_registers_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -2390,6 +2413,7 @@ pub fn run_with_cvttss2si_registers_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -2470,6 +2494,7 @@ pub fn run_with_cvtsd2si_registers_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -2552,6 +2577,7 @@ pub fn run_with_cvttsd2si_registers_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -2633,6 +2659,7 @@ pub fn run_with_cvtdq2pd_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -2714,6 +2741,7 @@ pub fn run_with_cvtdq2pd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -2795,6 +2823,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -2876,6 +2905,7 @@ pub fn run_with_cvtps2dq_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -2957,6 +2987,7 @@ pub fn run_with_cvttps2dq_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -3038,6 +3069,7 @@ pub fn run_with_cvtpd2dq_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -3119,6 +3151,7 @@ pub fn run_with_cvttpd2dq_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -3200,6 +3233,7 @@ pub fn run_with_cvtss2sd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -3281,6 +3315,7 @@ pub fn run_with_cvtps2pd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -3362,6 +3397,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -3443,6 +3479,7 @@ pub fn run_with_cmpss_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -3524,6 +3561,7 @@ pub fn run_with_cmpsd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -3605,6 +3643,7 @@ pub fn run_with_cmppd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -3685,6 +3724,7 @@ pub fn run_with_cmpps_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -3766,6 +3806,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -3900,6 +3941,7 @@ pub fn run_with_efer_rdmsr_profile(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -4190,6 +4232,7 @@ pub fn run_with_cr0_profile(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -4272,6 +4315,7 @@ pub fn run_with_cr4_profile(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -4588,6 +4632,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -4854,6 +4899,7 @@ pub fn step_with_cr0_profile(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -5178,6 +5224,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -5259,6 +5306,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -5342,6 +5390,7 @@ pub fn run_with_sqrtss_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -5423,6 +5472,7 @@ pub fn run_with_sqrtsd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -5504,6 +5554,7 @@ pub fn run_with_sqrtps_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -5585,6 +5636,7 @@ pub fn run_with_sqrtpd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -5666,6 +5718,7 @@ pub fn run_with_subpd_register_controls(
             subpd_registers: Some(controls),
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -5747,6 +5800,7 @@ pub fn run_with_mulpd_register_controls(
             subpd_registers: None,
             mulpd_registers: Some(controls),
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -5828,6 +5882,89 @@ pub fn run_with_divpd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: Some(controls),
+            divps_registers: None,
+            mulsd_registers: None,
+            mulss_registers: None,
+            mulps_registers: None,
+            subps_registers: None,
+            subsd_registers: None,
+            subss_registers: None,
+            cvtss2sd_registers: None,
+            cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
+            cmpss_registers: None,
+            cmpsd_registers: None,
+            cmppd_registers: None,
+            cmpps_registers: None,
+            comisd_ucomisd_registers: None,
+            cvtsi2sd_r32: None,
+            cvtsi2sd_r64: None,
+            cvtsi2sd_registers: None,
+            cvtsi2ss_registers: None,
+            cvtss2si_registers: None,
+            cvttss2si_registers: None,
+            cvtsd2si_registers: None,
+            cvttsd2si_registers: None,
+            fx_cr0: None,
+            unmasked_minss_denormal: false,
+            rdtsc: None,
+            swapgs: None,
+            cli: None,
+            sti: None,
+            halt: None,
+            cr0: None,
+            cr4: None,
+        },
+        StepRuntime {
+            rdtsc_source: None,
+            sti_sequence: None,
+            exact_hlt_only: false,
+            stop_requested: &mut stop_requested,
+        },
+    )
+}
+
+/// Execute one canonical Long64 register DIVPS form with explicit gates.
+pub fn run_with_divps_register_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: DivpsControls,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_configured(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        ExecutionProfiles {
+            cpuid: None,
+            msr: None,
+            sep: None,
+            xorpd: None,
+            minss_invalid: None,
+            maxss_unmasked: None,
+            minsd_unmasked: None,
+            maxsd_unmasked: None,
+            minpd_unmasked: None,
+            minps_unmasked: None,
+            maxps_unmasked: None,
+            maxpd_unmasked: None,
+            cvtdq2pd: None,
+            cvtdq2pd_registers: None,
+            cvtdq2ps_registers: None,
+            cvtps2dq_registers: None,
+            cvttps2dq_registers: None,
+            cvtpd2dq_registers: None,
+            cvttpd2dq_registers: None,
+            sqrtss_registers: None,
+            sqrtsd_registers: None,
+            sqrtps_registers: None,
+            sqrtpd_registers: None,
+            subpd_registers: None,
+            mulpd_registers: None,
+            divpd_registers: None,
+            divps_registers: Some(controls),
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -5909,6 +6046,7 @@ pub fn run_with_mulsd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: Some(controls),
             mulss_registers: None,
             mulps_registers: None,
@@ -5990,6 +6128,7 @@ pub fn run_with_mulss_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: Some(controls),
             mulps_registers: None,
@@ -6071,6 +6210,7 @@ pub fn run_with_mulps_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: Some(controls),
@@ -6152,6 +6292,7 @@ pub fn run_with_subsd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -6233,6 +6374,7 @@ pub fn run_with_subss_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -6314,6 +6456,7 @@ pub fn run_with_subps_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             divpd_registers: None,
+            divps_registers: None,
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
@@ -6388,6 +6531,7 @@ fn step_configured(
         subpd_registers: configured_subpd_register_controls,
         mulpd_registers: configured_mulpd_register_controls,
         divpd_registers: configured_divpd_register_controls,
+        divps_registers: configured_divps_register_controls,
         mulsd_registers: configured_mulsd_register_controls,
         mulss_registers: configured_mulss_register_controls,
         mulps_registers: configured_mulps_register_controls,
@@ -7559,6 +7703,42 @@ fn step_configured(
             });
         }
         let fault_vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+            Some(6)
+        } else if controls.cr0_ts {
+            Some(7)
+        } else {
+            None
+        };
+        if let Some(vector) = fault_vector {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+    }
+    if let Some(controls) = configured_divps_register_controls {
+        let is_canonical_register_form = matches!(
+            instruction.operation,
+            Operation::DivpsRegister { destination, source }
+                if instruction.length == if destination >= 8 || source >= 8 { 4 } else { 3 }
+                    && instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0x5e
+                    && instruction.prefixes.group1.is_none()
+                    && instruction.prefixes.segment.is_none()
+                    && !instruction.prefixes.operand_override
+                    && !instruction.prefixes.address_override
+                    && instruction.prefixes.rex.map(|rex| rex & 0x4f)
+                        == if destination >= 8 || source >= 8 {
+                            Some(0x40 | (u8::from(destination >= 8) << 2) | u8::from(source >= 8))
+                        } else { None }
+        );
+        if !is_canonical_register_form {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        let fault_vector = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
             Some(6)
         } else if controls.cr0_ts {
             Some(7)
@@ -8965,6 +9145,7 @@ fn step_configured(
             | Operation::SubpdRegister { .. }
             | Operation::MulpdRegister { .. }
             | Operation::DivpdRegister { .. }
+            | Operation::DivpsRegister { .. }
             | Operation::MulsdRegister { .. }
             | Operation::MulssRegister { .. }
             | Operation::MulpsRegister { .. }
@@ -9018,6 +9199,7 @@ fn step_configured(
             | Operation::SubpdRegister { .. }
             | Operation::MulpdRegister { .. }
             | Operation::DivpdRegister { .. }
+            | Operation::DivpsRegister { .. }
             | Operation::MulsdRegister { .. }
             | Operation::MulssRegister { .. }
             | Operation::MulpsRegister { .. }
@@ -9169,6 +9351,12 @@ fn step_configured(
                 && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
         } else if configured_divpd_register_controls.is_some()
             && matches!(instruction.operation, Operation::DivpdRegister { .. })
+        {
+            sse.mxcsr & !0x0000_ffbf == 0
+                && sse.mxcsr & (1 << 6) == 0
+                && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
+        } else if configured_divps_register_controls.is_some()
+            && matches!(instruction.operation, Operation::DivpsRegister { .. })
         {
             sse.mxcsr & !0x0000_ffbf == 0
                 && sse.mxcsr & (1 << 6) == 0
@@ -9823,6 +10011,10 @@ fn step_configured(
             state.sse.is_some()
         }
         Operation::DivpdRegister { .. } => false,
+        Operation::DivpsRegister { .. } if configured_divps_register_controls.is_some() => {
+            state.sse.is_some()
+        }
+        Operation::DivpsRegister { .. } => false,
         Operation::MulsdRegister { .. } if configured_mulsd_register_controls.is_some() => {
             state.sse.is_some()
         }
@@ -14169,6 +14361,114 @@ fn step_configured(
             }
             sse.xmm[usize::from(destination)] = result;
         }
+        Operation::DivpsRegister {
+            destination,
+            source,
+        } if configured_divps_register_controls.is_some() => {
+            let (lhs_xmm, rhs_xmm, old_mxcsr) = {
+                let sse = state.sse.as_ref().expect("DIVPS state prevalidated");
+                (
+                    sse.xmm[usize::from(destination)],
+                    sse.xmm[usize::from(source)],
+                    sse.mxcsr,
+                )
+            };
+            let lhs = std::array::from_fn::<_, 4, _>(|lane| {
+                u32::from_le_bytes(lhs_xmm[lane * 4..lane * 4 + 4].try_into().unwrap())
+            });
+            let rhs = std::array::from_fn::<_, 4, _>(|lane| {
+                u32::from_le_bytes(rhs_xmm[lane * 4..lane * 4 + 4].try_into().unwrap())
+            });
+            let mut new_ie = false;
+            let mut new_de = false;
+            let mut new_ze = false;
+            for lane in 0..4 {
+                let lhs_class = Binary32::from_bits(lhs[lane]).class();
+                let rhs_class = Binary32::from_bits(rhs[lane]).class();
+                let lhs_nan =
+                    matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                let rhs_nan =
+                    matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                if lhs_nan || rhs_nan {
+                    new_ie |= lhs_class == BinaryClass::SignalingNaN
+                        || rhs_class == BinaryClass::SignalingNaN;
+                    continue;
+                }
+                let invalid_quotient = (lhs_class == BinaryClass::Zero
+                    && rhs_class == BinaryClass::Zero)
+                    || (lhs_class == BinaryClass::Infinity && rhs_class == BinaryClass::Infinity);
+                if invalid_quotient {
+                    new_ie = true;
+                    continue;
+                }
+                // Division by either signed zero raises ZE before considering a
+                // subnormal numerator; infinity divided by zero is exempt.
+                if rhs_class == BinaryClass::Zero && lhs_class != BinaryClass::Infinity {
+                    new_ze = true;
+                    continue;
+                }
+                new_de |=
+                    lhs_class == BinaryClass::Subnormal || rhs_class == BinaryClass::Subnormal;
+            }
+            let unmasked_ie = new_ie && old_mxcsr & (1 << 7) == 0;
+            let unmasked_de = new_de && old_mxcsr & (1 << 8) == 0;
+            let unmasked_ze = new_ze && old_mxcsr & (1 << 9) == 0;
+            let controls = configured_divps_register_controls.expect("profile controls");
+            let sse = state.sse.as_mut().expect("DIVPS state prevalidated");
+            if unmasked_ie || unmasked_ze || unmasked_de {
+                sse.mxcsr = old_mxcsr
+                    | u32::from(new_ie)
+                    | (u32::from(new_de) << 1)
+                    | (u32::from(new_ze) << 2);
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
+            let rounding = cvtss2si_rounding_mode(old_mxcsr);
+            let flush_to_zero = old_mxcsr & (1 << 15) != 0;
+            let mut result = [0u8; 16];
+            let mut new_oe = false;
+            let mut new_ue = false;
+            let mut new_pe = false;
+            for lane in 0..4 {
+                let lhs_value = Binary32::from_bits(lhs[lane]);
+                let rhs_value = Binary32::from_bits(rhs[lane]);
+                let computed = Binary32::divide_raw_result(lhs_value, rhs_value, rounding);
+                let mut raw = computed.value().to_bits();
+                new_oe |= computed.overflow();
+                // This profile admits OM=1 only; the masked overflow response
+                // raises both OE and PE even when the exact significand fit.
+                new_pe |= computed.inexact() || computed.overflow();
+                // Underflow and FTZ use the exponent after precision rounding
+                // with an unbounded exponent (WPR.exp), not the exact product.
+                let tiny = computed.tiny_after_precision_rounding();
+                if flush_to_zero && tiny && raw & 0x7fff_ffff != 0 {
+                    raw &= 1 << 31;
+                    new_ue = true;
+                    new_pe = true;
+                } else {
+                    new_ue |= tiny && computed.inexact();
+                }
+                result[lane * 4..lane * 4 + 4].copy_from_slice(&raw.to_le_bytes());
+            }
+            sse.mxcsr = old_mxcsr
+                | u32::from(new_ie)
+                | (u32::from(new_de) << 1)
+                | (u32::from(new_ze) << 2)
+                | (u32::from(new_oe) << 3)
+                | (u32::from(new_ue) << 4)
+                | (u32::from(new_pe) << 5);
+            if new_pe && old_mxcsr & (1 << 12) == 0 {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
+            sse.xmm[usize::from(destination)] = result;
+        }
         Operation::MulsdRegister {
             destination,
             source,
@@ -14450,6 +14750,11 @@ fn step_configured(
             sse.xmm[usize::from(destination)] = result;
         }
         Operation::DivpdRegister { .. } => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        Operation::DivpsRegister { .. } => {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -114580,6 +114885,191 @@ mod swapgs_profile_tests {
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(state.rip, 0x2b200);
         assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn divps_runtime_gates_mxcsr_preconditions_and_fetch_priority() {
+        let code = [0x0f, 0x5e, 0xc1];
+        let controls = DivpsControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        for (gate, vector) in [
+            (
+                DivpsControls {
+                    sse_available: false,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                DivpsControls {
+                    cr0_em: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                DivpsControls {
+                    cr4_osfxsr: false,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                DivpsControls {
+                    cr0_ts: true,
+                    ..controls
+                },
+                7,
+            ),
+        ] {
+            for privilege in [
+                PrivilegeLevel::Ring0,
+                PrivilegeLevel::Ring1,
+                PrivilegeLevel::Ring2,
+                PrivilegeLevel::Ring3,
+            ] {
+                let mut state = LongModeState::default();
+                state.rip = 0x2b000;
+                state.sse = Some(SseState {
+                    xmm: [[0x5a; 16]; 16],
+                    mxcsr: 0x1f80,
+                });
+                let before = state.clone();
+                let stop_rip = state.rip + 3;
+                let mut memory = Memory::at(&code, state.rip);
+                let result = run_with_divps_register_controls(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(stop_rip),
+                        context: AccessContext {
+                            privilege,
+                            ..AccessContext::default()
+                        },
+                    },
+                    gate,
+                    || false,
+                );
+                assert_eq!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector,
+                        error_code: None,
+                        linear_address: None
+                    })
+                );
+                assert_eq!(result.instructions_executed, 0);
+                assert_eq!(state, before);
+                assert!(memory.accesses.is_empty());
+            }
+        }
+        for mxcsr in [0x1fc0, 0x11f80, 0x1b80, 0x1780] {
+            let mut state = LongModeState::default();
+            state.rip = 0x2b100;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr,
+            });
+            let before = state.clone();
+            let stop_rip = state.rip + 3;
+            let mut memory = Memory::at(&code, state.rip);
+            let result = run_with_divps_register_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(stop_rip),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x5e }));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let short = [0x0f, 0x5e];
+        let mut state = LongModeState::default();
+        state.rip = 0x2b200;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let mut memory = Memory::at(&short, state.rip);
+        memory.fetch_error = Some((
+            state.rip + 2,
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0),
+                linear_address: Some(state.rip + 2),
+            }),
+        ));
+        let result = run_with_divps_register_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            DivpsControls {
+                sse_available: false,
+                ..controls
+            },
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0),
+                linear_address: Some(state.rip + 2)
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state.rip, 0x2b200);
+        assert!(memory.accesses.is_empty());
+
+        let mut state = LongModeState::default();
+        state.rip = 0x2b300;
+        let mut xmm = [[0; 16]; 16];
+        xmm[0][..4].copy_from_slice(&0u32.to_le_bytes());
+        xmm[1][..4].copy_from_slice(&0u32.to_le_bytes());
+        state.sse = Some(SseState { xmm, mxcsr: 0x1c00 });
+        let stop_rip = state.rip + 3;
+        let mut memory = Memory::at(&code, state.rip);
+        let result = run_with_divps_register_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(stop_rip),
+                context: AccessContext::default(),
+            },
+            DivpsControls {
+                cr4_osxmmexcpt: false,
+                ..controls
+            },
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(state.sse.as_ref().unwrap().mxcsr & 0x3f, 1);
+        assert_eq!(state.rip, 0x2b300);
     }
 
     #[test]

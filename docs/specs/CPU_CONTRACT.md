@@ -13632,3 +13632,54 @@ rows in Table 2-19. The explicit Type 2/Table 2-19 cross-reference on p. 3-269
 is for VEX forms and is not applied to legacy DIVPD. Vol. 1 §§4.9.1.4–.6,
 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel Floating-Point
 Reference Sheet v2.13.
+
+## S2-37aw — bounded masked-range Long64 DIVPS XMM register pairs
+
+The local schema-v2 profile `s2-long-divps-registers-v1` admits only canonical
+Long64 legacy `NP 0F 5E /r` with ModR/M.mod=3 and all 16×16 XMM pairs. Low
+forms are three bytes; extended registers use one REX `41`, `44`, or `45`
+before `0F`, for four bytes. It rejects 66/F2/F3, REX.W/X/40,
+reordered/repeated/redundant prefixes, memory, trailing bytes, VEX and EVEX.
+Fetch precedes SSE/CR0.EM/CR4.OSFXSR #UD and then CR0.TS #NM at CPL0–3; there
+are no data callbacks. JIT, native, C ABI, fragment and generic paths remain
+closed.
+
+Admission requires MXCSR.OM=1 and UM=1, rejects DAZ and reserved MXCSR bits,
+and accepts all RC modes, FTZ, IM/DM/ZM/PM and prior sticky flags. Execution
+snapshots both XMM operands and computes old-destination/source for all four
+binary32 lanes. NaNs select the first original operand; selected SNaNs are
+quieted and any SNaN raises IE. NaNs suppress same-lane ZE and DE. `0/0` and
+`∞/∞` raise IE and produce masked indefinite `ffc00000`. Finite nonzero or
+subnormal numerator over zero raises ZE only; `∞/0` does not. Outside those
+cases, any subnormal operand raises precompute DE, including `0/subnormal`,
+`∞/subnormal` and `subnormal/∞`. IE/ZE/DE aggregate across all lanes before
+arithmetic. Unmasked pre-events commit all generated pre-flags and preserve the
+whole XMM destination, RIP and retirement. With pre-events masked,
+`Binary32::divide_raw_result` computes results under MXCSR.RC. Masked overflow
+records OE|PE. Underflow uses WPR's unbounded exponent after p=24 precision
+rounding; tiny inexact results raise UE|PE. FTZ flushes tiny nonzero results to
+signed zero and sets UE|PE. Post flags aggregate across lanes before unmasked
+PM; old sticky bits alone do not fault.
+
+The independent schema oracle uses raw-u32 exact rational arithmetic with no
+host FP or production helpers and bounds large exponent shifts. The fixture
+covers `1/3` (`3f800000/40400000`): RN/RU return `3eaaaaab`, RD/RZ return
+`3eaaaaaa`, with PE. `minnormal/2^24` rounds to zero for RN/RD/RZ and
+minimum-subnormal for RU, UE|PE without DE. The raw midpoint vector `00ffffff/40000000` returns minnormal for RN/RU and
+maxsub for RD/RZ, UE|PE. `minnormal/nextafter(1,+)` returns maxsub
+for RN/RD/RZ and minnormal for RU, UE|PE. Exact `minnormal/2` returns
+`00400000` without flags. `minsub/maxfinite` rounds up to one only for RU and
+raises DE|UE|PE. Local coverage includes all pairs and aliases, the four RC
+modes and FTZ, fourth-lane overflow/underflow, NaN payloads/SNaNs, signed
+zero/infinity, ZE/DE priority, stickies, lane permutations, pre/post atomicity,
+gates/fetch/CPL/no-callback, malformed/tampered inputs and JIT/native denial.
+These local checks do not establish physical acceptance.
+
+Sources: Intel SDM Rev. 093 Vol. 2A DIVPS pp. 3-270–3-272 and its legacy SSE
+instruction rows in Table 2-19. The explicit Type 2/Table 2-19 cross-reference
+on p. 3-272 concerns VEX forms and is not applied to legacy DIVPS. Exception
+gates follow the generic SSE/CR0/CR4 rules documented for this profile; Vol. 1
+§§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel
+Floating-Point Reference Sheet v2.13. This bounded local profile does not claim
+memory forms or memory alignment, other modes, physical acceptance, complete
+unmasked OE/UE behavior, or closure of parent S2-37/S2-38.

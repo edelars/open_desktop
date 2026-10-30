@@ -97,5 +97,12 @@ are in place; JIT/native and physical execution remain closed. See the [CPU
 contract](docs/specs/CPU_CONTRACT.md#s2-37av--bounded-masked-range-long64-divpd-xmm-register-pairs)
 and [Stage 2 report](docs/reports/STAGE_2_REPORT.md#s2-37av--divpd-register-pair-interpreter-profile).
 
+The local-only S2-37aw `DIVPS` profile extends that bounded register-pair path
+to four binary32 lanes with independently checked raw-rational rounding and
+cross-lane exception ordering. It remains interpreter-only; memory forms and
+physical acceptance are not claimed. See the [CPU
+contract](docs/specs/CPU_CONTRACT.md#s2-37aw--bounded-masked-range-long64-divps-xmm-register-pairs)
+and [Stage 2 report](docs/reports/STAGE_2_REPORT.md#s2-37aw--divps-register-pair-interpreter-profile).
+
 
 The local-only S2-34.20 ANDNPD profile supports long-mode register `66 [REX.R/B] 0F 55 /r` as `(~destination) & source` across raw 128-bit XMM values; ANDNPS remains separate. JIT/native and physical execution remain outside the profile. See the [CPU contract](docs/specs/CPU_CONTRACT.md#local-profile-s2-3420-s2-long-andnpd-reg-v1).

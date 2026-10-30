@@ -523,6 +523,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37ar | Strict schema-v2 canonical Long64 MULPD XMM register-pair profile; WPR exponent defines tininess/FTZ after precision rounding, including directed min-normal boundaries; OM=UM=1; JIT/native closed | Tininess erratum fixed; focused binary32/binary64 helper and MULPD/SUBPD/SUBPS/SUBSD/SUBSS regressions, workspace check passed; independent Sol-high review clean |
 | [x] | S2-37as | Strict schema-v2 canonical Long64 MULPS XMM register-pair profile; four-lane Binary32 raw multiplication, WPR tininess/FTZ, atomic IE/DE/OE/UE/PE; OM=UM=1; JIT/native closed | Focused ISA and schema-v2 matrix, MULPD/SUB* regressions, formatting/workspace/layout/diff checks passed; independent Sol-high review clean |
 | [x] | S2-37at | Strict schema-v2 canonical Long64 MULSD XMM register pairs; scalar Binary64 raw multiply, low64 write/high64 preservation, WPR tininess/FTZ, atomic IE/DE/OE/UE/PE; OM=UM=1; JIT/native closed | Focused decoder/runtime/schema matrix, RC/FTZ boundaries, halfway/overflow, all pairs, special values and backend denial passed; independent Sol-high review clean |
+| [x] | S2-37aw | Strict schema-v2 canonical Long64 DIVPS XMM register pairs; four-lane Binary32 raw divide, WPR tininess/FTZ, cross-lane IE/ZE/DE before computation, atomic IE/DE/ZE/OE/UE/PE; OM=UM=1; JIT/native closed | Focused oracle, decoder, gates and 256-pair runner matrix passed; DIVPD/MUL/SUB regressions, full od-testkit, workspace/layout/format/diff checks passed; independent Sol-high review clean; physical acceptance remains open |
 | [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j/k/l: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j/k/l; independent review |
 | [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
@@ -6811,7 +6812,7 @@ inventory.
 | CVTTPS2PI | `NP 0F 2C /r` | SSE | XMM, m64 → mm; 2×f32 → 2×i32 | 3-252 | missing |
 | CVTTSD2SI | `F2 0F 2C /r`; `F2 REX.W 0F 2C /r` | SSE2 | m64 → r32 / r64 | 3-253 | S2-37ae, bounded register-only |
 | DIVPD | `66 0F 5E /r` | SSE2 | XMM, m128; 2×f64 | 3-267 | S2-37av register-only masked-range; memory and full unmasked OE/UE missing |
-| DIVPS | `NP 0F 5E /r` | SSE | XMM, m128; 4×f32 | 3-270 | missing |
+| DIVPS | `NP 0F 5E /r` | SSE | XMM, m128; 4×f32 | 3-270 | S2-37aw bounded register-only; memory and full unmasked OE/UE missing |
 | DIVSD | `F2 0F 5E /r` | SSE2 | XMM, m64; low f64 | 3-273 | missing |
 | DIVSS | `F3 0F 5E /r` | SSE | XMM, m32; low f32 | 3-275 | missing |
 | MAXPD | `66 0F 5F /r` | SSE2 | XMM, m128; 2×f64 | 4-5 | S2-37l, bounded |
@@ -13885,3 +13886,54 @@ OE/UE behavior, or closure of parent S2-37/S2-38. See the [CPU
 contract](../specs/CPU_CONTRACT.md#s2-37av--bounded-masked-range-long64-divpd-xmm-register-pairs),
 [report](../reports/STAGE_2_REPORT.md#s2-37av--divpd-register-pair-interpreter-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37av-bounded-masked-range-divpd-register-pair-profile).
+
+#### S2-37aw — bounded masked-range Long64 DIVPS XMM register pairs
+
+Implement strict schema-v2 interpreter-only profile
+`s2-long-divps-registers-v1` for canonical Long64 legacy `NP 0F 5E /r`,
+ModR/M.mod=3, covering all 256 XMM pairs. Low forms are three bytes; extended
+indices use exactly one REX `41`, `44`, or `45` before `0F`, for four bytes.
+Reject 66/F2/F3, REX.W/X/40, reordered/repeated/redundant prefixes, memory,
+trailing bytes, VEX and EVEX. Fetch the complete encoding before SSE/EM/OSFXSR
+#UD then TS #NM, at CPL0–3; make no data callbacks. Keep JIT/native/C ABI/
+fragment/generic paths closed.
+
+Require MXCSR.OM=1 and MXCSR.UM=1 in schema and runtime. Reject DAZ and reserved
+MXCSR bits; accept every RC mode, FTZ, IM/DM/ZM/PM and old sticky flags. Snapshot
+both XMM operands and compute all four old-destination/source Binary32 lanes.
+NaNs select the first original operand; quiet a selected SNaN and raise IE for
+any SNaN; NaNs suppress same-lane ZE/DE. `0/0` and `∞/∞` raise IE and return
+the masked indefinite `ffc00000`. Finite nonzero or subnormal numerator over
+zero raises ZE only; `∞/0` returns signed infinity without ZE. In all remaining
+cases, any subnormal operand raises precompute DE, including `0/subnormal`,
+`∞/subnormal`, and `subnormal/∞`. Aggregate IE/ZE/DE across all four lanes
+before arithmetic; any unmasked pre-event commits all generated pre-flags and
+preserves the whole destination, RIP and retirement. Otherwise use the
+production `Binary32::divide_raw_result` under MXCSR.RC. Masked overflow sets
+OE|PE. Tininess and FTZ use WPR's unbounded exponent after p=24 precision
+rounding: tiny inexact results set UE|PE; FTZ flushes tiny nonzero results to
+signed zero with UE|PE. Aggregate post flags across lanes; unmasked PM commits
+flags then faults atomically. Old sticky flags alone do not fault.
+
+Use an independent raw-u32 exact-rational oracle, with no host FP or production
+helpers. Bound large shifts and round only once. The literal fixture covers
+`1/3` (`3f800000/40400000`): RN/RU give `3eaaaaab`, RD/RZ give `3eaaaaaa`,
+with PE. `minnormal/2^24` rounds to zero for RN/RD/RZ and minimum-subnormal for
+RU, with UE|PE and no DE. The exact midpoint vector `00ffffff/40000000` returns minnormal for RN/RU and
+maxsub for RD/RZ, with UE|PE. `minnormal/nextafter(1,+)` returns maxsub for RN/RD/RZ and
+minnormal for RU, with UE|PE. Exact `minnormal/2` returns `00400000` without
+flags. `minsub/maxfinite` rounds up to one only under RU and raises DE|UE|PE.
+Cover all RC and FTZ boundaries, fourth-lane overflow/underflow, all pairs and
+aliases, NaN payloads/SNaNs, signed zeros/infinities, ZE/DE priorities, sticky
+flags, lane permutations, pre/post atomicity, gates/fetch/CPL/no-callback,
+malformed/tampered inputs and JIT/native denial. Sources: Intel SDM Rev. 093
+Vol. 2A DIVPS pp. 3-270–3-272 and the legacy SSE rows in Table 2-19; the
+explicit Type 2/Table 2-19 cross-reference on p. 3-272 applies to VEX forms and
+is not applied to legacy DIVPS. Generic exception-gate documentation and Vol. 1
+§§4.9.1.4–.6, 11.5.2–11.5.3, DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel
+Floating-Point Reference Sheet v2.13. This local profile does not claim memory
+forms, alignment, physical acceptance, other modes, full unmasked OE/UE
+behavior or closure of parent S2-37/S2-38. See the [CPU
+contract](../specs/CPU_CONTRACT.md#s2-37aw--bounded-masked-range-long64-divps-xmm-register-pairs),
+[report](../reports/STAGE_2_REPORT.md#s2-37aw--divps-register-pair-interpreter-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37aw-bounded-masked-range-divps-register-pair-profile).

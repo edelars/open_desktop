@@ -18793,3 +18793,48 @@ Event 19/Table 7-8; Intel Floating-Point Reference Sheet v2.13. See the [CPU
 contract](../specs/CPU_CONTRACT.md#s2-37av--bounded-masked-range-long64-divpd-xmm-register-pairs),
 [plan](../plans/STAGE_2.md#s2-37av--bounded-masked-range-long64-divpd-xmm-register-pairs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37av-bounded-masked-range-divpd-register-pair-profile).
+
+## S2-37aw — DIVPS register-pair interpreter profile (2026-10-30)
+
+Implemented strict schema-v2 profile `s2-long-divps-registers-v1` for
+canonical Long64 legacy `NP 0F 5E /r`, ModR/M.mod=3, across all 256 XMM pairs.
+The low form is three bytes; extended XMM indices use one adjacent `41`, `44`
+or `45` REX byte before `0F`. Prefix, memory, trailing-byte, VEX and EVEX
+neighbors are rejected by the profile. The runtime fetches before SSE/EM/OSFXSR
+#UD then TS #NM, accepts CPL0–3 and makes no data callbacks. JIT/native/C ABI/
+fragment/generic execution stays closed.
+
+Execution snapshots both XMM values and classifies all four binary32 lanes
+before computing. It implements NaN selection/quieting, IE/ZE/DE lane priority,
+cross-lane pre-event aggregation, and atomic suppression of the full XMM/RIP on
+unmasked pre-events. Masked execution uses `Binary32::divide_raw_result` with
+MXCSR.RC, WPR tininess, FTZ, and aggregate OE/UE/PE status; unmasked PM is also
+atomic. The schema oracle uses its own raw-u32 exact-rational quotient/remainder
+routine, without host floating point or production helpers.
+
+Validation passed:
+
+- `cargo test -p od-testkit divps_ --offline` — 1 independent oracle test passed;
+- `cargo test -p od-isa divps_ --offline` — 2 decoder and gate/fetch tests passed;
+- `cargo test -p od-runner --test fixture_v2 divps_register_pairs_and_four_lane_exception_order_are_interpreter_only --offline` — passed all 256 pairs, four RC modes, lane permutations, IE/ZE/DE pre-event aggregation, PM atomic fault, NaN payload/SNaN behavior, same-lane ZE/DE suppression, lane-3 overflow/underflow, FTZ, malformed/tampered inputs and JIT/native denial;
+- `cargo test -p od-isa divpd_ --offline` — 3 tests passed; DIVPD runner matrix passed;
+- `cargo test -p od-testkit --offline` — 436 tests passed;
+- neighboring runner regressions passed: `mul` 11 tests and `sub` 35 tests;
+- `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+  `python3 tools/check_layout.py`, `git diff --check`, and `graphify update .` passed.
+- Independent Sol-high code review found no remaining runtime, schema, oracle or
+  documentation findings after correcting the catalogue status and midpoint
+  vector label.
+
+These are local interpreter/schema checks only; they do not
+establish physical acceptance, memory forms, memory alignment, other modes,
+complete unmasked OE/UE behavior or closure of parent S2-37/S2-38.
+
+Sources: Intel SDM Rev. 093 Vol. 2A DIVPS pp. 3-270–3-272 and the legacy SSE
+instruction rows in Table 2-19. The explicit Type 2/Table 2-19 cross-reference
+on p. 3-272 concerns VEX forms and is not applied to legacy DIVPS. Generic
+exception-gate documentation; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ;
+Vol. 3A Event 19/Table 7-8; Intel Floating-Point Reference Sheet v2.13. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37aw--bounded-masked-range-long64-divps-xmm-register-pairs),
+[plan](../plans/STAGE_2.md#s2-37aw--bounded-masked-range-long64-divps-xmm-register-pairs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37aw-bounded-masked-range-divps-register-pair-profile).
