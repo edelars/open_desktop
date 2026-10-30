@@ -62,6 +62,7 @@ LIFECYCLE_TESTS = (
     "bounded_memory_dispatch_nop_fallback_is_exact_and_strict_run_stays_strict",
     "code_region_store_invalidates_cached_prefix_and_tail_before_redispatch",
     "active_code_v3_exits_on_dirty_prefix_and_finishes_unrelated_store_in_one_entry",
+    "active_code_v3_invalidates_exact_not_yet_executed_tail_immediate",
     "active_code_v3_guards_faults_aliases_and_committed_stop_are_precise",
     "active_code_v3_slot_survives_capacity_two_invalidation_and_safe_reuse",
     "active_code_v3_architectural_write_fault_matches_interpreter_and_is_atomic",

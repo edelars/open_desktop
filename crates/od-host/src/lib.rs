@@ -2177,10 +2177,13 @@ impl TrackedInvalidationBatch {
 /// # Safety
 /// The write method must be synchronous, all-or-nothing, non-unwinding, and
 /// non-reentrant for the whole generated call. The owner must serialize the
-/// single vCPU, reject every destination overlapping the active source code
-/// backing (also through aliases), and keep the write target non-executable
-/// host memory. Preflight must only stage its decision: it must not surface a
-/// rejection until generated guards pass and the checked write is attempted.
+/// single vCPU, reject destinations overlapping the executing store
+/// instruction on its backing (also through aliases), and keep the write
+/// target ordinary host memory. The one V3 fixture exception is an exact
+/// qword replacement of the immediate bytes in its not-yet-executed tail MOV;
+/// that path marks the complete artifact dirty and exits before tail execution.
+/// Preflight must only stage its decision: it must not surface a rejection
+/// until generated guards pass and the checked write is attempted.
 pub unsafe trait TrackedExecutableCodeOwner: od_isa::memory::GuestMemory {
     fn preflight_code_store(
         &mut self,
@@ -2207,9 +2210,11 @@ pub unsafe trait TrackedExecutableCodeOwner: od_isa::memory::GuestMemory {
         complete_region: TrackedCodeRegionV2<'_>,
     ) -> Result<(), TrackedCodeStorePreflightError>;
 
-    /// Check that an active V3 artifact's not-yet-executed suffix does not
-    /// overlap the staged write. The executed prefix remains separately
-    /// eligible for a bounded `CodeInvalidated` exit.
+    /// Validate an active V3 artifact's not-yet-executed suffix against the
+    /// staged write. Only the exact final `MOV RCX, imm64` immediate in the
+    /// 23-byte fixture may be replaced; that write must mark the artifact
+    /// dirty so native execution returns before the stale tail. The executed
+    /// prefix remains separately eligible for a bounded `CodeInvalidated` exit.
     fn validate_active_code_tail_v3(
         &mut self,
         complete_region: TrackedCodeRegionV2<'_>,
@@ -4221,7 +4226,9 @@ mod tests {
     // SAFETY: this owner is a single-threaded fixed-RAM fixture. Its preflight
     // checks the entire mapping/backing range and version before entry, its
     // writes are checked slice copies with no unwind/callback, and it rejects
-    // overlap with the active source backing including aliases.
+    // the executing store instruction through any alias. The only active-tail
+    // exception is an exact single-segment V3 immediate replacement validated
+    // against the complete artifact source and marked dirty before commit.
     unsafe impl TrackedExecutableCodeOwner for TrackedCodeFixture {
         fn preflight_code_store(
             &mut self,
@@ -4396,7 +4403,25 @@ mod tests {
                                     && tail_start < target_end
                             });
                     if overlaps_tail {
-                        return Err(TrackedCodeStorePreflightError::ActiveSourceOverlap);
+                        let exact_tail_immediate = complete_region.source_bytes.len() == 23
+                            && executed_prefix_length == 13
+                            && &complete_region.source_bytes[..2] == &[0x48, 0xBA]
+                            && &complete_region.source_bytes[10..13] == &[0x48, 0x89, 0x03]
+                            && &complete_region.source_bytes[13..15] == &[0x48, 0xB9]
+                            && plan.segment_count == 1
+                            && plan.segments[0].is_some_and(|segment| {
+                                segment.backing == backing
+                                    && segment.offset == region_offset + 15
+                                    && segment.length == 8
+                            });
+                        if !exact_tail_immediate {
+                            return Err(TrackedCodeStorePreflightError::ActiveSourceOverlap);
+                        }
+                        let pending = self
+                            .pending
+                            .as_mut()
+                            .ok_or(TrackedCodeStorePreflightError::ActiveSourceMismatch)?;
+                        pending.intersects_code_region = true;
                     }
                 }
                 Ok(())
@@ -36453,6 +36478,457 @@ mod tests {
     }
 
     #[test]
+    fn active_code_v3_invalidates_exact_not_yet_executed_tail_immediate() {
+        use od_isa::LongModeState;
+        let _guard = jit_test_lock();
+
+        fn compare_tail_result(
+            expected: &LongModeState,
+            observed: &LongModeState,
+        ) -> Result<(), &'static str> {
+            if observed.gpr[1] != expected.gpr[1] {
+                return Err("stale native tail immediate");
+            }
+            if observed != expected {
+                return Err("tail CPU state mismatch");
+            }
+            Ok(())
+        }
+
+        fn run_case(target: u64, stop_during_write: bool) {
+            let entry = 0x1000_u64;
+            let old_immediate = 0xCAFE_BABE_1234_5678_u64;
+            let new_immediate = 0x8877_6655_4433_2211_u64;
+            let old_rcx = 0xA5A5_5A5A_F0F0_0F0F_u64;
+            let mut program = vec![0x48, 0xBA]; // MOV RDX, old prefix value
+            program.extend_from_slice(&0x1122_3344_5566_7788_u64.to_le_bytes());
+            program.extend_from_slice(&[0x48, 0x89, 0x03]); // MOV [RBX], RAX
+            program.extend_from_slice(&[0x48, 0xB9]); // MOV RCX, old tail immediate
+            program.extend_from_slice(&old_immediate.to_le_bytes());
+            assert_eq!(program.len(), 23);
+
+            let compiled = od_jit::memory_load_v2::compile_active_code_block_v3(
+                CodeView::new(entry, &program).unwrap(),
+                entry,
+            )
+            .unwrap();
+            let mut arena = PublishedArenaBackend::new(6).unwrap();
+            let active = arena.publish_active_code_block_v3(&compiled).unwrap();
+
+            let make_owner = || {
+                let mut owner =
+                    TrackedCodeFixture::new(&program[10..13], &[0x48, 0xB8, 1], &[0x48, 0xB8, 9]);
+                owner.backings[0].bytes[..program.len()].copy_from_slice(&program);
+                owner.active_source_rip = entry + 10;
+                owner.active_source = (0, 10, 3);
+                owner
+            };
+            let mut jit_owner = make_owner();
+            let mut interpreter_owner = make_owner();
+
+            let mut cache = od_jit::dispatch::MultiEntryBlockCache::new(
+                5,
+                od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+                od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+            )
+            .unwrap();
+            // Keep both direct and alias entries that depend on the complete
+            // backing, plus an unrelated entry that must remain resident.
+            run_tracked_code_block(&jit_owner, entry, &mut cache, &mut arena);
+            run_tracked_code_block(&jit_owner, entry + 13, &mut cache, &mut arena);
+            run_tracked_code_block(&jit_owner, 0x5000, &mut cache, &mut arena);
+            run_tracked_code_block(&jit_owner, 0x500D, &mut cache, &mut arena);
+            let (unrelated, unrelated_state) =
+                run_tracked_code_block(&jit_owner, 0x4000, &mut cache, &mut arena);
+            assert_eq!(unrelated.retired_instructions, 1);
+            assert_eq!(unrelated_state.gpr[0], 9);
+            assert_eq!(cache.resident_entries(), 5);
+
+            let initial = LongModeState {
+                rip: entry,
+                rflags: 0xA55,
+                gpr: {
+                    let mut gpr = [0_u64; 16];
+                    gpr[0] = new_immediate;
+                    gpr[1] = old_rcx;
+                    gpr[3] = target;
+                    gpr
+                },
+                ..LongModeState::default()
+            };
+
+            // Record a real native result from the old tail before the store.
+            // It must compare as stale after fresh dispatch observes new bytes.
+            let mut old_tail_input = initial.clone();
+            old_tail_input.rip = entry + 13;
+            old_tail_input.gpr[2] = 0x1122_3344_5566_7788;
+            let (old_tail_report, stale_native_tail) = run_tracked_code_block_with_state(
+                &jit_owner,
+                entry + 13,
+                old_tail_input,
+                &mut cache,
+                &mut arena,
+            );
+            assert_eq!(old_tail_report.retired_instructions, 1);
+            assert_eq!(stale_native_tail.gpr[1], old_immediate);
+
+            // A modification to any byte in the leased artifact tail invalidates
+            // the complete source before its already-compiled handle can run.
+            let mut stale_owner = make_owner();
+            stale_owner.backings[0].bytes[17] ^= 1;
+            let stale_bytes = stale_owner.backings[0].bytes.clone();
+            let stale_version = stale_owner.backings[0].version;
+            let mut stale_state = initial.clone();
+            assert_eq!(
+                active.execute_tracked_v3(
+                    &mut stale_state,
+                    &mut stale_owner,
+                    AccessContext::default(),
+                    3,
+                    None,
+                    &AtomicU8::new(0),
+                    |_| panic!("stale complete source cannot notify"),
+                ),
+                Err(ActiveCodeExecutionErrorV3::Preflight(
+                    TrackedCodeStorePreflightError::ActiveSourceMismatch
+                ))
+            );
+            assert_eq!(stale_state, initial);
+            assert_eq!(stale_owner.backings[0].bytes, stale_bytes);
+            assert_eq!(stale_owner.backings[0].version, stale_version);
+            assert_eq!(stale_owner.write_count, 0);
+
+            // Once the exact tail target has been admitted, both backend and
+            // architectural write failures remain atomic and do not publish a
+            // dirty notification for the staged-but-uncommitted plan.
+            let mut backend_owner = make_owner();
+            backend_owner.fail_write = true;
+            let backend_bytes = backend_owner.backings[0].bytes.clone();
+            let backend_version = backend_owner.backings[0].version;
+            let mut backend_state = initial.clone();
+            assert!(
+                active
+                    .execute_tracked_v3(
+                        &mut backend_state,
+                        &mut backend_owner,
+                        AccessContext::default(),
+                        3,
+                        None,
+                        &AtomicU8::new(0),
+                        |_| panic!("failed backend write cannot notify"),
+                    )
+                    .is_err()
+            );
+            assert_eq!(backend_state.rip, entry + 10);
+            assert_eq!(backend_state.gpr[2], 0x1122_3344_5566_7788);
+            assert_eq!(backend_state.gpr[1], old_rcx);
+            assert_eq!(backend_owner.backings[0].bytes, backend_bytes);
+            assert_eq!(backend_owner.backings[0].version, backend_version);
+            assert_eq!(backend_owner.write_count, 0);
+
+            let mut fault_owner = make_owner();
+            fault_owner.architectural_write_fault = Some(od_isa::memory::ArchitecturalFault {
+                vector: 14,
+                error_code: Some(2),
+                linear_address: Some(target),
+            });
+            let fault_bytes = fault_owner.backings[0].bytes.clone();
+            let fault_version = fault_owner.backings[0].version;
+            let mut fault_state = initial.clone();
+            let fault = active
+                .execute_tracked_v3(
+                    &mut fault_state,
+                    &mut fault_owner,
+                    AccessContext::default(),
+                    3,
+                    None,
+                    &AtomicU8::new(0),
+                    |_| panic!("faulting tail write cannot notify"),
+                )
+                .unwrap();
+            assert_eq!(
+                fault.exit,
+                ActiveCodeExecutionExitV3::GuestFault(od_isa::memory::ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(2),
+                    linear_address: Some(target),
+                })
+            );
+            assert_eq!(fault.retired_instructions, 1);
+            assert_eq!(fault_state.rip, entry + 10);
+            assert_eq!(fault_state.gpr[2], 0x1122_3344_5566_7788);
+            assert_eq!(fault_state.gpr[1], old_rcx);
+            assert_eq!(fault_owner.backings[0].bytes, fault_bytes);
+            assert_eq!(fault_owner.backings[0].version, fault_version);
+            assert_eq!(fault_owner.write_count, 0);
+
+            // Interpreter checkpoint through the committed store, before it
+            // fetches the changed immediate at the next instruction boundary.
+            let mut interpreter_state = initial.clone();
+            assert!(matches!(
+                od_isa::execute::step(
+                    &mut interpreter_state,
+                    &mut interpreter_owner,
+                    AccessContext::default(),
+                ),
+                Ok(od_isa::execute::StepOutcome::Advanced)
+            ));
+            assert_eq!(interpreter_state.rip, entry + 10);
+            interpreter_owner.begin_interpreter_write_scope(entry + 10, 3);
+            assert!(matches!(
+                od_isa::execute::step(
+                    &mut interpreter_state,
+                    &mut interpreter_owner,
+                    AccessContext::default(),
+                ),
+                Ok(od_isa::execute::StepOutcome::Advanced)
+            ));
+            let (interpreter_change, _) = interpreter_owner.finish_guest_write();
+            interpreter_owner.end_interpreter_write_scope();
+            assert_eq!(interpreter_state.rip, entry + 13);
+            assert_eq!(interpreter_state.gpr[2], 0x1122_3344_5566_7788);
+            assert_eq!(interpreter_state.gpr[1], old_rcx);
+            assert_eq!(interpreter_owner.write_count, 1);
+            assert_eq!(
+                interpreter_change.first(),
+                Some(od_jit::dispatch::CodeInvalidation::BackingContentChanged {
+                    backing: TrackedCodeFixture::id(2),
+                    current_version: od_jit::translation::BackingVersion::new(
+                        TrackedCodeFixture::nz(2),
+                    ),
+                })
+            );
+            assert_eq!(
+                &interpreter_owner.backings[0].bytes[15..23],
+                &new_immediate.to_le_bytes()
+            );
+
+            let stop = Arc::new(AtomicU8::new(0));
+            jit_owner.request_stop_on_write = stop_during_write;
+            jit_owner.stop_byte = Some(stop.clone());
+            let mut native_state = initial.clone();
+            let mut invalidated = 0;
+            let mut notifications = Vec::new();
+            let native = active
+                .execute_tracked_v3(
+                    &mut native_state,
+                    &mut jit_owner,
+                    AccessContext::default(),
+                    3,
+                    None,
+                    &stop,
+                    |change| {
+                        notifications.push(change);
+                        invalidated += cache.invalidate(change);
+                    },
+                )
+                .unwrap();
+            assert_eq!(native.exit, ActiveCodeExecutionExitV3::CodeInvalidated);
+            assert_eq!(native.remaining_budget, 1);
+            assert_eq!(native.retired_instructions, 2);
+            assert_eq!(native_state.rip, entry + 13);
+            assert_eq!(
+                native_state.gpr[1], old_rcx,
+                "tail did not execute natively"
+            );
+            assert_eq!(native_state, interpreter_state);
+            assert_eq!(jit_owner.write_count, 1);
+            assert_eq!(jit_owner.backings[0].version.get(), 2);
+            assert_eq!(
+                jit_owner.backings[0].bytes,
+                interpreter_owner.backings[0].bytes
+            );
+            assert_eq!(
+                jit_owner
+                    .backings
+                    .iter()
+                    .map(|backing| backing.version)
+                    .collect::<Vec<_>>(),
+                interpreter_owner
+                    .backings
+                    .iter()
+                    .map(|backing| backing.version)
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                notifications,
+                vec![od_jit::dispatch::CodeInvalidation::BackingContentChanged {
+                    backing: TrackedCodeFixture::id(2),
+                    current_version: od_jit::translation::BackingVersion::new(
+                        TrackedCodeFixture::nz(2),
+                    ),
+                }]
+            );
+            assert_eq!(invalidated, 4, "direct and alias dependencies are stale");
+            assert_eq!(
+                cache.resident_entries(),
+                1,
+                "unrelated entry remains cached"
+            );
+            if stop_during_write {
+                assert_eq!(stop.load(Ordering::Acquire), 1);
+            } else {
+                assert_eq!(stop.load(Ordering::Acquire), 0);
+            }
+
+            let publications_before_unrelated_hit = cache.counters().successful_publications;
+            let (unrelated_hit, unrelated_after) =
+                run_tracked_code_block(&jit_owner, 0x4000, &mut cache, &mut arena);
+            assert_eq!(unrelated_hit.retired_instructions, 1);
+            assert_eq!(unrelated_after.gpr[0], 9);
+            assert_eq!(
+                cache.counters().successful_publications,
+                publications_before_unrelated_hit,
+                "unrelated backing hit does not republish"
+            );
+
+            let mut interpreter_after_tail = interpreter_state.clone();
+            assert!(matches!(
+                od_isa::execute::step(
+                    &mut interpreter_after_tail,
+                    &mut interpreter_owner,
+                    AccessContext::default(),
+                ),
+                Ok(od_isa::execute::StepOutcome::Advanced)
+            ));
+            assert_eq!(interpreter_after_tail.gpr[1], new_immediate);
+
+            let (fresh_tail, direct_after_tail) = run_tracked_code_block_with_state(
+                &jit_owner,
+                entry + 13,
+                native_state.clone(),
+                &mut cache,
+                &mut arena,
+            );
+            assert_eq!(fresh_tail.retired_instructions, 1);
+            assert_eq!(direct_after_tail.gpr[1], new_immediate);
+            assert_eq!(
+                compare_tail_result(&interpreter_after_tail, &stale_native_tail),
+                Err("stale native tail immediate")
+            );
+            assert_eq!(
+                compare_tail_result(&interpreter_after_tail, &direct_after_tail),
+                Ok(())
+            );
+            assert_eq!(direct_after_tail, interpreter_after_tail);
+            assert_eq!(
+                jit_owner.backings[0].bytes,
+                interpreter_owner.backings[0].bytes
+            );
+
+            let mut alias_interpreter_tail = interpreter_after_tail.clone();
+            alias_interpreter_tail.rip = 0x500D;
+            assert!(matches!(
+                od_isa::execute::step(
+                    &mut alias_interpreter_tail,
+                    &mut interpreter_owner,
+                    AccessContext::default(),
+                ),
+                Ok(od_isa::execute::StepOutcome::Advanced)
+            ));
+            let mut alias_native_input = native_state;
+            alias_native_input.rip = 0x500D;
+            let (fresh_alias_tail, alias_after_tail) = run_tracked_code_block_with_state(
+                &jit_owner,
+                0x500D,
+                alias_native_input,
+                &mut cache,
+                &mut arena,
+            );
+            assert_eq!(fresh_alias_tail.retired_instructions, 1);
+            assert_eq!(alias_after_tail.gpr[1], new_immediate);
+            assert_eq!(alias_after_tail, alias_interpreter_tail);
+            assert_eq!(jit_owner.write_count, 1, "store is not replayed");
+
+            // The live V3 handle is still bound to the old complete source
+            // identity and cannot re-enter after the backing generation changes.
+            let mut stale_active_state = initial;
+            let stale_active_before = stale_active_state.clone();
+            assert_eq!(
+                active.execute_tracked_v3(
+                    &mut stale_active_state,
+                    &mut jit_owner,
+                    AccessContext::default(),
+                    3,
+                    None,
+                    &AtomicU8::new(0),
+                    |_| panic!("stale active artifact cannot notify"),
+                ),
+                Err(ActiveCodeExecutionErrorV3::Preflight(
+                    TrackedCodeStorePreflightError::ActiveSourceMismatch
+                ))
+            );
+            assert_eq!(stale_active_state, stale_active_before);
+        }
+
+        for (target, stop_during_write) in [(0x100F, true), (0x500F, false)] {
+            run_case(target, stop_during_write);
+        }
+
+        // A qword split across two adjacent mappings remains rejected even
+        // when the mappings alias contiguous offsets of the same backing.
+        let entry = 0x102A_u64;
+        let old_immediate = 0xCAFE_BABE_1234_5678_u64;
+        let mut split_program = vec![0x48, 0xBA];
+        split_program.extend_from_slice(&0x1122_3344_5566_7788_u64.to_le_bytes());
+        split_program.extend_from_slice(&[0x48, 0x89, 0x03]);
+        split_program.extend_from_slice(&[0x48, 0xB9]);
+        split_program.extend_from_slice(&old_immediate.to_le_bytes());
+        let compiled = od_jit::memory_load_v2::compile_active_code_block_v3(
+            CodeView::new(entry, &split_program).unwrap(),
+            entry,
+        )
+        .unwrap();
+        let mut split_owner =
+            TrackedCodeFixture::new(&split_program[10..13], &[0x48, 0xB8, 1], &[0x48, 0xB8, 9]);
+        split_owner.backings[0].bytes.resize(128, 0);
+        split_owner.backings[0].bytes[42..65].copy_from_slice(&split_program);
+        split_owner.mappings[0].len = 60;
+        split_owner.mappings.push(TrackedMappingFixture {
+            start: 0x103C,
+            len: 64,
+            backing: 0,
+            backing_offset: 60,
+            mapping: od_jit::translation::MappingId::new(TrackedCodeFixture::nz(30)),
+            mapping_version: od_jit::translation::MappingVersion::new(TrackedCodeFixture::nz(1)),
+            executable: true,
+            writable: true,
+        });
+        split_owner.active_source_rip = entry + 10;
+        split_owner.active_source = (0, 52, 3);
+        let mut split_arena = PublishedArenaBackend::new(2).unwrap();
+        let split_active = split_arena.publish_active_code_block_v3(&compiled).unwrap();
+        let mut split_state = LongModeState {
+            rip: entry,
+            ..LongModeState::default()
+        };
+        split_state.gpr[0] = 0x8877_6655_4433_2211;
+        split_state.gpr[1] = 0xA5A5_5A5A_F0F0_0F0F;
+        split_state.gpr[3] = entry + 15;
+        let before_split_bytes = split_owner.backings[0].bytes.clone();
+        let before_split_version = split_owner.backings[0].version;
+        assert_eq!(
+            split_active.execute_tracked_v3(
+                &mut split_state,
+                &mut split_owner,
+                AccessContext::default(),
+                3,
+                None,
+                &AtomicU8::new(0),
+                |_| panic!("split tail destination cannot notify"),
+            ),
+            Err(ActiveCodeExecutionErrorV3::Preflight(
+                TrackedCodeStorePreflightError::ActiveSourceOverlap
+            ))
+        );
+        assert_eq!(split_state.rip, entry + 10);
+        assert_eq!(split_state.gpr[2], 0x1122_3344_5566_7788);
+        assert_eq!(split_owner.backings[0].bytes, before_split_bytes);
+        assert_eq!(split_owner.backings[0].version, before_split_version);
+        assert_eq!(split_owner.write_count, 0);
+    }
+
+    #[test]
     fn active_code_v3_slot_survives_capacity_two_invalidation_and_safe_reuse() {
         let _guard = jit_test_lock();
         let entry = 0x1000_u64;
@@ -37001,9 +37477,10 @@ mod tests {
         assert_eq!(budget_state.rip, entry + 13);
         assert_eq!(budget_owner.write_count, 1);
 
-        // The owner rejects attempts to overwrite the not-yet-executed tail,
-        // including through the fixture's executable alias.
-        for tail_target in [entry + 15, 0x500F] {
+        // The bounded S3-24b case admits only the exact 8-byte immediate.
+        // The tail opcode, either one-byte-shifted qword, and split-target
+        // aliases remain rejected before any write.
+        for tail_target in [entry + 13, entry + 14, entry + 16, 0x500D, 0x500E, 0x5010] {
             let mut tail_owner = make_owner();
             let before_bytes = tail_owner.backings[0].bytes.clone();
             let before_version = tail_owner.backings[0].version;
@@ -37030,6 +37507,34 @@ mod tests {
             assert_eq!(tail_owner.backings[0].bytes, before_bytes);
             assert_eq!(tail_owner.backings[0].version, before_version);
             assert_eq!(tail_owner.write_count, 0);
+        }
+
+        // The currently executing store instruction remains protected through
+        // direct and aliased guest addresses.
+        for store_target in [entry + 10, 0x500A] {
+            let mut store_owner = make_owner();
+            let before_bytes = store_owner.backings[0].bytes.clone();
+            let before_version = store_owner.backings[0].version;
+            let mut store_state = initial.clone();
+            store_state.gpr[3] = store_target;
+            assert!(matches!(
+                active.execute_tracked_v3(
+                    &mut store_state,
+                    &mut store_owner,
+                    AccessContext::default(),
+                    3,
+                    None,
+                    &AtomicU8::new(0),
+                    |_| panic!("store-instruction overlap cannot notify"),
+                ),
+                Err(ActiveCodeExecutionErrorV3::Preflight(
+                    TrackedCodeStorePreflightError::ActiveSourceOverlap
+                ))
+            ));
+            assert_eq!(store_state.rip, entry + 10);
+            assert_eq!(store_owner.backings[0].bytes, before_bytes);
+            assert_eq!(store_owner.backings[0].version, before_version);
+            assert_eq!(store_owner.write_count, 0);
         }
 
         // A backend write failure is returned as a host memory error after the

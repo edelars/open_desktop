@@ -1933,11 +1933,43 @@ aliases.
 If the store faults, the first instruction remains committed and state stays
 at the store RIP; no bytes/version change. Entry guards preserve stop-RIP,
 STOP, then budget priority. A change to the already executed prefix is a
-bounded fixture scenario; it does not define behavior for modifying a future
-instruction or replace the architectural store/control-transfer requirement
-for general self-modifying code. General blocks, production MMU/writer
-integration, and complete S3-24 remain open. See the
+bounded fixture scenario; it does not replace the architectural
+store/control-transfer requirement for general self-modifying code. The
+initial S3-24a implementation rejected all future-tail overlap; S3-24b adds
+only the exact immediate replacement described below. General blocks,
+production MMU/writer integration, and complete S3-24 remain open. See the
 [S3-24a report](../reports/STAGE_3_S3-24a_2026-10-27.md).
+
+### S3-24b: exact not-yet-executed tail immediate invalidation
+
+The exact V3 artifact remains the 23-byte sequence
+`48 BA imm64; 48 89 03; 48 B9 imm64`. A fixture owner may commit one qword
+store only when the resolved write plan is a single segment covering exactly
+the final `MOV RCX,imm64` immediate at artifact offsets `[15,23)`. The opcode
+and instruction length remain unchanged. Admission also requires the complete
+23-byte source lease to match the backing before generated entry, the expected
+V3 opcode profile, and a target with the same backing identity and backing
+offset as the leased tail. Direct and aliased guest addresses therefore share
+one versioned backing notification. The qword must not be split across guest
+mapping segments, even when both segments name contiguous bytes of one backing.
+
+The owner sets the existing invocation-local dirty flag on that exact staged
+write plan before mutation. A successful checked write commits one store,
+advances RIP to `entry+13`, retires the prefix plus store, and exits
+`CodeInvalidated` before the old native tail can execute. After return and
+result decoding, the owner advances the backing generation and emits its
+notification while the V3 handle remains live. The dispatcher invalidates all
+cache dependencies on that backing, including direct and alias entries, but
+keeps unrelated backing entries resident. A later dispatch fetches the updated
+immediate and executes it once. Failure before commit leaves bytes, generation,
+and dirty outcome unchanged; STOP raised by a successful store does not
+suppress invalidation.
+
+This is fixture-level coherence and redispatch evidence for one decoded tail
+instruction. It is not a physical x86 SMC oracle and does not establish
+general instruction rewriting, production MMU/writer integration, arbitrary
+mapping spans, or complete S3-24. See the
+[S3-24b report](../reports/STAGE_3_S3-24b_2026-10-29.md).
 
 ### S3-27a: precise architectural fault for the V3 active-code store partial
 

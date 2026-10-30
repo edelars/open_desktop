@@ -4,6 +4,34 @@
 из [BENCHMARKS](BENCHMARKS.md). Она описывает проверки, которые будут включаться
 по мере готовности задач S3; не все пути реализованы сейчас.
 
+## S3-24b: exact future-tail immediate rewrite in the V3 fixture
+
+Run the exact `od-host` cases
+`tests::active_code_v3_invalidates_exact_not_yet_executed_tail_immediate` and
+`tests::active_code_v3_guards_faults_aliases_and_committed_stop_are_precise`
+on macOS ARM64, then run `python3 tests/cpu/stage3_harness.py --suite local`.
+The harness pins the new lifecycle test identity alongside the existing SMC
+and cache-lifecycle cases. Mini, physical-x86, performance, owner-backed, and
+Stage 2 suites remain unselected here.
+
+The first case changes only bytes `[entry+15, entry+23)` of the exact
+23-byte V3 artifact `MOV RDX,imm64; MOV [RBX],RAX; MOV RCX,imm64`. It checks
+direct and guest-alias destinations against one backing, one write and one
+version increment, retirement/budget/RIP at the committed store boundary,
+full interpreter CPU/RAM checkpoint parity, invalidation of all warmed direct
+and alias prefix/tail dependencies while an unrelated entry remains resident,
+and fresh dispatch through both mappings. A captured native result from the
+old tail is rejected by the comparator after the backing update. Negative
+cases reject writes into the store instruction, the tail opcode, qwords shifted
+by either one byte, a same-backing target split across adjacent mappings, and
+a stale full-source lease. Backend and architectural write failures retain
+atomicity; STOP raised during a successful write still yields the committed
+invalidation boundary.
+
+This is fixture-level identity/invalidation and redispatch evidence. It does
+not claim physical Intel/AMD self-modifying-code behavior, arbitrary code
+rewrites, production MMU/writer integration, or completion of S3-24.
+
 ## S3-29a: bounded demand-driven flags correctness candidate
 
 Run `cargo test -p od-jit --lib demand_flags_candidate --offline` and
