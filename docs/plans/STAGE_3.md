@@ -2719,6 +2719,15 @@ default or supports a cross-workload speedup/break-even conclusion. S3-40 and
 S3-41 remain open. See the
 [S3-40b addendum](../reports/STAGE_3_S3-40b_2026-10-30.md).
 
+#### S3-40c: single-block flags comparison addendum
+
+Added three S3-29f release runs to the provisional ledger: candidate/eager
+cross-run median paired ratios are 1.003–1.086 across seven fixed cases, with
+larger emitted candidate code. This supports no default change and does not
+settle full-runtime performance. Eager stays the reference/default; S3-29,
+S3-40, and S3-41 remain open. See the
+[S3-40c addendum](../reports/STAGE_3_S3-40c_2026-10-30.md).
+
 ### S3-41. Оформить приёмку этапа
 
 1. Создать STAGE_3_REPORT: exact profiles/forms, native/helper/fallback границы, revision/fingerprint, машины/toolchains, correctness counts, commands/seeds, cold/warm/resource результаты.
