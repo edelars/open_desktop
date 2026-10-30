@@ -331,6 +331,15 @@ struct FirstRunVariantResult {
     iqr_ns_per_sweep: u128,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct FirstRunSeriesRestart {
+    failed_pair: usize,
+    attempted_sweeps: usize,
+    fifo_elapsed_ns: u128,
+    interpreter_elapsed_ns: u128,
+    next_sweeps: usize,
+}
+
 #[derive(Serialize)]
 struct FirstRunReport {
     schema: u32,
@@ -343,6 +352,7 @@ struct FirstRunReport {
     visits: usize,
     calibration_sweeps: Vec<usize>,
     paired_calibration_attempts: usize,
+    measured_series_restarts: Vec<FirstRunSeriesRestart>,
     measured_pairs: usize,
     common_sweeps_per_sample: usize,
     timing_scope: String,
@@ -538,43 +548,33 @@ pub fn run_cold_first_execution(
     let (repetitions, paired_calibration_attempts) =
         calibrate_common_first_run_sweeps(&cases, started, initial_repetitions)?;
 
-    let mut fifo_samples = Vec::with_capacity(FIRST_RUN_PAIRS);
-    let mut interpreter_samples = Vec::with_capacity(FIRST_RUN_PAIRS);
-    for pair in 0..FIRST_RUN_PAIRS {
+    let measured = collect_first_run_series(repetitions, FIRST_RUN_PAIRS, |pair, sweeps| {
         if started.elapsed() > MAX_RUN_TIME {
             return Err(err("30 minute run limit exceeded during cold samples"));
         }
         let fifo_first = pair % 2 == 0;
         let (fifo_order, interpreter_order) = if fifo_first { (0, 1) } else { (1, 0) };
-        let (fifo_sample, interpreter_sample) = if fifo_first {
-            let fifo = measure_cold_fifo_sample(pair, fifo_order, repetitions, &cases, started)?;
-            let interpreter =
-                measure_interpreter_sample(pair, interpreter_order, repetitions, &cases, started)?;
-            (fifo, interpreter)
+        if fifo_first {
+            Ok((
+                measure_cold_fifo_sample(pair, fifo_order, sweeps, &cases, started)?,
+                measure_interpreter_sample(pair, interpreter_order, sweeps, &cases, started)?,
+            ))
         } else {
             let interpreter =
-                measure_interpreter_sample(pair, interpreter_order, repetitions, &cases, started)?;
-            let fifo = measure_cold_fifo_sample(pair, fifo_order, repetitions, &cases, started)?;
-            (fifo, interpreter)
-        };
-        if fifo_sample.elapsed_ns < MIN_SAMPLE.as_nanos() {
-            return Err(err(
-                "cold FIFO paired sample below 200ms after paired calibration",
-            ));
+                measure_interpreter_sample(pair, interpreter_order, sweeps, &cases, started)?;
+            let fifo = measure_cold_fifo_sample(pair, fifo_order, sweeps, &cases, started)?;
+            Ok((fifo, interpreter))
         }
-        if interpreter_sample.elapsed_ns < MIN_SAMPLE.as_nanos() {
-            return Err(err(
-                "interpreter paired sample below 200ms after paired calibration",
-            ));
-        }
-        fifo_samples.push(fifo_sample);
-        interpreter_samples.push(interpreter_sample);
-    }
+    })?;
 
-    let fifo_result =
-        summarize_first_run(FirstRunVariantName::Fifo16ColdBlockDispatcher, fifo_samples);
-    let interpreter_result =
-        summarize_first_run(FirstRunVariantName::Interpreter, interpreter_samples);
+    let fifo_result = summarize_first_run(
+        FirstRunVariantName::Fifo16ColdBlockDispatcher,
+        measured.fifo_samples,
+    );
+    let interpreter_result = summarize_first_run(
+        FirstRunVariantName::Interpreter,
+        measured.interpreter_samples,
+    );
     let fifo_by_pair: std::collections::HashMap<usize, u128> = fifo_result
         .samples
         .iter()
@@ -590,7 +590,7 @@ pub fn run_cold_first_execution(
         })
         .collect();
     let report = FirstRunReport {
-        schema: 1,
+        schema: 2,
         process_run,
         case_list_sha256: od_testkit::sha256_hex(&list),
         trace_sha256: od_testkit::sha256_hex(&trace_raw),
@@ -600,8 +600,9 @@ pub fn run_cold_first_execution(
         visits: trace.visits.len(),
         calibration_sweeps: calibration_sweeps.to_vec(),
         paired_calibration_attempts,
+        measured_series_restarts: measured.restarts,
         measured_pairs: FIRST_RUN_PAIRS,
-        common_sweeps_per_sample: repetitions,
+        common_sweeps_per_sample: measured.common_sweeps,
         timing_scope: "per-sample sum of fresh FIFO arena/cache initialization plus each corpus dispatch-call interval; interpreter-call intervals for the same case order; each JIT sweep starts with an empty cache; cache may be reused within a corpus sweep".into(),
         excluded_from_timing: "fixture/trace parsing and admission, interpreter oracle preparation, per-case state clone/reset, post-call result validation, runtime teardown, and process launch".into(),
         variants: vec![fifo_result, interpreter_result],
@@ -611,22 +612,83 @@ pub fn run_cold_first_execution(
     serde_json::to_value(report).map_err(|e| err(e.to_string()))
 }
 
-fn next_paired_calibration_sweeps(
+struct FirstRunSeriesSamples {
+    fifo_samples: Vec<FirstRunSample>,
+    interpreter_samples: Vec<FirstRunSample>,
+    restarts: Vec<FirstRunSeriesRestart>,
+    common_sweeps: usize,
+}
+
+fn collect_first_run_series<F>(
+    mut repetitions: usize,
+    pair_count: usize,
+    mut measure_pair: F,
+) -> Result<FirstRunSeriesSamples, BenchError>
+where
+    F: FnMut(usize, usize) -> Result<(FirstRunSample, FirstRunSample), BenchError>,
+{
+    let mut restarts = Vec::new();
+    loop {
+        let mut fifo_samples = Vec::with_capacity(pair_count);
+        let mut interpreter_samples = Vec::with_capacity(pair_count);
+        let mut retry_sweeps = None;
+        for pair in 0..pair_count {
+            let (fifo, interpreter) = measure_pair(pair, repetitions)?;
+            if let Some(next_sweeps) =
+                next_paired_sample_sweeps(repetitions, fifo.elapsed_ns, interpreter.elapsed_ns)?
+            {
+                restarts.push(FirstRunSeriesRestart {
+                    failed_pair: pair,
+                    attempted_sweeps: repetitions,
+                    fifo_elapsed_ns: fifo.elapsed_ns,
+                    interpreter_elapsed_ns: interpreter.elapsed_ns,
+                    next_sweeps,
+                });
+                retry_sweeps = Some(next_sweeps);
+                break;
+            }
+            fifo_samples.push(fifo);
+            interpreter_samples.push(interpreter);
+        }
+        if let Some(next_sweeps) = retry_sweeps {
+            repetitions = next_sweeps;
+            continue;
+        }
+        return Ok(FirstRunSeriesSamples {
+            fifo_samples,
+            interpreter_samples,
+            restarts,
+            common_sweeps: repetitions,
+        });
+    }
+}
+
+fn next_paired_sample_sweeps(
     current_sweeps: usize,
     fifo_elapsed_ns: u128,
     interpreter_elapsed_ns: u128,
-) -> Option<usize> {
-    let elapsed_ns = fifo_elapsed_ns.min(interpreter_elapsed_ns);
+) -> Result<Option<usize>, BenchError> {
     let minimum_ns = MIN_SAMPLE.as_nanos();
-    if elapsed_ns >= minimum_ns {
-        return None;
+    if fifo_elapsed_ns >= minimum_ns && interpreter_elapsed_ns >= minimum_ns {
+        return Ok(None);
     }
     let current = current_sweeps.max(1) as u128;
-    let target_work_ns = current.saturating_mul(minimum_ns);
-    let divisor = elapsed_ns.max(1);
-    let estimated = target_work_ns / divisor + u128::from(target_work_ns % divisor != 0);
-    let next = estimated.max(current.saturating_add(1));
-    usize::try_from(next).ok()
+    let target_work_ns = current
+        .checked_mul(minimum_ns)
+        .ok_or_else(|| err("paired sample calibration multiplication overflow"))?;
+    let elapsed_ns = fifo_elapsed_ns.min(interpreter_elapsed_ns).max(1);
+    let quotient = target_work_ns / elapsed_ns;
+    let estimated = quotient
+        .checked_add(u128::from(target_work_ns % elapsed_ns != 0))
+        .ok_or_else(|| err("paired sample calibration division overflow"))?;
+    let next = estimated.max(
+        current
+            .checked_add(1)
+            .ok_or_else(|| err("paired sample sweep count overflow"))?,
+    );
+    usize::try_from(next)
+        .map(Some)
+        .map_err(|_| err("paired sample sweep count exceeds platform limit"))
 }
 
 fn calibrate_common_first_run_sweeps(
@@ -652,14 +714,11 @@ fn calibrate_common_first_run_sweeps(
             (fifo, interpreter)
         };
         attempts = attempts.saturating_add(1);
-        if fifo.elapsed_ns >= MIN_SAMPLE.as_nanos()
-            && interpreter.elapsed_ns >= MIN_SAMPLE.as_nanos()
-        {
-            return Ok((repetitions, attempts));
+        let next = next_paired_sample_sweeps(repetitions, fifo.elapsed_ns, interpreter.elapsed_ns)?;
+        match next {
+            Some(next) => repetitions = next,
+            None => return Ok((repetitions, attempts)),
         }
-        repetitions =
-            next_paired_calibration_sweeps(repetitions, fifo.elapsed_ns, interpreter.elapsed_ns)
-                .ok_or_else(|| err("paired calibration sweep count overflow"))?;
     }
 }
 
@@ -1594,23 +1653,83 @@ mod tests {
     }
 
     #[test]
-    fn paired_calibration_expands_common_sweeps_when_actual_sample_is_short() {
+    fn measured_sample_drift_discards_partial_series_and_restarts_at_common_count() {
         let minimum_ns = MIN_SAMPLE.as_nanos();
+        let mut series_attempt = 0usize;
+        let measured = collect_first_run_series(1, FIRST_RUN_PAIRS, |pair, sweeps| {
+            if pair == 0 {
+                series_attempt += 1;
+            }
+            let (fifo_elapsed_ns, interpreter_elapsed_ns) = if series_attempt == 1 {
+                if pair == 0 {
+                    (minimum_ns + 100, minimum_ns + 100)
+                } else {
+                    (minimum_ns + 100, minimum_ns * 19 / 20)
+                }
+            } else {
+                (minimum_ns * sweeps as u128, minimum_ns * 2 * sweeps as u128)
+            };
+            let sample = |order, elapsed_ns| FirstRunSample {
+                pair,
+                order,
+                sweeps,
+                calls: 0,
+                retired_guest_instructions: 0,
+                native_block_executions: 0,
+                initialization_ns: 0,
+                execution_ns: elapsed_ns,
+                elapsed_ns,
+                cache_hits: 0,
+                cache_misses: 0,
+                successful_compiles: 0,
+                successful_publications: 0,
+                evictions: 0,
+                resident_entries_high_water: 0,
+                resident_code_bytes_high_water: 0,
+                resident_logical_metadata_bytes_high_water: 0,
+                arena_reserved_bytes: 0,
+            };
+            Ok((
+                sample(0, fifo_elapsed_ns),
+                sample(1, interpreter_elapsed_ns),
+            ))
+        })
+        .unwrap();
 
-        // Calibration suggested one sweep for both variants, but a later
-        // paired interpreter sample can drift below the fail-closed minimum.
+        assert_eq!(series_attempt, 2);
+        assert_eq!(measured.common_sweeps, 2);
+        assert_eq!(measured.fifo_samples.len(), FIRST_RUN_PAIRS);
+        assert_eq!(measured.interpreter_samples.len(), FIRST_RUN_PAIRS);
         assert_eq!(
-            next_paired_calibration_sweeps(1, minimum_ns, minimum_ns / 2),
-            Some(2)
+            measured.restarts,
+            vec![FirstRunSeriesRestart {
+                failed_pair: 1,
+                attempted_sweeps: 1,
+                fifo_elapsed_ns: minimum_ns + 100,
+                interpreter_elapsed_ns: minimum_ns * 19 / 20,
+                next_sweeps: 2,
+            }]
         );
-        assert_eq!(
-            next_paired_calibration_sweeps(4, minimum_ns * 2, minimum_ns / 2),
-            Some(8)
-        );
-        assert_eq!(
-            next_paired_calibration_sweeps(4, minimum_ns, minimum_ns),
-            None
-        );
+        for (pair, (fifo, interpreter)) in measured
+            .fifo_samples
+            .iter()
+            .zip(&measured.interpreter_samples)
+            .enumerate()
+        {
+            assert_eq!(fifo.pair, pair);
+            assert_eq!(interpreter.pair, pair);
+            assert_eq!(fifo.sweeps, 2);
+            assert_eq!(interpreter.sweeps, 2);
+            assert!(fifo.elapsed_ns >= minimum_ns);
+            assert!(interpreter.elapsed_ns >= minimum_ns);
+        }
+        // Pair zero from the failed first attempt was discarded.
+        assert_eq!(measured.fifo_samples[0].elapsed_ns, minimum_ns * 2);
+    }
+
+    #[test]
+    fn paired_sample_sweep_count_overflow_fails_closed() {
+        assert!(next_paired_sample_sweeps(usize::MAX, 1, MIN_SAMPLE.as_nanos()).is_err());
     }
 
     fn native_mov_case() -> Case {
