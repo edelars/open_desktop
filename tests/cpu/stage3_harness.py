@@ -83,12 +83,16 @@ LIFECYCLE_TESTS = (
     "active_code_v3_exits_on_dirty_prefix_and_finishes_unrelated_store_in_one_entry",
     "active_code_v3_invalidates_exact_not_yet_executed_tail_immediate",
     "active_code_v3_guards_faults_aliases_and_committed_stop_are_precise",
-    "active_code_v3_slot_survives_capacity_two_invalidation_and_safe_reuse",
+    "active_code_v3_pc_map_survives_artifact_drop_invalidation_and_safe_reuse",
     "active_code_v3_architectural_write_fault_matches_interpreter_and_is_atomic",
     "ir_two_load_pair_preserves_callbacks_faults_and_continuation",
 )
 
 ADDITIONAL_TEST_GATES = (
+    (
+        "s3_27c_active_code_v3_pc_map", "local_acceptance", "od-jit",
+        "memory_load_v2::tests::active_code_v3_compiles_only_exact_three_instruction_source",
+    ),
     (
         "s3_29e_coordinator", "local_acceptance", "od-host",
         "tests::s3_29e_bounded_arithmetic_load_coordinator",

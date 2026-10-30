@@ -153,6 +153,18 @@ compiler `CodeView` ending at `A+6` is independent of the guest mapping/fetch
 result. This test proves a fixture boundary only; production dispatcher and
 owner-backed MMU behavior remain untested.
 
+### Bounded S3-27c V3 host-PC attribution
+
+The exact `ActiveCodeBlockV3` compiler test requires a validated `PcMap` over
+all emitted ARM64 bytes, aligned contiguous ranges, exact commit boundaries at
+`A+10`, `A+13`, and `A+23`, and the expected commit/helper/exit admissibility
+classes. The native lifecycle test drops the compiler artifact, invalidates the
+cache, and then reuses the slot; the live handle retains its map and the stale
+generation is rejected. Helper failure attribution remains at store RIP `A+10`
+for both typed architectural-fault and backend-error outcomes. This is
+diagnostic attribution and does not provide host-fault recovery or replay
+authorization. Direct V2 maps and full S3-27 remain open.
+
 Production acceptance additionally needs the `od-machine` owner contract:
 private synchronous RAM capability, code lease across compile/publication/
 execution, MMU-aware fetch with deferred next-RIP fault delivery, and

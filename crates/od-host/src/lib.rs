@@ -63,12 +63,13 @@ struct TwoSiteMetadataV2 {
     pc_map: od_jit::statepoints::PcMap,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ActiveCodeMetadataV3 {
     entry_rip: u64,
     source_bytes: [u8; 23],
     site: od_jit::runtime::MemorySiteV2,
     compile_flavor: od_jit::translation::CompileFlavor,
+    pc_map: od_jit::statepoints::PcMap,
 }
 
 /// Compatibility name for the published executable mapping API.
@@ -2411,6 +2412,22 @@ impl PublishedArenaMemoryStore {
 }
 
 impl PublishedArenaActiveCodeV3 {
+    /// Return the immutable diagnostic attribution map retained with this
+    /// arena generation, independent of the compiler artifact's lifetime.
+    pub fn pc_map(&self) -> Result<od_jit::statepoints::PcMap, ActiveCodeExecutionErrorV3> {
+        let arena = self._block.arena.borrow();
+        let slot = arena
+            .slots
+            .get(self._block.slot_index)
+            .filter(|slot| slot.generation == self._block.generation)
+            .ok_or(ActiveCodeExecutionErrorV3::InvalidHandle)?;
+        let metadata = slot
+            .active_code_metadata_v3
+            .as_ref()
+            .ok_or(ActiveCodeExecutionErrorV3::InvalidMetadata)?;
+        Ok(metadata.pc_map.clone())
+    }
+
     /// Execute one verified three-instruction active-code artifact and apply
     /// its backing notification only after the generated call/result decode.
     pub fn execute_tracked_v3(
@@ -2700,7 +2717,13 @@ impl PublishedArenaBackend {
             source_bytes: *block.source_bytes(),
             site: *block.site(),
             compile_flavor: block.compile_flavor(),
+            pc_map: block.pc_map().clone(),
         };
+        if metadata.pc_map.code_len() as usize != code.len()
+            || metadata.pc_map.instruction_count() != 3
+        {
+            return Err(PublishedArenaError::InvalidBlockMetadata);
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             let mut arena = self.arena.borrow_mut();
@@ -36932,7 +36955,7 @@ mod tests {
     }
 
     #[test]
-    fn active_code_v3_slot_survives_capacity_two_invalidation_and_safe_reuse() {
+    fn active_code_v3_pc_map_survives_artifact_drop_invalidation_and_safe_reuse() {
         let _guard = jit_test_lock();
         let entry = 0x1000_u64;
         let old = 0x1122_3344_5566_7788_u64;
@@ -36954,6 +36977,8 @@ mod tests {
         let mut arena = PublishedArenaBackend::new(2).unwrap();
         assert_eq!(arena.capacity(), 2);
         let active = arena.publish_active_code_block_v3(&compiled).unwrap();
+        let retained_map = active.pc_map().unwrap();
+        drop(compiled);
         assert_eq!(arena.available_slots(), 1);
         assert_eq!(arena.cached_block_capacity(), 1);
 
@@ -36987,8 +37012,13 @@ mod tests {
             );
         }
 
+        let duplicate = od_jit::memory_load_v2::compile_active_code_block_v3(
+            CodeView::new(entry, &program).unwrap(),
+            entry,
+        )
+        .unwrap();
         assert!(matches!(
-            arena.publish_active_code_block_v3(&compiled),
+            arena.publish_active_code_block_v3(&duplicate),
             Err(PublishedArenaError::CapacityFull)
         ));
         assert_eq!(
@@ -37012,6 +37042,7 @@ mod tests {
         cache.clear();
         assert_eq!(cache.resident_entries(), 0);
         assert_eq!(arena.available_slots(), 1);
+        assert_eq!(active.pc_map().unwrap(), retained_map);
         let unchanged = od_isa::LongModeState {
             rip: entry,
             ..Default::default()
@@ -37060,6 +37091,7 @@ mod tests {
         assert_eq!(state.rip, entry + 13);
         assert_eq!(state.gpr[2], old);
         assert_eq!(owner.write_count, 1);
+        assert_eq!(active.pc_map().unwrap(), retained_map);
         assert_eq!(invalidated, 1);
         assert_eq!(cache.resident_entries(), 0);
         assert_eq!(
@@ -37140,6 +37172,14 @@ mod tests {
         );
         assert_eq!(arena.available_slots(), 0);
 
+        let stale = PublishedArenaActiveCodeV3 {
+            _block: PublishedArenaBlock {
+                arena: active._block.arena.clone(),
+                owner_id: active._block.owner_id.clone(),
+                slot_index: active._block.slot_index,
+                generation: active._block.generation,
+            },
+        };
         drop(active);
         assert_eq!(
             arena.available_slots(),
@@ -37154,6 +37194,12 @@ mod tests {
         .unwrap();
         let fresh_active = arena.publish_active_code_block_v3(&updated).unwrap();
         assert_eq!(arena.available_slots(), 0);
+        assert_eq!(fresh_active.pc_map().unwrap(), retained_map);
+        assert_eq!(
+            stale.pc_map(),
+            Err(ActiveCodeExecutionErrorV3::InvalidHandle),
+            "old generation cannot read the reused slot's attribution map"
+        );
 
         let stop = std::sync::Arc::new(AtomicU8::new(0));
         owner.request_stop_on_write = true;
@@ -37189,6 +37235,7 @@ mod tests {
 
         cache.clear();
         assert_eq!(arena.available_slots(), 1);
+        drop(stale);
         drop(arena);
         assert_eq!(
             PublishedArenaBackend::new(2).err(),
@@ -37219,6 +37266,12 @@ mod tests {
         .unwrap();
         let mut arena = PublishedArenaBackend::new(4).unwrap();
         let active = arena.publish_active_code_block_v3(&compiled).unwrap();
+        assert!(active.pc_map().unwrap().ranges().iter().any(|range| {
+            range.phase == od_jit::statepoints::StatePhase::Exit
+                && range.guest_rip == od_jit::statepoints::GuestRipSource::Fixed(entry + 10)
+                && range.snapshot
+                    == od_jit::statepoints::SnapshotAdmissibility::InadmissibleAfterEffect
+        }));
         let make_owner = || {
             let mut owner =
                 TrackedCodeFixture::new(&program[10..13], &[0x48, 0xB8, 1], &[0x48, 0xB8, 9]);
@@ -37590,6 +37643,12 @@ mod tests {
         .unwrap();
         let mut arena = PublishedArenaBackend::new(2).unwrap();
         let active = arena.publish_active_code_block_v3(&compiled).unwrap();
+        assert!(active.pc_map().unwrap().ranges().iter().any(|range| {
+            range.phase == od_jit::statepoints::StatePhase::Exit
+                && range.guest_rip == od_jit::statepoints::GuestRipSource::Fixed(entry + 10)
+                && range.snapshot
+                    == od_jit::statepoints::SnapshotAdmissibility::InadmissibleAfterEffect
+        }));
         let make_owner = || {
             let mut owner =
                 TrackedCodeFixture::new(&program[10..13], &[0x48, 0xB8, 1], &[0x48, 0xB8, 9]);
@@ -37751,6 +37810,7 @@ mod tests {
             source_bytes: *compiled.source_bytes(),
             site: *compiled.site(),
             compile_flavor: compiled.compile_flavor(),
+            pc_map: compiled.pc_map().clone(),
         };
         let site = metadata.site;
         let stop = AtomicU8::new(0);

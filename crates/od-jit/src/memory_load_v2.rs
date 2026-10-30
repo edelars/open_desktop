@@ -26,6 +26,8 @@ pub enum MemoryLoadCompileErrorV2 {
     Decode,
     UnsupportedForm,
     Encoding(EncodeError),
+    PcMap(crate::statepoints::PcMapError),
+    CodeRangeOverflow,
 }
 
 impl From<EncodeError> for MemoryLoadCompileErrorV2 {
@@ -153,6 +155,7 @@ pub struct MemoryStoreBlockV2 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ActiveCodeArtifactV3 {
     code: EncodedCode,
+    pc_map: crate::statepoints::PcMap,
     entry_rip: u64,
     source_bytes: [u8; 23],
     site: MemorySiteV2,
@@ -171,6 +174,9 @@ pub struct ActiveCodeBlockV3 {
 impl ActiveCodeBlockV3 {
     pub fn code(&self) -> &EncodedCode {
         &self.artifact.code
+    }
+    pub fn pc_map(&self) -> &crate::statepoints::PcMap {
+        &self.artifact.pc_map
     }
     pub fn site(&self) -> &MemorySiteV2 {
         &self.artifact.site
@@ -281,10 +287,11 @@ pub fn compile_active_code_block_v3(
     {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
-    let code = emit_active_code_block_v3(&site, entry_rip, prefix_value, tail_value)?;
+    let (code, pc_map) = emit_active_code_block_v3(&site, entry_rip, prefix_value, tail_value)?;
     Ok(ActiveCodeBlockV3 {
         artifact: ActiveCodeArtifactV3 {
             code,
+            pc_map,
             entry_rip,
             source_bytes: source,
             site,
@@ -310,7 +317,11 @@ fn emit_active_code_block_v3(
     entry_rip: u64,
     prefix_value: u64,
     tail_value: u64,
-) -> Result<EncodedCode, MemoryLoadCompileErrorV2> {
+) -> Result<(EncodedCode, crate::statepoints::PcMap), MemoryLoadCompileErrorV2> {
+    use crate::statepoints::{
+        GuestBoundaryPoint, GuestRipBoundary, GuestRipSource, HostCodeRange, PcMap,
+        SnapshotAdmissibility, StatePhase, StatePointRange,
+    };
     let mut encoder = Encoder::new();
     let stop_address = encoder.new_label()?;
     let stop_requested = encoder.new_label()?;
@@ -354,6 +365,7 @@ fn emit_active_code_block_v3(
         stop_requested,
         budget,
     )?;
+    let prefix_start = active_code_offset(&encoder)?;
     emit_imm64(&mut encoder, 9, prefix_value)?;
     encoder.str_x(
         XRegOrZero::Reg(xr(9)?),
@@ -367,6 +379,7 @@ fn emit_active_code_block_v3(
         LONG_MODE_RIP_OFFSET as u32,
     )?;
     decrement_remaining_and_retire(&mut encoder, 1)?;
+    let prefix_commit_end = active_code_offset(&encoder)?;
 
     // The store is one checked access through the shared V2 helper-call
     // primitive. All V3 guards and architectural commit sequencing stay here.
@@ -379,8 +392,12 @@ fn emit_active_code_block_v3(
         stop_requested,
         budget,
     )?;
-    emit_checked_memory_site_call_v2(&mut encoder, site.instruction_index())?;
+    let (helper_call_start, helper_call_end) =
+        emit_checked_memory_site_call_v2(&mut encoder, site.instruction_index())?;
+    let helper_call_start = active_word_offset_to_bytes(helper_call_start)?;
+    let helper_call_end = active_word_offset_to_bytes(helper_call_end)?;
     encoder.cbnz_w(WReg::new(0)?, helper_failure)?;
+    let store_commit_start = active_code_offset(&encoder)?;
     emit_imm64(&mut encoder, 9, site.next_rip())?;
     encoder.str_x(
         XRegOrZero::Reg(xr(9)?),
@@ -388,6 +405,7 @@ fn emit_active_code_block_v3(
         LONG_MODE_RIP_OFFSET as u32,
     )?;
     decrement_remaining_and_retire(&mut encoder, 2)?;
+    let store_commit_end = active_code_offset(&encoder)?;
     encoder.ldr_x(
         XRegOrZero::Reg(xr(9)?),
         HostAddressBase::Reg(xr(19)?),
@@ -404,6 +422,7 @@ fn emit_active_code_block_v3(
         stop_requested,
         budget,
     )?;
+    let tail_commit_start = active_code_offset(&encoder)?;
     emit_imm64(&mut encoder, 9, tail_value)?;
     encoder.str_x(
         XRegOrZero::Reg(xr(9)?),
@@ -417,25 +436,227 @@ fn emit_active_code_block_v3(
         LONG_MODE_RIP_OFFSET as u32,
     )?;
     decrement_remaining_and_retire(&mut encoder, 3)?;
+    let tail_commit_end = active_code_offset(&encoder)?;
     encoder.ldarb_w(WReg::new(9)?, HostAddressBase::Reg(xr(21)?));
     encoder.cbnz_w(WReg::new(9)?, stop_after_tail)?;
     encoder.b(complete)?;
 
+    let common_exit_start = active_code_offset(&encoder)?;
     encoder.bind(code_invalidated)?;
+    let code_invalidated_start = active_code_offset(&encoder)?;
     emit_return_v3(&mut encoder, RuntimeExitV3::CodeInvalidated as u16)?;
     encoder.bind(helper_failure)?;
+    let helper_failure_start = active_code_offset(&encoder)?;
     emit_return_v3(&mut encoder, RuntimeExitV3::MemoryOperation as u16)?;
     encoder.bind(stop_address)?;
+    let stop_address_start = active_code_offset(&encoder)?;
     emit_return_v3(&mut encoder, RuntimeExitV3::StopAddress as u16)?;
     encoder.bind(stop_requested)?;
+    let stop_requested_start = active_code_offset(&encoder)?;
     emit_return_v3(&mut encoder, RuntimeExitV3::StopRequested as u16)?;
     encoder.bind(budget)?;
+    let budget_start = active_code_offset(&encoder)?;
     emit_return_v3(&mut encoder, RuntimeExitV3::BudgetExhausted as u16)?;
     encoder.bind(stop_after_tail)?;
+    let stop_after_tail_start = active_code_offset(&encoder)?;
     emit_return_v3(&mut encoder, RuntimeExitV3::StopRequested as u16)?;
     encoder.bind(complete)?;
+    let complete_start = active_code_offset(&encoder)?;
     emit_return_v3(&mut encoder, RuntimeExitV3::Complete as u16)?;
-    encoder.finish().map_err(MemoryLoadCompileErrorV2::Encoding)
+    let code = encoder
+        .finish()
+        .map_err(MemoryLoadCompileErrorV2::Encoding)?;
+    let code_len = code
+        .words()
+        .len()
+        .checked_mul(4)
+        .and_then(|len| u32::try_from(len).ok())
+        .ok_or(MemoryLoadCompileErrorV2::CodeRangeOverflow)?;
+    let entry_rip = entry_rip;
+    let mut ranges = Vec::new();
+    let mut push = |start, end, rip, instruction_index, phase, snapshot| {
+        if start < end {
+            ranges.push(StatePointRange {
+                range: HostCodeRange::new(start, end),
+                guest_rip: rip,
+                instruction_index,
+                phase,
+                snapshot,
+            });
+        }
+    };
+    push(
+        0,
+        prefix_start,
+        GuestRipSource::Fixed(entry_rip),
+        Some(0),
+        StatePhase::BeforeInstruction,
+        SnapshotAdmissibility::CanonicalBoundary,
+    );
+    push(
+        prefix_start,
+        prefix_commit_end,
+        GuestRipSource::Fixed(entry_rip),
+        Some(0),
+        StatePhase::CommitInProgress,
+        SnapshotAdmissibility::InadmissibleDuringCommit,
+    );
+    push(
+        prefix_commit_end,
+        helper_call_start,
+        GuestRipSource::Fixed(site.guest_rip()),
+        Some(1),
+        StatePhase::BeforeInstruction,
+        SnapshotAdmissibility::ReplayCurrentInstruction,
+    );
+    push(
+        helper_call_start,
+        helper_call_end,
+        GuestRipSource::Fixed(site.guest_rip()),
+        Some(1),
+        StatePhase::HelperCall,
+        SnapshotAdmissibility::InadmissibleAfterEffect,
+    );
+    push(
+        helper_call_end,
+        store_commit_start,
+        GuestRipSource::Fixed(site.guest_rip()),
+        Some(1),
+        StatePhase::AfterHelper,
+        SnapshotAdmissibility::InadmissibleAfterEffect,
+    );
+    push(
+        store_commit_start,
+        store_commit_end,
+        GuestRipSource::Fixed(site.guest_rip()),
+        Some(1),
+        StatePhase::CommitInProgress,
+        SnapshotAdmissibility::InadmissibleDuringCommit,
+    );
+    push(
+        store_commit_end,
+        tail_commit_start,
+        GuestRipSource::Fixed(site.next_rip()),
+        Some(2),
+        StatePhase::BeforeInstruction,
+        SnapshotAdmissibility::ReplayCurrentInstruction,
+    );
+    push(
+        tail_commit_start,
+        tail_commit_end,
+        GuestRipSource::Fixed(site.next_rip()),
+        Some(2),
+        StatePhase::CommitInProgress,
+        SnapshotAdmissibility::InadmissibleDuringCommit,
+    );
+    let completed_rip = entry_rip
+        .checked_add(23)
+        .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?;
+    push(
+        tail_commit_end,
+        common_exit_start,
+        GuestRipSource::Fixed(completed_rip),
+        Some(2),
+        StatePhase::Exit,
+        SnapshotAdmissibility::CanonicalBoundary,
+    );
+    push(
+        code_invalidated_start,
+        helper_failure_start,
+        GuestRipSource::Fixed(site.next_rip()),
+        Some(1),
+        StatePhase::Exit,
+        SnapshotAdmissibility::CanonicalBoundary,
+    );
+    push(
+        helper_failure_start,
+        stop_address_start,
+        GuestRipSource::Fixed(site.guest_rip()),
+        Some(1),
+        StatePhase::Exit,
+        SnapshotAdmissibility::InadmissibleAfterEffect,
+    );
+    push(
+        stop_address_start,
+        stop_requested_start,
+        GuestRipSource::CanonicalState,
+        None,
+        StatePhase::Exit,
+        SnapshotAdmissibility::CanonicalBoundary,
+    );
+    push(
+        stop_requested_start,
+        budget_start,
+        GuestRipSource::CanonicalState,
+        None,
+        StatePhase::Exit,
+        SnapshotAdmissibility::CanonicalBoundary,
+    );
+    push(
+        budget_start,
+        stop_after_tail_start,
+        GuestRipSource::CanonicalState,
+        None,
+        StatePhase::Exit,
+        SnapshotAdmissibility::CanonicalBoundary,
+    );
+    push(
+        stop_after_tail_start,
+        complete_start,
+        GuestRipSource::Fixed(completed_rip),
+        Some(2),
+        StatePhase::Exit,
+        SnapshotAdmissibility::CanonicalBoundary,
+    );
+    push(
+        complete_start,
+        code_len,
+        GuestRipSource::Fixed(completed_rip),
+        Some(2),
+        StatePhase::Exit,
+        SnapshotAdmissibility::CanonicalBoundary,
+    );
+    drop(push);
+    let boundaries = vec![
+        GuestBoundaryPoint {
+            host_offset: prefix_commit_end,
+            rip: GuestRipBoundary::Fixed(site.guest_rip()),
+            instruction_index: 0,
+            committed_instructions: 1,
+            phase: StatePhase::Committed,
+            snapshot: SnapshotAdmissibility::CanonicalBoundary,
+        },
+        GuestBoundaryPoint {
+            host_offset: store_commit_end,
+            rip: GuestRipBoundary::Fixed(site.next_rip()),
+            instruction_index: 1,
+            committed_instructions: 2,
+            phase: StatePhase::Committed,
+            snapshot: SnapshotAdmissibility::CanonicalBoundary,
+        },
+        GuestBoundaryPoint {
+            host_offset: tail_commit_end,
+            rip: GuestRipBoundary::Fixed(completed_rip),
+            instruction_index: 2,
+            committed_instructions: 3,
+            phase: StatePhase::Committed,
+            snapshot: SnapshotAdmissibility::CanonicalBoundary,
+        },
+    ];
+    let pc_map = PcMap::new(code_len as usize, 3, ranges, boundaries)
+        .map_err(MemoryLoadCompileErrorV2::PcMap)?;
+    Ok((code, pc_map))
+}
+
+fn active_code_offset(encoder: &Encoder) -> Result<u32, MemoryLoadCompileErrorV2> {
+    active_word_offset_to_bytes(encoder.position())
+}
+
+fn active_word_offset_to_bytes(position: usize) -> Result<u32, MemoryLoadCompileErrorV2> {
+    position
+        .checked_mul(4)
+        .and_then(|offset| u32::try_from(offset).ok())
+        .ok_or(MemoryLoadCompileErrorV2::CodeRangeOverflow)
 }
 
 fn emit_v3_instruction_guard(
@@ -1447,7 +1668,7 @@ fn emit_memory_operation_v2(site: &MemorySiteV2) -> Result<EncodedCode, EncodeEr
 fn emit_checked_memory_site_call_v2(
     encoder: &mut Encoder,
     site_index: u32,
-) -> Result<(), EncodeError> {
+) -> Result<(usize, usize), EncodeError> {
     encoder.mov_x(xr(0)?, XRegOrZero::Reg(xr(19)?));
     encoder.movz_x(xr(1)?, site_index as u16, 0)?;
     let helper = memory_site_helper_v2 as *const () as usize as u64;
@@ -1455,8 +1676,9 @@ fn emit_checked_memory_site_call_v2(
     encoder.movk_x(xr(16)?, (helper >> 16) as u16, 1)?;
     encoder.movk_x(xr(16)?, (helper >> 32) as u16, 2)?;
     encoder.movk_x(xr(16)?, (helper >> 48) as u16, 3)?;
+    let call_start = encoder.position();
     encoder.blr(xr(16)?);
-    Ok(())
+    Ok((call_start, encoder.position()))
 }
 
 fn emit_return(encoder: &mut Encoder, tag: u16) -> Result<(), EncodeError> {
@@ -1495,6 +1717,7 @@ fn xr(number: u8) -> Result<XReg, EncodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::statepoints::{GuestRipBoundary, GuestRipSource, SnapshotAdmissibility, StatePhase};
     use od_isa::Register;
     use od_isa::long_decode::AddressBase;
 
@@ -7540,6 +7763,127 @@ mod tests {
             crate::translation::CompileFlavor::S3_24aActiveCodeV3
         );
         assert!(!artifact.code().words().is_empty());
+
+        let map = artifact.pc_map();
+        let code_len = (artifact.code().words().len() * 4) as u32;
+        assert_eq!(map.code_len(), code_len);
+        assert_eq!(map.instruction_count(), 3);
+        assert_eq!(map.ranges().first().unwrap().range.start(), 0);
+        assert_eq!(map.ranges().last().unwrap().range.end(), code_len);
+        for (index, range) in map.ranges().iter().enumerate() {
+            assert_eq!(range.range.start() % 4, 0, "range {index} start");
+            assert_eq!(range.range.end() % 4, 0, "range {index} end");
+            assert!(range.range.start() < range.range.end());
+            if let Some(next) = map.ranges().get(index + 1) {
+                assert_eq!(range.range.end(), next.range.start(), "range {index} gap");
+            }
+        }
+        assert_eq!(
+            map.boundaries()
+                .iter()
+                .map(|boundary| (
+                    boundary.rip,
+                    boundary.committed_instructions,
+                    boundary.instruction_index,
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (GuestRipBoundary::Fixed(0xA00A), 1, 0),
+                (GuestRipBoundary::Fixed(0xA00D), 2, 1),
+                (GuestRipBoundary::Fixed(0xA017), 3, 2),
+            ]
+        );
+        let commits: Vec<_> = map
+            .ranges()
+            .iter()
+            .filter(|range| range.phase == StatePhase::CommitInProgress)
+            .collect();
+        assert_eq!(commits.len(), 3);
+        for (commit, boundary, guest_rip, instruction_index, committed_count) in [
+            (&commits[0], &map.boundaries()[0], 0xA000, 0, 1),
+            (&commits[1], &map.boundaries()[1], 0xA00A, 1, 2),
+            (&commits[2], &map.boundaries()[2], 0xA00D, 2, 3),
+        ] {
+            assert_eq!(commit.guest_rip, GuestRipSource::Fixed(guest_rip));
+            assert_eq!(commit.instruction_index, Some(instruction_index));
+            assert_eq!(
+                commit.snapshot,
+                SnapshotAdmissibility::InadmissibleDuringCommit
+            );
+            assert_eq!(boundary.host_offset, commit.range.end());
+            assert_eq!(boundary.phase, StatePhase::Committed);
+            assert_eq!(boundary.committed_instructions, committed_count);
+            assert_eq!(boundary.snapshot, SnapshotAdmissibility::CanonicalBoundary);
+        }
+        assert!(map.ranges().iter().any(|range| {
+            range.phase == StatePhase::HelperCall
+                && range.guest_rip == GuestRipSource::Fixed(0xA00A)
+                && range.snapshot == SnapshotAdmissibility::InadmissibleAfterEffect
+        }));
+        assert!(map.ranges().iter().any(|range| {
+            range.phase == StatePhase::AfterHelper
+                && range.guest_rip == GuestRipSource::Fixed(0xA00A)
+                && range.snapshot == SnapshotAdmissibility::InadmissibleAfterEffect
+        }));
+        let exits: Vec<_> = map
+            .ranges()
+            .iter()
+            .filter(|range| range.phase == StatePhase::Exit)
+            .collect();
+        let helper_failure: Vec<_> = exits
+            .iter()
+            .filter(|range| {
+                range.guest_rip == GuestRipSource::Fixed(0xA00A)
+                    && range.instruction_index == Some(1)
+            })
+            .collect();
+        assert_eq!(helper_failure.len(), 1);
+        assert_eq!(
+            helper_failure[0].snapshot,
+            SnapshotAdmissibility::InadmissibleAfterEffect
+        );
+        let invalidated: Vec<_> = exits
+            .iter()
+            .filter(|range| {
+                range.guest_rip == GuestRipSource::Fixed(0xA00D)
+                    && range.instruction_index == Some(1)
+            })
+            .collect();
+        assert_eq!(invalidated.len(), 1);
+        assert_eq!(
+            invalidated[0].snapshot,
+            SnapshotAdmissibility::CanonicalBoundary
+        );
+        let tail_exits: Vec<_> = exits
+            .iter()
+            .filter(|range| {
+                range.guest_rip == GuestRipSource::Fixed(0xA017)
+                    && range.instruction_index == Some(2)
+            })
+            .collect();
+        assert_eq!(
+            tail_exits.len(),
+            3,
+            "post-tail path, STOP-after-tail, Complete"
+        );
+        assert!(
+            tail_exits
+                .iter()
+                .all(|range| range.snapshot == SnapshotAdmissibility::CanonicalBoundary)
+        );
+        let shared_exits: Vec<_> = exits
+            .iter()
+            .filter(|range| {
+                range.guest_rip == GuestRipSource::CanonicalState
+                    && range.instruction_index.is_none()
+            })
+            .collect();
+        assert_eq!(shared_exits.len(), 3, "stop-RIP, STOP, and budget stubs");
+        assert!(
+            shared_exits
+                .iter()
+                .all(|range| range.snapshot == SnapshotAdmissibility::CanonicalBoundary)
+        );
 
         for malformed in [
             bytes[..22].to_vec(),

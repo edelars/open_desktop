@@ -2032,6 +2032,26 @@ owner-backed MMU integration. Production cross-block fetch/fault delivery and
 S3-27's general PC-map coverage remain open. See the
 [S3-27b report](../reports/STAGE_3_S3-27b_2026-10-27.md).
 
+### S3-27c: diagnostic host-PC attribution for the exact V3 fixture
+
+The exact three-instruction `ActiveCodeBlockV3` carries a validated `PcMap`
+whose byte ranges cover the emitted ARM64 words contiguously. Boundaries record
+the committed guest RIPs `A+10`, `A+13`, and `A+23` after 1, 2, and 3 retired
+instructions; map instruction indices are zero-based (`0`, `1`, `2`). Canonical state writes and retirement accounting are marked
+`CommitInProgress`; the checked helper and post-write/pre-commit ranges are
+marked inadmissible after an effect. Helper failure is attributed to store RIP
+`A+10`, while its typed helper outcome distinguishes architectural faults from
+backend failures. CodeInvalidated and its stub are fixed to `A+13`; Complete and
+STOP-after-tail are fixed to `A+23`. Shared stop-RIP, STOP, and budget stubs use
+canonical state. This map is diagnostic attribution only: it does not install
+host-fault recovery or authorize replay after an effect.
+
+The map is cloned into the published arena slot metadata and remains available
+after compiler artifact drop and cache invalidation while that generation is
+live. Generation reuse rejects an old handle. This bounded exact-source fixture
+does not map direct V2 blocks, provide owner/MMU integration, or close S3-27.
+See the [S3-27c report](../reports/STAGE_3_S3-27c_2026-10-30.md).
+
 ### S3-19a: invocation-local checked memory helper ABI partial
 
 `od_jit::memory_bridge::CheckedMemoryAdapter` borrows one `&mut dyn
