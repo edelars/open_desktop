@@ -303,6 +303,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 subpd_controls: input.fixture.subpd_controls,
                 mulpd_controls: input.fixture.mulpd_controls,
                 divpd_controls: input.fixture.divpd_controls,
+                divsd_controls: input.fixture.divsd_controls,
                 divps_controls: input.fixture.divps_controls,
                 mulsd_controls: input.fixture.mulsd_controls,
                 mulss_controls: input.fixture.mulss_controls,
@@ -9408,6 +9409,84 @@ fn divpd_independent_integer_oracle_covers_rounding_and_exception_boundaries() {
     assert!(!invalid.3);
     let inf_over_zero = independent_divpd_lane(0x7ff0_0000_0000_0000, 0, 0x1f80);
     assert_eq!(inf_over_zero.3, false);
+}
+
+#[test]
+fn divsd_independent_integer_oracle_covers_scalar_boundaries() {
+    use super::independent_divsd;
+
+    let one = 0x3ff0_0000_0000_0000;
+    let three = 0x4008_0000_0000_0000;
+    for (rc, expected) in [
+        (0, 0x3fd5_5555_5555_5555),
+        (1, 0x3fd5_5555_5555_5555),
+        (2, 0x3fd5_5555_5555_5556),
+        (3, 0x3fd5_5555_5555_5555),
+    ] {
+        let result = independent_divsd(one, three, 0x1f80 | (rc << 13));
+        assert_eq!(result.0, expected);
+        assert_eq!(
+            (result.1, result.2, result.3, result.4, result.5, result.6),
+            (false, false, false, false, false, true)
+        );
+    }
+
+    let min_normal = 0x0010_0000_0000_0000;
+    let min_subnormal = 1;
+    let half_midpoint = independent_divsd(0x001f_ffff_ffff_ffff, 0x4000_0000_0000_0000, 0x1f80);
+    assert_eq!(half_midpoint.0, min_normal);
+    assert_eq!((half_midpoint.5, half_midpoint.6), (true, true));
+    for (rc, expected) in [
+        (0, min_normal),
+        (1, 0x000f_ffff_ffff_ffff),
+        (2, min_normal),
+        (3, 0x000f_ffff_ffff_ffff),
+    ] {
+        let rounded = independent_divsd(
+            0x001f_ffff_ffff_ffff,
+            0x4000_0000_0000_0000,
+            0x1f80 | (rc << 13),
+        );
+        assert_eq!(rounded.0, expected);
+        assert_eq!((rounded.5, rounded.6), (true, true));
+    }
+    for (rc, expected) in [
+        (0, 0x000f_ffff_ffff_ffff),
+        (1, 0x000f_ffff_ffff_ffff),
+        (2, min_normal),
+        (3, 0x000f_ffff_ffff_ffff),
+    ] {
+        let rounded = independent_divsd(min_normal, 0x3ff0_0000_0000_0001, 0x1f80 | (rc << 13));
+        assert_eq!(rounded.0, expected);
+        assert_eq!((rounded.5, rounded.6), (true, true));
+    }
+    let exact_tiny = independent_divsd(min_normal, 0x4000_0000_0000_0000, 0x1f80);
+    assert_eq!(exact_tiny.0, 0x0008_0000_0000_0000);
+    assert_eq!((exact_tiny.5, exact_tiny.6), (false, false));
+    let flushed = independent_divsd(min_normal, 0x4000_0000_0000_0000, 0x9f80);
+    assert_eq!(flushed.0, 0);
+    assert_eq!((flushed.5, flushed.6), (true, true));
+    let half_min_subnormal = independent_divsd(min_normal, 0x4340_0000_0000_0000, 0x1f80);
+    assert_eq!(half_min_subnormal.0, 0);
+    assert_eq!((half_min_subnormal.5, half_min_subnormal.6), (true, true));
+    let round_up = independent_divsd(min_normal, 0x4340_0000_0000_0000, 0x5f80);
+    assert_eq!(round_up.0, min_subnormal);
+    let negative_up = independent_divsd(one | (1 << 63), three, 0x5f80);
+    assert_eq!(negative_up.0, 0xbfd5_5555_5555_5555);
+    let negative_down = independent_divsd(one | (1 << 63), three, 0x3f80);
+    assert_eq!(negative_down.0, 0xbfd5_5555_5555_5556);
+
+    let subnormal_over_zero = independent_divsd(1, 0, 0x1f80 & !(1 << 8));
+    assert_eq!(
+        (
+            subnormal_over_zero.1,
+            subnormal_over_zero.2,
+            subnormal_over_zero.3
+        ),
+        (false, false, true)
+    );
+    let infinity_over_zero = independent_divsd(0x7ff0_0000_0000_0000, 0, 0x1f80 & !(1 << 9));
+    assert_eq!(infinity_over_zero.3, false);
 }
 
 #[test]

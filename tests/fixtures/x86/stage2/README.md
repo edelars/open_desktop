@@ -6837,3 +6837,15 @@ Intel SDM Rev. 093 is for VEX forms; the legacy SSE rows are the source for this
 encoding. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37aw--bounded-masked-range-long64-divps-xmm-register-pairs),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37aw--bounded-masked-range-long64-divps-xmm-register-pairs),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37aw--divps-register-pair-interpreter-profile).
+
+### S2-37ax bounded masked-range DIVSD register-pair profile
+
+`s2_37ax_divsd_xmm0_xmm1.case.json` is a literal canonical `F2 0F 5E /r`
+Long64 register fixture. Its low qwords exercise 1.0/3.0; the destination high
+qword is an SNaN canary and the source high qword is a subnormal canary. They
+must not contribute exceptions, and the destination high qword must be
+preserved. The local schema independently checks exact-rational rounding and
+pre/post exception atomicity. Sources and scope limits are recorded in the
+[plan](../../../../docs/plans/STAGE_2.md#s2-37ax--canonical-long64-divsd-xmm-register-pairs),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ax--bounded-masked-range-long64-divsd-xmm-register-pairs),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ax--divsd-register-pair-interpreter-profile).

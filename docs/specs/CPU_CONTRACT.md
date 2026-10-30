@@ -13683,3 +13683,37 @@ gates follow the generic SSE/CR0/CR4 rules documented for this profile; Vol. 1
 Floating-Point Reference Sheet v2.13. This bounded local profile does not claim
 memory forms or memory alignment, other modes, physical acceptance, complete
 unmasked OE/UE behavior, or closure of parent S2-37/S2-38.
+
+## S2-37ax — bounded masked-range Long64 DIVSD XMM register pairs
+
+The local schema-v2 profile `s2-long-divsd-registers-v1` admits canonical
+Long64 legacy `F2 0F 5E /r`, ModR/M.mod=3 and all 16×16 XMM register pairs. Low
+forms are four bytes; one adjacent REX `41`, `44` or `45` after F2 extends
+register indices, for five bytes. Memory, 66/F3, reordered/repeated/redundant
+prefixes, REX.W/X/40, trailing bytes, VEX and EVEX are rejected. Full fetch
+precedes SSE2/CR0.EM/CR4.OSFXSR #UD and then CR0.TS #NM at CPL0–3; no data
+callbacks occur. JIT/native/C ABI/fragment/generic paths remain closed.
+
+Admission requires MXCSR.OM=1 and UM=1, rejects DAZ/reserved bits, and accepts
+all RC modes, FTZ, IM/DM/ZM/PM and prior sticky flags. Execution snapshots both
+XMM registers, computes only old destination.low64 divided by source.low64,
+preserves destination.high64 and ignores source.high64. NaNs select the first
+original operand; a selected SNaN is quieted and any SNaN raises IE, while NaNs
+suppress same-lane ZE/DE. `0/0` and `∞/∞` raise IE and produce masked indefinite.
+A finite or subnormal numerator divided by zero raises ZE; `∞/0` does not.
+Otherwise any subnormal input raises precompute DE. Unmasked IE/ZE/DE commits
+new status and preserves XMM/RIP/retirement. With pre-events masked,
+`Binary64::divide_raw_result` executes under MXCSR.RC. Masked overflow sets
+OE|PE. Tiny results are classified from WPR's unbounded exponent after
+precision rounding: tiny inexact results set UE|PE, and FTZ flushes tiny
+nonzero results to signed zero with UE|PE. Unmasked PM commits flags then
+faults atomically; old sticky flags alone do not fault.
+
+The independent raw-u64 exact-rational oracle uses no host FP or production
+helpers. The literal fixture uses `1/3` (RN/RD/RZ=`3fd5555555555555`, RU=`3fd5555555555556`, PE) and places a signaling-NaN canary in destination.high64 plus a subnormal canary in source.high64. Independent boundary coverage includes half-minsub, midpoint between maxsub/minnormal, minimum-normal/nextafter(1,+), exact tiny, FTZ, negative directed rounding, subnormal/zero with ZM=1/DM=0 and infinity/zero with ZM=0. These are local interpreter/schema checks only and do not establish physical acceptance.
+
+Sources: Intel SDM Rev. 093 Vol. 2A DIVSD pp. 3-273–3-274 and legacy SSE
+rows in Table 2-20. The explicit Type 3 reference on p. 3-274 applies to
+VEX-encoded forms, not legacy DIVSD. Generic SIMD gates and exceptions; Vol. 1
+§§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel
+Floating-Point Reference Sheet v2.13.

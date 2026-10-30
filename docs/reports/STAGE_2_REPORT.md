@@ -18838,3 +18838,33 @@ Vol. 3A Event 19/Table 7-8; Intel Floating-Point Reference Sheet v2.13. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37aw--bounded-masked-range-long64-divps-xmm-register-pairs),
 [plan](../plans/STAGE_2.md#s2-37aw--bounded-masked-range-long64-divps-xmm-register-pairs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37aw-bounded-masked-range-divps-register-pair-profile).
+
+## S2-37ax — DIVSD register-pair interpreter profile (2026-10-30)
+
+Implemented strict schema-v2 profile `s2-long-divsd-registers-v1` for canonical
+Long64 legacy `F2 0F 5E /r`, ModR/M.mod=3, across all 256 XMM pairs. The scalar
+path snapshots both operands, divides only old destination.low64 by
+source.low64, preserves the destination high qword and ignores the source high
+qword. The independent raw-u64 rational oracle is separate from the production
+Binary64 divider. The literal fixture exercises 1/3 and high-qword SNaN and
+subnormal canaries. Prefix, memory, trailing-byte, VEX and EVEX neighbors are
+rejected. Runtime fetch/gate order is SSE2/EM/OSFXSR #UD then TS #NM and no data
+callbacks; JIT/native/C ABI/fragment/generic execution remains closed.
+
+Validation: `cargo test -p od-isa --offline divsd_` (4 passed, including
+cross-profile rejection and OSXMMEXCPT fallback), `cargo test -p od-isa
+--offline divpd_` (4 passed), `cargo test -p od-isa --offline divps_` (2
+passed), `cargo test -p od-testkit --offline` (437 passed), the focused
+independent DIVSD oracle test, and the DIVSD/DIVPD/DIVPS/MUL/SUB schema-v2
+runner regression filters all passed. Final `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `python3
+tools/check_layout.py`, and `git diff --check` passed. Independent review found
+and verified the DIVPD/DIVSD profile separation fix; no remaining review
+findings.
+
+Sources: Intel SDM Rev. 093 Vol. 2A DIVSD pp. 3-273–3-274; legacy SSE rows in
+Table 2-20. The explicit Type 3 reference on p. 3-274 concerns VEX forms, not
+legacy DIVSD. Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event
+19/Table 7-8; Intel Floating-Point Reference Sheet v2.13. This local profile
+does not claim physical acceptance, memory forms, other modes, complete
+unmasked OE/UE behavior or closure of parent S2-37/S2-38.

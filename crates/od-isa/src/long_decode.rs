@@ -984,6 +984,11 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only canonical F2 DIVSD register pair; scalar binary64 division.
+    DivsdRegister {
+        destination: u8,
+        source: u8,
+    },
     /// Local-only canonical no-prefix DIVPS register pair.
     DivpsRegister {
         destination: u8,
@@ -3443,6 +3448,19 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         .rex
                         .is_some_and(|rex| matches!(rex, 0x41 | 0x44 | 0x45))
                     && prefix_bytes[1] == prefixes.rex.unwrap());
+        let divsd_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x5e
+            && prefixes.group1 == Some(0xf2)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 1 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && prefix_bytes[0] == 0xf2
+                    && prefixes
+                        .rex
+                        .is_some_and(|rex| matches!(rex, 0x41 | 0x44 | 0x45))
+                    && prefix_bytes[1] == prefixes.rex.unwrap());
         let divps_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x5e
             && prefixes.group1.is_none()
@@ -4020,6 +4038,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !subps_register
                 && !subsd_register
                 && !mulsd_register
+                && !divsd_register
                 && !mulss_register
                 && !subss_register
                 && !cvttps2dq_register
@@ -4298,6 +4317,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
                 let rex = prefixes.rex.unwrap_or(0x40);
                 Operation::DivpdRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x5e) if divsd_register => {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                let rex = prefixes.rex.unwrap_or(0x40);
+                Operation::DivsdRegister {
                     destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                     source: (modrm & 7) | ((rex & 1) << 3),
                 }
@@ -10893,6 +10923,48 @@ mod tests {
     }
 
     #[test]
+    fn divsd_register_decodes_all_xmm_pairs_and_rejects_other_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 1) & 4) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut code = vec![0xf2];
+                if destination >= 8 || source >= 8 {
+                    code.push(rex);
+                }
+                code.extend([0x0f, 0x5e, modrm]);
+                let mut memory = Memory::new(&code);
+                let decoded = memory.decode().unwrap_or_else(|error| {
+                    panic!("{destination},{source} {code:02x?}: {error:?}")
+                });
+                assert_eq!(
+                    decoded.operation,
+                    Operation::DivsdRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, code.len() as u8);
+            }
+        }
+        for bytes in [
+            &[0xf2, 0x40, 0x0f, 0x5e, 0xc1][..],
+            &[0xf2, 0x42, 0x0f, 0x5e, 0xc1][..],
+            &[0xf2, 0x48, 0x0f, 0x5e, 0xc1][..],
+            &[0x40, 0xf2, 0x0f, 0x5e, 0xc1][..],
+            &[0xf2, 0xf2, 0x0f, 0x5e, 0xc1][..],
+            &[0xf3, 0xf2, 0x0f, 0x5e, 0xc1][..],
+            &[0xf2, 0x0f, 0x5e][..],
+            &[0xf2, 0x0f, 0x5e, 0x01][..],
+            &[0xc5, 0xfd, 0x5e, 0xc1][..],
+            &[0x62, 0xf1, 0xfd, 0x08, 0x5e, 0xc1][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn divps_register_decodes_all_xmm_pairs_and_rejects_other_encodings() {
         for destination in 0..16u8 {
             for source in 0..16u8 {
@@ -10922,7 +10994,6 @@ mod tests {
             &[0x42, 0x0f, 0x5e, 0xc1][..],
             &[0x48, 0x0f, 0x5e, 0xc1][..],
             &[0x41, 0x66, 0x0f, 0x5e, 0xc1][..],
-            &[0xf2, 0x0f, 0x5e, 0xc1][..],
             &[0xf3, 0x0f, 0x5e, 0xc1][..],
             &[0x41, 0x41, 0x0f, 0x5e, 0xc1][..],
             &[0x0f, 0x5e][..],

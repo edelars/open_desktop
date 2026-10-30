@@ -26914,6 +26914,530 @@ fn divpd_register_pairs_and_lane_exception_order_are_interpreter_only() {
 }
 
 #[test]
+fn divsd_register_pairs_and_lane_exception_order_are_interpreter_only() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_37ax_divsd_xmm0_xmm1.case.json");
+    let bytes = fs::read(path).unwrap();
+    let (base, base_result) = run(&bytes, "interpreter", 0);
+    let fixture = base.fixture.clone();
+    let mut tampered = base_result.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0] = "00".repeat(16);
+    }
+    assert!(tampered.validate_for(&base).is_err());
+
+    let mut malformed = fixture.clone();
+    malformed.memory[0].initial_bytes_hex = "66400f5ec1".into();
+    malformed.memory[0].comparison_mask_hex = "ff".repeat(5);
+    malformed.memory[0].length = 5;
+    malformed.stop_rip = Some(HexU64(malformed.initial_state.rip.get() + 5));
+    assert!(Fixture::from_json(&serde_json::to_vec(&malformed).unwrap()).is_err());
+    let encode = |raw: u64| {
+        raw.to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let write_lane = |case: &mut Fixture, register: usize, lane: usize, raw: u64| {
+        case.initial_state.sse.as_mut().unwrap().xmm[register]
+            .replace_range(lane * 16..lane * 16 + 16, &encode(raw));
+    };
+    let execute = |case: Fixture| {
+        let input = serde_json::to_vec(&case).unwrap();
+        let (loaded, result) = run(&input, "interpreter", 0);
+        od_testkit::v2::compare(&loaded, &result, &result)
+            .unwrap_or_else(|error| panic!("{}: {error:?}", loaded.fixture.case_id));
+        (loaded, result)
+    };
+    let read_lane = |result: &RunResult, register: usize, lane: usize| {
+        let xmm = &snapshot(result).state.sse.as_ref().unwrap().xmm[register];
+        u64::from_le_bytes(
+            (0..8)
+                .map(|i| {
+                    u8::from_str_radix(&xmm[lane * 16 + i * 2..lane * 16 + i * 2 + 2], 16).unwrap()
+                })
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        )
+    };
+
+    // Exercise every ModR/M pair, including aliases, from immutable source and
+    // destination snapshots. Every register contains finite 1.0 values.
+    for destination in 0u8..16 {
+        for source in 0u8..16 {
+            let mut case = fixture.clone();
+            case.case_id = format!("s2_37ax_pair_{destination}_{source}");
+            let rex = 0x40 | ((destination >> 1) & 4) | (source >> 3);
+            let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+            let mut code = vec![0xf2];
+            if destination >= 8 || source >= 8 {
+                code.push(rex);
+            }
+            code.extend([0x0f, 0x5e, modrm]);
+            let region = &mut case.memory[0];
+            region.initial_bytes_hex = code.iter().map(|byte| format!("{byte:02x}")).collect();
+            region.comparison_mask_hex = "ff".repeat(code.len());
+            region.length = code.len() as u32;
+            case.stop_rip = Some(HexU64(case.initial_state.rip.get() + code.len() as u64));
+            write_lane(&mut case, destination as usize, 0, 0x3ff0_0000_0000_0000);
+            write_lane(&mut case, source as usize, 0, 0x3ff0_0000_0000_0000);
+            let original_high =
+                case.initial_state.sse.as_ref().unwrap().xmm[destination as usize][16..].to_owned();
+            let (_, result) = execute(case);
+            assert_eq!(
+                read_lane(&result, destination as usize, 0),
+                0x3ff0_0000_0000_0000,
+                "{destination},{source}"
+            );
+            assert_eq!(
+                snapshot(&result).state.sse.as_ref().unwrap().xmm[destination as usize][16..],
+                original_high,
+                "upper qword {destination},{source}"
+            );
+        }
+    }
+
+    // The specified 1/3 vector checks all RC directions in the real runtime.
+    for (rc, expected) in [
+        (0, 0x3fd5_5555_5555_5555),
+        (1, 0x3fd5_5555_5555_5555),
+        (2, 0x3fd5_5555_5555_5556),
+        (3, 0x3fd5_5555_5555_5555),
+    ] {
+        let mut case = fixture.clone();
+        case.case_id = format!("s2_37ax_one_third_rc{rc}");
+        write_lane(&mut case, 0, 0, 0x3ff0_0000_0000_0000);
+        write_lane(&mut case, 1, 0, 0x4008_0000_0000_0000);
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (rc << 13));
+        let (_, result) = execute(case);
+        assert_eq!(read_lane(&result, 0, 0), expected);
+        assert_eq!(
+            snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x20,
+            0x20
+        );
+    }
+
+    // Production DIVSD is checked against literal binary64 WPR boundaries.
+    for (name, lhs, rhs, mxcsr, expected, status) in [
+        (
+            "half_minsub_rn",
+            0x0010_0000_0000_0000,
+            0x4340_0000_0000_0000,
+            0x1f80,
+            0,
+            0x30,
+        ),
+        (
+            "half_minsub_ru",
+            0x0010_0000_0000_0000,
+            0x4340_0000_0000_0000,
+            0x5f80,
+            1,
+            0x30,
+        ),
+        (
+            "midpoint_rn",
+            0x001f_ffff_ffff_ffff,
+            0x4000_0000_0000_0000,
+            0x1f80,
+            0x0010_0000_0000_0000,
+            0x30,
+        ),
+        (
+            "midpoint_rd",
+            0x001f_ffff_ffff_ffff,
+            0x4000_0000_0000_0000,
+            0x3f80,
+            0x000f_ffff_ffff_ffff,
+            0x30,
+        ),
+        (
+            "midpoint_ru",
+            0x001f_ffff_ffff_ffff,
+            0x4000_0000_0000_0000,
+            0x5f80,
+            0x0010_0000_0000_0000,
+            0x30,
+        ),
+        (
+            "midpoint_rz",
+            0x001f_ffff_ffff_ffff,
+            0x4000_0000_0000_0000,
+            0x7f80,
+            0x000f_ffff_ffff_ffff,
+            0x30,
+        ),
+        (
+            "minnormal_nextafter_rn",
+            0x0010_0000_0000_0000,
+            0x3ff0_0000_0000_0001,
+            0x1f80,
+            0x000f_ffff_ffff_ffff,
+            0x30,
+        ),
+        (
+            "minnormal_nextafter_ru",
+            0x0010_0000_0000_0000,
+            0x3ff0_0000_0000_0001,
+            0x5f80,
+            0x0010_0000_0000_0000,
+            0x30,
+        ),
+        (
+            "exact_tiny",
+            0x0010_0000_0000_0000,
+            0x4000_0000_0000_0000,
+            0x1f80,
+            0x0008_0000_0000_0000,
+            0,
+        ),
+        (
+            "ftz_inexact_tiny",
+            0x0010_0000_0000_0000,
+            0x4340_0000_0000_0000,
+            0x9f80,
+            0,
+            0x30,
+        ),
+        (
+            "ftz_half_minsub_rc0",
+            0x0010_0000_0000_0000,
+            0x4340_0000_0000_0000,
+            0x9f80,
+            0,
+            0x30,
+        ),
+        (
+            "ftz_half_minsub_rc1",
+            0x0010_0000_0000_0000,
+            0x4340_0000_0000_0000,
+            0xbf80,
+            0,
+            0x30,
+        ),
+        (
+            "ftz_half_minsub_rc2",
+            0x0010_0000_0000_0000,
+            0x4340_0000_0000_0000,
+            0xdf80,
+            0,
+            0x30,
+        ),
+        (
+            "ftz_half_minsub_rc3",
+            0x0010_0000_0000_0000,
+            0x4340_0000_0000_0000,
+            0xff80,
+            0,
+            0x30,
+        ),
+        (
+            "ftz_midpoint_rc0",
+            0x001f_ffff_ffff_ffff,
+            0x4000_0000_0000_0000,
+            0x9f80,
+            0,
+            0x30,
+        ),
+        (
+            "ftz_midpoint_rc1",
+            0x001f_ffff_ffff_ffff,
+            0x4000_0000_0000_0000,
+            0xbf80,
+            0,
+            0x30,
+        ),
+        (
+            "ftz_midpoint_rc2",
+            0x001f_ffff_ffff_ffff,
+            0x4000_0000_0000_0000,
+            0xdf80,
+            0,
+            0x30,
+        ),
+        (
+            "ftz_midpoint_rc3",
+            0x001f_ffff_ffff_ffff,
+            0x4000_0000_0000_0000,
+            0xff80,
+            0,
+            0x30,
+        ),
+        (
+            "ftz_min_normal_boundary_rc0",
+            0x0010_0000_0000_0000,
+            0x3ff0_0000_0000_0001,
+            0x9f80,
+            0,
+            0x30,
+        ),
+        (
+            "ftz_min_normal_boundary_rc1",
+            0x0010_0000_0000_0000,
+            0x3ff0_0000_0000_0001,
+            0xbf80,
+            0,
+            0x30,
+        ),
+        (
+            "ftz_min_normal_boundary_rc2",
+            0x0010_0000_0000_0000,
+            0x3ff0_0000_0000_0001,
+            0xdf80,
+            0,
+            0x30,
+        ),
+        (
+            "ftz_min_normal_boundary_rc3",
+            0x0010_0000_0000_0000,
+            0x3ff0_0000_0000_0001,
+            0xff80,
+            0,
+            0x30,
+        ),
+        (
+            "ftz_exact_tiny",
+            0x0010_0000_0000_0000,
+            0x4000_0000_0000_0000,
+            0x9f80,
+            0,
+            0x30,
+        ),
+        (
+            "negative_ru",
+            0xbff0_0000_0000_0000,
+            0x4008_0000_0000_0000,
+            0x5f80,
+            0xbfd5_5555_5555_5555,
+            0x20,
+        ),
+        (
+            "negative_rd",
+            0xbff0_0000_0000_0000,
+            0x4008_0000_0000_0000,
+            0x3f80,
+            0xbfd5_5555_5555_5556,
+            0x20,
+        ),
+    ] {
+        let mut case = fixture.clone();
+        case.case_id = format!("s2_37ax_boundary_{name}");
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        write_lane(&mut case, 0, 0, lhs);
+        write_lane(&mut case, 1, 0, rhs);
+        let (_, result) = execute(case);
+        let output = snapshot(&result).state.sse.as_ref().unwrap();
+        assert_eq!(read_lane(&result, 0, 0), expected, "{name}");
+        assert_eq!(output.mxcsr.get() & 0x3f, status, "{name}");
+    }
+
+    // ZE wins over a simultaneously present subnormal input; infinity/zero is exempt.
+    for (name, lhs, rhs, mxcsr, expected, status) in [
+        (
+            "subnormal_over_zero",
+            1,
+            0,
+            0x1e80,
+            0x7ff0_0000_0000_0000,
+            4,
+        ),
+        (
+            "infinity_over_zero_unmasked_ze",
+            0x7ff0_0000_0000_0000,
+            0,
+            0x1d80,
+            0x7ff0_0000_0000_0000,
+            0,
+        ),
+    ] {
+        let mut case = fixture.clone();
+        case.case_id = format!("s2_37ax_priority_{name}");
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        write_lane(&mut case, 0, 0, lhs);
+        write_lane(&mut case, 1, 0, rhs);
+        let (_, result) = execute(case);
+        let output = snapshot(&result).state.sse.as_ref().unwrap();
+        assert_eq!(read_lane(&result, 0, 0), expected, "{name}");
+        assert_eq!(output.mxcsr.get() & 0x3f, status, "{name}");
+    }
+
+    // Unmasked post-compute PM faults preserve the destination for OE, UE and PE.
+    for (name, lhs, rhs, status) in [
+        ("oe", 0x7fef_ffff_ffff_ffff, 0x0010_0000_0000_0000, 0x28),
+        ("ue", 0x0010_0000_0000_0000, 0x4340_0000_0000_0000, 0x30),
+        ("pe", 0x3ff0_0000_0000_0000, 0x4008_0000_0000_0000, 0x20),
+    ] {
+        let mut case = fixture.clone();
+        case.case_id = format!("s2_37ax_unmasked_pm_{name}");
+        case.expected_exit = ExpectedExit::Exception;
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x0f80);
+        write_lane(&mut case, 0, 0, lhs);
+        write_lane(&mut case, 1, 0, rhs);
+        let before = case.initial_state.sse.as_ref().unwrap().xmm[0].clone();
+        let (_, result) = execute(case);
+        let output = snapshot(&result).state.sse.as_ref().unwrap();
+        assert_eq!(output.mxcsr.get() & 0x3f, status, "{name}");
+        assert_eq!(output.xmm[0], before, "{name}");
+    }
+
+    // Previously sticky flags do not independently fault or alter a valid result.
+    let mut sticky = fixture.clone();
+    sticky.case_id = "s2_37ax_old_sticky_flags_do_not_fault".into();
+    sticky.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1fbf);
+    write_lane(&mut sticky, 0, 0, 0x3ff0_0000_0000_0000);
+    write_lane(&mut sticky, 1, 0, 0x3ff0_0000_0000_0000);
+    let (_, result) = execute(sticky);
+    assert_eq!(read_lane(&result, 0, 0), 0x3ff0_0000_0000_0000);
+    assert_eq!(
+        snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+        0x3f
+    );
+
+    // Scalar 0/0 raises only IE and preserves the destination when IM is clear.
+    let mut invalid_and_zero = fixture.clone();
+    invalid_and_zero.case_id = "s2_37ax_zero_over_zero_unmasked_ie".into();
+    invalid_and_zero.expected_exit = ExpectedExit::Exception;
+    invalid_and_zero.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f00);
+    write_lane(&mut invalid_and_zero, 0, 0, 0);
+    write_lane(&mut invalid_and_zero, 1, 0, 0);
+    let old_destination = invalid_and_zero.initial_state.sse.as_ref().unwrap().xmm[0].clone();
+    let (_, result) = execute(invalid_and_zero);
+    let output = snapshot(&result).state.sse.as_ref().unwrap();
+    assert_eq!(output.mxcsr.get() & 0x3f, 1);
+    assert_eq!(output.xmm[0], old_destination);
+
+    // Unmasked DE and ZE each commit their own status before an atomic fault.
+    for (name, lhs, rhs, mxcsr, status) in [
+        ("de", 1, 0x3ff0_0000_0000_0000, 0x1e80, 2),
+        ("ze", 0x3ff0_0000_0000_0000, 0, 0x1d80, 4),
+    ] {
+        let mut case = fixture.clone();
+        case.case_id = format!("s2_37ax_unmasked_{name}");
+        case.expected_exit = ExpectedExit::Exception;
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        write_lane(&mut case, 0, 0, lhs);
+        write_lane(&mut case, 1, 0, rhs);
+        let before = case.initial_state.sse.as_ref().unwrap().xmm[0].clone();
+        let (_, result) = execute(case);
+        let output = snapshot(&result).state.sse.as_ref().unwrap();
+        assert_eq!(output.mxcsr.get() & 0x3f, status, "{name}");
+        assert_eq!(output.xmm[0], before, "{name}");
+    }
+
+    // A signaling NaN suppresses a same-lane zero divisor and denormal check.
+    let mut nan_suppression = fixture.clone();
+    nan_suppression.case_id = "s2_37ax_snan_suppresses_ze".into();
+    write_lane(&mut nan_suppression, 0, 0, 0x7ff0_0000_0000_0001);
+    write_lane(&mut nan_suppression, 1, 0, 0);
+    write_lane(&mut nan_suppression, 0, 1, 0x3ff0_0000_0000_0000);
+    write_lane(&mut nan_suppression, 1, 1, 0x3ff0_0000_0000_0000);
+    let (_, result) = execute(nan_suppression);
+    assert_eq!(
+        snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+        1
+    );
+
+    // A subnormal dividend over zero reports ZE only; the zero-divisor path
+    // precedes the subnormal-input DE classification for that lane.
+    let mut subnormal_by_zero = fixture.clone();
+    subnormal_by_zero.case_id = "s2_37ax_subnormal_over_zero_is_ze_only".into();
+    write_lane(&mut subnormal_by_zero, 0, 0, 1);
+    write_lane(&mut subnormal_by_zero, 1, 0, 0);
+    write_lane(&mut subnormal_by_zero, 0, 1, 0x3ff0_0000_0000_0000);
+    write_lane(&mut subnormal_by_zero, 1, 1, 0x3ff0_0000_0000_0000);
+    subnormal_by_zero.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1e80); // DM=0, ZM=1
+    let (_, result) = execute(subnormal_by_zero);
+    assert_eq!(
+        snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+        4
+    );
+
+    // Signed zero/infinity, NaN and remaining subnormal combinations keep
+    // their lane-specific outputs while the independent schema oracle checks flags.
+    for (name, lhs, rhs, expected, status) in [
+        ("zero_over_finite", 0, 0x3ff0_0000_0000_0000, 0, 0),
+        (
+            "negative_zero_over_negative",
+            1 << 63,
+            0xbff0_0000_0000_0000,
+            0,
+            0,
+        ),
+        (
+            "one_over_negative_zero",
+            0x3ff0_0000_0000_0000,
+            1 << 63,
+            0xfff0_0000_0000_0000,
+            4,
+        ),
+        (
+            "infinity_over_zero",
+            0x7ff0_0000_0000_0000,
+            0,
+            0x7ff0_0000_0000_0000,
+            0,
+        ),
+        (
+            "infinity_over_finite",
+            0x7ff0_0000_0000_0000,
+            0x4000_0000_0000_0000,
+            0x7ff0_0000_0000_0000,
+            0,
+        ),
+        (
+            "finite_over_infinity",
+            0x4000_0000_0000_0000,
+            0x7ff0_0000_0000_0000,
+            0,
+            0,
+        ),
+        ("zero_over_infinity", 0, 0x7ff0_0000_0000_0000, 0, 0),
+        ("zero_over_zero", 0, 0, 0xfff8_0000_0000_0000, 1),
+        (
+            "infinity_over_infinity",
+            0x7ff0_0000_0000_0000,
+            0x7ff0_0000_0000_0000,
+            0xfff8_0000_0000_0000,
+            1,
+        ),
+        (
+            "snan_over_zero",
+            0x7ff0_0000_0000_0001,
+            0,
+            0x7ff8_0000_0000_0001,
+            1,
+        ),
+        ("subnormal_over_infinity", 1, 0x7ff0_0000_0000_0000, 0, 2),
+        (
+            "infinity_over_subnormal",
+            0x7ff0_0000_0000_0000,
+            1,
+            0x7ff0_0000_0000_0000,
+            2,
+        ),
+        ("zero_over_subnormal", 0, 1, 0, 2),
+    ] {
+        let mut case = fixture.clone();
+        case.case_id = format!("s2_37ax_special_{name}");
+        write_lane(&mut case, 0, 0, lhs);
+        write_lane(&mut case, 1, 0, rhs);
+        let (_, result) = execute(case);
+        assert_eq!(read_lane(&result, 0, 0), expected, "{name}");
+        assert_eq!(
+            snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+            status,
+            "{name}"
+        );
+    }
+
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(&bytes, backend, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+    }
+}
+
+#[test]
 fn divps_register_pairs_and_four_lane_exception_order_are_interpreter_only() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/x86/stage2/s2_37aw_divps_xmm0_xmm1.case.json");

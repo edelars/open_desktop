@@ -541,3 +541,11 @@ recorded in the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37aw--bounded
 and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-37aw--divps-register-pair-interpreter-profile).
 Memory forms, JIT/native execution, and physical acceptance remain outside this
 profile.
+
+S2-37ax adds bounded interpreter-only Long64 `DIVSD XMM,XMM` register pairs
+(`F2 [REX.R/B] 0F 5E /r`). It computes the low binary64 lane from operand
+snapshots while preserving destination.high64 and ignoring source.high64. The
+strict schema-v2 profile, independent raw-rational oracle, tests and scope
+limits are recorded in the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ax--bounded-masked-range-long64-divsd-xmm-register-pairs),
+[Stage 2 plan](../../docs/plans/STAGE_2.md#s2-37ax--canonical-long64-divsd-xmm-register-pairs)
+and [report](../../docs/reports/STAGE_2_REPORT.md#s2-37ax--divsd-register-pair-interpreter-profile).

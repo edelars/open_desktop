@@ -27,6 +27,12 @@ S2-13 shifts/rotates добавил 144 physical fixture inputs (142 register,
 и [evidence](reports/data/stage2/multiply-divide-2026-10-22.json) фиксируют
 результат и границу claim: physical `#DE` delivery/signal mapping не проверены.
 
+Последовательные локальные S2-37av/aw/ax добавили interpreter-only register
+profiles DIVPD, DIVPS и DIVSD; S2-37ax изменяет только low64 destination и
+сохраняет high64. Оракулы и ограничения перечислены в [Stage 2 report](reports/STAGE_2_REPORT.md#s2-37ax--divsd-register-pair-interpreter-profile);
+это локальные schema/interpreter checks, а не физическая приемка или поддержка
+memory forms.
+
 ## Куда класть изменение
 
 | Что добавляется | Единственное основное место |

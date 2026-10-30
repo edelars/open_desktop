@@ -106,3 +106,12 @@ and [Stage 2 report](docs/reports/STAGE_2_REPORT.md#s2-37aw--divps-register-pair
 
 
 The local-only S2-34.20 ANDNPD profile supports long-mode register `66 [REX.R/B] 0F 55 /r` as `(~destination) & source` across raw 128-bit XMM values; ANDNPS remains separate. JIT/native and physical execution remain outside the profile. See the [CPU contract](docs/specs/CPU_CONTRACT.md#local-profile-s2-3420-s2-long-andnpd-reg-v1).
+
+The local-only S2-37ax `DIVSD` profile admits canonical Long64 register-pair
+encodings, divides only the low binary64 lane, preserves destination.high64 and
+ignores source.high64. Its independent exact-rational oracle, literal fixture
+and interpreter coverage are recorded in the [CPU contract](docs/specs/CPU_CONTRACT.md#s2-37ax--bounded-masked-range-long64-divsd-xmm-register-pairs),
+[Stage 2 plan](docs/plans/STAGE_2.md#s2-37ax--canonical-long64-divsd-xmm-register-pairs)
+and [Stage 2 report](docs/reports/STAGE_2_REPORT.md#s2-37ax--divsd-register-pair-interpreter-profile).
+Memory forms, JIT/native execution and physical acceptance remain outside this
+profile.
