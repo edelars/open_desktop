@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последнее локальное подзадание S2-37ar добавляет ограниченный masked-range MULPD XMM register-pair interpreter profile после SUBPD/SUBPS/SUBSD/SUBSS. Профили требуют OM=UM=1; MULPD underflow и FTZ определяются по WPR exponent после precision rounding, а не по exact-product exponent. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последнее локальное подзадание S2-37as добавляет ограниченный masked-range MULPS XMM register-pair interpreter profile после MULPD. Профили требуют OM=UM=1; binary32 underflow и FTZ определяются по WPR exponent после precision rounding, а не по exact-product exponent. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -521,6 +521,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37ao | Strict schema-v2 canonical Long64 SUBPS XMM register pairs; SSE-gated four-lane raw binary32 subtraction; OM=UM=1 masked-range, atomic IE/DE/OE/UE/PE; JIT/native closed | S2-37an profile pattern and S2-38 exception ordering; focused checks/workspace check passed; initial and follow-up independent reviews clean; physical acceptance remains open |
 | [x] | S2-37ap | Strict schema-v2 canonical Long64 SUBSD XMM register pairs; scalar binary64 subtraction with preserved destination high64; OM=UM=1 masked-range, atomic IE/DE/OE/UE/PE; JIT/native closed | Focused tests, SUBPD/SUBPS regressions, formatting and workspace check passed; independent review clean; physical acceptance remains open |
 | [x] | S2-37ar | Strict schema-v2 canonical Long64 MULPD XMM register-pair profile; WPR exponent defines tininess/FTZ after precision rounding, including directed min-normal boundaries; OM=UM=1; JIT/native closed | Tininess erratum fixed; focused binary32/binary64 helper and MULPD/SUBPD/SUBPS/SUBSD/SUBSS regressions, workspace check passed; independent Sol-high review clean |
+| [x] | S2-37as | Strict schema-v2 canonical Long64 MULPS XMM register-pair profile; four-lane Binary32 raw multiplication, WPR tininess/FTZ, atomic IE/DE/OE/UE/PE; OM=UM=1; JIT/native closed | Focused ISA and schema-v2 matrix, MULPD/SUB* regressions, formatting/workspace/layout/diff checks passed; independent Sol-high review clean |
 | [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j/k/l: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j/k/l; independent review |
 | [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
@@ -6820,8 +6821,8 @@ inventory.
 | MINPS | `NP 0F 5D /r` | SSE | XMM, m128; 4×f32 | 4-19 | S2-37g, bounded |
 | MINSD | `F2 0F 5D /r` | SSE2 | XMM, m64; low f64 | 4-22 | S2-37i, bounded |
 | MINSS | `F3 0F 5D /r` | SSE | XMM, m32; low f32 | 4-24 | S2-37e, bounded |
-| MULPD | `66 0F 59 /r` | SSE2 | XMM, m128; 2×f64 | 4-142 | missing |
-| MULPS | `NP 0F 59 /r` | SSE | XMM, m128; 4×f32 | 4-145 | missing |
+| MULPD | `66 0F 59 /r` | SSE2 | XMM, m128; 2×f64 | 4-142 | S2-37ar register-only, OM=UM=1 masked-range; WPR tininess after precision rounding; memory and full unmasked OE/UE missing |
+| MULPS | `NP 0F 59 /r` | SSE | XMM, m128; 4×f32 | 4-145 | S2-37as register-only, OM=UM=1 masked-range; WPR tininess after precision rounding; memory and full unmasked OE/UE missing |
 | MULSD | `F2 0F 59 /r` | SSE2 | XMM, m64; low f64 | 4-148 | missing |
 | MULSS | `F3 0F 59 /r` | SSE | XMM, m32; low f32 | 4-150 | missing |
 | RCPPS | `NP 0F 53 /r` | SSE | XMM, m128; 4×f32 | 4-538 | S2-37d, bounded |
@@ -13700,3 +13701,50 @@ are not physical acceptance. Memory forms, other modes, full unmasked OE/UE,
 and parent S2-37/S2-38 remain open. Sources: Intel SDM Rev. 093 Vol. 2B MULPD
 pp. 4-142–4-143; Vol. 2A Type 2, Table 2-19; Vol. 1 §§4.9.1.4–.6, 11.5.3 and
 DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel Floating-Point Reference Sheet v2.13.
+
+#### S2-37as — bounded masked-range Long64 MULPS XMM register pairs
+
+Implement strict schema-v2 interpreter-only profile `s2-long-mulps-registers-v1`
+for canonical Long64 `0F 59 /r`, ModR/M.mod=3, covering all 256 XMM
+register pairs. Low forms are three bytes; extended indices require exactly
+one REX `41`, `44`, or `45` immediately before `0F`, for length four. Reject
+`66`/F2/F3, memory, reordered/repeated/redundant prefixes, REX.W/X/40,
+trailing bytes, VEX and EVEX. Fetch the complete encoding before SSE/EM/OSFXSR
+#UD and then TS #NM at CPL0–3; issue no data callbacks. Keep JIT/native/C ABI/
+fragment/generic paths closed.
+
+Require MXCSR.OM=1 and MXCSR.UM=1 in schema and runtime because complete
+unmasked overflow/underflow delivery is outside the profile. Reject DAZ and
+reserved MXCSR bits; accept all RC settings, FTZ, IM/DM/PM and old sticky flags.
+Snapshot destination and source XMM before computing all four binary32 lanes.
+NaN propagation selects the first operand, quiets a selected SNaN, and raises
+IE for either SNaN; QNaN alone does not raise IE and suppresses same-lane DE.
+Zero×infinity raises IE and produces `0xffc00000`; otherwise any subnormal
+operand raises precompute DE, including zero×subnormal and infinity×subnormal.
+Aggregate IE/DE across all lanes before arithmetic. Newly unmasked pre-events
+commit generated IE/DE only and preserve full XMM, RIP and retirement. With
+pre-events masked, use production `Binary32::multiply_raw_result` and MXCSR.RC.
+Masked overflow records OE|PE. Tininess and FTZ use
+`tiny_after_precision_rounding` (WPR exponent), not the exact product exponent
+or final subnormal encoding. For `0x00800000 × 0x3f7fffff`, every RC records
+UE|PE; RN/RU produce minimum-normal and RD/RZ maximum-subnormal, while FTZ
+flushes to zero. For `0x00800001 × 0x3f7ffffe`, RN/RU produce minimum-normal
+with PE only, unchanged by FTZ; RD/RZ produce maximum-subnormal with UE|PE or
+zero with UE|PE under FTZ. Commit aggregate status before unmasked PE delivery;
+preserve all XMM destination bytes on fault.
+
+The independent schema oracle multiplies raw binary32 significands with integer
+arithmetic and rounds to destination precision with an unbounded exponent
+before bounded subnormal rounding; it uses neither host FP nor production
+helpers. Cover aliases, operand order/NaN quieting, zero/infinity/subnormal
+classes, sign XOR, exact/inexact tiny results, FTZ/RC boundaries, halfway
+rounding, signed overflow, pre/post event priority, sticky flags, masks,
+atomicity, fetch/gates/CPL/STOP/budget/no-callback behavior, malformed encodings,
+result tampering and backend denial. This local profile is not physical
+acceptance. Memory forms, other modes, full unmasked OE/UE behavior and parent
+S2-37/S2-38 remain open. Sources: Intel SDM Rev. 093 Vol. 2B MULPS
+pp. 4-145–4-147; Vol. 2A Type 2/Table 2-19; Vol. 1 §§4.9.1.4–.6, 11.5.3 and
+DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel Floating-Point Reference Sheet v2.13.
+See [CPU contract](../specs/CPU_CONTRACT.md#s2-37as--bounded-masked-range-long64-mulps-xmm-register-pairs),
+[report](../reports/STAGE_2_REPORT.md#s2-37as--mulps-register-pair-interpreter-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37as-bounded-masked-range-mulps-register-pair-profile).

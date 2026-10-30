@@ -18610,3 +18610,50 @@ behavior remain open; parent S2-37/S2-38 are not closed. See the [CPU
 contract](../specs/CPU_CONTRACT.md#s2-37ar--bounded-masked-range-long64-mulpd-xmm-register-pairs),
 [plan](../plans/STAGE_2.md#s2-37ar--bounded-masked-range-long64-mulpd-xmm-register-pairs)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ar-bounded-masked-range-mulpd-register-pair-profile).
+
+## S2-37as — MULPS register-pair interpreter profile
+
+Implemented strict schema-v2 profile `s2-long-mulps-registers-v1` for canonical
+Long64 register-only `0F 59 /r`, including all 256 XMM destination/source pairs.
+Execution uses four snapshots of Binary32 inputs and the existing raw
+`Binary32::multiply_raw_result`; it aggregates IE/DE before arithmetic and
+commits the whole destination only after post-rounding exception disposition.
+The profile requires MXCSR.OM=1 and MXCSR.UM=1, rejects DAZ/reserved bits, and
+accepts RC, FTZ, IM/DM/PM and old sticky status. WPR tininess and FTZ use the
+production `tiny_after_precision_rounding` diagnostic. The independent schema
+oracle uses raw integer significands and independent rounding logic, with no
+host FP or production arithmetic helper.
+
+The literal fixture yields lane results `40400000`, `3fc00002`, `40800000`,
+`c0400000` and sticky PE. Focused runner coverage exercised all 256 aliases,
+canonical encoding refusal, all RC/FTZ combinations at both directed
+minimum-normal boundaries, production halfway rounding, signed overflow,
+NaN/SNaN operand selection and quieting, QNaN DE suppression, zero×infinity
+indefinite, subnormal DE, old stickies, unmasked pre-event aggregation, atomic
+post-PE #XM/#UD, control snapshots and JIT/native denial. Direct ISA tests
+covered every gate at CPL0–3, invalid MXCSR refusal, complete-fetch precedence,
+no data callbacks, and destination/retirement preservation.
+
+Passed checks:
+
+- `cargo test -p od-isa mulps_register --offline`
+- `cargo test -p od-isa mulps_runtime_gates_mxcsr_preconditions_and_complete_fetch_priority --offline`
+- `cargo test -p od-isa multiply_tininess_uses_precision_rounded_unbounded_exponent_for_binary32_and_64 --offline`
+- `cargo test -p od-runner mulps_register_pairs_rounding_events_and_backend_denial --offline`
+- `cargo test -p od-runner mulpd_literal_pair_rounding_and_backend_denial --offline`
+- `cargo test -p od-runner mulpd_nan_priority_pre_events_post_atomicity_and_tamper --offline`
+- `cargo test -p od-runner mulpd_integer_oracle_handles_tiny_shift128_and_overflow_rounding_boundary --offline`
+- `cargo test -p od-runner subpd_literal_pairs_and_bounded_range_exception_matrix --offline`
+- `cargo test -p od-runner subps_canonical_pairs_and_exception_priority_matrix --offline`
+- `cargo test -p od-runner subsd_literal_scalar_pairs_oracle_and_backend_denial --offline`
+- `cargo test -p od-runner subss_literal_pairs_masked_range_events_and_backend_denial --offline`
+- `cargo test -p od-testkit --offline` — 434 passed, including all schema-v2 parser and independent-oracle unit tests
+- `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, `python3 tools/check_layout.py`, and `git diff --check`
+
+Independent Sol-high review found no remaining issues after the gate matrix was
+moved into the MULPS test and CPL coverage was kept in the direct runtime
+`AccessContext` tests. Physical acceptance, memory forms, other modes, full
+unmasked overflow/underflow behavior and parent S2-37/S2-38 remain open. See
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37as--bounded-masked-range-long64-mulps-xmm-register-pairs),
+[plan](../plans/STAGE_2.md#s2-37as--bounded-masked-range-long64-mulps-xmm-register-pairs), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37as-bounded-masked-range-mulps-register-pair-profile).

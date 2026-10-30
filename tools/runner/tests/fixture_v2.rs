@@ -25684,3 +25684,373 @@ fn mulpd_integer_oracle_handles_tiny_shift128_and_overflow_rounding_boundary() {
         );
     }
 }
+
+#[test]
+fn mulps_register_pairs_rounding_events_and_backend_denial() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_37as_mulps_xmm0_xmm1.case.json");
+    let bytes = fs::read(path).unwrap();
+    let (base, literal) = run(&bytes, "interpreter", 0);
+    od_testkit::v2::compare(&base, &literal, &literal).unwrap();
+    assert_eq!(
+        snapshot(&literal).state.sse.as_ref().unwrap().xmm[0],
+        "000040400200c03f00008040000040c0"
+    );
+    assert_eq!(
+        snapshot(&literal).state.sse.as_ref().unwrap().mxcsr.get(),
+        0x1fa0
+    );
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(&bytes, backend, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+    }
+
+    let encode32 = |raw: u32| {
+        raw.to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let put_lane = |case: &mut Fixture, xmm: usize, lane: usize, raw: u32| {
+        case.initial_state.sse.as_mut().unwrap().xmm[xmm]
+            .replace_range(lane * 8..lane * 8 + 8, &encode32(raw));
+    };
+    let read_lane = |result: &RunResult, lane: usize| {
+        let raw = &snapshot(result).state.sse.as_ref().unwrap().xmm[0];
+        u32::from_le_bytes(
+            (0..4)
+                .map(|i| {
+                    u8::from_str_radix(&raw[lane * 8 + i * 2..lane * 8 + i * 2 + 2], 16).unwrap()
+                })
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        )
+    };
+    let execute = |case: Fixture| {
+        let input = serde_json::to_vec(&case).unwrap();
+        let (loaded, result) = run(&input, "interpreter", 0);
+        od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+        (loaded, result)
+    };
+
+    // Every canonical destination/source pair is parsed by the independent
+    // schema oracle, including aliases and the three legal REX extensions.
+    for destination in 0u8..16 {
+        for source in 0u8..16 {
+            let mut case = base.fixture.clone();
+            case.case_id = format!("s2_37as_pair_{destination}_{source}");
+            let rex = 0x40 | ((destination >> 1) & 4) | (source >> 3);
+            let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+            let mut code = Vec::new();
+            if destination >= 8 || source >= 8 {
+                code.push(rex);
+            }
+            code.extend([0x0f, 0x59, modrm]);
+            let region = &mut case.memory[0];
+            region.initial_bytes_hex = code.iter().map(|byte| format!("{byte:02x}")).collect();
+            region.comparison_mask_hex = "ff".repeat(code.len());
+            region.length = code.len() as u32;
+            case.stop_rip = Some(HexU64(case.initial_state.rip.get() + code.len() as u64));
+            let (_, result) = execute(case);
+            assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        }
+    }
+
+    // Canonical instruction and profile are both checked independently.
+    for bad in [
+        "400f59c1",
+        "420f59c1",
+        "480f59c1",
+        "660f59c1",
+        "f20f59c1",
+        "f30f59c1",
+        "400f59c1c0",
+        "0f5901",
+        "c5f859c1",
+        "62f17c0859c1",
+    ] {
+        let mut malformed = base.fixture.clone();
+        malformed.case_id = format!("s2_37as_bad_{bad}");
+        malformed.memory[0].initial_bytes_hex = bad.to_owned();
+        malformed.memory[0].length = (bad.len() / 2) as u32;
+        malformed.memory[0].comparison_mask_hex = "ff".repeat(bad.len() / 2);
+        malformed.stop_rip = Some(HexU64(
+            malformed.initial_state.rip.get() + (bad.len() / 2) as u64,
+        ));
+        assert!(
+            malformed.to_json().is_err(),
+            "accepted malformed MULPS {bad}"
+        );
+    }
+
+    // The precision-rounded unbounded exponent determines tininess. The first
+    // product remains tiny after WPR rounding in every mode; FTZ flushes it.
+    for rc in 0u32..4 {
+        for ftz in [false, true] {
+            let mut case = base.fixture.clone();
+            case.case_id = format!("s2_37as_midpoint_rc{rc}_ftz{ftz}");
+            put_lane(&mut case, 0, 0, 0x0080_0000);
+            put_lane(&mut case, 1, 0, 0x3f7f_ffff);
+            case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(u64::from(
+                0x1f80 | (rc << 13) | if ftz { 1 << 15 } else { 0 },
+            ));
+            let (_, result) = execute(case);
+            let expected = if ftz {
+                0
+            } else if rc == 0 || rc == 2 {
+                0x0080_0000
+            } else {
+                0x007f_ffff
+            };
+            assert_eq!(
+                read_lane(&result, 0),
+                expected,
+                "midpoint rc={rc} ftz={ftz}"
+            );
+            assert_eq!(
+                snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x30,
+                0x30
+            );
+        }
+    }
+
+    // Near the boundary, RN/RU round to normal and are unaffected by FTZ;
+    // RD/RZ remain tiny and FTZ flushes their subnormal result.
+    for rc in 0u32..4 {
+        for ftz in [false, true] {
+            let mut case = base.fixture.clone();
+            case.case_id = format!("s2_37as_near_boundary_rc{rc}_ftz{ftz}");
+            put_lane(&mut case, 0, 0, 0x0080_0001);
+            put_lane(&mut case, 1, 0, 0x3f7f_fffe);
+            case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(u64::from(
+                0x1f80 | (rc << 13) | if ftz { 1 << 15 } else { 0 },
+            ));
+            let (_, result) = execute(case);
+            let tiny = rc == 1 || rc == 3;
+            let expected = if tiny && ftz {
+                0
+            } else if tiny {
+                0x007f_ffff
+            } else {
+                0x0080_0000
+            };
+            assert_eq!(
+                read_lane(&result, 0),
+                expected,
+                "near boundary rc={rc} ftz={ftz}"
+            );
+            assert_eq!(
+                snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x30,
+                if tiny { 0x30 } else { 0x20 }
+            );
+        }
+    }
+
+    // A production-format halfway case exercises all RC modes. Signed overflow
+    // checks independently verify directed rounding and sign handling.
+    for rc in 0u32..4 {
+        let mut halfway = base.fixture.clone();
+        halfway.case_id = format!("s2_37as_halfway_rc{rc}");
+        put_lane(&mut halfway, 0, 0, 0x3f80_0001);
+        put_lane(&mut halfway, 1, 0, 0x3fc0_0000);
+        halfway.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(u64::from(0x1f80 | (rc << 13)));
+        let (_, result) = execute(halfway);
+        assert_eq!(
+            read_lane(&result, 0),
+            if rc == 0 || rc == 2 {
+                0x3fc0_0002
+            } else {
+                0x3fc0_0001
+            }
+        );
+        assert_eq!(
+            snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x20,
+            0x20
+        );
+
+        for negative in [false, true] {
+            let mut overflow = base.fixture.clone();
+            overflow.case_id = format!("s2_37as_overflow_rc{rc}_negative{negative}");
+            put_lane(
+                &mut overflow,
+                0,
+                0,
+                0x7f7f_ffff | if negative { 1 << 31 } else { 0 },
+            );
+            put_lane(&mut overflow, 1, 0, 0x4000_0000);
+            overflow.initial_state.sse.as_mut().unwrap().mxcsr =
+                HexU64(u64::from(0x1f80 | (rc << 13)));
+            let (_, result) = execute(overflow);
+            let to_inf = rc == 0 || rc == 1 && negative || rc == 2 && !negative;
+            let expected = (if negative { 1 << 31 } else { 0 })
+                | if to_inf { 0x7f80_0000 } else { 0x7f7f_ffff };
+            assert_eq!(
+                read_lane(&result, 0),
+                expected,
+                "overflow rc={rc} negative={negative}"
+            );
+            assert_eq!(
+                snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x28,
+                0x28
+            );
+        }
+    }
+
+    // NaN selection is operand ordered; SNaN is quieted and raises IE while a
+    // QNaN suppresses DE from a same-lane subnormal partner.
+    for (lhs, rhs, expected, invalid) in [
+        (0x7fc1_2345, 0x7f80_4321, 0x7fc1_2345, true),
+        (0x7f80_4321, 0x7fc1_2345, 0x7fc0_4321, true),
+        (0x7fc1_2345, 0xffc5_6789, 0x7fc1_2345, false),
+        (0x3f80_0000, 0x7f80_4321, 0x7fc0_4321, true),
+    ] {
+        let mut case = base.fixture.clone();
+        case.case_id = format!("s2_37as_nan_{lhs:08x}_{rhs:08x}");
+        put_lane(&mut case, 0, 0, lhs);
+        put_lane(&mut case, 1, 0, rhs);
+        let (_, result) = execute(case);
+        assert_eq!(read_lane(&result, 0), expected);
+        assert_eq!(
+            snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 3,
+            u64::from(invalid)
+        );
+    }
+
+    let mut qnan_subnormal = base.fixture.clone();
+    qnan_subnormal.case_id = "s2_37as_qnan_suppresses_same_lane_de".into();
+    put_lane(&mut qnan_subnormal, 0, 0, 0x7fc1_2345);
+    put_lane(&mut qnan_subnormal, 1, 0, 1);
+    let (_, result) = execute(qnan_subnormal);
+    assert_eq!(read_lane(&result, 0), 0x7fc1_2345);
+    assert_eq!(
+        snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 3,
+        0
+    );
+
+    let mut zero_infinity = base.fixture.clone();
+    zero_infinity.case_id = "s2_37as_zero_times_infinity_indefinite".into();
+    put_lane(&mut zero_infinity, 0, 0, 0);
+    put_lane(&mut zero_infinity, 1, 0, 0x7f80_0000);
+    let (_, result) = execute(zero_infinity);
+    assert_eq!(read_lane(&result, 0), 0xffc0_0000);
+    assert_eq!(
+        snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 3,
+        1
+    );
+
+    let mut infinity_subnormal = base.fixture.clone();
+    infinity_subnormal.case_id = "s2_37as_infinity_times_subnormal_denormal".into();
+    put_lane(&mut infinity_subnormal, 0, 0, 0x7f80_0000);
+    put_lane(&mut infinity_subnormal, 1, 0, 1);
+    let (_, result) = execute(infinity_subnormal);
+    assert_eq!(read_lane(&result, 0), 0x7f80_0000);
+    assert_eq!(
+        snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 2,
+        2
+    );
+
+    let mut old_stickies = base.fixture.clone();
+    old_stickies.case_id = "s2_37as_old_stickies_preserved".into();
+    old_stickies.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1fa5);
+    let (_, result) = execute(old_stickies);
+    assert_eq!(
+        snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+        0x25
+    );
+
+    // Unmasked pre-events collect IE/DE across all lanes, suppress post flags,
+    // and preserve the full destination; post-PE faults also preserve XMM.
+    let mut pre = base.fixture.clone();
+    pre.case_id = "s2_37as_unmasked_pre_atomic".into();
+    pre.expected_exit = ExpectedExit::Exception;
+    pre.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f00);
+    put_lane(&mut pre, 0, 0, 0);
+    put_lane(&mut pre, 1, 0, 0x7f80_0000);
+    put_lane(&mut pre, 0, 1, 1);
+    put_lane(&mut pre, 1, 1, 0x3f80_0000);
+    put_lane(&mut pre, 0, 2, 0x3f80_0001);
+    put_lane(&mut pre, 1, 2, 0x3fc0_0000);
+    let original = pre.initial_state.sse.as_ref().unwrap().xmm[0].clone();
+    let (_, result) = execute(pre);
+    let sse = snapshot(&result).state.sse.as_ref().unwrap();
+    assert_eq!(sse.xmm[0], original);
+    assert_eq!(sse.mxcsr.get() & 0x3f, 3);
+
+    let mut post = base.fixture.clone();
+    post.case_id = "s2_37as_unmasked_pe_atomic".into();
+    post.expected_exit = ExpectedExit::Exception;
+    post.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x0f80);
+    put_lane(&mut post, 0, 0, 0x3f80_0001);
+    put_lane(&mut post, 1, 0, 0x3fc0_0000);
+    let original = post.initial_state.sse.as_ref().unwrap().xmm[0].clone();
+    let (loaded, result) = execute(post);
+    let sse = snapshot(&result).state.sse.as_ref().unwrap();
+    assert_eq!(sse.xmm[0], original);
+    assert_eq!(sse.mxcsr.get() & 0x3f, 0x20);
+    let mut tampered = result.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0] = "00".repeat(16);
+    }
+    assert!(tampered.validate_for(&loaded).is_err());
+
+    let mut post_ud = base.fixture.clone();
+    post_ud.case_id = "s2_37as_unmasked_pe_simd_ud".into();
+    post_ud.expected_exit = ExpectedExit::Exception;
+    post_ud.mulps_controls.as_mut().unwrap().cr4_osxmmexcpt = false;
+    post_ud.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x0f80);
+    put_lane(&mut post_ud, 0, 0, 0x3f80_0001);
+    put_lane(&mut post_ud, 1, 0, 0x3fc0_0000);
+    let (_, result) = execute(post_ud);
+    let Observation::Available {
+        value: Some(ref exception),
+    } = snapshot(&result).exception
+    else {
+        panic!("exception available")
+    };
+    assert_eq!(exception.vector, 6);
+
+    // Controls are immutable inputs in the result; an allowed instruction
+    // retires, TS gives #NM, and SSE/EM/OSFXSR violations take #UD first. The
+    // direct runtime gate test covers these controls at CPL0–3.
+    for (sse, em, ts, osfxsr, expected_vector) in [
+        (false, false, false, true, Some(6)),
+        (true, true, true, true, Some(6)),
+        (true, false, true, false, Some(6)),
+        (true, false, true, true, Some(7)),
+        (true, false, false, true, None),
+    ] {
+        let mut gated = base.fixture.clone();
+        gated.case_id = format!("s2_37as_gate_{sse}_{em}_{ts}_{osfxsr}");
+        gated.mulps_controls.as_mut().unwrap().sse_available = sse;
+        gated.mulps_controls.as_mut().unwrap().cr0_em = em;
+        gated.mulps_controls.as_mut().unwrap().cr0_ts = ts;
+        gated.mulps_controls.as_mut().unwrap().cr4_osfxsr = osfxsr;
+        gated.expected_exit = if expected_vector.is_some() {
+            ExpectedExit::Exception
+        } else {
+            ExpectedExit::StopAddress
+        };
+        let (_, result) = execute(gated);
+        let output = snapshot(&result);
+        match (&output.exception, expected_vector) {
+            (
+                Observation::Available {
+                    value: Some(exception),
+                },
+                Some(vector),
+            ) => assert_eq!(exception.vector, vector),
+            (Observation::Available { value: None }, None) => {}
+            _ => panic!("unexpected MULPS gate result"),
+        }
+    }
+
+    // The independent profile parser rejects unsupported MXCSR policy and
+    // incomplete fixture controls, and result validation binds gate snapshots.
+    let mut bad_mxcsr = base.fixture.clone();
+    bad_mxcsr.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1780);
+    assert!(bad_mxcsr.to_json().is_err(), "UM=0 accepted");
+    let mut missing_controls = base.fixture.clone();
+    missing_controls.mulps_controls = None;
+    assert!(missing_controls.to_json().is_err());
+}

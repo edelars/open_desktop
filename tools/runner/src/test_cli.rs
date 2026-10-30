@@ -4,16 +4,16 @@ use std::io::{self, Write};
 use std::process::{Command, ExitCode};
 
 use od_isa::execute::{
-    Cvttpd2dqControls, Cvttps2dqControls, Cvttss2siRegistersControls, MulpdControls,
+    Cvttpd2dqControls, Cvttps2dqControls, Cvttss2siRegistersControls, MulpdControls, MulpsControls,
     SqrtpdControls, SqrtpsControls, SqrtsdControls, SqrtssControls, SubpdControls, SubpsControls,
     SubsdControls, SubssControls, run_with_cvtpd2dq_register_controls,
     run_with_cvttpd2dq_register_controls, run_with_cvttps2dq_register_controls,
     run_with_cvttsd2si_registers_controls, run_with_cvttss2si_registers_controls,
-    run_with_mulpd_register_controls, run_with_sqrtpd_register_controls,
-    run_with_sqrtps_register_controls, run_with_sqrtsd_register_controls,
-    run_with_sqrtss_register_controls, run_with_subpd_register_controls,
-    run_with_subps_register_controls, run_with_subsd_register_controls,
-    run_with_subss_register_controls,
+    run_with_mulpd_register_controls, run_with_mulps_register_controls,
+    run_with_sqrtpd_register_controls, run_with_sqrtps_register_controls,
+    run_with_sqrtsd_register_controls, run_with_sqrtss_register_controls,
+    run_with_subpd_register_controls, run_with_subps_register_controls,
+    run_with_subsd_register_controls, run_with_subss_register_controls,
 };
 use od_isa::{CpuState, ExecutionResult, interpret};
 use od_testkit::case::{Fixture, LoadedFixture};
@@ -535,6 +535,7 @@ fn expected_native_xorpd_oracle(
                 sqrtpd_controls: None,
                 subpd_controls: None,
                 mulpd_controls: None,
+                mulps_controls: None,
                 subps_controls: None,
                 subsd_controls: None,
                 subss_controls: None,
@@ -1762,6 +1763,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongMulpsRegistersV1 {
+        let controls = loaded
+            .fixture
+            .mulps_controls
+            .expect("validated MULPS controls");
+        run_with_mulps_register_controls(
+            &mut state,
+            memory,
+            config,
+            MulpsControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongSubsdRegistersV1 {
         let controls = loaded
             .fixture
@@ -2176,6 +2195,7 @@ fn execute_fixture_v2(
                 sqrtpd_controls: loaded.fixture.sqrtpd_controls,
                 subpd_controls: loaded.fixture.subpd_controls,
                 mulpd_controls: loaded.fixture.mulpd_controls,
+                mulps_controls: loaded.fixture.mulps_controls,
                 subps_controls: loaded.fixture.subps_controls,
                 subsd_controls: loaded.fixture.subsd_controls,
                 subss_controls: loaded.fixture.subss_controls,
@@ -3366,6 +3386,7 @@ mod tests {
                     sqrtpd_controls: input.fixture.sqrtpd_controls,
                     subpd_controls: input.fixture.subpd_controls,
                     mulpd_controls: input.fixture.mulpd_controls,
+                    mulps_controls: input.fixture.mulps_controls,
                     subps_controls: input.fixture.subps_controls,
                     subsd_controls: input.fixture.subsd_controls,
                     subss_controls: input.fixture.subss_controls,

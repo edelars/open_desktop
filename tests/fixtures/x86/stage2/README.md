@@ -6732,3 +6732,23 @@ Vol. 1 §§4.9.1.4–.6, 11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel
 Floating-Point Reference Sheet v2.13. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ar--bounded-masked-range-long64-mulpd-xmm-register-pairs),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37ar--bounded-masked-range-long64-mulpd-xmm-register-pairs)
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ar--mulpd-register-pair-interpreter-profile-2026-10-30).
+
+### S2-37as bounded masked-range MULPS register-pair profile
+
+`s2_37as_mulps_xmm0_xmm1.case.json` is a literal canonical `0F 59 /r` Long64
+packed binary32 multiply. It checks exact `3.0×1.0`, one inexact halfway lane,
+and positive/negative products. The strict schema-v2 profile covers all 256
+XMM pairs, requires MXCSR.OM=1 and MXCSR.UM=1, rejects DAZ/reserved bits, and
+accepts all RC, FTZ, IM/DM/PM and old sticky bits. The independent oracle uses
+raw integer significands, without host FP or production arithmetic helpers.
+Runner checks cover every alias, malformed encodings, SSE/CR0/CR4 gates at
+CPL0–3, both precision-rounded tiny boundaries over all RC/FTZ settings,
+halfway rounding, signed overflow, NaN/SNaN ordering, atomic pre/post faults,
+and interpreter-only backend admission. Local evidence does not establish
+physical acceptance; memory operands, other modes and full unmasked OE/UE
+behavior remain outside the slice. Sources: Intel SDM Rev. 093 Vol. 2B MULPS
+pp. 4-145–4-147; Vol. 2A Type 2/Table 2-19; Vol. 1 §§4.9.1.4–.6, 11.5.3 and
+DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel Floating-Point Reference Sheet v2.13.
+See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37as--bounded-masked-range-long64-mulps-xmm-register-pairs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37as--bounded-masked-range-long64-mulps-xmm-register-pairs), and
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37as--mulps-register-pair-interpreter-profile).
