@@ -8457,3 +8457,72 @@ fn cvtss2si_parser_covers_all_512_pairs_and_rejects_noncanonical_forms() {
         assert_eq!(cvtss2si_register_encoding(bytes), None, "{bytes}");
     }
 }
+
+#[test]
+fn cvttss2si_parser_covers_all_512_pairs_and_rejects_noncanonical_forms() {
+    for wide in [false, true] {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let mut bytes = vec![0xf3];
+                let rex = match (wide, destination >= 8, source >= 8) {
+                    (false, false, false) => None,
+                    (false, true, false) => Some(0x44),
+                    (false, false, true) => Some(0x41),
+                    (false, true, true) => Some(0x45),
+                    (true, false, false) => Some(0x48),
+                    (true, false, true) => Some(0x49),
+                    (true, true, false) => Some(0x4c),
+                    (true, true, true) => Some(0x4d),
+                };
+                if let Some(rex) = rex {
+                    bytes.push(rex);
+                }
+                bytes.extend_from_slice(&[
+                    0x0f,
+                    0x2c,
+                    0xc0 | ((destination & 7) << 3) | (source & 7),
+                ]);
+                let text = bytes
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                assert_eq!(
+                    cvttss2si_register_encoding(&text),
+                    Some((wide, destination, source, bytes.len() as u32))
+                );
+            }
+        }
+    }
+    for bytes in [
+        "f3400f2cc0",
+        "f3420f2cc0",
+        "f30f2c00",
+        "f3660f2cc0",
+        "f20f2cc0",
+        "f30f2cc0c0",
+        "f30f2dc0",
+    ] {
+        assert_eq!(cvttss2si_register_encoding(bytes), None, "{bytes}");
+    }
+}
+
+#[test]
+fn cvttss2si_oracle_always_truncates_toward_zero() {
+    for (bits, expected) in [(0x3fc0_0000, 1), (0xbfc0_0000, u64::MAX)] {
+        for rc in 0..4 {
+            assert_eq!(
+                independent_binary32_to_integer(bits, 3, false),
+                (expected, false, true),
+                "bits={bits:08x} RC={rc}"
+            );
+        }
+    }
+    assert_eq!(
+        independent_binary32_to_integer(0xcf00_0000, 3, false),
+        (0xffff_ffff_8000_0000, false, false)
+    );
+    assert_eq!(
+        independent_binary32_to_integer(0x4f00_0000, 3, false),
+        (0x8000_0000, true, false)
+    );
+}

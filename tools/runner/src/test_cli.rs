@@ -3,6 +3,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::process::{Command, ExitCode};
 
+use od_isa::execute::{Cvttss2siRegistersControls, run_with_cvttss2si_registers_controls};
 use od_isa::{CpuState, ExecutionResult, interpret};
 use od_testkit::case::{Fixture, LoadedFixture};
 use od_testkit::compare::{
@@ -1783,6 +1784,24 @@ fn execute_fixture_v2(
             memory,
             config,
             Cvtss2siRegistersControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
+    } else if loaded.fixture.profile == v2::Profile::LongCvttss2siRegistersV1 {
+        let controls = loaded
+            .fixture
+            .cvtss2si_controls
+            .expect("validated CVTTSS2SI controls");
+        run_with_cvttss2si_registers_controls(
+            &mut state,
+            memory,
+            config,
+            Cvttss2siRegistersControls {
                 sse_available: controls.sse_available,
                 cr0_em: controls.cr0_em,
                 cr0_ts: controls.cr0_ts,

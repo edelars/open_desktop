@@ -6514,3 +6514,16 @@ only the interpreter; memory sources and physical acceptance remain outside
 scope. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ac--canonical-long64-cvtsd2si-register-space),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37ac--canonical-long64-cvtsd2si-register-space),
 and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ac--canonical-long64-cvtsd2si-register-space).
+
+### S2-37ad canonical CVTTSS2SI register space
+
+The separate profile `s2-long-cvttss2si-registers-v1` recognizes all 512
+canonical Long64 r32/r64 GPR × XMM register forms. The schema oracle parses the
+F3 0F 2C opcode and uses an independent raw-binary32 integer oracle with
+TowardZero, regardless of MXCSR.RC. Runtime coverage includes source and
+destination selectors, zero-extension, fractional values, width boundaries,
+Invalid/Precision priority, sticky state, DM-unmasked subnormals without DE,
+and unmasked exception atomicity. Gate/fetch ordering and backend denial are
+profile requirements; physical acceptance remains in the combined final stage.
+Source: Intel SDM Rev. 093 Vol. 2A `CVTTSS2SI` pp. 3-255–3-256 and Vol. 1
+§11.5.2.2 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).

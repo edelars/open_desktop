@@ -18090,3 +18090,35 @@ now assert the input bits are clear and the expected execution/sticky results;
 targeted re-review is clean. The reviewer independently passed four ISA tests,
 the 512-form runner test, and `git diff --check`. No performance claim or
 measurement was needed for this bounded correctness slice.
+
+## S2-37ad — canonical Long64 CVTTSS2SI register space
+
+Implemented decoder operations for `F3 0F 2C /r` and canonical REX forms,
+including ModR/M.mod=3 and high GPR/XMM selectors. Added a distinct interpreter
+runtime profile; it reads XMM low32 and uses `RationalRoundingMode::TowardZero`
+for both signed widths, independent of MXCSR.RC. Existing conversion status
+handling commits only new IE/PE before #XM or SIMD #UD and leaves destination,
+RIP and retirement unchanged on an unmasked event. The schema-v2 profile has
+an independent canonical encoding parser and binary32 integer oracle. Plan,
+CPU contract, and fixture README now record the bounded scope and Rev. 093
+provenance. The parent S2-37 and hardware acceptance remain open.
+
+Checks run:
+
+- `cargo test -p od-runner cvttss2si_register_profile_ignores_mxcsr_rounding_control --offline` — passed; executes all 512 selector/width forms and checks positive/negative fractions across all RC values, actual r32/r64 limits and signed minima, QNaN/SNaN/infinity, masked Invalid, unmasked Invalid and Precision atomicity, OSXMMEXCPT=0 SIMD #UD, old sticky IE/PE without a new event, and subnormal input with DM unmasked.
+- `cargo test -p od-testkit cvttss2si --offline` — passed; the independent parser accepts all 512 canonical forms and rejects malformed encodings; the integer oracle verifies truncation and signed boundaries.
+- `cargo test -p od-isa cvttss2si_register_space_gate_priority --offline` — passed; complete fetch, gate priority and CPL0–3 are checked across low/high selector and width classes, with no data-memory callback.
+- `cargo test -p od-isa cvttss2si_runtime_profile_is_separate_from_cvtss2si_and_generic_execution --offline` — passed; direct runtime checks deny cross-admission with CVTSS2SI and CVTSI2SS in both directions, plus generic CVTTSS2SI execution, without state mutation or retirement.
+- `cargo test -p od-runner cvtss2si_canonical_register_space --offline` and `cargo test -p od-runner cvtsi2ss_canonical_register_space --offline` — neighboring conversion profiles passed.
+- `cargo test -p od-isa cvtss2si_refuses_daz_reserved_mxcsr_and_generic_execution --offline` — passed.
+- `cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`, and `git diff --check` — passed.
+- `python3 tools/check_layout.py` — only the pre-existing unmapped `.git` entry and two historical missing manifest links were reported.
+- `graphify update .` — completed.
+
+Independent Sol-medium review initially found a broken CVTSS2SI parser
+rejection vector, malformed forms using the neighboring 0F 2D opcode, and
+missing CVTT boundary/exception/cross-admission cases. These were corrected;
+targeted re-review is clean. The reviewer independently passed the CVTSS2SI
+parser regression, both CVTT testkit tests, the expanded runner test, both ISA
+tests, and the final runtime-separation test. Physical hardware acceptance
+remains in the combined final stage.
