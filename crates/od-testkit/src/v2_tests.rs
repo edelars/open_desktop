@@ -300,6 +300,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 sqrtsd_controls: input.fixture.sqrtsd_controls,
                 sqrtps_controls: input.fixture.sqrtps_controls,
                 sqrtpd_controls: input.fixture.sqrtpd_controls,
+                subpd_controls: input.fixture.subpd_controls,
                 cvtss2sd_controls: input.fixture.cvtss2sd_controls,
                 cvtps2pd_controls: input.fixture.cvtps2pd_controls,
                 comiss_ucomiss_controls: input.fixture.comiss_ucomiss_controls,
@@ -8881,6 +8882,103 @@ fn sqrtpd_parser_and_independent_binary64_oracle_cover_pairs_and_aggregate_event
         assert_eq!(v, expected);
         assert!(pe);
     }
+}
+
+#[test]
+fn subpd_parser_and_independent_integer_oracle_cover_masked_range_semantics() {
+    for destination in 0u8..16 {
+        for source in 0u8..16 {
+            let mut bytes = vec![0x66];
+            if destination >= 8 || source >= 8 {
+                bytes.push(0x40 | ((destination >> 1) & 4) | (source >> 3));
+            }
+            bytes.extend([0x0f, 0x5c, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+            let code = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+            assert_eq!(
+                subpd_register_encoding(&code),
+                Some((destination, source, bytes.len() as u32)),
+                "{code}"
+            );
+        }
+    }
+    for code in [
+        "0f5cc1",
+        "f30f5cc1",
+        "f2660f5cc1",
+        "66660f5cc1",
+        "66400f5cc1",
+        "66480f5cc1",
+        "66420f5cc1",
+        "660f5c00",
+        "660f5cc190",
+        "c5fd5cc1",
+        "62f1fd085cc1",
+    ] {
+        assert_eq!(subpd_register_encoding(code), None, "{code}");
+    }
+
+    let (normal, ie, de, oe, ue, pe) = independent_subpd(
+        [0x4008_0000_0000_0000, 0x3ff0_0000_0000_0000],
+        [0x3ff0_0000_0000_0000, 0x3c90_0000_0000_0000],
+        0x1f80,
+    );
+    assert_eq!(normal, [0x4000_0000_0000_0000, 0x3ff0_0000_0000_0000]);
+    assert!(!ie && !de && !oe && !ue && pe);
+
+    for (rc, expected) in [
+        (0, 0x3ff0_0000_0000_0000),
+        (1, 0x3fefffffffffffff),
+        (2, 0x3ff0_0000_0000_0000),
+        (3, 0x3fefffffffffffff),
+    ] {
+        let (value, tiny, pe, oe) =
+            independent_subpd_finite_lane(0x3ff0_0000_0000_0000, 0x3c90_0000_0000_0000, rc);
+        assert_eq!(value, expected);
+        assert!(!tiny && pe && !oe);
+    }
+
+    let (canceled_down, _, _, _, _, _) = independent_subpd(
+        [0x3ff0_0000_0000_0000, 0x3ff0_0000_0000_0000],
+        [0x3ff0_0000_0000_0000, 0x3ff0_0000_0000_0000],
+        0x1f80 | (1 << 13),
+    );
+    assert_eq!(canceled_down, [1 << 63, 1 << 63]);
+
+    let (overflow, ie, de, oe, ue, pe) = independent_subpd(
+        [0x7fef_ffff_ffff_ffff, 0],
+        [0xffef_ffff_ffff_ffff, 0],
+        0x1f80,
+    );
+    assert_eq!(overflow[0], 0x7ff0_0000_0000_0000);
+    let (_, _, exact_significand_inexact, exact_overflow) =
+        independent_subpd_finite_lane(0x7fef_ffff_ffff_ffff, 0xffef_ffff_ffff_ffff, 0);
+    assert!(exact_overflow && !exact_significand_inexact);
+    assert!(!ie && !de && oe && !ue && pe, "masked OM=1 records OE|PE");
+
+    let (tiny_plain, _, _, _, tiny_ue, tiny_pe) = independent_subpd([1, 0], [0, 0], 0x1f80);
+    assert_eq!(tiny_plain[0], 1);
+    assert!(!tiny_ue && !tiny_pe);
+    let (tiny_ftz, _, _, _, tiny_ue, tiny_pe) =
+        independent_subpd([1, 0], [0, 0], 0x1f80 | (1 << 15));
+    assert_eq!(tiny_ftz[0], 0);
+    assert!(tiny_ue && tiny_pe);
+
+    let (nan_lanes, ie, de, _, _, _) =
+        independent_subpd([0x7ff8_0000_0000_1234, 1], [1, 0], 0x1f80);
+    assert_eq!(nan_lanes[0], 0x7ff8_0000_0000_1234);
+    assert!(!ie && de, "QNaN suppresses same-lane DE only");
+    let (_, ie, de, _, _, _) = independent_subpd(
+        [0x7ff8_0000_0000_1234, 0x3ff0_0000_0000_0000],
+        [0x7ff0_0000_0000_0001, 0x3c90_0000_0000_0000],
+        0x1f80 & !(1 << 7),
+    );
+    assert!(ie && !de, "unmasked IE suppresses other-lane post PE");
+    let (_, ie, de, _, _, pe) = independent_subpd(
+        [0x7ff0_0000_0000_0000, 0x3ff0_0000_0000_0000],
+        [0x7ff0_0000_0000_0000, 0x3c90_0000_0000_0000],
+        0x1f80 & !(1 << 7),
+    );
+    assert!(ie && !de && !pe, "invalid pre-event suppresses PE");
 }
 
 #[test]

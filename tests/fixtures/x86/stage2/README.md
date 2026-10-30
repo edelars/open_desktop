@@ -6630,3 +6630,22 @@ Vol. 1 §§11.5.3.1–.3; Vol. 3A Event 19/Table 7-8; Floating-Point Reference
 Sheet v2.13 pp. 1–2. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37am--canonical-long64-sqrtsd-xmm-register-pairs),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37am--canonical-long64-sqrtsd-xmm-register-pairs),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37am--sqrtsd-register-pair-interpreter-profile-2026-10-30).
+
+### S2-37an bounded masked-range SUBPD register-pair profile
+
+`s2_37an_subpd_xmm0_xmm1.case.json` is a literal `66 0F 5C /r` Long64
+XMM0,XMM1 fixture with two binary64 lanes. The strict schema-v2 profile covers
+all 256 pairs and canonical four-/five-byte register forms. Admission requires
+MXCSR.OM=1 and MXCSR.UM=1, rejects DAZ/reserved bits, and accepts RC, FTZ,
+IM/DM/PM and prior sticky flags. It therefore covers masked OE/UE only, not the
+full unmasked overflow/underflow behavior. Local runner tests cover aliasing,
+all pair routes, NaN/infinity/subnormal classes, cross-lane IE/DE priority,
+directed rounding/signed zero, masked overflow, FTZ tiny results, atomic
+exceptions, gates/fetch/CPL and backend denial. These results are not physical
+acceptance. Memory forms and other modes remain outside this profile. Sources:
+Intel SDM Rev. 093 Vol. 2B SUBPD pp. 4-687–4-689 and Vol. 2A §2.5.2,
+Table 2-19 (p. 2-27); Vol. 1 §§4.9.1.4–.6, 11.5.3 and DAZ/FTZ; Vol. 3A
+Event 19/Table 7-8; Intel
+Floating-Point Reference Sheet v2.13. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37an--bounded-masked-range-long64-subpd-xmm-register-pairs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37an--bounded-masked-range-long64-subpd-xmm-register-pairs)
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37an--subpd-register-pair-interpreter-profile-2026-10-30).

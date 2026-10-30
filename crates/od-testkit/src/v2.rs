@@ -278,6 +278,8 @@ pub enum Profile {
     LongSqrtpsRegistersV1,
     #[serde(rename = "s2-long-sqrtpd-registers-v1")]
     LongSqrtpdRegistersV1,
+    #[serde(rename = "s2-long-subpd-registers-v1")]
+    LongSubpdRegistersV1,
     #[serde(rename = "s2-long-cvtss2sd-registers-v1")]
     LongCvtss2sdRegistersV1,
     #[serde(rename = "s2-long-cvtps2pd-registers-v1")]
@@ -1312,6 +1314,7 @@ impl IntegerState {
                     | Profile::LongSqrtsdRegistersV1
                     | Profile::LongSqrtpsRegistersV1
                     | Profile::LongSqrtpdRegistersV1
+                    | Profile::LongSubpdRegistersV1
                     | Profile::LongCvtss2sdRegistersV1
                     | Profile::LongCvtps2pdRegistersV1
                     | Profile::LongComissUcomissRegistersV1
@@ -1521,6 +1524,7 @@ impl IntegerState {
                 | Profile::LongSqrtsdRegistersV1
                 | Profile::LongSqrtpsRegistersV1
                 | Profile::LongSqrtpdRegistersV1
+                | Profile::LongSubpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -1681,6 +1685,7 @@ impl IntegerState {
                 | Profile::LongSqrtsdRegistersV1
                 | Profile::LongSqrtpsRegistersV1
                 | Profile::LongSqrtpdRegistersV1
+                | Profile::LongSubpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -2023,6 +2028,7 @@ impl IntegerState {
             | Profile::LongSqrtsdRegistersV1
             | Profile::LongSqrtpsRegistersV1
             | Profile::LongSqrtpdRegistersV1
+            | Profile::LongSubpdRegistersV1
             | Profile::LongCvtss2sdRegistersV1
             | Profile::LongCvtps2pdRegistersV1
             | Profile::LongCvtsi2sdR32ExactV1
@@ -2189,6 +2195,7 @@ impl IntegerState {
                 | Profile::LongSqrtsdRegistersV1
                 | Profile::LongSqrtpsRegistersV1
                 | Profile::LongSqrtpdRegistersV1
+                | Profile::LongSubpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -2367,6 +2374,7 @@ impl IntegerState {
                 | Profile::LongSqrtsdRegistersV1
                 | Profile::LongSqrtpsRegistersV1
                 | Profile::LongSqrtpdRegistersV1
+                | Profile::LongSubpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -2554,6 +2562,7 @@ impl IntegerState {
                 | Profile::LongSqrtsdRegistersV1
                 | Profile::LongSqrtpsRegistersV1
                 | Profile::LongSqrtpdRegistersV1
+                | Profile::LongSubpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -2748,6 +2757,7 @@ impl IntegerState {
                 | Profile::LongSqrtsdRegistersV1
                 | Profile::LongSqrtpsRegistersV1
                 | Profile::LongSqrtpdRegistersV1
+                | Profile::LongSubpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -3572,6 +3582,7 @@ impl IntegerState {
                 | Profile::LongSqrtsdRegistersV1
                 | Profile::LongSqrtpsRegistersV1
                 | Profile::LongSqrtpdRegistersV1
+                | Profile::LongSubpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -3723,6 +3734,7 @@ impl IntegerState {
                 | Profile::LongSqrtsdRegistersV1
                 | Profile::LongSqrtpsRegistersV1
                 | Profile::LongSqrtpdRegistersV1
+                | Profile::LongSubpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -3990,6 +4002,8 @@ pub struct Fixture {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqrtpd_controls: Option<SqrtpdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subpd_controls: Option<SubpdControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtss2sd_controls: Option<Cvtss2sdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtps2pd_controls: Option<Cvtps2pdControlSnapshot>,
@@ -4163,6 +4177,7 @@ pub struct SqrtssControlSnapshot {
 pub type SqrtpsControlSnapshot = SqrtssControlSnapshot;
 pub type SqrtpdControlSnapshot = Cvtdq2psControlSnapshot;
 pub type SqrtsdControlSnapshot = Cvtdq2psControlSnapshot;
+pub type SubpdControlSnapshot = Cvtdq2psControlSnapshot;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -6204,6 +6219,58 @@ impl Fixture {
                 "only valid for SQRTPD register-space profile",
             ));
         }
+        if self.profile == Profile::LongSubpdRegistersV1 {
+            let _ = self
+                .subpd_controls
+                .ok_or_else(|| invalid("subpd_controls", "required by the SUBPD profile"))?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by the SUBPD profile"))?;
+            let (_, _, length) =
+                subpd_register_encoding(&code.initial_bytes_hex).ok_or_else(|| {
+                    invalid("memory.code", "outside canonical SUBPD register profile")
+                })?;
+            let start = self.initial_state.rip.get();
+            if code.guest_address.get() != start
+                || code.length != length
+                || !code.permissions.execute
+                || self.memory.len() != 1
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(u64::from(length))
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "SUBPD requires one canonical executable encoding, budget 1, and stop RIP entry+length",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .expect("SSE2 required by SUBPD")
+                .mxcsr
+                .get();
+            if mxcsr & !0x0000_ffbf != 0
+                || mxcsr & (1 << 6) != 0
+                || mxcsr & ((1 << 10) | (1 << 11)) != ((1 << 10) | (1 << 11))
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "SUBPD requires supported MXCSR bits, DAZ=0, OM=1, and UM=1",
+                ));
+            }
+        } else if self.subpd_controls.is_some() {
+            return Err(invalid(
+                "subpd_controls",
+                "only valid for SUBPD register-space profile",
+            ));
+        }
         if self.profile == Profile::LongCvtss2sdRegistersV1 {
             let _ = self
                 .cvtss2sd_controls
@@ -7312,6 +7379,9 @@ impl Fixture {
                 }
                 Profile::LongSqrtpdRegistersV1 => {
                     sqrtpd_register_encoding(&code_bytes).map(|(_, _, length)| length)
+                }
+                Profile::LongSubpdRegistersV1 => {
+                    subpd_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
                 Profile::LongCvtss2sdRegistersV1 => {
                     cvtss2sd_register_encoding(&code_bytes).map(|(_, _, length)| length)
@@ -9275,6 +9345,7 @@ impl Fixture {
             sqrtsd_controls: None,
             sqrtps_controls: None,
             sqrtpd_controls: None,
+            subpd_controls: None,
             cvtss2sd_controls: None,
             cvtps2pd_controls: None,
             comiss_ucomiss_controls: None,
@@ -9400,6 +9471,8 @@ pub struct Snapshot {
     pub sqrtps_controls: Option<SqrtpsControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqrtpd_controls: Option<SqrtpdControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subpd_controls: Option<SubpdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtss2sd_controls: Option<Cvtss2sdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -9786,6 +9859,19 @@ impl RunResult {
             return Err(invalid(
                 "snapshot.sqrtpd_controls",
                 "only valid for the SQRTPD profile",
+            ));
+        }
+        if self.profile == Profile::LongSubpdRegistersV1 {
+            if snapshot.subpd_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.subpd_controls",
+                    "required by the SUBPD profile",
+                ));
+            }
+        } else if snapshot.subpd_controls.is_some() {
+            return Err(invalid(
+                "snapshot.subpd_controls",
+                "only valid for the SUBPD profile",
             ));
         }
         if self.profile == Profile::LongCvtss2sdRegistersV1 {
@@ -10360,6 +10446,21 @@ impl RunResult {
             }
             if loaded.fixture.profile == Profile::LongSqrtpdRegistersV1 {
                 validate_sqrtpd_registers_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.subpd_controls,
+                value.subpd_controls,
+            ) {
+                (Profile::LongSubpdRegistersV1, Some(input), Some(output)) if input == output => {}
+                (Profile::LongSubpdRegistersV1, _, _) => {
+                    return Err(FormatError::CaseMismatch("subpd_controls"));
+                }
+                (_, None, None) => {}
+                _ => return Err(FormatError::CaseMismatch("subpd_controls")),
+            }
+            if loaded.fixture.profile == Profile::LongSubpdRegistersV1 {
+                validate_subpd_registers_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
@@ -13719,6 +13820,139 @@ fn validate_sqrtpd_registers_result(
     Ok(())
 }
 
+fn validate_subpd_registers_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .subpd_controls
+        .ok_or(FormatError::CaseMismatch("subpd_controls"))?;
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    let (destination, source, length) = subpd_register_encoding(&code.initial_bytes_hex)
+        .ok_or(FormatError::CaseMismatch("SUBPD encoding"))?;
+    let lhs_bytes = decode_bytes(&initial_sse.xmm[usize::from(destination)])?;
+    let rhs_bytes = decode_bytes(&initial_sse.xmm[usize::from(source)])?;
+    let lhs = std::array::from_fn(|lane| {
+        u64::from_le_bytes(lhs_bytes[lane * 8..lane * 8 + 8].try_into().unwrap())
+    });
+    let rhs = std::array::from_fn(|lane| {
+        u64::from_le_bytes(rhs_bytes[lane * 8..lane * 8 + 8].try_into().unwrap())
+    });
+    let old_mxcsr = initial_sse.mxcsr.get() as u32;
+    let (values, new_ie, new_de, new_oe, new_ue, new_pe) = independent_subpd(lhs, rhs, old_mxcsr);
+    let unmasked_ie = new_ie && old_mxcsr & (1 << 7) == 0;
+    let unmasked_de = new_de && old_mxcsr & (1 << 8) == 0;
+    let unmasked_pre = unmasked_ie || unmasked_de;
+    let unmasked_oe = new_oe && old_mxcsr & (1 << 10) == 0;
+    let unmasked_ue = new_ue && old_mxcsr & (1 << 11) == 0;
+    let unmasked_pe = new_pe && old_mxcsr & (1 << 12) == 0;
+    let gate_vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let fault_vector = gate_vector.or_else(|| {
+        if unmasked_pre || unmasked_oe || unmasked_ue || unmasked_pe {
+            Some(if controls.cr4_osxmmexcpt { 19 } else { 6 })
+        } else {
+            None
+        }
+    });
+    if !matches!(
+        (fault_vector.is_some(), fixture.expected_exit),
+        (true, ExpectedExit::Exception) | (false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("SUBPD expected exit"));
+    }
+    let mut expected_state = fixture.initial_state.clone();
+    if gate_vector.is_none() {
+        let sse = expected_state
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        sse.mxcsr = HexU64(u64::from(
+            old_mxcsr
+                | u32::from(new_ie)
+                | (u32::from(new_de) << 1)
+                | (u32::from(new_oe) << 3)
+                | (u32::from(new_ue) << 4)
+                | (u32::from(new_pe) << 5),
+        ));
+        if !unmasked_pre && !unmasked_oe && !unmasked_ue && !unmasked_pe {
+            let mut expected_destination = [0u8; 16];
+            for (lane, value) in values.into_iter().enumerate() {
+                expected_destination[lane * 8..lane * 8 + 8].copy_from_slice(&value.to_le_bytes());
+            }
+            sse.xmm[usize::from(destination)] = crate::memory::encode_bytes(&expected_destination);
+            expected_state.rip = HexU64(
+                fixture
+                    .initial_state
+                    .rip
+                    .get()
+                    .checked_add(u64::from(length))
+                    .ok_or(FormatError::CaseMismatch("SUBPD stop overflow"))?,
+            );
+        }
+    }
+    let expected_memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected_state {
+        return Err(FormatError::CaseMismatch("SUBPD state"));
+    }
+    if snapshot.rflags_defined != HexU64(INTEGER_FLAGS) {
+        return Err(FormatError::CaseMismatch("SUBPD defined flags"));
+    }
+    if snapshot.memory != expected_memory {
+        return Err(FormatError::CaseMismatch("SUBPD memory"));
+    }
+    let expected_count = u64::from(fault_vector.is_none());
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(expected_count),
+        })
+    {
+        return Err(FormatError::CaseMismatch("SUBPD retirement count"));
+    }
+    match (fault_vector, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == Observation::Unavailable {
+                    reason: "exception has no architectural error code".into(),
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("SUBPD outcome/exception")),
+    }
+    Ok(())
+}
+
 fn validate_cvtss2sd_registers_result(
     loaded: &LoadedFixture,
     result: &RunResult,
@@ -17043,6 +17277,34 @@ fn sqrtpd_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
     Some((destination, source, bytes.len() as u32))
 }
 
+fn subpd_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (rex, modrm) = match bytes.as_slice() {
+        [0x66, 0x0f, 0x5c, modrm] => (0u8, *modrm),
+        [0x66, rex, 0x0f, 0x5c, modrm] if matches!(*rex, 0x41 | 0x44 | 0x45) => (*rex, *modrm),
+        _ => return None,
+    };
+    if modrm >> 6 != 3 {
+        return None;
+    }
+    let destination = ((modrm >> 3) & 7) | (((rex >> 2) & 1) << 3);
+    let source = (modrm & 7) | ((rex & 1) << 3);
+    if (destination >= 8 || source >= 8) != (bytes.len() == 5)
+        || (rex & 4 != 0) != (destination >= 8)
+        || (rex & 1 != 0) != (source >= 8)
+        || rex & 0x0a != 0
+    {
+        return None;
+    }
+    Some((destination, source, bytes.len() as u32))
+}
+
 fn sqrtsd_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
     if code_bytes.len() % 2 != 0 {
         return None;
@@ -17069,6 +17331,256 @@ fn sqrtsd_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
         return None;
     }
     Some((destination, source, bytes.len() as u32))
+}
+
+#[derive(Clone, Copy)]
+struct IndependentWide([u64; 34]);
+
+impl IndependentWide {
+    fn shifted(value: u64, shift: usize) -> Self {
+        let mut limbs = [0u64; 34];
+        let index = shift / 64;
+        let offset = shift % 64;
+        limbs[index] |= value << offset;
+        if offset != 0 && index + 1 < limbs.len() {
+            limbs[index + 1] |= value >> (64 - offset);
+        }
+        Self(limbs)
+    }
+
+    fn compare(self, other: Self) -> core::cmp::Ordering {
+        for index in (0..self.0.len()).rev() {
+            match self.0[index].cmp(&other.0[index]) {
+                core::cmp::Ordering::Equal => {}
+                ordering => return ordering,
+            }
+        }
+        core::cmp::Ordering::Equal
+    }
+
+    fn add(self, other: Self) -> Self {
+        let mut output = [0u64; 34];
+        let mut carry = 0u128;
+        for (index, slot) in output.iter_mut().enumerate() {
+            let sum = u128::from(self.0[index]) + u128::from(other.0[index]) + carry;
+            *slot = sum as u64;
+            carry = sum >> 64;
+        }
+        debug_assert_eq!(carry, 0);
+        Self(output)
+    }
+
+    fn subtract(self, other: Self) -> Self {
+        debug_assert_ne!(self.compare(other), core::cmp::Ordering::Less);
+        let mut output = [0u64; 34];
+        let mut borrow = false;
+        for (index, slot) in output.iter_mut().enumerate() {
+            let (first, first_borrow) = self.0[index].overflowing_sub(other.0[index]);
+            let (value, second_borrow) = first.overflowing_sub(u64::from(borrow));
+            *slot = value;
+            borrow = first_borrow || second_borrow;
+        }
+        debug_assert!(!borrow);
+        Self(output)
+    }
+
+    fn highest_bit(self) -> Option<usize> {
+        self.0.iter().enumerate().rev().find_map(|(index, limb)| {
+            (*limb != 0).then(|| index * 64 + (63 - limb.leading_zeros() as usize))
+        })
+    }
+
+    fn bit(self, bit: usize) -> bool {
+        self.0[bit / 64] & (1u64 << (bit % 64)) != 0
+    }
+
+    fn any_below(self, bit: usize) -> bool {
+        let whole = bit / 64;
+        if self.0[..whole].iter().any(|limb| *limb != 0) {
+            return true;
+        }
+        let partial = bit % 64;
+        partial != 0 && self.0[whole] & ((1u64 << partial) - 1) != 0
+    }
+
+    fn extract_53(self, start: usize) -> u64 {
+        let mut output = 0u64;
+        for offset in 0..53 {
+            if self.bit(start + offset) {
+                output |= 1u64 << offset;
+            }
+        }
+        output
+    }
+}
+
+fn independent_subpd_finite_lane(lhs: u64, rhs: u64, rc: u32) -> (u64, bool, bool, bool) {
+    let decode = |raw: u64| {
+        let exponent = ((raw >> 52) & 0x7ff) as usize;
+        let fraction = raw & 0x000f_ffff_ffff_ffff;
+        let sign = raw >> 63 != 0;
+        if exponent == 0 {
+            (sign, IndependentWide::shifted(fraction, 0))
+        } else {
+            (
+                sign,
+                IndependentWide::shifted((1u64 << 52) | fraction, exponent - 1),
+            )
+        }
+    };
+    let (lhs_sign, lhs_magnitude) = decode(lhs);
+    let (rhs_sign, rhs_magnitude) = decode(rhs);
+    let effective_rhs_sign = !rhs_sign;
+    let (negative, magnitude) = if lhs_sign == effective_rhs_sign {
+        (lhs_sign, lhs_magnitude.add(rhs_magnitude))
+    } else {
+        match lhs_magnitude.compare(rhs_magnitude) {
+            core::cmp::Ordering::Greater => (lhs_sign, lhs_magnitude.subtract(rhs_magnitude)),
+            core::cmp::Ordering::Less => {
+                (effective_rhs_sign, rhs_magnitude.subtract(lhs_magnitude))
+            }
+            core::cmp::Ordering::Equal => {
+                return (if rc == 1 { 1u64 << 63 } else { 0 }, false, false, false);
+            }
+        }
+    };
+    let Some(top) = magnitude.highest_bit() else {
+        return (u64::from(negative) << 63, false, false, false);
+    };
+    let mut exponent_top = top;
+    let mut significand;
+    let mut inexact = false;
+    if top < 52 {
+        significand = magnitude.0[0];
+    } else {
+        let shift = top - 52;
+        significand = magnitude.extract_53(shift);
+        inexact = shift != 0 && magnitude.any_below(shift);
+        let round_up = if !inexact {
+            false
+        } else {
+            match rc {
+                0 => {
+                    let guard = magnitude.bit(shift - 1);
+                    guard && (magnitude.any_below(shift - 1) || significand & 1 != 0)
+                }
+                1 => negative,
+                2 => !negative,
+                _ => false,
+            }
+        };
+        significand += u64::from(round_up);
+        if significand == (1u64 << 53) {
+            significand >>= 1;
+            exponent_top += 1;
+        }
+    }
+    let overflow = exponent_top > 2097;
+    if overflow {
+        let infinity = rc == 0 || rc == 1 && negative || rc == 2 && !negative;
+        let value = if infinity {
+            (u64::from(negative) << 63) | 0x7ff0_0000_0000_0000
+        } else {
+            (u64::from(negative) << 63) | 0x7fef_ffff_ffff_ffff
+        };
+        return (value, false, inexact, true);
+    }
+    let value = if exponent_top < 52 {
+        (u64::from(negative) << 63) | significand
+    } else {
+        (u64::from(negative) << 63)
+            | (((exponent_top - 51) as u64) << 52)
+            | (significand & 0x000f_ffff_ffff_ffff)
+    };
+    (value, exponent_top < 52, inexact, false)
+}
+
+fn independent_subpd_lane(lhs: u64, rhs: u64, mxcsr: u32) -> (u64, bool, bool, bool, bool, bool) {
+    let lhs_exp = (lhs >> 52) & 0x7ff;
+    let rhs_exp = (rhs >> 52) & 0x7ff;
+    let lhs_frac = lhs & 0x000f_ffff_ffff_ffff;
+    let rhs_frac = rhs & 0x000f_ffff_ffff_ffff;
+    let lhs_nan = lhs_exp == 0x7ff && lhs_frac != 0;
+    let rhs_nan = rhs_exp == 0x7ff && rhs_frac != 0;
+    let lhs_snan = lhs_nan && lhs_frac & (1 << 51) == 0;
+    let rhs_snan = rhs_nan && rhs_frac & (1 << 51) == 0;
+    if lhs_nan || rhs_nan {
+        let selected = if lhs_nan { lhs } else { rhs };
+        let selected_snan = if lhs_nan { lhs_snan } else { rhs_snan };
+        let value = if selected_snan {
+            selected | (1 << 51)
+        } else {
+            selected
+        };
+        return (value, lhs_snan || rhs_snan, false, false, false, false);
+    }
+    let lhs_inf = lhs_exp == 0x7ff;
+    let rhs_inf = rhs_exp == 0x7ff;
+    if lhs_inf && rhs_inf && (lhs ^ rhs) >> 63 == 0 {
+        return (0xfff8_0000_0000_0000, true, false, false, false, false);
+    }
+    let new_de = (lhs_exp == 0 && lhs_frac != 0) || (rhs_exp == 0 && rhs_frac != 0);
+    if lhs_inf {
+        return (lhs, false, new_de, false, false, false);
+    }
+    if rhs_inf {
+        return (
+            ((rhs ^ (1 << 63)) & (1 << 63)) | 0x7ff0_0000_0000_0000,
+            false,
+            new_de,
+            false,
+            false,
+            false,
+        );
+    }
+    let (mut value, tiny, mut pe, oe) = independent_subpd_finite_lane(lhs, rhs, (mxcsr >> 13) & 3);
+    let mut ue = tiny && pe;
+    if mxcsr & (1 << 15) != 0
+        && tiny
+        && value & 0x7ff0_0000_0000_0000 == 0
+        && value & 0x000f_ffff_ffff_ffff != 0
+    {
+        value &= 1 << 63;
+        ue = true;
+        pe = true;
+    }
+    (value, false, new_de, oe, ue, pe)
+}
+
+fn independent_subpd(
+    lhs: [u64; 2],
+    rhs: [u64; 2],
+    mxcsr: u32,
+) -> ([u64; 2], bool, bool, bool, bool, bool) {
+    let mut values = [0u64; 2];
+    let mut ie = false;
+    let mut de = false;
+    let mut oe = false;
+    let mut ue = false;
+    let mut pe = false;
+    let lanes = [
+        independent_subpd_lane(lhs[0], rhs[0], mxcsr),
+        independent_subpd_lane(lhs[1], rhs[1], mxcsr),
+    ];
+    for (index, (value, lane_ie, lane_de, lane_oe, lane_ue, lane_pe)) in
+        lanes.into_iter().enumerate()
+    {
+        values[index] = value;
+        ie |= lane_ie;
+        de |= lane_de;
+        oe |= lane_oe;
+        ue |= lane_ue;
+        // SUBPD fixtures admit OM=1 only, whose masked overflow response
+        // records OE|PE even when the exact significand itself was representable.
+        pe |= lane_pe || lane_oe;
+    }
+    let unmasked_pre = ie && mxcsr & (1 << 7) == 0 || de && mxcsr & (1 << 8) == 0;
+    if unmasked_pre {
+        oe = false;
+        ue = false;
+        pe = false;
+    }
+    (values, ie, de, oe, ue, pe)
 }
 
 fn independent_sqrtpd_lane(raw: u64, mxcsr: u32) -> (u64, bool, bool, bool) {

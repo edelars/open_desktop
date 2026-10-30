@@ -13218,3 +13218,50 @@ Intel Floating-Point Reference Sheet v2.13 pp. 1–2
 See the [plan](../plans/STAGE_2.md#s2-37am--canonical-long64-sqrtsd-xmm-register-pairs),
 [report](../reports/STAGE_2_REPORT.md#s2-37am--sqrtsd-register-pair-interpreter-profile-2026-10-30),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37am-canonical-sqrtsd-register-pair).
+
+## S2-37an — bounded masked-range Long64 SUBPD XMM register pairs
+
+The strict schema-v2 interpreter-only profile `s2-long-subpd-registers-v1`
+admits all 256 canonical Long64 `66 0F 5C /r` XMM register pairs with
+ModR/M.mod=3. Low forms are four bytes; extended indices use one REX `41`,
+`44` or `45` immediately after `66` and are five bytes. Memory, F2/F3,
+reordered/repeated/redundant prefixes, REX.W/X/40, trailing bytes, VEX and EVEX
+are refused. Full fetch precedes SSE2/EM/OSFXSR #UD and then TS #NM at CPL0–3;
+the profile performs no data callbacks. JIT/native/C ABI/fragment/generic
+execution remains closed.
+
+The profile admits only MXCSR.OM=1 and MXCSR.UM=1 because the existing
+`BinaryRoundingResult` cannot preserve exact-significand overflow information
+for the OM=0 case. It rejects DAZ and reserved MXCSR bits, while accepting RC,
+FTZ, IM/DM/PM and prior sticky flags. Thus it covers masked overflow and
+underflow behavior only and makes no claim for unmasked OE/UE delivery.
+
+Each lane computes old destination minus source from pre-execution snapshots.
+NaNs are classified before the subtraction sign transform: SNaN raises IE and
+is quieted by the local raw helper, QNaN alone does not raise IE, and a NaN
+suppresses DE for that lane. Opposite-effective-sign infinities raise IE and
+produce the indefinite when masked. Otherwise a subnormal operand contributes
+precompute DE. IE and DE aggregate across lanes before computation; any newly
+unmasked pre-event commits all generated IE/DE and suppresses every new OE/UE/PE
+and the full-XMM result. When pre-events are masked, both lanes compute under
+MXCSR.RC. Masked overflow records OE|PE; an inexact tiny result records UE|PE,
+and FTZ can flush a tiny result to signed zero while adding UE|PE. New sticky
+flags are committed before an unmasked #XM (OSXMMEXCPT=1) or SIMD-generated #UD
+otherwise. Unmasked outcomes preserve the complete destination, RIP and
+retirement; old sticky flags alone do not fault. Success replaces the whole
+destination XMM.
+
+The schema oracle uses independent raw-u64 integer arithmetic and rounding,
+without host FP or production helpers. Local checks include 256 pairs and
+aliases, cross-lane pre-event priority, NaN/infinity/subnormal cases, all RCs,
+masked overflow and FTZ underflow, masks/stickies, gates/fetch/CPL/atomicity,
+strict encoding, metadata tampering and backend denial. This evidence is local
+and is not physical acceptance. Full unmasked OE/UE semantics, memory operands,
+other modes, and parent S2-37/S2-38 remain open. Sources: Intel SDM Rev. 093
+Vol. 2B SUBPD pp. 4-687–4-689 and Vol. 2A p. 2-27 ([official SDM](https://cdrdv.intel.com/v1/dl/getContent/671199));
+Vol. 1 §§4.9.1.4–.6, 11.5.3 and DAZ/FTZ ([Vol. 1](https://cdrdv.intel.com/v1/dl/getContent/671436));
+Vol. 3A Event 19/Table 7-8 ([Vol. 3A](https://cdrdv.intel.com/v1/dl/getContent/671190));
+Intel Floating-Point Reference Sheet v2.13 ([PDF](https://cdrdv.intel.com/v1/dl/getContent/786447?fileName=floating-point-reference-sheet-for-intel-architecture.pdf)).
+See the [plan](../plans/STAGE_2.md#s2-37an--bounded-masked-range-long64-subpd-xmm-register-pairs),
+[report](../reports/STAGE_2_REPORT.md#s2-37an--subpd-register-pair-interpreter-profile-2026-10-30),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37an-bounded-masked-range-subpd-register-pair).

@@ -18404,3 +18404,46 @@ review remains pending. SQRTSD memory forms, physical acceptance, other modes an
 parent S2-37/S2-38 remain open. Sources: Intel SDM Rev. 093 Vol. 2B SQRTSD
 pp. 4-667–4-668 (Type 3, Table 2-20); Vol. 1 §§11.5.3.1–.3; Vol. 3A Event 19
 and Table 7-8; Floating-Point Reference Sheet v2.13 pp. 1–2.
+
+### S2-37an — SUBPD register-pair interpreter profile (2026-10-30)
+
+Implemented strict schema-v2 interpreter-only profile
+`s2-long-subpd-registers-v1` for all 256 canonical Long64 `66 0F 5C /r`
+register pairs with ModR/M.mod=3. Low forms are four bytes; extended forms
+require a single REX `41`/`44`/`45` after `66` and are five bytes. Invalid
+prefix order/count, memory, trailing bytes, REX.W/X/40, VEX and EVEX are refused.
+Full fetch precedes SSE2/EM/OSFXSR #UD and TS #NM at CPL0–3; there are no data
+callbacks. JIT/native/C ABI/fragment/generic paths remain closed.
+
+This is an explicit masked-range limit: schema and public runtime admission
+require MXCSR.OM=1 and MXCSR.UM=1 because the available raw rounding result
+cannot distinguish exact-significand overflow from the OM=0 response. DAZ and
+reserved MXCSR bits are rejected; RC, FTZ, other exception masks and prior
+sticky flags are accepted. No complete unmasked OE/UE behavior is claimed.
+Production execution snapshots both XMM operands, classifies NaN before
+sign-transforming the subtrahend, aggregates IE/DE before arithmetic, and
+commits both destination lanes atomically. With masked pre-events it computes
+both lanes, recording masked overflow as OE|PE and inexact tiny underflow as
+UE|PE (including FTZ flush); newly unmasked pre-events suppress all post flags.
+Old sticky flags alone do not fault.
+
+The schema oracle is independent raw-u64 integer subtraction and rounding; it
+uses neither host FP nor production arithmetic helpers. The literal fixture
+passed. Focused checks passed for all 256 decode/runtime pairs and aliases,
+independent oracle vectors, masks, RC including directed signed-zero, masked
+overflow, FTZ tiny results, cross-lane IE/DE versus PE priority, strict MXCSR
+admission, public runtime gates/fetch/atomicity and JIT/native denial. Runner
+matrix command: `cargo test -p od-runner --test fixture_v2
+subpd_literal_pairs_and_bounded_range_exception_matrix --offline -- --nocapture`
+(1 passed). A direct runtime regression passed with
+`cargo test -p od-isa
+subpd_public_runtime_enforces_bounded_masks_fetch_gates_and_atomic_status
+--offline -- --nocapture` (1 passed). Focused `od-testkit` parser/oracle and
+`od-isa` decoder suites also passed. Formatting, workspace checks, layout
+validation, diff checks and independent review passed. These are local results, not physical acceptance. Full
+unmasked OE/UE semantics, memory operands, other modes and parent S2-37/S2-38
+remain open. Sources: Intel SDM Rev. 093 Vol. 2B SUBPD pp. 4-687–4-689 and
+Vol. 2A p. 2-27 ([official SDM](https://cdrdv.intel.com/v1/dl/getContent/671199));
+Vol. 1 §§4.9.1.4–.6, 11.5.3 and DAZ/FTZ ([Vol. 1](https://cdrdv.intel.com/v1/dl/getContent/671436));
+Vol. 3A Event 19/Table 7-8 ([Vol. 3A](https://cdrdv.intel.com/v1/dl/getContent/671190));
+Intel Floating-Point Reference Sheet v2.13 ([PDF](https://cdrdv.intel.com/v1/dl/getContent/786447?fileName=floating-point-reference-sheet-for-intel-architecture.pdf)).
