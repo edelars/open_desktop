@@ -17750,8 +17750,8 @@ Checks passed:
 - `cargo test -p od-runner --test fixture_v2 comiss_ucomiss_register_pairs_raw_classes_exceptions_and_backend_denial --offline`
 - `cargo test -p od-isa comiss_ucomiss_profile_fetch_gates_and_cpl_are_bounded --offline`
 
-The implementation and oracle have not received independent review yet; the
-plan remains unchecked pending that review. The Linux x86_64 native denial test
+Independent Sol-medium review found no concrete correctness or regression
+issues. The plan is checked. The Linux x86_64 native denial test
 is platform-gated and was not run on this macOS host; `native_profile_local_only`
 includes this profile, while the interpreter fixture verifies JIT denial.
 `cargo fmt --all -- --check` and `cargo check --workspace --all-targets --offline`
