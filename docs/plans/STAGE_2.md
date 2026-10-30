@@ -6834,7 +6834,7 @@ inventory.
 | SUBPD | `66 0F 5C /r` | SSE2 | XMM, m128; 2×f64 | 4-687 | S2-37an register-only, OM=UM=1 masked-range; full unmasked OE/UE and memory missing |
 | SUBPS | `NP 0F 5C /r` | SSE | XMM, m128; 4×f32 | 4-690 | S2-37ao register-only, OM=UM=1 masked-range; full unmasked OE/UE and memory missing |
 | SUBSD | `F2 0F 5C /r` | SSE2 | XMM, m64; low f64 | 4-693 | S2-37ap canonical register-only, low64 result/high64 preserved, OM=UM=1 masked-range; memory and full unmasked OE/UE missing |
-| SUBSS | `F3 0F 5C /r` | SSE | XMM, m32; low f32 | 4-695 | missing |
+| SUBSS | `F3 0F 5C /r` | SSE | XMM, m32; low f32 | 4-695 | S2-37aq canonical register-only, low32 result/high96 preserved, OM=UM=1 masked-range; memory and full unmasked OE/UE missing |
 | UCOMISD | `66 0F 2E /r` | SSE2 | XMM, m64; EFLAGS | 4-733 | S2-37w, bounded register-only |
 | UCOMISS | `NP 0F 2E /r` | SSE | XMM, m32; EFLAGS | 4-735 | S2-37v, bounded register-only |
 
