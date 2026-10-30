@@ -18786,7 +18786,7 @@ minnormal/maxsub, is mathematically inconsistent: it is a half-minsub tie and
 raises UE|PE. The oracle tests that tie separately; the neighboring
 `minnormal/nextafter(1,+)` vector exercises maxsub versus minnormal rounding.
 
-Sources: Intel SDM Rev. 093 Vol. 2B DIVPD pp. 3-267–3-269; Vol. 2A legacy SSE
+Sources: Intel SDM Rev. 093 Vol. 2A DIVPD pp. 3-267–3-269; Vol. 2A legacy SSE
 rows in Table 2-19. The explicit Type 2 reference on p. 3-269 is for VEX forms,
 not legacy DIVPD. Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A
 Event 19/Table 7-8; Intel Floating-Point Reference Sheet v2.13. See the [CPU

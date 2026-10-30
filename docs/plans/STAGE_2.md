@@ -13876,7 +13876,7 @@ quieting; zeros, infinities and subnormals; IE+ZE/DE and ZE+DE cross-lane
 priority; SNaN suppression of same-lane ZE/DE; RC and FTZ; pre/post exception
 atomicity; stickies and masks; full fetch/gates/CPL/STOP/budget/no-callback;
 malformed/tampered inputs; and backend denial. Sources: Intel SDM Rev. 093
-Vol. 2B DIVPD pp. 3-267–3-269; Vol. 2A legacy SSE instruction rows in Table
+Vol. 2A DIVPD pp. 3-267–3-269; Vol. 2A legacy SSE instruction rows in Table
 2-19 (the explicit Type 2 reference on p. 3-269 concerns VEX forms, not legacy
 DIVPD); Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19 and
 Table 7-8; Intel Floating-Point Reference Sheet v2.13. This local profile does

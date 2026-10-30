@@ -13627,7 +13627,7 @@ tampering and JIT/native denial. These local checks do not establish physical
 acceptance. Memory forms, other modes, full unmasked OE/UE behavior and parent
 S2-37/S2-38 remain open.
 
-Sources: Intel SDM Rev. 093 Vol. 2B DIVPD pp. 3-267–3-269; Vol. 2A legacy SSE
+Sources: Intel SDM Rev. 093 Vol. 2A DIVPD pp. 3-267–3-269; Vol. 2A legacy SSE
 rows in Table 2-19. The explicit Type 2/Table 2-19 cross-reference on p. 3-269
 is for VEX forms and is not applied to legacy DIVPD. Vol. 1 §§4.9.1.4–.6,
 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel Floating-Point
