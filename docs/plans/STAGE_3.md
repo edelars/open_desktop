@@ -2553,16 +2553,21 @@ runtime teardown, independent-instance lifecycle, SMC invalidation, and broader
 workloads remain unmeasured. See the
 [S3-37a report](../reports/STAGE_3_S3-37a_2026-10-30.md).
 
-#### S3-37b: process-wide RSS snapshot support (measurement pending)
+#### S3-37b: process-wide RSS snapshots for bounded FIFO16 churn
 
 The `cache-churn` report now takes process-wide RSS snapshots after corpus
 preparation but before FIFO runtime creation, after the fixed sweeps but before
 runtime drop, and after explicit runtime drop. On macOS it reads `/bin/ps` RSS
 in KiB and converts to bytes. Other targets and sampling failures are reported
-as `null` with a reason. These values include the whole benchmark process and
-are not cache-attributed or leak/lifecycle acceptance. No S3-37b measurement
-has been run yet; repeated release-process results and interpretation remain
-open. See the [benchmark protocol](../testing/BENCHMARKS.md#s3-37b-process-wide-rss-snapshots).
+as `null` with a reason. Three release processes completed the same 128-sweep
+corpus: pre-runtime RSS was 5,024–5,056 KiB, pre-drop RSS was 5,808–6,000 KiB,
+and post-drop RSS was 5,744–5,936 KiB. Post-drop snapshots were 64 KiB below
+the pre-drop snapshots in all three processes, while remaining 688–912 KiB
+above each process's pre-runtime baseline. These process-wide values include
+the runner and its allocations; allocator retention and process-wide RSS do
+not establish cache attribution, leak-free behavior, or per-runtime release.
+See the [S3-37b report](../reports/STAGE_3_S3-37b_2026-10-30.md) and
+[benchmark protocol](../testing/BENCHMARKS.md#s3-37b-process-wide-rss-snapshots).
 
 1. Выполнить длинную серию unique blocks, повторных invalidations, capacity evictions, SMC и mixed hit/miss workloads.
 2. Снимать executable bytes, metadata bytes, live/retired blocks, compile counts и доступные process memory показатели с описанием метода.

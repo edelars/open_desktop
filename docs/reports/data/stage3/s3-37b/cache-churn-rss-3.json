@@ -1,0 +1,2517 @@
+{
+  "arena_reserved_bytes": 65536,
+  "arena_unoccupied_slots_at_resident_high_water": 0,
+  "cache_capacity_entries": 16,
+  "capture_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "80b318a6293da499c7d9287da4d9db8c4e3ff4f6",
+      "source_sha256": "e52e51dfe03ae87197de98538ef114fe5ea896fef4af146e720e92ac2722add2",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "80b318a6293da499c7d9287da4d9db8c4e3ff4f6",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": true
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "case_list_sha256": "b9276b52556b3692552de074e83cd8aef0c777f29861bd19ab09c188e41615d3",
+  "cumulative_counter_totals": {
+    "evictions": 168944,
+    "hits": 256,
+    "misses": 168960,
+    "successful_compiles": 168960,
+    "successful_publications": 168960
+  },
+  "excluded_from_timing": "fixture/trace parsing and admission, interpreter oracle preparation, per-case state clone/reset, post-call validation, runtime initialization/teardown, and process launch",
+  "fixed_sweeps": 128,
+  "input_calls": 129280,
+  "inputs": 1010,
+  "measure_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "bab3e52e3f07f7f47ca824c7c0298dd32fc25227",
+      "source_sha256": "6498c8ace08ec30cad0e738c460d31560ac7c698dc0827ecfad27689eae12ebd",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "bab3e52e3f07f7f47ca824c7c0298dd32fc25227",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": false
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "native_block_executions": 169216,
+  "process_rss_after_runtime_drop": {
+    "method": "macOS /bin/ps -o rss= -p <pid>; KiB converted to bytes",
+    "rss_bytes": 5980160,
+    "unavailable_reason": null
+  },
+  "process_rss_after_sweeps_before_runtime_drop": {
+    "method": "macOS /bin/ps -o rss= -p <pid>; KiB converted to bytes",
+    "rss_bytes": 6045696,
+    "unavailable_reason": null
+  },
+  "process_rss_before_runtime_creation": {
+    "method": "macOS /bin/ps -o rss= -p <pid>; KiB converted to bytes",
+    "rss_bytes": 5160960,
+    "unavailable_reason": null
+  },
+  "process_run": 3,
+  "resident_code_bytes_high_water": 21640,
+  "resident_entries_high_water": 16,
+  "resident_logical_metadata_bytes_high_water": 50124,
+  "retired_guest_instructions": 382720,
+  "schema": 2,
+  "sweeps": [
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1304,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 1,
+      "timed_dispatch_elapsed_ns": 8413794
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 2,
+      "timed_dispatch_elapsed_ns": 7594595
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 3,
+      "timed_dispatch_elapsed_ns": 7310134
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 4,
+      "timed_dispatch_elapsed_ns": 6934863
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 5,
+      "timed_dispatch_elapsed_ns": 6788830
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 6,
+      "timed_dispatch_elapsed_ns": 6606804
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 7,
+      "timed_dispatch_elapsed_ns": 6417468
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 8,
+      "timed_dispatch_elapsed_ns": 6412992
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 9,
+      "timed_dispatch_elapsed_ns": 6378227
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 10,
+      "timed_dispatch_elapsed_ns": 6332762
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 11,
+      "timed_dispatch_elapsed_ns": 6429965
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 12,
+      "timed_dispatch_elapsed_ns": 6248370
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 13,
+      "timed_dispatch_elapsed_ns": 6420798
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 14,
+      "timed_dispatch_elapsed_ns": 6364816
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 15,
+      "timed_dispatch_elapsed_ns": 6334358
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 16,
+      "timed_dispatch_elapsed_ns": 6363040
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 17,
+      "timed_dispatch_elapsed_ns": 6316128
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 18,
+      "timed_dispatch_elapsed_ns": 6336706
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 19,
+      "timed_dispatch_elapsed_ns": 6390916
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 20,
+      "timed_dispatch_elapsed_ns": 6224057
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 21,
+      "timed_dispatch_elapsed_ns": 6420186
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 22,
+      "timed_dispatch_elapsed_ns": 6304082
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 23,
+      "timed_dispatch_elapsed_ns": 6462546
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 24,
+      "timed_dispatch_elapsed_ns": 6385893
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 25,
+      "timed_dispatch_elapsed_ns": 6265266
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 26,
+      "timed_dispatch_elapsed_ns": 6365044
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 27,
+      "timed_dispatch_elapsed_ns": 6392094
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 28,
+      "timed_dispatch_elapsed_ns": 6248159
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 29,
+      "timed_dispatch_elapsed_ns": 6413022
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 30,
+      "timed_dispatch_elapsed_ns": 6396319
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 31,
+      "timed_dispatch_elapsed_ns": 6424558
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 32,
+      "timed_dispatch_elapsed_ns": 6371534
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 33,
+      "timed_dispatch_elapsed_ns": 6266990
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 34,
+      "timed_dispatch_elapsed_ns": 6335909
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 35,
+      "timed_dispatch_elapsed_ns": 6303448
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 36,
+      "timed_dispatch_elapsed_ns": 6340960
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 37,
+      "timed_dispatch_elapsed_ns": 6436749
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 38,
+      "timed_dispatch_elapsed_ns": 6243795
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 39,
+      "timed_dispatch_elapsed_ns": 6411285
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 40,
+      "timed_dispatch_elapsed_ns": 6393305
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 41,
+      "timed_dispatch_elapsed_ns": 6282271
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 42,
+      "timed_dispatch_elapsed_ns": 6410115
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 43,
+      "timed_dispatch_elapsed_ns": 6298062
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 44,
+      "timed_dispatch_elapsed_ns": 6336987
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 45,
+      "timed_dispatch_elapsed_ns": 6418433
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 46,
+      "timed_dispatch_elapsed_ns": 6224299
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 47,
+      "timed_dispatch_elapsed_ns": 6426404
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 48,
+      "timed_dispatch_elapsed_ns": 6304967
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 49,
+      "timed_dispatch_elapsed_ns": 6311242
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 50,
+      "timed_dispatch_elapsed_ns": 6395176
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 51,
+      "timed_dispatch_elapsed_ns": 6250665
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 52,
+      "timed_dispatch_elapsed_ns": 6359430
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 53,
+      "timed_dispatch_elapsed_ns": 6380328
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 54,
+      "timed_dispatch_elapsed_ns": 6253601
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 55,
+      "timed_dispatch_elapsed_ns": 6443042
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 56,
+      "timed_dispatch_elapsed_ns": 6302784
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 57,
+      "timed_dispatch_elapsed_ns": 6419989
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 58,
+      "timed_dispatch_elapsed_ns": 6341787
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 59,
+      "timed_dispatch_elapsed_ns": 6334803
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 60,
+      "timed_dispatch_elapsed_ns": 6291774
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 61,
+      "timed_dispatch_elapsed_ns": 6311758
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 62,
+      "timed_dispatch_elapsed_ns": 6230973
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 63,
+      "timed_dispatch_elapsed_ns": 6351747
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 64,
+      "timed_dispatch_elapsed_ns": 6241913
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 65,
+      "timed_dispatch_elapsed_ns": 6373471
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 66,
+      "timed_dispatch_elapsed_ns": 6337451
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 67,
+      "timed_dispatch_elapsed_ns": 6331766
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 68,
+      "timed_dispatch_elapsed_ns": 6381082
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 69,
+      "timed_dispatch_elapsed_ns": 6335421
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 70,
+      "timed_dispatch_elapsed_ns": 6329218
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 71,
+      "timed_dispatch_elapsed_ns": 6404068
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 72,
+      "timed_dispatch_elapsed_ns": 6380349
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 73,
+      "timed_dispatch_elapsed_ns": 6422965
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 74,
+      "timed_dispatch_elapsed_ns": 6365437
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 75,
+      "timed_dispatch_elapsed_ns": 6324863
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 76,
+      "timed_dispatch_elapsed_ns": 6399697
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 77,
+      "timed_dispatch_elapsed_ns": 6282269
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 78,
+      "timed_dispatch_elapsed_ns": 6358089
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 79,
+      "timed_dispatch_elapsed_ns": 6402263
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 80,
+      "timed_dispatch_elapsed_ns": 6232502
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 81,
+      "timed_dispatch_elapsed_ns": 6422908
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 82,
+      "timed_dispatch_elapsed_ns": 6309699
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 83,
+      "timed_dispatch_elapsed_ns": 6350213
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 84,
+      "timed_dispatch_elapsed_ns": 6384624
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 85,
+      "timed_dispatch_elapsed_ns": 6339333
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 86,
+      "timed_dispatch_elapsed_ns": 6350514
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 87,
+      "timed_dispatch_elapsed_ns": 6359639
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 88,
+      "timed_dispatch_elapsed_ns": 6290816
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 89,
+      "timed_dispatch_elapsed_ns": 6427576
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 90,
+      "timed_dispatch_elapsed_ns": 6323522
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 91,
+      "timed_dispatch_elapsed_ns": 6405615
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 92,
+      "timed_dispatch_elapsed_ns": 6372800
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 93,
+      "timed_dispatch_elapsed_ns": 6283594
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 94,
+      "timed_dispatch_elapsed_ns": 6395947
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 95,
+      "timed_dispatch_elapsed_ns": 6302845
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 96,
+      "timed_dispatch_elapsed_ns": 6306725
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 97,
+      "timed_dispatch_elapsed_ns": 6429693
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 98,
+      "timed_dispatch_elapsed_ns": 6226205
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 99,
+      "timed_dispatch_elapsed_ns": 6401710
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 100,
+      "timed_dispatch_elapsed_ns": 6364675
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 101,
+      "timed_dispatch_elapsed_ns": 6309919
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 102,
+      "timed_dispatch_elapsed_ns": 6331357
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 103,
+      "timed_dispatch_elapsed_ns": 6299655
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 104,
+      "timed_dispatch_elapsed_ns": 6339908
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 105,
+      "timed_dispatch_elapsed_ns": 6412973
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 106,
+      "timed_dispatch_elapsed_ns": 6293319
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 107,
+      "timed_dispatch_elapsed_ns": 6447044
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 108,
+      "timed_dispatch_elapsed_ns": 6308805
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 109,
+      "timed_dispatch_elapsed_ns": 6933696
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 110,
+      "timed_dispatch_elapsed_ns": 6443499
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 111,
+      "timed_dispatch_elapsed_ns": 7261106
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 112,
+      "timed_dispatch_elapsed_ns": 6557107
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 113,
+      "timed_dispatch_elapsed_ns": 6402665
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 114,
+      "timed_dispatch_elapsed_ns": 6353020
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 115,
+      "timed_dispatch_elapsed_ns": 6409956
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 116,
+      "timed_dispatch_elapsed_ns": 6234513
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 117,
+      "timed_dispatch_elapsed_ns": 6428286
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 118,
+      "timed_dispatch_elapsed_ns": 6347420
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 119,
+      "timed_dispatch_elapsed_ns": 6408011
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 120,
+      "timed_dispatch_elapsed_ns": 6369066
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 121,
+      "timed_dispatch_elapsed_ns": 6286682
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 122,
+      "timed_dispatch_elapsed_ns": 6352058
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 123,
+      "timed_dispatch_elapsed_ns": 6364804
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 124,
+      "timed_dispatch_elapsed_ns": 6323126
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 125,
+      "timed_dispatch_elapsed_ns": 6430492
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 126,
+      "timed_dispatch_elapsed_ns": 6282241
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 127,
+      "timed_dispatch_elapsed_ns": 6348714
+    },
+    {
+      "arena_reserved_bytes": 65536,
+      "arena_unoccupied_slots_at_resident_high_water": 0,
+      "counter_delta": {
+        "evictions": 1320,
+        "hits": 2,
+        "misses": 1320,
+        "successful_compiles": 1320,
+        "successful_publications": 1320
+      },
+      "input_calls": 1010,
+      "native_block_executions": 1322,
+      "resident_code_bytes_high_water": 21640,
+      "resident_entries_high_water": 16,
+      "resident_logical_metadata_bytes_high_water": 50124,
+      "retired_guest_instructions": 2990,
+      "sweep": 128,
+      "timed_dispatch_elapsed_ns": 6346362
+    }
+  ],
+  "teardown_or_independent_instance_lifecycle_measured": false,
+  "timed_dispatch_elapsed_ns": 820058685,
+  "timing_scope": "sum of each production FIFO dispatch-call interval over complete frozen-corpus sweeps on one retained runtime/cache/arena; state cloning/reset and oracle validation occur outside timed calls",
+  "total_elapsed_ns": 10934698209,
+  "trace_sha256": "bf8d5efe0c52a47cbb4682f67ea73a82e684d463733aff3be60fed0b280bd5b3",
+  "visits": 1322
+}

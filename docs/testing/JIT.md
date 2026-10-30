@@ -771,3 +771,14 @@ metadata bytes. This is a bounded capacity-churn observation. The path does
 not measure process RSS, teardown, independent runtime instances, SMC
 invalidation, or longer leak-free stress; S3-37 remains open. See the
 [S3-37a report](../reports/STAGE_3_S3-37a_2026-10-30.md).
+
+### S3-37b process-wide RSS snapshots
+
+The same 128-sweep workload now records process-wide RSS before runtime
+creation, before runtime drop, and after explicit drop. Three release runs
+observed 5,024–5,056 KiB before creation, 5,808–6,000 KiB before drop, and
+5,744–5,936 KiB after drop. Each post-drop sample was 64 KiB below its
+pre-drop sample and remained above its pre-runtime baseline. RSS includes all
+benchmark-process allocations and cannot attribute changes to the cache;
+runtime lifecycle, SMC, broader workloads, and leak-free behavior remain
+unverified. See the [S3-37b report](../reports/STAGE_3_S3-37b_2026-10-30.md).

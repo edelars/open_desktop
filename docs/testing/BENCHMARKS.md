@@ -351,8 +351,14 @@ is the parsed KiB count converted to bytes. Sampling runs outside the timed
 dispatch intervals. On other targets, or when sampling fails, RSS is `null`
 and the report includes a reason. Each value is process-wide: fixtures, the
 runner, and all other live allocations contribute, so these samples do not
-attribute bytes to the cache or establish leak-free lifecycle behavior. No
-S3-37b release measurements have been recorded yet.
+attribute bytes to the cache or establish leak-free lifecycle behavior. Three
+release processes completed the same 128 sweeps with all snapshots available:
+pre-runtime RSS was 5,024–5,056 KiB, pre-drop was 5,808–6,000 KiB, and
+post-drop was 5,744–5,936 KiB. Each post-drop sample was 64 KiB below its
+pre-drop sample and remained 688–912 KiB above that process's pre-runtime
+baseline. This is process-wide RSS observation only; it does not prove memory
+was released or retained by the cache itself. See the
+[S3-37b report](../reports/STAGE_3_S3-37b_2026-10-30.md).
 
 Recorded trace дополняется ограниченными synthetic-сценариями:
 1/8/64/512/4096 keys и observed unique count, hot loops на 1/8 keys, reverse
