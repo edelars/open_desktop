@@ -23,6 +23,7 @@ pub const PROFILE_CVTSI2SS_REGISTERS: &str = "s2-long-cvtsi2ss-registers-v1";
 pub const PROFILE_CVTSS2SI_REGISTERS: &str = "s2-long-cvtss2si-registers-v1";
 pub const PROFILE_CVTTSS2SI_REGISTERS: &str = "s2-long-cvttss2si-registers-v1";
 pub const PROFILE_CVTSD2SI_REGISTERS: &str = "s2-long-cvtsd2si-registers-v1";
+pub const PROFILE_CVTTSD2SI_REGISTERS: &str = "s2-long-cvttsd2si-registers-v1";
 pub const PROFILE_FS_BASE: &str = "s2-long-fs-base-v1";
 pub const PROFILE_GS_BASE: &str = "s2-long-gs-base-v1";
 pub const PROFILE_FS_BASE_MSR: &str = "s2-long-fs-base-msr-v1";
@@ -291,6 +292,8 @@ pub enum Profile {
     LongCvttss2siRegistersV1,
     #[serde(rename = "s2-long-cvtsd2si-registers-v1")]
     LongCvtsd2siRegistersV1,
+    #[serde(rename = "s2-long-cvttsd2si-registers-v1")]
+    LongCvttsd2siRegistersV1,
     #[serde(rename = "s2-long-native-xorpd-xmm0-xmm1-v1")]
     LongNativeXorpdXmm0Xmm1V1,
     #[serde(rename = "s2-long-andpd-reg-v1")]
@@ -1300,6 +1303,7 @@ impl IntegerState {
                     | Profile::LongCvtss2siRegistersV1
                     | Profile::LongCvttss2siRegistersV1
                     | Profile::LongCvtsd2siRegistersV1
+                    | Profile::LongCvttsd2siRegistersV1
                     | Profile::LongNativeXorpdXmm0Xmm1V1
                     | Profile::LongAndpdRegV1
                     | Profile::LongOrpdRegV1
@@ -1500,6 +1504,7 @@ impl IntegerState {
                 | Profile::LongCvtss2siRegistersV1
                 | Profile::LongCvttss2siRegistersV1
                 | Profile::LongCvtsd2siRegistersV1
+                | Profile::LongCvttsd2siRegistersV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
                 | Profile::LongAndnpdRegV1
@@ -1651,6 +1656,7 @@ impl IntegerState {
                 | Profile::LongCvtss2siRegistersV1
                 | Profile::LongCvttss2siRegistersV1
                 | Profile::LongCvtsd2siRegistersV1
+                | Profile::LongCvttsd2siRegistersV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -1978,6 +1984,7 @@ impl IntegerState {
             | Profile::LongCvtss2siRegistersV1
             | Profile::LongCvttss2siRegistersV1
             | Profile::LongCvtsd2siRegistersV1
+            | Profile::LongCvttsd2siRegistersV1
             | Profile::LongNativeXorpdXmm0Xmm1V1
             | Profile::LongAndpdRegV1
             | Profile::LongOrpdRegV1
@@ -2141,6 +2148,7 @@ impl IntegerState {
                 | Profile::LongCvtss2siRegistersV1
                 | Profile::LongCvttss2siRegistersV1
                 | Profile::LongCvtsd2siRegistersV1
+                | Profile::LongCvttsd2siRegistersV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -2310,6 +2318,7 @@ impl IntegerState {
                 | Profile::LongCvtss2siRegistersV1
                 | Profile::LongCvttss2siRegistersV1
                 | Profile::LongCvtsd2siRegistersV1
+                | Profile::LongCvttsd2siRegistersV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -2488,6 +2497,7 @@ impl IntegerState {
                 | Profile::LongCvtss2siRegistersV1
                 | Profile::LongCvttss2siRegistersV1
                 | Profile::LongCvtsd2siRegistersV1
+                | Profile::LongCvttsd2siRegistersV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -2673,6 +2683,7 @@ impl IntegerState {
                 | Profile::LongCvtss2siRegistersV1
                 | Profile::LongCvttss2siRegistersV1
                 | Profile::LongCvtsd2siRegistersV1
+                | Profile::LongCvttsd2siRegistersV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -3488,6 +3499,7 @@ impl IntegerState {
                 | Profile::LongCvtss2siRegistersV1
                 | Profile::LongCvttss2siRegistersV1
                 | Profile::LongCvtsd2siRegistersV1
+                | Profile::LongCvttsd2siRegistersV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -3630,6 +3642,7 @@ impl IntegerState {
                 | Profile::LongCvtss2siRegistersV1
                 | Profile::LongCvttss2siRegistersV1
                 | Profile::LongCvtsd2siRegistersV1
+                | Profile::LongCvttsd2siRegistersV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -6295,7 +6308,10 @@ impl Fixture {
                 "only valid for CVTSS2SI register-space profile",
             ));
         }
-        if self.profile == Profile::LongCvtsd2siRegistersV1 {
+        if matches!(
+            self.profile,
+            Profile::LongCvtsd2siRegistersV1 | Profile::LongCvttsd2siRegistersV1
+        ) {
             let _ = self.cvtsd2si_controls.ok_or_else(|| {
                 invalid(
                     "cvtsd2si_controls",
@@ -6309,10 +6325,14 @@ impl Fixture {
                 .ok_or_else(|| {
                     invalid("memory.code", "required by CVTSD2SI register-space profile")
                 })?;
-            let (_, _, _, length) = cvtsd2si_register_encoding(&code.initial_bytes_hex)
-                .ok_or_else(|| {
-                    invalid("memory.code", "outside canonical CVTSD2SI register space")
-                })?;
+            let encoding = if self.profile == Profile::LongCvttsd2siRegistersV1 {
+                cvttsd2si_register_encoding(&code.initial_bytes_hex)
+            } else {
+                cvtsd2si_register_encoding(&code.initial_bytes_hex)
+            };
+            let (_, _, _, length) = encoding.ok_or_else(|| {
+                invalid("memory.code", "outside canonical CVTSD2SI register space")
+            })?;
             let start = self.initial_state.rip.get();
             let bytes = decode_bytes(&code.initial_bytes_hex)?;
             if code.guest_address.get() != start
@@ -6329,7 +6349,7 @@ impl Fixture {
             {
                 return Err(invalid(
                     "memory.code",
-                    "CVTSD2SI register-space fixtures require one canonical executable form, budget 1, and stop RIP entry+length",
+                    "CVTSD2SI-family register-space fixtures require one canonical executable form, budget 1, and stop RIP entry+length",
                 ));
             }
             let mxcsr = self
@@ -6342,7 +6362,7 @@ impl Fixture {
             if mxcsr & !0x0000_ffbf != 0 {
                 return Err(invalid(
                     "state.sse.mxcsr",
-                    "CVTSD2SI requires supported MXCSR bits only",
+                    "CVTSD2SI-family requires supported MXCSR bits only",
                 ));
             }
         } else if self.cvtsd2si_controls.is_some() {
@@ -9288,7 +9308,10 @@ impl RunResult {
                 "only valid for CVTSS2SI/CVTTSS2SI register-space profiles",
             ));
         }
-        if self.profile == Profile::LongCvtsd2siRegistersV1 {
+        if matches!(
+            self.profile,
+            Profile::LongCvtsd2siRegistersV1 | Profile::LongCvttsd2siRegistersV1
+        ) {
             if snapshot.cvtsd2si_controls.is_none() {
                 return Err(invalid(
                     "snapshot.cvtsd2si_controls",
@@ -9737,9 +9760,12 @@ impl RunResult {
                 loaded.fixture.cvtsd2si_controls,
                 value.cvtsd2si_controls,
             ) {
-                (Profile::LongCvtsd2siRegistersV1, Some(input), Some(output))
-                    if input == output => {}
-                (Profile::LongCvtsd2siRegistersV1, _, _) => {
+                (
+                    Profile::LongCvtsd2siRegistersV1 | Profile::LongCvttsd2siRegistersV1,
+                    Some(input),
+                    Some(output),
+                ) if input == output => {}
+                (Profile::LongCvtsd2siRegistersV1 | Profile::LongCvttsd2siRegistersV1, _, _) => {
                     return Err(FormatError::CaseMismatch("cvtsd2si_controls"));
                 }
                 (_, None, None) => {}
@@ -9754,7 +9780,10 @@ impl RunResult {
             if loaded.fixture.profile == Profile::LongCvttss2siRegistersV1 {
                 validate_cvttss2si_registers_result(loaded, self, value)?;
             }
-            if loaded.fixture.profile == Profile::LongCvtsd2siRegistersV1 {
+            if matches!(
+                loaded.fixture.profile,
+                Profile::LongCvtsd2siRegistersV1 | Profile::LongCvttsd2siRegistersV1
+            ) {
                 validate_cvtsd2si_registers_result(loaded, self, value)?;
             }
             match (
@@ -12873,9 +12902,14 @@ fn validate_cvtsd2si_registers_result(
         .iter()
         .find(|r| r.region_id == "code")
         .ok_or(FormatError::CaseMismatch("memory.code"))?;
-    let (wide, destination, source, length) =
+    let truncating = fixture.profile == Profile::LongCvttsd2siRegistersV1;
+    let parsed = if truncating {
+        cvttsd2si_register_encoding(&code.initial_bytes_hex)
+    } else {
         cvtsd2si_register_encoding(&code.initial_bytes_hex)
-            .ok_or(FormatError::CaseMismatch("CVTSD2SI encoding"))?;
+    };
+    let (wide, destination, source, length) =
+        parsed.ok_or(FormatError::CaseMismatch("CVTSD2SI-family encoding"))?;
     let controls = fixture
         .cvtsd2si_controls
         .ok_or(FormatError::CaseMismatch("cvtsd2si_controls"))?;
@@ -12891,7 +12925,7 @@ fn validate_cvtsd2si_registers_result(
             .unwrap(),
     );
     let (integer_bits, invalid, inexact) =
-        independent_binary64_to_integer(raw, (mxcsr >> 13) & 3, wide);
+        independent_binary64_to_integer(raw, if truncating { 3 } else { (mxcsr >> 13) & 3 }, wide);
     let prerequisite = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
         Some(6)
     } else if controls.cr0_ts {
@@ -16284,6 +16318,43 @@ fn cvtsd2si_register_encoding(code_bytes: &str) -> Option<(bool, u8, u8, u32)> {
         return None;
     }
     Some((wide, destination, source, bytes.len() as u32))
+}
+
+fn cvttsd2si_register_encoding(code_bytes: &str) -> Option<(bool, u8, u8, u32)> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (rex, modrm) = match bytes.as_slice() {
+        [0xf2, 0x0f, 0x2c, modrm] => (0u8, *modrm),
+        [0xf2, rex, 0x0f, 0x2c, modrm] => (*rex, *modrm),
+        _ => return None,
+    };
+    if modrm >> 6 != 3 {
+        return None;
+    }
+    let wide = rex & 8 != 0;
+    let destination = ((modrm >> 3) & 7) | (((rex >> 2) & 1) << 3);
+    let source = (modrm & 7) | ((rex & 1) << 3);
+    let expected_rex = match (wide, destination >= 8, source >= 8) {
+        (false, false, false) => None,
+        (false, true, false) => Some(0x44),
+        (false, false, true) => Some(0x41),
+        (false, true, true) => Some(0x45),
+        (true, false, false) => Some(0x48),
+        (true, false, true) => Some(0x49),
+        (true, true, false) => Some(0x4c),
+        (true, true, true) => Some(0x4d),
+    };
+    let actual_rex = if bytes.len() == 5 {
+        Some(bytes[1])
+    } else {
+        None
+    };
+    (actual_rex == expected_rex).then_some((wide, destination, source, bytes.len() as u32))
 }
 
 fn punpckhqdq_register_length(code_bytes: &str) -> Option<u32> {

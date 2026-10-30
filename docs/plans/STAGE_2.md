@@ -508,6 +508,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37ab | Local-only canonical Long64 CVTSS2SI register forms; r32/r64 conversion using MXCSR.RC, IE/PE only and atomic unmasked exit; JIT/native closed | Independent Sol-medium review clean after runtime-admission and coverage fixes |
 | [x] | S2-37ac | Local-only canonical Long64 CVTSD2SI register forms; r32/r64 binary64 conversion using MXCSR.RC, IE/PE only and atomic unmasked exit; JIT/native closed | Independent Sol-medium review clean after DM/IM test corrections; physical checks remain in final stage |
 | [x] | S2-37ad | Local-only canonical Long64 CVTTSS2SI register forms; r32/r64 TowardZero conversion independent of MXCSR.RC; JIT/native closed | Independent Sol-medium review clean after parser and coverage corrections; physical acceptance remains in final stage |
+| [x] | S2-37ae | Local-only canonical Long64 CVTTSD2SI register forms; r32/r64 TowardZero conversion independent of MXCSR.RC; JIT/native closed | Independent Sol-medium review clean; physical acceptance remains in final stage |
 | [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j/k/l: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j/k/l; independent review |
 | [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
@@ -6794,8 +6795,7 @@ inventory.
 | CVTTPD2PI | `66 0F 2C /r` | SSE2 | XMM, m128 → mm; 2×f64 → 2×i32 | 3-248 | missing |
 | CVTTPS2DQ | `F3 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-249 | missing |
 | CVTTPS2PI | `NP 0F 2C /r` | SSE | XMM, m64 → mm; 2×f32 → 2×i32 | 3-252 | missing |
-| CVTTSD2SI | `F2 0F 2C /r`; `F2 REX.W 0F 2C /r` | SSE2 | m64 → r32 / r64 | 3-253 | missing |
-| CVTTSS2SI | `F3 0F 2C /r`; `F3 REX.W 0F 2C /r` | SSE | m32 → r32 / r64 | 3-255 | missing |
+| CVTTSD2SI | `F2 0F 2C /r`; `F2 REX.W 0F 2C /r` | SSE2 | m64 → r32 / r64 | 3-253 | S2-37ae, bounded register-only |
 | DIVPD | `66 0F 5E /r` | SSE2 | XMM, m128; 2×f64 | 3-267 | missing |
 | DIVPS | `NP 0F 5E /r` | SSE | XMM, m128; 4×f32 | 3-270 | missing |
 | DIVSD | `F2 0F 5E /r` | SSE2 | XMM, m64; low f64 | 3-273 | missing |
@@ -13216,3 +13216,35 @@ fetch/CPL, malformed forms, metadata tampering and backend denial. Memory forms,
 physical acceptance, and parent S2-37 remain open. Hardware acceptance belongs
 to the combined final stage. Source: Intel SDM Rev. 093 Vol. 2A `CVTTSS2SI`
 pp. 3-255–3-256 and Vol. 1 §11.5.2.2 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+
+#### S2-37ae — canonical Long64 CVTTSD2SI register space
+
+Implement strict schema-v2 interpreter-only profile
+`s2-long-cvttsd2si-registers-v1` for 512 Long64 register forms:
+`F2 0F 2C /r` for r32 and `F2 REX.W 0F 2C /r` for r64, with
+ModR/M.mod=3. REX.R extends the GPR destination and REX.B extends the XMM
+source. Admit canonical REX values only (`41/44/45` for r32 and
+`48/49/4C/4D` for r64); reject memory, REX.X, redundant/reordered/other
+prefixes, trailing bytes, VEX and EVEX. Keep runtime admission separate from
+CVTSD2SI and CVTTSS2SI. Generic, C, fragment, JIT and native paths stay closed.
+
+Read only source XMM low64 and convert raw binary64 to signed i32/i64 using
+TowardZero regardless of MXCSR.RC. Check range after truncation; r32 writes
+zero-extended bits to the full GPR, including RSP. Preserve RC, XMM, unrelated
+GPRs and RFLAGS. Invalid conversions set IE and produce masked integer
+indefinite; exact signed minima remain valid. Invalid suppresses PE; valid
+fractional values raise PE. Subnormals do not raise DE even with DM clear or
+unmasked. Commit IE/PE before #XM with OSXMMEXCPT=1 or SIMD-generated #UD
+otherwise, suppressing destination, RIP and retirement atomically. Old sticky
+status alone never faults. Fetch the full instruction before SSE2/EM/OSFXSR
+#UD, then TS #NM at CPL0–3. No data-memory callback is permitted. FTZ is
+irrelevant; local refusal of DAZ and reserved MXCSR bits is allowed.
+
+Use an independent raw-u64 integer oracle, not host floating point. Cover all
+selector pairs, RC independence, signed fractions/ties, subnormal with DM
+clear, NaN/infinity, representable neighbors of signed 32/64-bit limits, exact
+minima versus indefinite, IE/PE masks and sticky state, unmasked faults,
+OSXMMEXCPT=0, malformed forms, metadata tampering and backend denial. Hardware
+acceptance remains part of the combined final stage. Source: Intel SDM Rev. 093
+Vol. 2A `CVTTSD2SI` pp. 3-253–3-254 and Vol. 1 §11.5.2.2
+([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).

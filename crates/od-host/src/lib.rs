@@ -629,4 +629,20 @@ mod tests {
         );
         assert!(raw_handle.is_null());
     }
+
+    #[test]
+    fn cvttsd2si_remains_closed_to_fragment_and_c_abi_paths() {
+        use std::ffi::c_void;
+
+        let code = [0xf2, 0x0f, 0x2c, 0xc0];
+        let mut state = od_isa::CpuState::default();
+        assert!(execute_x86_fragment(&code, &mut state, 1).is_err());
+
+        let mut handle: *mut c_void = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { od_fragment_create(code.as_ptr(), code.len(), &mut handle) },
+            STATUS_INVALID_CODE
+        );
+        assert!(handle.is_null());
+    }
 }

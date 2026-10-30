@@ -12945,3 +12945,28 @@ closed. Memory forms and physical acceptance remain open; parent S2-37 remains
 open and hardware validation remains in the combined final stage. Provenance:
 Intel SDM Rev. 093 Vol. 2A `CVTTSS2SI` pp. 3-255–3-256; Vol. 1 §11.5.2.2
 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+
+## S2-37ae — canonical Long64 CVTTSD2SI register space
+
+The strict schema-v2 interpreter profile `s2-long-cvttsd2si-registers-v1`
+admits exactly 512 canonical `F2 0F 2C /r` r32 and `F2 REX.W 0F 2C /r` r64
+register forms. ModR/M.mod must be 3; canonical REX.R/B extend the GPR
+destination and XMM source. It refuses memory, REX.X, extra/reordered
+prefixes, trailing bytes, VEX and EVEX. Runtime admission is independent from
+CVTSD2SI and CVTTSS2SI.
+
+The operation reads source XMM low64 and truncates raw binary64 toward zero
+independently of MXCSR.RC. Range is checked after truncation. r32 writes
+zero-extended bits into the full GPR, including RSP. It preserves RC, all XMM,
+other GPRs and RFLAGS. Masked invalid input writes integer indefinite and sets
+IE; exact signed minima are valid. Invalid suppresses PE; valid fractional
+values set PE. Subnormals never raise DE, including when DM is unmasked. Sticky
+IE/PE commit before newly unmasked #XM or SIMD #UD; destination, RIP and
+retirement are suppressed atomically. Old sticky state alone does not fault.
+Full fetch precedes SSE2/EM/OSFXSR #UD then TS #NM at CPL0–3. No data callback
+occurs. FTZ is irrelevant; DAZ/reserved MXCSR refusal is local policy.
+Generic/C/fragment/JIT/native admission is closed. Physical acceptance remains
+part of the combined final stage; parent S2-37 remains open. The independent
+fixture oracle parses raw binary64 and uses integer arithmetic. Provenance:
+Intel SDM Rev. 093 Vol. 2A `CVTTSD2SI` pp. 3-253–3-254 and Vol. 1 §11.5.2.2
+([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).

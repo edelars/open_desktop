@@ -83,5 +83,12 @@ The local-only S2-35.49 `PAND` diagnostic profile accepts only register-form
 `66 [REX.R/B] 0F DB /r` and preserves unrelated CPU state. Its literal fixture
 is interpreter-only; JIT/native and physical SSE2 execution are not claimed.
 
+The local-only S2-37ae `CVTTSD2SI` profile admits canonical Long64 register
+forms for r32/r64 and truncates raw binary64 toward zero independently of
+MXCSR.RC. Its schema-v2 oracle and 512-form fixture matrix are in place;
+generic/JIT/native execution is closed, and physical acceptance remains in the
+combined final stage. See the [CPU contract](docs/specs/CPU_CONTRACT.md#s2-37ae--canonical-long64-cvttsd2si-register-space)
+and [Stage 2 report](docs/reports/STAGE_2_REPORT.md#s2-37ae--canonical-long64-cvttsd2si-register-space).
+
 
 The local-only S2-34.20 ANDNPD profile supports long-mode register `66 [REX.R/B] 0F 55 /r` as `(~destination) & source` across raw 128-bit XMM values; ANDNPS remains separate. JIT/native and physical execution remain outside the profile. See the [CPU contract](docs/specs/CPU_CONTRACT.md#local-profile-s2-3420-s2-long-andnpd-reg-v1).

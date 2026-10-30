@@ -18122,3 +18122,33 @@ targeted re-review is clean. The reviewer independently passed the CVTSS2SI
 parser regression, both CVTT testkit tests, the expanded runner test, both ISA
 tests, and the final runtime-separation test. Physical hardware acceptance
 remains in the combined final stage.
+
+## S2-37ae — canonical Long64 CVTTSD2SI register space
+
+Added the interpreter-only schema-v2 profile `s2-long-cvttsd2si-registers-v1`
+for all 512 canonical r32/r64 × GPR0–15 × XMM0–15 forms. It reads only XMM
+low64, uses the raw binary64 integer conversion oracle with TowardZero, ignores
+and preserves MXCSR.RC, records IE/PE, and suppresses destination/RIP/retirement
+on a newly unmasked event. SSE2 admission is separate from CVTSD2SI and
+CVTTSS2SI. Generic, C, fragment, JIT and native remain closed. The duplicate
+CVTTSS2SI missing inventory row was removed; its S2-37ad row remains the sole
+entry.
+
+Verification completed locally:
+
+- `cargo test -p od-isa cvttsd2si_decodes_all_register_pairs_and_rejects_noncanonical_forms --offline` — passed; 512 encoding pairs and rejected prefix/memory/VEX/EVEX forms.
+- `cargo test -p od-isa cvttsd2si_profile_has_separate_sse2_gates_and_cross_denial --offline` — passed; full-fetch SSE2/EM/OSFXSR priority, TS #NM, CPL0–3, zero data callbacks, truncated fetch before gates, and direct denial by CVTSD2SI/CVTTSS2SI/generic paths.
+- `cargo test -p od-host cvttsd2si_remains_closed_to_fragment_and_c_abi_paths --offline` — passed; both fragment compilation/execution and C ABI creation reject the instruction.
+- `cargo test -p od-runner --test fixture_v2 cvttsd2si_register_profile_truncates_raw_binary64_across_512_forms --offline` — passed; all register forms, RC preservation, ±0, fractional conversions, subnormals with DM clear, representable signed bounds and post-truncation range, NaN/infinity, masked/unmasked IE/PE, old sticky IE/PE, OSXMMEXCPT=0, malformed encodings, result/control/fault metadata tampering, and JIT/native denial.
+
+The local full-fetch/gate/CPL checks passed. Physical host acceptance remains
+subject to the combined final-stage verification. Parent S2-37 remains open.
+Provenance:
+Intel SDM Rev. 093 Vol. 2A `CVTTSD2SI` pp. 3-253–3-254 and Vol. 1 §11.5.2.2
+([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+
+Independent Sol-medium review found no blocking defects. It independently
+passed both CVTTSD2SI ISA tests and the 512-form runner matrix. The host fragment
+test did not finish within the review tool deadline; the author reported it
+passed. Gate/CPL and unmasked checks use representative r32 forms, while the
+runner and oracle cover all widths and selectors.

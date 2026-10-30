@@ -21672,6 +21672,18 @@ fn cvtsd2si_canonical_register_space_executes_512_forms_and_boundaries() {
     };
     exception.vector = 6;
     od_testkit::v2::compare(&input, &result, &tampered_fault).unwrap_err();
+    let mut tampered_error_code = result.clone();
+    let Observation::Available { value } = &mut tampered_error_code.snapshot else {
+        panic!("snapshot")
+    };
+    let Observation::Available {
+        value: Some(exception),
+    } = &mut value.exception
+    else {
+        panic!("exception")
+    };
+    exception.error_code = Observation::Available { value: HexU64(0) };
+    od_testkit::v2::compare(&input, &result, &tampered_error_code).unwrap_err();
     let mut tampered_controls = result.clone();
     let Observation::Available { value } = &mut tampered_controls.snapshot else {
         panic!("snapshot unavailable")
@@ -21761,6 +21773,279 @@ fn cvtsd2si_canonical_register_space_executes_512_forms_and_boundaries() {
     assert_eq!(value.state.gpr[0], HexU64(1));
     assert_ne!(value.state.sse.as_ref().unwrap().mxcsr.get() & 1, 0);
 
+    let source = fixture.to_json().unwrap();
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(&source, backend, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+    }
+}
+
+#[test]
+fn cvttsd2si_register_profile_truncates_raw_binary64_across_512_forms() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let path = root.join("s2_37n_cvtsi2sd_r32_zero.case.json");
+    let mut fixture = Fixture::from_json(&fs::read(path).unwrap())
+        .unwrap()
+        .fixture;
+    fixture.profile = od_testkit::v2::Profile::LongCvttsd2siRegistersV1;
+    fixture.cvtsi2sd_r32_controls = None;
+    fixture.cvtsi2sd_r64_controls = None;
+    fixture.cvtsi2ss_controls = None;
+    fixture.cvtss2si_controls = None;
+    fixture.cvtsd2si_controls = Some(od_testkit::v2::Cvtsd2siControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: true,
+    });
+    fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+    for wide in [false, true] {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = match (wide, destination >= 8, source >= 8) {
+                    (false, false, false) => None,
+                    (false, true, false) => Some(0x44),
+                    (false, false, true) => Some(0x41),
+                    (false, true, true) => Some(0x45),
+                    (true, false, false) => Some(0x48),
+                    (true, false, true) => Some(0x49),
+                    (true, true, false) => Some(0x4c),
+                    (true, true, true) => Some(0x4d),
+                };
+                let mut code = vec![0xf2];
+                if let Some(rex) = rex {
+                    code.push(rex);
+                }
+                code.extend([0x0f, 0x2c, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+                fixture.memory[0].initial_bytes_hex =
+                    code.iter().map(|b| format!("{b:02x}")).collect();
+                fixture.memory[0].length = code.len() as u32;
+                fixture.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+                fixture.stop_rip =
+                    Some(HexU64(fixture.initial_state.rip.get() + code.len() as u64));
+                fixture.initial_state.gpr =
+                    std::array::from_fn(|i| HexU64(0xa5a5_1234_5678_0000 | i as u64));
+                let sse = fixture.initial_state.sse.as_mut().unwrap();
+                sse.mxcsr = HexU64(0x1f80 | (3 << 13));
+                sse.xmm = std::array::from_fn(|i| {
+                    let mut b = (i as f64 + 1.75).to_bits().to_le_bytes().to_vec();
+                    b.extend([0xa5; 8]);
+                    b.iter().map(|v| format!("{v:02x}")).collect()
+                });
+                fixture.expected_exit = ExpectedExit::StopAddress;
+                let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+                od_testkit::v2::compare(&input, &result, &result).unwrap();
+                let Observation::Available { value } = result.snapshot else {
+                    panic!("snapshot")
+                };
+                assert_eq!(
+                    value.state.gpr[usize::from(destination)],
+                    HexU64(u64::from(source + 1))
+                );
+                assert_eq!(
+                    value.state.sse.as_ref().unwrap().mxcsr.get() & (3 << 13),
+                    3 << 13
+                );
+                assert_ne!(value.state.sse.as_ref().unwrap().mxcsr.get() & (1 << 5), 0);
+            }
+        }
+    }
+    // Raw binary64 edge classes confirm TowardZero, post-truncation bounds,
+    // Invalid priority, sticky IE/PE, and the absence of Denormal Exception.
+    for wide in [false, true] {
+        for (raw, invalid, inexact, dm_masked) in [
+            (0, false, false, true),                       // +0
+            (0x8000_0000_0000_0000, false, false, true),   // -0
+            (0x4004_0000_0000_0000u64, false, true, true), // +2.5
+            (0xc004_0000_0000_0000, false, true, true),    // -2.5
+            (1, false, true, false),                       // positive subnormal
+            (0x8000_0000_0000_0001, false, true, false),   // negative subnormal
+            (0xc1e0_0000_0000_0000, false, false, true),   // exact i32 minimum
+            (0xc1e0_0000_0000_0001, false, true, true),    // truncates back to i32 minimum
+            (0x41df_ffff_ffff_ffff, false, true, true),    // largest binary64 below 2^31
+            (0x41e0_0000_0000_0000, true, false, true),    // 2^31
+            (0xc3e0_0000_0000_0000, false, false, true),   // exact i64 minimum
+            (0xc3e0_0000_0000_0001, true, false, true),    // adjacent value below i64 minimum
+            (0x43df_ffff_ffff_ffff, false, false, true),   // largest binary64 below 2^63
+            (0x43e0_0000_0000_0000, true, false, true),    // 2^63
+            (0x7ff8_0000_0000_0001, true, false, true),    // QNaN
+            (0x7ff0_0000_0000_0001, true, false, true),    // SNaN
+            (0x7ff0_0000_0000_0000, true, false, true),    // +infinity
+        ] {
+            if !wide
+                && matches!(
+                    raw,
+                    0xc3e0_0000_0000_0000
+                        | 0xc3e0_0000_0000_0001
+                        | 0x43df_ffff_ffff_ffff
+                        | 0x43e0_0000_0000_0000
+                )
+            {
+                continue;
+            }
+            fixture.memory[0].initial_bytes_hex =
+                if wide { "f2480f2cc2" } else { "f20f2cc2" }.into();
+            let len = if wide { 5 } else { 4 };
+            fixture.memory[0].length = len;
+            fixture.memory[0].comparison_mask_hex = "ff".repeat(len as usize);
+            fixture.stop_rip = Some(HexU64(fixture.initial_state.rip.get() + u64::from(len)));
+            fixture.initial_state.sse.as_mut().unwrap().xmm[2].replace_range(
+                ..16,
+                &raw.to_le_bytes()
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>(),
+            );
+            for rc in 0..4u64 {
+                let mxcsr = if dm_masked { 0x1f80 } else { 0x1e80 } | (rc << 13);
+                fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+                fixture.expected_exit = ExpectedExit::StopAddress;
+                let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+                od_testkit::v2::compare(&input, &result, &result).unwrap();
+                let Observation::Available { value } = result.snapshot else {
+                    panic!("snapshot")
+                };
+                let status = value.state.sse.as_ref().unwrap().mxcsr.get();
+                let expected_invalid = invalid && !(wide && raw == 0x41e0_0000_0000_0000);
+                let expected_inexact = inexact && !(wide && raw == 0x41e0_0000_0000_0000);
+                assert_eq!(
+                    status & 1 != 0,
+                    expected_invalid,
+                    "raw={raw:016x} wide={wide}"
+                );
+                assert_eq!(
+                    status & (1 << 5) != 0,
+                    expected_inexact,
+                    "raw={raw:016x} wide={wide}"
+                );
+                assert_eq!(status & (1 << 1), 0, "CVTTSD2SI does not signal DE");
+                assert_eq!(status & (3 << 13), rc << 13, "RC is preserved");
+            }
+        }
+    }
+    fixture.memory[0].initial_bytes_hex = "f20f2cc2".into();
+    fixture.memory[0].length = 4;
+    fixture.memory[0].comparison_mask_hex = "ffffffff".into();
+    fixture.stop_rip = Some(HexU64(fixture.initial_state.rip.get() + 4));
+    fixture.initial_state.sse.as_mut().unwrap().xmm[2].replace_range(..16, "010000000000f87f");
+    fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 & !(1 << 7));
+    fixture.expected_exit = ExpectedExit::Exception;
+    let old_gpr = fixture.initial_state.gpr[0];
+    let invalid_input = fixture.to_json().unwrap();
+    let (input, result) = run(&invalid_input, "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let mut tampered_fault = result.clone();
+    let Observation::Available { value } = &mut tampered_fault.snapshot else {
+        panic!("snapshot")
+    };
+    let Observation::Available {
+        value: Some(exception),
+    } = &mut value.exception
+    else {
+        panic!("exception")
+    };
+    exception.vector = 6;
+    od_testkit::v2::compare(&input, &result, &tampered_fault).unwrap_err();
+    let mut tampered_error_code = result.clone();
+    let Observation::Available { value } = &mut tampered_error_code.snapshot else {
+        panic!("snapshot")
+    };
+    let Observation::Available {
+        value: Some(exception),
+    } = &mut value.exception
+    else {
+        panic!("exception")
+    };
+    exception.error_code = Observation::Available { value: HexU64(0) };
+    od_testkit::v2::compare(&input, &result, &tampered_error_code).unwrap_err();
+    let Observation::Available { value } = result.snapshot else {
+        panic!("snapshot")
+    };
+    assert_eq!(value.state.gpr[0], old_gpr);
+    assert_eq!(value.state.rip, fixture.initial_state.rip);
+    assert_ne!(value.state.sse.as_ref().unwrap().mxcsr.get() & 1, 0);
+    assert_eq!(
+        result.instructions_executed,
+        Observation::Available { value: HexU64(0) }
+    );
+    fixture.cvtsd2si_controls.as_mut().unwrap().cr4_osxmmexcpt = false;
+    let osxmmexcpt_input = fixture.to_json().unwrap();
+    let (loaded, result) = run(&osxmmexcpt_input, "interpreter", 0);
+    od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+    let Observation::Available { value } = result.snapshot else {
+        panic!("snapshot")
+    };
+    assert!(
+        matches!(value.exception, Observation::Available { value: Some(ref e) } if e.vector == 6)
+    );
+    fixture.cvtsd2si_controls.as_mut().unwrap().cr4_osxmmexcpt = true;
+    fixture.initial_state.sse.as_mut().unwrap().xmm[2].replace_range(..16, "000000000000f83f");
+    fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 & !(1 << 12));
+    let pe_input = fixture.to_json().unwrap();
+    let (loaded, result) = run(&pe_input, "interpreter", 0);
+    od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+    let Observation::Available { value } = result.snapshot else {
+        panic!("snapshot")
+    };
+    assert_eq!(
+        value.state.sse.as_ref().unwrap().mxcsr.get() & (1 << 5),
+        1 << 5
+    );
+    assert_eq!(
+        value.state.sse.as_ref().unwrap().mxcsr.get() & 1,
+        0,
+        "Invalid suppresses Precision"
+    );
+    fixture.expected_exit = ExpectedExit::StopAddress;
+    fixture.initial_state.sse.as_mut().unwrap().xmm[2].replace_range(..16, "000000000000f03f");
+    fixture.initial_state.sse.as_mut().unwrap().mxcsr =
+        HexU64((0x1f80 & !(1 << 7) & !(1 << 12)) | 0x21);
+    let exact_input = fixture.to_json().unwrap();
+    let (loaded, exact) = run(&exact_input, "interpreter", 0);
+    od_testkit::v2::compare(&loaded, &exact, &exact).unwrap();
+    assert!(
+        matches!(exact.outcome, Outcome::StopAddress {}),
+        "old sticky IE/PE alone does not fault"
+    );
+    let mut tampered_state = exact.clone();
+    let Observation::Available { value } = &mut tampered_state.snapshot else {
+        panic!("snapshot")
+    };
+    value.state.gpr[0] = HexU64(value.state.gpr[0].get() ^ 1);
+    od_testkit::v2::compare(&loaded, &exact, &tampered_state).unwrap_err();
+    let mut tampered_controls = exact.clone();
+    let Observation::Available { value } = &mut tampered_controls.snapshot else {
+        panic!("snapshot")
+    };
+    value.cvtsd2si_controls.as_mut().unwrap().sse2_available = false;
+    od_testkit::v2::compare(&loaded, &exact, &tampered_controls).unwrap_err();
+    for bad in [
+        "f20f2cc200",
+        "f20f2c",
+        "f30f2cc0",
+        "f20f2dc0",
+        "f2400f2cc0",
+        "f2420f2cc0",
+        "48f20f2cc0",
+        "f2f20f2cc0",
+        "c5fb2cc0",
+        "62f1ff082cc0",
+        "f20f2c00",
+    ] {
+        let mut malformed = fixture.clone();
+        malformed.memory[0].initial_bytes_hex = bad.into();
+        malformed.memory[0].length = (bad.len() / 2) as u32;
+        malformed.memory[0].comparison_mask_hex = "ff".repeat(bad.len() / 2);
+        malformed.stop_rip = Some(HexU64(
+            malformed.initial_state.rip.get() + (bad.len() / 2) as u64,
+        ));
+        assert!(
+            malformed.to_json().is_err(),
+            "accepted malformed CVTTSD2SI {bad}"
+        );
+    }
     let source = fixture.to_json().unwrap();
     for backend in ["jit", "native"] {
         let (_, denied) = run(&source, backend, 4);
