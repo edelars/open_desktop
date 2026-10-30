@@ -755,8 +755,10 @@ and raw results are in the
 retained production FIFO16 runtime and records per-sweep/cumulative cache
 counters and resident code/metadata and arena high-water. Its unoccupied-slot
 value is derived as capacity minus resident-entry high-water, not read from an
-allocator counter. The path is
-implemented but has not been run. It does not measure process RSS, teardown,
-independent runtime instances, SMC invalidation, or longer leak-free stress;
-S3-37 remains open. See the
+allocator counter. Three release runs each observed 168,960
+misses/compiles/publications, 168,944 evictions, 256 hits, and the same
+resident high-water: 16 entries, 21,640 code bytes, and 50,124 logical
+metadata bytes. This is a bounded capacity-churn observation. The path does
+not measure process RSS, teardown, independent runtime instances, SMC
+invalidation, or longer leak-free stress; S3-37 remains open. See the
 [S3-37a report](../reports/STAGE_3_S3-37a_2026-10-30.md).

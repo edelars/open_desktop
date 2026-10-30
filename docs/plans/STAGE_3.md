@@ -2525,10 +2525,13 @@ metadata high-water and arena reservation plus a derived unoccupied-slot value
 (`capacity - resident entry high-water`). The latter is not read from an
 allocator availability counter. The
 runner requires observable eviction/recompile and uses the existing 30-minute
-limit. This is tooling-only; no run has been collected. Process RSS, runtime
-teardown, independent-instance lifecycle, SMC invalidation, and broader
-workloads remain unmeasured. It is not a leak-free stress result. See the
-[S3-37a implementation report](../reports/STAGE_3_S3-37a_2026-10-30.md).
+limit. Three release processes each completed 128 sweeps with resident
+high-water at 16 entries, 21,640 code bytes, and 50,124 logical metadata bytes;
+each recorded 168,944 evictions and 168,960 successful compiles/publications.
+This is bounded FIFO churn evidence, not a leak-free stress result. Process RSS,
+runtime teardown, independent-instance lifecycle, SMC invalidation, and broader
+workloads remain unmeasured. See the
+[S3-37a report](../reports/STAGE_3_S3-37a_2026-10-30.md).
 
 1. Выполнить длинную серию unique blocks, повторных invalidations, capacity evictions, SMC и mixed hit/miss workloads.
 2. Снимать executable bytes, metadata bytes, live/retired blocks, compile counts и доступные process memory показатели с описанием метода.

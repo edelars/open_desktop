@@ -314,8 +314,12 @@ correctness validation, runtime initialization/teardown, and process launch.
 Process RSS and teardown/independent-instance lifecycle are not measured. This
 fixed corpus repetition is bounded capacity-churn evidence only; it is not a
 long leak-free stress result and does not cover SMC invalidation or broader
-workloads. The command is implemented but no run has been collected. See the
-[S3-37a implementation report](../reports/STAGE_3_S3-37a_2026-10-30.md).
+workloads. Three release runs each completed all 128 sweeps with identical
+totals: 168,960 misses/compiles/publications, 168,944 evictions, and 256 hits.
+Resident high-water was 16 entries, 21,640 code bytes, and 50,124 logical
+metadata bytes. This is bounded capacity-churn evidence, not a long leak-free
+stress result. Process RSS and teardown remain unmeasured. See the
+[S3-37a report](../reports/STAGE_3_S3-37a_2026-10-30.md).
 
 Recorded trace дополняется ограниченными synthetic-сценариями:
 1/8/64/512/4096 keys и observed unique count, hot loops на 1/8 keys, reverse
@@ -329,6 +333,7 @@ permission, aliases с общим backing и 1/2/4 dependency spans. Synthetic-
 4,096 visits per input; 65,536 visits total; 4,096 keys; 128 MiB logical
 payload; 24 scenarios; 10 minutes trace capture; 30 minutes measure run. Limit
 нарушение завершает операцию ошибкой. Тесты покрывают malformed trace,
-admission сценариев, parity вариантов и stale hit. Реальный corpus trace и
-timed run ещё не выполнялись; lookup structure не выбрана, ускорение не
-заявляется.
+admission сценариев, parity вариантов и stale hit. Для lookup-structure
+prototype default не выбран и ускорение не заявляется. Recorded corpus runs
+для dispatch/cache, cold first execution, warm resident execution и FIFO16
+churn описаны отдельно в отчётах S3-18d1, S3-35a, S3-36a и S3-37a.
