@@ -285,6 +285,17 @@ does not include a dedicated physical fixture for these exact bytes.
 
 [S3-33l report](../../docs/reports/STAGE_3_S3-33l_2026-10-30.md).
 
+S3-33m adds a separate uncached profile for exactly `48 8D 05 dd dd dd dd`
+(`LEA RAX,[RIP+disp32]`). Admission binds all seven bytes to the decoded W64
+RAX form, address64 `NextRip` base, no index, scale 1, and the decoder-owned
+signed displacement. Lowering writes the wrapping sum of this instruction's
+guest `next_rip` and displacement as a W64 constant, preserving flags and all
+other GPRs. It performs no data access, canonicality check, or helper call.
+This is local differential evidence for these exact bytes, not a physical
+fixture claim.
+
+[S3-33m report](../../docs/reports/STAGE_3_S3-33m_2026-10-30.md).
+
 S3-33i adds a separate uncached opt-in profile for the exact bare bytes
 `48 87 D8` (`XCHG RAX,RBX`). Admission checks both the decoded W64 register
 pair and all three source bytes; equivalent ModRM/short-register forms, self

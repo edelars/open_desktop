@@ -2539,6 +2539,22 @@ Mini/performance отложены до конца Stage 3; Stage 2 и owner/MMU 
 
 Доказательство ограничено локальными differential checks. Для точных байтов `48 8D 04 0B` нет отдельного physical fixture evidence; этот срез не расширяет Stage2, owner/MMU или Mini. Mini и performance остаются not_run до конца Stage 3. См. [S3-33l report](../reports/STAGE_3_S3-33l_2026-10-30.md).
 
+#### S3-33m. Exact native LEA RAX,[RIP+disp32]
+
+Отдельный uncached профиль принимает только `48 8D 05 dd dd dd dd` (7 байт):
+W64/address64, RAX, `NextRip`, без index, scale 1 и signed displacement,
+связанный с exact bytes и decode. Lowering вычисляет
+`instruction.next_rip.wrapping_add_signed(displacement)`, записывает W64
+constant в RAX и коммитит одну инструкцию. Flags, остальные GPR и pending
+flags сохраняются; data access, canonicality check и helper отсутствуют.
+Admission/compiler/host gates проверяют exact negatives, signed edges,
+переменную длину предшествующей инструкции, разные guest RIP, wrapping,
+полное interpreter/native состояние, pending CMP→LEA→JNZ и нулевые data
+callbacks. Результат — только local differential evidence; отдельное physical
+подтверждение exact bytes не заявляется. Stage 2 и owner/MMU вне scope; Mini и
+performance остаются not_run до конца Stage 3. См.
+[S3-33m report](../reports/STAGE_3_S3-33m_2026-10-30.md).
+
 ## 9. Проверка, производительность и интеграция
 
 ### S3-34. Собрать corpus и проверить сам harness

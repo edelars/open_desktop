@@ -306,6 +306,18 @@ ADDITIONAL_TEST_GATES = (
         "s3_33l_native_lea_rbx_rcx_host", "local_acceptance", "od-host",
         "tests::native_lea_rax_rbx_rcx_matches_interpreter_and_preserves_flags_without_data_access",
     ),
+    (
+        "s3_33m_native_lea_rax_rip_disp32_admission", "local_acceptance", "od-jit",
+        "block::tests::lea_rax_rip_disp32_admission_is_exact_and_uses_signed_decoded_disp",
+    ),
+    (
+        "s3_33m_native_lea_rax_rip_disp32_compiler", "local_acceptance", "od-jit",
+        "block_compile::tests::native_lea_rax_rip_disp32_compiles_eager_and_candidate_from_guest_next_rip",
+    ),
+    (
+        "s3_33m_native_lea_rax_rip_disp32_host", "local_acceptance", "od-host",
+        "tests::native_lea_rax_rip_disp32_matches_interpreter_without_data_access",
+    ),
 )
 RUST_TEST_GATES = (
     *(

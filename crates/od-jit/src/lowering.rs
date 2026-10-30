@@ -16,8 +16,8 @@ use crate::block::{
     DecodeBoundary, DecodedInstruction, S0_09NopAddRaxImm8Admission, S0_09NopAdmission,
     S0_09NopCmpRaxImm8Admission, S0_09NopDecRaxAdmission, S0_09NopIncRaxAdmission,
     S0_09NopLeaRaxRbxAdmission, S0_09NopLeaRaxRbxDisp8Admission, S0_09NopLeaRaxRbxRcxAdmission,
-    S0_09NopMovRaxImm32Admission, S0_09NopNegRaxAdmission, S0_09NopNotRaxAdmission,
-    S0_09NopSubRaxImm8Admission, S0_09NopXchgRaxRbxAdmission,
+    S0_09NopLeaRaxRipDisp32Admission, S0_09NopMovRaxImm32Admission, S0_09NopNegRaxAdmission,
+    S0_09NopNotRaxAdmission, S0_09NopSubRaxImm8Admission, S0_09NopXchgRaxRbxAdmission,
 };
 use crate::ir::{
     self, BranchCondition, ExitKind, FlagEffect, GuestGpr, GuestInstruction, IntWidth, IntegerKind,
@@ -224,6 +224,7 @@ pub(crate) fn lower_for_native_lea_rax_rbx(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -249,6 +250,7 @@ pub(crate) fn lower_for_native_lea_rax_rbx_disp8(
         Some(admission),
         None,
         None,
+        None,
     )
 }
 
@@ -271,6 +273,7 @@ pub(crate) fn lower_for_native_xchg_rax_rbx(
         None,
         None,
         Some(admission),
+        None,
         None,
         None,
         None,
@@ -329,6 +332,33 @@ pub(crate) fn lower_for_native_lea_rax_rbx_rcx(
         None,
         false,
         false,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(admission),
+        None,
+    )
+}
+
+pub(crate) fn lower_for_native_lea_rax_rip_disp32(
+    outcome: &BuildOutcome,
+    admission: &S0_09NopLeaRaxRipDisp32Admission,
+) -> Result<LoweringOutcome, LoweringError> {
+    lower_with_admission_and_lea(
+        outcome,
+        Some(admission.boundaries()),
+        None,
+        None,
+        None,
+        false,
+        false,
+        None,
         None,
         None,
         None,
@@ -401,6 +431,7 @@ pub(crate) fn lower_for_native_mov_rax_imm32(
         None,
         Some(admission),
         None,
+        None,
     )
 }
 
@@ -436,6 +467,7 @@ fn lower_with_admission(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -457,6 +489,7 @@ fn lower_with_admission_and_lea(
     native_lea_rax_rbx_disp8_admission: Option<&S0_09NopLeaRaxRbxDisp8Admission>,
     native_mov_rax_imm32_admission: Option<&S0_09NopMovRaxImm32Admission>,
     native_lea_rax_rbx_rcx_admission: Option<&S0_09NopLeaRaxRbxRcxAdmission>,
+    native_lea_rax_rip_disp32_admission: Option<&S0_09NopLeaRaxRipDisp32Admission>,
 ) -> Result<LoweringOutcome, LoweringError> {
     let block = match outcome {
         BuildOutcome::NoBlock(no_block) => {
@@ -589,6 +622,12 @@ fn lower_with_admission_and_lea(
                     && matches!(decoded.operation, DecodedOperation::Nop)
                     || admission.admits_lea_rax_rbx_rcx(*guest_rip)
                         && block::is_exact_lea_rax_rbx_rcx(*decoded, &[0x48, 0x8d, 0x04, 0x0b])
+            }) || native_lea_rax_rip_disp32_admission.is_some_and(|admission| {
+                admission.admits_nop(*guest_rip)
+                    && matches!(decoded.operation, DecodedOperation::Nop)
+                    || admission.displacement(*guest_rip).is_some_and(|disp| {
+                        block::is_exact_lea_rax_rip_disp32(*decoded, &[0x48,0x8d,0x05, disp as u8, (disp >> 8) as u8, (disp >> 16) as u8, (disp >> 24) as u8])
+                    })
             }) || native_xchg_rax_rbx_admission.is_some_and(|admission| {
                 admission.admits_nop(*guest_rip)
                     && matches!(decoded.operation, DecodedOperation::Nop)
@@ -710,6 +749,8 @@ fn lower_with_admission_and_lea(
             .and_then(|proof| proof.lea_rbx_disp8_value(instruction.guest_rip));
         let admitted_native_lea_sib = native_lea_rax_rbx_rcx_admission
             .is_some_and(|proof| proof.admits_lea_rax_rbx_rcx(instruction.guest_rip));
+        let admitted_native_lea_rip_disp32 = native_lea_rax_rip_disp32_admission
+            .and_then(|proof| proof.displacement(instruction.guest_rip));
         let admitted_native_xchg = native_xchg_rax_rbx_admission
             .is_some_and(|proof| proof.admits_xchg_rax_rbx(instruction.guest_rip));
         let admitted_native_add_rax_imm8 = native_add_rax_imm8_admission
@@ -727,6 +768,7 @@ fn lower_with_admission_and_lea(
             && !admitted_native_lea
             && admitted_native_lea_disp8.is_none()
             && !admitted_native_lea_sib
+            && admitted_native_lea_rip_disp32.is_none()
             && !admitted_native_xchg
             && !admitted_native_add_rax_imm8
             && !admitted_native_cmp_rax_imm8
@@ -764,6 +806,14 @@ fn lower_with_admission_and_lea(
             )?;
         } else if admitted_native_lea_sib {
             lower_exact_lea_rax_rbx_rcx(instruction, index, &mut next_temp, &mut operations)?;
+        } else if let Some(displacement) = admitted_native_lea_rip_disp32 {
+            lower_exact_lea_rax_rip_disp32(
+                instruction,
+                index,
+                displacement,
+                &mut next_temp,
+                &mut operations,
+            )?;
         } else if admitted_native_xchg {
             lower_exact_xchg_rax_rbx(instruction, index, &mut next_temp, &mut operations)?;
         } else if admitted_native_add_rax_imm8 {
@@ -1366,6 +1416,45 @@ fn lower_exact_lea_rax_rbx_rcx(
     operations.push(Operation::WriteGpr {
         register: GuestGpr(0),
         src: result,
+        width: IntWidth::W64,
+    });
+    operations.push(Operation::CommitInstruction { index });
+    Ok(())
+}
+
+fn lower_exact_lea_rax_rip_disp32(
+    instruction: &DecodedInstruction,
+    index: usize,
+    displacement: i64,
+    next_temp: &mut u32,
+    operations: &mut Vec<Operation>,
+) -> Result<(), LoweringError> {
+    let invalid = || LoweringError::InvalidDecodedForm {
+        guest_rip: instruction.guest_rip,
+    };
+    let bytes = [
+        0x48,
+        0x8d,
+        0x05,
+        displacement as u8,
+        (displacement >> 8) as u8,
+        (displacement >> 16) as u8,
+        (displacement >> 24) as u8,
+    ];
+    if !block::is_exact_lea_rax_rip_disp32(instruction.decoded, &bytes) {
+        return Err(invalid());
+    }
+    let value = instruction.next_rip.wrapping_add_signed(displacement);
+    operations.push(Operation::BeginInstruction { index });
+    let constant = allocate_temp(next_temp);
+    operations.push(Operation::Constant {
+        dst: constant,
+        width: IntWidth::W64,
+        value,
+    });
+    operations.push(Operation::WriteGpr {
+        register: GuestGpr(0),
+        src: constant,
         width: IntWidth::W64,
     });
     operations.push(Operation::CommitInstruction { index });

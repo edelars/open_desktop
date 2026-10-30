@@ -1611,6 +1611,24 @@ no physical fixture confirmation is available. Mini/performance remain
 deferred until Stage 3 ends. See
 [S3-33l report](../reports/STAGE_3_S3-33l_2026-10-30.md).
 
+### S3-33m: opt-in exact native LEA RAX,[RIP+disp32]
+
+The separate uncached profile admits only `48 8D 05 dd dd dd dd`, length 7,
+with W64/address64, destination RAX, `AddressBase::NextRip`, no index, scale
+1, and displacement exactly bound to the decoded signed disp32. Lowering
+computes `instruction.next_rip.wrapping_add_signed(displacement)` from the
+specific guest instruction, emits a W64 constant, writes RAX, and commits once.
+Flags, other GPRs, and pending flags are preserved. The result is not treated
+as a memory address; no data access, canonicality check, branch, or helper is
+performed. Exact profile remains separate from other LEA forms.
+
+Admission/compiler/host checks cover exact-form negatives, variable-length
+preceding instructions, signed displacement edges, different guest RIPs,
+wrapping result arithmetic, pending CMP→LEA→JNZ, full state parity and zero
+data callbacks. Evidence is local differential only; no physical fixture is
+claimed. Mini/performance remain deferred until Stage 3 ends. See
+[S3-33m report](../reports/STAGE_3_S3-33m_2026-10-30.md).
+
 ### S3-29d: uncached arithmetic-to-checked-load handoff
 
 The bounded host fixture composes existing eager and demand-flags native

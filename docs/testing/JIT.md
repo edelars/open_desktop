@@ -270,6 +270,23 @@ physical fixture evidence for the exact bytes. Mini/performance remain deferred
 until Stage 3 ends. See the
 [S3-33l report](../reports/STAGE_3_S3-33l_2026-10-30.md).
 
+## S3-33m: exact native LEA RAX,[RIP+disp32]
+
+Run the three exact admission, compiler, and host parity gates through
+`python3 tests/cpu/stage3_harness.py --suite local`. The uncached profile
+admits only `48 8D 05 dd dd dd dd`: W64/address64, RAX destination, RIP-relative
+base, no index, scale 1, signed decoder-owned disp32, and length 7. The result
+is this instruction's guest `next_rip` plus signed displacement with wrapping
+W64 arithmetic; it is not used as a memory address. Flags, other GPRs, and
+pending flags remain unchanged, with no data callbacks or helpers.
+
+Cases cover 0, ±1, ±7, `i32::MIN/MAX`, distinct guest RIPs, a variable-length
+preceding instruction, valid code near the guest address limit, CMP→LEA→JNZ,
+and exact-form/branch-boundary negatives. The current evidence is local
+differential only and has no physical fixture claim. Mini/performance remain
+deferred until Stage 3 ends. See
+[S3-33m report](../reports/STAGE_3_S3-33m_2026-10-30.md).
+
 ## Срез A: один register-only блок
 
 1. Использовать только точные S0-09 формы из JIT contract и fixtures с

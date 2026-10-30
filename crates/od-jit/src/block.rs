@@ -23,6 +23,7 @@ enum BlockBuildProfile {
     S0_09NativeLeaRaxRbx,
     S0_09NativeLeaRaxRbxDisp8,
     S0_09NativeLeaRaxRbxRcx,
+    S0_09NativeLeaRaxRipDisp32,
     S0_09NativeXchgRaxRbx,
     S0_09NativeAddRaxImm8,
     S0_09NativeCmpRaxImm8,
@@ -208,6 +209,15 @@ pub struct S0_09NopLeaRaxRbxRcxAdmission {
     boundaries: AdmittedInstructionBoundaries,
     nop_rips: Vec<u64>,
     lea_rips: Vec<u64>,
+}
+
+/// Separate bounded admission for S0-09 plus exact bare
+/// `LEA RAX,[RIP+disp32]`; each displacement is bound to its instruction RIP.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct S0_09NopLeaRaxRipDisp32Admission {
+    boundaries: AdmittedInstructionBoundaries,
+    nop_rips: Vec<u64>,
+    lea_displacements: Vec<(u64, i64)>,
 }
 
 /// Separate bounded admission for S0-09 plus exact bare `XCHG RAX,RBX`.
@@ -973,6 +983,102 @@ impl S0_09NopLeaRaxRbxRcxAdmission {
     }
 }
 
+impl S0_09NopLeaRaxRipDisp32Admission {
+    /// Decode the immutable view, admitting only S0-09, exact bare NOP, and
+    /// exact `48 8D 05 dd dd dd dd` (`LEA RAX,[RIP+disp32]`).
+    pub fn from_code(code: CodeView<'_>) -> Result<Self, S0_09NopAdmissionError> {
+        let mut rip = code.base_rip();
+        let mut boundaries = Vec::new();
+        let mut instructions = Vec::new();
+        let mut nop_rips = Vec::new();
+        let mut lea_displacements = Vec::new();
+        while rip < code.code_end() {
+            let offset = usize::try_from(rip - code.base_rip())
+                .map_err(|_| S0_09NopAdmissionError::RangeOverflow { rip, length: 0 })?;
+            let mut memory = CodeMemory::full_code(code);
+            let instruction = long_decode::decode(&mut memory, rip, AccessContext::default())
+                .map_err(|error| S0_09NopAdmissionError::Decode { rip, error })?;
+            if !(1..=15).contains(&instruction.length) {
+                return Err(S0_09NopAdmissionError::InvalidLength {
+                    rip,
+                    length: instruction.length,
+                });
+            }
+            let next_rip = rip.checked_add(u64::from(instruction.length)).ok_or(
+                S0_09NopAdmissionError::RangeOverflow {
+                    rip,
+                    length: instruction.length,
+                },
+            )?;
+            if next_rip > code.code_end() {
+                return Err(S0_09NopAdmissionError::RangeOverflow {
+                    rip,
+                    length: instruction.length,
+                });
+            }
+            if is_exact_bare_nop(instruction, code.bytes()[offset]) {
+                nop_rips.push(rip);
+            } else if is_exact_lea_rax_rip_disp32(instruction, &code.bytes()[offset..]) {
+                let Operation::Lea { src, .. } = instruction.operation else {
+                    unreachable!("exact RIP-relative LEA predicate checked the operation")
+                };
+                lea_displacements.push((rip, src.displacement));
+            } else if !is_s0_09_form(instruction) {
+                return Err(S0_09NopAdmissionError::UnsupportedInstruction { rip });
+            }
+            boundaries.push(rip);
+            instructions.push((rip, next_rip, instruction));
+            rip = next_rip;
+        }
+        boundaries.push(code.code_end());
+        for (branch_rip, next_rip, instruction) in &instructions {
+            let Operation::Branch { displacement, .. } = instruction.operation else {
+                continue;
+            };
+            let target = next_rip.wrapping_add_signed(i64::from(displacement));
+            if !boundaries.contains(&target) {
+                return Err(S0_09NopAdmissionError::BranchTargetNotBoundary {
+                    rip: *branch_rip,
+                    target,
+                });
+            }
+        }
+        Ok(Self {
+            boundaries: AdmittedInstructionBoundaries {
+                code_base: code.base_rip(),
+                code_end: code.code_end(),
+                code_bytes: code.bytes().to_vec(),
+                boundaries,
+            },
+            nop_rips,
+            lea_displacements,
+        })
+    }
+
+    pub(crate) fn boundaries(&self) -> &AdmittedInstructionBoundaries {
+        &self.boundaries
+    }
+    pub(crate) fn matches_code(&self, code: CodeView<'_>) -> bool {
+        self.boundaries.matches_code(code)
+    }
+    pub(crate) fn contains(&self, rip: u64) -> bool {
+        self.boundaries.contains(rip)
+    }
+    pub(crate) fn admits_nop(&self, rip: u64) -> bool {
+        self.nop_rips.contains(&rip)
+    }
+    pub(crate) fn displacement(&self, rip: u64) -> Option<i64> {
+        self.lea_displacements
+            .iter()
+            .find_map(|(admitted_rip, displacement)| {
+                (*admitted_rip == rip).then_some(*displacement)
+            })
+    }
+    pub(crate) fn admits_lea_rax_rip_disp32(&self, rip: u64) -> bool {
+        self.displacement(rip).is_some()
+    }
+}
+
 impl S0_09NopXchgRaxRbxAdmission {
     /// Decode the full immutable view, admitting only S0-09, exact bare NOP,
     /// and exact `48 87 D8` (`XCHG RAX,RBX`).
@@ -1673,6 +1779,37 @@ pub(crate) fn is_exact_lea_rax_rbx_rcx(instruction: Instruction, bytes: &[u8]) -
         && bytes.get(..4) == Some(&[0x48, 0x8d, 0x04, 0x0b])
 }
 
+pub(crate) fn is_exact_lea_rax_rip_disp32(instruction: Instruction, bytes: &[u8]) -> bool {
+    let Some(raw_displacement) = bytes.get(3..7) else {
+        return false;
+    };
+    let Ok(raw_displacement) = <[u8; 4]>::try_from(raw_displacement) else {
+        return false;
+    };
+    let displacement = i64::from(i32::from_le_bytes(raw_displacement));
+    matches!(instruction.operation,
+        Operation::Lea { dst, src }
+        if dst.register() == od_isa::Register::Rax
+            && dst.size() == OperandSize::Qword
+            && src.base == AddressBase::NextRip
+            && src.index.is_none()
+            && src.scale == 1
+            && src.displacement == displacement
+            && src.address_size == OperandSize::Qword
+            && src.size == OperandSize::Qword)
+        && instruction.opcode.map == OpcodeMap::Primary
+        && instruction.opcode.byte == 0x8d
+        && instruction.prefixes.rex == Some(0x48)
+        && instruction.prefixes.group1.is_none()
+        && instruction.prefixes.segment.is_none()
+        && !instruction.prefixes.operand_override
+        && !instruction.prefixes.address_override
+        && instruction.operand_size == OperandSize::Qword
+        && instruction.address_size == OperandSize::Qword
+        && instruction.length == 7
+        && bytes.get(..3) == Some(&[0x48, 0x8d, 0x05])
+}
+
 pub(crate) fn is_exact_xchg_rax_rbx(instruction: Instruction, bytes: &[u8]) -> bool {
     matches!(instruction.operation,
         Operation::Xchg { left, right }
@@ -2041,6 +2178,21 @@ pub(crate) fn build_block_for_native_lea_rax_rbx_rcx(
         context,
         limits,
         BlockBuildProfile::S0_09NativeLeaRaxRbxRcx,
+    )
+}
+
+pub(crate) fn build_block_for_native_lea_rax_rip_disp32(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    context: AccessContext,
+    limits: BlockLimits,
+) -> Result<BuildOutcome, BuildError> {
+    build_block_with_profile(
+        code,
+        entry_rip,
+        context,
+        limits,
+        BlockBuildProfile::S0_09NativeLeaRaxRipDisp32,
     )
 }
 
@@ -2747,6 +2899,9 @@ fn build_block_with_profile(
                 || is_exact_lea_rax_rbx_disp8(decoded, &code.bytes[guest_offset..])
         } else if profile == BlockBuildProfile::S0_09NativeLeaRaxRbxRcx {
             is_s0_09_form(decoded) || is_exact_lea_rax_rbx_rcx(decoded, &code.bytes[guest_offset..])
+        } else if profile == BlockBuildProfile::S0_09NativeLeaRaxRipDisp32 {
+            is_s0_09_form(decoded)
+                || is_exact_lea_rax_rip_disp32(decoded, &code.bytes[guest_offset..])
         } else if profile == BlockBuildProfile::S0_09NativeXchgRaxRbx {
             is_s0_09_form(decoded) || is_exact_xchg_rax_rbx(decoded, &code.bytes[guest_offset..])
         } else if profile == BlockBuildProfile::S0_09NativeAddRaxImm8 {
@@ -2842,6 +2997,7 @@ fn build_block_with_profile(
             | BlockBuildProfile::S0_09NativeLeaRaxRbx
             | BlockBuildProfile::S0_09NativeLeaRaxRbxDisp8
             | BlockBuildProfile::S0_09NativeLeaRaxRbxRcx
+            | BlockBuildProfile::S0_09NativeLeaRaxRipDisp32
             | BlockBuildProfile::S0_09NativeXchgRaxRbx
             | BlockBuildProfile::S0_09NativeAddRaxImm8
             | BlockBuildProfile::S0_09NativeCmpRaxImm8 => false,
@@ -3251,6 +3407,40 @@ mod tests {
         assert!(matches!(
             S0_09NopLeaRaxRbxRcxAdmission::from_code(view),
             Err(S0_09NopAdmissionError::BranchTargetNotBoundary { target: 0x3e85, .. })
+        ));
+    }
+
+    #[test]
+    fn lea_rax_rip_disp32_admission_is_exact_and_uses_signed_decoded_disp() {
+        let bytes = [0x48, 0x8d, 0x05, 0x8b, 0x4d, 0x12, 0xe3];
+        let view = CodeView::new(0x1000, &bytes).unwrap();
+        let admitted = S0_09NopLeaRaxRipDisp32Admission::from_code(view).unwrap();
+        assert!(admitted.admits_lea_rax_rip_disp32(0x1000));
+        assert_eq!(
+            admitted.displacement(0x1000),
+            Some(i32::from_le_bytes([0x8b, 0x4d, 0x12, 0xe3]) as i64)
+        );
+        assert!(!S0_09NopLeaRaxRbxRcxAdmission::from_code(view).is_ok());
+
+        for bytes in [
+            &[0x67, 0x48, 0x8d, 0x05, 0, 0, 0, 0][..], // address32
+            &[0x48, 0x8d, 0x0d, 0, 0, 0, 0][..],       // other destination
+            &[0x48, 0x8d, 0x04, 0x25, 0, 0, 0, 0][..], // SIB
+            &[0x48, 0x8d, 0x45, 0][..],                // disp8 register form
+            &[0x66, 0x48, 0x8d, 0x05, 0, 0, 0, 0][..], // prefix
+            &[0x48, 0x8d, 0x05, 0, 0, 0][..],          // truncated
+        ] {
+            let view = CodeView::new(0x2000, bytes).unwrap();
+            assert!(
+                S0_09NopLeaRaxRipDisp32Admission::from_code(view).is_err(),
+                "{bytes:02x?}"
+            );
+        }
+        let branch_into_displacement = [0x74, 0x03, 0x48, 0x8d, 0x05, 0, 0, 0, 0];
+        let view = CodeView::new(0x3000, &branch_into_displacement).unwrap();
+        assert!(matches!(
+            S0_09NopLeaRaxRipDisp32Admission::from_code(view),
+            Err(S0_09NopAdmissionError::BranchTargetNotBoundary { target: 0x3005, .. })
         ));
     }
 

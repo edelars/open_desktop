@@ -72647,4 +72647,313 @@ mod tests {
         assert_eq!(stop_after_result.retired_native, 1);
         assert_eq!(stop_after_result.retired_interpreter, 0);
     }
+
+    #[test]
+    fn native_lea_rax_rip_disp32_matches_interpreter_without_data_access() {
+        let _guard = jit_test_lock();
+        use od_isa::memory::{AccessKind, GuestMemory};
+
+        struct CodeOnly<'a> {
+            base: u64,
+            bytes: &'a [u8],
+            data_accesses: usize,
+        }
+        impl GuestMemory for CodeOnly<'_> {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                address
+                    .checked_sub(self.base)
+                    .and_then(|offset| self.bytes.get(offset as usize))
+                    .copied()
+                    .ok_or(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Fetch,
+                    })
+            }
+            fn read(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                self.data_accesses += 1;
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: &[u8],
+            ) -> Result<(), MemoryError> {
+                self.data_accesses += 1;
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                self.data_accesses += 1;
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                self.data_accesses += 1;
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                self.data_accesses += 1;
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+
+        let base = 0xD300;
+        let stop = AtomicU8::new(0);
+        let control = od_jit::dispatch::DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let code = [
+            0x48, 0x8d, 0x05, 0xf9, 0xff, 0xff, 0xff, 0x74, 0x02, 0x90, 0x90,
+        ];
+        let view = CodeView::new(base, &code).unwrap();
+        let admission =
+            od_jit::dispatch::LeaRaxRipDisp32InterpreterFallbackAdmission::from_code(view).unwrap();
+        for &(base, displacement) in &[
+            (0xD300, 0),
+            (0xD300, 1),
+            (0xD300, -1),
+            (0xD300, 7),
+            (0xD300, -7),
+            (0xD300, i32::MIN),
+            (0xD300, i32::MAX),
+            (0xE400, -7),                   // same bytes, different guest next_rip
+            (u64::MAX - 20, i32::MAX),      // valid code window; result wraps
+            (0x0000_7fff_ffff_fff0, 0x100), // valid code window; noncanonical result
+        ] {
+            let disp_bytes = displacement.to_le_bytes();
+            let code = [
+                0x48,
+                0x8d,
+                0x05,
+                disp_bytes[0],
+                disp_bytes[1],
+                disp_bytes[2],
+                disp_bytes[3],
+                0x74,
+                0x02,
+                0x90,
+                0x90,
+            ];
+            let view = CodeView::new(base, &code).unwrap();
+            let admission =
+                od_jit::dispatch::LeaRaxRipDisp32InterpreterFallbackAdmission::from_code(view)
+                    .unwrap();
+            for flags in [0x202, 0x8d5 | 0x202, 0x155 | 0x202, 0x888 | 0x202] {
+                let mut initial = od_isa::LongModeState::default();
+                initial.rip = base;
+                initial.rflags = flags | (1 << 10) | (1 << 21);
+                initial.gpr[0] = 0x1234_5678_9abc_def0;
+                initial.gpr[1] = 0xaaaa_5555_ffff_0000;
+                initial.gpr[3] = 0x5555_aaaa_0000_ffff;
+                let mut expected = initial.clone();
+                let mut interpreter_memory = CodeOnly {
+                    base,
+                    bytes: &code,
+                    data_accesses: 0,
+                };
+                let expected_retired = if initial.rflags & (1 << 6) != 0 { 2 } else { 4 };
+                while expected.rip < base + code.len() as u64 {
+                    od_isa::execute::step(
+                        &mut expected,
+                        &mut interpreter_memory,
+                        AccessContext::default(),
+                    )
+                    .unwrap();
+                }
+                assert_eq!(interpreter_memory.data_accesses, 0);
+                assert_eq!(
+                    expected.gpr[0],
+                    (base + 7).wrapping_add_signed(displacement as i64)
+                );
+                assert_eq!(expected.rflags, initial.rflags);
+                for candidate in [false, true] {
+                    let mut actual = initial.clone();
+                    let outcome = if candidate {
+                        od_jit::dispatch::run_with_native_lea_rax_rip_disp32_demand_flags_candidate(
+                            view,
+                            &admission,
+                            &mut actual,
+                            4,
+                            control,
+                            &mut PublishedBlockExecutor,
+                        )
+                    } else {
+                        od_jit::dispatch::run_with_native_lea_rax_rip_disp32(
+                            view,
+                            &admission,
+                            &mut actual,
+                            4,
+                            control,
+                            &mut PublishedBlockExecutor,
+                        )
+                    }
+                    .unwrap();
+                    assert_eq!(actual, expected);
+                    assert_eq!(outcome.retired_native, 2);
+                    assert_eq!(outcome.retired_interpreter, expected_retired - 2);
+                }
+            }
+        }
+        let pending_cmp = [
+            0x48, 0x3b, 0xc3, 0x48, 0x8d, 0x05, 0xf9, 0xff, 0xff, 0xff, 0x75, 0x02, 0x90, 0x90,
+        ];
+        let pending_view = CodeView::new(base, &pending_cmp).unwrap();
+        let pending_admission =
+            od_jit::dispatch::LeaRaxRipDisp32InterpreterFallbackAdmission::from_code(pending_view)
+                .unwrap();
+        let mut initial = od_isa::LongModeState::default();
+        initial.rip = base;
+        initial.gpr[0] = 3;
+        initial.gpr[3] = 3;
+        initial.gpr[1] = u64::MAX;
+        initial.rflags |= 0x8d5;
+        let mut expected = initial.clone();
+        let mut interpreter_memory = CodeOnly {
+            base,
+            bytes: &pending_cmp,
+            data_accesses: 0,
+        };
+        for _ in 0..5 {
+            od_isa::execute::step(
+                &mut expected,
+                &mut interpreter_memory,
+                AccessContext::default(),
+            )
+            .unwrap();
+        }
+        let mut actual = initial;
+        let outcome = od_jit::dispatch::run_with_native_lea_rax_rip_disp32_demand_flags_candidate(
+            pending_view,
+            &pending_admission,
+            &mut actual,
+            5,
+            control,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(outcome.retired_native, 3);
+        assert_eq!(outcome.retired_interpreter, 2);
+
+        let mut exhausted = od_isa::LongModeState::default();
+        exhausted.rip = base;
+        let before = exhausted.clone();
+        let no_budget = od_jit::dispatch::run_with_native_lea_rax_rip_disp32(
+            view,
+            &admission,
+            &mut exhausted,
+            0,
+            control,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        assert_eq!(exhausted, before);
+        assert_eq!(no_budget.retired_native, 0);
+        assert_eq!(no_budget.retired_interpreter, 0);
+
+        let stop_at_entry = od_jit::dispatch::DispatchControl {
+            stop_rip: Some(base),
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let mut stopped = od_isa::LongModeState::default();
+        stopped.rip = base;
+        let before = stopped.clone();
+        let stop_result = od_jit::dispatch::run_with_native_lea_rax_rip_disp32(
+            view,
+            &admission,
+            &mut stopped,
+            2,
+            stop_at_entry,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        assert_eq!(stopped, before);
+        assert_eq!(stop_result.retired_native, 0);
+        assert_eq!(stop_result.retired_interpreter, 0);
+
+        let mut one_step = od_isa::LongModeState::default();
+        one_step.rip = base;
+        one_step.gpr[3] = u64::MAX;
+        one_step.gpr[1] = 1;
+        let one_step_result = od_jit::dispatch::run_with_native_lea_rax_rip_disp32(
+            view,
+            &admission,
+            &mut one_step,
+            1,
+            control,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        assert_eq!(one_step.gpr[0], base);
+        assert_eq!(one_step.rip, base + 7);
+        assert_eq!(one_step_result.retired_native, 1);
+        assert_eq!(one_step_result.retired_interpreter, 0);
+
+        let stop_after_lea = od_jit::dispatch::DispatchControl {
+            stop_rip: Some(base + 7),
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let mut stopped_after_lea = od_isa::LongModeState::default();
+        stopped_after_lea.rip = base;
+        stopped_after_lea.gpr[3] = u64::MAX;
+        stopped_after_lea.gpr[1] = 1;
+        let stop_after_result = od_jit::dispatch::run_with_native_lea_rax_rip_disp32(
+            view,
+            &admission,
+            &mut stopped_after_lea,
+            4,
+            stop_after_lea,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        assert_eq!(stopped_after_lea.gpr[0], base);
+        assert_eq!(stopped_after_lea.rip, base + 7);
+        assert_eq!(stop_after_result.retired_native, 1);
+        assert_eq!(stop_after_result.retired_interpreter, 0);
+    }
 }
