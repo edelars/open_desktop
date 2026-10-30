@@ -301,6 +301,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 sqrtps_controls: input.fixture.sqrtps_controls,
                 sqrtpd_controls: input.fixture.sqrtpd_controls,
                 subpd_controls: input.fixture.subpd_controls,
+                subps_controls: input.fixture.subps_controls,
                 cvtss2sd_controls: input.fixture.cvtss2sd_controls,
                 cvtps2pd_controls: input.fixture.cvtps2pd_controls,
                 comiss_ucomiss_controls: input.fixture.comiss_ucomiss_controls,
@@ -8979,6 +8980,82 @@ fn subpd_parser_and_independent_integer_oracle_cover_masked_range_semantics() {
         0x1f80 & !(1 << 7),
     );
     assert!(ie && !de && !pe, "invalid pre-event suppresses PE");
+}
+
+#[test]
+fn subps_parser_and_independent_raw_u32_oracle_cover_four_lanes() {
+    for destination in 0u8..16 {
+        for source in 0u8..16 {
+            let mut bytes = Vec::new();
+            if destination >= 8 || source >= 8 {
+                bytes.push(0x40 | ((destination >> 1) & 4) | (source >> 3));
+            }
+            bytes.extend([0x0f, 0x5c, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+            let code = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+            assert_eq!(
+                subps_register_encoding(&code),
+                Some((destination, source, bytes.len() as u32)),
+                "{code}"
+            );
+        }
+    }
+    for code in [
+        "660f5cc1",
+        "f30f5cc1",
+        "f20f5cc1",
+        "400f5cc1",
+        "480f5cc1",
+        "0f5c",
+        "0f5c01",
+        "0f5cc190",
+        "c5fc5cc1",
+        "62f17c085cc1",
+    ] {
+        assert_eq!(subps_register_encoding(code), None, "{code}");
+    }
+    let (values, ie, de, oe, ue, pe) = independent_subps(
+        [0x40c0_0000, 0x3f80_0000, 0xc040_0000, 0],
+        [0x3f80_0000, 0x4000_0000, 0x4040_0000, 0],
+        0x1f80,
+    );
+    assert_eq!(values, [0x40a0_0000, 0xbf80_0000, 0xc0c0_0000, 0]);
+    assert!(!ie && !de && !oe && !ue && !pe);
+    for (rc, expected) in [
+        (0, 0x3f80_0000),
+        (1, 0x3f7f_ffff),
+        (2, 0x3f80_0000),
+        (3, 0x3f7f_ffff),
+    ] {
+        let (value, tiny, pe, oe) = independent_subps_finite_lane(0x3f80_0000, 0x3300_0000, rc);
+        assert_eq!(value, expected);
+        assert!(!tiny && pe && !oe);
+    }
+    let (overflow, ie, de, oe, ue, pe) =
+        independent_subps([0x7f7f_ffff, 0, 0, 0], [0xff7f_ffff, 0, 0, 0], 0x1f80);
+    assert_eq!(overflow[0], 0x7f80_0000);
+    assert!(!ie && !de && oe && !ue && pe);
+    let (tiny, _, _, _, ue, pe) = independent_subps([1, 0, 0, 0], [0; 4], 0x1f80 | (1 << 15));
+    assert_eq!(tiny[0], 0);
+    assert!(ue && pe);
+    let (nan, ie, de, _, _, _) =
+        independent_subps([0x7fc0_1234, 1, 0, 0], [0x3f80_0000, 0, 0, 0], 0x1f80);
+    assert_eq!(nan[0], 0x7fc0_1234);
+    assert!(!ie && de);
+    let (_, ie, de, _, _, pe) = independent_subps(
+        [0x7f80_0001, 0x3f80_0000, 0x7f7f_ffff, 1],
+        [0, 0, 0xff7f_ffff, 0],
+        0x1f80,
+    );
+    assert!(ie && de && pe, "masked lane statuses aggregate");
+    let (_, ie, de, oe, ue, pe) = independent_subps(
+        [0x7f80_0001, 1, 0x7f7f_ffff, 1],
+        [0x3f80_0000, 0, 0xff7f_ffff, 0],
+        0x1f80 & !(1 << 7),
+    );
+    assert!(
+        ie && de && !oe && !ue && !pe,
+        "unmasked IE suppresses post events across packed lanes"
+    );
 }
 
 #[test]

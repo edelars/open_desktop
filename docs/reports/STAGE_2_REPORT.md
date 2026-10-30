@@ -18447,3 +18447,54 @@ Vol. 2A p. 2-27 ([official SDM](https://cdrdv.intel.com/v1/dl/getContent/671199)
 Vol. 1 §§4.9.1.4–.6, 11.5.3 and DAZ/FTZ ([Vol. 1](https://cdrdv.intel.com/v1/dl/getContent/671436));
 Vol. 3A Event 19/Table 7-8 ([Vol. 3A](https://cdrdv.intel.com/v1/dl/getContent/671190));
 Intel Floating-Point Reference Sheet v2.13 ([PDF](https://cdrdv.intel.com/v1/dl/getContent/786447?fileName=floating-point-reference-sheet-for-intel-architecture.pdf)).
+
+### S2-37ao — SUBPS register-pair interpreter profile (2026-10-30)
+
+Implemented strict schema-v2 interpreter-only profile
+`s2-long-subps-registers-v1` for all 256 canonical Long64 no-prefix `0F 5C /r`
+register pairs with ModR/M.mod=3. Low forms are three bytes; high XMM indices
+require exactly one `REX 41/44/45` before the opcode and are four bytes. Memory,
+other prefix combinations, REX.W/X/40, trailing bytes, VEX and EVEX remain
+unsupported. Complete instruction fetch precedes SSE/EM/OSFXSR #UD and TS #NM
+gates at CPL0–3. The operation issues no data callbacks. JIT/native/C ABI and
+generic admission remain closed.
+
+Schema and runtime admission require MXCSR.OM=1 and UM=1 because the available
+raw result cannot distinguish all exact-significand overflow cases for full
+OM=0 delivery. DAZ/reserved bits are rejected; all RC values, FTZ, IM/DM/PM and
+old sticky bits are admitted. Production snapshots both XMM inputs, classifies
+NaNs before rhs sign transformation, scans all four lanes for IE/DE, then
+computes results and aggregates OE/UE/PE. Any newly unmasked pre-event records
+IE/DE only and preserves full XMM; masked pre-events allow post computation.
+Masked overflow records OE|PE. Inexact tiny results record UE|PE, with FTZ
+flushing to signed zero. PM=0 records status before an atomic unmasked exception.
+
+The schema oracle uses separate raw-u32 integer arithmetic and rounding rather
+than host FP or the production subtract helper. Local tests cover every register
+pair and alias, all four lane routes, SNaN and QNaN, rhs NaN sign/payload
+preservation, invalid same-sign infinities, denormal inputs, overflow, FTZ tiny
+results, pre-event priority, masked IE|DE|OE|UE|PE aggregation, PM=0 whole-XMM
+preservation, old sticky flags with their corresponding masks clear, strict
+MXCSR admission, gate/fetch/CPL/no-callback behavior, result-tampering rejection,
+and JIT/native denial. The literal fixture confirms four exact lanes. The
+independent oracle covers all RCs; separately, the production runner executes a
+halfway case at each RC and checks the output bits and PE, including directed
+rounding.
+
+Focused checks passed: `cargo test -p od-isa subps_ --offline`,
+`cargo test -p od-testkit subps_ --offline`, and
+`cargo test -p od-runner --test fixture_v2
+subps_canonical_pairs_and_exception_priority_matrix --offline`. The SUBPD
+regressions also passed: its public-runtime test and literal 256-pair runner
+matrix. `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py`, and `git diff --check` passed. Graphify was
+updated. Initial and follow-up independent reviews were clean; the follow-up confirms
+all-RC production evidence and tampering rejection.
+This is local evidence, not physical x86
+acceptance. Full unmasked OE/UE semantics, memory forms, other modes and parent
+S2-37/S2-38 remain open. Sources: Intel SDM Rev. 093 Vol. 2B SUBPS pp. 4-690–4-692
+and Vol. 2A p. 2-27 ([official SDM](https://cdrdv.intel.com/v1/dl/getContent/671199));
+Vol. 1 §§4.9.1.4–.6, 11.5.3 and DAZ/FTZ ([Vol. 1](https://cdrdv.intel.com/v1/dl/getContent/671436));
+Vol. 3A Event 19/Table 7-8 ([Vol. 3A](https://cdrdv.intel.com/v1/dl/getContent/671190));
+Intel Floating-Point Reference Sheet v2.13 ([PDF](https://cdrdv.intel.com/v1/dl/getContent/786447?fileName=floating-point-reference-sheet-for-intel-architecture.pdf)).

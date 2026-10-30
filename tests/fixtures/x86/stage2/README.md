@@ -6631,6 +6631,26 @@ Sheet v2.13 pp. 1–2. See the [CPU contract](../../../../docs/specs/CPU_CONTRAC
 [plan](../../../../docs/plans/STAGE_2.md#s2-37am--canonical-long64-sqrtsd-xmm-register-pairs),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37am--sqrtsd-register-pair-interpreter-profile-2026-10-30).
 
+### S2-37ao bounded masked-range SUBPS register-pair profile
+
+`s2_37ao_subps_xmm0_xmm1.case.json` is a literal `0F 5C /r` Long64
+XMM0,XMM1 fixture with four binary32 lanes. The strict schema-v2 profile covers
+all 256 register pairs using canonical three-/four-byte encodings and requires
+MXCSR.OM=1 and MXCSR.UM=1. DAZ/reserved bits are rejected; RC, FTZ, IM/DM/PM
+and prior sticky flags are admitted. The independent oracle uses integer raw-u32
+subtraction and rounding; the oracle covers all four RC settings. Production
+runner cases execute the halfway vector at each RC and check result bits and PE.
+Local checks also cover lane routing and aliases, combined SNaN/denormal/overflow/
+tiny events, IE/DE-before-OE/UE/PE ordering, FTZ, PM=0 atomicity, old sticky
+flags with clear masks, result-tampering rejection, schema/runtime gates and
+JIT/native denial. This is not physical
+acceptance. Memory operands, other modes and full unmasked OE/UE behavior remain
+outside the slice. Sources: Intel SDM Rev. 093 Vol. 2B SUBPS pp. 4-690–4-692;
+Vol. 1 §§4.9.1.4–.6, 11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel
+Floating-Point Reference Sheet v2.13. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ao--bounded-masked-range-long64-subps-xmm-register-pairs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37ao--bounded-masked-range-long64-subps-xmm-register-pairs)
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ao--subps-register-pair-interpreter-profile-2026-10-30).
+
 ### S2-37an bounded masked-range SUBPD register-pair profile
 
 `s2_37an_subpd_xmm0_xmm1.case.json` is a literal `66 0F 5C /r` Long64

@@ -13219,6 +13219,57 @@ See the [plan](../plans/STAGE_2.md#s2-37am--canonical-long64-sqrtsd-xmm-register
 [report](../reports/STAGE_2_REPORT.md#s2-37am--sqrtsd-register-pair-interpreter-profile-2026-10-30),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37am-canonical-sqrtsd-register-pair).
 
+## S2-37ao — bounded masked-range Long64 SUBPS XMM register pairs
+
+The strict schema-v2 interpreter-only profile `s2-long-subps-registers-v1`
+admits all 256 canonical Long64 `0F 5C /r` XMM register pairs with
+ModR/M.mod=3. Low forms are three bytes; extended indices use exactly one REX
+`41`, `44` or `45` before `0F` and are four bytes. Memory, mandatory prefixes,
+reordered/repeated/redundant prefixes, REX.W/X/40, trailing bytes, VEX and EVEX
+are refused. Full fetch precedes SSE/EM/OSFXSR #UD and then TS #NM at CPL0–3;
+the profile performs no data callbacks. JIT/native/C ABI/fragment/generic
+execution remains closed.
+
+Admission requires MXCSR.OM=1 and MXCSR.UM=1 because the available raw
+rounding result does not retain the exact-significand distinction needed for
+complete OM=0 overflow semantics. DAZ and reserved MXCSR bits are rejected; RC,
+FTZ, IM/DM/PM and prior sticky bits are accepted. This is a bounded masked
+overflow/underflow profile.
+
+All four lanes use snapshots of the old destination and source XMM. NaNs are
+classified before the subtrahend sign transformation. SNaN raises IE and is
+quieted by the local raw helper; QNaN alone does not raise IE, and a NaN
+suppresses DE only in its own lane. Invalid same-sign infinity subtraction
+raises IE. Otherwise subnormal operands raise precompute DE. IE and DE aggregate
+across all four lanes before arithmetic. A newly unmasked pre-event commits
+IE/DE, suppresses all new OE/UE/PE, and preserves the whole destination XMM and
+RIP. When pre-events are masked, all lanes compute with MXCSR.RC; masked
+overflow records OE|PE, while inexact tiny results record UE|PE. FTZ can flush a
+tiny result to signed zero and adds UE|PE. New status is committed before an
+unmasked #XM (OSXMMEXCPT=1) or SIMD-generated #UD otherwise; that outcome keeps
+the full XMM unchanged. Prior sticky flags alone do not fault. Success replaces
+all 128 destination bits atomically.
+
+The schema oracle uses independent raw-u32 integer arithmetic and rounding,
+without host floating point or production helpers; its vectors cover all four RC
+settings independently of execution. Production interpreter tests run the
+halfway rounding vector at each RC and check the selected result and PE. Local
+checks include all 256 pairs and aliases, four-lane routing, SNaN/QNaN and
+infinity handling, rhs NaN sign/payload preservation, mixed IE/DE/OE/UE/PE
+priority, FTZ, masks/stickies including old sticky bits with clear masks,
+atomic PM=0 faults and result-tampering rejection. Runtime tests cover gates,
+fetch, CPL and no data callbacks; JIT/native denial is explicit. These
+results are local, not physical acceptance. Memory operands, other modes, full
+unmasked OE/UE semantics and parent S2-37/S2-38 remain open. Sources: Intel SDM
+Rev. 093 Vol. 2B SUBPS pp. 4-690–4-692 and Vol. 2A p. 2-27
+([official SDM](https://cdrdv.intel.com/v1/dl/getContent/671199)); Vol. 1
+§§4.9.1.4–.6, 11.5.3 and DAZ/FTZ ([Vol. 1](https://cdrdv.intel.com/v1/dl/getContent/671436));
+Vol. 3A Event 19/Table 7-8 ([Vol. 3A](https://cdrdv.intel.com/v1/dl/getContent/671190));
+Intel Floating-Point Reference Sheet v2.13 ([PDF](https://cdrdv.intel.com/v1/dl/getContent/786447?fileName=floating-point-reference-sheet-for-intel-architecture.pdf)).
+See the [plan](../plans/STAGE_2.md#s2-37ao--bounded-masked-range-long64-subps-xmm-register-pairs),
+[report](../reports/STAGE_2_REPORT.md#s2-37ao--subps-register-pair-interpreter-profile-2026-10-30),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ao-bounded-masked-range-subps-register-pair).
+
 ## S2-37an — bounded masked-range Long64 SUBPD XMM register pairs
 
 The strict schema-v2 interpreter-only profile `s2-long-subpd-registers-v1`

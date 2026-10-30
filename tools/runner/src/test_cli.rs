@@ -5,12 +5,13 @@ use std::process::{Command, ExitCode};
 
 use od_isa::execute::{
     Cvttpd2dqControls, Cvttps2dqControls, Cvttss2siRegistersControls, SqrtpdControls,
-    SqrtpsControls, SqrtsdControls, SqrtssControls, SubpdControls,
+    SqrtpsControls, SqrtsdControls, SqrtssControls, SubpdControls, SubpsControls,
     run_with_cvtpd2dq_register_controls, run_with_cvttpd2dq_register_controls,
     run_with_cvttps2dq_register_controls, run_with_cvttsd2si_registers_controls,
     run_with_cvttss2si_registers_controls, run_with_sqrtpd_register_controls,
     run_with_sqrtps_register_controls, run_with_sqrtsd_register_controls,
     run_with_sqrtss_register_controls, run_with_subpd_register_controls,
+    run_with_subps_register_controls,
 };
 use od_isa::{CpuState, ExecutionResult, interpret};
 use od_testkit::case::{Fixture, LoadedFixture};
@@ -531,6 +532,7 @@ fn expected_native_xorpd_oracle(
                 sqrtps_controls: None,
                 sqrtpd_controls: None,
                 subpd_controls: None,
+                subps_controls: None,
                 cvtss2sd_controls: None,
                 cvtps2pd_controls: None,
                 comiss_ucomiss_controls: None,
@@ -1737,6 +1739,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongSubpsRegistersV1 {
+        let controls = loaded
+            .fixture
+            .subps_controls
+            .expect("validated SUBPS controls");
+        run_with_subps_register_controls(
+            &mut state,
+            memory,
+            config,
+            SubpsControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongCvtps2pdRegistersV1 {
         let controls = loaded
             .fixture
@@ -2096,6 +2116,7 @@ fn execute_fixture_v2(
                 sqrtps_controls: loaded.fixture.sqrtps_controls,
                 sqrtpd_controls: loaded.fixture.sqrtpd_controls,
                 subpd_controls: loaded.fixture.subpd_controls,
+                subps_controls: loaded.fixture.subps_controls,
                 cvtss2sd_controls: loaded.fixture.cvtss2sd_controls,
                 cvtps2pd_controls: loaded.fixture.cvtps2pd_controls,
                 comiss_ucomiss_controls: loaded.fixture.comiss_ucomiss_controls,
@@ -3282,6 +3303,7 @@ mod tests {
                     sqrtps_controls: input.fixture.sqrtps_controls,
                     sqrtpd_controls: input.fixture.sqrtpd_controls,
                     subpd_controls: input.fixture.subpd_controls,
+                    subps_controls: input.fixture.subps_controls,
                     cvtss2sd_controls: input.fixture.cvtss2sd_controls,
                     cvtps2pd_controls: input.fixture.cvtps2pd_controls,
                     comiss_ucomiss_controls: input.fixture.comiss_ucomiss_controls,
