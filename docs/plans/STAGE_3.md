@@ -2684,6 +2684,14 @@ workloads не дают общего break-even, high-water не доказыв�
 реестра. S3-40 и итоговая приёмка остаются открытыми. См.
 [S3-40a report](../reports/STAGE_3_S3-40a_2026-10-30.md).
 
+#### S3-40b: branch/helper and RSS evidence addendum
+
+Added the S3-36b branch/helper warm comparison and S3-37b process-wide RSS
+snapshots to the provisional decision ledger. Neither chooses a production
+default or supports a cross-workload speedup/break-even conclusion. S3-40 and
+S3-41 remain open. See the
+[S3-40b addendum](../reports/STAGE_3_S3-40b_2026-10-30.md).
+
 ### S3-41. Оформить приёмку этапа
 
 1. Создать STAGE_3_REPORT: exact profiles/forms, native/helper/fallback границы, revision/fingerprint, машины/toolchains, correctness counts, commands/seeds, cold/warm/resource результаты.
