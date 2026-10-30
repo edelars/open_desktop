@@ -27762,3 +27762,355 @@ fn divps_register_pairs_and_four_lane_exception_order_are_interpreter_only() {
         assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
     }
 }
+
+#[test]
+fn divss_register_pairs_scalar_events_and_interpreter_only() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_37ay_divss_xmm0_xmm1.case.json");
+    let bytes = fs::read(path).unwrap();
+    let (base, base_result) = run(&bytes, "interpreter", 0);
+    let fixture = base.fixture.clone();
+    let mut tampered = base_result.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0] = "00".repeat(16);
+    }
+    assert!(tampered.validate_for(&base).is_err());
+
+    let encode = |raw: u32| {
+        raw.to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let write_low = |case: &mut Fixture, register: usize, raw: u32| {
+        case.initial_state.sse.as_mut().unwrap().xmm[register].replace_range(0..8, &encode(raw));
+    };
+    let read_low = |result: &RunResult, register: usize| {
+        let xmm = &snapshot(result).state.sse.as_ref().unwrap().xmm[register];
+        u32::from_le_bytes(
+            (0..4)
+                .map(|i| u8::from_str_radix(&xmm[i * 2..i * 2 + 2], 16).unwrap())
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        )
+    };
+    let execute = |case: Fixture| {
+        let input = serde_json::to_vec(&case).unwrap();
+        let (loaded, result) = run(&input, "interpreter", 0);
+        od_testkit::v2::compare(&loaded, &result, &result)
+            .unwrap_or_else(|error| panic!("{}: {error:?}", loaded.fixture.case_id));
+        (loaded, result)
+    };
+
+    for destination in 0u8..16 {
+        for source in 0u8..16 {
+            let mut case = fixture.clone();
+            case.case_id = format!("s2_37ay_pair_{destination}_{source}");
+            let rex = 0x40 | ((destination >> 1) & 4) | (source >> 3);
+            let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+            let mut code = vec![0xf3];
+            if destination >= 8 || source >= 8 {
+                code.push(rex);
+            }
+            code.extend([0x0f, 0x5e, modrm]);
+            let region = &mut case.memory[0];
+            region.initial_bytes_hex = code.iter().map(|byte| format!("{byte:02x}")).collect();
+            region.comparison_mask_hex = "ff".repeat(code.len());
+            region.length = code.len() as u32;
+            case.stop_rip = Some(HexU64(case.initial_state.rip.get() + code.len() as u64));
+            write_low(&mut case, destination as usize, 0x3f80_0000);
+            write_low(&mut case, source as usize, 0x3f80_0000);
+            let high96 =
+                case.initial_state.sse.as_ref().unwrap().xmm[destination as usize][8..].to_owned();
+            let (_, result) = execute(case);
+            assert_eq!(read_low(&result, destination as usize), 0x3f80_0000);
+            assert_eq!(
+                snapshot(&result).state.sse.as_ref().unwrap().xmm[destination as usize][8..],
+                high96
+            );
+        }
+    }
+
+    for (rc, expected) in [
+        (0, 0x3eaa_aaab),
+        (1, 0x3eaa_aaaa),
+        (2, 0x3eaa_aaab),
+        (3, 0x3eaa_aaaa),
+    ] {
+        let mut case = fixture.clone();
+        case.case_id = format!("s2_37ay_one_third_rc{rc}");
+        write_low(&mut case, 0, 0x3f80_0000);
+        write_low(&mut case, 1, 0x4040_0000);
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (rc << 13));
+        let (_, result) = execute(case);
+        assert_eq!(read_low(&result, 0), expected);
+        assert_eq!(
+            snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+            0x20
+        );
+    }
+
+    for (name, lhs, rhs, mxcsr, expected, flags) in [
+        ("half_minsub_rn", 0x0080_0000, 0x4b80_0000, 0x1f80, 0, 0x30),
+        ("half_minsub_ru", 0x0080_0000, 0x4b80_0000, 0x5f80, 1, 0x30),
+        (
+            "midpoint_rn",
+            0x00ff_ffff,
+            0x4000_0000,
+            0x1f80,
+            0x0080_0000,
+            0x30,
+        ),
+        (
+            "midpoint_rd",
+            0x00ff_ffff,
+            0x4000_0000,
+            0x3f80,
+            0x007f_ffff,
+            0x30,
+        ),
+        (
+            "exact_tiny",
+            0x0080_0000,
+            0x4000_0000,
+            0x1f80,
+            0x0040_0000,
+            0,
+        ),
+        ("ftz_tiny", 0x0080_0000, 0x4000_0000, 0x9f80, 0, 0x30),
+        ("tiny_huge_shift", 1, 0x7f7f_ffff, 0x5f80, 1, 0x32),
+    ] {
+        let mut case = fixture.clone();
+        case.case_id = format!("s2_37ay_{name}");
+        write_low(&mut case, 0, lhs);
+        write_low(&mut case, 1, rhs);
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        let (_, result) = execute(case);
+        assert_eq!(read_low(&result, 0), expected, "{name}");
+        assert_eq!(
+            snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+            flags,
+            "{name}"
+        );
+    }
+
+    for (name, lhs, rhs, flags, expected) in [
+        ("snan", 0x7f80_0001, 0x3f80_0000, 1, 0x7fc0_0001),
+        ("zero_zero", 0x8000_0000, 0, 1, 0xffc0_0000),
+        ("subnormal_zero", 1, 0, 4, 0x7f80_0000),
+        ("infinity_zero", 0x7f80_0000, 0, 0, 0x7f80_0000),
+        ("infinity_subnormal", 0x7f80_0000, 1, 2, 0x7f80_0000),
+    ] {
+        let mut case = fixture.clone();
+        case.case_id = format!("s2_37ay_{name}");
+        write_low(&mut case, 0, lhs);
+        write_low(&mut case, 1, rhs);
+        let (_, result) = execute(case);
+        assert_eq!(read_low(&result, 0), expected, "{name}");
+        assert_eq!(
+            snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+            flags,
+            "{name}"
+        );
+    }
+
+    let mut zm = fixture.clone();
+    zm.case_id = "s2_37ay_subnormal_zero_zm_dm".into();
+    write_low(&mut zm, 0, 1);
+    write_low(&mut zm, 1, 0);
+    zm.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 & !(1 << 8) | (1 << 9));
+    let (_, result) = execute(zm);
+    assert_eq!(
+        snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+        4
+    );
+
+    for (name, update) in [("sse", 0), ("em", 1), ("osfxsr", 2), ("ts", 3)] {
+        let mut case = fixture.clone();
+        case.case_id = format!("s2_37ay_gate_{name}");
+        case.expected_exit = ExpectedExit::Exception;
+        let controls = case.divss_controls.as_mut().unwrap();
+        match update {
+            0 => controls.sse_available = false,
+            1 => controls.cr0_em = true,
+            2 => controls.cr4_osfxsr = false,
+            _ => controls.cr0_ts = true,
+        }
+        let before = case.initial_state.sse.as_ref().unwrap().xmm[0].clone();
+        let (_, result) = execute(case);
+        let Observation::Available {
+            value: Some(exception),
+        } = &snapshot(&result).exception
+        else {
+            panic!("expected gate exception for {name}");
+        };
+        assert_eq!(exception.vector, if update == 3 { 7 } else { 6 });
+        assert_eq!(snapshot(&result).state.sse.as_ref().unwrap().xmm[0], before);
+    }
+
+    for (name, lhs, rhs, unmask_bit, status) in [
+        ("pre_ie", 0x7f80_0001, 0x3f80_0000, 7, 1),
+        ("pre_ze", 0x3f80_0000, 0, 9, 4),
+        ("pre_de", 1, 0x3f80_0000, 8, 2),
+    ] {
+        for (osxmmexcpt, vector) in [(true, 19), (false, 6)] {
+            let mut case = fixture.clone();
+            case.case_id = format!("s2_37ay_{name}_xm{osxmmexcpt}");
+            case.expected_exit = ExpectedExit::Exception;
+            write_low(&mut case, 0, lhs);
+            write_low(&mut case, 1, rhs);
+            case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 & !(1 << unmask_bit));
+            case.divss_controls.as_mut().unwrap().cr4_osxmmexcpt = osxmmexcpt;
+            let before = case.initial_state.sse.as_ref().unwrap().xmm[0].clone();
+            let rip = case.initial_state.rip;
+            let (_, result) = execute(case);
+            let observed = snapshot(&result);
+            assert_eq!(observed.state.sse.as_ref().unwrap().xmm[0], before);
+            assert_eq!(observed.state.rip, rip);
+            assert_eq!(
+                observed.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+                status
+            );
+            let Observation::Available {
+                value: Some(exception),
+            } = &observed.exception
+            else {
+                panic!("expected pre-event exception for {name}");
+            };
+            assert_eq!(exception.vector, vector);
+        }
+    }
+
+    let mut infinity_over_zero = fixture.clone();
+    infinity_over_zero.case_id = "s2_37ay_infinity_over_unmasked_zero".into();
+    write_low(&mut infinity_over_zero, 0, 0x7f80_0000);
+    write_low(&mut infinity_over_zero, 1, 0);
+    infinity_over_zero.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 & !(1 << 9));
+    let (_, result) = execute(infinity_over_zero);
+    assert_eq!(read_low(&result, 0), 0x7f80_0000);
+    assert_eq!(
+        snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+        0
+    );
+
+    for (osxmmexcpt, vector) in [(true, 19), (false, 6)] {
+        let mut post_pe = fixture.clone();
+        post_pe.case_id = format!("s2_37ay_post_pe_xm{osxmmexcpt}");
+        post_pe.expected_exit = ExpectedExit::Exception;
+        write_low(&mut post_pe, 0, 0x3f80_0000);
+        write_low(&mut post_pe, 1, 0x4040_0000);
+        post_pe.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x0f80);
+        post_pe.divss_controls.as_mut().unwrap().cr4_osxmmexcpt = osxmmexcpt;
+        let before = post_pe.initial_state.sse.as_ref().unwrap().xmm[0].clone();
+        let rip = post_pe.initial_state.rip;
+        let (_, result) = execute(post_pe);
+        let observed = snapshot(&result);
+        assert_eq!(observed.state.sse.as_ref().unwrap().xmm[0], before);
+        assert_eq!(observed.state.rip, rip);
+        assert_eq!(
+            observed.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+            0x20
+        );
+        let Observation::Available {
+            value: Some(exception),
+        } = &observed.exception
+        else {
+            panic!("expected precision exception");
+        };
+        assert_eq!(exception.vector, vector);
+    }
+
+    let mut masked_overflow = fixture.clone();
+    masked_overflow.case_id = "s2_37ay_masked_overflow".into();
+    write_low(&mut masked_overflow, 0, 0x7f7f_ffff);
+    write_low(&mut masked_overflow, 1, 0x0080_0000);
+    let (_, result) = execute(masked_overflow);
+    assert_eq!(read_low(&result, 0), 0x7f80_0000);
+    assert_eq!(
+        snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+        0x28
+    );
+
+    let mut unmasked_de_suppresses_post = fixture.clone();
+    unmasked_de_suppresses_post.case_id = "s2_37ay_unmasked_de_suppresses_post".into();
+    unmasked_de_suppresses_post.expected_exit = ExpectedExit::Exception;
+    write_low(&mut unmasked_de_suppresses_post, 0, 1);
+    write_low(&mut unmasked_de_suppresses_post, 1, 0x7f7f_ffff);
+    unmasked_de_suppresses_post
+        .initial_state
+        .sse
+        .as_mut()
+        .unwrap()
+        .mxcsr = HexU64(0x1e80);
+    let before = unmasked_de_suppresses_post
+        .initial_state
+        .sse
+        .as_ref()
+        .unwrap()
+        .xmm[0]
+        .clone();
+    let rip = unmasked_de_suppresses_post.initial_state.rip;
+    let (_, result) = execute(unmasked_de_suppresses_post);
+    let observed = snapshot(&result);
+    assert_eq!(observed.state.sse.as_ref().unwrap().xmm[0], before);
+    assert_eq!(observed.state.rip, rip);
+    assert_eq!(
+        observed.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+        0x02
+    );
+    let Observation::Available {
+        value: Some(exception),
+    } = &observed.exception
+    else {
+        panic!("expected denormal exception before post-events");
+    };
+    assert_eq!(exception.vector, 19);
+
+    let mut old_stickies = fixture.clone();
+    old_stickies.case_id = "s2_37ay_old_stickies_do_not_fault".into();
+    write_low(&mut old_stickies, 0, 0x3f80_0000);
+    write_low(&mut old_stickies, 1, 0x3f80_0000);
+    old_stickies.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1fbf);
+    let (_, result) = execute(old_stickies);
+    assert_eq!(read_low(&result, 0), 0x3f80_0000);
+    assert_eq!(
+        snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+        0x3f
+    );
+
+    for masks in 0u32..8 {
+        let mut case = fixture.clone();
+        case.case_id = format!("s2_37ay_exception_mask_combination_{masks}");
+        write_low(&mut case, 0, 1);
+        write_low(&mut case, 1, 0);
+        let mxcsr = (0x1f80 & !((1 << 7) | (1 << 8) | (1 << 9)))
+            | (u32::from(masks & 1 != 0) << 7)
+            | (u32::from(masks & 2 != 0) << 8)
+            | (u32::from(masks & 4 != 0) << 9);
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(u64::from(mxcsr));
+        if masks & 4 == 0 {
+            case.expected_exit = ExpectedExit::Exception;
+        }
+        let before = case.initial_state.sse.as_ref().unwrap().xmm[0].clone();
+        let (_, result) = execute(case);
+        let observed = snapshot(&result);
+        assert_eq!(observed.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f, 4);
+        if masks & 4 == 0 {
+            assert_eq!(observed.state.sse.as_ref().unwrap().xmm[0], before);
+        } else {
+            assert_eq!(read_low(&result, 0), 0x7f80_0000);
+        }
+    }
+
+    let mut malformed = fixture.clone();
+    malformed.memory[0].initial_bytes_hex = "f3660f5ec1".into();
+    malformed.memory[0].comparison_mask_hex = "ff".repeat(5);
+    malformed.memory[0].length = 5;
+    malformed.stop_rip = Some(HexU64(malformed.initial_state.rip.get() + 5));
+    assert!(Fixture::from_json(&serde_json::to_vec(&malformed).unwrap()).is_err());
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(&bytes, backend, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+    }
+}

@@ -5,12 +5,13 @@ use std::process::{Command, ExitCode};
 
 use od_isa::execute::{
     Cvttpd2dqControls, Cvttps2dqControls, Cvttss2siRegistersControls, DivpdControls, DivpsControls,
-    DivsdControls, MulpdControls, MulpsControls, MulsdControls, MulssControls, SqrtpdControls,
-    SqrtpsControls, SqrtsdControls, SqrtssControls, SubpdControls, SubpsControls, SubsdControls,
-    SubssControls, run_with_cvtpd2dq_register_controls, run_with_cvttpd2dq_register_controls,
-    run_with_cvttps2dq_register_controls, run_with_cvttsd2si_registers_controls,
-    run_with_cvttss2si_registers_controls, run_with_divpd_register_controls,
-    run_with_divps_register_controls, run_with_divsd_register_controls,
+    DivsdControls, DivssControls, MulpdControls, MulpsControls, MulsdControls, MulssControls,
+    SqrtpdControls, SqrtpsControls, SqrtsdControls, SqrtssControls, SubpdControls, SubpsControls,
+    SubsdControls, SubssControls, run_with_cvtpd2dq_register_controls,
+    run_with_cvttpd2dq_register_controls, run_with_cvttps2dq_register_controls,
+    run_with_cvttsd2si_registers_controls, run_with_cvttss2si_registers_controls,
+    run_with_divpd_register_controls, run_with_divps_register_controls,
+    run_with_divsd_register_controls, run_with_divss_register_controls,
     run_with_mulpd_register_controls, run_with_mulps_register_controls,
     run_with_mulsd_register_controls, run_with_mulss_register_controls,
     run_with_sqrtpd_register_controls, run_with_sqrtps_register_controls,
@@ -541,6 +542,7 @@ fn expected_native_xorpd_oracle(
                 divpd_controls: None,
                 divsd_controls: None,
                 divps_controls: None,
+                divss_controls: None,
                 mulsd_controls: None,
                 mulss_controls: None,
                 mulps_controls: None,
@@ -1807,6 +1809,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongDivssRegistersV1 {
+        let controls = loaded
+            .fixture
+            .divss_controls
+            .expect("validated DIVSS controls");
+        run_with_divss_register_controls(
+            &mut state,
+            memory,
+            config,
+            DivssControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongDivpsRegistersV1 {
         let controls = loaded
             .fixture
@@ -2296,6 +2316,7 @@ fn execute_fixture_v2(
                 divpd_controls: loaded.fixture.divpd_controls,
                 divsd_controls: loaded.fixture.divsd_controls,
                 divps_controls: loaded.fixture.divps_controls,
+                divss_controls: loaded.fixture.divss_controls,
                 mulsd_controls: loaded.fixture.mulsd_controls,
                 mulss_controls: loaded.fixture.mulss_controls,
                 mulps_controls: loaded.fixture.mulps_controls,
@@ -3492,6 +3513,7 @@ mod tests {
                     divpd_controls: input.fixture.divpd_controls,
                     divsd_controls: input.fixture.divsd_controls,
                     divps_controls: input.fixture.divps_controls,
+                    divss_controls: input.fixture.divss_controls,
                     mulsd_controls: input.fixture.mulsd_controls,
                     mulss_controls: input.fixture.mulss_controls,
                     mulps_controls: input.fixture.mulps_controls,

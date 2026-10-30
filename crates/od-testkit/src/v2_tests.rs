@@ -305,6 +305,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 divpd_controls: input.fixture.divpd_controls,
                 divsd_controls: input.fixture.divsd_controls,
                 divps_controls: input.fixture.divps_controls,
+                divss_controls: input.fixture.divss_controls,
                 mulsd_controls: input.fixture.mulsd_controls,
                 mulss_controls: input.fixture.mulss_controls,
                 mulps_controls: input.fixture.mulps_controls,
@@ -9589,4 +9590,118 @@ fn divps_independent_integer_oracle_covers_rounding_and_exception_boundaries() {
         0x1f80,
     );
     assert_eq!((ie, de, ze), (true, true, true));
+}
+
+#[test]
+fn divss_independent_scalar_oracle_covers_rounding_events_and_scalar_bounds() {
+    use super::independent_divss;
+
+    for (rc, expected) in [
+        (0, 0x3eaa_aaab),
+        (1, 0x3eaa_aaaa),
+        (2, 0x3eaa_aaab),
+        (3, 0x3eaa_aaaa),
+    ] {
+        let lane = independent_divss(0x3f80_0000, 0x4040_0000, 0x1f80 | (rc << 13));
+        assert_eq!(lane.0, expected);
+        assert_eq!(
+            (lane.1, lane.2, lane.3, lane.6),
+            (false, false, false, true)
+        );
+    }
+    for (rc, expected) in [(0, 0), (1, 0), (2, 1), (3, 0)] {
+        let lane = independent_divss(0x0080_0000, 0x4b80_0000, 0x1f80 | (rc << 13));
+        assert_eq!(lane.0, expected);
+        assert_eq!((lane.2, lane.5, lane.6), (false, true, true));
+    }
+    for (rc, expected) in [
+        (0, 0x0080_0000),
+        (1, 0x007f_ffff),
+        (2, 0x0080_0000),
+        (3, 0x007f_ffff),
+    ] {
+        let lane = independent_divss(0x00ff_ffff, 0x4000_0000, 0x1f80 | (rc << 13));
+        assert_eq!(lane.0, expected);
+        assert_eq!((lane.5, lane.6), (true, true));
+    }
+    for (rc, expected) in [
+        (0, 0x007f_ffff),
+        (1, 0x007f_ffff),
+        (2, 0x0080_0000),
+        (3, 0x007f_ffff),
+    ] {
+        let lane = independent_divss(0x0080_0000, 0x3f80_0001, 0x1f80 | (rc << 13));
+        assert_eq!(lane.0, expected);
+        assert_eq!((lane.5, lane.6), (true, true));
+    }
+    let exact_tiny = independent_divss(0x0080_0000, 0x4000_0000, 0x1f80);
+    assert_eq!(exact_tiny.0, 0x0040_0000);
+    assert_eq!(
+        (exact_tiny.2, exact_tiny.5, exact_tiny.6),
+        (false, false, false)
+    );
+    let ftz_tiny = independent_divss(0x0080_0000, 0x4000_0000, 0x9f80);
+    assert_eq!(ftz_tiny.0, 0);
+    assert_eq!((ftz_tiny.5, ftz_tiny.6), (true, true));
+    for rc in 0..4 {
+        let lane = independent_divss(0x8000_0000, 0x4040_0000, 0x1f80 | (rc << 13));
+        assert_eq!(lane.0, 0x8000_0000);
+        assert!(!lane.1 && !lane.2 && !lane.3);
+    }
+    let huge_shift = independent_divss(1, 0x7f7f_ffff, 0x1f80 | (2 << 13));
+    assert_eq!(huge_shift.0, 1);
+    assert_eq!(
+        (huge_shift.2, huge_shift.5, huge_shift.6),
+        (true, true, true)
+    );
+    let unmasked_de = independent_divss(1, 0x7f7f_ffff, 0x1e80);
+    assert_eq!(
+        (
+            unmasked_de.1,
+            unmasked_de.2,
+            unmasked_de.4,
+            unmasked_de.5,
+            unmasked_de.6
+        ),
+        (false, true, false, false, false)
+    );
+
+    let snan = independent_divss(0x7f80_0001, 0x3f80_0000, 0x1f80);
+    assert_eq!(
+        (snan.0, snan.1, snan.2, snan.3),
+        (0x7fc0_0001, true, false, false)
+    );
+    let zero_over_zero = independent_divss(0x8000_0000, 0, 0x1f80);
+    assert_eq!(
+        (
+            zero_over_zero.0,
+            zero_over_zero.1,
+            zero_over_zero.2,
+            zero_over_zero.3
+        ),
+        (0xffc0_0000, true, false, false)
+    );
+    let subnormal_over_zero = independent_divss(1, 0, 0x1f80);
+    assert_eq!(
+        (
+            subnormal_over_zero.1,
+            subnormal_over_zero.2,
+            subnormal_over_zero.3
+        ),
+        (false, false, true)
+    );
+    let infinity_over_zero = independent_divss(0x7f80_0000, 0, 0x1f80);
+    assert_eq!(
+        (
+            infinity_over_zero.0,
+            infinity_over_zero.2,
+            infinity_over_zero.3
+        ),
+        (0x7f80_0000, false, false)
+    );
+    let infinity_over_subnormal = independent_divss(0x7f80_0000, 1, 0x1f80);
+    assert_eq!(
+        (infinity_over_subnormal.2, infinity_over_subnormal.3),
+        (true, false)
+    );
 }

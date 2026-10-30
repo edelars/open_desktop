@@ -13717,3 +13717,46 @@ rows in Table 2-20. The explicit Type 3 reference on p. 3-274 applies to
 VEX-encoded forms, not legacy DIVSD. Generic SIMD gates and exceptions; Vol. 1
 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel
 Floating-Point Reference Sheet v2.13.
+
+
+## S2-37ay — canonical Long64 DIVSS XMM register pairs
+
+The local schema-v2 profile `s2-long-divss-registers-v1` admits canonical
+Long64 legacy `F3 0F 5E /r`, ModR/M.mod=3, for all 256 XMM register pairs.
+Low forms are four bytes; extended indices use one REX `41`, `44` or `45` after
+F3 for five bytes. It rejects 66/F2, memory, reordered/repeated/redundant
+prefixes, REX.W/X/40, trailing bytes, VEX and EVEX. Fetch precedes SSE/EM/
+OSFXSR #UD and then TS #NM at CPL0–3, with no data callbacks. This is an SSE
+form, not SSE2. JIT/native/C ABI/fragment/generic paths are closed.
+
+Admission requires MXCSR.OM=1 and UM=1, rejects DAZ/reserved bits, and accepts
+all RC modes, FTZ, IM/DM/ZM/PM and old sticky flags. Execution snapshots both
+XMM operands, computes only `old_destination.low32 / source.low32`, preserves
+destination.high96 and ignores source.high96. NaNs select the first original
+operand; a selected SNaN is quieted and any SNaN raises IE; NaNs suppress
+same-lane ZE/DE. `0/0` and `∞/∞` raise IE and return masked indefinite
+`ffc00000`. Finite nonzero or subnormal numerator over zero raises ZE only;
+`∞/0` does not. Otherwise any subnormal operand raises precompute DE, including
+zero/subnormal and infinity/subnormal. Unmasked IE/ZE/DE commits new status and
+preserves XMM/RIP/retirement. With pre-events masked, `Binary32::divide_raw_result`
+executes under MXCSR.RC. Masked overflow records OE|PE. Tininess is defined by
+the unbounded WPR exponent after p=24 precision rounding: tiny inexact results
+raise UE|PE, and FTZ flushes tiny nonzero results to signed zero with UE|PE.
+Post flags commit before unmasked PM delivery; XMM/RIP/retirement remain atomic.
+
+The independent schema oracle is a scalar wrapper over the testkit's independent
+raw-u32 rational lane oracle. The literal fixture uses low32 `1/3`; destination
+high96 carries SNaN/integer canaries and source high96 carries zero/infinity
+canaries. Additional literal vectors cover half-minsub, the maxsub/minnormal
+midpoint, minnormal/nextafter(1,+), exact tiny, FTZ and a large exponent gap.
+The runner verifies all pairs/aliases, high96 preservation, SNaN quieting,
+subnormal/zero with ZM=1 and DM=0 (ZE only), infinity/zero with ZM unmasked,
+all RC modes, pre/post event atomicity and #XM/#UD selection. Runtime tests
+cover CPL0–3, full-fetch priority, no data callbacks and invalid MXCSR.
+
+Sources: Intel SDM Rev. 093 Vol. 2A DIVSS pp. 3-275–3-276 and legacy SSE rows
+in Table 2-20. The p. 3-276 Type 3 note references VEX-encoded forms, not the
+legacy DIVSS entry. Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A
+Event 19/Table 7-8; Intel Floating-Point Reference Sheet v2.13. Memory forms,
+other modes, complete unmasked OE/UE, physical acceptance and parent S2-37/
+S2-38 remain open.

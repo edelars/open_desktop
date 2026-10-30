@@ -18868,3 +18868,39 @@ legacy DIVSD. Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Even
 19/Table 7-8; Intel Floating-Point Reference Sheet v2.13. This local profile
 does not claim physical acceptance, memory forms, other modes, complete
 unmasked OE/UE behavior or closure of parent S2-37/S2-38.
+
+
+## S2-37ay — DIVSS register-pair interpreter profile (2026-10-30)
+
+Implemented strict schema-v2 `s2-long-divss-registers-v1` for canonical
+Long64 legacy `F3 0F 5E /r`, ModR/M.mod=3, across all 256 XMM pairs. The
+scalar Binary32 path uses SSE gates, full fetch, snapshots, low32-only division,
+high96 preservation and no data callbacks. It checks IE/ZE/DE before arithmetic,
+uses `Binary32::divide_raw_result` with RC/WPR/FTZ for masked execution, and
+commits flags before unmasked PE delivery. OM=UM=1 is required; DAZ/reserved
+MXCSR bits are rejected. JIT/native/C ABI/fragment/generic execution remains
+closed. The independent schema oracle wraps the independent raw-u32 rational
+lane helper, not host FP or production arithmetic.
+
+Focused validation passed: `cargo test -p od-testkit divss_ --offline`
+(1 oracle test); `cargo test -p od-isa divss_register_decodes --offline`
+(1 decoder test); `cargo test -p od-isa divss_runtime_gates --offline`
+(1 runtime CPL0–3/fetch/gate test); and the `divss_register_pairs_scalar_events_and_interpreter_only`
+runner test (256 pairs, RC/WPR/FTZ, special values, masks, pre/post faults,
+malformed/tampered inputs, and backend denial). The focused matrix
+also checks masked overflow (OE|PE), unmasked DE suppressing later UE/PE while
+preserving XMM/RIP, and the oracle's matching pre-event suppression. The
+existing DIVSD pair-alias runtime test passed after restoring its binary64 FTZ
+mask; a focused DIVSD FTZ test confirms negative-zero sign and UE|PE behavior.
+DIVPD, DIVPS, MUL, and SUB runner regressions and the full od-testkit suite also
+passed. `cargo fmt --all -- --check`, `cargo check --workspace --all-targets
+--offline`, `python3 tools/check_layout.py`, and `git diff --check` passed.
+
+Intel SDM Rev. 093 Vol. 2A DIVSS pp. 3-275–3-276 and legacy SSE rows in Table
+2-20 are the source basis. The Type 3 note on p. 3-276 describes VEX forms and
+is not claimed for legacy DIVSS. Local checks do not establish physical
+acceptance, memory forms, other modes, complete unmasked OE/UE behavior, or
+closure of parent S2-37/S2-38. See the [CPU contract]
+(../specs/CPU_CONTRACT.md#s2-37ay--canonical-long64-divss-xmm-register-pairs),
+[plan](../plans/STAGE_2.md#s2-37ay--canonical-long64-divss-xmm-register-pairs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ay-bounded-masked-range-divss-register-pair-profile).

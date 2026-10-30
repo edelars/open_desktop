@@ -115,3 +115,13 @@ and interpreter coverage are recorded in the [CPU contract](docs/specs/CPU_CONTR
 and [Stage 2 report](docs/reports/STAGE_2_REPORT.md#s2-37ax--divsd-register-pair-interpreter-profile).
 Memory forms, JIT/native execution and physical acceptance remain outside this
 profile.
+
+
+The local-only S2-37ay `DIVSS` profile admits canonical Long64 register-pair
+forms, divides only low32, preserves destination.high96 and ignores source.high96.
+Its independent rational oracle and 256-pair interpreter matrix cover MXCSR RC,
+WPR/FTZ rounding and SIMD exception ordering. The profile is SSE, interpreter-only,
+and does not claim memory forms or physical acceptance. See the [CPU contract]
+(docs/specs/CPU_CONTRACT.md#s2-37ay--canonical-long64-divss-xmm-register-pairs),
+[Stage 2 plan](docs/plans/STAGE_2.md#s2-37ay--canonical-long64-divss-xmm-register-pairs)
+and [report](docs/reports/STAGE_2_REPORT.md#s2-37ay--divss-register-pair-interpreter-profile).

@@ -6849,3 +6849,23 @@ pre/post exception atomicity. Sources and scope limits are recorded in the
 [plan](../../../../docs/plans/STAGE_2.md#s2-37ax--canonical-long64-divsd-xmm-register-pairs),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ax--bounded-masked-range-long64-divsd-xmm-register-pairs),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ax--divsd-register-pair-interpreter-profile).
+
+
+### S2-37ay bounded masked-range DIVSS register-pair profile
+
+`s2_37ay_divss_xmm0_xmm1.case.json` is a literal canonical `F3 0F 5E /r`
+Long64 scalar binary32 divide. Its low lanes exercise 1/3, while destination
+high96 contains signaling-NaN/integer canaries and source high96 contains
+zero/infinity canaries; those upper lanes do not participate. The strict
+schema-v2 profile admits all 256 XMM register pairs, requires OM/UM=1 and
+rejects DAZ/reserved MXCSR bits. It tests RC/FTZ rounding, WPR tininess, NaN
+quieting, IE/ZE/DE priorities, pre/post atomicity, gates/fetch/CPL, invalid
+encodings, result tampering and JIT/native denial. Subnormal/zero with ZM=1 and
+DM=0 raises ZE only; infinity/zero remains nonfaulting with ZM unmasked.
+
+DIVSS is SSE. The Type 3 note on Intel SDM Rev. 093 Vol. 2A p. 3-276 refers to
+VEX forms, not legacy DIVSS; the profile cites legacy SSE rows in Table 2-20.
+Memory forms and physical acceptance are not claimed. See the [plan]
+(../../../../docs/plans/STAGE_2.md#s2-37ay--canonical-long64-divss-xmm-register-pairs),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ay--canonical-long64-divss-xmm-register-pairs),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ay--divss-register-pair-interpreter-profile).
