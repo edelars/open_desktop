@@ -2504,8 +2504,9 @@ dispatcher samples, and validates each reset execution outside the timed
 calls. Three release runs measured 12.129–12.343 µs per warm FIFO sweep and
 2.019–2.053 µs per interpreter sweep on this slice. The interpreter was about
 6.0× faster for this workload; no general performance conclusion is supported.
-It covers register-only cases and does not complete S3-36's branch/helper/memory
-workload matrix. See the [S3-36a report](../reports/STAGE_3_S3-36a_2026-10-30.md).
+It covers register-only cases. The narrow accepted-fixture branch/helper
+profile is recorded separately in S3-36b; memory workloads and the full S3-36
+matrix remain open. See the [S3-36a report](../reports/STAGE_3_S3-36a_2026-10-30.md).
 
 #### S3-36b: bounded S3-14 branch/helper warm profile
 
@@ -2518,10 +2519,12 @@ retained FIFO runtime, and admits only hit-only timed FIFO samples. Calibrated
 interpreter/dispatcher samples alternate, with raw durations, counters,
 timer-scope metadata, and input hashes in the report. The earlier
 `warm-first-run` remains bound to the full S3-17 register-only corpus and keeps
-its existing behavior. The S3-36b profile has not been timed yet; see the
-[S3-36b report](../reports/STAGE_3_S3-36b_2026-10-30.md). This is branch/helper
-evidence only and does not cover memory workloads or close the full S3-36
-matrix.
+its existing behavior. Three release runs on the five-case profile measured
+FIFO at 3.736–3.959 µs/sweep and interpreter at 0.726–0.751 µs/sweep;
+interpreter was about 5.3× faster on these fixtures. This is narrow
+branch/helper evidence only and does not cover memory workloads or close the
+full S3-36 matrix. See the
+[S3-36b report](../reports/STAGE_3_S3-36b_2026-10-30.md).
 
 1. Прогреть cache вне timed samples и подтвердить hit/compile counters. Повторять одинаковую гостевую работу с корректным reset initial state.
 2. Измерять полный steady-state runtime path с lookup/dispatcher/helpers/flags и exits, а не только одну ARM64 arithmetic instruction.

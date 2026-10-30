@@ -749,6 +749,15 @@ about 6.0× faster on this register-only slice; S3-36 remains partial. Details
 and raw results are in the
 [S3-36a report](../reports/STAGE_3_S3-36a_2026-10-30.md).
 
+### S3-36b bounded S3-14 branch/helper warm profile
+
+`od-bench warm-branch-helper` measures four accepted conditional-branch
+boundary fixtures and one live-through-helper fixture using a frozen case list
+and trace. Three release runs measured the warm dispatcher at 3.736–3.959 µs
+and interpreter at 0.726–0.751 µs per five-case sweep. The interpreter was
+about 5.3× faster on these fixtures; memory workloads and the full S3-36
+matrix remain open. See the [S3-36b report](../reports/STAGE_3_S3-36b_2026-10-30.md).
+
 ### S3-37a bounded FIFO16 corpus churn path
 
 `od-bench cache-churn` runs 128 full sweeps of the frozen S3-17 corpus on one

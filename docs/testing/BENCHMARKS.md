@@ -293,8 +293,9 @@ Three release runs measured the warm FIFO dispatcher at 12.129–12.343 µs per
 6.0× faster on this slice; this does not support a result for other workloads.
 The raw JSON, hashes, counter checks, restart data and timing boundaries are in
 the [S3-36a report](../reports/STAGE_3_S3-36a_2026-10-30.md). This path covers
-only a bounded register-only resident slice and does not complete the
-branch/helper/memory or resource portions of S3-36.
+only a bounded register-only resident slice; S3-36b records separate narrow
+branch/helper evidence. Memory and the full workload/resource matrix remain
+open.
 
 ### S3-36b: bounded branch/helper warm profile
 
@@ -307,11 +308,12 @@ prewarms one retained FIFO runtime, and rejects timed dispatcher samples unless
 they contain hits with zero miss/compile/publication/eviction deltas. Calibrated
 interpreter and dispatcher samples alternate over the same reset inputs. Raw
 sample durations, paired ratios, counters, input hashes and timer boundaries
-are recorded. The fixed list and captured trace provenance, command and
-current no-measurement status are in the
-[S3-36b report](../reports/STAGE_3_S3-36b_2026-10-30.md). This is bounded
-branch/helper evidence; it does not cover memory, fallback or invalidation
-workloads and does not complete S3-36.
+are recorded. Three release runs measured FIFO at 3.736–3.959 µs/sweep and
+interpreter at 0.726–0.751 µs/sweep; the interpreter was about 5.3× faster on
+these fixtures. The fixed list, trace, raw results, hashes and timer scope are
+in the [S3-36b report](../reports/STAGE_3_S3-36b_2026-10-30.md). This is
+bounded branch/helper evidence; it does not cover memory, fallback or
+invalidation workloads and does not complete S3-36.
 
 ### S3-37a: bounded production FIFO16 corpus churn observation
 
