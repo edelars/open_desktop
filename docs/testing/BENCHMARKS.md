@@ -158,7 +158,7 @@ compiler/revision/source fingerprint/profile и отдельный runtime
 cwd/repository-revision/dirty context. Measure report сохраняет SHA-256 точных
 trace JSON bytes и соответствующую build/runtime metadata самого измерения.
 
-### S3-18d1: native end-to-end dispatch/cache comparison (implementation only)
+### S3-18d1: bounded native dispatch/cache measurements
 
 `od-bench dispatch-cache` is opt-in and requires Apple Silicon macOS. It accepts
 only the frozen S3-17 case list and dispatcher trace (checked by exact SHA-256),
@@ -192,7 +192,8 @@ The exact frozen inputs are `work/tmp/stage3/s3-17/cases.txt` and
 `work/tmp/stage3/s3-17/dispatch-trace.json`; their accepted SHA-256 values are
 `b9276b52556b3692552de074e83cd8aef0c777f29861bd19ab09c188e41615d3` and
 `bf8d5efe0c52a47cbb4682f67ea73a82e684d463733aff3be60fed0b280bd5b3`.
-After independent review, collect three separate release process runs:
+Collect three separate release process runs after the benchmark path has been
+reviewed:
 
 ```sh
 for run in 1 2 3; do
@@ -204,9 +205,13 @@ for run in 1 2 3; do
 done
 ```
 
-This protocol is implemented but has not been run; no speed or policy conclusion
-is available. Full-corpus performance collection is a separate subtask and
-S3-18 remains open.
+Three sequential release process runs were collected on 2026-10-30. Raw reports,
+host/revision/input hashes, cold-sweep medians and limits are recorded in the
+[S3-18d1 report](../reports/STAGE_3_S3-18d1_2026-10-30.md). This is bounded
+dispatch/cache evidence only; it does not measure interpreter or legacy-fragment
+timing, arena/cache construction/destruction, or a single cold compile+first
+execution. No product speed or cache-policy conclusion is made. Full Stage 3
+performance acceptance and S3-18 remain open.
 
 Recorded trace дополняется ограниченными synthetic-сценариями:
 1/8/64/512/4096 keys и observed unique count, hot loops на 1/8 keys, reverse
