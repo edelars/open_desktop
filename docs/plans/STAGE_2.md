@@ -6502,23 +6502,142 @@ precise fault ordering, and the remaining MXCSR/SSE exception surface are not
 implemented or claimed. Final physical checks stay in the combined Mac mini
 substage.
 
-#### S2-37 coverage and dependency inventory after S2-37l
+#### S2-37 required legacy SSE/SSE2 arithmetic, comparison and conversion inventory
 
-Completed local slices are RSQRTSS/RCPSS/RSQRTPS/RCPPS (S2-37a–d) and masked
-MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD (S2-37e–l), with only the
-bounded masked IE/DE subset from S2-38a. These slices do not enable CPUID
-SSE/SSE2, native execution, JIT, memory operands, unmasked exception delivery,
-or full guest fault priority.
+**Profile decision (2026-10-29):** the selected synthetic CPU target is Generic
+`amd64` / x86-64-v1 and advertises SSE and SSE2. Therefore every legacy SSE/SSE2
+form below is target-required in Long64, whether or not the examined Linux boot
+path reaches it. This is a normative target inventory, not an implementation
+claim or a complete inventory of every SSE/SSE2 instruction family. For every
+row, Linux static mapping is `not_run` and runtime observation is `not_run`;
+neither kernel reachability nor physical acceptance is inferred from the target
+contract. Source basis is Intel SDM Rev. 093, September 2026, Vol. 2A
+253666-093US, instructions ADDPD through DIVSS (pp. 3-16–3-275), and Vol. 2B
+253667-093US, MAXPD through UCOMISS (pp. 4-5–4-735). The Vol. 2A source is
+[official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199); the
+Vol. 2B source is [official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241).
 
-Remaining S2-37 work is the profile-selected inventory of exact scalar and
-packed arithmetic and comparisons (including ADD/SUB/MUL/DIV/SQRT families and
-other selected SSE/SSE2 arithmetic forms), followed by required conversions.
-Each form needs decoder/profile boundaries, operand and lane semantics, MXCSR
-rounding and status behavior, refusal/fault behavior, and an independent oracle
-before admission. The exact required set and order must come from the adopted
-guest profile; this inventory deliberately selects no next opcode. Full S2-38
-exception delivery and fault ordering, S2-39 state save/restore, and final
-physical acceptance remain separate dependencies.
+`/r` marks the ModR/M register-or-memory operand; the register class and memory
+width are defined by each row. `NP` means no mandatory prefix. Unless noted,
+destinations are XMM; scalar arithmetic/conversion forms preserve the other
+destination lanes as specified by the instruction. The opcode and feature
+columns below are legacy encodings only; VEX/EVEX forms are outside this
+inventory.
+
+| Form | Legacy opcode | Feature | Source / result width | Vol. 2 start page | Existing S2-37 slice |
+|---|---|---|---|---:|---|
+| ADDPD | `66 0F 58 /r` | SSE2 | XMM, m128; 2×f64 | 3-16 | missing |
+| ADDPS | `NP 0F 58 /r` | SSE | XMM, m128; 4×f32 | 3-19 | missing |
+| ADDSD | `F2 0F 58 /r` | SSE2 | XMM, m64; low f64 | 3-22 | missing |
+| ADDSS | `F3 0F 58 /r` | SSE | XMM, m32; low f32 | 3-24 | missing |
+| CMPPD | `66 0F C2 /r ib` | SSE2 | XMM, m128; 2×64-bit masks | 3-168 | missing |
+| CMPPS | `NP 0F C2 /r ib` | SSE | XMM, m128; 4×32-bit masks | 3-175 | missing |
+| CMPSD | `F2 0F C2 /r ib` | SSE2 | XMM, m64; low 64-bit mask | 3-185 | missing |
+| CMPSS | `F3 0F C2 /r ib` | SSE | XMM, m32; low 32-bit mask | 3-189 | missing |
+| COMISD | `66 0F 2F /r` | SSE2 | XMM, m64; EFLAGS | 3-199 | missing |
+| COMISS | `NP 0F 2F /r` | SSE | XMM, m32; EFLAGS | 3-201 | missing |
+| CVTDQ2PD | `F3 0F E6 /r` | SSE2 | m64 / low 2×i32 → 2×f64 | 3-208 | missing |
+| CVTDQ2PS | `NP 0F 5B /r` | SSE2 | XMM, m128; 4×i32 → 4×f32 | 3-211 | missing |
+| CVTPD2DQ | `F2 0F E6 /r` | SSE2 | XMM, m128; 2×f64 → low 2×i32 | 3-214 | missing |
+| CVTPD2PI | `66 0F 2D /r` | SSE2 | XMM, m128 → mm; 2×f64 → 2×i32 | 3-218 | missing |
+| CVTPD2PS | `66 0F 5A /r` | SSE2 | XMM, m128; 2×f64 → low 2×f32 | 3-219 | missing |
+| CVTPI2PD | `66 0F 2A /r` | SSE2 | mm/m64 → XMM; 2×i32 → 2×f64 | 3-223 | missing |
+| CVTPI2PS | `NP 0F 2A /r` | SSE | mm/m64 → XMM; 2×i32 → low 2×f32 | 3-224 | missing |
+| CVTPS2DQ | `66 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-225 | missing |
+| CVTPS2PD | `NP 0F 5A /r` | SSE2 | m64; low 2×f32 → 2×f64 | 3-228 | missing |
+| CVTPS2PI | `NP 0F 2D /r` | SSE | XMM, m64 → mm; 2×f32 → 2×i32 | 3-231 | missing |
+| CVTSD2SI | `F2 0F 2D /r`; `F2 REX.W 0F 2D /r` | SSE2 | m64 → r32 / r64 | 3-232 | missing |
+| CVTSD2SS | `F2 0F 5A /r` | SSE2 | XMM, m64; f64 → low f32 | 3-234 | missing |
+| CVTSI2SD | `F2 0F 2A /r`; `F2 REX.W 0F 2A /r` | SSE2 | r32/m32 or r64/m64 → low f64 | 3-236 | missing |
+| CVTSI2SS | `F3 0F 2A /r`; `F3 REX.W 0F 2A /r` | SSE | r32/m32 or r64/m64 → low f32 | 3-238 | missing |
+| CVTSS2SD | `F3 0F 5A /r` | SSE2 | XMM, m32; f32 → low f64 | 3-240 | missing |
+| CVTSS2SI | `F3 0F 2D /r`; `F3 REX.W 0F 2D /r` | SSE | m32 → r32 / r64 | 3-242 | missing |
+| CVTTPD2DQ | `66 0F E6 /r` | SSE2 | XMM, m128; 2×f64 → low 2×i32 | 3-244 | missing |
+| CVTTPD2PI | `66 0F 2C /r` | SSE2 | XMM, m128 → mm; 2×f64 → 2×i32 | 3-248 | missing |
+| CVTTPS2DQ | `F3 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-249 | missing |
+| CVTTPS2PI | `NP 0F 2C /r` | SSE | XMM, m64 → mm; 2×f32 → 2×i32 | 3-252 | missing |
+| CVTTSD2SI | `F2 0F 2C /r`; `F2 REX.W 0F 2C /r` | SSE2 | m64 → r32 / r64 | 3-253 | missing |
+| CVTTSS2SI | `F3 0F 2C /r`; `F3 REX.W 0F 2C /r` | SSE | m32 → r32 / r64 | 3-255 | missing |
+| DIVPD | `66 0F 5E /r` | SSE2 | XMM, m128; 2×f64 | 3-267 | missing |
+| DIVPS | `NP 0F 5E /r` | SSE | XMM, m128; 4×f32 | 3-270 | missing |
+| DIVSD | `F2 0F 5E /r` | SSE2 | XMM, m64; low f64 | 3-273 | missing |
+| DIVSS | `F3 0F 5E /r` | SSE | XMM, m32; low f32 | 3-275 | missing |
+| MAXPD | `66 0F 5F /r` | SSE2 | XMM, m128; 2×f64 | 4-5 | S2-37l, bounded |
+| MAXPS | `NP 0F 5F /r` | SSE | XMM, m128; 4×f32 | 4-8 | S2-37h, bounded |
+| MAXSD | `F2 0F 5F /r` | SSE2 | XMM, m64; low f64 | 4-11 | S2-37j, bounded |
+| MAXSS | `F3 0F 5F /r` | SSE | XMM, m32; low f32 | 4-13 | S2-37f, bounded |
+| MINPD | `66 0F 5D /r` | SSE2 | XMM, m128; 2×f64 | 4-16 | S2-37k, bounded |
+| MINPS | `NP 0F 5D /r` | SSE | XMM, m128; 4×f32 | 4-19 | S2-37g, bounded |
+| MINSD | `F2 0F 5D /r` | SSE2 | XMM, m64; low f64 | 4-22 | S2-37i, bounded |
+| MINSS | `F3 0F 5D /r` | SSE | XMM, m32; low f32 | 4-24 | S2-37e, bounded |
+| MULPD | `66 0F 59 /r` | SSE2 | XMM, m128; 2×f64 | 4-142 | missing |
+| MULPS | `NP 0F 59 /r` | SSE | XMM, m128; 4×f32 | 4-145 | missing |
+| MULSD | `F2 0F 59 /r` | SSE2 | XMM, m64; low f64 | 4-148 | missing |
+| MULSS | `F3 0F 59 /r` | SSE | XMM, m32; low f32 | 4-150 | missing |
+| RCPPS | `NP 0F 53 /r` | SSE | XMM, m128; 4×f32 | 4-538 | S2-37d, bounded |
+| RCPSS | `F3 0F 53 /r` | SSE | XMM, m32; low f32 | 4-540 | S2-37b, bounded |
+| RSQRTPS | `NP 0F 52 /r` | SSE | XMM, m128; 4×f32 | 4-594 | S2-37c, bounded |
+| RSQRTSS | `F3 0F 52 /r` | SSE | XMM, m32; low f32 | 4-596 | S2-37a, bounded |
+| SQRTPD | `66 0F 51 /r` | SSE2 | XMM, m128; 2×f64 | 4-661 | missing |
+| SQRTPS | `NP 0F 51 /r` | SSE | XMM, m128; 4×f32 | 4-664 | missing |
+| SQRTSD | `F2 0F 51 /r` | SSE2 | XMM, m64; low f64 | 4-667 | missing |
+| SQRTSS | `F3 0F 51 /r` | SSE | XMM, m32; low f32 | 4-669 | missing |
+| SUBPD | `66 0F 5C /r` | SSE2 | XMM, m128; 2×f64 | 4-687 | missing |
+| SUBPS | `NP 0F 5C /r` | SSE | XMM, m128; 4×f32 | 4-690 | missing |
+| SUBSD | `F2 0F 5C /r` | SSE2 | XMM, m64; low f64 | 4-693 | missing |
+| SUBSS | `F3 0F 5C /r` | SSE | XMM, m32; low f32 | 4-695 | missing |
+| UCOMISD | `66 0F 2E /r` | SSE2 | XMM, m64; EFLAGS | 4-733 | missing |
+| UCOMISS | `NP 0F 2E /r` | SSE | XMM, m32; EFLAGS | 4-735 | missing |
+
+This is 62 instruction mnemonics (36 A–L, 26 M–Z); the integer conversion
+forms with `REX.W` are separately required r64 subforms. `REX.W` does not
+widen the packed 2×i32 MMX conversions. In Long64, `REX.R` extends an XMM
+destination in ModR/M.reg to XMM8–15; `REX.B` extends an XMM source in
+ModR/M.r/m to XMM8–15. MMX register indices remain MM0–7. `CVTDQ2PD` is exact
+i32→f64 and its Rev. 093 entry has no SIMD floating-point exception subsection;
+do not copy Precision from `CVTDQ2PS`. `CVTPS2PD`/`CVTSS2SD` finite widening is
+exact but still has source-class exception handling. `CVTT*` truncates toward
+zero independently of MXCSR RC. `CVTPD2DQ`, `CVTTPD2DQ`, and `CVTPD2PS` zero
+the upper 64 bits of their XMM destination; scalar arithmetic/conversions
+preserve upper lanes.
+
+The six `*PI*` conversions with an MMX endpoint belong to this target
+inventory; they are not pure-XMM operations. The MMX-destination `CVTPD2PI`,
+`CVTPS2PI`, `CVTTPD2PI`, and `CVTTPS2PI` forms transition shared x87/MMX state
+(TOP=0, all x87 tags valid) and handle a pending x87 exception first.
+`CVTPI2PS` also has that transition. For `CVTPI2PD`, only the `xmm,mm`
+register-source form transitions and observes pending x87 exceptions; its
+`xmm,m64` memory-source form does neither. `CVTPI2PD` is exact and has no SIMD
+FP exceptions; `CVTPI2PS` uses MXCSR.RC and may raise Precision. FP-to-MMX
+conversions use MXCSR.RC except `CVTT*`, which truncates toward zero; they may
+raise Invalid/Precision, and masked invalid produces `0x80000000` in the
+affected dword. Full x87/MMX transition and pending-exception behavior remains
+unimplemented/unclaimed pending S2-33/38 integration.
+
+For arithmetic ADD/SUB/MUL/DIV/SQRT, MXCSR rounding and the per-entry listed
+invalid/denormal/overflow/underflow/precision conditions apply; DIV also has
+divide-by-zero. Compare instructions do not round: `CMP*` signals invalid for
+SNaN on every predicate and for QNaN on signaling predicates LT, LE, NLT and
+NLE (predicate imm8[2:0] 1, 2, 5, 6); imm8[7:3] are reserved. `COMIS*` signals
+invalid for QNaN or SNaN. `UCOMIS*` signals invalid for SNaN only. Completed
+COMIS/UCOMIS comparisons write ZF/PF/CF as unordered `111`, greater `000`, less
+`001`, equal `100`, and clear OF/SF/AF; an unmasked SIMD exception suppresses
+the EFLAGS update. `RCP*`/`RSQRT*` ignore MXCSR RC, have relative error bounded
+by 1.5×2^-12, and report no SIMD floating-point exceptions; source-class and
+tiny-result details remain per instruction entry.
+
+For all rows, target-required=`yes`, Linux static mapping=`not_run`, runtime
+observed=`not_run`. The existing S2-37a–l code is only bounded Long64
+register-only coverage: no memory forms, full CPUID/control gates, arbitrary
+MXCSR, unmasked/fault ordering, JIT/native admission or physical acceptance.
+This table deliberately selects no next opcode. First map the Linux image and
+decide the supported-mode/profile inventory; then implement the next uncovered
+required group with its exact feature gates, exception/memory behavior and
+independent oracle. Legacy exception references in SUB and UCOMIS shared SDM
+entries that are explicitly labelled for VEX encodings are not evidence for
+legacy fault classes. MINSS Rev. 093 explicitly cites Type 2/Table 2-19 despite
+its scalar width. Physical acceptance remains in the combined final Mac mini
+substage.
 
 ### S2-38. MXCSR и FP fault ordering
 
