@@ -19,10 +19,11 @@ from pathlib import Path
 import stage1_oracle
 
 ROOT = Path(__file__).resolve().parents[2]
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 GENERATED_COUNT = 1000
 GENERATED_SEED = "0x5eedcafe"
 REPEATS = 2
+RUN_ID_PATTERN = re.compile(r"stage3-\d{8}-\d{6}-[0-9a-f]{10}")
 
 MEMORY_REQUIRED_TESTS = {
     "fixed_seed_memory_corpus_matches_interpreter_twice_per_input",
@@ -52,6 +53,13 @@ SELF_TEST_NAMES = (
     "test_self_test_output_validator_rejects_zero_match_and_all_skipped",
     "test_stage1_child_fingerprint_and_both_builds_are_pinned",
     "test_manual_frozen_input_and_result_bind_to_parent_manifest",
+    "test_rust_test_manifest_rejects_a_missing_mandatory_gate",
+    "test_rust_gate_summary_rejects_an_omitted_mandatory_gate",
+    "test_rust_gate_summary_rejects_forged_passed_evidence",
+    "test_rust_gate_rejects_zero_match_ignored_and_failed_runs",
+    "test_final_summary_rejects_missing_invalid_and_traversal_run_id",
+    "test_final_summary_rejects_run_directory_and_logs_symlinks",
+    "test_final_summary_rejects_step_log_symlink_and_external_log_path",
 )
 SELF_TEST_IDENTITIES = {
     f"__main__.Stage3HarnessValidationTests.{name}" for name in SELF_TEST_NAMES
@@ -69,8 +77,76 @@ LIFECYCLE_TESTS = (
     "ir_two_load_pair_preserves_callbacks_faults_and_continuation",
 )
 
-LOCAL_STEPS = ("harness_self_tests", "stage1_dispatch", "memory_corpus", *LIFECYCLE_TESTS)
+ADDITIONAL_TEST_GATES = (
+    (
+        "s3_29e_coordinator", "local_acceptance", "od-host",
+        "tests::s3_29e_bounded_arithmetic_load_coordinator",
+    ),
+    (
+        "demand_flags_replacement_spills", "local_acceptance", "od-host",
+        "tests::demand_flags_candidate_defers_replaced_writers_and_survives_clobbers_and_spills",
+    ),
+    (
+        "demand_flags_branch_materialization", "local_acceptance", "od-host",
+        "tests::demand_flags_candidate_materializes_before_jz_and_jnz_after_preserving_mov",
+    ),
+    (
+        "demand_flags_exit_materialization", "local_acceptance", "od-host",
+        "tests::demand_flags_candidate_materializes_on_stop_unsupported_and_helper_failure_exits",
+    ),
+    (
+        "s3_28_event_before_entry", "local_acceptance", "od-jit",
+        "dispatch::tests::event_pending_before_entry_preserves_state_budget_cache_and_nop_fallback",
+    ),
+    (
+        "s3_28_stop_priority_after_publication", "local_acceptance", "od-jit",
+        "dispatch::tests::cached_publication_boundary_rechecks_stop_priority_before_event",
+    ),
+    (
+        "abi_create_execute_stop_destroy", "local_acceptance", "od-host",
+        "tests::c_abi_create_execute_stop_destroy_lifecycle",
+    ),
+    (
+        "abi_stop_before_execute", "local_acceptance", "od-host",
+        "tests::c_abi_stop_requested_before_execute_is_honored_once",
+    ),
+    (
+        "abi_dispatch_interpreter_loop_reuse", "local_acceptance", "od-host",
+        "tests::c_abi_register_dispatch_matches_interpreter_and_reuses_loop_block",
+    ),
+    (
+        "abi_stop_at_code_end", "local_acceptance", "od-host",
+        "tests::c_abi_pre_stop_at_code_end_honors_v0_stop_contract_once",
+    ),
+    (
+        "abi_interleaved_handles", "local_acceptance", "od-host",
+        "tests::c_abi_repeated_and_interleaved_handles_keep_state_independent",
+    ),
+    (
+        "abi_busy_invalid_state_output_preservation", "local_acceptance", "od-host",
+        "tests::c_abi_reports_live_process_mapping_as_busy",
+    ),
+)
+RUST_TEST_GATES = (
+    *(
+        (name, "local_lifecycle", "od-host", f"tests::{name}")
+        for name in LIFECYCLE_TESTS
+    ),
+    *ADDITIONAL_TEST_GATES,
+)
+LOCAL_STEPS = (
+    "harness_self_tests",
+    "stage1_dispatch",
+    "memory_corpus",
+    *(step for step, _, _, _ in RUST_TEST_GATES),
+)
 UNSELECTED_SUITES = ("physical_x86", "mac_mini", "performance", "owner_backed", "stage2")
+LOCAL_RUST_TEST_SOURCES = (
+    "crates/od-host/src/lib.rs",
+    "crates/od-jit/src/dispatch.rs",
+    "tests/cpu/stage3_harness.py",
+    "tests/cpu/test_stage3_harness.py",
+)
 
 
 class HarnessError(RuntimeError):
@@ -152,6 +228,125 @@ def validate_required_steps(
         raise HarnessError("required local steps incomplete: " + ", ".join(missing))
 
 
+def rust_test_argv(package: str, identity: str) -> list[str]:
+    return [
+        "cargo", "test", "--offline", "-p", package, "--lib", identity,
+        "--", "--exact", "--test-threads=1",
+    ]
+
+
+def rust_test_gate_manifest() -> list[dict[str, str]]:
+    return [
+        {
+            "step": step,
+            "suite": suite,
+            "package": package,
+            "identity": identity,
+        }
+        for step, suite, package, identity in RUST_TEST_GATES
+    ]
+
+
+def validate_run_id(value: object) -> Path:
+    if not isinstance(value, str) or RUN_ID_PATTERN.fullmatch(value) is None:
+        raise HarnessError("Stage 3 run id is missing or invalid")
+    harness_root = (ROOT / "work" / "stage3-harness").resolve()
+    if ROOT not in harness_root.parents:
+        raise HarnessError("Stage 3 harness root escaped repository root")
+    requested_run_root = harness_root / value
+    run_root = requested_run_root.resolve()
+    if (
+        run_root != requested_run_root
+        or run_root.name != value
+        or run_root.parent != harness_root
+        or ROOT not in run_root.parents
+    ):
+        raise HarnessError("Stage 3 run directory escaped the harness root")
+    requested_logs_root = run_root / "logs"
+    logs_root = requested_logs_root.resolve()
+    if (
+        logs_root != requested_logs_root
+        or logs_root.parent != run_root
+        or ROOT not in logs_root.parents
+    ):
+        raise HarnessError("Stage 3 run logs escaped the harness run directory")
+    return run_root
+
+
+def validate_required_rust_test_evidence(
+    steps: dict[str, dict], run_root: Path | None = None
+) -> None:
+    for step_name, suite, package, identity in RUST_TEST_GATES:
+        step = steps.get(step_name)
+        if not isinstance(step, dict) or step.get("status") != "passed":
+            raise HarnessError(f"required Rust test gate is missing or not passed: {step_name}")
+        if (
+            step.get("name") != step_name
+            or step.get("gate_suite") != suite
+            or step.get("package") != package
+            or step.get("test_identity") != identity
+            or step.get("argv") != rust_test_argv(package, identity)
+            or step.get("returncode") != 0
+            or step.get("failure") is not None
+        ):
+            raise HarnessError(f"required Rust test gate invocation is not exact: {step_name}")
+        log_rel = step.get("log")
+        output_digest = step.get("output_sha256")
+        if not isinstance(log_rel, str) or not isinstance(output_digest, str):
+            raise HarnessError(f"required Rust test gate log evidence is missing: {step_name}")
+        log_lexical = ROOT / log_rel
+        log_path = log_lexical.resolve()
+        if ROOT not in log_path.parents:
+            raise HarnessError(f"required Rust test gate log escaped repository root: {step_name}")
+        if run_root is not None:
+            expected_log = run_root / "logs" / f"{step_name}.log"
+            expected_rel = expected_log.relative_to(ROOT).as_posix()
+            if (
+                log_rel != expected_rel
+                or log_lexical != expected_log
+                or log_path != expected_log
+            ):
+                raise HarnessError(f"required Rust test gate log path differs: {step_name}")
+        try:
+            raw_output = log_path.read_bytes()
+            output = raw_output.decode("utf-8", errors="replace")
+        except OSError as error:
+            raise HarnessError(f"required Rust test gate log is missing: {step_name}") from error
+        if sha256_bytes(raw_output) != output_digest:
+            raise HarnessError(f"required Rust test gate log digest differs: {step_name}")
+        if step.get("output_tail") != output[-4000:]:
+            raise HarnessError(f"required Rust test gate output tail differs from log: {step_name}")
+        observed = parse_test_outcomes(output)
+        try:
+            exact_observed = validate_exact_rust_test_output(output, identity)
+        except HarnessError as error:
+            raise HarnessError(
+                f"required Rust test gate lacks exact passing output: {step_name}: {error}"
+            ) from error
+        if exact_observed != observed or step.get("test_outcomes") != observed:
+            raise HarnessError(f"required Rust test gate lacks exact passing output: {step_name}")
+
+
+def validate_rust_test_manifest(value: object) -> None:
+    if not isinstance(value, dict):
+        raise HarnessError("input manifest is missing local Rust test gates")
+    if value.get("gates") != rust_test_gate_manifest():
+        raise HarnessError("input manifest does not pin the exact required Rust test gates")
+    sources = value.get("sources")
+    expected_paths = list(LOCAL_RUST_TEST_SOURCES)
+    if not isinstance(sources, list) or [item.get("path") for item in sources if isinstance(item, dict)] != expected_paths:
+        raise HarnessError("input manifest does not pin the required Rust test sources")
+    if len(sources) != len(expected_paths):
+        raise HarnessError("input manifest has malformed Rust test source pins")
+    for item, relative in zip(sources, expected_paths, strict=True):
+        digest = item.get("sha256")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise HarnessError(f"input manifest has an invalid source pin for {relative}")
+        source_path = (ROOT / relative).resolve()
+        if ROOT not in source_path.parents or sha256_file(source_path) != digest:
+            raise HarnessError(f"input manifest source pin differs for {relative}")
+
+
 def validate_unselected_suites(suites: dict[str, dict]) -> None:
     invalid = [
         name for name in UNSELECTED_SUITES
@@ -171,6 +366,17 @@ def parse_test_outcomes(output: str) -> dict[str, str]:
         name: "ignored" if outcome.startswith("ignored") else outcome
         for name, outcome in matches
     }
+
+
+def validate_exact_rust_test_output(output: str, identity: str) -> dict[str, str]:
+    rows = re.findall(
+        r"^test ([A-Za-z0-9_:]+) \.\.\. (ok|ignored(?:, .*)?|FAILED)$",
+        output,
+        re.MULTILINE,
+    )
+    if len(rows) != 1 or rows[0][0] != identity or rows[0][1] != "ok":
+        raise HarnessError(f"exact Rust test output did not contain one passing identity: {identity}")
+    return {identity: "ok"}
 
 
 def validate_self_test_output(output: str) -> dict[str, str]:
@@ -520,6 +726,7 @@ def run_step(
         combined += "\n--- stderr ---\n" + stderr
     with log_path.open("x", encoding="utf-8") as output:
         output.write(combined)
+    output_sha256 = sha256_bytes(combined.encode("utf-8"))
 
     try:
         end_fingerprint = source_fingerprint()
@@ -541,6 +748,7 @@ def run_step(
         "source_fingerprint_after": end_fingerprint,
         "log": log_path.relative_to(ROOT).as_posix(),
         "output_tail": combined[-4000:],
+        "output_sha256": output_sha256,
     }
 
 
@@ -621,6 +829,13 @@ def input_manifest() -> dict:
             "source_sha256": sha256_file(host_path),
             "exact_tests": list(LIFECYCLE_TESTS),
         },
+        "local_rust_tests": {
+            "gates": rust_test_gate_manifest(),
+            "sources": [
+                {"path": name, "sha256": sha256_file(ROOT / name)}
+                for name in LOCAL_RUST_TEST_SOURCES
+            ],
+        },
     }
 
 
@@ -633,13 +848,25 @@ def validate_input_manifest_file(path: Path, expected_digest: str) -> dict:
         raise HarnessError(f"input manifest is missing or malformed: {error}") from error
     if not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION:
         raise HarnessError("input manifest has an unsupported schema")
+    validate_rust_test_manifest(value.get("local_rust_tests"))
     return value
 
 
 def validate_final_summary(summary: dict, input_manifest_path: Path) -> None:
+    run_root = validate_run_id(summary.get("run_id"))
     validate_unselected_suites(summary.get("suites", {}))
     statuses = {name: summary.get("steps", {}).get(name, {}).get("status") for name in LOCAL_STEPS}
     validate_required_steps(statuses)
+    steps = summary.get("steps", {})
+    validate_required_rust_test_evidence(steps, run_root)
+    lifecycle_steps = [step for step, suite, _, _ in RUST_TEST_GATES if suite == "local_lifecycle"]
+    acceptance_steps = [step for step, suite, _, _ in RUST_TEST_GATES if suite == "local_acceptance"]
+    suites = summary.get("suites", {})
+    if (
+        suites.get("local_lifecycle") != {"status": "passed", "tests": lifecycle_steps}
+        or suites.get("local_acceptance") != {"status": "passed", "tests": acceptance_steps}
+    ):
+        raise HarnessError("required local Rust test suite membership is incomplete or forged")
     digest = summary.get("input_manifest_sha256")
     if not isinstance(digest, str):
         raise HarnessError("input manifest digest is missing from summary")
@@ -787,32 +1014,40 @@ def main(argv: list[str] | None = None) -> int:
                 summary["steps"][name]["allowed_ignored"] = sorted(MEMORY_ALLOWED_IGNORED_TESTS)
                 replace_json(summary_path, summary)
 
-        lifecycle_steps = []
-        for test_name in LIFECYCLE_TESTS:
-            exact_test_name = f"tests::{test_name}"
-            command = [
-                "cargo", "test", "--offline", "-p", "od-host", "--lib", exact_test_name,
-                "--", "--exact", "--test-threads=1",
-            ]
-            step = run_step(test_name, command, run_dir, 1800, fingerprint)
+        rust_test_steps: dict[str, list[dict]] = {
+            "local_lifecycle": [],
+            "local_acceptance": [],
+        }
+        for step_name, suite, package, exact_test_name in RUST_TEST_GATES:
+            command = rust_test_argv(package, exact_test_name)
+            step = run_step(step_name, command, run_dir, 1800, fingerprint)
+            step["gate_suite"] = suite
+            step["package"] = package
+            step["test_identity"] = exact_test_name
             if step["status"] == "passed":
                 try:
-                    outcomes = validate_test_outcomes(step["output_tail"], {exact_test_name})
+                    outcomes = validate_exact_rust_test_output(
+                        step["output_tail"], exact_test_name
+                    )
                     step["test_outcomes"] = outcomes
                 except HarnessError as error:
                     step["status"] = "failed"
                     step["failure"] = str(error)
-            summary["steps"][test_name] = step
-            lifecycle_steps.append(step)
+            summary["steps"][step_name] = step
+            rust_test_steps[suite].append(step)
             replace_json(summary_path, summary)
             if step["status"] != "passed":
                 raise HarnessError(
-                    f"required lifecycle test {test_name} failed: {step.get('failure')}"
+                    f"required Rust test gate {step_name} failed: {step.get('failure')}"
                 )
 
         summary["suites"]["local_lifecycle"] = {
             "status": "passed",
-            "tests": [item["name"] for item in lifecycle_steps],
+            "tests": [item["name"] for item in rust_test_steps["local_lifecycle"]],
+        }
+        summary["suites"]["local_acceptance"] = {
+            "status": "passed",
+            "tests": [item["name"] for item in rust_test_steps["local_acceptance"]],
         }
         summary["suites"]["stage1_dispatch"] = {
             "status": "local_only",

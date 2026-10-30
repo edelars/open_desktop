@@ -2,11 +2,54 @@
 """Unit tests for Stage 3 harness evidence validation; no child suites run."""
 
 import hashlib
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
 import stage3_harness as harness
+
+
+def passing_rust_gate_steps(log_dir: Path):
+    steps = {}
+    for step, suite, package, identity in harness.RUST_TEST_GATES:
+        output = f"test {identity} ... ok\n"
+        log_path = log_dir / f"{step}.log"
+        log_path.write_text(output)
+        steps[step] = {
+            "name": step,
+            "gate_suite": suite,
+            "package": package,
+            "test_identity": identity,
+            "argv": harness.rust_test_argv(package, identity),
+            "status": "passed",
+            "failure": None,
+            "returncode": 0,
+            "output_tail": output,
+            "output_sha256": harness.sha256_bytes(output.encode("utf-8")),
+            "log": log_path.relative_to(harness.ROOT).as_posix(),
+            "test_outcomes": {identity: "ok"},
+        }
+    return steps
+
+
+def passing_final_summary(run_id: str, log_dir: Path):
+    steps = passing_rust_gate_steps(log_dir)
+    for name in ("harness_self_tests", "stage1_dispatch", "memory_corpus"):
+        steps[name] = {"status": "passed"}
+    lifecycle = [step for step, suite, _, _ in harness.RUST_TEST_GATES if suite == "local_lifecycle"]
+    acceptance = [step for step, suite, _, _ in harness.RUST_TEST_GATES if suite == "local_acceptance"]
+    suites = {name: {"status": "not_run"} for name in harness.UNSELECTED_SUITES}
+    suites["local_lifecycle"] = {"status": "passed", "tests": lifecycle}
+    suites["local_acceptance"] = {"status": "passed", "tests": acceptance}
+    return {"run_id": run_id, "steps": steps, "suites": suites}
+
+
+def replace_step_log_output(step, output: str):
+    log_path = harness.ROOT / step["log"]
+    log_path.write_text(output)
+    step["output_tail"] = output[-4000:]
+    step["output_sha256"] = harness.sha256_bytes(output.encode("utf-8"))
 
 
 class Stage3HarnessValidationTests(unittest.TestCase):
@@ -130,6 +173,142 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         changed_path = [dict(results[0], fixture_path="work/other.json"), results[1]]
         with self.assertRaisesRegex(harness.HarnessError, "manual result is not bound"):
             harness.validate_stage1_manual_bindings(child_inputs, changed_path, parent)
+
+    def test_rust_test_manifest_rejects_a_missing_mandatory_gate(self):
+        manifest = {
+            "gates": harness.rust_test_gate_manifest(),
+            "sources": [
+                {"path": name, "sha256": harness.sha256_file(harness.ROOT / name)}
+                for name in harness.LOCAL_RUST_TEST_SOURCES
+            ],
+        }
+        manifest["gates"].pop()
+        with self.assertRaisesRegex(harness.HarnessError, "exact required Rust test gates"):
+            harness.validate_rust_test_manifest(manifest)
+
+    def test_rust_gate_summary_rejects_an_omitted_mandatory_gate(self):
+        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+            steps = passing_rust_gate_steps(Path(temporary))
+            missing_step = harness.ADDITIONAL_TEST_GATES[0][0]
+            del steps[missing_step]
+            with self.assertRaisesRegex(harness.HarnessError, missing_step):
+                harness.validate_required_rust_test_evidence(steps)
+
+    def test_rust_gate_summary_rejects_forged_passed_evidence(self):
+        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+            steps = passing_rust_gate_steps(Path(temporary))
+            step_name, _, _, _ = harness.ADDITIONAL_TEST_GATES[0]
+            steps[step_name]["output_tail"] = "test tests::unrelated_test ... ok\n"
+            with self.assertRaisesRegex(harness.HarnessError, step_name):
+                harness.validate_required_rust_test_evidence(steps)
+
+            steps = passing_rust_gate_steps(Path(temporary))
+            steps[step_name]["argv"] = harness.rust_test_argv("od-host", "tests::unrelated_test")
+            with self.assertRaisesRegex(harness.HarnessError, step_name):
+                harness.validate_required_rust_test_evidence(steps)
+
+    def test_rust_gate_rejects_zero_match_ignored_and_failed_runs(self):
+        step_name, _, _, identity = harness.ADDITIONAL_TEST_GATES[0]
+        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+            for output in (
+                "test result: ok. 0 passed; 0 failed; 0 ignored\n",
+                f"test {identity} ... ignored\n",
+                f"test {identity} ... ok\ntest {identity} ... ok\n",
+            ):
+                steps = passing_rust_gate_steps(Path(temporary))
+                replace_step_log_output(steps[step_name], output)
+                with self.assertRaisesRegex(harness.HarnessError, step_name):
+                    harness.validate_required_rust_test_evidence(steps)
+
+            steps = passing_rust_gate_steps(Path(temporary))
+            steps[step_name]["status"] = "failed"
+            steps[step_name]["failure"] = "timeout"
+            steps[step_name]["returncode"] = None
+            with self.assertRaisesRegex(harness.HarnessError, step_name):
+                harness.validate_required_rust_test_evidence(steps)
+
+    def test_final_summary_rejects_missing_invalid_and_traversal_run_id(self):
+        for run_id in (
+            None,
+            "",
+            "invalid-run-id",
+            "../outside",
+            "stage3-20261030-010101-abcdef0123/../../outside",
+        ):
+            with self.subTest(run_id=run_id):
+                with self.assertRaisesRegex(harness.HarnessError, "run id is missing or invalid"):
+                    harness.validate_final_summary({"run_id": run_id}, Path("missing-input.json"))
+
+    def test_final_summary_rejects_run_directory_and_logs_symlinks(self):
+        harness_root = harness.ROOT / "work" / "stage3-harness"
+        harness_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=harness.ROOT) as external:
+            external_path = Path(external)
+
+            run_id = harness.new_run_id()
+            run_link = harness_root / run_id
+            run_link.symlink_to(external_path, target_is_directory=True)
+            try:
+                with self.assertRaisesRegex(harness.HarnessError, "run directory escaped"):
+                    harness.validate_run_id(run_id)
+            finally:
+                run_link.unlink()
+
+            canonical_id = harness.new_run_id()
+            canonical_dir = harness_root / canonical_id
+            canonical_dir.mkdir()
+            alias_id = harness.new_run_id()
+            alias_link = harness_root / alias_id
+            alias_link.symlink_to(canonical_dir, target_is_directory=True)
+            try:
+                with self.assertRaisesRegex(harness.HarnessError, "run directory escaped"):
+                    harness.validate_run_id(alias_id)
+            finally:
+                alias_link.unlink()
+                canonical_dir.rmdir()
+
+            run_id = harness.new_run_id()
+            run_dir = harness_root / run_id
+            run_dir.mkdir()
+            logs_link = run_dir / "logs"
+            logs_link.symlink_to(external_path, target_is_directory=True)
+            try:
+                with self.assertRaisesRegex(harness.HarnessError, "run logs escaped"):
+                    harness.validate_final_summary({"run_id": run_id}, Path("missing-input.json"))
+            finally:
+                logs_link.unlink()
+                run_dir.rmdir()
+
+    def test_final_summary_rejects_step_log_symlink_and_external_log_path(self):
+        harness_root = harness.ROOT / "work" / "stage3-harness"
+        harness_root.mkdir(parents=True, exist_ok=True)
+        run_id = harness.new_run_id()
+        run_dir = harness_root / run_id
+        logs_dir = run_dir / "logs"
+        logs_dir.mkdir(parents=True)
+        with tempfile.TemporaryDirectory(dir=harness.ROOT) as external:
+            external_log = Path(external) / "result.log"
+            step_name, _, _, identity = harness.RUST_TEST_GATES[0]
+            output = f"test {identity} ... ok\n"
+            external_log.write_text(output)
+            summary = passing_final_summary(run_id, logs_dir)
+            expected_log = logs_dir / f"{step_name}.log"
+            expected_log.unlink()
+            expected_log.symlink_to(external_log)
+            try:
+                with self.assertRaisesRegex(harness.HarnessError, "log path differs"):
+                    harness.validate_final_summary(summary, Path("unused-input-manifest.json"))
+
+                expected_log.unlink()
+                expected_log.write_text(output)
+                summary["steps"][step_name]["log"] = external_log.relative_to(
+                    harness.ROOT
+                ).as_posix()
+                with self.assertRaisesRegex(harness.HarnessError, "log path differs"):
+                    harness.validate_final_summary(summary, Path("unused-input-manifest.json"))
+            finally:
+                expected_log.unlink(missing_ok=True)
+                shutil.rmtree(run_dir)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -267,8 +267,10 @@ claim physical x86 equivalence.
 Run `python3 tests/cpu/stage3_harness.py --suite local`. It first runs its own
 validation self-tests, then the existing Stage 1 local dispatcher harness with
 the manual cases plus 1000 seeded generated cases twice, the complete
-`od-host/tests/memory_corpus.rs` integration suite, and seven exact `od-host`
-lifecycle test identities. The memory corpus includes its 2400-unique-input
+`od-host/tests/memory_corpus.rs` integration suite, and nine exact `od-host`
+lifecycle test identities. S3-34f also adds twelve exact acceptance gates for
+the bounded coordinator/demand-flags, event priority, and V0 ABI lifecycle/status
+contracts. The memory corpus includes its 2400-unique-input
 two-repeat run, named fault/STOP/budget/continuation cases, comparator self-check,
 versioned replay and reducer checks. Two environment-only saved-case replay and
 reducer tests remain ignored by design; all mandatory named tests must pass.
@@ -288,6 +290,36 @@ Stage 1 summary/manifest paths and hashes are linked from it. The result is
 `local_only`; physical x86/Mini, performance, Stage 2 and owner-backed suites
 are explicitly `not_run`. It does not claim complete Stage 3 acceptance. See
 [S3-34e report](../reports/STAGE_3_S3-34e_2026-10-29.md).
+
+### S3-34f local acceptance audit
+
+The local harness adds these exact tests to its nine lifecycle identities:
+
+| Contract | Bounded acceptance form | Exact Rust test identity | Proof and residual boundary |
+|---|---|---|---|
+| S3-29e coordinator | Existing arithmetic → checked load → branch/suffix API | `od-host::tests::s3_29e_bounded_arithmetic_load_coordinator` | Full state/RAM parity, faults and retries, phase accounting/priority; no general memory, cache or owner/MMU |
+| S3-29 pending flags | Exact arithmetic writers, preserving MOV, JZ/JNZ and defined exits | `od-host::tests::demand_flags_candidate_defers_replaced_writers_and_survives_clobbers_and_spills`; `od-host::tests::demand_flags_candidate_materializes_before_jz_and_jnz_after_preserving_mov`; `od-host::tests::demand_flags_candidate_materializes_on_stop_unsupported_and_helper_failure_exits` | Replacement, spills/clobbers, branch consumers, STOP/unsupported/helper failures; opt-in candidate only, eager remains default, no performance policy |
+| S3-28 control | Event before register-dispatch work; STOP priority after publication | `od-jit::dispatch::tests::event_pending_before_entry_preserves_state_budget_cache_and_nop_fallback`; `od-jit::dispatch::tests::cached_publication_boundary_rechecks_stop_priority_before_event` | No work before pre-entry event; STOP beats event after publish; bounded local boundary, no latency claim |
+| S3-38a V0 ABI | Existing register-only V0 fragment and handle lifecycle | `od-host::tests::c_abi_create_execute_stop_destroy_lifecycle`; `od-host::tests::c_abi_stop_requested_before_execute_is_honored_once`; `od-host::tests::c_abi_register_dispatch_matches_interpreter_and_reuses_loop_block`; `od-host::tests::c_abi_pre_stop_at_code_end_honors_v0_stop_contract_once`; `od-host::tests::c_abi_repeated_and_interleaved_handles_keep_state_independent`; `od-host::tests::c_abi_reports_live_process_mapping_as_busy` | STOP/destroy, loop reuse, code-end contract, independent handles, BUSY/invalid-state and output preservation. VMHost process regressions remain a separate gate; persistent cache/ownership and full S3-38 remain open. |
+
+The input manifest pins these gate records (step, package and full test
+identity), plus hashes of the harness and test source files. Each test runs in
+its own Cargo `--exact` lane. The run summary records exact argv, status,
+identity, output tail and a digest bound to that step's log in the same run
+directory. Final validation requires a generated-format run ID, rejects
+sibling-run aliases and run/log/step-log symlinks, and requires each log's
+canonical lexical run-local path. It checks each log digest/tail and requires
+exactly one matching non-ignored `... ok` line. Missing steps, wrong
+crate/identity or argv, zero/duplicate matches, ignored results, nonzero/
+timeout runs and forged `passed` summaries fail validation. Self-tests cover
+omitted manifest/summary gates, invalid paths and forged evidence.
+
+This audit proves only the bounded test lanes listed above. Full S3-28, S3-29,
+S3-34 and S3-38 remain open. ISSUE-027 remains open pending process-level
+reproduction; S3-23/24 general writer/MMU and physical SMC, unknown memory
+classes, performance policy, physical x86/Mini and Stage 2 remain outside this
+local profile. See the
+[S3-34f report](../reports/STAGE_3_S3-34f_2026-10-30.md).
 
 Каждая новая строка support matrix получает literal positive/negative cases,
 точный сравниваемый state и внешний prerequisite. В отчёте сохранять git
