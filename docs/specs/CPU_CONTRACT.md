@@ -12970,3 +12970,35 @@ part of the combined final stage; parent S2-37 remains open. The independent
 fixture oracle parses raw binary64 and uses integer arithmetic. Provenance:
 Intel SDM Rev. 093 Vol. 2A `CVTTSD2SI` pp. 3-253–3-254 and Vol. 1 §11.5.2.2
 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+
+## S2-37af — canonical Long64 CVTPS2DQ XMM register pairs
+
+The schema-v2 interpreter profile `s2-long-cvtps2dq-registers-v1` accepts all
+256 XMM destination/source pairs in Long64. It requires `66 0F 5B /r`,
+ModR/M.mod=3, and exactly one REX `41`, `44`, or `45` after `66` when an XMM
+index is extended. Memory, REX.W/X/40, repeated/reordered/other prefixes,
+trailing bytes, VEX and EVEX are bounded-profile refusals only. Runtime
+admission is independent of CVTDQ2PS; JIT, native, C ABI, fragment and generic
+CPUID paths remain closed.
+
+Execution snapshots the complete source before writing, rounds all four raw
+binary32 lanes using MXCSR.RC, then checks signed-i32 range. A masked invalid
+lane returns `0x80000000`; exact −2^31 remains valid. New IE is accumulated
+before computation; new PE is accumulated only from valid inexact lanes. With
+IM=0, any new IE commits IE and faults before adding PE from another lane. With
+IM=1, invalid lanes do not suppress PE from valid inexact lanes; IE|PE is
+committed and PM controls the post-computation fault. Old sticky bits are
+preserved and alone do not fault. Unmasked new IE/PE suppresses the entire XMM
+destination, RIP and retirement, then selects #XM or SIMD-generated #UD by
+OSXMMEXCPT. This conversion raises no DE; the local profile rejects DAZ and
+ignores FTZ.
+
+Full fetch precedes SSE2/EM/OSFXSR #UD and TS #NM gates at CPL0–3. No data
+memory callbacks occur. The result oracle classifies and rounds raw `u32` bits
+with independent integer arithmetic. It exercises the complete lane-event ×
+RC × masks × OSXMMEXCPT × sticky-status matrix, aliases, tie and signed-range
+boundaries, subnormals, atomic destination suppression, gates/fetch and strict
+metadata refusal. Memory m128, other modes, hardware acceptance, and parent
+S2-37/S2-38 remain open. Hardware evidence is reserved for the combined final
+stage. Source: Intel SDM Rev. 093 Vol. 2A CVTPS2DQ pp. 3-225–3-227; Vol. 1
+§§11.5.3.2–3 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).

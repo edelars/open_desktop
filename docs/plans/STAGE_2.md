@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последние локальные подзадания S2-37s/t/u/v/w добавляют canonical Long64 CVTDQ2PS/CVTSS2SD/CVTPS2PD/COMISS/UCOMISS/COMISD/UCOMISD register-space schema-v2 interpreter-only profiles; это не закрывает общий S2-37, CPUID admission или physical acceptance. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последнее локальное подзадание S2-37af добавляет canonical Long64 CVTPS2DQ register-space schema-v2 interpreter-only profile; соседние S2-37s/t/u/v/w добавляют другие register-space profiles. Это не закрывает общий S2-37, CPUID admission или physical acceptance. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -509,6 +509,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37ac | Local-only canonical Long64 CVTSD2SI register forms; r32/r64 binary64 conversion using MXCSR.RC, IE/PE only and atomic unmasked exit; JIT/native closed | Independent Sol-medium review clean after DM/IM test corrections; physical checks remain in final stage |
 | [x] | S2-37ad | Local-only canonical Long64 CVTTSS2SI register forms; r32/r64 TowardZero conversion independent of MXCSR.RC; JIT/native closed | Independent Sol-medium review clean after parser and coverage corrections; physical acceptance remains in final stage |
 | [x] | S2-37ae | Local-only canonical Long64 CVTTSD2SI register forms; r32/r64 TowardZero conversion independent of MXCSR.RC; JIT/native closed | Independent Sol-medium review clean; physical acceptance remains in final stage |
+| [x] | S2-37af | Local-only canonical Long64 CVTPS2DQ register-pair profile; packed IE-before-PE ordering, whole-XMM atomic unmasked exit; JIT/native closed | Independent Sol-medium review clean; hardware validation remains in combined final stage |
 | [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j/k/l: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j/k/l; independent review |
 | [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
@@ -6781,7 +6782,7 @@ inventory.
 | CVTPD2PS | `66 0F 5A /r` | SSE2 | XMM, m128; 2×f64 → low 2×f32 | 3-219 | missing |
 | CVTPI2PD | `66 0F 2A /r` | SSE2 | mm/m64 → XMM; 2×i32 → 2×f64 | 3-223 | missing |
 | CVTPI2PS | `NP 0F 2A /r` | SSE | mm/m64 → XMM; 2×i32 → low 2×f32 | 3-224 | missing |
-| CVTPS2DQ | `66 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-225 | missing |
+| CVTPS2DQ | `66 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-225 | S2-37af, bounded register-only |
 | CVTPS2PD | `NP 0F 5A /r` | SSE2 | m64; low 2×f32 → 2×f64 | 3-228 | S2-37u, bounded register-only |
 | CVTPS2PI | `NP 0F 2D /r` | SSE | XMM, m64 → mm; 2×f32 → 2×i32 | 3-231 | missing |
 | CVTSD2SI | `F2 0F 2D /r`; `F2 REX.W 0F 2D /r` | SSE2 | m64 → r32 / r64 | 3-232 | S2-37ac, bounded register-only |
@@ -13248,3 +13249,38 @@ OSXMMEXCPT=0, malformed forms, metadata tampering and backend denial. Hardware
 acceptance remains part of the combined final stage. Source: Intel SDM Rev. 093
 Vol. 2A `CVTTSD2SI` pp. 3-253–3-254 and Vol. 1 §11.5.2.2
 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+
+#### S2-37af — canonical Long64 CVTPS2DQ register pairs
+
+Implement schema-v2 interpreter-only profile `s2-long-cvtps2dq-registers-v1`
+for every Long64 XMM destination/source pair. Canonical bytes are `66 0F 5B /r`
+with ModR/M.mod=3; if either index is 8–15, place exactly one REX byte after
+`66`, using `41`, `44`, or `45`. Reject memory, REX.W/X/40, reordered,
+repeated or other prefixes, trailing bytes, VEX and EVEX as profile refusals.
+Keep admission separate from CVTDQ2PS; JIT/native/C/fragment/generic paths stay
+closed.
+
+Snapshot all four raw binary32 source lanes before writing. Convert each with
+`Binary32::to_i32` using MXCSR.RC and round before signed-32 range checking.
+Masked invalid returns integer indefinite `0x80000000`, while exact −2^31 is
+valid. Aggregate IE from invalid lanes; aggregate PE only from valid inexact
+lanes. IE is pre-computation: when any new IE is unmasked (IM=0), commit IE
+only and fault before adding new PE from other lanes. When IM=1, invalid lanes
+do not suppress PE from valid inexact lanes; commit IE|PE and use PM for the
+post-computation fault. Preserve old sticky status. A new unmasked IE/PE fault
+suppresses the complete XMM result, RIP advance and retirement; deliver #XM
+with OSXMMEXCPT=1 or SIMD-generated #UD otherwise. Old sticky flags alone do
+not fault. There is no DE for this conversion; subnormals with DAZ set are
+locally refused, and FTZ is irrelevant.
+
+Fetch fully before SSE2/EM/OSFXSR #UD and then TS #NM gates at CPL0–3. No data
+memory callback occurs. The independent schema oracle classifies raw `u32`
+values and performs integer rounding/range checks without production helpers
+or host floating point. Cover 256 pairs and aliases, all 81 four-lane event
+distributions × RC × IM/PM × OSXMMEXCPT × prior IE/PE, both IE/PE lane orders,
+boundary/tie/subnormal cases, full-state atomicity, fetch/gate/CPL/STOP/zero
+budget behavior, malformed/schema/result/control tampering and backend
+cross-denial. Memory `m128`, other modes, physical acceptance, and parent
+S2-37/S2-38 stay open; physical hardware evidence is part of the combined final
+stage. Sources: Intel SDM Rev. 093 Vol. 2A CVTPS2DQ pp. 3-225–3-227; Vol. 1
+§§11.5.3.2–3 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).

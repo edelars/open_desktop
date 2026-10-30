@@ -517,6 +517,7 @@ fn expected_native_xorpd_oracle(
                 maxpd_unmasked_controls: None,
                 cvtdq2pd_controls: None,
                 cvtdq2ps_controls: None,
+                cvtps2dq_controls: None,
                 cvtss2sd_controls: None,
                 cvtps2pd_controls: None,
                 comiss_ucomiss_controls: None,
@@ -1014,30 +1015,30 @@ fn execute_fixture_v2(
     use od_isa::execute::{
         CmppdControls, CmppsControls, CmpsdControls, CmpssControls, ComisdUcomisdControls,
         ComissUcomissControls, Cr0Profile, Cr4Profile, Cvtdq2pdControls, Cvtdq2psControls,
-        Cvtps2pdControls, Cvtsd2siRegistersControls, Cvtsi2sdR32Controls, Cvtsi2sdR64Controls,
-        Cvtsi2ssRegistersControls, Cvtss2sdControls, Cvtss2siRegistersControls,
-        Fxrstor64Cr0Controls, Fxsave64Cr0Controls, MaxpdUnmaskedControls, MaxpsUnmaskedControls,
-        MaxsdUnmaskedControls, MaxssUnmaskedControls, MinpdUnmaskedControls, MinpsUnmaskedControls,
-        MinsdUnmaskedControls, MinssInvalidControls, RdtscControls, RunConfig, RunExit,
-        XorpdPrerequisiteState, run, run_with_cli_profile, run_with_cmppd_register_controls,
-        run_with_cmpps_register_controls, run_with_cmpsd_register_controls,
-        run_with_cmpss_register_controls, run_with_comisd_ucomisd_register_controls,
-        run_with_comiss_ucomiss_register_controls, run_with_cr0_profile,
-        run_with_cvtdq2pd_controls, run_with_cvtdq2pd_register_controls,
-        run_with_cvtdq2ps_register_controls, run_with_cvtps2pd_register_controls,
-        run_with_cvtsd2si_registers_controls, run_with_cvtsi2sd_r32_controls,
-        run_with_cvtsi2sd_r64_controls, run_with_cvtsi2sd_registers_controls,
-        run_with_cvtsi2ss_registers_controls, run_with_cvtss2sd_register_controls,
-        run_with_cvtss2si_registers_controls, run_with_efer_rdmsr_profile,
-        run_with_fxrstor64_cr0_controls, run_with_fxsave64_cr0_controls, run_with_halt_profile,
-        run_with_kernel_gs_base_profile, run_with_maxpd_unmasked_controls,
-        run_with_maxps_unmasked_controls, run_with_maxsd_unmasked_controls,
-        run_with_maxss_unmasked_controls, run_with_minpd_unmasked_controls,
-        run_with_minps_unmasked_controls, run_with_minsd_unmasked_controls,
-        run_with_minss_invalid_controls, run_with_minss_unmasked_denormal_controls,
-        run_with_msr_profile, run_with_rdtsc_source, run_with_rep_continuation,
-        run_with_sep_profile, run_with_sti_profile, run_with_swapgs_profile,
-        run_with_xorpd_prerequisites,
+        Cvtps2dqControls, Cvtps2pdControls, Cvtsd2siRegistersControls, Cvtsi2sdR32Controls,
+        Cvtsi2sdR64Controls, Cvtsi2ssRegistersControls, Cvtss2sdControls,
+        Cvtss2siRegistersControls, Fxrstor64Cr0Controls, Fxsave64Cr0Controls,
+        MaxpdUnmaskedControls, MaxpsUnmaskedControls, MaxsdUnmaskedControls, MaxssUnmaskedControls,
+        MinpdUnmaskedControls, MinpsUnmaskedControls, MinsdUnmaskedControls, MinssInvalidControls,
+        RdtscControls, RunConfig, RunExit, XorpdPrerequisiteState, run, run_with_cli_profile,
+        run_with_cmppd_register_controls, run_with_cmpps_register_controls,
+        run_with_cmpsd_register_controls, run_with_cmpss_register_controls,
+        run_with_comisd_ucomisd_register_controls, run_with_comiss_ucomiss_register_controls,
+        run_with_cr0_profile, run_with_cvtdq2pd_controls, run_with_cvtdq2pd_register_controls,
+        run_with_cvtdq2ps_register_controls, run_with_cvtps2dq_register_controls,
+        run_with_cvtps2pd_register_controls, run_with_cvtsd2si_registers_controls,
+        run_with_cvtsi2sd_r32_controls, run_with_cvtsi2sd_r64_controls,
+        run_with_cvtsi2sd_registers_controls, run_with_cvtsi2ss_registers_controls,
+        run_with_cvtss2sd_register_controls, run_with_cvtss2si_registers_controls,
+        run_with_efer_rdmsr_profile, run_with_fxrstor64_cr0_controls,
+        run_with_fxsave64_cr0_controls, run_with_halt_profile, run_with_kernel_gs_base_profile,
+        run_with_maxpd_unmasked_controls, run_with_maxps_unmasked_controls,
+        run_with_maxsd_unmasked_controls, run_with_maxss_unmasked_controls,
+        run_with_minpd_unmasked_controls, run_with_minps_unmasked_controls,
+        run_with_minsd_unmasked_controls, run_with_minss_invalid_controls,
+        run_with_minss_unmasked_denormal_controls, run_with_msr_profile, run_with_rdtsc_source,
+        run_with_rep_continuation, run_with_sep_profile, run_with_sti_profile,
+        run_with_swapgs_profile, run_with_xorpd_prerequisites,
     };
     use od_testkit::v2;
     use std::time::{Duration, Instant};
@@ -1561,6 +1562,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongCvtps2dqRegistersV1 {
+        let controls = loaded
+            .fixture
+            .cvtps2dq_controls
+            .expect("validated CVTPS2DQ controls");
+        run_with_cvtps2dq_register_controls(
+            &mut state,
+            memory,
+            config,
+            Cvtps2dqControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongCvtps2pdRegistersV1 {
         let controls = loaded
             .fixture
@@ -1911,6 +1930,7 @@ fn execute_fixture_v2(
                 maxpd_unmasked_controls: loaded.fixture.maxpd_unmasked_controls,
                 cvtdq2pd_controls: loaded.fixture.cvtdq2pd_controls,
                 cvtdq2ps_controls: loaded.fixture.cvtdq2ps_controls,
+                cvtps2dq_controls: loaded.fixture.cvtps2dq_controls,
                 cvtss2sd_controls: loaded.fixture.cvtss2sd_controls,
                 cvtps2pd_controls: loaded.fixture.cvtps2pd_controls,
                 comiss_ucomiss_controls: loaded.fixture.comiss_ucomiss_controls,
@@ -3088,6 +3108,7 @@ mod tests {
                     maxpd_unmasked_controls: input.fixture.maxpd_unmasked_controls,
                     cvtdq2pd_controls: input.fixture.cvtdq2pd_controls,
                     cvtdq2ps_controls: input.fixture.cvtdq2ps_controls,
+                    cvtps2dq_controls: input.fixture.cvtps2dq_controls,
                     cvtss2sd_controls: input.fixture.cvtss2sd_controls,
                     cvtps2pd_controls: input.fixture.cvtps2pd_controls,
                     comiss_ucomiss_controls: input.fixture.comiss_ucomiss_controls,

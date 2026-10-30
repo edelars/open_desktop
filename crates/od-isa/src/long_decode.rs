@@ -945,6 +945,11 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only legacy `66 0F 5B /r` packed binary32-to-signed-i32 conversion.
+    Cvtps2dqRegister {
+        destination: u8,
+        source: u8,
+    },
     /// Local-only legacy `F3 0F 5A /r` binary32-to-binary64 XMM form.
     Cvtss2sdRegister {
         destination: u8,
@@ -3253,6 +3258,19 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 || prefix_count == 1
                     && matches!(prefixes.rex, Some(0x41 | 0x44 | 0x45))
                     && prefix_bytes[0] == prefixes.rex.unwrap());
+        let cvtps2dq_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x5b
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 1 && prefix_bytes[0] == 0x66 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && prefix_bytes[0] == 0x66
+                    && prefixes
+                        .rex
+                        .is_some_and(|rex| matches!(rex, 0x41 | 0x44 | 0x45))
+                    && prefix_bytes[1] == prefixes.rex.unwrap());
         let cvtps2pd_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x5a
             && prefixes.group1.is_none()
@@ -3844,6 +3862,16 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 Operation::Cvtdq2psRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x5b) if cvtps2dq_register => {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::Cvtps2dqRegister {
                     destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                     source: (modrm & 7) | ((rex & 1) << 3),
                 }

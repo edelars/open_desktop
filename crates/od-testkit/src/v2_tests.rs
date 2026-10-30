@@ -292,6 +292,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 maxpd_unmasked_controls: input.fixture.maxpd_unmasked_controls,
                 cvtdq2pd_controls: input.fixture.cvtdq2pd_controls,
                 cvtdq2ps_controls: input.fixture.cvtdq2ps_controls,
+                cvtps2dq_controls: input.fixture.cvtps2dq_controls,
                 cvtss2sd_controls: input.fixture.cvtss2sd_controls,
                 cvtps2pd_controls: input.fixture.cvtps2pd_controls,
                 comiss_ucomiss_controls: input.fixture.comiss_ucomiss_controls,
@@ -8407,6 +8408,27 @@ fn cvtss2si_integer_oracle_covers_signed_boundaries_rounding_and_event_priority(
             independent_binary32_to_integer(bits, rc, wide),
             (result, invalid, inexact),
             "bits={bits:08x} RC={rc} width={wide}"
+        );
+    }
+}
+
+#[test]
+fn cvtps2dq_raw_lane_oracle_keeps_invalid_and_valid_precision_events_separate() {
+    for rc in 0..4 {
+        assert_eq!(
+            independent_binary32_to_integer(0x4f00_0000, rc, false),
+            (0x8000_0000, true, false),
+            "+2^31 is invalid without PE"
+        );
+        assert_eq!(
+            independent_binary32_to_integer(0x3fc0_0000, rc, false),
+            (if rc == 0 || rc == 2 { 2 } else { 1 }, false, true),
+            "valid 1.5 contributes PE under every rounding mode"
+        );
+        assert_eq!(
+            independent_binary32_to_integer(0xcf00_0000, rc, false),
+            (0xffff_ffff_8000_0000, false, false),
+            "exact -2^31 is valid"
         );
     }
 }

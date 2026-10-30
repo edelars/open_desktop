@@ -18152,3 +18152,52 @@ passed both CVTTSD2SI ISA tests and the 512-form runner matrix. The host fragmen
 test did not finish within the review tool deadline; the author reported it
 passed. Gate/CPL and unmasked checks use representative r32 forms, while the
 runner and oracle cover all widths and selectors.
+
+## S2-37af — canonical Long64 CVTPS2DQ XMM register pairs
+
+The schema-v2 interpreter profile `s2-long-cvtps2dq-registers-v1` accepts all
+256 XMM destination/source pairs in Long64. It requires `66 0F 5B /r`,
+ModR/M.mod=3, and exactly one REX `41`, `44`, or `45` after `66` when an XMM
+index is extended. Memory, REX.W/X/40, repeated/reordered/other prefixes,
+trailing bytes, VEX and EVEX are bounded-profile refusals only. Runtime
+admission is independent of CVTDQ2PS; JIT, native, C ABI, fragment and generic
+CPUID paths remain closed.
+
+Execution snapshots the complete source before writing, rounds all four raw
+binary32 lanes using MXCSR.RC, then checks signed-i32 range. A masked invalid
+lane returns `0x80000000`; exact −2^31 remains valid. New IE is accumulated
+before computation; new PE is accumulated only from valid inexact lanes. With
+IM=0, any new IE commits IE and faults before adding PE from another lane. With
+IM=1, invalid lanes do not suppress PE from valid inexact lanes; IE|PE is
+committed and PM controls the post-computation fault. Old sticky bits are
+preserved and alone do not fault. Unmasked new IE/PE suppresses the entire XMM
+destination, RIP and retirement, then selects #XM or SIMD-generated #UD by
+OSXMMEXCPT. This conversion raises no DE; the local profile rejects DAZ and
+ignores FTZ.
+
+Full fetch precedes SSE2/EM/OSFXSR #UD and TS #NM gates at CPL0–3. No data
+memory callbacks occur. The result oracle classifies and rounds raw `u32` bits
+with independent integer arithmetic. It exercises the complete lane-event ×
+RC × masks × OSXMMEXCPT × sticky-status matrix, aliases, tie and signed-range
+boundaries, subnormals, atomic destination suppression, gates/fetch and strict
+metadata refusal. Memory m128, other modes, hardware acceptance, and parent
+S2-37/S2-38 remain open. Hardware evidence is reserved for the combined final
+stage.
+
+Focused verification passed:
+
+- `cargo test -p od-runner cvtps2dq_register_pairs_and_ie_pe_ordering_matrix --offline` — directly runs the unmasked literal lane-0 IE/lane-3 PE fixture and verifies IE-only status, atomic XMM/RIP and zero retirement; also covers all 256 register pairs plus 10,368 lane-event/RC/IM/PM/OSXMMEXCPT/old-IE-PE cases, a separate masked-IE/PM-unmasked IE|PE case, rounding and signed-range vectors, DM-clear subnormals, malformed bytes, metadata tampering, profile cross-denial and JIT/native denial.
+- `cargo test -p od-testkit cvtps2dq_prerequisites_fetch_order_cpl_stop_and_budget_make_no_data_callbacks --offline` — full-fetch/gate order across CPL0–3, zero data callbacks, truncation before gates, STOP and zero budget.
+- `cargo test -p od-testkit cvtps2dq_raw_lane_oracle_keeps_invalid_and_valid_precision_events_separate --offline` — independent raw-bit oracle checks for invalid +2^31, valid/inexact 1.5 under all four RC modes, and exact −2^31.
+- `cargo test -p od-runner cvtdq2ps_register_pairs_and_precision_exception_matrix --offline` and `cargo test -p od-testkit cvtdq2ps_prerequisites_fetch_order_and_cpl_matrix_make_no_data_callbacks --offline` — neighboring CVTDQ2PS regression checks.
+- `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, `git diff --check`, and `graphify update .` — passed.
+
+`python3 tools/check_layout.py` still reports the pre-existing ISSUE-023: the
+`.git` worktree pointer and two missing historical oracle manifests. No new
+layout or link failures were reported. An independent Sol-high review found no
+remaining defects after removal of a redundant result-schema validation block.
+The separate Sol-medium review found no remaining defects and rechecked the
+10,368-case count and unmasked literal fixture. No physical or Mac mini
+execution was run; it remains part of the combined final stage. Source: Intel
+SDM Rev. 093 Vol. 2A CVTPS2DQ pp. 3-225–3-227; Vol. 1
+§§11.5.3.2–3 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).

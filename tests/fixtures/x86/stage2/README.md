@@ -6527,3 +6527,17 @@ and unmasked exception atomicity. Gate/fetch ordering and backend denial are
 profile requirements; physical acceptance remains in the combined final stage.
 Source: Intel SDM Rev. 093 Vol. 2A `CVTTSS2SI` pp. 3-255–3-256 and Vol. 1
 §11.5.2.2 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+
+### S2-37af canonical CVTPS2DQ register pairs
+
+`s2_37af_cvtps2dq_ie_lane0_pe_lane3.case.json` is a literal canonical
+`66 0F 5B /r` XMM0,XMM1 fixture. IM is clear. Lane 0 contains +2^31 and
+generates unmasked IE; lane 3 contains 1.5 and would generate PE. The fixture
+expects the IE fault with sticky IE only, unchanged XMM/RIP and zero retirement,
+proving that IE commits before PE from another valid lane. A separate runner
+case masks IE and unmasks PE to prove IE|PE aggregation. The schema-v2 runner
+test generates all 256 pairs and the complete four-lane `{none,IE,PE}` event
+cross-product.
+Only register forms are in scope. Source: Intel SDM Rev. 093 Vol. 2A
+CVTPS2DQ pp. 3-225–3-227 and Vol. 1 §§11.5.3.2–3
+([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
