@@ -2365,6 +2365,20 @@ dispatch API. Admission для INC/DEC не расширяется. Lowering ч�
 Mini/performance отложены до конца Stage 3. См.
 [S3-33c report](../reports/STAGE_3_S3-33c_2026-10-30.md).
 
+#### S3-33d. Exact native qword ADD RAX, sign-extended imm8
+
+Добавлен отдельный uncached opt-in profile для bare `48 83 C0 ib` с каждым
+значением `ib` от `00` до `FF`. `S0_09NopAddRaxImm8Admission` проверяет
+sign-extension каждого source byte против decoded immediate и не расширяет
+generic, INC, DEC или NEG admission. Lowering использует decoder-owned значение как W64 Const и выполняет
+Add с полным `FlagEffect::Arithmetic`; eager и demand-flags API используют
+существующий IR/emitter и pending-flags path. Проверены все 256 байтов,
+`ADD ...,0`, отрицательные imm8, полное состояние, pending CMP/ADD/JZ/JNZ с
+различимыми outcomes, pending PC-map witness, successor full writer, budget и
+STOP. Реальные результаты и оставшееся независимое ревью отмечены в
+[S3-33d report](../reports/STAGE_3_S3-33d_2026-10-30.md). Mini и performance
+проверки отложены до конца Stage 3; S3-33 и этап остаются открытыми.
+
 ## 9. Проверка, производительность и интеграция
 
 ### S3-34. Собрать corpus и проверить сам harness

@@ -199,6 +199,17 @@ evidence with no performance claim; Mini and performance checks remain deferred
 until Stage 3 ends. See
 [S3-33c report](../../docs/reports/STAGE_3_S3-33c_2026-10-30.md).
 
+S3-33d adds a separate uncached opt-in profile for exact bare `48 83 C0 ib`
+(`ADD RAX, sign-extended imm8`) through `S0_09NopAddRaxImm8Admission` and
+`compile_block_for_native_add_rax_imm8*` /
+`dispatch::run_with_native_add_rax_imm8*`. Admission records the decoder-owned
+sign-extended immediate for all 256 byte values and cross-checks it against the
+source byte. Lowering uses the decoder-owned value as a W64 constant with full
+arithmetic flags; existing INC/DEC/NEG and generic
+admissions stay unchanged. This is partial correctness evidence only; Mini and
+performance checks remain deferred until the end of Stage 3. See the
+[S3-33d report](../../docs/reports/STAGE_3_S3-33d_2026-10-30.md).
+
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).
 Проверки корректности и измерений по задачам этапа — в

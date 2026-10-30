@@ -13,8 +13,8 @@ use od_isa::long_decode::{
 
 use crate::block::{
     self, AdmittedInstructionBoundaries, BlockStopReason, BranchTargetResolution, BuildOutcome,
-    DecodeBoundary, DecodedInstruction, S0_09NopAdmission, S0_09NopDecRaxAdmission,
-    S0_09NopIncRaxAdmission, S0_09NopNegRaxAdmission,
+    DecodeBoundary, DecodedInstruction, S0_09NopAddRaxImm8Admission, S0_09NopAdmission,
+    S0_09NopDecRaxAdmission, S0_09NopIncRaxAdmission, S0_09NopNegRaxAdmission,
 };
 use crate::ir::{
     self, BranchCondition, ExitKind, FlagEffect, GuestGpr, GuestInstruction, IntWidth, IntegerKind,
@@ -48,7 +48,7 @@ pub enum LoweringError {
 
 /// Lower one bounded block-builder result and verify every emitted Program.
 pub fn lower(outcome: &BuildOutcome) -> Result<LoweringOutcome, LoweringError> {
-    lower_with_admission(outcome, None, None, None, None, false, false, None)
+    lower_with_admission(outcome, None, None, None, None, false, false, None, None)
 }
 
 /// Lower a block for a future dispatcher using complete fixture-v1 decode
@@ -68,6 +68,7 @@ pub(crate) fn lower_for_dispatch(
         false,
         false,
         None,
+        None,
     )
 }
 
@@ -86,6 +87,7 @@ pub(crate) fn lower_for_nop_fallback(
         false,
         false,
         None,
+        None,
     )
 }
 
@@ -101,6 +103,7 @@ pub(crate) fn lower_for_nop_inc_rax_fallback(
         None,
         false,
         false,
+        None,
         None,
     )
 }
@@ -118,6 +121,7 @@ pub(crate) fn lower_for_native_inc_rax(
         true,
         false,
         None,
+        None,
     )
 }
 
@@ -133,6 +137,7 @@ pub(crate) fn lower_for_native_dec_rax(
         Some(admission),
         false,
         true,
+        None,
         None,
     )
 }
@@ -150,6 +155,24 @@ pub(crate) fn lower_for_native_neg_rax(
         false,
         false,
         Some(admission),
+        None,
+    )
+}
+
+pub(crate) fn lower_for_native_add_rax_imm8(
+    outcome: &BuildOutcome,
+    admission: &S0_09NopAddRaxImm8Admission,
+) -> Result<LoweringOutcome, LoweringError> {
+    lower_with_admission(
+        outcome,
+        Some(admission.boundaries()),
+        None,
+        None,
+        None,
+        false,
+        false,
+        None,
+        Some(admission),
     )
 }
 
@@ -162,6 +185,7 @@ fn lower_with_admission(
     native_inc_rax: bool,
     native_dec_rax: bool,
     native_neg_rax_admission: Option<&S0_09NopNegRaxAdmission>,
+    native_add_rax_imm8_admission: Option<&S0_09NopAddRaxImm8Admission>,
 ) -> Result<LoweringOutcome, LoweringError> {
     let block = match outcome {
         BuildOutcome::NoBlock(no_block) => {
@@ -265,6 +289,21 @@ fn lower_with_admission(
                     && matches!(decoded.operation, DecodedOperation::Nop)
                     || admission.admits_neg_rax(*guest_rip)
                         && block::is_exact_neg_rax(*decoded, &[0x48, 0xf7, 0xd8])
+            }) || native_add_rax_imm8_admission.is_some_and(|admission| {
+                admission.admits_nop(*guest_rip)
+                    && matches!(decoded.operation, DecodedOperation::Nop)
+                    || admission
+                        .add_rax_imm8_value(*guest_rip)
+                        .is_some_and(|expected| {
+                            matches!(decoded.operation,
+                            DecodedOperation::Arithmetic {
+                                kind: ArithmeticKind::Add,
+                                dst: Operand::Register(destination),
+                                src: Operand::Immediate(value),
+                            } if destination.register() == od_isa::Register::Rax
+                                && destination.size() == od_isa::OperandSize::Qword
+                                && value == expected)
+                        })
             }) =>
         {
             (
@@ -332,9 +371,12 @@ fn lower_with_admission(
                 .is_some_and(|proof| proof.admits_dec_rax(instruction.guest_rip));
         let admitted_native_neg = native_neg_rax_admission
             .is_some_and(|proof| proof.admits_neg_rax(instruction.guest_rip));
+        let admitted_native_add_rax_imm8 = native_add_rax_imm8_admission
+            .is_some_and(|proof| proof.admits_add_rax_imm8(instruction.guest_rip));
         if !admitted_native_inc
             && !admitted_native_dec
             && !admitted_native_neg
+            && !admitted_native_add_rax_imm8
             && !block::is_s0_09_form(instruction.decoded)
             && !block::is_checked_qword_load_form(instruction.decoded)
             && !block::is_checked_qword_store_form(instruction.decoded)
@@ -353,6 +395,19 @@ fn lower_with_admission(
             lower_exact_dec_rax(instruction, index, &mut next_temp, &mut operations)?;
         } else if admitted_native_neg {
             lower_exact_neg_rax(instruction, index, &mut next_temp, &mut operations)?;
+        } else if admitted_native_add_rax_imm8 {
+            let admitted_value = native_add_rax_imm8_admission
+                .and_then(|proof| proof.add_rax_imm8_value(instruction.guest_rip))
+                .ok_or(LoweringError::InvalidDecodedForm {
+                    guest_rip: instruction.guest_rip,
+                })?;
+            lower_exact_add_rax_imm8(
+                instruction,
+                index,
+                admitted_value,
+                &mut next_temp,
+                &mut operations,
+            )?;
         } else {
             lower_instruction(instruction, index, &mut next_temp, &mut operations)?;
         }
@@ -691,6 +746,62 @@ fn lower_exact_neg_rax(
         kind: IntegerKind::Subtract,
         lhs: zero,
         rhs: rax,
+        result: Some(result),
+        width: IntWidth::W64,
+        flags: FlagEffect::Arithmetic,
+    });
+    operations.push(Operation::WriteGpr {
+        register: crate::ir::GuestGpr(0),
+        src: result,
+        width: IntWidth::W64,
+    });
+    operations.push(Operation::CommitInstruction { index });
+    Ok(())
+}
+
+fn lower_exact_add_rax_imm8(
+    instruction: &DecodedInstruction,
+    index: usize,
+    admitted_value: u64,
+    next_temp: &mut u32,
+    operations: &mut Vec<Operation>,
+) -> Result<(), LoweringError> {
+    let invalid = || LoweringError::InvalidDecodedForm {
+        guest_rip: instruction.guest_rip,
+    };
+    let DecodedOperation::Arithmetic {
+        kind: ArithmeticKind::Add,
+        dst: Operand::Register(destination),
+        src: Operand::Immediate(value),
+    } = instruction.decoded.operation
+    else {
+        return Err(invalid());
+    };
+    if destination.register() != od_isa::Register::Rax
+        || destination.size() != od_isa::OperandSize::Qword
+        || value != admitted_value
+        || !block::is_exact_add_rax_imm8(instruction.decoded, &[0x48, 0x83, 0xc0, value as u8])
+    {
+        return Err(invalid());
+    }
+    operations.push(Operation::BeginInstruction { index });
+    let lhs = allocate_temp(next_temp);
+    let rhs = allocate_temp(next_temp);
+    let result = allocate_temp(next_temp);
+    operations.push(Operation::ReadGpr {
+        dst: lhs,
+        register: crate::ir::GuestGpr(0),
+        width: IntWidth::W64,
+    });
+    operations.push(Operation::Constant {
+        dst: rhs,
+        width: IntWidth::W64,
+        value,
+    });
+    operations.push(Operation::Integer {
+        kind: IntegerKind::Add,
+        lhs,
+        rhs,
         result: Some(result),
         width: IntWidth::W64,
         flags: FlagEffect::Arithmetic,
@@ -1087,6 +1198,64 @@ mod tests {
             ]
         ));
         assert_eq!(ir::verify(&lowered.program), Ok(()));
+    }
+
+    #[test]
+    fn native_add_rax_imm8_lowers_decoded_sign_extended_value() {
+        for (immediate, value) in [
+            (0x00, 0),
+            (0x01, 1),
+            (0x7f, 127),
+            (0x80, u64::MAX - 127),
+            (0xff, u64::MAX),
+        ] {
+            let bytes = [0x48, 0x83, 0xc0, immediate];
+            let code = CodeView::new(BASE, &bytes).unwrap();
+            let admission = S0_09NopAddRaxImm8Admission::from_code(code).unwrap();
+            let built = block::build_block_for_native_add_rax_imm8(
+                code,
+                BASE,
+                AccessContext::default(),
+                BlockLimits::default(),
+            )
+            .unwrap();
+            let lowered = match lower_for_native_add_rax_imm8(&built, &admission).unwrap() {
+                LoweringOutcome::Program(program) => program,
+                other => panic!("expected ADD immediate native prefix, got {other:?}"),
+            };
+            assert!(matches!(
+                &lowered.program.operations[..6],
+                [
+                    Operation::BeginInstruction { index: 0 },
+                    Operation::ReadGpr {
+                        dst: TempId(0),
+                        register: GuestGpr(0),
+                        width: IntWidth::W64
+                    },
+                    Operation::Constant {
+                        dst: TempId(1),
+                        width: IntWidth::W64,
+                        value: constant
+                    },
+                    Operation::Integer {
+                        kind: IntegerKind::Add,
+                        lhs: TempId(0),
+                        rhs: TempId(1),
+                        result: Some(TempId(2)),
+                        width: IntWidth::W64,
+                        flags: FlagEffect::Arithmetic
+                    },
+                    Operation::WriteGpr {
+                        register: GuestGpr(0),
+                        src: TempId(2),
+                        width: IntWidth::W64
+                    },
+                    Operation::CommitInstruction { index: 0 },
+                ] if *constant == value
+            ));
+            assert_eq!(lowered.program.guest_instructions[0].next_rip, BASE + 4);
+            assert_eq!(ir::verify(&lowered.program), Ok(()));
+        }
     }
 
     #[test]

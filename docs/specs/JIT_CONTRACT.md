@@ -1454,6 +1454,17 @@ at the branch consumer. This is partial correctness evidence only; Mini and
 performance checks remain deferred until Stage 3 ends. See
 [S3-33c report](../reports/STAGE_3_S3-33c_2026-10-30.md).
 
+The separate uncached `compile_block_for_native_add_rax_imm8*` and
+`dispatch::run_with_native_add_rax_imm8*` APIs use
+`S0_09NopAddRaxImm8Admission` for exact bare `48 83 C0 ib` only. The decoder's
+sign-extended immediate is carried into W64 `Add` lowering with full arithmetic
+flags. Admission cross-checks each raw immediate byte against the decoder's
+sign-extended value; lowering uses that decoded value without recalculating it.
+INC, DEC, NEG, and generic admission contracts remain
+operation-specific. The path is opt-in and uncached, with no performance claim;
+Mini and performance checks remain deferred until the Stage 3 gate. See
+[S3-33d report](../reports/STAGE_3_S3-33d_2026-10-30.md).
+
 ### S3-29d: uncached arithmetic-to-checked-load handoff
 
 The bounded host fixture composes existing eager and demand-flags native

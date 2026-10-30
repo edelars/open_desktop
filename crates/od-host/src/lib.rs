@@ -39957,6 +39957,340 @@ mod tests {
     }
 
     #[test]
+    fn native_add_rax_imm8_matches_interpreter_full_state_and_pending_branch() {
+        let _guard = jit_test_lock();
+        use od_isa::memory::{AccessKind, GuestMemory};
+        use od_jit::statepoints::{SnapshotAdmissibility, StatePhase};
+        struct CodeOnly<'a> {
+            base: u64,
+            bytes: &'a [u8],
+        }
+        impl GuestMemory for CodeOnly<'_> {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                address
+                    .checked_sub(self.base)
+                    .and_then(|offset| self.bytes.get(offset as usize))
+                    .copied()
+                    .ok_or(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Fetch,
+                    })
+            }
+            fn read(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: &[u8],
+            ) -> Result<(), MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+        fn interpret(
+            code: &[u8],
+            base: u64,
+            state: &mut od_isa::LongModeState,
+            budget: u64,
+        ) -> u64 {
+            let mut memory = CodeOnly { base, bytes: code };
+            let mut retired = 0;
+            while retired < budget && state.rip < base + code.len() as u64 {
+                assert!(matches!(
+                    od_isa::execute::step(state, &mut memory, AccessContext::default()).unwrap(),
+                    od_isa::execute::StepOutcome::Advanced | od_isa::execute::StepOutcome::Branched
+                ));
+                retired += 1;
+            }
+            retired
+        }
+        struct CandidateWitness {
+            executor: PublishedBlockExecutor,
+            branch_rips: [u64; 2],
+            pending_branch_rips: [bool; 2],
+        }
+        impl od_jit::dispatch::ControlledBlockExecutor for CandidateWitness {
+            type Error = PublishedBlockExecutionError;
+            fn execute_one_block_controlled(
+                &mut self,
+                block: &od_jit::block_compile::CompiledBlock,
+                state: &mut od_isa::LongModeState,
+                budget: u64,
+                control: od_jit::dispatch::DispatchControl<'_>,
+            ) -> Result<od_jit::dispatch::BlockExecutionReport, Self::Error> {
+                for (index, branch_rip) in self.branch_rips.iter().enumerate() {
+                    self.pending_branch_rips[index] |=
+                        block.emitted().pc_map().ranges().iter().any(|range| {
+                            range.guest_rip
+                                == od_jit::statepoints::GuestRipSource::Fixed(*branch_rip)
+                                && range.phase != StatePhase::Exit
+                                && range.snapshot == SnapshotAdmissibility::InadmissiblePendingFlags
+                        });
+                }
+                od_jit::dispatch::ControlledBlockExecutor::execute_one_block_controlled(
+                    &mut self.executor,
+                    block,
+                    state,
+                    budget,
+                    control,
+                )
+            }
+        }
+        let stop = AtomicU8::new(0);
+        let control = od_jit::dispatch::DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let base = 0x9010;
+        let values = [
+            0,
+            1,
+            u64::MAX,
+            i64::MIN as u64,
+            i64::MAX as u64,
+            0x10,
+            0x11,
+            0x100,
+        ];
+        for immediate in [0x00_u8, 0x01, 0x7f, 0x80, 0xff] {
+            let code = [0x48, 0x83, 0xc0, immediate];
+            let view = CodeView::new(base, &code).unwrap();
+            let admission =
+                od_jit::dispatch::AddRaxImm8InterpreterFallbackAdmission::from_code(view).unwrap();
+            for value in values {
+                for carry in [false, true] {
+                    let mut initial = od_isa::LongModeState::default();
+                    initial.rip = base;
+                    initial.rflags = 0x202 | (1 << 10) | (1 << 21) | u64::from(carry);
+                    initial.gpr[0] = value;
+                    initial.gpr[1] = 0x1234;
+                    initial.gpr[2] = 0x5678;
+                    initial.gpr[3] = 0x9abc;
+                    let mut expected = initial.clone();
+                    assert_eq!(interpret(&code, base, &mut expected, 1), 1);
+                    let mut actual = initial.clone();
+                    let result =
+                        od_jit::dispatch::run_with_native_add_rax_imm8_demand_flags_candidate(
+                            view,
+                            &admission,
+                            &mut actual,
+                            1,
+                            control,
+                            &mut PublishedBlockExecutor,
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        actual, expected,
+                        "imm={immediate:#04x}, RAX={value:#x}, CF={carry}"
+                    );
+                    assert_eq!(result.retired_native, 1);
+                    assert_eq!(result.retired_interpreter, 0);
+                    assert_eq!(
+                        actual.rflags & ((1 << 10) | (1 << 21)),
+                        (1 << 10) | (1 << 21)
+                    );
+                    for budget in 0..=1 {
+                        let mut budget_actual = initial.clone();
+                        let result =
+                            od_jit::dispatch::run_with_native_add_rax_imm8_demand_flags_candidate(
+                                view,
+                                &admission,
+                                &mut budget_actual,
+                                budget,
+                                control,
+                                &mut PublishedBlockExecutor,
+                            )
+                            .unwrap();
+                        let mut budget_expected = initial.clone();
+                        let retired = interpret(&code, base, &mut budget_expected, budget);
+                        assert_eq!(budget_actual, budget_expected);
+                        assert_eq!(result.retired_native + result.retired_interpreter, retired);
+                    }
+                }
+            }
+        }
+
+        let code = [
+            0x48, 0x3b, 0xc1, // CMP RAX, RCX; prior flags oppose the ADD result in each case
+            0x48, 0x83, 0xc0, 0xff, // ADD RAX, -1
+            0x74, 0x0a, // JZ skips MOV RBX,1
+            0x48, 0xbb, 1, 0, 0, 0, 0, 0, 0, 0, // MOV RBX,1
+            0x75, 0x0a, // JNZ skips MOV RCX,2
+            0x48, 0xb9, 2, 0, 0, 0, 0, 0, 0, 0, // MOV RCX,2
+            0x48, 0x03, 0xd0, // ADD RDX, RAX (successor full writer)
+        ];
+        let view = CodeView::new(base + 0x100, &code).unwrap();
+        let admission =
+            od_jit::dispatch::AddRaxImm8InterpreterFallbackAdmission::from_code(view).unwrap();
+        let branch_cases = [(1_u64, 0_u64, true), (2, 2, false)];
+        for (rax, rcx, add_zero) in branch_cases {
+            for (incoming_arithmetic, direction_flag) in [(0, false), (0x8d5, true)] {
+                let mut initial = od_isa::LongModeState::default();
+                initial.rip = view.base_rip();
+                initial.rflags = 0x202 | incoming_arithmetic | (u64::from(direction_flag) << 10);
+                initial.gpr[0] = rax;
+                initial.gpr[1] = rcx;
+                initial.gpr[2] = 5;
+                initial.gpr[3] = 0xaaaa;
+                let mut expected = initial.clone();
+                assert_eq!(interpret(&code, view.base_rip(), &mut expected, 6), 6);
+                assert_eq!(expected.gpr[0], rax.wrapping_sub(1));
+                assert_eq!(expected.gpr[3], if add_zero { 0xaaaa } else { 1 });
+                assert_eq!(expected.gpr[1], if add_zero { 2 } else { rcx });
+                assert_eq!(expected.gpr[2], if add_zero { 5 } else { 6 });
+                assert_eq!(expected.rflags & (1 << 10), u64::from(direction_flag) << 10);
+
+                let mut witness = CandidateWitness {
+                    executor: PublishedBlockExecutor,
+                    branch_rips: [view.base_rip() + 7, view.base_rip() + 19],
+                    pending_branch_rips: [false, false],
+                };
+                let mut actual = initial.clone();
+                let result = od_jit::dispatch::run_with_native_add_rax_imm8_demand_flags_candidate(
+                    view,
+                    &admission,
+                    &mut actual,
+                    6,
+                    control,
+                    &mut witness,
+                )
+                .unwrap();
+                assert_eq!(actual, expected, "pending CMP/ADD/JZ/JNZ RAX={rax:#x}");
+                assert_eq!(result.retired_native, 6);
+                assert_eq!(result.retired_interpreter, 0);
+                assert!(witness.pending_branch_rips[0]);
+
+                let mut eager = initial.clone();
+                let eager_result = od_jit::dispatch::run_with_native_add_rax_imm8(
+                    view,
+                    &admission,
+                    &mut eager,
+                    6,
+                    control,
+                    &mut PublishedBlockExecutor,
+                )
+                .unwrap();
+                assert_eq!(eager, expected);
+                assert_eq!(eager_result.retired_native, 6);
+                assert_eq!(eager_result.retired_interpreter, 0);
+
+                for budget in 0..=6 {
+                    let mut budget_actual = initial.clone();
+                    let result =
+                        od_jit::dispatch::run_with_native_add_rax_imm8_demand_flags_candidate(
+                            view,
+                            &admission,
+                            &mut budget_actual,
+                            budget,
+                            control,
+                            &mut PublishedBlockExecutor,
+                        )
+                        .unwrap();
+                    let mut budget_expected = initial.clone();
+                    let retired = interpret(&code, view.base_rip(), &mut budget_expected, budget);
+                    assert_eq!(budget_actual, budget_expected);
+                    assert_eq!(result.retired_native + result.retired_interpreter, retired);
+                    assert_eq!(result.retired_interpreter, 0);
+                }
+
+                for (stop_rip, retired_before_stop) in [
+                    (view.base_rip() + 3, 1),
+                    (view.base_rip() + 7, 2),
+                    (view.base_rip() + 31, 5),
+                ] {
+                    let stop_control = od_jit::dispatch::DispatchControl {
+                        stop_rip: Some(stop_rip),
+                        stop_requested: &stop,
+                        event_requested: None,
+                    };
+                    let mut stopped = initial.clone();
+                    let result =
+                        od_jit::dispatch::run_with_native_add_rax_imm8_demand_flags_candidate(
+                            view,
+                            &admission,
+                            &mut stopped,
+                            6,
+                            stop_control,
+                            &mut PublishedBlockExecutor,
+                        )
+                        .unwrap();
+                    let mut stopped_expected = initial.clone();
+                    assert_eq!(
+                        interpret(
+                            &code,
+                            view.base_rip(),
+                            &mut stopped_expected,
+                            retired_before_stop,
+                        ),
+                        retired_before_stop
+                    );
+                    assert_eq!(stopped, stopped_expected);
+                    assert_eq!(stopped.rip, stop_rip);
+                    assert_eq!(result.retired_native, retired_before_stop);
+                    assert_eq!(result.retired_interpreter, 0);
+                    assert_eq!(
+                        result.exit,
+                        od_jit::dispatch::DispatchExit::Runtime(RuntimeExitTag::StopAddress)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn native_neg_rax_replaces_full_pending_flags_and_matches_interpreter() {
         let _guard = jit_test_lock();
         use od_isa::memory::{AccessKind, GuestMemory};
