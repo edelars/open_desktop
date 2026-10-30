@@ -284,6 +284,8 @@ pub enum Profile {
     LongSubpsRegistersV1,
     #[serde(rename = "s2-long-subsd-registers-v1")]
     LongSubsdRegistersV1,
+    #[serde(rename = "s2-long-subss-registers-v1")]
+    LongSubssRegistersV1,
     #[serde(rename = "s2-long-cvtss2sd-registers-v1")]
     LongCvtss2sdRegistersV1,
     #[serde(rename = "s2-long-cvtps2pd-registers-v1")]
@@ -1321,6 +1323,7 @@ impl IntegerState {
                     | Profile::LongSubpdRegistersV1
                     | Profile::LongSubpsRegistersV1
                     | Profile::LongSubsdRegistersV1
+                    | Profile::LongSubssRegistersV1
                     | Profile::LongCvtss2sdRegistersV1
                     | Profile::LongCvtps2pdRegistersV1
                     | Profile::LongComissUcomissRegistersV1
@@ -1533,6 +1536,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongSubpsRegistersV1
                 | Profile::LongSubsdRegistersV1
+                | Profile::LongSubssRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -1696,6 +1700,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongSubpsRegistersV1
                 | Profile::LongSubsdRegistersV1
+                | Profile::LongSubssRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -2041,6 +2046,7 @@ impl IntegerState {
             | Profile::LongSubpdRegistersV1
             | Profile::LongSubpsRegistersV1
             | Profile::LongSubsdRegistersV1
+            | Profile::LongSubssRegistersV1
             | Profile::LongCvtss2sdRegistersV1
             | Profile::LongCvtps2pdRegistersV1
             | Profile::LongCvtsi2sdR32ExactV1
@@ -2210,6 +2216,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongSubpsRegistersV1
                 | Profile::LongSubsdRegistersV1
+                | Profile::LongSubssRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -2391,6 +2398,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongSubpsRegistersV1
                 | Profile::LongSubsdRegistersV1
+                | Profile::LongSubssRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -2581,6 +2589,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongSubpsRegistersV1
                 | Profile::LongSubsdRegistersV1
+                | Profile::LongSubssRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -2778,6 +2787,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongSubpsRegistersV1
                 | Profile::LongSubsdRegistersV1
+                | Profile::LongSubssRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -3605,6 +3615,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongSubpsRegistersV1
                 | Profile::LongSubsdRegistersV1
+                | Profile::LongSubssRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -3759,6 +3770,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongSubpsRegistersV1
                 | Profile::LongSubsdRegistersV1
+                | Profile::LongSubssRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -4032,6 +4044,8 @@ pub struct Fixture {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subsd_controls: Option<SubsdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subss_controls: Option<SubssControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtss2sd_controls: Option<Cvtss2sdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtps2pd_controls: Option<Cvtps2pdControlSnapshot>,
@@ -4207,6 +4221,7 @@ pub type SqrtpdControlSnapshot = Cvtdq2psControlSnapshot;
 pub type SqrtsdControlSnapshot = Cvtdq2psControlSnapshot;
 pub type SubpdControlSnapshot = Cvtdq2psControlSnapshot;
 pub type SubsdControlSnapshot = Cvtdq2psControlSnapshot;
+pub type SubssControlSnapshot = SubpsControlSnapshot;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -6362,6 +6377,58 @@ impl Fixture {
                 "only valid for SUBSD register-space profile",
             ));
         }
+        if self.profile == Profile::LongSubssRegistersV1 {
+            let _ = self
+                .subss_controls
+                .ok_or_else(|| invalid("subss_controls", "required by the SUBSS profile"))?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by the SUBSS profile"))?;
+            let (_, _, length) =
+                subss_register_encoding(&code.initial_bytes_hex).ok_or_else(|| {
+                    invalid("memory.code", "outside canonical SUBSS register profile")
+                })?;
+            let start = self.initial_state.rip.get();
+            if code.guest_address.get() != start
+                || code.length != length
+                || !code.permissions.execute
+                || self.memory.len() != 1
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(u64::from(length))
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "SUBSS requires one canonical executable encoding, budget 1, and stop RIP entry+length",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .expect("SSE2 required by SUBSS")
+                .mxcsr
+                .get();
+            if mxcsr & !0x0000_ffbf != 0
+                || mxcsr & (1 << 6) != 0
+                || mxcsr & ((1 << 10) | (1 << 11)) != ((1 << 10) | (1 << 11))
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "SUBSS requires supported MXCSR bits, DAZ=0, OM=1, and UM=1",
+                ));
+            }
+        } else if self.subss_controls.is_some() {
+            return Err(invalid(
+                "subss_controls",
+                "only valid for SUBSS register-space profile",
+            ));
+        }
         if self.profile == Profile::LongSubpsRegistersV1 {
             let _ = self
                 .subps_controls
@@ -7528,6 +7595,9 @@ impl Fixture {
                 }
                 Profile::LongSubsdRegistersV1 => {
                     subsd_register_encoding(&code_bytes).map(|(_, _, length)| length)
+                }
+                Profile::LongSubssRegistersV1 => {
+                    subss_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
                 Profile::LongCvtss2sdRegistersV1 => {
                     cvtss2sd_register_encoding(&code_bytes).map(|(_, _, length)| length)
@@ -9494,6 +9564,7 @@ impl Fixture {
             subpd_controls: None,
             subps_controls: None,
             subsd_controls: None,
+            subss_controls: None,
             cvtss2sd_controls: None,
             cvtps2pd_controls: None,
             comiss_ucomiss_controls: None,
@@ -9625,6 +9696,8 @@ pub struct Snapshot {
     pub subps_controls: Option<SubpsControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subsd_controls: Option<SubsdControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subss_controls: Option<SubssControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtss2sd_controls: Option<Cvtss2sdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -10037,6 +10110,19 @@ impl RunResult {
             return Err(invalid(
                 "snapshot.subsd_controls",
                 "only valid for the SUBSD profile",
+            ));
+        }
+        if self.profile == Profile::LongSubssRegistersV1 {
+            if snapshot.subss_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.subss_controls",
+                    "required by SUBSS profile",
+                ));
+            }
+        } else if snapshot.subss_controls.is_some() {
+            return Err(invalid(
+                "snapshot.subss_controls",
+                "only valid for SUBSS profile",
             ));
         }
         if self.profile == Profile::LongSubpsRegistersV1 {
@@ -10651,6 +10737,21 @@ impl RunResult {
             }
             if loaded.fixture.profile == Profile::LongSubsdRegistersV1 {
                 validate_subsd_registers_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.subss_controls,
+                value.subss_controls,
+            ) {
+                (Profile::LongSubssRegistersV1, Some(input), Some(output)) if input == output => {}
+                (Profile::LongSubssRegistersV1, _, _) => {
+                    return Err(FormatError::CaseMismatch("subss_controls"));
+                }
+                (_, None, None) => {}
+                _ => return Err(FormatError::CaseMismatch("subss_controls")),
+            }
+            if loaded.fixture.profile == Profile::LongSubssRegistersV1 {
+                validate_subss_registers_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
@@ -14288,6 +14389,134 @@ fn validate_subsd_registers_result(
     Ok(())
 }
 
+fn validate_subss_registers_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .subss_controls
+        .ok_or(FormatError::CaseMismatch("subss_controls"))?;
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    let (destination, source, length) = subss_register_encoding(&code.initial_bytes_hex)
+        .ok_or(FormatError::CaseMismatch("SUBSS encoding"))?;
+    let lhs_bytes = decode_bytes(&initial_sse.xmm[usize::from(destination)])?;
+    let rhs_bytes = decode_bytes(&initial_sse.xmm[usize::from(source)])?;
+    let lhs = u32::from_le_bytes(lhs_bytes[..4].try_into().unwrap());
+    let rhs = u32::from_le_bytes(rhs_bytes[..4].try_into().unwrap());
+    let old_mxcsr = initial_sse.mxcsr.get() as u32;
+    let (value, new_ie, new_de, new_oe, new_ue, new_pe) = independent_subss(lhs, rhs, old_mxcsr);
+    let unmasked_ie = new_ie && old_mxcsr & (1 << 7) == 0;
+    let unmasked_de = new_de && old_mxcsr & (1 << 8) == 0;
+    let unmasked_pre = unmasked_ie || unmasked_de;
+    let unmasked_oe = new_oe && old_mxcsr & (1 << 10) == 0;
+    let unmasked_ue = new_ue && old_mxcsr & (1 << 11) == 0;
+    let unmasked_pe = new_pe && old_mxcsr & (1 << 12) == 0;
+    let gate_vector = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let fault_vector = gate_vector.or_else(|| {
+        if unmasked_pre || unmasked_oe || unmasked_ue || unmasked_pe {
+            Some(if controls.cr4_osxmmexcpt { 19 } else { 6 })
+        } else {
+            None
+        }
+    });
+    if !matches!(
+        (fault_vector.is_some(), fixture.expected_exit),
+        (true, ExpectedExit::Exception) | (false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("SUBSS expected exit"));
+    }
+    let mut expected_state = fixture.initial_state.clone();
+    if gate_vector.is_none() {
+        let sse = expected_state
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        sse.mxcsr = HexU64(u64::from(
+            old_mxcsr
+                | u32::from(new_ie)
+                | (u32::from(new_de) << 1)
+                | (u32::from(new_oe) << 3)
+                | (u32::from(new_ue) << 4)
+                | (u32::from(new_pe) << 5),
+        ));
+        if !unmasked_pre && !unmasked_oe && !unmasked_ue && !unmasked_pe {
+            let mut expected_destination =
+                decode_bytes(&initial_sse.xmm[usize::from(destination)])?;
+            expected_destination[..4].copy_from_slice(&value.to_le_bytes());
+            sse.xmm[usize::from(destination)] = crate::memory::encode_bytes(&expected_destination);
+            expected_state.rip = HexU64(
+                fixture
+                    .initial_state
+                    .rip
+                    .get()
+                    .checked_add(u64::from(length))
+                    .ok_or(FormatError::CaseMismatch("SUBSS stop overflow"))?,
+            );
+        }
+    }
+    let expected_memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected_state {
+        return Err(FormatError::CaseMismatch("SUBSS state"));
+    }
+    if snapshot.rflags_defined != HexU64(INTEGER_FLAGS) {
+        return Err(FormatError::CaseMismatch("SUBSS defined flags"));
+    }
+    if snapshot.memory != expected_memory {
+        return Err(FormatError::CaseMismatch("SUBSS memory"));
+    }
+    let expected_count = u64::from(fault_vector.is_none());
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(expected_count),
+        })
+    {
+        return Err(FormatError::CaseMismatch("SUBSS retirement count"));
+    }
+    match (fault_vector, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == Observation::Unavailable {
+                    reason: "exception has no architectural error code".into(),
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("SUBSS outcome/exception")),
+    }
+    Ok(())
+}
+
 fn validate_subps_registers_result(
     loaded: &LoadedFixture,
     result: &RunResult,
@@ -17801,6 +18030,34 @@ fn subsd_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
     Some((destination, source, bytes.len() as u32))
 }
 
+fn subss_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (rex, modrm) = match bytes.as_slice() {
+        [0xf3, 0x0f, 0x5c, modrm] => (0u8, *modrm),
+        [0xf3, rex, 0x0f, 0x5c, modrm] if matches!(*rex, 0x41 | 0x44 | 0x45) => (*rex, *modrm),
+        _ => return None,
+    };
+    if modrm >> 6 != 3 {
+        return None;
+    }
+    let destination = ((modrm >> 3) & 7) | (((rex >> 2) & 1) << 3);
+    let source = (modrm & 7) | ((rex & 1) << 3);
+    if (destination >= 8 || source >= 8) != (bytes.len() == 5)
+        || (rex & 4 != 0) != (destination >= 8)
+        || (rex & 1 != 0) != (source >= 8)
+        || rex & 0x0a != 0
+    {
+        return None;
+    }
+    Some((destination, source, bytes.len() as u32))
+}
+
 fn subps_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
     if code_bytes.len() % 2 != 0 {
         return None;
@@ -18079,6 +18336,52 @@ fn independent_subsd(lhs: u64, rhs: u64, mxcsr: u32) -> (u64, bool, bool, bool, 
     } else {
         (value, ie, de, oe, ue, pe || oe)
     }
+}
+
+fn independent_subss(lhs: u32, rhs: u32, mxcsr: u32) -> (u32, bool, bool, bool, bool, bool) {
+    let lhs_exp = (lhs >> 23) & 0xff;
+    let rhs_exp = (rhs >> 23) & 0xff;
+    let lhs_frac = lhs & 0x007f_ffff;
+    let rhs_frac = rhs & 0x007f_ffff;
+    let lhs_nan = lhs_exp == 0xff && lhs_frac != 0;
+    let rhs_nan = rhs_exp == 0xff && rhs_frac != 0;
+    let lhs_snan = lhs_nan && lhs_frac & (1 << 22) == 0;
+    let rhs_snan = rhs_nan && rhs_frac & (1 << 22) == 0;
+    if lhs_nan || rhs_nan {
+        let selected = if lhs_nan { lhs } else { rhs };
+        let selected_snan = if lhs_nan { lhs_snan } else { rhs_snan };
+        return (
+            selected | if selected_snan { 1 << 22 } else { 0 },
+            lhs_snan || rhs_snan,
+            false,
+            false,
+            false,
+            false,
+        );
+    }
+    let lhs_inf = lhs_exp == 0xff;
+    let rhs_inf = rhs_exp == 0xff;
+    if lhs_inf && rhs_inf && (lhs ^ rhs) >> 31 == 0 {
+        return (0xffc0_0000, true, false, false, false, false);
+    }
+    let de = (lhs_exp == 0 && lhs_frac != 0) || (rhs_exp == 0 && rhs_frac != 0);
+    if lhs_inf {
+        return (lhs, false, de, false, false, false);
+    }
+    if rhs_inf {
+        return (rhs ^ (1 << 31), false, de, false, false, false);
+    }
+    let (mut value, tiny, mut pe, oe) = independent_subps_finite_lane(lhs, rhs, (mxcsr >> 13) & 3);
+    let mut ue = tiny && pe;
+    if mxcsr & (1 << 15) != 0 && tiny && value & 0x7f80_0000 == 0 && value & 0x007f_ffff != 0 {
+        value &= 1 << 31;
+        ue = true;
+        pe = true;
+    }
+    if de && mxcsr & (1 << 8) == 0 {
+        return (value, false, de, false, false, false);
+    }
+    (value, false, de, oe, ue, pe || oe)
 }
 
 fn independent_subpd(

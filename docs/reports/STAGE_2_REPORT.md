@@ -18535,3 +18535,39 @@ instruction entry; Vol. 1 §§4.9.1.4–.6, 11.5.3; Vol. 3A Event 19/Table 7-8.
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37ap--bounded-masked-range-long64-subsd-xmm-register-pairs),
 [plan](../plans/STAGE_2.md#s2-37ap--bounded-masked-range-long64-subsd-xmm-register-pairs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ap-bounded-masked-range-subsd-register-pair).
+### S2-37aq — SUBSS register-pair interpreter profile (2026-10-30)
+
+Implemented strict schema-v2 profile `s2-long-subss-registers-v1` for all 256
+canonical Long64 `F3 0F 5C /r` register pairs. It rejects memory and noncanonical
+prefix forms, and full fetch precedes SSE/EM/OSFXSR #UD and TS #NM gates. The
+operation performs no data callbacks and remains denied to JIT/native/C ABI,
+fragment and generic execution.
+
+Schema and runtime require OM=UM=1, reject DAZ/reserved MXCSR bits and accept
+all RC, FTZ, IM/DM/PM and old sticky settings. Both XMM operands are snapshotted;
+only low32 is subtracted, destination high96 is preserved, and source high96 is
+ignored. The first original NaN is selected before RHS sign inversion; SNaN
+raises IE, QNaN alone does not, and NaNs suppress DE. Same-sign infinity
+subtraction returns `0xffc00000` with IE. Other subnormal operands raise DE.
+Masked overflow records OE|PE; inexact tiny and FTZ-flushed results record
+UE|PE. Unmasked new events commit status without changing XMM/RIP/retirement.
+The schema oracle is an independent raw-u32 integer implementation with no host
+FP or production arithmetic helper.
+
+The literal fixture and focused 256-pair runner matrix pass, including all-RC
+execution, NaN ordering and quieting (lhs QNaN/rhs SNaN, lhs SNaN/rhs QNaN,
+both SNaN, and rhs-only SNaN), infinity/DE/FTZ/overflow cases, runtime gates
+and unmasked-precision atomicity. The testkit raw-u32 oracle, production
+runtime unit test, SUBSD and SUBPS runner regressions also pass. Review found
+and corrected RHS-selected SNaN quieting; no code findings remain. The fixture
+provenance table reference was aligned to Type 3/Table 2-20. `cargo fmt --all
+-- --check`, `cargo check --workspace --all-targets --offline`,
+`git diff --check` and `graphify update .` pass. The repository layout did not
+change, so the layout checker was not applicable. This is local evidence, not
+physical acceptance; memory forms, other modes and full unmasked OE/UE behavior
+remain outside the profile. Sources: Intel SDM Rev. 093
+Vol. 2A Type 3/Table 2-20 and Vol. 2B SUBSS pp. 4-695–4-696; Vol. 1
+§§4.9.1.4–.6, 11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8. See the [CPU
+contract](../specs/CPU_CONTRACT.md#s2-37aq--bounded-masked-range-long64-subss-xmm-register-pairs),
+[plan](../plans/STAGE_2.md#s2-37aq--bounded-masked-range-long64-subss-xmm-register-pairs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37aq-bounded-masked-range-subss-register-pair).

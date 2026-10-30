@@ -6670,6 +6670,26 @@ Floating-Point Reference Sheet v2.13. See the [CPU contract](../../../../docs/sp
 [plan](../../../../docs/plans/STAGE_2.md#s2-37an--bounded-masked-range-long64-subpd-xmm-register-pairs)
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37an--subpd-register-pair-interpreter-profile-2026-10-30).
 
+### S2-37aq bounded masked-range SUBSS register-pair profile
+
+`s2_37aq_subss_xmm0_xmm1.case.json` is a handwritten literal `F3 0F 5C /r`
+Long64 XMM0,XMM1 scalar binary32 subtraction. The low32 computes 3.0−1.0;
+destination high96 contains a byte-pattern canary, and source high96 contains
+poison data that must be ignored. The strict schema-v2 profile covers all 256
+register pairs, requires MXCSR.OM=1 and MXCSR.UM=1, rejects DAZ/reserved bits,
+and accepts every RC, FTZ, IM/DM/PM and old sticky setting. Its independent
+oracle uses raw-u32 integer arithmetic without host floating point or
+production helpers. Local checks cover aliases, high96 preservation/ignoring,
+all RC settings, NaN ordering and quieting, infinity-invalid, subnormal DE,
+FTZ, masked overflow, DE-before-PE atomicity, gates/fetch/CPL, result tampering
+and interpreter-only backend denial. This is local evidence, not physical
+acceptance. Memory forms, other modes and full unmasked OE/UE behavior remain
+outside the slice. Sources: Intel SDM Rev. 093 Vol. 2A Type 3/Table 2-20 and
+Vol. 2B SUBSS pp. 4-695–4-696; Vol. 1 §§4.9.1.4–.6 and 11.5.3; Vol. 3A Event
+19/Table 7-8. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37aq--bounded-masked-range-long64-subss-xmm-register-pairs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37aq--bounded-masked-range-long64-subss-xmm-register-pairs)
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37aq--subss-register-pair-interpreter-profile-2026-10-30).
+
 ### S2-37ap bounded masked-range SUBSD register-pair profile
 
 `s2_37ap_subsd_xmm0_xmm1.case.json` is a literal `F2 0F 5C /r` Long64

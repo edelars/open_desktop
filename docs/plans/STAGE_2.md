@@ -13568,6 +13568,41 @@ behavior and parent S2-37/S2-38 remain open. See the [CPU contract](../specs/CPU
 [report](../reports/STAGE_2_REPORT.md#s2-37ap--subsd-register-pair-interpreter-profile-2026-10-30),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ap-bounded-masked-range-subsd-register-pair).
 
+#### S2-37aq — bounded masked-range Long64 SUBSS XMM register pairs
+
+Implement strict schema-v2 interpreter-only profile
+`s2-long-subss-registers-v1` for canonical Long64 `F3 0F 5C /r`,
+ModR/M.mod=3, covering all 256 XMM register pairs. Low forms are four bytes;
+extended indices require one REX `41`, `44`, or `45` immediately after F3 and
+are five bytes. Reject memory, 66/F2, reordered/repeated/redundant prefixes,
+REX.W/X/40, trailing bytes, VEX and EVEX. Fetch fully before SSE/EM/OSFXSR #UD
+and TS #NM gates at CPL0–3. No data callbacks; JIT/native/C ABI/fragment/generic
+execution remains closed. This is SSE Type 3, Table 2-20.
+
+Require MXCSR.OM=1 and MXCSR.UM=1 in schema and runtime; reject DAZ and reserved
+bits, while accepting every RC value, FTZ, IM/DM/PM and prior sticky flags.
+Snapshot both XMM operands; compute only old destination.low32 minus
+source.low32, preserve destination.high96 and ignore source.high96. Classify
+NaNs before rhs sign inversion, select the first original NaN, quiet SNaN and
+raise IE for either signaling input; QNaN alone does not raise IE and any NaN
+suppresses DE. Same-sign infinity subtraction raises IE and returns masked
+`0xffc00000`; otherwise low32 subnormal operands raise DE. IE/DE precede
+arithmetic. Masked overflow records OE|PE; inexact tiny results record UE|PE;
+FTZ flushes tiny values to signed zero with UE|PE. A newly unmasked pre-event or
+PM commits new sticky bits but preserves XMM, RIP and retirement. Old sticky
+bits alone do not fault. Do not claim full unmasked OE/UE behavior.
+
+The schema oracle uses independent raw-u32 integer arithmetic, not host FP or
+production helpers. Focused tests cover all pairs and aliases, poisoned source
+high96, destination high96 preservation, NaN/infinity/zero/subnormal, FTZ,
+overflow, DE-before-PE, all four production RC modes, atomic faults, gates,
+fetch/CPL, malformed prefixes, result tampering and backend denial. These are
+local checks, not physical acceptance. Memory operands, other modes, full
+unmasked OE/UE behavior, and parent S2-37/S2-38 remain open. See the [CPU
+contract](../specs/CPU_CONTRACT.md#s2-37aq--bounded-masked-range-long64-subss-xmm-register-pairs),
+[report](../reports/STAGE_2_REPORT.md#s2-37aq--subss-register-pair-interpreter-profile-2026-10-30),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37aq-bounded-masked-range-subss-register-pair).
+
 #### S2-37an — bounded masked-range Long64 SUBPD XMM register pairs
 
 Implement strict schema-v2 interpreter-only profile

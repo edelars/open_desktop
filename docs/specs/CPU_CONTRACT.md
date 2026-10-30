@@ -13270,6 +13270,42 @@ See the [plan](../plans/STAGE_2.md#s2-37ao--bounded-masked-range-long64-subps-xm
 [report](../reports/STAGE_2_REPORT.md#s2-37ao--subps-register-pair-interpreter-profile-2026-10-30),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ao-bounded-masked-range-subps-register-pair).
 
+## S2-37aq — bounded masked-range Long64 SUBSS XMM register pairs
+
+The strict schema-v2 interpreter-only profile `s2-long-subss-registers-v1`
+admits all 256 canonical Long64 `F3 0F 5C /r` XMM register pairs with
+ModR/M.mod=3. Low forms are four bytes; extended forms use exactly one REX
+`41`, `44` or `45` immediately after `F3` and are five bytes. Memory, 66/F2,
+reordered/repeated/redundant prefixes, REX.W/X/40, trailing bytes, VEX and EVEX
+are refused. Full fetch precedes SSE/EM/OSFXSR #UD and TS #NM at CPL0–3; there
+are no data callbacks. JIT/native/C ABI/fragment/generic admission remains
+closed. This is the scalar Type 3 form in Intel SDM Rev. 093 Vol. 2A Table 2-20.
+
+The bounded range requires MXCSR.OM=1 and MXCSR.UM=1 because the current raw
+rounding result cannot distinguish every exact-significand overflow case for
+the OM=0 response. DAZ and reserved bits are rejected; all RC, FTZ, IM/DM/PM
+and prior sticky settings are accepted. Both XMM operands are snapshotted; only
+old destination.low32 minus source.low32 is computed, destination.high96 is
+preserved bit-for-bit, and source.high96 is ignored. NaNs are classified before
+rhs sign inversion. The first original NaN is selected; SNaN is quieted and
+raises IE if either operand is signaling, QNaN alone does not raise IE, and any
+NaN suppresses DE. Same-sign infinity subtraction raises IE and returns masked
+indefinite `0xffc00000`; otherwise low32 subnormals raise DE. IE/DE precede
+arithmetic. Masked overflow adds OE|PE; inexact tiny values add UE|PE; FTZ
+flushes tiny results to signed zero with UE|PE. New unmasked events commit
+sticky bits while preserving XMM, RIP and retirement. Old sticky bits alone do
+not fault. Full unmasked OE/UE semantics are not claimed.
+
+The independent schema oracle uses raw-u32 integer arithmetic and no host FP or
+production helper. Local tests cover all pairs and aliases, poisoned source
+high96, preserved destination high96, NaN/infinity/zero/subnormal classes, FTZ,
+overflow, all production RC modes, DE-before-PE and atomic exceptions, gates,
+fetch/CPL, malformed encodings, tampering and backend denial. This is local
+evidence, not physical acceptance. Memory forms, other modes and full unmasked
+OE/UE behavior remain outside this profile. See the [plan](../plans/STAGE_2.md#s2-37aq--bounded-masked-range-long64-subss-xmm-register-pairs),
+[report](../reports/STAGE_2_REPORT.md#s2-37aq--subss-register-pair-interpreter-profile-2026-10-30),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37aq-bounded-masked-range-subss-register-pair).
+
 ## S2-37an — bounded masked-range Long64 SUBPD XMM register pairs
 
 The strict schema-v2 interpreter-only profile `s2-long-subpd-registers-v1`

@@ -303,6 +303,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 subpd_controls: input.fixture.subpd_controls,
                 subps_controls: input.fixture.subps_controls,
                 subsd_controls: input.fixture.subsd_controls,
+                subss_controls: input.fixture.subss_controls,
                 cvtss2sd_controls: input.fixture.cvtss2sd_controls,
                 cvtps2pd_controls: input.fixture.cvtps2pd_controls,
                 comiss_ucomiss_controls: input.fixture.comiss_ucomiss_controls,
@@ -9057,6 +9058,80 @@ fn subps_parser_and_independent_raw_u32_oracle_cover_four_lanes() {
         ie && de && !oe && !ue && !pe,
         "unmasked IE suppresses post events across packed lanes"
     );
+}
+
+#[test]
+fn subss_parser_and_independent_raw_u32_oracle_cover_scalar_events() {
+    for destination in 0..16u8 {
+        for source in 0..16u8 {
+            let rex = 0x40 | ((destination >> 1) & 4) | (source >> 3);
+            let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+            let mut code = vec![0xf3];
+            if destination >= 8 || source >= 8 {
+                code.push(rex);
+            }
+            code.extend([0x0f, 0x5c, modrm]);
+            let code_hex = code
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            assert_eq!(
+                subss_register_encoding(&code_hex),
+                Some((destination, source, code.len() as u32))
+            );
+        }
+    }
+    for malformed in [
+        "f30f5c01",
+        "f3660f5cc1",
+        "66f30f5cc1",
+        "f3400f5cc1",
+        "f3420f5cc1",
+        "f3480f5cc1",
+        "f30f5cc1ff",
+        "c5fa5cc1",
+        "62f17e085cc1",
+    ] {
+        assert_eq!(subss_register_encoding(malformed), None, "{malformed}");
+    }
+    for (rc, expected) in [
+        (0, 0x3f80_0000),
+        (2, 0x3f80_0000),
+        (1, 0x3f7f_ffff),
+        (3, 0x3f7f_ffff),
+    ] {
+        let (value, ie, de, oe, ue, pe) =
+            independent_subss(0x3f80_0000, 0x3300_0000, 0x1f80 | (rc << 13));
+        assert_eq!(value, expected);
+        assert!(!ie && !de && !oe && !ue && pe);
+    }
+    let (nan, ie, de, _, _, _) = independent_subss(0x7fc0_1234, 0x7f80_0001, 0x1f80);
+    assert_eq!(nan, 0x7fc0_1234);
+    assert!(ie && !de);
+    let (rhs_snan, ie, de, _, _, _) = independent_subss(0x3f80_0000, 0x7f80_0001, 0x1f80);
+    assert_eq!(rhs_snan, 0x7fc0_0001, "selected RHS SNaN is quieted");
+    assert!(ie && !de);
+    let (lhs_snan, ie, de, _, _, _) = independent_subss(0xff80_0123, 0x7fc0_0456, 0x1f80);
+    assert_eq!(lhs_snan, 0xffc0_0123, "selected LHS SNaN is quieted");
+    assert!(ie && !de);
+    let (both_snan, ie, de, _, _, _) = independent_subss(0xff80_0123, 0x7f80_0456, 0x1f80);
+    assert_eq!(both_snan, 0xffc0_0123, "first original SNaN is selected");
+    assert!(ie && !de);
+    let (indefinite, ie, _, _, _, _) = independent_subss(0x7f80_0000, 0x7f80_0000, 0x1f80);
+    assert_eq!(indefinite, 0xffc0_0000);
+    assert!(ie);
+    let (_, _, de, _, _, _) = independent_subss(1, 0, 0x1f80);
+    assert!(de);
+    let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_37aq_subss_xmm0_xmm1.case.json");
+    let fixture = Fixture::from_json(&std::fs::read(fixture_path).unwrap())
+        .unwrap()
+        .fixture;
+    for mxcsr in [0x1b80, 0x1780, 0x1fc0, 0x11f80] {
+        let mut invalid = fixture.clone();
+        invalid.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(invalid.validate().is_err(), "MXCSR={mxcsr:#x}");
+    }
 }
 
 #[test]
