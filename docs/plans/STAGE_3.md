@@ -2467,15 +2467,17 @@ alternates interpreter and default FIFO(16) block-dispatcher samples, and
 creates a fresh runtime/cache/arena for every cold dispatcher sweep. Timed
 scope includes initialization and first corpus execution; setup of fixture
 inputs, state reset/validation and teardown are explicitly excluded. Raw
-sample reporting and host/build/input fingerprints are implemented. The
-two process attempts exited before writing reports because an interpreter
-sample fell below 200 ms, including one after paired calibration. A short
-measured pair now discards the partial series, raises the shared sweep count,
-and restarts the complete series. No valid measurement has been collected,
-so S3-35 remains partial and no performance conclusion is supported. Legacy
-fragment timing is not applicable unless an
-admitted legacy input shape and semantics are established for these same
-inputs. See [`BENCHMARKS.md`](../testing/BENCHMARKS.md#s3-35a-cold-first-full-corpus-execution).
+sample reporting and host/build/input fingerprints are implemented. Three
+release process runs completed on the frozen corpus after two initial
+calibration attempts ended below the 200 ms floor; their logs are linked in
+the S3-35a report. The cold FIFO sweep median was 6.64–6.69 ms per 1,010-case
+corpus sweep versus 0.164–0.166 ms for the interpreter. This describes one
+bounded cold workload and does not support a general speed claim. Separate
+pipeline component timings remain open, so S3-35 is partial. Legacy fragment
+timing is not applicable unless an admitted legacy input shape and semantics
+are established for these same inputs. See the
+[S3-35a report](../reports/STAGE_3_S3-35a_2026-10-30.md) and
+[`BENCHMARKS.md`](../testing/BENCHMARKS.md#s3-35a-cold-first-full-corpus-execution).
 
 1. Измерить полный первый запуск при пустом code cache: необходимые decode/IR/lowering/allocation/publication/lookup/execution, с явно указанной стоимостью initialization.
 2. Отдельно снять составляющие pipeline, не складывая несовместимые independently calibrated samples как точный end-to-end результат.

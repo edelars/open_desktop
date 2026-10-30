@@ -725,6 +725,9 @@ dispatcher sweep creates a fresh runtime/cache/arena with an empty code cache;
 timing includes initialization plus all dispatch calls through first full
 corpus completion, but excludes input preparation, state cloning/reset,
 validation, and teardown. Samples alternate order and report raw counts,
-median, range, IQR, and paired per-sweep ratios. The focused path is implemented,
-but measurements have not yet been collected; S3-35 and performance acceptance
-remain open. Mini/physical and Stage 2 checks are outside this bounded slice.
+median, range, IQR, and paired per-sweep ratios. Three local release runs
+measured the cold FIFO dispatcher at 6.64–6.69 ms per corpus sweep and
+interpreter at 0.164–0.166 ms. The raw results and exclusions are in the
+[S3-35a report](../reports/STAGE_3_S3-35a_2026-10-30.md). This is one bounded
+cold workload; S3-35 remains partial and warm/performance acceptance remain
+open. Mini/physical and Stage 2 checks are outside this slice.

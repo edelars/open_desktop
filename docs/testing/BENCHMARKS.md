@@ -257,16 +257,16 @@ for run in 1 2 3; do
 done
 ```
 
-S3-35a implements the reproducible comparison path only. Measurements have
-not yet been collected, no speedup or legacy-fragment comparison is claimed,
-and S3-35/S3-36 remain open. Legacy fragment timing is not applicable to this
-path until an admitted legacy shape is shown to match the same frozen corpus
-and semantics. Two process attempts ended before producing reports because
-interpreter batches fell below 200 ms, including one after paired calibration.
-Their logs are `work/tmp/stage3/s3-35/first-run-1-attempt.log` and
-`work/tmp/stage3/s3-35/first-run-fixed-1-attempt.log`. A later short measured
-pair now discards the partial series and restarts at a larger shared sweep
-count; no short pair is accepted into the output.
+Three release process runs were collected on 2026-10-30. The cold FIFO
+dispatcher measured 6.64–6.69 ms per 1,010-case sweep; interpreter measured
+0.164–0.166 ms. The [S3-35a report](../reports/STAGE_3_S3-35a_2026-10-30.md)
+records normalized medians, raw JSON, source/input hashes, calibration
+restarts, and two earlier failed calibration attempts. Those attempts produced
+no result report and are excluded from the statistics. This is one bounded
+cold register-only workload; it does not support speed claims for other
+workloads. Full pipeline component timings, warm execution and resource gates
+remain open. Legacy fragment timing remains omitted because equivalent
+admission and semantics were not established for this corpus.
 
 Recorded trace дополняется ограниченными synthetic-сценариями:
 1/8/64/512/4096 keys и observed unique count, hot loops на 1/8 keys, reverse

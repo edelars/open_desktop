@@ -1,0 +1,6 @@
+S3-35a first attempted process run (failed; preserved, no retry-to-pass)
+UTC: 2026-10-30 07:09:14
+Command: cargo run --release -p od-bench --offline -- cold-first-run --case-list work/tmp/stage3/s3-17/cases.txt --trace work/tmp/stage3/s3-17/dispatch-trace.json --process-run 1 --output work/tmp/stage3/s3-35/first-run-1.json
+Exit status: 1
+Stderr: Error: BenchError("interpreter paired sample below 200ms")
+Output report: not created
