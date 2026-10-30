@@ -108,6 +108,29 @@ Run `cargo test -p od-jit --offline cmp_rax_imm8_admission_covers_signed_byte_ra
 
 Lowering is Read RAX → decoded W64 Const → W64 Compare with `result=None` and full `FlagEffect::Arithmetic` → Commit; no GPR write is permitted. Host parity compares complete state and retirement for equal/unequal cases, `CMP ...,0`, `MAX` versus `FF`, and `...80` versus `80`; it checks DF/non-arithmetic preservation, both initial CF values, varied old arithmetic flags, JZ/JNZ distinct paths, candidate pending-statepoint evidence, a successor full writer, budgets 0..5, and STOP before CMP and at branch boundaries. Negative admission covers `/0` ADD, `/5` SUB, other GPR/R8, `81`, accumulator encoding, memory, narrow widths, prefixes, truncation, and a branch into the immediate. Mini and performance checks remain deferred until the end of Stage 3. See the [S3-33e report](../reports/STAGE_3_S3-33e_2026-10-30.md).
 
+## S3-33f: exact native SUB RAX, sign-extended imm8
+
+Run the exact S3-33f admission, lowering, compiler, and host tests, plus the
+three local harness gates `s3_33f_native_sub_rax_imm8_admission`,
+`s3_33f_native_sub_rax_imm8_compiler`, and
+`s3_33f_native_sub_rax_imm8_host`. Only its dedicated admission and eager/
+demand-candidate APIs accept bare `48 83 E8 ib` (`83 /5`, W64 RAX); all 256
+immediate bytes are checked against decoder-owned sign extension. The IR is
+Read RAX → decoded W64 Const → W64 Subtract with a result and full arithmetic
+flags → Write RAX → Commit.
+
+Coverage includes SUB zero's flag update, `0-1`, `0-(-1)`, MIN−1, MAX−(-1),
+both old CF values, AF/PF boundaries, opposing incoming flags, DF and
+non-arithmetic preservation, full state/RIP/retirement, and both eager and
+candidate execution. Branch tests cover pending CMP→SUB and ADD→SUB with
+distinguishable JZ/JNZ paths, candidate PC-map evidence, terminal SUB, a
+successor full writer, budgets and STOP before SUB, after SUB, and before the
+successor. Negative cases include other `/digit` values, GPRs including R8,
+memory/width variants, prefixes, `81`, accumulator encoding, truncation, and a
+branch into the immediate; prior arithmetic admissions reject this profile.
+Mini and performance checks remain deferred until the end of Stage 3. See the
+[S3-33f report](../reports/STAGE_3_S3-33f_2026-10-30.md).
+
 ## Срез A: один register-only блок
 
 1. Использовать только точные S0-09 формы из JIT contract и fixtures с

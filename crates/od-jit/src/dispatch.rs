@@ -18,7 +18,8 @@ use crate::block_compile::{
     compile_block_for_native_cmp_rax_imm8_demand_flags_candidate, compile_block_for_native_dec_rax,
     compile_block_for_native_dec_rax_demand_flags_candidate, compile_block_for_native_inc_rax,
     compile_block_for_native_inc_rax_demand_flags_candidate, compile_block_for_native_neg_rax,
-    compile_block_for_native_neg_rax_demand_flags_candidate, compile_block_for_nop_fallback,
+    compile_block_for_native_neg_rax_demand_flags_candidate, compile_block_for_native_sub_rax_imm8,
+    compile_block_for_native_sub_rax_imm8_demand_flags_candidate, compile_block_for_nop_fallback,
     compile_block_for_nop_fallback_demand_flags_candidate, compile_block_for_nop_inc_rax_fallback,
     compile_block_for_nop_inc_rax_fallback_demand_flags_candidate, compile_prepared_dispatch_block,
 };
@@ -98,6 +99,7 @@ pub use crate::block::S0_09NopCmpRaxImm8Admission as CmpRaxImm8InterpreterFallba
 pub use crate::block::S0_09NopDecRaxAdmission as DecRaxInterpreterFallbackAdmission;
 pub use crate::block::S0_09NopIncRaxAdmission as IncRaxInterpreterFallbackAdmission;
 pub use crate::block::S0_09NopNegRaxAdmission as NegRaxInterpreterFallbackAdmission;
+pub use crate::block::S0_09NopSubRaxImm8Admission as SubRaxImm8InterpreterFallbackAdmission;
 
 /// One cooperative control context is shared for the full dispatch invocation.
 /// STOP fields are forwarded to generated guards; an event request is sampled
@@ -1772,6 +1774,46 @@ pub fn run_with_native_cmp_rax_imm8_demand_flags_candidate<E: ControlledBlockExe
     )
 }
 
+/// Opt-in uncached dispatcher for exact native `SUB RAX, sign-extended imm8`.
+pub fn run_with_native_sub_rax_imm8<E: ControlledBlockExecutor>(
+    code: CodeView<'_>,
+    admission: &SubRaxImm8InterpreterFallbackAdmission,
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    executor: &mut E,
+) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
+    run_with_nop_fallback_strategy(
+        code,
+        FallbackAdmission::NopSubRaxImm8(admission),
+        state,
+        total_budget,
+        control,
+        executor,
+        NopFallbackCompilation::NativeSubRaxImm8,
+    )
+}
+
+/// Demand-flags candidate for exact native `SUB RAX, sign-extended imm8`.
+pub fn run_with_native_sub_rax_imm8_demand_flags_candidate<E: ControlledBlockExecutor>(
+    code: CodeView<'_>,
+    admission: &SubRaxImm8InterpreterFallbackAdmission,
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    executor: &mut E,
+) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
+    run_with_nop_fallback_strategy(
+        code,
+        FallbackAdmission::NopSubRaxImm8(admission),
+        state,
+        total_budget,
+        control,
+        executor,
+        NopFallbackCompilation::NativeSubRaxImm8DemandFlagsCandidate,
+    )
+}
+
 #[derive(Clone, Copy)]
 enum NopFallbackCompilation {
     Eager,
@@ -1786,6 +1828,8 @@ enum NopFallbackCompilation {
     NativeAddRaxImm8DemandFlagsCandidate,
     NativeCmpRaxImm8,
     NativeCmpRaxImm8DemandFlagsCandidate,
+    NativeSubRaxImm8,
+    NativeSubRaxImm8DemandFlagsCandidate,
 }
 
 #[derive(Clone, Copy)]
@@ -1796,6 +1840,7 @@ enum FallbackAdmission<'a> {
     NopNegRax(&'a NegRaxInterpreterFallbackAdmission),
     NopAddRaxImm8(&'a AddRaxImm8InterpreterFallbackAdmission),
     NopCmpRaxImm8(&'a CmpRaxImm8InterpreterFallbackAdmission),
+    NopSubRaxImm8(&'a SubRaxImm8InterpreterFallbackAdmission),
 }
 
 impl FallbackAdmission<'_> {
@@ -1807,6 +1852,7 @@ impl FallbackAdmission<'_> {
             Self::NopNegRax(admission) => admission.matches_code(code),
             Self::NopAddRaxImm8(admission) => admission.matches_code(code),
             Self::NopCmpRaxImm8(admission) => admission.matches_code(code),
+            Self::NopSubRaxImm8(admission) => admission.matches_code(code),
         }
     }
     fn contains(self, rip: u64) -> bool {
@@ -1817,6 +1863,7 @@ impl FallbackAdmission<'_> {
             Self::NopNegRax(admission) => admission.contains(rip),
             Self::NopAddRaxImm8(admission) => admission.contains(rip),
             Self::NopCmpRaxImm8(admission) => admission.contains(rip),
+            Self::NopSubRaxImm8(admission) => admission.contains(rip),
         }
     }
     fn admits_nop(self, rip: u64) -> bool {
@@ -1827,6 +1874,7 @@ impl FallbackAdmission<'_> {
             Self::NopNegRax(admission) => admission.admits_nop(rip),
             Self::NopAddRaxImm8(admission) => admission.admits_nop(rip),
             Self::NopCmpRaxImm8(admission) => admission.admits_nop(rip),
+            Self::NopSubRaxImm8(admission) => admission.admits_nop(rip),
         }
     }
     fn admits_inc_rax(self, rip: u64) -> bool {
@@ -1836,6 +1884,7 @@ impl FallbackAdmission<'_> {
             | Self::NopNegRax(_)
             | Self::NopAddRaxImm8(_)
             | Self::NopCmpRaxImm8(_) => false,
+            Self::NopSubRaxImm8(_) => false,
             Self::NopIncRax(admission) => admission.admits_inc_rax(rip),
         }
     }
@@ -1846,6 +1895,7 @@ impl FallbackAdmission<'_> {
             | Self::NopNegRax(_)
             | Self::NopAddRaxImm8(_)
             | Self::NopCmpRaxImm8(_) => false,
+            Self::NopSubRaxImm8(_) => false,
             Self::NopDecRax(admission) => admission.admits_dec_rax(rip),
         }
     }
@@ -1864,6 +1914,12 @@ impl FallbackAdmission<'_> {
     fn admits_cmp_rax_imm8(self, rip: u64) -> bool {
         match self {
             Self::NopCmpRaxImm8(admission) => admission.admits_cmp_rax_imm8(rip),
+            _ => false,
+        }
+    }
+    fn admits_sub_rax_imm8(self, rip: u64) -> bool {
+        match self {
+            Self::NopSubRaxImm8(admission) => admission.admits_sub_rax_imm8(rip),
             _ => false,
         }
     }
@@ -2088,6 +2144,34 @@ fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
                     | FallbackAdmission::NopAddRaxImm8(_),
                     NopFallbackCompilation::NativeCmpRaxImm8DemandFlagsCandidate,
                 ) => unreachable!("native CMP immediate requires its dedicated admission"),
+                (FallbackAdmission::NopSubRaxImm8(_), NopFallbackCompilation::Eager)
+                | (
+                    FallbackAdmission::NopSubRaxImm8(_),
+                    NopFallbackCompilation::DemandFlagsCandidate,
+                ) => unreachable!("SUB-immediate admission is native-only"),
+                (
+                    FallbackAdmission::NopSubRaxImm8(admission),
+                    NopFallbackCompilation::NativeSubRaxImm8,
+                ) => compile_block_for_native_sub_rax_imm8(code, state.rip, admission),
+                (
+                    FallbackAdmission::NopSubRaxImm8(admission),
+                    NopFallbackCompilation::NativeSubRaxImm8DemandFlagsCandidate,
+                ) => compile_block_for_native_sub_rax_imm8_demand_flags_candidate(
+                    code, state.rip, admission,
+                ),
+                (
+                    FallbackAdmission::Nop(_)
+                    | FallbackAdmission::NopIncRax(_)
+                    | FallbackAdmission::NopDecRax(_)
+                    | FallbackAdmission::NopNegRax(_)
+                    | FallbackAdmission::NopAddRaxImm8(_)
+                    | FallbackAdmission::NopCmpRaxImm8(_),
+                    NopFallbackCompilation::NativeSubRaxImm8
+                    | NopFallbackCompilation::NativeSubRaxImm8DemandFlagsCandidate,
+                ) => unreachable!("native SUB immediate requires its dedicated admission"),
+                (FallbackAdmission::NopSubRaxImm8(_), _) => {
+                    unreachable!("native SUB immediate admission requires its dedicated compiler")
+                }
             }
             .map_err(DispatchError::Compile)?;
         let block = match compiled {
@@ -2098,7 +2182,8 @@ fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
                     || admission.admits_dec_rax(rip)
                     || admission.admits_neg_rax(rip)
                     || admission.admits_add_rax_imm8(rip)
-                    || admission.admits_cmp_rax_imm8(rip))
+                    || admission.admits_cmp_rax_imm8(rip)
+                    || admission.admits_sub_rax_imm8(rip))
                     || rip != state.rip
                 {
                     return Err(DispatchError::NoNativePrefix { rip });

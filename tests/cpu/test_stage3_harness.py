@@ -313,6 +313,9 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             "s3_33d_native_add_rax_imm8_host",
             "s3_33d_native_add_rax_imm8_compiler",
             "s3_33d_native_add_rax_imm8_admission",
+            "s3_33f_native_sub_rax_imm8_host",
+            "s3_33f_native_sub_rax_imm8_compiler",
+            "s3_33f_native_sub_rax_imm8_admission",
         ]
         gates = [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_33")]
         manifest_gates = [

@@ -1479,6 +1479,21 @@ separate. The path is opt-in and uncached; Mini and performance checks remain
 deferred until the Stage 3 gate. See
 [S3-33e report](../reports/STAGE_3_S3-33e_2026-10-30.md).
 
+### S3-33f: opt-in exact native SUB RAX, sign-extended imm8
+
+The separate `compile_block_for_native_sub_rax_imm8*` and
+`dispatch::run_with_native_sub_rax_imm8*` APIs use their own
+`S0_09NopSubRaxImm8Admission` for exact bare `48 83 E8 ib` only (W64 RAX,
+opcode `83 /5`, length four). Admission checks every source immediate byte
+against the decoder-owned sign-extended value, which lowering consumes as a W64
+constant. The lowering is Read RAX → Const → W64 `Subtract` with
+`FlagEffect::Arithmetic` and `result=Some` → Write RAX → one Commit. This
+updates all arithmetic flags even for immediate zero; `FF` means subtract
+negative one and is not INC semantics. Existing generic, INC, DEC, NEG, ADD,
+and CMP admissions remain separate. The path is opt-in and uncached; Mini and
+performance checks remain deferred until the Stage 3 gate. See
+[S3-33f report](../reports/STAGE_3_S3-33f_2026-10-30.md).
+
 ### S3-29d: uncached arithmetic-to-checked-load handoff
 
 The bounded host fixture composes existing eager and demand-flags native
