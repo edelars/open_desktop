@@ -84,11 +84,28 @@ LIFECYCLE_TESTS = (
     "active_code_v3_invalidates_exact_not_yet_executed_tail_immediate",
     "active_code_v3_guards_faults_aliases_and_committed_stop_are_precise",
     "active_code_v3_pc_map_survives_artifact_drop_invalidation_and_safe_reuse",
+    "direct_memory_v2_pc_map_survives_artifact_drop_and_arena_slot_reuse",
     "active_code_v3_architectural_write_fault_matches_interpreter_and_is_atomic",
     "ir_two_load_pair_preserves_callbacks_faults_and_continuation",
 )
 
 ADDITIONAL_TEST_GATES = (
+    (
+        "s3_27d_direct_memory_v2_pc_map", "local_acceptance", "od-jit",
+        "memory_load_v2::tests::ir_checked_load_uses_distinct_v2_artifact_and_pc_map",
+    ),
+    (
+        "s3_27d_direct_memory_v2_pc_map_lifecycle", "local_acceptance", "od-host",
+        "tests::direct_memory_v2_pc_map_survives_artifact_drop_and_arena_slot_reuse",
+    ),
+    (
+        "s3_27d_direct_memory_v2_pc_map_invalidation", "local_acceptance", "od-host",
+        "tests::tracked_v2_store_invalidates_alias_after_return_and_preserves_late_stop_commit",
+    ),
+    (
+        "s3_27d_direct_memory_v2_error_distinction", "local_acceptance", "od-host",
+        "tests::address32_low_base_rsi_rdi_index_sib_matches_all_execution_paths",
+    ),
     (
         "s3_27c_active_code_v3_pc_map", "local_acceptance", "od-jit",
         "memory_load_v2::tests::active_code_v3_compiles_only_exact_three_instruction_source",

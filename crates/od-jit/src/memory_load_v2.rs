@@ -50,6 +50,7 @@ struct MemoryArtifactV2 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MemoryLoadBlockV2 {
     artifact: MemoryArtifactV2,
+    pc_map: crate::statepoints::PcMap,
 }
 
 /// Compiler-issued checked load lowered from the shared typed IR/allocator
@@ -150,6 +151,7 @@ impl IrMemoryLoadBlockV2 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MemoryStoreBlockV2 {
     artifact: MemoryArtifactV2,
+    pc_map: crate::statepoints::PcMap,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -794,6 +796,25 @@ macro_rules! impl_artifact_accessors {
 impl_artifact_accessors!(MemoryLoadBlockV2);
 impl_artifact_accessors!(MemoryStoreBlockV2);
 
+impl MemoryLoadBlockV2 {
+    /// Generated-state attribution for this code. A `ReplayCurrentInstruction`
+    /// value identifies the guest state only; replay additionally requires the
+    /// caller to establish synchronous ordinary RAM independently. This map
+    /// does not classify `GuestMemory` implementations or authorize replay for
+    /// MMIO or unknown memory classes.
+    pub fn pc_map(&self) -> &crate::statepoints::PcMap {
+        &self.pc_map
+    }
+}
+
+impl MemoryStoreBlockV2 {
+    /// Generated-state attribution for this code. The map does not classify
+    /// memory types or change the existing private synchronous store contract.
+    pub fn pc_map(&self) -> &crate::statepoints::PcMap {
+        &self.pc_map
+    }
+}
+
 /// Compile the exact checked-memory V2 profile from decoded guest bytes.
 ///
 /// The decoder remains the source of operand semantics. The raw-byte checks
@@ -802,9 +823,9 @@ pub fn compile_memory_load_block_v2(
     code: CodeView<'_>,
     entry_rip: u64,
 ) -> Result<MemoryLoadBlockV2, MemoryLoadCompileErrorV2> {
-    Ok(MemoryLoadBlockV2 {
-        artifact: compile_memory_operation_v2(code, entry_rip, MemorySiteOperationV2::Load)?,
-    })
+    let (artifact, pc_map) =
+        compile_memory_operation_v2(code, entry_rip, MemorySiteOperationV2::Load)?;
+    Ok(MemoryLoadBlockV2 { artifact, pc_map })
 }
 
 /// Compile the exact checked qword load through BasicBlock → typed IR →
@@ -1377,32 +1398,35 @@ pub fn compile_memory_store_block_v2(
     code: CodeView<'_>,
     entry_rip: u64,
 ) -> Result<MemoryStoreBlockV2, MemoryLoadCompileErrorV2> {
-    Ok(MemoryStoreBlockV2 {
-        artifact: compile_memory_operation_v2(code, entry_rip, MemorySiteOperationV2::Store)?,
-    })
+    let (artifact, pc_map) =
+        compile_memory_operation_v2(code, entry_rip, MemorySiteOperationV2::Store)?;
+    Ok(MemoryStoreBlockV2 { artifact, pc_map })
 }
 
 fn compile_memory_operation_v2(
     code: CodeView<'_>,
     entry_rip: u64,
     access: MemorySiteOperationV2,
-) -> Result<MemoryArtifactV2, MemoryLoadCompileErrorV2> {
+) -> Result<(MemoryArtifactV2, crate::statepoints::PcMap), MemoryLoadCompileErrorV2> {
     let (site, bytes) = checked_memory_metadata_v2(code, entry_rip, access)?;
-    let code = emit_memory_operation_v2(&site).map_err(MemoryLoadCompileErrorV2::Encoding)?;
+    let (code, pc_map) = emit_memory_operation_v2(&site)?;
     let compile_flavor = match access {
         MemorySiteOperationV2::Load => crate::translation::CompileFlavor::S3_19bMemoryLoadV2,
         MemorySiteOperationV2::Store => crate::translation::CompileFlavor::S3_20bMemoryStoreV2,
     };
     let mut source_bytes = [0; MEMORY_SITE_SOURCE_BYTES_MAX];
     source_bytes[..bytes.len()].copy_from_slice(bytes);
-    Ok(MemoryArtifactV2 {
-        code,
-        site,
-        entry_rip,
-        source_bytes,
-        source_len: bytes.len() as u8,
-        compile_flavor,
-    })
+    Ok((
+        MemoryArtifactV2 {
+            code,
+            site,
+            entry_rip,
+            source_bytes,
+            source_len: bytes.len() as u8,
+            compile_flavor,
+        },
+        pc_map,
+    ))
 }
 
 /// Decode and validate one checked MOV memory site without emitting native
@@ -1466,7 +1490,13 @@ fn checked_memory_metadata_v2(
     Ok((site, bytes))
 }
 
-fn emit_memory_operation_v2(site: &MemorySiteV2) -> Result<EncodedCode, EncodeError> {
+fn emit_memory_operation_v2(
+    site: &MemorySiteV2,
+) -> Result<(EncodedCode, crate::statepoints::PcMap), MemoryLoadCompileErrorV2> {
+    use crate::statepoints::{
+        GuestBoundaryPoint, GuestRipBoundary, GuestRipSource, HostCodeRange, PcMap,
+        SnapshotAdmissibility, StatePhase, StatePointRange,
+    };
     let mut encoder = Encoder::new();
     let budget_exit = encoder.new_label()?;
     let stop_exit = encoder.new_label()?;
@@ -1532,8 +1562,18 @@ fn emit_memory_operation_v2(site: &MemorySiteV2) -> Result<EncodedCode, EncodeEr
     encoder.cbz_x(XRegOrZero::Reg(xr(9)?), budget_exit)?;
     encoder.bind(success)?;
 
+    let helper_start = encoder
+        .position()
+        .checked_mul(4)
+        .ok_or(EncodeError::BufferTooLarge)?;
     emit_checked_memory_site_call_v2(&mut encoder, site.instruction_index)?;
     encoder.cbnz_w(WReg::new(0)?, helper_failure)?;
+    let helper_end = encoder
+        .position()
+        .checked_mul(4)
+        .ok_or(EncodeError::BufferTooLarge)?;
+
+    let commit_start = helper_end;
 
     if site.operation == MemorySiteOperationV2::Load {
         encoder.ldr_x(
@@ -1574,11 +1614,19 @@ fn emit_memory_operation_v2(site: &MemorySiteV2) -> Result<EncodedCode, EncodeEr
         HostAddressBase::Reg(xr(19)?),
         RUNTIME_CONTEXT_RETIRED_INSTRUCTIONS_OFFSET as u32,
     )?;
+    let committed_offset = encoder
+        .position()
+        .checked_mul(4)
+        .ok_or(EncodeError::BufferTooLarge)?;
     encoder.ldarb_w(WReg::new(10)?, HostAddressBase::Reg(xr(21)?));
     encoder.cbnz_w(WReg::new(10)?, stop_after_commit)?;
     emit_return(&mut encoder, 0)?;
 
     encoder.bind(budget_exit)?;
+    let budget_exit_start = encoder
+        .position()
+        .checked_mul(4)
+        .ok_or(EncodeError::BufferTooLarge)?;
     encoder.ldr_x(
         XRegOrZero::Reg(xr(9)?),
         HostAddressBase::Reg(xr(19)?),
@@ -1598,6 +1646,10 @@ fn emit_memory_operation_v2(site: &MemorySiteV2) -> Result<EncodedCode, EncodeEr
     emit_return(&mut encoder, 1)?;
 
     encoder.bind(stop_exit)?;
+    let stop_exit_start = encoder
+        .position()
+        .checked_mul(4)
+        .ok_or(EncodeError::BufferTooLarge)?;
     encoder.ldr_x(
         XRegOrZero::Reg(xr(9)?),
         HostAddressBase::Reg(xr(19)?),
@@ -1617,9 +1669,17 @@ fn emit_memory_operation_v2(site: &MemorySiteV2) -> Result<EncodedCode, EncodeEr
     emit_return(&mut encoder, 3)?;
 
     encoder.bind(stop_after_commit)?;
+    let stop_after_commit_start = encoder
+        .position()
+        .checked_mul(4)
+        .ok_or(EncodeError::BufferTooLarge)?;
     emit_return(&mut encoder, 3)?;
 
     encoder.bind(stop_address_exit)?;
+    let stop_address_exit_start = encoder
+        .position()
+        .checked_mul(4)
+        .ok_or(EncodeError::BufferTooLarge)?;
     encoder.ldr_x(
         XRegOrZero::Reg(xr(9)?),
         HostAddressBase::Reg(xr(19)?),
@@ -1639,6 +1699,10 @@ fn emit_memory_operation_v2(site: &MemorySiteV2) -> Result<EncodedCode, EncodeEr
     emit_return(&mut encoder, 4)?;
 
     encoder.bind(helper_failure)?;
+    let helper_failure_start = encoder
+        .position()
+        .checked_mul(4)
+        .ok_or(EncodeError::BufferTooLarge)?;
     encoder.ldr_x(
         XRegOrZero::Reg(xr(9)?),
         HostAddressBase::Reg(xr(19)?),
@@ -1659,7 +1723,117 @@ fn emit_memory_operation_v2(site: &MemorySiteV2) -> Result<EncodedCode, EncodeEr
         &mut encoder,
         crate::runtime::RUNTIME_EXIT_V2_MEMORY_OPERATION as u16,
     )?;
-    encoder.finish()
+    let code = encoder.finish()?;
+    let code_len = code
+        .words()
+        .len()
+        .checked_mul(4)
+        .ok_or(EncodeError::BufferTooLarge)?;
+    let mut ranges = Vec::new();
+    let mut push_range =
+        |start: usize, end: usize, phase, rip, snapshot| -> Result<(), MemoryLoadCompileErrorV2> {
+            if start < end {
+                let start = u32::try_from(start).map_err(|_| EncodeError::BufferTooLarge)?;
+                let end = u32::try_from(end).map_err(|_| EncodeError::BufferTooLarge)?;
+                ranges.push(StatePointRange {
+                    range: HostCodeRange::new(start, end),
+                    guest_rip: rip,
+                    instruction_index: Some(site.instruction_index),
+                    phase,
+                    snapshot,
+                });
+            }
+            Ok(())
+        };
+    let load = site.operation == MemorySiteOperationV2::Load;
+    let boundary = u32::try_from(committed_offset).map_err(|_| EncodeError::BufferTooLarge)?;
+    push_range(
+        0,
+        helper_start,
+        StatePhase::BeforeInstruction,
+        GuestRipSource::Fixed(site.guest_rip),
+        SnapshotAdmissibility::CanonicalBoundary,
+    )?;
+    push_range(
+        helper_start,
+        helper_end,
+        StatePhase::HelperCall,
+        GuestRipSource::Fixed(site.guest_rip),
+        if load {
+            SnapshotAdmissibility::ReplayCurrentInstruction
+        } else {
+            SnapshotAdmissibility::InadmissibleAfterEffect
+        },
+    )?;
+    push_range(
+        commit_start,
+        boundary as usize,
+        StatePhase::CommitInProgress,
+        GuestRipSource::Fixed(site.guest_rip),
+        SnapshotAdmissibility::InadmissibleDuringCommit,
+    )?;
+    let code_len = u32::try_from(code_len).map_err(|_| EncodeError::BufferTooLarge)?;
+    push_range(
+        boundary as usize,
+        budget_exit_start,
+        StatePhase::Committed,
+        GuestRipSource::Fixed(site.next_rip),
+        SnapshotAdmissibility::CanonicalBoundary,
+    )?;
+    push_range(
+        budget_exit_start,
+        stop_exit_start,
+        StatePhase::Exit,
+        GuestRipSource::Fixed(site.guest_rip),
+        SnapshotAdmissibility::CanonicalBoundary,
+    )?;
+    push_range(
+        stop_exit_start,
+        stop_after_commit_start,
+        StatePhase::Exit,
+        GuestRipSource::Fixed(site.guest_rip),
+        SnapshotAdmissibility::CanonicalBoundary,
+    )?;
+    push_range(
+        stop_after_commit_start,
+        stop_address_exit_start,
+        StatePhase::Exit,
+        GuestRipSource::Fixed(site.next_rip),
+        SnapshotAdmissibility::CanonicalBoundary,
+    )?;
+    push_range(
+        stop_address_exit_start,
+        helper_failure_start,
+        StatePhase::Exit,
+        GuestRipSource::Fixed(site.guest_rip),
+        SnapshotAdmissibility::CanonicalBoundary,
+    )?;
+    push_range(
+        helper_failure_start,
+        code_len as usize,
+        StatePhase::Exit,
+        GuestRipSource::Fixed(site.guest_rip),
+        if load {
+            SnapshotAdmissibility::ReplayCurrentInstruction
+        } else {
+            SnapshotAdmissibility::InadmissibleAfterEffect
+        },
+    )?;
+    let pc_map = PcMap::new(
+        code_len as usize,
+        1,
+        ranges,
+        vec![GuestBoundaryPoint {
+            host_offset: boundary,
+            rip: GuestRipBoundary::Fixed(site.next_rip),
+            instruction_index: site.instruction_index,
+            committed_instructions: 1,
+            phase: StatePhase::Committed,
+            snapshot: SnapshotAdmissibility::CanonicalBoundary,
+        }],
+    )
+    .map_err(MemoryLoadCompileErrorV2::PcMap)?;
+    Ok((code, pc_map))
 }
 
 /// Shared low-level call primitive. It only transports the V2 context/site to
@@ -1908,6 +2082,86 @@ mod tests {
         );
         assert_eq!(ir_block.pc_map().boundaries().len(), 1);
         assert_ne!(ir_block.code().words(), direct.code().words());
+        assert_eq!(
+            direct.pc_map().code_len() as usize,
+            direct.code().words().len() * 4
+        );
+        assert_eq!(direct.pc_map().instruction_count(), 1);
+        assert_eq!(direct.pc_map().boundaries().len(), 1);
+        assert_eq!(
+            direct.pc_map().boundaries()[0].rip,
+            crate::statepoints::GuestRipBoundary::Fixed(direct.site().next_rip())
+        );
+        let ranges = direct.pc_map().ranges();
+        assert!(!ranges.is_empty());
+        assert_eq!(ranges[0].range.start(), 0);
+        assert_eq!(
+            ranges.last().unwrap().range.end(),
+            direct.pc_map().code_len()
+        );
+        for (index, range) in ranges.iter().enumerate() {
+            assert_eq!(range.range.start() % 4, 0);
+            assert_eq!(range.range.end() % 4, 0);
+            if index > 0 {
+                assert_eq!(ranges[index - 1].range.end(), range.range.start());
+            }
+        }
+        assert!(ranges.iter().any(|range| range.snapshot
+            == crate::statepoints::SnapshotAdmissibility::ReplayCurrentInstruction));
+        assert!(ranges.iter().any(|range| range.snapshot
+            == crate::statepoints::SnapshotAdmissibility::InadmissibleDuringCommit));
+        let exit_ranges = ranges
+            .iter()
+            .filter(|range| range.phase == crate::statepoints::StatePhase::Exit)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            exit_ranges.len(),
+            5,
+            "each out-of-line exit stub has its own range"
+        );
+        assert!(
+            exit_ranges.iter().any(|range| {
+                range.guest_rip == crate::statepoints::GuestRipSource::Fixed(0x1003)
+            }),
+            "STOP-after-commit is attributed to the fixed next RIP"
+        );
+        assert!(
+            ranges.iter().any(|range| {
+                range.phase == crate::statepoints::StatePhase::Committed
+                    && range.guest_rip == crate::statepoints::GuestRipSource::Fixed(0x1003)
+            }),
+            "normal completion is attributed to the fixed next RIP"
+        );
+        assert!(
+            exit_ranges.iter().any(|range| {
+                range.guest_rip == crate::statepoints::GuestRipSource::Fixed(0x1000)
+                    && range.snapshot
+                        == crate::statepoints::SnapshotAdmissibility::ReplayCurrentInstruction
+            }),
+            "load helper failure is attributed to the fixed guest RIP"
+        );
+
+        let store = compile_memory_store_block_v2(
+            CodeView::new(0x1000, &[0x48, 0x89, 0x03]).unwrap(),
+            0x1000,
+        )
+        .unwrap();
+        assert_eq!(
+            store.pc_map().code_len() as usize,
+            store.code().words().len() * 4
+        );
+        let helper = store
+            .pc_map()
+            .ranges()
+            .iter()
+            .find(|range| range.phase == crate::statepoints::StatePhase::HelperCall)
+            .unwrap();
+        assert_eq!(
+            helper.snapshot,
+            crate::statepoints::SnapshotAdmissibility::InadmissibleAfterEffect
+        );
+        assert!(!store.pc_map().ranges().iter().any(|range| range.snapshot
+            == crate::statepoints::SnapshotAdmissibility::ReplayCurrentInstruction));
     }
 
     #[test]

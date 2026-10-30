@@ -2052,6 +2052,39 @@ live. Generation reuse rejects an old handle. This bounded exact-source fixture
 does not map direct V2 blocks, provide owner/MMU integration, or close S3-27.
 See the [S3-27c report](../reports/STAGE_3_S3-27c_2026-10-30.md).
 
+### S3-27d: diagnostic host-PC attribution for direct singleton V2 memory blocks
+
+Direct `MemoryLoadBlockV2` and `MemoryStoreBlockV2` artifacts own a validated
+ARM64 `PcMap` separately from the shared `MemoryArtifactV2`, which remains
+shared with the typed-IR compiler. The map covers every emitted byte in
+contiguous aligned ranges and records one committed boundary at the next guest
+RIP. The direct emitter captures byte offsets from checked encoder word
+positions; it does not alter code emission, admission, labels, order, or ABI.
+
+Entry guards map to the fixed guest RIP. The checked load helper-call range is
+classified `ReplayCurrentInstruction` as generated-state attribution only.
+Replay additionally requires the caller to establish synchronous ordinary
+RAM independently; the safe direct load API accepts arbitrary `GuestMemory`,
+so this map never authorizes replay for arbitrary implementations, MMIO, or
+unknown memory classes. No host-fault recovery is installed. A store
+helper-call range and its failure path are non-replayable after the possible
+write. Commit writes are inadmissible until the committed boundary. The normal
+return and STOP-after-commit use the fixed next RIP; pre-entry exits use the
+fixed entry RIP, while stop-address, budget, and helper-failure stubs have
+their explicit ranges and RIP sources. Helper guest/backend results remain
+distinct in the existing execution result contract.
+
+`PublishedCode::pc_map()` and a generation-checked
+`PublishedArenaMemoryStore::pc_map()` expose owned copies retained after the
+compiler artifact is dropped. Arena metadata remains attached to the store
+generation across notification/cache invalidation; a handle from a reused
+generation is rejected. The existing `MemoryOperationMetadataV2` remains a
+`Copy` execution descriptor, and shared-IR/V3 maps remain unchanged. This
+diagnostic mapping does not add host-fault recovery, physical/MMU/unknown
+memory classes, Stage2 integration, Mini/performance claims, or close full
+S3-27/Stage3. See the
+[S3-27d report](../reports/STAGE_3_S3-27d_2026-10-30.md).
+
 ### S3-19a: invocation-local checked memory helper ABI partial
 
 `od_jit::memory_bridge::CheckedMemoryAdapter` borrows one `&mut dyn

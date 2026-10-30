@@ -23,6 +23,7 @@ pub struct PublishedCode {
     region: MappedRegion,
     block_metadata: Option<BlockMetadata>,
     memory_operation_metadata_v2: Option<MemoryOperationMetadataV2>,
+    direct_memory_metadata_v2: Option<DirectMemoryMetadataV2>,
     checked_load_ir_metadata_v2: Option<CheckedLoadIrMetadataV2>,
     checked_store_ir_metadata_v2: Option<CheckedLoadIrMetadataV2>,
     checked_two_site_metadata_v2: Option<TwoSiteMetadataV2>,
@@ -41,6 +42,12 @@ struct MemoryOperationMetadataV2 {
     source_bytes: [u8; od_jit::runtime::MEMORY_SITE_SOURCE_BYTES_MAX],
     source_len: u8,
     compile_flavor: od_jit::translation::CompileFlavor,
+}
+
+#[derive(Clone)]
+struct DirectMemoryMetadataV2 {
+    operation: MemoryOperationMetadataV2,
+    pc_map: od_jit::statepoints::PcMap,
 }
 
 #[derive(Clone)]
@@ -289,17 +296,19 @@ impl PublishedCode {
             .code()
             .to_le_bytes()
             .map_err(|_| ExecutableMemoryError::AllocationFailed)?;
-        Self::publish_with_metadata(
-            &code,
-            None,
-            Some(MemoryOperationMetadataV2 {
-                entry_rip: block.entry_rip(),
-                site: *block.site(),
-                source_bytes: block.source_bytes_storage().0,
-                source_len: block.source_bytes_storage().1,
-                compile_flavor: block.compile_flavor(),
-            }),
-        )
+        let operation = MemoryOperationMetadataV2 {
+            entry_rip: block.entry_rip(),
+            site: *block.site(),
+            source_bytes: block.source_bytes_storage().0,
+            source_len: block.source_bytes_storage().1,
+            compile_flavor: block.compile_flavor(),
+        };
+        let mut published = Self::publish_with_metadata(&code, None, Some(operation))?;
+        published.direct_memory_metadata_v2 = Some(DirectMemoryMetadataV2 {
+            operation,
+            pc_map: block.pc_map().clone(),
+        });
+        Ok(published)
     }
 
     /// Publishes a shared-IR checked-load artifact under a separate typed
@@ -659,17 +668,19 @@ impl PublishedCode {
             .code()
             .to_le_bytes()
             .map_err(|_| ExecutableMemoryError::AllocationFailed)?;
-        Self::publish_with_metadata(
-            &code,
-            None,
-            Some(MemoryOperationMetadataV2 {
-                entry_rip: block.entry_rip(),
-                site: *block.site(),
-                source_bytes: block.source_bytes_storage().0,
-                source_len: block.source_bytes_storage().1,
-                compile_flavor: block.compile_flavor(),
-            }),
-        )
+        let operation = MemoryOperationMetadataV2 {
+            entry_rip: block.entry_rip(),
+            site: *block.site(),
+            source_bytes: block.source_bytes_storage().0,
+            source_len: block.source_bytes_storage().1,
+            compile_flavor: block.compile_flavor(),
+        };
+        let mut published = Self::publish_with_metadata(&code, None, Some(operation))?;
+        published.direct_memory_metadata_v2 = Some(DirectMemoryMetadataV2 {
+            operation,
+            pc_map: block.pc_map().clone(),
+        });
+        Ok(published)
     }
 
     /// Execute one verified V2 MOV load with invocation-local memory ownership.
@@ -809,6 +820,7 @@ impl PublishedCode {
                 region,
                 block_metadata,
                 memory_operation_metadata_v2,
+                direct_memory_metadata_v2: None,
                 checked_load_ir_metadata_v2: None,
                 checked_store_ir_metadata_v2: None,
                 checked_two_site_metadata_v2: None,
@@ -825,6 +837,10 @@ impl PublishedCode {
         }
     }
 
+    /// Return the map retained with this published entry. For direct V2 load,
+    /// `ReplayCurrentInstruction` is state attribution only: callers must
+    /// independently establish synchronous ordinary RAM before replay. The
+    /// map does not classify arbitrary `GuestMemory`, MMIO, or unknown classes.
     pub fn pc_map(&self) -> Option<&od_jit::statepoints::PcMap> {
         self.block_metadata
             .as_ref()
@@ -843,6 +859,15 @@ impl PublishedCode {
                 self.checked_two_site_metadata_v2
                     .as_ref()
                     .map(|metadata| &metadata.pc_map)
+            })
+            .or_else(|| {
+                self.direct_memory_metadata_v2.as_ref().map(|metadata| {
+                    debug_assert_eq!(
+                        metadata.operation.entry_rip,
+                        metadata.operation.site.guest_rip()
+                    );
+                    &metadata.pc_map
+                })
             })
     }
 
@@ -1968,6 +1993,7 @@ struct ArenaSlot {
     generation: u64,
     metadata: Option<BlockMetadata>,
     memory_operation_metadata_v2: Option<MemoryOperationMetadataV2>,
+    direct_memory_metadata_v2: Option<DirectMemoryMetadataV2>,
     active_code_metadata_v3: Option<ActiveCodeMetadataV3>,
 }
 
@@ -2028,6 +2054,7 @@ impl PublishedArenaBackend {
                 generation: 0,
                 metadata: None,
                 memory_operation_metadata_v2: None,
+                direct_memory_metadata_v2: None,
                 active_code_metadata_v3: None,
             });
             let mut free_slots = Vec::with_capacity(max_blocks);
@@ -2091,9 +2118,11 @@ impl Drop for PublishedArenaBlock {
         if slot.generation == self.generation {
             let block_metadata = slot.metadata.take();
             let memory_metadata = slot.memory_operation_metadata_v2.take();
+            let direct_memory_metadata = slot.direct_memory_metadata_v2.take();
             let active_code_metadata = slot.active_code_metadata_v3.take();
             let occupied = block_metadata.is_some()
                 || memory_metadata.is_some()
+                || direct_memory_metadata.is_some()
                 || active_code_metadata.is_some();
             if !occupied {
                 return;
@@ -2239,6 +2268,29 @@ pub enum TrackedCodeStoreExecutionErrorV2 {
 }
 
 impl PublishedArenaMemoryStore {
+    /// Return the immutable host-PC map retained for this store generation.
+    /// The generation check prevents an old typed handle from observing a
+    /// later artifact after its arena slot has been reused. The map does not
+    /// classify memory types or authorize replay.
+    pub fn pc_map(&self) -> Result<od_jit::statepoints::PcMap, PublishedArenaError> {
+        let arena = self._block.arena.borrow();
+        let slot = arena
+            .slots
+            .get(self._block.slot_index)
+            .filter(|slot| slot.generation == self._block.generation)
+            .ok_or(PublishedArenaError::StaleHandle)?;
+        let metadata = slot
+            .direct_memory_metadata_v2
+            .as_ref()
+            .ok_or(PublishedArenaError::InvalidBlockMetadata)?;
+        if metadata.operation.site.guest_rip() != metadata.operation.entry_rip
+            || metadata.pc_map.instruction_count() != 1
+        {
+            return Err(PublishedArenaError::InvalidBlockMetadata);
+        }
+        Ok(metadata.pc_map.clone())
+    }
+
     /// Execute a verified store through the separate fixture code-owner
     /// contract, then apply its notification after native return/result decode.
     /// The existing private-data unsafe store API is not involved.
@@ -2667,6 +2719,10 @@ impl PublishedArenaBackend {
             slot.generation = generation;
             slot.metadata = None;
             slot.memory_operation_metadata_v2 = Some(metadata);
+            slot.direct_memory_metadata_v2 = Some(DirectMemoryMetadataV2 {
+                operation: metadata,
+                pc_map: block.pc_map().clone(),
+            });
             slot.active_code_metadata_v3 = None;
             // SAFETY: the checked slot range belongs to this arena; the source
             // vector is owned independently and cannot alias the MAP_JIT mapping.
@@ -2751,6 +2807,7 @@ impl PublishedArenaBackend {
             slot.generation = generation;
             slot.metadata = None;
             slot.memory_operation_metadata_v2 = None;
+            slot.direct_memory_metadata_v2 = None;
             slot.active_code_metadata_v3 = Some(metadata);
             // SAFETY: the checked slot range is owned by this arena and the
             // immutable compiler output cannot alias the executable mapping.
@@ -2835,6 +2892,7 @@ impl od_jit::dispatch::CachedBlockBackend for PublishedArenaBackend {
             slot.generation = generation;
             slot.metadata = Some(metadata);
             slot.memory_operation_metadata_v2 = None;
+            slot.direct_memory_metadata_v2 = None;
             slot.active_code_metadata_v3 = None;
             // SAFETY: the checked slot range belongs to this arena; the source
             // `code` vector cannot alias the MAP_JIT mapping.
@@ -34860,7 +34918,10 @@ mod tests {
         let store_view = CodeView::new(0x1000, &store_source).unwrap();
         let store =
             od_jit::memory_load_v2::compile_memory_store_block_v2(store_view, 0x1000).unwrap();
+        let retained_pc_map = store.pc_map().clone();
         let published_store = arena.publish_memory_store_v2(&store).unwrap();
+        drop(store);
+        assert_eq!(published_store.pc_map().unwrap(), retained_pc_map);
         assert_eq!(arena.cached_block_capacity(), 3);
         assert_eq!(arena.available_slots(), 1);
 
@@ -34948,6 +35009,7 @@ mod tests {
         assert_eq!(owner.backings[1].version.get(), 2);
         assert_eq!(invalidated.len(), 1);
         assert_eq!(cache.resident_entries(), 1, "unrelated C entry remains");
+        assert_eq!(published_store.pc_map().unwrap(), retained_pc_map);
 
         let publications = cache.counters().successful_publications;
         let (second_c, _) = run_tracked_code_block(&owner, 0x4000, &mut cache, &mut arena);
@@ -36952,6 +37014,49 @@ mod tests {
         assert_eq!(split_owner.backings[0].bytes, before_split_bytes);
         assert_eq!(split_owner.backings[0].version, before_split_version);
         assert_eq!(split_owner.write_count, 0);
+    }
+
+    #[test]
+    fn direct_memory_v2_pc_map_survives_artifact_drop_and_arena_slot_reuse() {
+        let _guard = jit_test_lock();
+        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            return;
+        }
+
+        let entry = 0x1000_u64;
+        let load_code = CodeView::new(entry, &[0x48, 0x8b, 0x03]).unwrap();
+        let load = od_jit::memory_load_v2::compile_memory_load_block_v2(load_code, entry).unwrap();
+        let expected_load_map = load.pc_map().clone();
+        let published = PublishedCode::publish_memory_load_v2(&load).unwrap();
+        drop(load);
+        assert_eq!(published.pc_map(), Some(&expected_load_map));
+        drop(published);
+
+        let store_code = CodeView::new(entry, &[0x48, 0x89, 0x03]).unwrap();
+        let store =
+            od_jit::memory_load_v2::compile_memory_store_block_v2(store_code, entry).unwrap();
+        let expected_store_map = store.pc_map().clone();
+        let mut arena = PublishedArenaBackend::new(1).unwrap();
+        let handle = arena.publish_memory_store_v2(&store).unwrap();
+        drop(store);
+        assert_eq!(handle.pc_map().unwrap(), expected_store_map);
+
+        // Preserve a diagnostic copy of the first generation's handle to
+        // prove it cannot read metadata after the slot is reused.
+        let stale = PublishedArenaMemoryStore {
+            _block: PublishedArenaBlock {
+                arena: handle._block.arena.clone(),
+                owner_id: handle._block.owner_id.clone(),
+                slot_index: handle._block.slot_index,
+                generation: handle._block.generation,
+            },
+        };
+        drop(handle);
+        let replacement =
+            od_jit::memory_load_v2::compile_memory_store_block_v2(store_code, entry).unwrap();
+        let replacement_handle = arena.publish_memory_store_v2(&replacement).unwrap();
+        assert_eq!(replacement_handle.pc_map().unwrap(), expected_store_map);
+        assert_eq!(stale.pc_map(), Err(PublishedArenaError::StaleHandle));
     }
 
     #[test]
