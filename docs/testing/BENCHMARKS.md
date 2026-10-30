@@ -4,6 +4,43 @@
 
 Для ограниченного CPU-среза [`od-runner --benchmark`](../../tools/runner/README.md#reproducible-cpu-benchmark) собирает decode, translation/lowering, executable publication, повторный interpreter и повторный JIT с чередованием порядка и 20 samples по умолчанию. Каждая серия калибруется отдельно до batch не короче 200 ms; raw samples включают объём работы и elapsed time. Это не покрывает cold process/VMHost launch, ABI/IPC и resource measurements.
 
+## S3-29f: single-block eager/demand-flags comparison
+
+`od-bench flags-compare` is an opt-in Apple Silicon macOS release measurement
+with a fixed seven-case profile of already accepted S0-09 W64 register-only
+forms. Cases cover replaced flag writers before JZ, a budget exit between
+writers, aliased ADD operands, and both taken and not-taken JZ/JNZ outcomes.
+The report binds case bytes and initial states to a deterministic profile
+SHA-256; callers cannot select arbitrary programs.
+
+Before timing, the harness requires each compiler to produce one complete
+block, verifies guest instruction count and code end, then compares eager and
+uncached candidate execution with the interpreter for complete
+`LongModeState`, branch continuation, exit accounting, retirement, and
+remaining budget. Each pair uses the same number of executions and alternates
+variant order. The 20 pairs are calibrated to at least 200 ms of summed
+`execute_block` call durations per variant. State reset, compilation, code
+validation, publication, post-sample comparison, and mapping drop are outside
+the timed intervals. Repeated executions within a sample use the same live
+published mapping. One `PublishedCode` mapping is published at a time and is
+dropped before its paired variant is published; compile time, emitted code
+size, and publication duration are reported separately.
+
+Reproduce one process with:
+
+```sh
+cargo run --release -p od-bench --offline -- flags-compare \
+  --process-run 1 \
+  --output work/tmp/stage3/s3-29f/flags-compare-1.json
+```
+
+Timed calls include the `execute_block` safe wrapper, runtime state
+materialization/snapshot, and arithmetic-flags helper work. This path does not
+include dispatcher lookup, shared-cache admission, interpreter fallback,
+checked-memory helpers, guest-memory workloads, physical x86, or Mini. It is
+single-block strategy evidence only and does not establish a production
+default or full warm-runtime result. The comparison has not been measured yet.
+
 ## Подготовка прогона
 
 Перед измерением закрепить:

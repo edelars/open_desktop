@@ -208,10 +208,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("cache-churn requires native Apple Silicon macOS execution".into());
             }
         }
+        "flags-compare" => {
+            let output = output.ok_or("flags-compare requires --output PATH")?;
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                let value = serde_json::to_value(od_bench::flags_compare::run(process_run)?)?;
+                od_bench::dispatch_cache::write_atomic(&output, &value)?;
+            }
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                let _ = (output, process_run);
+                return Err("flags-compare requires native Apple Silicon macOS execution".into());
+            }
+        }
         _ => {
             print_usage();
             return Err(
-                "expected record, measure, synthetic, dispatch-cache, cold-first-run, warm-first-run, warm-branch-helper, or cache-churn".into(),
+                "expected record, measure, synthetic, dispatch-cache, cold-first-run, warm-first-run, warm-branch-helper, cache-churn, or flags-compare".into(),
             );
         }
     }
@@ -237,6 +250,7 @@ fn print_usage() {
   od-bench warm-first-run --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench warm-branch-helper --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench cache-churn --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
+  od-bench flags-compare --process-run 1..3 --output report.json\n\
          `record` requires macOS ARM64. `measure` rebuilds all keys before timing."
     );
 }

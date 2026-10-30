@@ -2231,7 +2231,7 @@ fn summarize(variant: VariantName, mut samples: Vec<Sample>) -> VariantResult {
     }
 }
 
-struct FetchMemory<'a>(&'a [u8]);
+pub(crate) struct FetchMemory<'a>(pub(crate) &'a [u8]);
 impl GuestMemory for FetchMemory<'_> {
     fn fetch(&mut self, a: u64, _: AccessContext) -> Result<u8, MemoryError> {
         usize::try_from(a)

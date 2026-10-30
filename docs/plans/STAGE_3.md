@@ -2261,6 +2261,27 @@ It does not add owner/MMU integration, cache admission, ISA forms or a
 performance claim; Mini and performance remain deferred to the end of Stage 3.
 See the [S3-29e report](../reports/STAGE_3_S3-29e_2026-10-29.md).
 
+#### S3-29f: single-block eager/demand-flags measurement path
+
+Added `od-bench flags-compare` for a fixed seven-case subset of accepted S0-09
+register-only programs: replaced flag writers, an instruction-budget exit
+between writers, aliased ADD operands, and JZ/JNZ taken and untaken outcomes.
+Both compilers must produce the complete single guest block. Before timing,
+the harness compares full `LongModeState`, exit continuation, remaining
+budget, and retired instructions with the interpreter. It then measures
+repeated execution of already published eager and uncached candidate blocks;
+state reset, compilation, publication and outcome checks stay outside timed
+calls. Pair order alternates, work counts match, each accepted series has 20
+pairs with at least 200 ms per variant, and one MAP_JIT mapping is published
+and dropped at a time. Compile/publication costs and emitted code sizes are
+recorded separately. Timed calls include the safe wrapper, runtime state
+materialization/snapshot, and arithmetic-flags helper work. This is
+single-block evidence only; it does not include dispatcher/shared-cache lookup,
+interpreter fallback, checked-memory helpers, or guest-memory workloads. No
+measurement has been run yet, so S3-29 policy remains open. Mini and
+physical-x86 checks remain deferred to the end of Stage 3. See the
+[S3-29f report](../reports/STAGE_3_S3-29f_2026-10-30.md).
+
 ### S3-30. Выбрать register allocator
 
 1. На измеренных горячих workloads определить цену spills/reloads и helper clobbers текущего простого allocator.

@@ -716,6 +716,25 @@ Run `cargo test -p od-jit --lib rsi_rdi_data_direct_displacement_profile_is_exac
 
 Run `cargo test -p od-host --lib s3_29e_bounded_arithmetic_load_coordinator --offline` and `cargo test -p od-jit --offline`. Exercise the public `od_jit::memory_dispatch::run_bounded_arithmetic_load` call with eager and uncached demand-flags strategies over one/two exact ADD/SUB/CMP full writers, `48 8B 03`, JZ/JNZ and the existing ADD fallthrough. Compare complete state, RAM, flags and retirement with the interpreter for both branch outcomes. Verify `#PF` and `#GP` preserve the prefix and load RIP with no load retirement/RAX commit/suffix, then resume at that RIP without replay; backend failures must remain host errors. Check shared budget and stop-RIP/STOP/event priority at each phase boundary and after publication before native entry. Inject malformed native and memory reports, invalid plans/entries, unsupported compilation, zero progress and invalid phase RIPs; require typed results/errors without panics or masked faults. Confirm register mappings are released before memory publication and memory mappings before suffix publication through host adapters. No owner/MMU, cache, ISA-form, Mini or performance claims are in this slice. Full Stage 3 local harness and Linux workspace checks are recorded in the [S3-29e report](../reports/STAGE_3_S3-29e_2026-10-29.md).
 
+### S3-29f single-block eager/demand-flags measurement path
+
+`od-bench flags-compare` uses a fixed seven-case profile of accepted S0-09
+W64 programs: replaced arithmetic writers, a budget exit between writers,
+aliased ADD inputs, and taken/not-taken JZ and JNZ. Both compilers must emit
+the complete single block; before timing the harness compares complete CPU
+state, branch continuation, exit accounting, retirement and remaining budget
+with the interpreter. The measured interval sums repeated calls to one
+published artifact after state reset; compilation, publication, reset and
+validation remain separate. Variant order alternates across 20 pairs, each
+with at least 200 ms per variant. One MAP_JIT mapping is live at a time and is
+dropped before the paired variant is published. No measurement has been run
+yet. Timed calls include the `execute_block` safe wrapper, state
+materialization/snapshot and arithmetic-flags helper work. It does not measure
+dispatcher/cache lookup, interpreter fallback, checked-memory helpers or
+guest-memory workloads, and does not select the production default. Mini and
+physical-x86 checks remain deferred until the end of Stage 3. See the
+[S3-29f report](../reports/STAGE_3_S3-29f_2026-10-30.md).
+
 ### S3-35a cold first full-corpus benchmark path
 
 `od-bench cold-first-run` compares interpreter execution and the default
