@@ -1590,6 +1590,27 @@ physical-x86 source-byte confirmation is claimed. Mini/performance checks
 remain deferred until Stage 3 ends. See
 [S3-33k report](../reports/STAGE_3_S3-33k_2026-10-30.md).
 
+### S3-33l: opt-in exact native LEA RAX,[RBX+RCX]
+
+The separate uncached profile admits only exact bytes `48 8D 04 0B`: W64 and
+address64, destination RAX, base RBX, index RCX, scale 1, displacement 0,
+length 4. It keeps the earlier no-displacement and disp8 LEA profiles
+independent. Lowering reads RBX and RCX before any write, adds them as W64 with
+`FlagEffect::Preserve`, writes RAX, then commits once. Full RFLAGS, definedness,
+and pending flag-writer state are preserved. LEA performs no data access,
+canonicality check, flags helper, or memory helper. Eager and demand-flags
+candidate compile/dispatch remain uncached opt-in APIs.
+
+Local negative admission covers neighboring ModR/M/SIB encodings, register
+swaps, scales, no index, displacement forms, RIP-relative addressing, prefixes,
+truncation, and a branch into the instruction body. Host differential checks
+cover representative operands, full state, flags, pending CMP→LEA→JNZ with
+opposite predecessor/sum ZF, zero data callbacks, budget exhaustion, and STOP
+before/after retirement. Exact bytes have local differential evidence only;
+no physical fixture confirmation is available. Mini/performance remain
+deferred until Stage 3 ends. See
+[S3-33l report](../reports/STAGE_3_S3-33l_2026-10-30.md).
+
 ### S3-29d: uncached arithmetic-to-checked-load handoff
 
 The bounded host fixture composes existing eager and demand-flags native

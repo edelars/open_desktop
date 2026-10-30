@@ -2533,6 +2533,12 @@ exact gates и fail-closed omission checks. Точного физическог�
 Mini/performance отложены до конца Stage 3; Stage 2 и owner/MMU вне scope.
 См. [S3-33k report](../reports/STAGE_3_S3-33k_2026-10-30.md).
 
+#### S3-33l. Exact native LEA RAX,[RBX+RCX]
+
+Отдельный uncached профиль допускает только байты `48 8D 04 0B`: W64/address64, RAX destination, RBX base, RCX index, scale 1, displacement 0, длина 4. Предыдущие LEA профили остаются отдельными. Lowering читает RBX и RCX до записи результата, выполняет W64 Add с Preserve flags, пишет RAX и коммитит одну инструкцию. Data memory и helper не используются; guest address values не проходят canonicality/data-access path. Admission/decoder negatives и eager/candidate compilation покрыты локальными тестами; host parity проверяет representative operands, flags, pending CMP→LEA→Jcc, budget exhaustion, STOP at entry и нулевые data callbacks.
+
+Доказательство ограничено локальными differential checks. Для точных байтов `48 8D 04 0B` нет отдельного physical fixture evidence; этот срез не расширяет Stage2, owner/MMU или Mini. Mini и performance остаются not_run до конца Stage 3. См. [S3-33l report](../reports/STAGE_3_S3-33l_2026-10-30.md).
+
 ## 9. Проверка, производительность и интеграция
 
 ### S3-34. Собрать corpus и проверить сам harness

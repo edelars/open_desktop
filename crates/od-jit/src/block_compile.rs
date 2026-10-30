@@ -7,9 +7,9 @@ use crate::block::{
     self, AdmittedInstructionBoundaries, BlockLimits, BlockStopReason, BuildError, BuildOutcome,
     CodeView, DecodeBoundary, S0_09NopAddRaxImm8Admission, S0_09NopAdmission,
     S0_09NopCmpRaxImm8Admission, S0_09NopDecRaxAdmission, S0_09NopIncRaxAdmission,
-    S0_09NopLeaRaxRbxAdmission, S0_09NopLeaRaxRbxDisp8Admission, S0_09NopMovRaxImm32Admission,
-    S0_09NopNegRaxAdmission, S0_09NopNotRaxAdmission, S0_09NopSubRaxImm8Admission,
-    S0_09NopXchgRaxRbxAdmission,
+    S0_09NopLeaRaxRbxAdmission, S0_09NopLeaRaxRbxDisp8Admission, S0_09NopLeaRaxRbxRcxAdmission,
+    S0_09NopMovRaxImm32Admission, S0_09NopNegRaxAdmission, S0_09NopNotRaxAdmission,
+    S0_09NopSubRaxImm8Admission, S0_09NopXchgRaxRbxAdmission,
 };
 use crate::block_emitter::{
     BlockEmitterError, EmittedCheckedLoadBlockV2, EmittedCheckedStoreBlockV2, EmittedRuntimeBlock,
@@ -774,6 +774,81 @@ fn compile_native_lea_rax_rbx_disp8_inner(
     )
     .map_err(BlockCompileError::Build)?;
     let lowered = match lowering::lower_for_native_lea_rax_rbx_disp8(&built, admission)
+        .map_err(BlockCompileError::Lowering)?
+    {
+        LoweringOutcome::Program(lowered) => lowered,
+        LoweringOutcome::NoNativePrefix {
+            rip,
+            reason,
+            deferred_error,
+        } => {
+            return Ok(BlockCompileOutcome::NoNativePrefix {
+                rip,
+                reason,
+                deferred_error,
+            });
+        }
+    };
+    if let BuildOutcome::Block(block) = &built {
+        for instruction in &block.instructions {
+            for rip in [instruction.guest_rip, instruction.next_rip] {
+                if !admission.contains(rip) {
+                    return Err(BlockCompileError::DispatchBlockBoundaryNotAdmitted { rip });
+                }
+            }
+        }
+    }
+    compile_lowered(code.code_end(), lowered, strategy)
+}
+
+/// Compile exact bare `LEA RAX,[RBX+RCX]` as a separate opt-in uncached path.
+pub fn compile_block_for_native_lea_rax_rbx_rcx(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopLeaRaxRbxRcxAdmission,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    compile_native_lea_rax_rbx_rcx_inner(
+        code,
+        entry_rip,
+        admission,
+        crate::block_emitter::FlagMaterializationStrategy::Eager,
+    )
+}
+
+/// Compile the demand-flags candidate for exact bare `LEA RAX,[RBX+RCX]`.
+pub fn compile_block_for_native_lea_rax_rbx_rcx_demand_flags_candidate(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopLeaRaxRbxRcxAdmission,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    compile_native_lea_rax_rbx_rcx_inner(
+        code,
+        entry_rip,
+        admission,
+        crate::block_emitter::FlagMaterializationStrategy::DemandDrivenCandidate,
+    )
+}
+
+fn compile_native_lea_rax_rbx_rcx_inner(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopLeaRaxRbxRcxAdmission,
+    strategy: crate::block_emitter::FlagMaterializationStrategy,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    if !admission.matches_code(code) {
+        return Err(BlockCompileError::NopAdmissionDoesNotMatchCode);
+    }
+    if !admission.contains(entry_rip) {
+        return Err(BlockCompileError::NopEntryNotAdmitted { entry_rip });
+    }
+    let built = block::build_block_for_native_lea_rax_rbx_rcx(
+        code,
+        entry_rip,
+        AccessContext::default(),
+        BlockLimits::default(),
+    )
+    .map_err(BlockCompileError::Build)?;
+    let lowered = match lowering::lower_for_native_lea_rax_rbx_rcx(&built, admission)
         .map_err(BlockCompileError::Lowering)?
     {
         LoweringOutcome::Program(lowered) => lowered,
@@ -1911,6 +1986,48 @@ mod tests {
                 "LEA RAX,[RBX] must not call a helper"
             );
             for instruction_rip in [0xB2A0, 0xB2A3] {
+                assert!(compiled.emitted().pc_map().ranges().iter().any(|range| {
+                    range.guest_rip == crate::statepoints::GuestRipSource::Fixed(instruction_rip)
+                }));
+            }
+        }
+    }
+
+    #[test]
+    fn native_lea_rax_rbx_rcx_compiles_eager_and_candidate_without_memory_helper() {
+        let code = [
+            0x48, 0x8d, 0x04, 0x0b, // LEA RAX,[RBX+RCX]
+            0x74, 0x00, // JZ to code end, consuming unchanged flags
+        ];
+        let view = CodeView::new(0xB2A0, &code).unwrap();
+        let admission = S0_09NopLeaRaxRbxRcxAdmission::from_code(view).unwrap();
+        for candidate in [false, true] {
+            let outcome = if candidate {
+                compile_block_for_native_lea_rax_rbx_rcx_demand_flags_candidate(
+                    view, 0xB2A0, &admission,
+                )
+            } else {
+                compile_block_for_native_lea_rax_rbx_rcx(view, 0xB2A0, &admission)
+            }
+            .unwrap();
+            let BlockCompileOutcome::Compiled(compiled) = outcome else {
+                panic!("native LEA/JZ should compile: {outcome:?}");
+            };
+            assert_eq!(compiled.code_end(), 0xB2A6);
+            assert_eq!(compiled.emitted().pc_map().instruction_count(), 2);
+            assert!(compiled.emitted().safe_entry_provenance());
+            assert_eq!(
+                compiled
+                    .emitted()
+                    .code()
+                    .words()
+                    .iter()
+                    .filter(|word| **word == 0xD63F_0200)
+                    .count(),
+                0,
+                "LEA RAX,[RBX+RCX] must not call a helper"
+            );
+            for instruction_rip in [0xB2A0, 0xB2A4] {
                 assert!(compiled.emitted().pc_map().ranges().iter().any(|range| {
                     range.guest_rip == crate::statepoints::GuestRipSource::Fixed(instruction_rip)
                 }));

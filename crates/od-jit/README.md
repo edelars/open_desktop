@@ -275,6 +275,16 @@ exact new bytes; it does not establish a physical-x86 oracle for this encoding.
 Mini and performance checks remain deferred until Stage 3 ends. See the
 [S3-33k report](../../docs/reports/STAGE_3_S3-33k_2026-10-30.md).
 
+S3-33l adds a separate uncached opt-in profile for exact `LEA RAX,[RBX+RCX]`
+(`48 8D 04 0B`). It admits only W64/address64, RBX base, RCX index, scale 1,
+and zero displacement. Lowering reads both source GPRs before writing RAX,
+uses W64 Add with preserved flags, then commits once. This computes a register
+sum and performs no data-memory access or helper call. The profile remains
+separate from the no-displacement and disp8 LEA profiles. Local parity evidence
+does not include a dedicated physical fixture for these exact bytes.
+
+[S3-33l report](../../docs/reports/STAGE_3_S3-33l_2026-10-30.md).
+
 S3-33i adds a separate uncached opt-in profile for the exact bare bytes
 `48 87 D8` (`XCHG RAX,RBX`). Admission checks both the decoded W64 register
 pair and all three source bytes; equivalent ModRM/short-register forms, self

@@ -249,6 +249,27 @@ representative local differential checks, not an exhaustive enumeration of
 remain deferred until Stage 3 ends; Stage 2 and owner/MMU are outside this
 slice. See the [S3-33k report](../reports/STAGE_3_S3-33k_2026-10-30.md).
 
+## S3-33l: exact native LEA RAX,[RBX+RCX]
+
+Run the three exact admission, compiler, and host parity gates from
+`python3 tests/cpu/stage3_harness.py --suite local`. The opt-in uncached
+profile admits only `48 8D 04 0B`: W64/address64, RAX destination, RBX base,
+RCX index, scale 1, zero displacement, and length 4. It remains separate from
+the earlier no-displacement and disp8 LEA profiles. Lowering reads both sources
+before writing RAX, adds as W64 with `FlagEffect::Preserve`, and commits once;
+compiled code must not contain a guest data-memory operation or helper call.
+
+Admission negatives cover adjacent ModR/M/SIB encodings, swapped registers,
+other scales, no index, displacement-bearing and RIP-relative forms, prefixes,
+truncation, and branch targets inside the instruction. Host parity checks full
+state across representative values and flags, zero data callbacks, and
+CMP→LEA→JNZ where predecessor ZF opposes the sum's ZF. Distinguishable branch
+paths plus budget=1 and STOP at entry/after LEA check retirement and RIP
+boundaries. These are local differential checks; there is no dedicated
+physical fixture evidence for the exact bytes. Mini/performance remain deferred
+until Stage 3 ends. See the
+[S3-33l report](../reports/STAGE_3_S3-33l_2026-10-30.md).
+
 ## Срез A: один register-only блок
 
 1. Использовать только точные S0-09 формы из JIT contract и fixtures с
