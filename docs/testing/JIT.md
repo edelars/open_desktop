@@ -84,6 +84,12 @@ Run the compiler regression `cargo test -p od-jit native_inc_rax_is_opt_in_and_c
 
 The host regression checks eager and candidate full-state parity for CF=0/1 and the arithmetic edge values, followed by native JZ/JNZ consumers. The native path must retire all selected instructions natively; candidate budget boundaries and STOP-RIP at the pre-INC boundary must match interpreter state without replay. The compiler test also proves that the existing bridge still returns `NoNativePrefix` at INC and that both native strategies include the branch in their PC map. Prefixes, DEC and other registers remain negative admission cases from S3-29c. Do not run Mini or performance checks until the final Stage 3 gate.
 
+## S3-33b: exact native DEC RAX
+
+Run `cargo test -p od-jit --lib dec_rax_admission_is_exact_and_separate_from_inc_profile --offline`, `cargo test -p od-jit --lib native_dec_rax_is_opt_in_and_compiles_following_branch_consumers --offline`, and `cargo test -p od-host --lib native_dec_rax_preserves_cf_and_matches_interpreter_branches --offline`. Separate `compile_block_for_native_dec_rax*` and `dispatch::run_with_native_dec_rax*` APIs use `S0_09NopDecRaxAdmission` and only exact bare `48 FF C8`. W64 Subtract+1 writes PF/AF/ZF/SF/OF while preserving CF and other bits. The demand candidate materializes pending full flags before DEC and preserves live allocator homes across the helper boundary; DEC flags are eager and introduce no pending descriptor/helper ABI.
+
+The host differential test compares complete CPU state and retirement with `od_isa::execute::step` for both CF values, 0/1/`u64::MAX`/signed extrema/AF-PF edges, and both JZ/JNZ outcomes. It covers eager/candidate execution, candidate budgets 0..6, STOP at entry and immediately before DEC after the pending CMP, pending-flags PC-map evidence, and negative exact-form admission (truncation, prefixes, INC, other registers, immediate SUB, memory DEC, and branches into DEC). This remains partial uncached correctness evidence with no performance claim; Mini and performance checks remain deferred until Stage 3 ends.
+
 ## Срез A: один register-only блок
 
 1. Использовать только точные S0-09 формы из JIT contract и fixtures с

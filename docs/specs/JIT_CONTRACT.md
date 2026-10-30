@@ -1413,6 +1413,27 @@ INC. This is bounded correctness evidence only; it changes no shared cache or
 default policy and makes no performance claim. Mini/performance remain deferred
 until Stage 3 ends. See [S3-33a report](../reports/STAGE_3_S3-33a_2026-10-30.md).
 
+### S3-33b: opt-in exact native DEC RAX
+
+The separately named uncached `compile_block_for_native_dec_rax*` and
+`dispatch::run_with_native_dec_rax*` paths use their own
+`S0_09NopDecRaxAdmission`; the S3-33a INC admission and APIs remain INC-only.
+They accept only exact bare `48 FF C8` (`DEC RAX`) in addition to S0-09 forms
+and bare NOP. DEC lowers as W64 Subtract by constant one with the existing
+INC/DEC partial RFLAGS mask PF/AF/ZF/SF/OF, so CF and every other bit are
+preserved. The demand-flags candidate materializes any pending full writer
+before DEC and preserves live allocator homes across that helper boundary;
+DEC flags are merged eagerly, with no new pending descriptor or helper ABI.
+The path remains uncached and opt-in.
+
+Compiler and host differential coverage checks exact negative admissions,
+complete CPU state and retirement against `od_isa::execute::step` for both CF
+inputs and zero, one, `u64::MAX`, signed extrema, AF/PF edges, and native JZ/JNZ
+consumers. Candidate budgets and STOP at entry and immediately before DEC are covered. This is partial
+Stage 3 correctness evidence only; no performance claim is made, and Mini and
+performance checks remain deferred to the end of Stage 3. See
+[S3-33b report](../reports/STAGE_3_S3-33b_2026-10-30.md).
+
 ### S3-29d: uncached arithmetic-to-checked-load handoff
 
 The bounded host fixture composes existing eager and demand-flags native

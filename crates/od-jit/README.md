@@ -177,6 +177,17 @@ budget and STOP-RIP handling. This slice remains exact-form only and makes no
 performance claim; Mini and measurements remain deferred to the end of Stage 3.
 See [S3-33a report](../../docs/reports/STAGE_3_S3-33a_2026-10-30.md).
 
+S3-33b adds a separate uncached opt-in `S0_09NopDecRaxAdmission` and
+`compile_block_for_native_dec_rax*` / `dispatch::run_with_native_dec_rax*`
+paths for exact bare `48 FF C8`. W64 Subtract+1 updates only PF/AF/ZF/SF/OF,
+preserving CF and other bits. The demand-flags candidate materializes a pending
+full writer before DEC and preserves allocator live homes across the helper;
+the partial flags then merge eagerly without a new pending descriptor or helper
+ABI. INC admission and APIs remain separate and INC-only. This partial correctness
+slice is uncached and makes no performance claim; Mini and performance checks
+remain deferred to the end of Stage 3. See
+[S3-33b report](../../docs/reports/STAGE_3_S3-33b_2026-10-30.md).
+
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).
 Проверки корректности и измерений по задачам этапа — в

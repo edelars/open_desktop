@@ -39665,6 +39665,298 @@ mod tests {
     }
 
     #[test]
+    fn native_dec_rax_preserves_cf_and_matches_interpreter_branches() {
+        let _guard = jit_test_lock();
+        use od_isa::memory::{AccessKind, GuestMemory};
+        use od_jit::statepoints::{SnapshotAdmissibility, StatePhase};
+
+        struct CodeOnly<'a> {
+            base: u64,
+            bytes: &'a [u8],
+        }
+        impl GuestMemory for CodeOnly<'_> {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                address
+                    .checked_sub(self.base)
+                    .and_then(|offset| self.bytes.get(offset as usize))
+                    .copied()
+                    .ok_or(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Fetch,
+                    })
+            }
+            fn read(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: &[u8],
+            ) -> Result<(), MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+        fn interpret(
+            code: &[u8],
+            base: u64,
+            state: &mut od_isa::LongModeState,
+            budget: u64,
+        ) -> u64 {
+            let mut memory = CodeOnly { base, bytes: code };
+            let mut retired = 0;
+            while retired < budget && state.rip < base + code.len() as u64 {
+                assert!(matches!(
+                    od_isa::execute::step(state, &mut memory, AccessContext::default()).unwrap(),
+                    od_isa::execute::StepOutcome::Advanced | od_isa::execute::StepOutcome::Branched
+                ));
+                retired += 1;
+            }
+            retired
+        }
+        struct CandidateWitness {
+            executor: PublishedBlockExecutor,
+            pending_seen: bool,
+        }
+        impl od_jit::dispatch::ControlledBlockExecutor for CandidateWitness {
+            type Error = PublishedBlockExecutionError;
+            fn execute_one_block_controlled(
+                &mut self,
+                block: &od_jit::block_compile::CompiledBlock,
+                state: &mut od_isa::LongModeState,
+                budget: u64,
+                control: od_jit::dispatch::DispatchControl<'_>,
+            ) -> Result<od_jit::dispatch::BlockExecutionReport, Self::Error> {
+                self.pending_seen |= block.emitted().pc_map().ranges().iter().any(|range| {
+                    range.phase != StatePhase::Exit
+                        && range.snapshot == SnapshotAdmissibility::InadmissiblePendingFlags
+                });
+                od_jit::dispatch::ControlledBlockExecutor::execute_one_block_controlled(
+                    &mut self.executor,
+                    block,
+                    state,
+                    budget,
+                    control,
+                )
+            }
+        }
+
+        let base = 0x8E00;
+        let mut code = vec![0x48, 0x3B, 0xC1, 0x48, 0xB8]; // CMP RAX,RCX; MOV RAX,imm64
+        code.extend_from_slice(&0_u64.to_le_bytes());
+        code.extend_from_slice(&[0x48, 0xff, 0xc8, 0x74, 0x0a]); // DEC RAX; JZ over MOV RBX
+        code.extend_from_slice(&[0x48, 0xbb]);
+        code.extend_from_slice(&1_u64.to_le_bytes());
+        code.extend_from_slice(&[0x75, 0x0a]); // JNZ over MOV RCX
+        code.extend_from_slice(&[0x48, 0xb9]);
+        code.extend_from_slice(&2_u64.to_le_bytes());
+        let dec_rip = base + 13;
+        let stop = AtomicU8::new(0);
+        let control = od_jit::dispatch::DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let values = [
+            0_u64,
+            1,
+            u64::MAX,
+            0x8000_0000_0000_0000,
+            0x7fff_ffff_ffff_ffff,
+            0x10,
+            0x0e,
+            0x7e,
+            0x7f,
+        ];
+        for value in values {
+            for carry in [false, true] {
+                let mut scenario = code.clone();
+                scenario[5..13].copy_from_slice(&value.to_le_bytes());
+                let view = CodeView::new(base, &scenario).unwrap();
+                let admission =
+                    od_jit::dispatch::DecRaxInterpreterFallbackAdmission::from_code(view).unwrap();
+                let mut initial = od_isa::LongModeState::default();
+                initial.rip = base;
+                initial.rflags = 0x202 | (1 << 21);
+                initial.gpr[0] = if carry { 0 } else { 2 };
+                initial.gpr[1] = 1;
+                initial.gpr[2] = 0x1234;
+                initial.gpr[3] = 0x5678;
+                let mut expected = initial.clone();
+                let full_retired = interpret(&scenario, base, &mut expected, 6);
+                assert_eq!(full_retired, 6);
+                assert_eq!(expected.gpr[0], value.wrapping_sub(1));
+                assert_eq!(expected.rflags & 1, u64::from(carry));
+                assert_eq!(expected.rflags & (1 << 21), 1 << 21);
+
+                let mut candidate = initial.clone();
+                let mut witness = CandidateWitness {
+                    executor: PublishedBlockExecutor,
+                    pending_seen: false,
+                };
+                let candidate_result =
+                    od_jit::dispatch::run_with_native_dec_rax_demand_flags_candidate(
+                        view,
+                        &admission,
+                        &mut candidate,
+                        6,
+                        control,
+                        &mut witness,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    candidate, expected,
+                    "candidate value={value:#x}, CF={carry}"
+                );
+                assert_eq!(candidate_result.retired_native, 6);
+                assert_eq!(candidate_result.retired_interpreter, 0);
+                assert!(
+                    witness.pending_seen,
+                    "DEC must materialize preceding full CMP flags"
+                );
+
+                let mut eager = initial.clone();
+                let eager_result = od_jit::dispatch::run_with_native_dec_rax(
+                    view,
+                    &admission,
+                    &mut eager,
+                    6,
+                    control,
+                    &mut PublishedBlockExecutor,
+                )
+                .unwrap();
+                assert_eq!(eager, expected, "eager value={value:#x}, CF={carry}");
+                assert_eq!(eager_result.retired_native, 6);
+                assert_eq!(eager_result.retired_interpreter, 0);
+
+                for budget in 0..=6 {
+                    let mut bounded = initial.clone();
+                    let result = od_jit::dispatch::run_with_native_dec_rax_demand_flags_candidate(
+                        view,
+                        &admission,
+                        &mut bounded,
+                        budget,
+                        control,
+                        &mut PublishedBlockExecutor,
+                    )
+                    .unwrap();
+                    let mut oracle = initial.clone();
+                    let retired = interpret(&scenario, base, &mut oracle, budget);
+                    assert_eq!(
+                        bounded, oracle,
+                        "budget={budget}, value={value:#x}, CF={carry}"
+                    );
+                    assert_eq!(result.retired_native + result.retired_interpreter, retired);
+                    assert_eq!(result.retired_interpreter, 0);
+                }
+
+                // STOP at entry is a stable boundary; the instruction is not retired.
+                let stop_control = od_jit::dispatch::DispatchControl {
+                    stop_rip: Some(base),
+                    stop_requested: &stop,
+                    event_requested: None,
+                };
+                let mut stopped = initial.clone();
+                let result = od_jit::dispatch::run_with_native_dec_rax_demand_flags_candidate(
+                    view,
+                    &admission,
+                    &mut stopped,
+                    6,
+                    stop_control,
+                    &mut PublishedBlockExecutor,
+                )
+                .unwrap();
+                assert_eq!(stopped, initial);
+                assert_eq!(result.retired_native + result.retired_interpreter, 0);
+                assert_eq!(
+                    result.exit,
+                    od_jit::dispatch::DispatchExit::Runtime(RuntimeExitTag::StopAddress)
+                );
+
+                // A native stop guard may also expose the exact boundary
+                // after CMP/MOV and before DEC, with canonical pending flags.
+                let stop_before_dec = od_jit::dispatch::DispatchControl {
+                    stop_rip: Some(dec_rip),
+                    stop_requested: &stop,
+                    event_requested: None,
+                };
+                let mut before_dec = initial.clone();
+                let stopped = od_jit::dispatch::run_with_native_dec_rax_demand_flags_candidate(
+                    view,
+                    &admission,
+                    &mut before_dec,
+                    6,
+                    stop_before_dec,
+                    &mut PublishedBlockExecutor,
+                )
+                .unwrap();
+                let mut expected_before_dec = initial.clone();
+                assert_eq!(interpret(&scenario, base, &mut expected_before_dec, 2), 2);
+                assert_eq!(before_dec, expected_before_dec);
+                assert_eq!(before_dec.rip, dec_rip);
+                assert_eq!(stopped.retired_native, 2);
+                assert_eq!(stopped.retired_interpreter, 0);
+                assert_eq!(
+                    stopped.exit,
+                    od_jit::dispatch::DispatchExit::Runtime(RuntimeExitTag::StopAddress)
+                );
+                assert!(dec_rip < base + scenario.len() as u64);
+            }
+        }
+    }
+
+    #[test]
     fn native_fallback_nop_preserves_preceding_arithmetic_flags() {
         let _guard = jit_test_lock();
         let base_rip = 0x7BC0;

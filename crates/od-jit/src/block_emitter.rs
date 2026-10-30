@@ -1513,17 +1513,15 @@ fn emit_runtime_block_inner(
                 flags,
             } => {
                 require_w64(*width, operation_index)?;
-                let partial_inc = *flags == FlagEffect::WriteMask(crate::ir::INC_RAX_FLAGS_MASK)
-                    && *kind == IntegerKind::Add
-                    && result.is_some();
-                if *flags != FlagEffect::Arithmetic && !partial_inc {
+                let partial_inc_dec = is_partial_inc_dec(*flags, *kind, result.is_some());
+                if *flags != FlagEffect::Arithmetic && !partial_inc_dec {
                     return Err(BlockEmitterError::UnsupportedFlagEffect {
                         operation: operation_index,
                         effect: *flags,
                     });
                 }
                 let (rip, index) = active_guest(program, active_instruction)?;
-                if partial_inc
+                if partial_inc_dec
                     && flag_strategy == FlagMaterializationStrategy::DemandDrivenCandidate
                 {
                     if let Some(descriptor) = pending_flags {
@@ -1569,7 +1567,7 @@ fn emit_runtime_block_inner(
                 }
                 let pending_start = code_offset(&encoder)?;
                 let mut integer_effect_start = pending_start;
-                if flag_strategy == FlagMaterializationStrategy::Eager || partial_inc {
+                if flag_strategy == FlagMaterializationStrategy::Eager || partial_inc_dec {
                     let boundary = HelperBoundaryPosition::BeforeOperation(operation_index);
                     allocation.helper_boundary(boundary).map_err(|_| {
                         BlockEmitterError::MissingHelperBoundary {
@@ -1622,8 +1620,8 @@ fn emit_runtime_block_inner(
                     );
                     encoder.bind(success)?;
                     allocation.emit_restore_after_helper(&mut encoder, boundary)?;
-                    if partial_inc {
-                        emit_merge_helper_flags(&mut encoder, crate::ir::INC_RAX_FLAGS_MASK)?;
+                    if partial_inc_dec {
+                        emit_merge_helper_flags(&mut encoder, crate::ir::INC_DEC_RAX_FLAGS_MASK)?;
                     } else {
                         emit_store_helper_flags(&mut encoder)?;
                     }
@@ -1649,7 +1647,7 @@ fn emit_runtime_block_inner(
                         FRAME_PENDING_FLAGS_RHS,
                     )?;
                 }
-                if flag_strategy == FlagMaterializationStrategy::Eager || partial_inc {
+                if flag_strategy == FlagMaterializationStrategy::Eager || partial_inc_dec {
                     allocation.emit_load_scratch(&mut encoder, *lhs, xreg(13)?)?;
                     allocation.emit_load_scratch(&mut encoder, *rhs, xreg(14)?)?;
                 }
@@ -1693,7 +1691,7 @@ fn emit_runtime_block_inner(
                     integer_snapshot,
                 );
                 if flag_strategy == FlagMaterializationStrategy::DemandDrivenCandidate
-                    && !partial_inc
+                    && !partial_inc_dec
                 {
                     pending_flags = Some(PendingFlagsDescriptor::w64(*kind));
                 }
@@ -2020,10 +2018,8 @@ fn validate_runtime_shape(
                     instruction_index: 0,
                 })?;
                 require_w64(*width, index)?;
-                let partial_inc = *flags == FlagEffect::WriteMask(crate::ir::INC_RAX_FLAGS_MASK)
-                    && *kind == IntegerKind::Add
-                    && result.is_some();
-                if *flags != FlagEffect::Arithmetic && !partial_inc {
+                let partial_inc_dec = is_partial_inc_dec(*flags, *kind, result.is_some());
+                if *flags != FlagEffect::Arithmetic && !partial_inc_dec {
                     return Err(BlockEmitterError::UnsupportedFlagEffect {
                         operation: index,
                         effect: *flags,
@@ -2349,8 +2345,8 @@ fn emit_store_helper_flags(encoder: &mut Encoder) -> Result<(), BlockEmitterErro
 }
 
 fn emit_merge_helper_flags(encoder: &mut Encoder, mask: u64) -> Result<(), BlockEmitterError> {
-    // INC preserves CF (and every other bit outside its architectural write
-    // mask), so merge the helper's ADD flags with the staged prior RFLAGS.
+    // INC/DEC preserve CF (and every bit outside their architectural write
+    // mask), so merge the helper's ADD/SUB flags with staged prior RFLAGS.
     encoder.ldr_x(
         XRegOrZero::Reg(xreg(13)?),
         AddressBase::Sp,
@@ -2370,6 +2366,12 @@ fn emit_merge_helper_flags(encoder: &mut Encoder, mask: u64) -> Result<(), Block
     encoder.add_x(xreg(13)?, xreg(13)?, XRegOrZero::Reg(xreg(15)?));
     encoder.str_x(XRegOrZero::Reg(xreg(13)?), AddressBase::Reg(xreg(16)?), 0)?;
     Ok(())
+}
+
+fn is_partial_inc_dec(flags: FlagEffect, kind: IntegerKind, has_result: bool) -> bool {
+    flags == FlagEffect::WriteMask(crate::ir::INC_DEC_RAX_FLAGS_MASK)
+        && matches!(kind, IntegerKind::Add | IntegerKind::Subtract)
+        && has_result
 }
 
 fn emit_materialize_pending_flags(

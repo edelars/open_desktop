@@ -2337,6 +2337,22 @@ retirement, budget, STOP, PC-map и negative-form checks документиру�
 correctness slice; S3-33 и Stage 3 остаются открытыми, performance/Mini
 проверки отложены до конца этапа.
 
+#### S3-33b. Exact native qword DEC RAX
+
+Добавлен отдельный uncached opt-in путь для точного bare `48 FF C8` через
+`S0_09NopDecRaxAdmission` и отдельно названные eager/demand-candidate compile
+и dispatch API. Admission не меняет INC-only `S0_09NopIncRaxAdmission`.
+Lowering представляет DEC как W64 Subtract на единицу с частичной маской
+PF/AF/ZF/SF/OF; CF и остальные bits сохраняются. Demand candidate материализует
+предшествующий полный flags writer до DEC и сохраняет live allocator homes;
+новых pending descriptor/helper ABI нет. Отдельные compiler и host differential
+проверки покрывают полное состояние, retirement, оба CF, arithmetic/AF/PF
+edges, JZ/JNZ, candidate budgets и STOP на entry/перед DEC после pending CMP;
+также проверены точные отрицательные формы.
+Срез частичный: он не выбирает default, не входит в shared cache и не содержит
+performance claim. Mini и замеры отложены до конца Stage 3. См.
+[S3-33b report](../reports/STAGE_3_S3-33b_2026-10-30.md).
+
 ## 9. Проверка, производительность и интеграция
 
 ### S3-34. Собрать corpus и проверить сам harness

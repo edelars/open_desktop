@@ -5,7 +5,7 @@ use od_isa::memory::AccessContext;
 use crate::allocator::{Allocation, AllocatorConfig, AllocatorError, HelperBoundaryPosition};
 use crate::block::{
     self, AdmittedInstructionBoundaries, BlockLimits, BlockStopReason, BuildError, BuildOutcome,
-    CodeView, DecodeBoundary, S0_09NopAdmission, S0_09NopIncRaxAdmission,
+    CodeView, DecodeBoundary, S0_09NopAdmission, S0_09NopDecRaxAdmission, S0_09NopIncRaxAdmission,
 };
 use crate::block_emitter::{
     BlockEmitterError, EmittedCheckedLoadBlockV2, EmittedCheckedStoreBlockV2, EmittedRuntimeBlock,
@@ -469,6 +469,81 @@ fn compile_native_inc_rax_inner(
     compile_lowered(code.code_end(), lowered, strategy)
 }
 
+/// Compile exact bare W64 DEC RAX as an opt-in uncached native candidate.
+pub fn compile_block_for_native_dec_rax(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopDecRaxAdmission,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    compile_native_dec_rax_inner(
+        code,
+        entry_rip,
+        admission,
+        crate::block_emitter::FlagMaterializationStrategy::Eager,
+    )
+}
+
+/// Compile an uncached demand-flags candidate for exact bare W64 DEC RAX.
+pub fn compile_block_for_native_dec_rax_demand_flags_candidate(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopDecRaxAdmission,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    compile_native_dec_rax_inner(
+        code,
+        entry_rip,
+        admission,
+        crate::block_emitter::FlagMaterializationStrategy::DemandDrivenCandidate,
+    )
+}
+
+fn compile_native_dec_rax_inner(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopDecRaxAdmission,
+    strategy: crate::block_emitter::FlagMaterializationStrategy,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    if !admission.matches_code(code) {
+        return Err(BlockCompileError::NopAdmissionDoesNotMatchCode);
+    }
+    if !admission.contains(entry_rip) {
+        return Err(BlockCompileError::NopEntryNotAdmitted { entry_rip });
+    }
+    let built = block::build_block_for_native_dec_rax(
+        code,
+        entry_rip,
+        AccessContext::default(),
+        BlockLimits::default(),
+    )
+    .map_err(BlockCompileError::Build)?;
+    let lowered = match lowering::lower_for_native_dec_rax(&built, admission)
+        .map_err(BlockCompileError::Lowering)?
+    {
+        LoweringOutcome::Program(lowered) => lowered,
+        LoweringOutcome::NoNativePrefix {
+            rip,
+            reason,
+            deferred_error,
+        } => {
+            return Ok(BlockCompileOutcome::NoNativePrefix {
+                rip,
+                reason,
+                deferred_error,
+            });
+        }
+    };
+    if let BuildOutcome::Block(block) = &built {
+        for instruction in &block.instructions {
+            for rip in [instruction.guest_rip, instruction.next_rip] {
+                if !admission.contains(rip) {
+                    return Err(BlockCompileError::DispatchBlockBoundaryNotAdmitted { rip });
+                }
+            }
+        }
+    }
+    compile_lowered(code.code_end(), lowered, strategy)
+}
+
 fn compile_block_inner(
     code: CodeView<'_>,
     entry_rip: u64,
@@ -784,6 +859,35 @@ mod tests {
             );
             assert!(compiled.emitted().safe_entry_provenance());
         }
+    }
+
+    #[test]
+    fn native_dec_rax_is_opt_in_and_compiles_following_branch_consumers() {
+        let code = [
+            0x48, 0xff, 0xc8, // DEC RAX
+            0x74, 0x00, // JZ to code end, consuming DEC's ZF
+        ];
+        let view = CodeView::new(0xB100, &code).unwrap();
+        let admission = S0_09NopDecRaxAdmission::from_code(view).unwrap();
+        let BlockCompileOutcome::Compiled(compiled) =
+            compile_block_for_native_dec_rax_demand_flags_candidate(view, 0xB100, &admission)
+                .unwrap()
+        else {
+            panic!("native DEC/JZ should compile");
+        };
+        assert_eq!(compiled.code_end(), 0xB105);
+        let ranges = compiled.emitted().pc_map().ranges();
+        assert!(
+            ranges.iter().any(|range| {
+                range.guest_rip == crate::statepoints::GuestRipSource::Fixed(0xB100)
+            })
+        );
+        assert!(
+            ranges.iter().any(|range| {
+                range.guest_rip == crate::statepoints::GuestRipSource::Fixed(0xB103)
+            })
+        );
+        assert!(compiled.emitted().safe_entry_provenance());
     }
 
     #[test]
