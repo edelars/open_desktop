@@ -235,6 +235,10 @@ outside the timed intervals; teardown remains included in whole-run wall time.
 Reports persist build/revision/fingerprint and host/toolchain metadata, input
 hashes, exact timing scope, calibrated/common sweep counts, raw samples and
 counters, median/range/IQR, and paired per-sweep interpreter/FIFO ratios.
+After the independent per-variant calibration, a paired calibration pass
+measures both variants at the same sweep count and raises that count until
+each timed sample reaches 200 ms. Measured pairs retain that fixed common
+count and still fail closed if either side falls below the threshold.
 
 After review, collect three separate release process runs:
 
@@ -252,7 +256,10 @@ S3-35a implements the reproducible comparison path only. Measurements have
 not yet been collected, no speedup or legacy-fragment comparison is claimed,
 and S3-35/S3-36 remain open. Legacy fragment timing is not applicable to this
 path until an admitted legacy shape is shown to match the same frozen corpus
-and semantics.
+and semantics. The first process attempt ended before producing a report
+because a paired interpreter sample fell below 200 ms; its failure log is
+`work/tmp/stage3/s3-35/first-run-1-attempt.log`. The paired calibration now
+rechecks and expands the shared sweep count before measured pairs.
 
 Recorded trace дополняется ограниченными synthetic-сценариями:
 1/8/64/512/4096 keys и observed unique count, hot loops на 1/8 keys, reverse

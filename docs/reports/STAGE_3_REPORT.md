@@ -47,7 +47,7 @@
 |---|---|
 | Тройное сравнение interpreter/JIT/physical x86 для обязательных принятых профилей (S3-21) | Не выполнено; Mac mini проверка отложена до конца локальной работы Stage 3. |
 | S3-18d1 dispatch/cache cold-sweep observation | Выполнены три локальных release runs на одном frozen corpus; это partial evidence, не full cold compile+first-execution comparison. См. [отчёт](STAGE_3_S3-18d1_2026-10-30.md). |
-| Полные cold/warm measurements, churn/resources и решения о default (S3-35…37, S3-40) | Не выполнены. Для S3-35a добавлен `od-bench cold-first-run`, но raw performance runs ещё не собирались; не заявлять ускорение или окончательный выбор flags/allocator без сопоставимых замеров. |
+| Полные cold/warm measurements, churn/resources и решения о default (S3-35…37, S3-40) | Не выполнены. `od-bench cold-first-run` реализован; первая попытка завершилась до отчёта: paired interpreter sample оказался короче 200 ms. Добавлена paired recalibration с общим числом sweeps; повтор не запускался. Сырых результатов и основания для speedup/default выбора нет. |
 | Production RAM/backing/mapping/MMU owner и committed-writer integration | Не входит в текущий local fixture scope; не реализован этим отчётом и не засчитывается как локальное доказательство. |
 | ISSUE-027 | Открыта: прежний timeout не локализован; три диагностических наблюдения не установили причину или исправление. Не повторять suite без нового основания. |
 | M1 Pro (S3-39) | Не подтверждён этим run; проверка остаётся отдельной. |

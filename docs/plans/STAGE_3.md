@@ -2468,8 +2468,11 @@ creates a fresh runtime/cache/arena for every cold dispatcher sweep. Timed
 scope includes initialization and first corpus execution; setup of fixture
 inputs, state reset/validation and teardown are explicitly excluded. Raw
 sample reporting and host/build/input fingerprints are implemented. The
-benchmark has not yet been run, so S3-35 remains partial and no performance
-conclusion is supported. Legacy fragment timing is not applicable unless an
+first process attempt exited before writing a report because the paired
+interpreter sample fell below 200 ms; paired calibration now revalidates and
+raises the shared sweep count. No valid measurement has been collected, so
+S3-35 remains partial and no performance conclusion is supported. Legacy
+fragment timing is not applicable unless an
 admitted legacy input shape and semantics are established for these same
 inputs. See [`BENCHMARKS.md`](../testing/BENCHMARKS.md#s3-35a-cold-first-full-corpus-execution).
 
