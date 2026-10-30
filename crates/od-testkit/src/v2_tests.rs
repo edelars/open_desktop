@@ -292,6 +292,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 maxpd_unmasked_controls: input.fixture.maxpd_unmasked_controls,
                 cvtdq2pd_controls: input.fixture.cvtdq2pd_controls,
                 cvtsi2sd_r32_controls: input.fixture.cvtsi2sd_r32_controls,
+                cvtsi2sd_r64_controls: input.fixture.cvtsi2sd_r64_controls,
                 fxsave64_cr0_controls: input.fixture.fxsave64_cr0_controls,
                 fxrstor64_cr0_controls: input.fixture.fxrstor64_cr0_controls,
                 rdtsc_source_calls: None,
@@ -8235,4 +8236,49 @@ fn native_xorpd_profile_requires_sse_only_exact_input_state() {
         ));
         assert!(wrong.validate().is_err(), "{bytes}");
     }
+}
+#[test]
+fn cvtsi2sd_r64_independent_oracle_covers_signed_boundaries_ties_and_directed_rounding() {
+    use super::independent_i64_to_binary64;
+    let vectors = [
+        (0, 0, 0x0000_0000_0000_0000, false),
+        (1, 0, 0x3ff0_0000_0000_0000, false),
+        (-1, 0, 0xbff0_0000_0000_0000, false),
+        (i64::MIN, 0, 0xc3e0_0000_0000_0000, false),
+        (i64::MAX, 0, 0x43e0_0000_0000_0000, true),
+        (i64::MAX, 1, 0x43df_ffff_ffff_ffff, true),
+        (i64::MAX, 2, 0x43e0_0000_0000_0000, true),
+        (i64::MAX, 3, 0x43df_ffff_ffff_ffff, true),
+        ((1i64 << 53) - 1, 0, 0x433f_ffff_ffff_ffff, false),
+        ((1i64 << 53) + 1, 0, 0x4340_0000_0000_0000, true),
+        ((1i64 << 53) + 1, 2, 0x4340_0000_0000_0001, true),
+        ((1i64 << 53) + 3, 0, 0x4340_0000_0000_0002, true),
+        (-((1i64 << 53) + 1), 0, 0xc340_0000_0000_0000, true),
+        (-((1i64 << 53) + 1), 1, 0xc340_0000_0000_0001, true),
+        (-((1i64 << 53) + 1), 2, 0xc340_0000_0000_0000, true),
+        (-((1i64 << 53) + 3), 1, 0xc340_0000_0000_0002, true),
+        ((1i64 << 54) - 1, 0, 0x4350_0000_0000_0000, true),
+        (-((1i64 << 54) - 1), 0, 0xc350_0000_0000_0000, true),
+    ];
+    for (value, rc, bits, inexact) in vectors {
+        assert_eq!(
+            independent_i64_to_binary64(value, rc),
+            (bits, inexact),
+            "RAX={value}, RC={rc}"
+        );
+    }
+    // Midpoint neighbors around 2^53: below is exact, the two adjacent odd
+    // integers are exact halfway cases whose even neighbor depends on parity.
+    assert_eq!(
+        independent_i64_to_binary64((1i64 << 53) - 1, 0).0,
+        0x433f_ffff_ffff_ffff
+    );
+    assert_eq!(
+        independent_i64_to_binary64((1i64 << 53) + 1, 0).0,
+        0x4340_0000_0000_0000
+    );
+    assert_eq!(
+        independent_i64_to_binary64((1i64 << 53) + 3, 0).0,
+        0x4340_0000_0000_0002
+    );
 }

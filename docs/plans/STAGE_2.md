@@ -6555,6 +6555,45 @@ See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37n--exact-long64-cvtsi2sd-xm
 [stage report](../reports/STAGE_2_REPORT.md#s2-37n--exact-long64-cvtsi2sd-xmm0eax),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37n-local-cvtsi2sd-r32).
 
+#### S2-37o — exact Long64 CVTSI2SD XMM0,RAX
+
+Implement the interpreter-only schema-v2 profile
+`s2-long-cvtsi2sd-r64-exact-v1` for only `F2 48 0F 2A C0`, one executable
+mapping, budget one, and stop RIP `entry+5`. Keep S2-37n r32 separate. Other
+REX values, r32, other GPR/XMM indices, memory, other/reordered/repeated
+prefixes, other opcodes, VEX and EVEX are profile refusals, not generalized
+architectural #UD claims.
+
+Read the complete signed i64 from RAX and convert with `Binary64::from_i64`
+under MXCSR.RC. Replace only XMM0 low64 on success; preserve its high64, RAX,
+MXCSR except a newly sticky PE, and unrelated state. Accept only the existing
+MXCSR mask `0x0000ffbf`; DAZ=1 and reserved bits reject. Only Precision may be
+newly raised. For inexact results, set PE before delivery: PM=0 suppresses the
+destination and retirement, then raises #XM if CR4.OSXMMEXCPT=1 or SIMD #UD
+otherwise. PM=1 commits the rounded result and sticky PE. Exact results do not
+fault from old PE. Preserve SSE2, CR0.EM/TS and CR4.OSFXSR prerequisite gates;
+full fetch precedes #UD then #NM and prerequisite faults leave state unchanged.
+
+Use an independent schema-v2 oracle based on signed magnitude, u128 remainder
+bits and explicit nearest-even/directed rounding. Literal coverage includes
+0, ±1, i64 endpoints, ±(2^53−1), ±2^53, ±(2^53+1), ±(2^53+3), midpoint
+neighbors and carry across a power boundary. Verify all 4 RC × 2 PM × 2
+OSXMMEXCPT × 2 old-PE combinations on representative exact and inexact values,
+plus prerequisite CPL0–3, malformed/truncated encodings, STOP/budget, complete
+state preservation, no data callbacks, schema/result/control tampering and
+JIT/native denial. i64::MAX rounding to 2^63 is valid, not overflow.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CVTSI2SD` pp. 3-236–3-237, Type 3 §2.5
+Table 2-15 and §2.5.3 Table 2-20 p. 2-28; Vol. 1 §11.5.2.6 p. 11-16 and
+§§11.5.3.1–3 pp. 11-16–11-18 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+The full operand/register space, memory forms, full S2-37 and parent S2-34/S2-38
+acceptance remain open; physical execution belongs to the combined final
+hardware substage.
+
+See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37o--exact-long64-cvtsi2sd-xmm0rax),
+[stage report](../reports/STAGE_2_REPORT.md#s2-37o--exact-long64-cvtsi2sd-xmm0rax),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37o-local-cvtsi2sd-r64).
+
 #### S2-38a — consumed masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD status subset
 
 Only masked IE/DE sticky-status updates used by S2-37e/f/g/h/i/j/k/l are implemented.
@@ -6614,7 +6653,7 @@ inventory.
 | CVTPS2PI | `NP 0F 2D /r` | SSE | XMM, m64 → mm; 2×f32 → 2×i32 | 3-231 | missing |
 | CVTSD2SI | `F2 0F 2D /r`; `F2 REX.W 0F 2D /r` | SSE2 | m64 → r32 / r64 | 3-232 | missing |
 | CVTSD2SS | `F2 0F 5A /r` | SSE2 | XMM, m64; f64 → low f32 | 3-234 | missing |
-| CVTSI2SD | `F2 0F 2A /r`; `F2 REX.W 0F 2A /r` | SSE2 | r32/m32 or r64/m64 → low f64 | 3-236 | S2-37n, exact `C0` r32 only |
+| CVTSI2SD | `F2 0F 2A /r`; `F2 REX.W 0F 2A /r` | SSE2 | r32/m32 or r64/m64 → low f64 | 3-236 | S2-37n, exact `C0` r32; S2-37o, exact `48 C0` r64 only |
 | CVTSI2SS | `F3 0F 2A /r`; `F3 REX.W 0F 2A /r` | SSE | r32/m32 or r64/m64 → low f32 | 3-238 | missing |
 | CVTSS2SD | `F3 0F 5A /r` | SSE2 | XMM, m32; f32 → low f64 | 3-240 | missing |
 | CVTSS2SI | `F3 0F 2D /r`; `F3 REX.W 0F 2D /r` | SSE | m32 → r32 / r64 | 3-242 | missing |

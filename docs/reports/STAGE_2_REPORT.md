@@ -17412,3 +17412,50 @@ legacy gates §2.5.3 Table 2-20 p. 2-28
 [plan](../plans/STAGE_2.md#s2-37n--exact-long64-cvtsi2sd-xmm0eax),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37n--exact-long64-cvtsi2sd-xmm0eax),
 and [fixtures](../../tests/fixtures/x86/stage2/README.md#s2-37n-local-cvtsi2sd-r32).
+
+## S2-37o — exact Long64 CVTSI2SD XMM0,RAX
+
+Implemented interpreter-only schema-v2 profile
+`s2-long-cvtsi2sd-r64-exact-v1` for only `F2 48 0F 2A C0`, one executable
+mapping, budget one and stop RIP `entry+5`. It reads full RAX as signed i64,
+converts with `Binary64::from_i64` under MXCSR.RC, changes only XMM0 low64 on
+completion, and preserves XMM0 high64, RAX and unrelated state. S2-37n r32
+remains distinct. Other REX values, r32, other indices, memory, other or
+reordered/repeated prefixes, other opcodes, VEX and EVEX remain profile
+refusals.
+
+The existing local MXCSR mask `0x0000ffbf` applies; DAZ=1 and reserved bits
+reject, and FTZ does not affect integer conversion. Only Precision can be new.
+Sticky PE is committed before an unmasked inexact exception. PM=0 suppresses
+destination update and retirement, then raises #XM with OSXMMEXCPT=1 or
+SIMD-generated #UD with it clear. PM=1 commits the rounded result and PE.
+Exact conversions do not fault from old PE. Full fetch precedes prerequisite
+#UD (SSE2/EM/OSFXSR) and #NM (TS); prerequisite faults do not mutate state.
+`i64::MAX → 2^63` under applicable rounding is a valid finite result.
+
+Sixteen literal fixtures cover signed endpoints, exact values, ties, directed
+rounding, the power-boundary carry, masked completion and both precision fault
+paths. The independent schema oracle uses signed magnitude plus explicit
+53-bit remainder and RC rounding, without production conversion helpers or
+host FP. ISA tests exercise the full RC × PM × OSXMMEXCPT × old-PE matrix,
+prerequisite CPL0–3, malformed/truncated forms, STOP/budget and state/access
+preservation. Runner tests validate fixtures and controls, PE-before-fault,
+result tampering, and JIT/native denial.
+
+Focused checks passed: `cargo test -p od-isa cvtsi2sd_r64_profile --offline`,
+`cargo test -p od-testkit cvtsi2sd_r64_independent_oracle --offline`, and
+`cargo test -p od-runner cvtsi2sd_r64_exact_literals --offline`. Also passed
+`cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`
+and `git diff --check`; `graphify update .` completed. No layout check was
+needed because no directories were added.
+No Mac mini, SSH or physical hardware validation was run; that remains reserved
+for the combined final hardware substage. This slice does not implement the
+full r64 operand/register space or memory forms; full CVTSI2SD/S2-37 and parent
+S2-34/S2-38 acceptance remain open.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CVTSI2SD` pp. 3-236–3-237, Type 3 §2.5
+Table 2-15 and §2.5.3 Table 2-20 p. 2-28; Vol. 1 §11.5.2.6 p. 11-16 and
+§§11.5.3.1–3 pp. 11-16–11-18 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37o--exact-long64-cvtsi2sd-xmm0rax),
+[plan](../plans/STAGE_2.md#s2-37o--exact-long64-cvtsi2sd-xmm0rax), and
+[fixtures](../../tests/fixtures/x86/stage2/README.md#s2-37o-local-cvtsi2sd-r64).

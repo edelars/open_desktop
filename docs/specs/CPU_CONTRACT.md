@@ -11556,6 +11556,50 @@ Source: Intel SDM Rev. 093 Vol. 2A `CVTSI2SD` pp. 3-236–3-237, Type 3 per
 [report](../reports/STAGE_2_REPORT.md#s2-37n--exact-long64-cvtsi2sd-xmm0eax),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37n-local-cvtsi2sd-r32).
 
+## S2-37o — exact Long64 CVTSI2SD XMM0,RAX
+
+The interpreter-only schema-v2 profile `s2-long-cvtsi2sd-r64-exact-v1` admits
+only `F2 48 0F 2A C0` (`CVTSI2SD XMM0,RAX`), one executable mapping, budget one,
+and stop RIP `entry+5`. It rejects other REX values, r32, other GPR/XMM
+indices, memory, other/reordered/repeated prefixes, other opcodes and VEX/EVEX
+as profile refusals; this does not claim architectural #UD for every excluded
+form. The existing r32 profile remains separate.
+
+The immutable controls are SSE2 availability, CR0.EM/TS, CR4.OSFXSR and
+CR4.OSXMMEXCPT. Complete fetch precedes prerequisite #UD (missing SSE2, EM=1,
+or OSFXSR=0), then #NM (TS=1), at CPL0–3. Prerequisite faults do not change
+MXCSR or any other CPU state and make no data-memory callbacks.
+
+On execution the full RAX is interpreted as signed i64. Conversion uses
+`Binary64::from_i64` with MXCSR.RC. Only XMM0[63:0] changes on completion;
+XMM0[127:64], RAX, flags/definedness and unrelated state are preserved. The
+supported local MXCSR mask remains `0x0000ffbf`; DAZ=1 and reserved bits reject,
+while FTZ has no effect. Only Precision can be newly generated. PE is sticky:
+`PE_new = PE_old OR inexact`, and all other MXCSR bits are preserved. Exact
+conversion never faults because of old PE. For inexact conversion with PM=0,
+the executor commits PE first, suppresses the destination write, leaves RIP and
+retirement unchanged, then reports #XM when OSXMMEXCPT=1 or SIMD-generated #UD
+when it is 0. With PM=1 it commits the rounded result and sticky PE regardless
+of OSXMMEXCPT. i64::MAX rounding to 2^63 is a valid finite result, not overflow.
+
+Sixteen handwritten fixtures include signed endpoints, exact values, ties,
+directed rounding, the carry boundary, masked completion and both unmasked
+exception paths. The independent schema oracle uses signed magnitude and
+explicit 53-bit remainder/tie/directed rounding without production conversion
+helpers or host FP. Tests cover the RC × PM × OSXMMEXCPT × old-PE matrix,
+prerequisites at CPL0–3, malformed/truncated forms, STOP/budget, state
+preservation, zero data callbacks, schema/result/control tampering and JIT /
+native denial. This is only the exact RAX/XMM0 form: the full r64 operand and
+register space, memory variants, full CVTSI2SD/S2-37 and parent S2-34/S2-38
+acceptance remain open. No physical execution is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CVTSI2SD` pp. 3-236–3-237, Type 3 §2.5
+Table 2-15 and §2.5.3 Table 2-20 p. 2-28; Vol. 1 §11.5.2.6 p. 11-16 and
+§§11.5.3.1–3 pp. 11-16–11-18 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+See the [plan](../plans/STAGE_2.md#s2-37o--exact-long64-cvtsi2sd-xmm0rax),
+[report](../reports/STAGE_2_REPORT.md#s2-37o--exact-long64-cvtsi2sd-xmm0rax),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37o-local-cvtsi2sd-r64).
+
 ## S2-38b — точечные SSE2 prerequisite gates для XORPD
 
 Schema-v2 profile `s2-long-xorpd-prerequisites-v1` принимает ровно одну

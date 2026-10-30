@@ -17835,3 +17835,110 @@ fn cvtsi2sd_r32_exact_literals_use_eax_bits_preserve_state_and_deny_other_backen
     value.state.sse.as_mut().unwrap().xmm[0].replace_range(..2, "ff");
     assert!(od_testkit::v2::compare(&input, &result, &wrong_output).is_err());
 }
+
+#[test]
+fn cvtsi2sd_r64_exact_literals_validate_precision_exits_and_deny_other_backends() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let mut paths: Vec<_> = fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("s2_37o_cvtsi2sd_r64_")
+        })
+        .collect();
+    paths.sort();
+    assert_eq!(paths.len(), 16, "handwritten CVTSI2SD r64 literals");
+    let mut representative = None;
+    let mut saw_xm = false;
+    let mut saw_ud = false;
+    for path in paths {
+        let source = fs::read(&path).unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongCvtsi2sdR64ExactV1
+        );
+        assert_eq!(
+            od_testkit::v2::compare(&input, &result, &result).unwrap(),
+            Vec::<String>::new()
+        );
+        let Observation::Available { value } = &result.snapshot else {
+            panic!("snapshot unavailable")
+        };
+        assert_eq!(
+            value.state.gpr, input.fixture.initial_state.gpr,
+            "full RAX and GPR preservation"
+        );
+        let initial = input.fixture.initial_state.sse.as_ref().unwrap();
+        let final_sse = value.state.sse.as_ref().unwrap();
+        assert_eq!(
+            &final_sse.xmm[0][16..],
+            &initial.xmm[0][16..],
+            "XMM0 high64 preserved"
+        );
+        assert_eq!(value.state.rflags, input.fixture.initial_state.rflags);
+        assert_eq!(result.backend, Backend::Interpreter);
+        if let Outcome::Exception {} = result.outcome {
+            let Observation::Available {
+                value: Some(exception),
+            } = &value.exception
+            else {
+                panic!("fault must carry exception metadata")
+            };
+            assert!(exception.vector == 19 || exception.vector == 6);
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available { value: HexU64(0) }
+            );
+            assert_eq!(value.state.rip, input.fixture.initial_state.rip);
+            assert_eq!(
+                final_sse.mxcsr.get() & 0x20,
+                0x20,
+                "precision sticky bit commits before fault"
+            );
+            saw_xm |= exception.vector == 19;
+            saw_ud |= exception.vector == 6;
+        } else {
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available { value: HexU64(1) }
+            );
+            assert_eq!(value.state.rip, input.fixture.stop_rip.unwrap());
+        }
+        representative.get_or_insert(source);
+    }
+    assert!(
+        saw_xm && saw_ud,
+        "fixtures cover SIMD #XM and post-computation #UD"
+    );
+    let source = representative.unwrap();
+    let (_, jit) = run(&source, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    let (_, native) = run(&source, "native", 4);
+    assert!(matches!(native.outcome, Outcome::Unsupported { .. }));
+    let (input, result) = run(&source, "interpreter", 0);
+    let mut missing_controls = input.fixture.clone();
+    missing_controls.cvtsi2sd_r64_controls = None;
+    assert!(missing_controls.validate().is_err());
+    let mut wrong_form = input.fixture.clone();
+    wrong_form.memory[0].initial_bytes_hex = "f2490f2ac0".into();
+    assert!(wrong_form.validate().is_err());
+    let mut wrong_echo = result.clone();
+    let Observation::Available { value } = &mut wrong_echo.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.cvtsi2sd_r64_controls.as_mut().unwrap().cr4_osxmmexcpt =
+        !value.cvtsi2sd_r64_controls.unwrap().cr4_osxmmexcpt;
+    assert!(od_testkit::v2::compare(&input, &result, &wrong_echo).is_err());
+    let mut wrong_output = result.clone();
+    let Observation::Available { value } = &mut wrong_output.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.state.sse.as_mut().unwrap().mxcsr =
+        HexU64(value.state.sse.as_ref().unwrap().mxcsr.get() ^ 0x20);
+    assert!(od_testkit::v2::compare(&input, &result, &wrong_output).is_err());
+}

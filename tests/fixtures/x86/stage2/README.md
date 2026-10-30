@@ -6281,3 +6281,18 @@ exactly representable input. Profile refusals do not generalize architectural
 #UD claims to excluded forms. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37n--exact-long64-cvtsi2sd-xmm0eax)
 and [plan](../../../../docs/plans/STAGE_2.md#s2-37n--exact-long64-cvtsi2sd-xmm0eax).
+
+### S2-37o local CVTSI2SD r64
+
+Sixteen literal fixtures accept only Long64 `F2 48 0F 2A C0`, one executable
+mapping, budget one and stop RIP `entry+5`. They cover zero, ±1, i64 endpoints,
+values around 2^53, halfway cases and carry at a power boundary. MXCSR inputs
+select exact and inexact results, RC, masked and unmasked Precision, old PE and
+both OSXMMEXCPT values. Unmasked inexact cases check sticky PE with unchanged
+destination, RIP and retirement; OSXMMEXCPT selects #XM or SIMD-generated #UD.
+The schema oracle independently rounds signed magnitude using explicit
+remainder bits. Runner checks preserve full RAX and XMM0 high64, reject result
+and control tampering, and deny JIT/native backends. Other encodings are local
+profile refusals, not architectural #UD claims. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37o--exact-long64-cvtsi2sd-xmm0rax)
+and [plan](../../../../docs/plans/STAGE_2.md#s2-37o--exact-long64-cvtsi2sd-xmm0rax).
