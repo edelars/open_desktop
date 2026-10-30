@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последние локальные подзадания S2-37s/t добавляют canonical Long64 CVTDQ2PS/CVTSS2SD register-space schema-v2 interpreter-only profiles; это не закрывает общий S2-37, CPUID admission или physical acceptance. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последние локальные подзадания S2-37s/t/u добавляют canonical Long64 CVTDQ2PS/CVTSS2SD/CVTPS2PD register-space schema-v2 interpreter-only profiles; это не закрывает общий S2-37, CPUID admission или physical acceptance. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -498,6 +498,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37l | Local-only Long64 legacy register MAXPD profile `s2-long-maxpd-reg-masked-v1`; aggregates masked IE/DE sticky status across two lanes; JIT/native closed | S2-36z, S2-37j/k, bounded S2-38a; independent review |
 | [x] | S2-37s | Local-only canonical Long64 CVTDQ2PS register-space profile; aggregates four-lane Precision and suppresses the full destination on unmasked PE; JIT/native closed | S2-36 rounding, S2-38 PE policy; independent review |
 | [ ] | S2-37t | Local-only canonical Long64 CVTSS2SD XMM register-pair profile; raw binary32 widening with sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-38 IE/DE policy; independent review pending |
+| [ ] | S2-37u | Local-only canonical Long64 CVTPS2PD XMM register-pair profile; two-lane raw widening with aggregate sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-37t, S2-38 IE/DE policy; independent review pending |
 | [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j/k/l: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j/k/l; independent review |
 | [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
@@ -6771,7 +6772,7 @@ inventory.
 | CVTPI2PD | `66 0F 2A /r` | SSE2 | mm/m64 → XMM; 2×i32 → 2×f64 | 3-223 | missing |
 | CVTPI2PS | `NP 0F 2A /r` | SSE | mm/m64 → XMM; 2×i32 → low 2×f32 | 3-224 | missing |
 | CVTPS2DQ | `66 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-225 | missing |
-| CVTPS2PD | `NP 0F 5A /r` | SSE2 | m64; low 2×f32 → 2×f64 | 3-228 | missing |
+| CVTPS2PD | `NP 0F 5A /r` | SSE2 | m64; low 2×f32 → 2×f64 | 3-228 | S2-37u, bounded register-only |
 | CVTPS2PI | `NP 0F 2D /r` | SSE | XMM, m64 → mm; 2×f32 → 2×i32 | 3-231 | missing |
 | CVTSD2SI | `F2 0F 2D /r`; `F2 REX.W 0F 2D /r` | SSE2 | m64 → r32 / r64 | 3-232 | missing |
 | CVTSD2SS | `F2 0F 5A /r` | SSE2 | XMM, m64; f64 → low f32 | 3-234 | missing |
@@ -12906,3 +12907,35 @@ generic CPUID, memory operands, other modes, full S2-34/38, Stage 4, and physica
 acceptance remain open. Source basis: Intel SDM Rev. 093 Vol. 1 Table D-11,
 Table 11-1, §§11.5.2.2, 11.5.3.1–3 and Vol. 2A CVTSS2SD pp. 3-240–3-241,
 Tables 2-15 and 2-20.
+
+#### S2-37u — canonical Long64 CVTPS2PD XMM register pairs
+
+Implement schema-v2 interpreter profile `s2-long-cvtps2pd-registers-v1` for
+all 256 XMM destination/source pairs. Accept canonical bare `0F 5A /r` for low
+registers and exactly `41`, `44`, or `45` REX before the opcode for extended
+source and/or destination. Require ModR/M.mod=3, one executable mapping, budget
+one and checked stop RIP `entry+length`. Redundant `40`, W/X, memory, mandatory
+prefixes, trailing bytes, VEX and EVEX are profile refusals only. Preserve prior
+profiles.
+
+Snapshot source before either lane is converted. Read only source low64, widen
+two binary32 values exactly to two binary64 lanes, and replace the entire
+128-bit destination, including aliases. QNaN mapping adds no IE; SNaN is quieted
+and raises IE; a binary32 subnormal widens exactly and raises DE. Aggregate new
+IE and DE independently across lanes and preserve all other MXCSR bits. An
+unmasked new event commits applicable sticky bits, suppresses the whole
+destination/RIP/retirement, then reports #XM or SIMD #UD by OSXMMEXCPT. Old
+sticky flags alone do not fault. No PE/OE/UE/ZE; RC/FTZ are irrelevant; DAZ is
+refused. SSE2/EM/OSFXSR #UD and TS #NM gates run after full fetch at CPL0–3.
+
+The independent schema parser derives both registers and length; the oracle
+parses source bits and reuses its integer-only scalar widening oracle separately
+for both lanes. Coverage includes 256 pairs/16 aliases, all 288 combinations of
+per-lane none/IE/DE events, IM, DM, OSXMMEXCPT and old IE/DE; NaN payload/sign,
+all subnormal leading positions, ignored high64 hostile values, whole-destination
+replacement/suppression, prereq/fetch/no-callback, malformed bytes, tampering,
+JIT/native denial. Memory m64, other forms/modes, generic CPUID integration,
+physical acceptance, and parent S2-37/S2-38 remain open.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTPS2PD pp. 3-228–3-230, Tables 2-15 and
+2-20 p. 2-28; Vol. 1 Table D-11 and §§11.5.3.1–3. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37u--canonical-long64-cvtps2pd-xmm-register-pairs), [report](../reports/STAGE_2_REPORT.md#s2-37u--canonical-long64-cvtps2pd-xmm-register-pairs), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37u-canonical-cvtps2pd-register-pairs).

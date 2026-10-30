@@ -12593,3 +12593,45 @@ Vol. 2A CVTSS2SD pp. 3-240–3-241, Tables 2-15 and 2-20
 [stage plan](../plans/STAGE_2.md#s2-37t--canonical-long64-cvtss2sd-xmm-register-pairs),
 [report](../reports/STAGE_2_REPORT.md#s2-37t--canonical-long64-cvtss2sd-xmm-register-pairs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37t-canonical-cvtss2sd-register-pairs).
+
+
+## S2-37u — canonical Long64 CVTPS2PD XMM register pairs
+
+The bounded interpreter-only schema-v2 profile is
+`s2-long-cvtps2pd-registers-v1`. It accepts all 256 XMM destination/source
+pairs, including aliases. Low registers use canonical bare `0F 5A /r` (length
+3); extended registers use exactly REX `41`, `44`, or `45` before the opcode
+(length 4). ModR/M.mod is 3. One executable mapping, budget one and checked
+stop RIP `entry+length` are required. Redundant `40`, W/X, memory, mandatory or
+other prefixes, trailing bytes, VEX and EVEX are profile refusals. The
+independent parser derives both register indices and instruction length.
+
+After full fetch, SSE2 absence, CR0.EM or CR4.OSFXSR produces #UD; CR0.TS then
+produces #NM at CPL0–3. The profile echoes SSE2, EM, TS, OSFXSR and OSXMMEXCPT.
+MXCSR accepts only bits in `0x0000ffbf`; DAZ is refused. RC and FTZ do not
+change this exact widening conversion.
+
+The executor snapshots the source XMM, reads only low64 as two binary32 lanes,
+and widens each exactly to binary64. It replaces the full 128-bit destination;
+self-aliases use the initial source. QNaN sign/payload mapping adds no IE,
+SNaNs are quieted and raise IE, and subnormals widen to normal binary64 and
+raise DE. New IE and DE are aggregated independently across the lanes and ORed
+into old sticky status while preserving all other MXCSR bits. Old sticky IE/DE
+alone do not fault. If a new IE/DE is unmasked (IM/DM=0), applicable sticky bits
+commit before the entire destination, RIP advance and retirement are suppressed;
+OSXMMEXCPT selects #XM or SIMD-generated #UD. No PE/OE/UE/ZE is generated.
+
+The independent result oracle parses source bits and applies the independent
+integer-only binary32 widening oracle to each lane. Runner coverage includes all
+256 pairs and 16 aliases; the 288-case Cartesian exception matrix; signed NaN
+payloads, subnormal leading positions/extrema, ignored high64, whole-destination
+replacement and suppression, gate/fetch/CPL/no-callback, malformed encodings,
+tampering, and JIT/native denial. No memory callbacks occur. JIT/native/C ABI,
+fragment and generic CPUID admission remain closed. The m64 memory operand,
+other forms/modes, physical acceptance, and parent S2-37/S2-38 remain open.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTPS2PD pp. 3-228–3-230 and Tables 2-15
+and 2-20 p. 2-28; Vol. 1 Table D-11 and §§11.5.3.1–3. See the [stage
+plan](../plans/STAGE_2.md#s2-37u--canonical-long64-cvtps2pd-xmm-register-pairs),
+[report](../reports/STAGE_2_REPORT.md#s2-37u--canonical-long64-cvtps2pd-xmm-register-pairs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37u-canonical-cvtps2pd-register-pairs).

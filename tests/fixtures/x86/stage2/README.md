@@ -6378,3 +6378,18 @@ destination high64 preservation, and IE/DE exception controls. JIT and native
 requests remain unsupported. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37t--canonical-long64-cvtss2sd-xmm-register-pairs),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37t--canonical-long64-cvtss2sd-xmm-register-pairs), and
 [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37t--canonical-long64-cvtss2sd-xmm-register-pairs).
+
+
+### S2-37u canonical CVTPS2PD register pairs
+
+`s2_37u_cvtps2pd_asymmetric_register_pair.case.json` is the handwritten
+schema-v2 `s2-long-cvtps2pd-registers-v1` fixture. It uses canonical
+`0F 5A C1`, converts both low binary32 lanes, and places hostile SNaN/subnormal
+patterns in ignored source high64. Runner coverage checks all 256 register
+pairs and aliases, raw NaN/subnormal widening, full destination replacement,
+and all 288 lane-event/mask/OSXMMEXCPT/old-sticky combinations, including
+second-lane-only unmasked suppression. Gate/fetch/CPL/no-callback, malformed
+encoding, tampering, JIT and native denial are covered. See the [CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37u--canonical-long64-cvtps2pd-xmm-register-pairs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37u--canonical-long64-cvtps2pd-xmm-register-pairs),
+and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37u--canonical-long64-cvtps2pd-xmm-register-pairs).

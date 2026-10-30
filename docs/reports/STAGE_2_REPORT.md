@@ -17661,3 +17661,55 @@ Sources: Intel SDM Rev. 093 Vol. 1 Table D-11, Table 11-1, §§11.5.2.2,
 11.5.3.1–3 (https://cdrdv2.intel.com/v1/dl/getContent/671436); Vol. 2A
 CVTSS2SD pp. 3-240–3-241, Tables 2-15 and 2-20
 (https://cdrdv2.intel.com/v1/dl/getContent/671199). See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37t--canonical-long64-cvtss2sd-xmm-register-pairs), [plan](../plans/STAGE_2.md#s2-37t--canonical-long64-cvtss2sd-xmm-register-pairs), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37t-canonical-cvtss2sd-register-pairs).
+
+## S2-37u — canonical Long64 CVTPS2PD XMM register pairs
+
+Implemented the schema-v2 interpreter profile `s2-long-cvtps2pd-registers-v1`
+for all 256 canonical Long64 XMM source/destination pairs, including aliases.
+The independent parser accepts bare `0F 5A /r` (3 bytes) and REX `41/44/45`
+forms (4 bytes), requires ModR/M.mod=3 and one executable mapping/budget-one/
+checked stop RIP, and refuses other prefixes, memory, trailing bytes, VEX and
+EVEX. Existing profiles remain unchanged.
+
+Execution snapshots both source lanes, widens their raw binary32 values to
+binary64, and replaces the full destination. QNaN mapping raises no IE; SNaN
+quieting raises IE; subnormals widen exactly and raise DE. IE and DE aggregate
+independently across lanes. Unmasked newly raised status is committed before
+whole-destination/RIP/retirement suppression, with OSXMMEXCPT selecting #XM or
+SIMD-generated #UD. The profile accepts MXCSR mask `0x0000ffbf`, refuses DAZ,
+and ignores RC/FTZ. The independent schema oracle parses each source lane and
+uses its separate integer-only scalar widening math.
+
+The handwritten asymmetric fixture and runner matrix cover all register pairs,
+16 aliases, NaN signs/payloads, all subnormal leading positions and extrema,
+high64 ignore, full destination replacement, and all 288 combinations of
+per-lane none/IE/DE × IM × DM × OSXMMEXCPT × prior IE × prior DE. Executor unit
+coverage checks CPL0–3 prerequisite gates after full fetch, truncated-fetch
+priority, zero data callbacks, mixed IE+DE aggregation, and atomic suppression.
+JIT denial is exercised. Native denial is explicitly configured in the
+Linux-only native runner path; that test could not execute on this macOS host.
+JIT/native/C ABI/fragment/generic CPUID admission remains closed. Memory
+operands and physical acceptance remain open; this does not close parent S2-37
+or S2-38.
+
+Checks passed:
+
+- `cargo test -p od-isa cvtps2pd_prerequisites_fetch_and_atomic_two_lane_status --offline`
+- `cargo test -p od-testkit --offline` (412 passed)
+- `cargo test -p od-runner --test fixture_v2 cvtps2pd_register_pairs_raw_classes_and_exception_matrix --offline`
+- `cargo check -p od-x86-runner --all-targets --offline`
+- `cargo fmt --all -- --check`
+- `cargo check --workspace --all-targets --offline`
+
+`python3 tools/check_layout.py` reported the already registered ISSUE-023
+worktree `.git` pointer and two missing historical oracle manifests; no project
+structure was changed in this task.
+
+Independent Sol review passed with no findings. The Linux-only native denial
+test remains unexecuted on this macOS host. Sources: Intel SDM Rev. 093 Vol. 2A CVTPS2PD
+pp. 3-228–3-230, Tables 2-15/Table 2-20 p. 2-28; Vol. 1 Table D-11 and
+§§11.5.3.1–3 ([Vol. 2A](https://cdrdv2.intel.com/v1/dl/getContent/671199),
+[Vol. 1](https://cdrdv2.intel.com/v1/dl/getContent/671436)). See the [CPU
+contract](../specs/CPU_CONTRACT.md#s2-37u--canonical-long64-cvtps2pd-xmm-register-pairs),
+[plan](../plans/STAGE_2.md#s2-37u--canonical-long64-cvtps2pd-xmm-register-pairs), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37u-canonical-cvtps2pd-register-pairs).
