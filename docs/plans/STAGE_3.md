@@ -2376,7 +2376,22 @@ Add с полным `FlagEffect::Arithmetic`; eager и demand-flags API испо
 `ADD ...,0`, отрицательные imm8, полное состояние, pending CMP/ADD/JZ/JNZ с
 различимыми outcomes, pending PC-map witness, successor full writer, budget и
 STOP. Реальные результаты и оставшееся независимое ревью отмечены в
-[S3-33d report](../reports/STAGE_3_S3-33d_2026-10-30.md). Mini и performance
+[S3-33d report](../reports/STAGE_3_S3-33d_2026-10-30.md); independent review
+завершено без оставшихся замечаний. Mini и performance
+проверки отложены до конца Stage 3; S3-33 и этап остаются открытыми.
+
+#### S3-33e. Exact native qword CMP RAX, sign-extended imm8
+
+Добавлен отдельный uncached opt-in profile только для bare `48 83 F8 ib`
+(`CMP RAX, sign-extended imm8`, opcode `83 /7`) со всеми 256 байтами
+непосредственного операнда. Admission сверяет raw byte с decoder-owned
+sign-extended immediate; lowering использует W64 `Compare` с
+`result=None` и полным `FlagEffect::Arithmetic`, без `WriteGpr`. Eager и
+demand-flags APIs используют текущие IR/emitter/pending-flags механизмы;
+generic, INC, DEC, NEG и ADD-immediate admissions остаются отдельными.
+Проверены равенство/неравенство, неизменность всех GPR, branch consumers,
+candidate pending-statepoint, следующий full writer, бюджеты и STOP. См.
+[S3-33e report](../reports/STAGE_3_S3-33e_2026-10-30.md). Mini и performance
 проверки отложены до конца Stage 3; S3-33 и этап остаются открытыми.
 
 ## 9. Проверка, производительность и интеграция

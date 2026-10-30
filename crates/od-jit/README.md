@@ -210,6 +210,15 @@ admissions stay unchanged. This is partial correctness evidence only; Mini and
 performance checks remain deferred until the end of Stage 3. See the
 [S3-33d report](../../docs/reports/STAGE_3_S3-33d_2026-10-30.md).
 
+S3-33e adds a separate uncached opt-in `S0_09NopCmpRaxImm8Admission` and
+eager/demand-flags compile and dispatch APIs for exact bare `48 83 F8 ib`
+(`CMP RAX, sign-extended imm8`). Admission cross-checks all 256 source-byte
+values against the decoder-owned sign-extended value. Lowering uses W64
+`Compare` with full arithmetic flags and no GPR write; prior profiles remain
+operation-specific. This is partial correctness evidence only. Mini and
+performance checks remain deferred to the end of Stage 3. See
+[S3-33e report](../../docs/reports/STAGE_3_S3-33e_2026-10-30.md).
+
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).
 Проверки корректности и измерений по задачам этапа — в

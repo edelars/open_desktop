@@ -6,7 +6,8 @@ use crate::allocator::{Allocation, AllocatorConfig, AllocatorError, HelperBounda
 use crate::block::{
     self, AdmittedInstructionBoundaries, BlockLimits, BlockStopReason, BuildError, BuildOutcome,
     CodeView, DecodeBoundary, S0_09NopAddRaxImm8Admission, S0_09NopAdmission,
-    S0_09NopDecRaxAdmission, S0_09NopIncRaxAdmission, S0_09NopNegRaxAdmission,
+    S0_09NopCmpRaxImm8Admission, S0_09NopDecRaxAdmission, S0_09NopIncRaxAdmission,
+    S0_09NopNegRaxAdmission,
 };
 use crate::block_emitter::{
     BlockEmitterError, EmittedCheckedLoadBlockV2, EmittedCheckedStoreBlockV2, EmittedRuntimeBlock,
@@ -621,6 +622,81 @@ fn compile_native_add_rax_imm8_inner(
     )
     .map_err(BlockCompileError::Build)?;
     let lowered = match lowering::lower_for_native_add_rax_imm8(&built, admission)
+        .map_err(BlockCompileError::Lowering)?
+    {
+        LoweringOutcome::Program(lowered) => lowered,
+        LoweringOutcome::NoNativePrefix {
+            rip,
+            reason,
+            deferred_error,
+        } => {
+            return Ok(BlockCompileOutcome::NoNativePrefix {
+                rip,
+                reason,
+                deferred_error,
+            });
+        }
+    };
+    if let BuildOutcome::Block(block) = &built {
+        for instruction in &block.instructions {
+            for rip in [instruction.guest_rip, instruction.next_rip] {
+                if !admission.contains(rip) {
+                    return Err(BlockCompileError::DispatchBlockBoundaryNotAdmitted { rip });
+                }
+            }
+        }
+    }
+    compile_lowered(code.code_end(), lowered, strategy)
+}
+
+/// Compile the exact native `CMP RAX, sign-extended imm8` profile eagerly.
+pub fn compile_block_for_native_cmp_rax_imm8(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopCmpRaxImm8Admission,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    compile_native_cmp_rax_imm8_inner(
+        code,
+        entry_rip,
+        admission,
+        crate::block_emitter::FlagMaterializationStrategy::Eager,
+    )
+}
+
+/// Compile the demand-flags candidate for exact bare `CMP RAX, sign-extended imm8`.
+pub fn compile_block_for_native_cmp_rax_imm8_demand_flags_candidate(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopCmpRaxImm8Admission,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    compile_native_cmp_rax_imm8_inner(
+        code,
+        entry_rip,
+        admission,
+        crate::block_emitter::FlagMaterializationStrategy::DemandDrivenCandidate,
+    )
+}
+
+fn compile_native_cmp_rax_imm8_inner(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopCmpRaxImm8Admission,
+    strategy: crate::block_emitter::FlagMaterializationStrategy,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    if !admission.matches_code(code) {
+        return Err(BlockCompileError::NopAdmissionDoesNotMatchCode);
+    }
+    if !admission.contains(entry_rip) {
+        return Err(BlockCompileError::NopEntryNotAdmitted { entry_rip });
+    }
+    let built = block::build_block_for_native_cmp_rax_imm8(
+        code,
+        entry_rip,
+        AccessContext::default(),
+        BlockLimits::default(),
+    )
+    .map_err(BlockCompileError::Build)?;
+    let lowered = match lowering::lower_for_native_cmp_rax_imm8(&built, admission)
         .map_err(BlockCompileError::Lowering)?
     {
         LoweringOutcome::Program(lowered) => lowered,
@@ -1335,6 +1411,38 @@ mod tests {
             }));
             assert!(compiled.emitted().pc_map().ranges().iter().any(|range| {
                 range.guest_rip == crate::statepoints::GuestRipSource::Fixed(0xB304)
+            }));
+            assert!(compiled.emitted().safe_entry_provenance());
+        }
+    }
+
+    #[test]
+    fn native_cmp_rax_imm8_compiles_eager_and_candidate_branch_consumers() {
+        let code = [
+            0x48, 0x83, 0xf8, 0xff, // CMP RAX, -1
+            0x74, 0x00, // JZ to code end, consuming CMP flags
+        ];
+        let view = CodeView::new(0xB400, &code).unwrap();
+        let admission = S0_09NopCmpRaxImm8Admission::from_code(view).unwrap();
+        for candidate in [false, true] {
+            let outcome = if candidate {
+                compile_block_for_native_cmp_rax_imm8_demand_flags_candidate(
+                    view, 0xB400, &admission,
+                )
+            } else {
+                compile_block_for_native_cmp_rax_imm8(view, 0xB400, &admission)
+            }
+            .unwrap();
+            let BlockCompileOutcome::Compiled(compiled) = outcome else {
+                panic!("native CMP-immediate/JZ should compile");
+            };
+            assert_eq!(compiled.code_end(), 0xB406);
+            assert_eq!(compiled.emitted().pc_map().instruction_count(), 2);
+            assert!(compiled.emitted().pc_map().ranges().iter().any(|range| {
+                range.guest_rip == crate::statepoints::GuestRipSource::Fixed(0xB400)
+            }));
+            assert!(compiled.emitted().pc_map().ranges().iter().any(|range| {
+                range.guest_rip == crate::statepoints::GuestRipSource::Fixed(0xB404)
             }));
             assert!(compiled.emitted().safe_entry_provenance());
         }

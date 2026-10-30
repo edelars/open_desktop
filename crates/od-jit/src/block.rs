@@ -19,6 +19,7 @@ enum BlockBuildProfile {
     S0_09NativeDecRax,
     S0_09NativeNegRax,
     S0_09NativeAddRaxImm8,
+    S0_09NativeCmpRaxImm8,
     CheckedQwordLoad,
     CheckedQwordStore,
     CheckedQwordMemoryPair,
@@ -171,6 +172,14 @@ pub struct S0_09NopAddRaxImm8Admission {
     boundaries: AdmittedInstructionBoundaries,
     nop_rips: Vec<u64>,
     add_rax_imm8_values: Vec<(u64, u64)>,
+}
+
+/// Separate bounded admission for S0-09 plus exact bare `CMP RAX, sign-extended imm8`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct S0_09NopCmpRaxImm8Admission {
+    boundaries: AdmittedInstructionBoundaries,
+    nop_rips: Vec<u64>,
+    cmp_rax_imm8_values: Vec<(u64, u64)>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -640,6 +649,132 @@ impl S0_09NopAddRaxImm8Admission {
     }
 }
 
+impl S0_09NopCmpRaxImm8Admission {
+    /// Decode the full immutable view, admitting only S0-09, exact bare NOP,
+    /// and exact `48 83 F8 ib` (`CMP RAX, sign-extended imm8`).
+    pub fn from_code(code: CodeView<'_>) -> Result<Self, S0_09NopAdmissionError> {
+        let mut rip = code.base_rip();
+        let mut boundaries = Vec::new();
+        let mut instructions = Vec::new();
+        let mut nop_rips = Vec::new();
+        let mut cmp_rax_imm8_values = Vec::new();
+        while rip < code.code_end() {
+            let offset = usize::try_from(rip - code.base_rip())
+                .map_err(|_| S0_09NopAdmissionError::RangeOverflow { rip, length: 0 })?;
+            let mut memory = CodeMemory::full_code(code);
+            let instruction = long_decode::decode(&mut memory, rip, AccessContext::default())
+                .map_err(|error| S0_09NopAdmissionError::Decode { rip, error })?;
+            if !(1..=15).contains(&instruction.length) {
+                return Err(S0_09NopAdmissionError::InvalidLength {
+                    rip,
+                    length: instruction.length,
+                });
+            }
+            let next_rip = rip.checked_add(u64::from(instruction.length)).ok_or(
+                S0_09NopAdmissionError::RangeOverflow {
+                    rip,
+                    length: instruction.length,
+                },
+            )?;
+            if next_rip > code.code_end() {
+                return Err(S0_09NopAdmissionError::RangeOverflow {
+                    rip,
+                    length: instruction.length,
+                });
+            }
+            if is_exact_bare_nop(instruction, code.bytes()[offset]) {
+                nop_rips.push(rip);
+            } else if is_exact_cmp_rax_imm8(instruction, &code.bytes()[offset..]) {
+                let Operation::Arithmetic {
+                    src: Operand::Immediate(value),
+                    ..
+                } = instruction.operation
+                else {
+                    unreachable!("exact CMP immediate predicate guarantees its operation");
+                };
+                cmp_rax_imm8_values.push((rip, value));
+            } else if !is_s0_09_form(instruction) {
+                return Err(S0_09NopAdmissionError::UnsupportedInstruction { rip });
+            }
+            boundaries.push(rip);
+            instructions.push((rip, next_rip, instruction));
+            rip = next_rip;
+        }
+        boundaries.push(code.code_end());
+        for (branch_rip, next_rip, instruction) in &instructions {
+            let Operation::Branch { displacement, .. } = instruction.operation else {
+                continue;
+            };
+            let target = next_rip.wrapping_add_signed(i64::from(displacement));
+            if !boundaries.contains(&target) {
+                return Err(S0_09NopAdmissionError::BranchTargetNotBoundary {
+                    rip: *branch_rip,
+                    target,
+                });
+            }
+        }
+        Ok(Self {
+            boundaries: AdmittedInstructionBoundaries {
+                code_base: code.base_rip(),
+                code_end: code.code_end(),
+                code_bytes: code.bytes().to_vec(),
+                boundaries,
+            },
+            nop_rips,
+            cmp_rax_imm8_values,
+        })
+    }
+    pub(crate) fn boundaries(&self) -> &AdmittedInstructionBoundaries {
+        &self.boundaries
+    }
+    pub(crate) fn matches_code(&self, code: CodeView<'_>) -> bool {
+        self.boundaries.matches_code(code)
+    }
+    pub(crate) fn contains(&self, rip: u64) -> bool {
+        self.boundaries.contains(rip)
+    }
+    pub(crate) fn admits_nop(&self, rip: u64) -> bool {
+        self.nop_rips.contains(&rip)
+    }
+    pub(crate) fn admits_cmp_rax_imm8(&self, rip: u64) -> bool {
+        self.cmp_rax_imm8_values
+            .iter()
+            .any(|(admitted_rip, _)| *admitted_rip == rip)
+    }
+    pub(crate) fn cmp_rax_imm8_value(&self, rip: u64) -> Option<u64> {
+        self.cmp_rax_imm8_values
+            .iter()
+            .find_map(|(admitted_rip, value)| (*admitted_rip == rip).then_some(*value))
+    }
+}
+
+pub(crate) fn is_exact_cmp_rax_imm8(instruction: Instruction, bytes: &[u8]) -> bool {
+    matches!(instruction.operation,
+        Operation::Arithmetic { kind: ArithmeticKind::Cmp, dst: Operand::Register(dst), src: Operand::Immediate(_) }
+        if dst.register() == od_isa::Register::Rax && dst.size() == OperandSize::Qword)
+        && instruction.opcode.map == OpcodeMap::Primary
+        && instruction.opcode.byte == 0x83
+        && instruction.prefixes.rex == Some(0x48)
+        && instruction.prefixes.group1.is_none()
+        && instruction.prefixes.segment.is_none()
+        && !instruction.prefixes.operand_override
+        && !instruction.prefixes.address_override
+        && instruction.operand_size == OperandSize::Qword
+        && instruction.address_size == OperandSize::Qword
+        && instruction.length == 4
+        && bytes.get(..3) == Some(&[0x48, 0x83, 0xf8])
+        && bytes.get(3).is_some_and(|immediate| {
+            let decoded = match instruction.operation {
+                Operation::Arithmetic {
+                    src: Operand::Immediate(value),
+                    ..
+                } => value,
+                _ => return false,
+            };
+            decoded == (*immediate as i8 as i64) as u64
+        })
+}
+
 pub(crate) fn is_exact_add_rax_imm8(instruction: Instruction, bytes: &[u8]) -> bool {
     matches!(instruction.operation,
         Operation::Arithmetic { kind: ArithmeticKind::Add, dst: Operand::Register(dst), src: Operand::Immediate(_) }
@@ -987,6 +1122,21 @@ pub(crate) fn build_block_for_native_add_rax_imm8(
         context,
         limits,
         BlockBuildProfile::S0_09NativeAddRaxImm8,
+    )
+}
+
+pub(crate) fn build_block_for_native_cmp_rax_imm8(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    context: AccessContext,
+    limits: BlockLimits,
+) -> Result<BuildOutcome, BuildError> {
+    build_block_with_profile(
+        code,
+        entry_rip,
+        context,
+        limits,
+        BlockBuildProfile::S0_09NativeCmpRaxImm8,
     )
 }
 
@@ -1611,6 +1761,8 @@ fn build_block_with_profile(
             is_s0_09_form(decoded) || is_exact_neg_rax(decoded, &code.bytes[guest_offset..])
         } else if profile == BlockBuildProfile::S0_09NativeAddRaxImm8 {
             is_s0_09_form(decoded) || is_exact_add_rax_imm8(decoded, &code.bytes[guest_offset..])
+        } else if profile == BlockBuildProfile::S0_09NativeCmpRaxImm8 {
+            is_s0_09_form(decoded) || is_exact_cmp_rax_imm8(decoded, &code.bytes[guest_offset..])
         } else {
             is_s0_09_form(decoded)
         };
@@ -1692,7 +1844,8 @@ fn build_block_with_profile(
             | BlockBuildProfile::S0_09NativeIncRax
             | BlockBuildProfile::S0_09NativeDecRax
             | BlockBuildProfile::S0_09NativeNegRax
-            | BlockBuildProfile::S0_09NativeAddRaxImm8 => false,
+            | BlockBuildProfile::S0_09NativeAddRaxImm8
+            | BlockBuildProfile::S0_09NativeCmpRaxImm8 => false,
         };
         if complete_bounded_profile {
             return Ok(finish(
@@ -1947,6 +2100,53 @@ mod tests {
         assert!(matches!(
             S0_09NopAddRaxImm8Admission::from_code(view),
             Err(S0_09NopAdmissionError::BranchTargetNotBoundary { target: 0x1c05, .. })
+        ));
+    }
+
+    #[test]
+    fn cmp_rax_imm8_admission_covers_signed_byte_range_and_rejects_neighbors() {
+        for byte in 0u8..=u8::MAX {
+            let source = [0x48, 0x83, 0xf8, byte];
+            let view = CodeView::new(0x4c00, &source).unwrap();
+            let admission = S0_09NopCmpRaxImm8Admission::from_code(view).unwrap();
+            let expected = (byte as i8 as i64) as u64;
+            assert!(admission.admits_cmp_rax_imm8(0x4c00), "{byte:#04x}");
+            assert_eq!(admission.cmp_rax_imm8_value(0x4c00), Some(expected));
+            assert!(S0_09NopAddRaxImm8Admission::from_code(view).is_err());
+            assert!(S0_09NopIncRaxAdmission::from_code(view).is_err());
+            assert!(S0_09NopDecRaxAdmission::from_code(view).is_err());
+            assert!(S0_09NopNegRaxAdmission::from_code(view).is_err());
+            assert!(S0_09NopAdmission::from_code(view).is_err());
+        }
+
+        for bytes in [
+            &[0x48, 0x83, 0xf8][..],                // truncated immediate
+            &[0x48, 0x83, 0xc0, 0x01][..],          // ADD /0
+            &[0x48, 0x83, 0xe8, 0x01][..],          // SUB /5
+            &[0x48, 0x83, 0xf9, 0x01][..],          // CMP RCX
+            &[0x49, 0x83, 0xf8, 0x01][..],          // CMP R8
+            &[0x48, 0x81, 0xf8, 0x01, 0, 0, 0][..], // full immediate
+            &[0x48, 0x3d, 0x01, 0, 0, 0][..],       // accumulator encoding
+            &[0x48, 0x83, 0x38, 0x01][..],          // CMP [RAX], imm8
+            &[0x83, 0xf8, 0x01][..],                // 32-bit width
+            &[0x66, 0x83, 0xf8, 0x01][..],          // 16-bit width
+            &[0x80, 0xf8, 0x01][..],                // 8-bit width
+            &[0x66, 0x48, 0x83, 0xf8, 0x01][..],
+            &[0xf3, 0x48, 0x83, 0xf8, 0x01][..],
+            &[0x48, 0x40, 0x83, 0xf8, 0x01][..],
+        ] {
+            let view = CodeView::new(0x4d00, bytes).unwrap();
+            assert!(
+                S0_09NopCmpRaxImm8Admission::from_code(view).is_err(),
+                "{bytes:02x?}"
+            );
+        }
+
+        let branch_into_immediate = [0x74, 0x03, 0x48, 0x83, 0xf8, 0xff];
+        let view = CodeView::new(0x4e00, &branch_into_immediate).unwrap();
+        assert!(matches!(
+            S0_09NopCmpRaxImm8Admission::from_code(view),
+            Err(S0_09NopAdmissionError::BranchTargetNotBoundary { target: 0x4e05, .. })
         ));
     }
 

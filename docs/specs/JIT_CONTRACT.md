@@ -1465,6 +1465,20 @@ operation-specific. The path is opt-in and uncached, with no performance claim;
 Mini and performance checks remain deferred until the Stage 3 gate. See
 [S3-33d report](../reports/STAGE_3_S3-33d_2026-10-30.md).
 
+### S3-33e: opt-in exact native CMP RAX, sign-extended imm8
+
+The separate uncached `compile_block_for_native_cmp_rax_imm8*` and
+`dispatch::run_with_native_cmp_rax_imm8*` APIs use their own
+`S0_09NopCmpRaxImm8Admission` for exact bare `48 83 F8 ib` only (W64 RAX,
+opcode `83 /7`, length four). Admission cross-checks each source immediate
+byte against the decoder-owned sign-extended value; lowering consumes that
+decoded value as a W64 constant. It emits `Compare` with full
+`FlagEffect::Arithmetic` and `result=None`, then commits without any GPR
+write. Existing generic, INC, DEC, NEG, and ADD-immediate admissions remain
+separate. The path is opt-in and uncached; Mini and performance checks remain
+deferred until the Stage 3 gate. See
+[S3-33e report](../reports/STAGE_3_S3-33e_2026-10-30.md).
+
 ### S3-29d: uncached arithmetic-to-checked-load handoff
 
 The bounded host fixture composes existing eager and demand-flags native
