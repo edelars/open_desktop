@@ -742,7 +742,9 @@ before calibration and keeps it alive through alternating interpreter and
 dispatcher samples. Every measured dispatcher sample checks for hits and zero
 misses, compiles, publications, and evictions; state reset and result validation
 stay outside timed calls. The full 1,010-case corpus churns FIFO16 and cannot
-provide the resident warm evidence this path measures. This implementation has
-not yet collected warm timings and covers register-only cases only; it does
-not complete S3-36 or establish a performance result. Details are in the
-[S3-36a implementation report](../reports/STAGE_3_S3-36a_2026-10-30.md).
+provide the resident warm evidence this path measures. Three release runs
+measured the warm dispatcher at 12.129–12.343 µs and
+interpreter at 2.019–2.053 µs per selected corpus sweep. The interpreter was
+about 6.0× faster on this register-only slice; S3-36 remains partial. Details
+and raw results are in the
+[S3-36a report](../reports/STAGE_3_S3-36a_2026-10-30.md).

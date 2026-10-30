@@ -2500,10 +2500,11 @@ misses/compiles and only 2 hits. The runner prewarms one persistent runtime,
 verifies that measured sweeps have hits and zero
 miss/compile/publication/eviction deltas, alternates interpreter and cached
 dispatcher samples, and validates each reset execution outside the timed
-calls. This is a measurement path only; no warm benchmark has been run and no
-performance conclusion is supported. It covers register-only cases and does
-not complete S3-36's branch/helper/memory workload matrix. See the
-[S3-36a implementation report](../reports/STAGE_3_S3-36a_2026-10-30.md).
+calls. Three release runs measured 12.129–12.343 µs per warm FIFO sweep and
+2.019–2.053 µs per interpreter sweep on this slice. The interpreter was about
+6.0× faster for this workload; no general performance conclusion is supported.
+It covers register-only cases and does not complete S3-36's branch/helper/memory
+workload matrix. See the [S3-36a report](../reports/STAGE_3_S3-36a_2026-10-30.md).
 
 1. Прогреть cache вне timed samples и подтвердить hit/compile counters. Повторять одинаковую гостевую работу с корректным reset initial state.
 2. Измерять полный steady-state runtime path с lookup/dispatcher/helpers/flags и exits, а не только одну ARM64 arithmetic instruction.

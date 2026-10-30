@@ -288,10 +288,13 @@ The complete 1,010-case frozen corpus is unsuitable as a resident warm sample:
 FIFO(16) capacity is smaller than the active working set. A recorded cold
 corpus sweep observed 1,320 misses/compiles and only 2 hits, so repeating the
 whole corpus would measure churn/recompilation, not steady-state cache hits.
-This path covers only a bounded register-only resident slice. No measurement
-has been collected; it supports no performance conclusion and does not complete
-the branch/helper/memory or resource portions of S3-36. See the
-[S3-36a implementation report](../reports/STAGE_3_S3-36a_2026-10-30.md).
+Three release runs measured the warm FIFO dispatcher at 12.129–12.343 µs per
+14-case sweep and the interpreter at 2.019–2.053 µs. The interpreter was about
+6.0× faster on this slice; this does not support a result for other workloads.
+The raw JSON, hashes, counter checks, restart data and timing boundaries are in
+the [S3-36a report](../reports/STAGE_3_S3-36a_2026-10-30.md). This path covers
+only a bounded register-only resident slice and does not complete the
+branch/helper/memory or resource portions of S3-36.
 
 Recorded trace дополняется ограниченными synthetic-сценариями:
 1/8/64/512/4096 keys и observed unique count, hot loops на 1/8 keys, reverse
