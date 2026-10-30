@@ -28,6 +28,7 @@ use crate::{
 };
 
 const PAIRS: usize = 20;
+const FIRST_RUN_PAIRS: usize = 20;
 const MIN_SAMPLE: Duration = Duration::from_millis(200);
 const ARENA_SLOTS: usize = 16;
 const MAX_CASE_LIST_BYTES: usize = 4 * 1024 * 1024;
@@ -291,6 +292,65 @@ struct Report {
     scenarios: Vec<ScenarioResult>,
 }
 
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum FirstRunVariantName {
+    Interpreter,
+    Fifo16ColdBlockDispatcher,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct FirstRunSample {
+    pair: usize,
+    order: usize,
+    sweeps: usize,
+    calls: u64,
+    retired_guest_instructions: u64,
+    native_block_executions: u64,
+    initialization_ns: u128,
+    execution_ns: u128,
+    elapsed_ns: u128,
+    cache_hits: u64,
+    cache_misses: u64,
+    successful_compiles: u64,
+    successful_publications: u64,
+    evictions: u64,
+    resident_entries_high_water: usize,
+    resident_code_bytes_high_water: usize,
+    resident_logical_metadata_bytes_high_water: usize,
+    arena_reserved_bytes: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct FirstRunVariantResult {
+    variant: FirstRunVariantName,
+    samples: Vec<FirstRunSample>,
+    median_ns_per_sweep: u128,
+    min_ns_per_sweep: u128,
+    max_ns_per_sweep: u128,
+    iqr_ns_per_sweep: u128,
+}
+
+#[derive(Serialize)]
+struct FirstRunReport {
+    schema: u32,
+    process_run: u8,
+    case_list_sha256: String,
+    trace_sha256: String,
+    capture_host: HostMetadata,
+    measure_host: HostMetadata,
+    inputs: usize,
+    visits: usize,
+    calibration_sweeps: Vec<usize>,
+    measured_pairs: usize,
+    common_sweeps_per_sample: usize,
+    timing_scope: String,
+    excluded_from_timing: String,
+    variants: Vec<FirstRunVariantResult>,
+    paired_interpreter_over_fifo_ratios: Vec<f64>,
+    total_elapsed_ns: u128,
+}
+
 pub fn run(
     case_list: &Path,
     trace_path: &Path,
@@ -414,6 +474,427 @@ pub fn run(
     let total_elapsed_ns = started.elapsed().as_nanos();
     let report=Report{schema:1,process_run,case_list_sha256:od_testkit::sha256_hex(&list),trace_sha256:od_testkit::sha256_hex(&trace_raw),capture_host:trace.capture_host.clone(),measure_host:HostMetadata::current(),inputs:trace.inputs.len(),visits:trace.visits.len(),timing_scope:"dispatch-call intervals accumulated; state reset and result validation outside timer; cache retained between warm measured sweeps".into(),excluded_from_timing:"fixture/trace parsing, full decoder admission, interpreter oracle, arena/cache construction and destruction, state clone/reset, and result validation".into(),arena_slots:ARENA_SLOTS,arena_slot_bytes:od_host::ARENA_SLOT_BYTES,total_elapsed_ns,scenarios:output};
     serde_json::to_value(report).map_err(|e| err(e.to_string()))
+}
+
+/// Measures one complete register-only corpus pass from an empty FIFO block
+/// cache against the interpreter on the same frozen fixtures. Each measured
+/// JIT sweep owns a new arena/cache; runtime teardown and harness state/reset
+/// validation are intentionally outside the timed intervals.
+pub fn run_cold_first_execution(
+    case_list: &Path,
+    trace_path: &Path,
+    process_run: u8,
+) -> Result<serde_json::Value, BenchError> {
+    if cfg!(debug_assertions) {
+        return Err(err("cold-first-run measurement requires a release build"));
+    }
+    if !(1..=3).contains(&process_run) {
+        return Err(err("process-run must be 1..=3"));
+    }
+    let started = Instant::now();
+    let list = read_bounded(case_list, MAX_CASE_LIST_BYTES, "case list")?;
+    let trace_raw = read_bounded(trace_path, crate::MAX_LOGICAL_BYTES, "trace")?;
+    if od_testkit::sha256_hex(&list) != FROZEN_CASE_LIST_SHA256
+        || od_testkit::sha256_hex(&trace_raw) != FROZEN_TRACE_SHA256
+    {
+        return Err(err(
+            "case list or trace does not match the frozen S3-17 corpus",
+        ));
+    }
+    let trace: RecordedTrace =
+        serde_json::from_slice(&trace_raw).map_err(|e| err(format!("trace JSON: {e}")))?;
+    if trace.visits.len() != 1_322 || trace.visits.len() > MAX_TOTAL_TRACE_VISITS {
+        return Err(err("frozen trace visit count mismatch"));
+    }
+    let cases = prepare_cases(&list, &trace, started)?;
+    if cases.len() != MAX_INPUTS {
+        return Err(err("cold-first-run requires the complete frozen corpus"));
+    }
+
+    // Native preflight is deliberately outside timing and the fresh engine is
+    // dropped before calibration, so it cannot leave a compiled block behind.
+    let _ = cold_fifo_sweep(&cases, started)?;
+    let mut calibration = [Duration::ZERO; 2];
+    let mut calibration_sweeps = [0usize; 2];
+    while calibration.iter().any(|elapsed| *elapsed < MIN_SAMPLE) {
+        if started.elapsed() > MAX_RUN_TIME {
+            return Err(err("30 minute run limit exceeded during cold calibration"));
+        }
+        if calibration[0] < MIN_SAMPLE {
+            let sweep = cold_fifo_sweep(&cases, started)?;
+            calibration[0] = calibration[0]
+                .saturating_add(sweep.initialization)
+                .saturating_add(sweep.execution);
+            calibration_sweeps[0] += 1;
+        }
+        if calibration[1] < MIN_SAMPLE {
+            let sweep = interpreter_sweep(&cases, started)?;
+            calibration[1] = calibration[1].saturating_add(sweep.execution);
+            calibration_sweeps[1] += 1;
+        }
+    }
+    let repetitions = calibration_sweeps.into_iter().max().unwrap_or(1).max(1);
+
+    let mut fifo_samples = Vec::with_capacity(FIRST_RUN_PAIRS);
+    let mut interpreter_samples = Vec::with_capacity(FIRST_RUN_PAIRS);
+    for pair in 0..FIRST_RUN_PAIRS {
+        if started.elapsed() > MAX_RUN_TIME {
+            return Err(err("30 minute run limit exceeded during cold samples"));
+        }
+        let fifo_first = pair % 2 == 0;
+        let (fifo_order, interpreter_order) = if fifo_first { (0, 1) } else { (1, 0) };
+        if fifo_first {
+            fifo_samples.push(measure_cold_fifo_sample(
+                pair,
+                fifo_order,
+                repetitions,
+                &cases,
+                started,
+            )?);
+            interpreter_samples.push(measure_interpreter_sample(
+                pair,
+                interpreter_order,
+                repetitions,
+                &cases,
+                started,
+            )?);
+        } else {
+            interpreter_samples.push(measure_interpreter_sample(
+                pair,
+                interpreter_order,
+                repetitions,
+                &cases,
+                started,
+            )?);
+            fifo_samples.push(measure_cold_fifo_sample(
+                pair,
+                fifo_order,
+                repetitions,
+                &cases,
+                started,
+            )?);
+        }
+    }
+
+    let fifo_result =
+        summarize_first_run(FirstRunVariantName::Fifo16ColdBlockDispatcher, fifo_samples);
+    let interpreter_result =
+        summarize_first_run(FirstRunVariantName::Interpreter, interpreter_samples);
+    let fifo_by_pair: std::collections::HashMap<usize, u128> = fifo_result
+        .samples
+        .iter()
+        .map(|sample| (sample.pair, sample.elapsed_ns / sample.sweeps as u128))
+        .collect();
+    let ratios = interpreter_result
+        .samples
+        .iter()
+        .map(|sample| {
+            let interpreter = sample.elapsed_ns as f64 / sample.sweeps as f64;
+            let fifo = fifo_by_pair[&sample.pair] as f64;
+            interpreter / fifo
+        })
+        .collect();
+    let report = FirstRunReport {
+        schema: 1,
+        process_run,
+        case_list_sha256: od_testkit::sha256_hex(&list),
+        trace_sha256: od_testkit::sha256_hex(&trace_raw),
+        capture_host: trace.capture_host.clone(),
+        measure_host: HostMetadata::current(),
+        inputs: trace.inputs.len(),
+        visits: trace.visits.len(),
+        calibration_sweeps: calibration_sweeps.to_vec(),
+        measured_pairs: FIRST_RUN_PAIRS,
+        common_sweeps_per_sample: repetitions,
+        timing_scope: "per-sample sum of fresh FIFO arena/cache initialization plus each corpus dispatch-call interval; interpreter-call intervals for the same case order; each JIT sweep starts with an empty cache; cache may be reused within a corpus sweep".into(),
+        excluded_from_timing: "fixture/trace parsing and admission, interpreter oracle preparation, per-case state clone/reset, post-call result validation, runtime teardown, and process launch".into(),
+        variants: vec![fifo_result, interpreter_result],
+        paired_interpreter_over_fifo_ratios: ratios,
+        total_elapsed_ns: started.elapsed().as_nanos(),
+    };
+    serde_json::to_value(report).map_err(|e| err(e.to_string()))
+}
+
+struct ColdSweep {
+    initialization: Duration,
+    execution: Duration,
+    calls: u64,
+    retired: u64,
+    native_blocks: u64,
+    counters: Counters,
+}
+
+fn cold_fifo_sweep(cases: &[Case], started: Instant) -> Result<ColdSweep, BenchError> {
+    let init_started = Instant::now();
+    let mut engine = Variant::new(VariantName::MultiFifo16)?;
+    let initialization = init_started.elapsed();
+    let mut execution = Duration::ZERO;
+    let mut retired = 0u64;
+    let mut native_blocks = 0u64;
+    for case in cases {
+        if started.elapsed() > MAX_RUN_TIME {
+            return Err(err("30 minute run limit exceeded during cold FIFO sweep"));
+        }
+        let mut state = case.initial.clone();
+        let call_started = Instant::now();
+        let result = engine.call(case, &mut state)?;
+        execution = execution.saturating_add(call_started.elapsed());
+        validate_dispatch_result(case, &state, &result)?;
+        retired = retired
+            .checked_add(result.retired_instructions)
+            .ok_or_else(|| err("retirement count overflow"))?;
+        native_blocks = native_blocks
+            .checked_add(result.blocks_executed)
+            .ok_or_else(|| err("native block count overflow"))?;
+    }
+    let counters = engine.counters();
+    drop(engine); // Runtime teardown is explicitly outside the measured intervals.
+    Ok(ColdSweep {
+        initialization,
+        execution,
+        calls: cases.len() as u64,
+        retired,
+        native_blocks,
+        counters,
+    })
+}
+
+fn interpreter_sweep(cases: &[Case], started: Instant) -> Result<ColdSweep, BenchError> {
+    let mut execution = Duration::ZERO;
+    let mut retired = 0u64;
+    for case in cases {
+        if started.elapsed() > MAX_RUN_TIME {
+            return Err(err("30 minute run limit exceeded during interpreter sweep"));
+        }
+        let mut state = case.initial.clone();
+        let mut memory = FetchMemory(&case.bytes);
+        let call_started = Instant::now();
+        let result = interpreter_run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: case.budget,
+                stop_rip: Some(case.bytes.len() as u64),
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        execution = execution.saturating_add(call_started.elapsed());
+        validate_interpreter_result(case, &state, &result)?;
+        retired = retired
+            .checked_add(result.instructions_executed)
+            .ok_or_else(|| err("interpreter retirement count overflow"))?;
+    }
+    Ok(ColdSweep {
+        initialization: Duration::ZERO,
+        execution,
+        calls: cases.len() as u64,
+        retired,
+        native_blocks: 0,
+        counters: Counters::default(),
+    })
+}
+
+fn measure_cold_fifo_sample(
+    pair: usize,
+    order: usize,
+    repetitions: usize,
+    cases: &[Case],
+    started: Instant,
+) -> Result<FirstRunSample, BenchError> {
+    let mut initialization = Duration::ZERO;
+    let mut execution = Duration::ZERO;
+    let mut calls = 0u64;
+    let mut retired = 0u64;
+    let mut native_blocks = 0u64;
+    let mut counters = Counters {
+        arena_free: usize::MAX,
+        ..Counters::default()
+    };
+    for _ in 0..repetitions {
+        let sweep = cold_fifo_sweep(cases, started)?;
+        initialization = initialization.saturating_add(sweep.initialization);
+        execution = execution.saturating_add(sweep.execution);
+        calls = calls
+            .checked_add(sweep.calls)
+            .ok_or_else(|| err("cold FIFO call count overflow"))?;
+        retired = retired
+            .checked_add(sweep.retired)
+            .ok_or_else(|| err("cold FIFO retirement count overflow"))?;
+        native_blocks = native_blocks
+            .checked_add(sweep.native_blocks)
+            .ok_or_else(|| err("cold FIFO native block count overflow"))?;
+        add_sample_counters(&mut counters, sweep.counters)?;
+    }
+    let elapsed = initialization.saturating_add(execution);
+    if elapsed < MIN_SAMPLE {
+        return Err(err("cold FIFO paired sample below 200ms"));
+    }
+    Ok(FirstRunSample {
+        pair,
+        order,
+        sweeps: repetitions,
+        calls,
+        retired_guest_instructions: retired,
+        native_block_executions: native_blocks,
+        initialization_ns: initialization.as_nanos(),
+        execution_ns: execution.as_nanos(),
+        elapsed_ns: elapsed.as_nanos(),
+        cache_hits: counters.hits,
+        cache_misses: counters.misses,
+        successful_compiles: counters.compiles,
+        successful_publications: counters.publications,
+        evictions: counters.evictions,
+        resident_entries_high_water: counters.resident,
+        resident_code_bytes_high_water: counters.code_bytes,
+        resident_logical_metadata_bytes_high_water: counters.logical_bytes,
+        arena_reserved_bytes: counters.arena_reserved_bytes,
+    })
+}
+
+fn measure_interpreter_sample(
+    pair: usize,
+    order: usize,
+    repetitions: usize,
+    cases: &[Case],
+    started: Instant,
+) -> Result<FirstRunSample, BenchError> {
+    let mut execution = Duration::ZERO;
+    let mut calls = 0u64;
+    let mut retired = 0u64;
+    for _ in 0..repetitions {
+        let sweep = interpreter_sweep(cases, started)?;
+        execution = execution.saturating_add(sweep.execution);
+        calls = calls
+            .checked_add(sweep.calls)
+            .ok_or_else(|| err("interpreter call count overflow"))?;
+        retired = retired
+            .checked_add(sweep.retired)
+            .ok_or_else(|| err("interpreter retirement count overflow"))?;
+    }
+    if execution < MIN_SAMPLE {
+        return Err(err("interpreter paired sample below 200ms"));
+    }
+    Ok(FirstRunSample {
+        pair,
+        order,
+        sweeps: repetitions,
+        calls,
+        retired_guest_instructions: retired,
+        native_block_executions: 0,
+        initialization_ns: 0,
+        execution_ns: execution.as_nanos(),
+        elapsed_ns: execution.as_nanos(),
+        cache_hits: 0,
+        cache_misses: 0,
+        successful_compiles: 0,
+        successful_publications: 0,
+        evictions: 0,
+        resident_entries_high_water: 0,
+        resident_code_bytes_high_water: 0,
+        resident_logical_metadata_bytes_high_water: 0,
+        arena_reserved_bytes: 0,
+    })
+}
+
+fn add_sample_counters(total: &mut Counters, current: Counters) -> Result<(), BenchError> {
+    total.hits = total
+        .hits
+        .checked_add(current.hits)
+        .ok_or_else(|| err("cache hit counter overflow"))?;
+    total.misses = total
+        .misses
+        .checked_add(current.misses)
+        .ok_or_else(|| err("cache miss counter overflow"))?;
+    total.compiles = total
+        .compiles
+        .checked_add(current.compiles)
+        .ok_or_else(|| err("compile counter overflow"))?;
+    total.publications = total
+        .publications
+        .checked_add(current.publications)
+        .ok_or_else(|| err("publication counter overflow"))?;
+    total.evictions = total
+        .evictions
+        .checked_add(current.evictions)
+        .ok_or_else(|| err("eviction counter overflow"))?;
+    total.resident = total.resident.max(current.resident);
+    total.code_bytes = total.code_bytes.max(current.code_bytes);
+    total.logical_bytes = total.logical_bytes.max(current.logical_bytes);
+    total.arena_capacity = total.arena_capacity.max(current.arena_capacity);
+    total.arena_free = total.arena_free.min(current.arena_free);
+    total.arena_reserved_bytes = total.arena_reserved_bytes.max(current.arena_reserved_bytes);
+    total.cache_lookup_metrics_available |= current.cache_lookup_metrics_available;
+    Ok(())
+}
+
+fn summarize_first_run(
+    variant: FirstRunVariantName,
+    mut samples: Vec<FirstRunSample>,
+) -> FirstRunVariantResult {
+    let mut per_sweep = samples
+        .iter()
+        .map(|sample| sample.elapsed_ns / sample.sweeps as u128)
+        .collect::<Vec<_>>();
+    per_sweep.sort_unstable();
+    let median = if per_sweep.len() % 2 == 0 {
+        (per_sweep[per_sweep.len() / 2 - 1] + per_sweep[per_sweep.len() / 2]) / 2
+    } else {
+        per_sweep[per_sweep.len() / 2]
+    };
+    let iqr = per_sweep[per_sweep.len() * 3 / 4].saturating_sub(per_sweep[per_sweep.len() / 4]);
+    samples.sort_by_key(|sample| sample.pair);
+    FirstRunVariantResult {
+        variant,
+        samples,
+        median_ns_per_sweep: median,
+        min_ns_per_sweep: per_sweep[0],
+        max_ns_per_sweep: *per_sweep.last().unwrap(),
+        iqr_ns_per_sweep: iqr,
+    }
+}
+
+fn validate_dispatch_result(
+    case: &Case,
+    state: &LongModeState,
+    result: &od_jit::dispatch::DispatchResult,
+) -> Result<(), BenchError> {
+    if state.gpr != case.expected.gpr
+        || state.rip != case.expected.rip
+        || state.rflags & case.flags_mask != case.expected.rflags & case.flags_mask
+        || result.exit != case.exit
+        || result.retired_instructions != case.retired
+        || result.remaining_budget != case.remaining
+        || result.blocks_executed as usize != case.entry_count
+    {
+        return Err(err(format!("native result mismatch for {}", case.id)));
+    }
+    Ok(())
+}
+
+fn validate_interpreter_result(
+    case: &Case,
+    state: &LongModeState,
+    result: &od_isa::execute::RunResult,
+) -> Result<(), BenchError> {
+    let expected_exit = matches!(
+        (&case.exit, &result.exit),
+        (DispatchExit::CodeEnd, RunExit::StopAddress)
+            | (
+                DispatchExit::BudgetExhausted,
+                RunExit::InstructionBudgetExhausted
+            )
+    );
+    if !expected_exit
+        || state.gpr != case.expected.gpr
+        || state.rip != case.expected.rip
+        || state.rflags & case.flags_mask != case.expected.rflags & case.flags_mask
+        || result.instructions_executed != case.retired
+        || case.budget.saturating_sub(result.instructions_executed) != case.remaining
+    {
+        return Err(err(format!("interpreter result mismatch for {}", case.id)));
+    }
+    Ok(())
 }
 
 fn prepare_cases(
@@ -1031,6 +1512,43 @@ mod tests {
         assert!(matches!(&engine, Variant::Lru { .. }));
         replace_variant(&mut engine, VariantName::SingleEntryArena16).unwrap();
         assert!(matches!(&engine, Variant::Single { .. }));
+    }
+
+    #[test]
+    fn first_run_summary_normalizes_each_batch_by_cold_sweeps() {
+        let sample = |pair, sweeps, elapsed_ns| FirstRunSample {
+            pair,
+            order: pair % 2,
+            sweeps,
+            calls: 0,
+            retired_guest_instructions: 0,
+            native_block_executions: 0,
+            initialization_ns: 0,
+            execution_ns: elapsed_ns,
+            elapsed_ns,
+            cache_hits: 0,
+            cache_misses: 0,
+            successful_compiles: 0,
+            successful_publications: 0,
+            evictions: 0,
+            resident_entries_high_water: 0,
+            resident_code_bytes_high_water: 0,
+            resident_logical_metadata_bytes_high_water: 0,
+            arena_reserved_bytes: 0,
+        };
+        let result = summarize_first_run(
+            FirstRunVariantName::Interpreter,
+            vec![
+                sample(0, 1, 100),
+                sample(1, 2, 400),
+                sample(2, 4, 1_200),
+                sample(3, 5, 2_000),
+            ],
+        );
+        assert_eq!(result.min_ns_per_sweep, 100);
+        assert_eq!(result.median_ns_per_sweep, 250);
+        assert_eq!(result.max_ns_per_sweep, 400);
+        assert_eq!(result.iqr_ns_per_sweep, 200);
     }
 
     fn native_mov_case() -> Case {

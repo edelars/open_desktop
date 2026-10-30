@@ -715,3 +715,16 @@ Run `cargo test -p od-jit --lib rsi_rdi_data_direct_displacement_profile_is_exac
 ### S3-29e bounded arithmetic/checked-load coordinator
 
 Run `cargo test -p od-host --lib s3_29e_bounded_arithmetic_load_coordinator --offline` and `cargo test -p od-jit --offline`. Exercise the public `od_jit::memory_dispatch::run_bounded_arithmetic_load` call with eager and uncached demand-flags strategies over one/two exact ADD/SUB/CMP full writers, `48 8B 03`, JZ/JNZ and the existing ADD fallthrough. Compare complete state, RAM, flags and retirement with the interpreter for both branch outcomes. Verify `#PF` and `#GP` preserve the prefix and load RIP with no load retirement/RAX commit/suffix, then resume at that RIP without replay; backend failures must remain host errors. Check shared budget and stop-RIP/STOP/event priority at each phase boundary and after publication before native entry. Inject malformed native and memory reports, invalid plans/entries, unsupported compilation, zero progress and invalid phase RIPs; require typed results/errors without panics or masked faults. Confirm register mappings are released before memory publication and memory mappings before suffix publication through host adapters. No owner/MMU, cache, ISA-form, Mini or performance claims are in this slice. Full Stage 3 local harness and Linux workspace checks are recorded in the [S3-29e report](../reports/STAGE_3_S3-29e_2026-10-29.md).
+
+### S3-35a cold first full-corpus benchmark path
+
+`od-bench cold-first-run` compares interpreter execution and the default
+FIFO(16) block dispatcher on the exact frozen S3-17 register-only corpus.
+Correctness preflight and oracle construction run before timing. Every timed
+dispatcher sweep creates a fresh runtime/cache/arena with an empty code cache;
+timing includes initialization plus all dispatch calls through first full
+corpus completion, but excludes input preparation, state cloning/reset,
+validation, and teardown. Samples alternate order and report raw counts,
+median, range, IQR, and paired per-sweep ratios. The focused path is implemented,
+but measurements have not yet been collected; S3-35 and performance acceptance
+remain open. Mini/physical and Stage 2 checks are outside this bounded slice.

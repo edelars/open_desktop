@@ -213,6 +213,47 @@ timing, arena/cache construction/destruction, or a single cold compile+first
 execution. No product speed or cache-policy conclusion is made. Full Stage 3
 performance acceptance and S3-18 remain open.
 
+### S3-35a: cold first full-corpus execution
+
+`od-bench cold-first-run` is an opt-in Apple Silicon macOS release benchmark
+for the full frozen S3-17 register-only case list and trace. It validates the
+exact input hashes and admitted trace boundaries, decodes/admit-checks all
+1,010 cases, and computes the interpreter oracle before timing. It also runs
+and discards a native correctness preflight before timed samples.
+
+Each sample consists of complete corpus sweeps. Interpreter and default
+FIFO(16) block dispatcher samples use the same cases, input states, sweep
+count, and output validation. Sample order alternates within pairs. Every cold
+dispatcher sweep starts with a newly initialized runtime, arena, and empty
+code cache. Its timed total includes runtime/cache/arena initialization plus
+dispatch lookup, decode/key work, compilation, publication, and first corpus
+execution. Cache reuse within that same corpus sweep is intentional and is
+part of the workload. Interpreter timing includes its full case execution.
+Fixture loading, interpreter oracle/preflight, state cloning/reset,
+post-execution validation, process launch, and runtime/cache/arena teardown are
+outside the timed intervals; teardown remains included in whole-run wall time.
+Reports persist build/revision/fingerprint and host/toolchain metadata, input
+hashes, exact timing scope, calibrated/common sweep counts, raw samples and
+counters, median/range/IQR, and paired per-sweep interpreter/FIFO ratios.
+
+After review, collect three separate release process runs:
+
+```sh
+for run in 1 2 3; do
+  cargo run --release -p od-bench --offline -- cold-first-run \
+    --case-list work/tmp/stage3/s3-17/cases.txt \
+    --trace work/tmp/stage3/s3-17/dispatch-trace.json \
+    --process-run "$run" \
+    --output "work/tmp/stage3/s3-35/first-run-$run.json"
+done
+```
+
+S3-35a implements the reproducible comparison path only. Measurements have
+not yet been collected, no speedup or legacy-fragment comparison is claimed,
+and S3-35/S3-36 remain open. Legacy fragment timing is not applicable to this
+path until an admitted legacy shape is shown to match the same frozen corpus
+and semantics.
+
 Recorded trace дополняется ограниченными synthetic-сценариями:
 1/8/64/512/4096 keys и observed unique count, hot loops на 1/8 keys, reverse
 unique sequence, alternating hit/miss, stale mapping/backing/execute

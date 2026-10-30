@@ -256,7 +256,7 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-33 | Расширение lowering по готовности S2 | S3-27, S3-29; готовый interpreter/native subset |
 | [ ] | S3-34 | Corpus, reducer и негативные проверки | S3-24–S3-33 в принятой конфигурации |
 | [partial] | S3-34f | Exact local acceptance gates for bounded S3-28/29/38 slices | S3-34e, S3-28a/b, S3-29a–e, S3-38a; full suite gates remain open |
-| [ ] | S3-35 | Измерить холодное исполнение | S3-01, S3-34 |
+| [partial] | S3-35 | Измерить холодное исполнение | S3-01, S3-34 |
 | [ ] | S3-36 | Измерить прогретое исполнение | S3-35 |
 | [ ] | S3-37 | Cache churn и ресурсы | S3-25, S3-34 |
 | [ ] | S3-38 | Интеграция VMHost и ABI | S3-28, S3-34 |
@@ -2458,6 +2458,20 @@ fail-closed Cargo gate
 не входят. См. [S3-34h report](../reports/STAGE_3_S3-34h_2026-10-30.md).
 
 ### S3-35. Измерить холодное исполнение
+
+#### S3-35a: first full-corpus interpreter/FIFO comparison path
+
+Implemented opt-in `od-bench cold-first-run` for the frozen S3-17
+register-only corpus. It performs correctness preflight outside timed samples,
+alternates interpreter and default FIFO(16) block-dispatcher samples, and
+creates a fresh runtime/cache/arena for every cold dispatcher sweep. Timed
+scope includes initialization and first corpus execution; setup of fixture
+inputs, state reset/validation and teardown are explicitly excluded. Raw
+sample reporting and host/build/input fingerprints are implemented. The
+benchmark has not yet been run, so S3-35 remains partial and no performance
+conclusion is supported. Legacy fragment timing is not applicable unless an
+admitted legacy input shape and semantics are established for these same
+inputs. See [`BENCHMARKS.md`](../testing/BENCHMARKS.md#s3-35a-cold-first-full-corpus-execution).
 
 1. Измерить полный первый запуск при пустом code cache: необходимые decode/IR/lowering/allocation/publication/lookup/execution, с явно указанной стоимостью initialization.
 2. Отдельно снять составляющие pipeline, не складывая несовместимые independently calibrated samples как точный end-to-end результат.
