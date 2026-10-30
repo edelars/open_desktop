@@ -12713,3 +12713,39 @@ Normative sources: Intel SDM Rev. 093 Vol. 2A COMISD pp. 3-199–3-200
 UCOMISD pp. 4-733–4-734 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241));
 Vol. 1 Tables D-6/D-7, §4.9.2 NaN-before-denormal priority, and
 §§11.5.2.2/11.5.3 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+
+## S2-37x — canonical Long64 CMPSS XMM register pairs
+
+The schema-v2 interpreter-only profile `s2-long-cmpss-registers-v1` admits
+legacy `F3 0F C2 /r ib` with ModR/M.mod=3, all 256 XMM pairs, and immediate
+predicates 0–7. Low register pairs use the canonical 5-byte encoding. Extended
+operands use exactly REX `41`, `44`, or `45` after F3 (6 bytes). The fixture
+parser independently derives opcode, registers, predicate and length. One
+executable mapping, one-instruction budget and checked stop RIP are required.
+Other/repeated/reordered prefixes, REX.W/X, memory, trailing bytes, VEX/EVEX,
+and immediate values above 7 are profile refusals. High immediate bits are
+locally rejected without asserting architectural #UD.
+
+Both XMM inputs are snapshotted; only low32 is consumed. Comparison uses raw
+binary32 classification and signed-magnitude ordering, with +0 and -0 equal.
+Predicate bits 0–7 mean, in order: ordered equal, ordered less, ordered
+less-or-equal, unordered, unordered-or-not-equal, unordered-or-not-less,
+unordered-or-not-less-or-equal, ordered. Completion writes all ones or zero to
+destination low32, preserving its high96 and every other register/state field.
+
+SNaN raises new IE for every predicate. QNaN raises new IE for predicates 1,
+2, 5, and 6. If either operand is NaN, new DE from a subnormal other operand
+is suppressed; otherwise either subnormal raises DE. New IE/DE are ORed with
+old sticky bits. Existing sticky bits alone do not fault. Only a newly raised,
+unmasked event exits: commit MXCSR status first, return #XM when
+CR4.OSXMMEXCPT=1 or SIMD-generated #UD otherwise, and preserve destination,
+RIP and retirement. Full instruction fetch precedes SSE availability/CR0.EM/
+CR4.OSFXSR #UD and then CR0.TS #NM at CPL0–3. JIT, native, generic CPUID, C ABI
+and fragment admission remain closed. Memory forms, other modes, physical
+acceptance and parent S2-37/S2-38 remain open; hardware acceptance is deferred
+to the final combined stage.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CMPSS pp. 3-189–3-192, Table 3-8
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 1
+§4.9.2 NaN-before-denormal priority and §11.5.3
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).

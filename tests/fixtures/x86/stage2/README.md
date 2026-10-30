@@ -6420,3 +6420,19 @@ physical acceptance and parent S2-37/S2-38 remain out of scope. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37w--canonical-long64-comisd-and-ucomisd-xmm-register-pairs),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37w--canonical-long64-comisd-and-ucomisd-xmm-register-pairs),
 and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37w--canonical-long64-comisd-and-ucomisd-xmm-register-pairs).
+
+### S2-37x canonical CMPSS register pairs
+
+`s2_37x_cmpss_registers.case.json` is the handwritten schema-v2
+`s2-long-cmpss-registers-v1` anchor for canonical `F3 0F C2 C1 01`.
+The runner constructs all 2048 XMM-pair/predicate encodings and checks operand
+aliases, all legacy predicate outcomes, raw binary32 classes, signed zero,
+NaN-before-denormal priority, signaling-predicate IE, IE/DE masks and sticky
+bits, destination high96, fault atomicity, gate/fetch/CPL behavior, malformed
+forms, tampering and JIT/native denial. The testkit has an independent raw-bit
+comparator and predicate table. Immediate high bits are local profile refusals;
+this profile does not claim architectural #UD for them. Memory forms, generic
+CPUID admission, physical acceptance, and parent S2-37/S2-38 remain open.
+See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37x--canonical-long64-cmpss-xmm-register-pairs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37x--canonical-long64-cmpss-xmm-register-pairs),
+and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37x--canonical-long64-cmpss-xmm-register-pairs).
