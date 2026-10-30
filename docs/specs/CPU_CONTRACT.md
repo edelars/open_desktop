@@ -12894,3 +12894,31 @@ integer arithmetic. It does not call production conversion helpers. Provenance:
 Intel SDM Rev. 093 Vol. 2A `CVTSS2SI` pp. 3-242–3-243; Vol. 1 §11.5.2.2
 explicitly excludes this conversion from denormal exception signaling
 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+
+## S2-37ac — canonical Long64 CVTSD2SI register space
+
+The separate schema-v2 interpreter profile `s2-long-cvtsd2si-registers-v1`
+accepts exactly 512 canonical Long64 forms: r32/r64 GPR destination × XMM0–15
+low64 source. `F2 0F 2D /r` selects r32 and `F2 REX.W 0F 2D /r` selects r64;
+ModR/M.mod=3 is mandatory. REX.R extends the GPR destination and REX.B the XMM
+source. Only canonical REX forms are accepted; REX.X, memory, other/reordered
+or redundant prefixes, trailing bytes, VEX and EVEX are local refusals.
+
+Conversion uses MXCSR.RC and signed i32/i64 range after rounding. r32 writes
+zero-extended bits to the full GPR, including RSP. Preserve every XMM, other
+GPR and RFLAGS. Masked Invalid produces integer indefinite. Exact signed
+minimum remains valid and distinguishable by IE. Invalid suppresses PE; valid
+inexact conversion raises PE. Sticky IE/PE is committed before newly unmasked
+#XM or SIMD-generated #UD. A new unmasked event suppresses destination, RIP and
+retirement; old sticky bits alone do not fault. The conversion raises no DE for
+subnormals even when DM is unmasked; FTZ has no effect. The local profile may
+refuse DAZ/reserved MXCSR bits. Full fetch precedes missing SSE2/EM/OSFXSR #UD
+then TS #NM at CPL0–3. No data-memory access occurs. Only interpreter execution
+is admitted; JIT, native, generic CPUID, C ABI and fragment paths remain closed.
+Memory forms and physical acceptance are not claimed; parent S2-37 remains
+open and hardware acceptance belongs to the combined final stage.
+
+The fixture oracle parses raw binary64 fields and performs integer rounding and
+range classification without production conversion helpers or host floating
+point. Provenance: Intel SDM Rev. 093 Vol. 2A `CVTSD2SI` pp. 3-232–3-233 and
+Vol. 1 §11.5.2.2 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).

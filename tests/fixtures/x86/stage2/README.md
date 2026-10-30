@@ -6500,3 +6500,17 @@ physical acceptance remain open. Sources: Intel SDM Rev. 093 Vol. 2A pp.
 3-242–3-243; Vol. 1 §11.5.2.2 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
 See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ab--canonical-long64-cvtss2si-register-space)
 and [plan](../../../../docs/plans/STAGE_2.md#s2-37ab--canonical-long64-cvtss2si-register-space).
+
+### S2-37ac canonical CVTSD2SI register space
+
+The schema-v2 profile `s2-long-cvtsd2si-registers-v1` accepts all 512
+canonical r32/r64 GPR destination × XMM source combinations. Its oracle parses
+raw binary64 fields and performs integer rounding and range checks; it does not
+call production conversion helpers or host floating point. Coverage includes
+all selector pairs, MXCSR.RC, halfway values, signed i32/i64 boundaries, exact
+signed minima versus integer indefinite, QNaN/SNaN/infinity, subnormal without
+DE, sticky IE/PE and unmasked exception atomicity. The bounded profile admits
+only the interpreter; memory sources and physical acceptance remain outside
+scope. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ac--canonical-long64-cvtsd2si-register-space),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37ac--canonical-long64-cvtsd2si-register-space),
+and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ac--canonical-long64-cvtsd2si-register-space).

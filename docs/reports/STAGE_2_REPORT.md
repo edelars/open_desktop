@@ -18049,3 +18049,44 @@ Independent Sol-medium review initially identified four issues: preserved CVTSI2
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37ab--canonical-long64-cvtss2si-register-space),
 [plan](../plans/STAGE_2.md#s2-37ab--canonical-long64-cvtss2si-register-space), and
 [fixture guide](../../tests/fixtures/x86/stage2/README.md#s2-37ab-canonical-cvtss2si-register-space).
+
+## S2-37ac — canonical Long64 CVTSD2SI register space
+
+Implemented the interpreter-only schema-v2 profile `s2-long-cvtsd2si-registers-v1`
+for 512 canonical Long64 register encodings. Execution reads XMM low64, rounds
+binary64 with the existing `Binary64::to_i32/to_i64` helpers under MXCSR.RC,
+range-checks after rounding, zero-extends r32 results, and preserves XMM and
+unrelated state. IE/PE sticky status commits before an unmasked #XM or SIMD #UD;
+new unmasked events suppress destination, RIP and retirement. No DE is raised
+for subnormal input. Strict profile/runtime admission stays separate from
+CVTSS2SI and CVTSI2SS; generic, C, fragment, JIT and native paths stay closed.
+
+The schema-v2 validator has an independent raw binary64 integer oracle. The
+runner constructs every source/destination pair at both widths using distinct
+low64 values and covers rounding modes, halfway conversion, signed boundaries,
+exact minima versus integer indefinite, NaN/infinity, subnormal with DM unmasked,
+unmasked Invalid and Precision atomicity, OSXMMEXCPT=0, sticky status, and
+round-before-range boundaries. Decoder coverage checks 512 forms and malformed
+prefix classes. Interpreter tests cover complete fetch, gate ordering at all
+CPLs, STOP, zero budget, truncation, no data callbacks, local MXCSR refusal,
+cross-profile denial, and fault/control-metadata tampering. No physical hardware
+oracle was run; physical checks remain in the single combined final stage.
+Parent S2-37 remains open. Provenance: Intel SDM Rev. 093 Vol. 2A `CVTSD2SI` pp. 3-232–3-233
+and Vol. 1 §11.5.2.2 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+
+Checks run:
+
+- `cargo test -p od-testkit cvtss2si --offline` — existing CVTSS2SI oracle/parser regressions passed (2 tests).
+- `cargo test -p od-isa cvtsd2si --offline` — decode matrix, all-CPL gate/fetch, STOP/zero-budget/truncation and profile-denial tests passed (4 tests).
+- `cargo test -p od-runner cvtsd2si_canonical_register_space --offline` — all 512 forms, rounding, range and exception boundaries passed.
+- `cargo test -p od-runner cvtss2si_canonical_register_space --offline` and `cargo test -p od-runner cvtsi2ss_canonical_register_space --offline` — neighboring profile regressions passed.
+- `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, and `git diff --check` — passed.
+- `python3 tools/check_layout.py` — reported only the existing unmapped root `.git` and two historical oracle manifest links.
+- `graphify update .` — completed.
+
+Independent Sol-medium review found two test-matrix errors: DM and IM were
+intended to be clear but were still set in the chosen MXCSR values. Both tests
+now assert the input bits are clear and the expected execution/sticky results;
+targeted re-review is clean. The reviewer independently passed four ISA tests,
+the 512-form runner test, and `git diff --check`. No performance claim or
+measurement was needed for this bounded correctness slice.

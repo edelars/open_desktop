@@ -1015,6 +1015,16 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only legacy `F2 0F 2D /r` signed binary64-to-r32 conversion.
+    Cvtsd2siR32Register {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only legacy `F2 REX.W 0F 2D /r` signed binary64-to-r64 conversion.
+    Cvtsd2siR64Register {
+        destination: u8,
+        source: u8,
+    },
     /// Local-only legacy `0F 5D /r` XMM-register form with masked IE/DE status.
     MinpsRegisterMasked {
         destination: u8,
@@ -3371,6 +3381,27 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && matches!(prefixes.rex, Some(0x48 | 0x49 | 0x4c | 0x4d))
             && prefix_bytes[0] == 0xf3
             && prefix_bytes[1] == prefixes.rex.unwrap();
+        let cvtsd2si_r32_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x2d
+            && prefixes.group1 == Some(0xf2)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 1 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && matches!(prefixes.rex, Some(0x41 | 0x44 | 0x45))
+                    && prefix_bytes[0] == 0xf2
+                    && prefix_bytes[1] == prefixes.rex.unwrap());
+        let cvtsd2si_r64_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x2d
+            && prefixes.group1 == Some(0xf2)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && prefix_count == 2
+            && matches!(prefixes.rex, Some(0x48 | 0x49 | 0x4c | 0x4d))
+            && prefix_bytes[0] == 0xf2
+            && prefix_bytes[1] == prefixes.rex.unwrap();
         let maxss_register_masked = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x5f
             && prefixes.group1 == Some(0xf3)
@@ -3454,6 +3485,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && opcode.byte == 0x2d
             && !cvtss2si_r32_register
             && !cvtss2si_r64_register
+            && !cvtsd2si_r32_register
+            && !cvtsd2si_r64_register
         {
             return Err(self.unsupported(opcode));
         }
@@ -3557,6 +3590,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !cvtsi2ss_r64_register
                 && !cvtss2si_r32_register
                 && !cvtss2si_r64_register
+                && !cvtsd2si_r32_register
+                && !cvtsd2si_r64_register
                 && !cmpss_register
                 && !cmpsd_register
                 && !cmppd_register
@@ -3890,6 +3925,26 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 Operation::Cvtss2siR64Register {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x2d) if cvtsd2si_r32_register => {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::Cvtsd2siR32Register {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x2d) if cvtsd2si_r64_register => {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::Cvtsd2siR64Register {
                     destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                     source: (modrm & 7) | ((rex & 1) << 3),
                 }
@@ -18766,6 +18821,58 @@ mod tests {
             &[0xf2, 0xf2, 0x0f, 0x2a, 0xc0],
             &[0x48, 0xf2, 0x0f, 0x2a, 0xc0],
             &[0xf2, 0x0f, 0x2a, 0x00],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn cvtsd2si_decodes_all_register_pairs_and_rejects_noncanonical_forms() {
+        for wide in [false, true] {
+            for destination in 0..16u8 {
+                for source in 0..16u8 {
+                    let rex = match (wide, destination >= 8, source >= 8) {
+                        (false, false, false) => None,
+                        (false, true, false) => Some(0x44),
+                        (false, false, true) => Some(0x41),
+                        (false, true, true) => Some(0x45),
+                        (true, false, false) => Some(0x48),
+                        (true, false, true) => Some(0x49),
+                        (true, true, false) => Some(0x4c),
+                        (true, true, true) => Some(0x4d),
+                    };
+                    let mut bytes = vec![0xf2];
+                    if let Some(rex) = rex {
+                        bytes.push(rex);
+                    }
+                    bytes.extend([0x0f, 0x2d, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+                    let decoded = Memory::new(&bytes)
+                        .decode()
+                        .unwrap_or_else(|error| panic!("{bytes:02x?}: {error:?}"));
+                    let expected = if wide {
+                        Operation::Cvtsd2siR64Register {
+                            destination,
+                            source,
+                        }
+                    } else {
+                        Operation::Cvtsd2siR32Register {
+                            destination,
+                            source,
+                        }
+                    };
+                    assert_eq!(decoded.operation, expected, "{bytes:02x?}");
+                    assert_eq!(decoded.length, bytes.len() as u8);
+                }
+            }
+        }
+        for bytes in [
+            &[0xf2, 0x40, 0x0f, 0x2d, 0xc0][..],
+            &[0xf2, 0x42, 0x0f, 0x2d, 0xc0],
+            &[0xf2, 0xf2, 0x0f, 0x2d, 0xc0],
+            &[0x48, 0xf2, 0x0f, 0x2d, 0xc0],
+            &[0xf2, 0x0f, 0x2d, 0x00],
+            &[0xc5, 0xfb, 0x2d, 0xc0],
+            &[0x62, 0xf1, 0xff, 0x08, 0x2d, 0xc0],
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }
