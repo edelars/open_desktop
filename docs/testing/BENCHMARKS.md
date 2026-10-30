@@ -48,7 +48,13 @@ materialization/snapshot, and arithmetic-flags helper work. This path does not
 include dispatcher lookup, shared-cache admission, interpreter fallback,
 checked-memory helpers, guest-memory workloads, physical x86, or Mini. It is
 single-block strategy evidence only and does not establish a production
-default or full warm-runtime result. The comparison has not been measured yet.
+default or full warm-runtime result. Three sequential release processes
+completed the seven-case profile. Across the three process-level paired-ratio
+medians, candidate/eager ratios ranged from 1.003352 to 1.085941 by case; all
+seven were above 1, with aliased ADD near parity. Candidate code was 40–47%
+larger. This bounded result does not prove a general slowdown or support a
+default choice. Source/profile fingerprints, raw samples, code sizes and
+process details are in the [S3-29f report](../reports/STAGE_3_S3-29f_2026-10-30.md).
 
 ## Подготовка прогона
 
