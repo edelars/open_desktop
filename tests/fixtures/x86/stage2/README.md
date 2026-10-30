@@ -6326,3 +6326,24 @@ fixed profiles keep their prior restrictions. JIT/native and physical
 acceptance remain closed; m32/m64 memory forms and broader CPU support remain
 open. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37q--canonical-long64-cvtsi2sd-register-operand-space)
 and [plan](../../../../docs/plans/STAGE_2.md#s2-37q--canonical-long64-cvtsi2sd-register-operands).
+
+### S2-37r canonical CVTSI2SS register space
+
+The schema-v2 profile `s2-long-cvtsi2ss-registers-v1` admits canonical
+Long64 r32/r64 register forms across XMM0–15 × GPR0–15 (512 forms). The runner
+constructs every byte sequence and validates it against an independent
+integer-only binary32 oracle. Literal oracle anchors cover signed 2^24
+thresholds, i32/i64 endpoints, halfway neighbors, exponent carry and direct
+rounding cases that distinguish conversion from double rounding. Separate
+interpreter and runner literal cases execute signed thresholds/endpoints,
+ties, carry and direct-vs-double-rounding values across RC for both widths,
+and verify exact completion with old PE and PM=0. The selector loop
+checks GPR source preservation, XMM upper96 preservation, RSP as a normal source,
+MXCSR.RC and Precision mask/OSXMMEXCPT/old-PE combinations. Full fetch and
+prerequisite gates are checked at all CPL values across REX classes; no data
+memory callback occurs. Malformed/truncated prefixes and forms are rejected
+as local profile refusals. Result/control tampering is rejected, and JIT,
+native, C and fragment paths remain closed. m32/m64, other modes/prefixes and
+physical acceptance remain open. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37r--canonical-long64-cvtsi2ss-register-operand-space)
+and [plan](../../../../docs/plans/STAGE_2.md#s2-37r--canonical-long64-cvtsi2ss-register-operand-space).

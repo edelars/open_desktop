@@ -11672,6 +11672,47 @@ See the [plan](../plans/STAGE_2.md#s2-37q--canonical-long64-cvtsi2sd-register-op
 [report](../reports/STAGE_2_REPORT.md#s2-37q--canonical-long64-cvtsi2sd-register-operand-space),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37q-canonical-cvtsi2sd-register-space).
 
+## S2-37r — canonical Long64 CVTSI2SS register operand space
+
+The interpreter-only schema-v2 sibling profile `s2-long-cvtsi2ss-registers-v1`
+admits all 512 r32/r64 × XMM0–15 destination × GPR0–15 source register forms,
+ModR/M.mod=3 only. Canonical r32 encodings are `F3 0F 2A /r` for low indices
+and `F3 41/44/45 0F 2A /r` for extended source/destination; r64 requires W
+and uses `F3 48/49/4C/4D 0F 2A /r`. The independent schema parser consumes the
+complete stream. Redundant `40`, X, incorrect W, noncanonical prefixes,
+memory, trailing bytes, VEX and EVEX are local profile refusals, not claims
+that every excluded form is architecturally #UD. S2-37p/q and earlier exact
+profiles retain their own scope.
+
+Read selected signed i32 low32 or full signed i64; r32 ignores source high32
+and preserves the full source GPR. Convert directly to binary32 using MXCSR.RC,
+never via binary64. Only XMM destination low32 changes; its upper96 and all
+other machine state remain unchanged. Both widths may raise Precision. New PE
+is sticky. With PM=1 the rounded result commits; with PM=0 PE commits before
+#XM when CR4.OSXMMEXCPT=1 or SIMD-generated #UD otherwise, and destination/RIP
+and retirement are suppressed. Old PE alone is not a fault. Only MXCSR mask
+`0x0000ffbf` is supported; DAZ/reserved bits reject and FTZ is irrelevant.
+SSE availability, CR0.EM/TS and CR4.OSFXSR prerequisites follow complete fetch
+and precede conversion; prerequisite faults preserve state. CPL0–3 use the same
+order. RSP is an ordinary source; this profile performs no data-memory access.
+
+The independent oracle uses signed magnitude, u128 and explicit 24-bit
+significand/remainder rounding, with no production conversion helper or host
+float. Literal cases include signed precision thresholds, i32/i64 ends,
+halfway neighbors, exponent carry and a direct-vs-double-rounding discriminator.
+The runner checks all 512 mappings, source/destination preservation, masked
+and unmasked precision behavior, RSP, malformed/truncated encodings, result and
+control tampering, and backend denial. Generic capability, JIT/native/C/fragment
+execution remain denied. m32/m64 memory forms, other modes/prefixes and
+physical acceptance remain open.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CVTSI2SS` pp. 3-238–3-239, Type 3
+Table 2-15/Table 2-20 p. 2-28; Vol. 1 §§11.5.2.6 and 11.5.3; REX §2.2.1.2
+and Table 2-4 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+See the [plan](../plans/STAGE_2.md#s2-37r--canonical-long64-cvtsi2ss-register-operand-space),
+[report](../reports/STAGE_2_REPORT.md#s2-37r--canonical-long64-cvtsi2ss-register-operand-space),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37r-canonical-cvtsi2ss-register-space).
+
 ## S2-38b — точечные SSE2 prerequisite gates для XORPD
 
 Schema-v2 profile `s2-long-xorpd-prerequisites-v1` принимает ровно одну

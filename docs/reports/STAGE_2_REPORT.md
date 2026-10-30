@@ -17528,3 +17528,53 @@ Table 2-20 p. 2-28; Vol. 1 §§11.5.2.6 and 11.5.3; REX §2.2.1.2/Table 2-4
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37q--canonical-long64-cvtsi2sd-register-operand-space),
 [plan](../plans/STAGE_2.md#s2-37q--canonical-long64-cvtsi2sd-register-operands), and
 [fixtures](../../tests/fixtures/x86/stage2/README.md#s2-37q-canonical-cvtsi2sd-register-space).
+
+## S2-37r — canonical Long64 CVTSI2SS register operand space
+
+Implemented schema-v2 profile `s2-long-cvtsi2ss-registers-v1` for all 512
+canonical Long64 r32/r64 × XMM0–15 × GPR0–15 register forms. ModR/M.mod=3 is
+required. r32 accepts F3 alone for low indices or F3 followed by exactly
+REX.41/44/45; r64 uses F3 followed by exactly REX.48/49/4C/4D. The schema
+independently parses the full byte stream, requires a single executable code
+mapping, budget one and stop RIP at entry+length, and validates exact controls
+and result echoes. Other encodings are local profile refusals.
+
+The interpreter reads signed low32 or signed full i64, with r32 high32 ignored
+and the full GPR preserved. It converts directly to binary32 using MXCSR.RC,
+updates destination low32 only, and preserves upper96 and unrelated state.
+Either width can generate PE. PE is committed before unmasked #XM/#UD; PM=1
+commits the rounded result, PM=0 suppresses destination/RIP/retirement, and an
+old PE without a new event does not fault. MXCSR support is exactly bounded by
+`0x0000ffbf`; SSE availability and CR0/CR4 prerequisites follow complete fetch.
+No data-memory access is performed. JIT/native remain denied; the generic C
+fragment adapter continues rejecting states with SSE payloads.
+
+The independent schema oracle uses integer-only signed magnitude, u128 and
+explicit 24-bit remainder/halfway/RC rounding. It includes signed 2^24
+threshold literals, i32/i64 endpoints, directed-rounding cases, exponent
+carry, halfway neighbors and a direct-vs-double-rounding discriminator.
+Focused checks passed:
+
+- `cargo test -p od-isa cvtsi2ss --offline` — all-pair no-data-callback,
+  prerequisite gate/CPL, generic-capability denial, STOP, zero-budget and
+  truncated-fetch tests passed.
+- `cargo test -p od-testkit cvtsi2ss --offline` — integer oracle and all-pair
+  canonical parser tests passed.
+- `cargo test -p od-runner cvtsi2ss_canonical_register_space --offline` — 512
+  forms, both-width precision matrices, malformed forms, tampering and
+  JIT/native denial passed.
+- `cargo test -p od-isa cvtsi2ss_rounding_literals --offline` and
+  `cargo test -p od-runner cvtsi2ss_executed_literals --offline` — executed
+  literal vectors cover signed thresholds and endpoints, ties, exponent carry,
+  direct-vs-double-rounding discriminators across RC, and exact completion with
+  old PE and PM=0 for both source widths.
+
+The S2-37p/q plan evidence rows now distinguish their canonical 256/512
+register-space coverage. No physical, SSH or Mac mini execution occurred.
+Memory forms, other modes/prefixes, generic CPUID admission, and physical
+acceptance remain open. Sources: Intel SDM Rev. 093 Vol. 2A `CVTSI2SS`
+pp. 3-238–3-239, Type 3 Tables 2-15/2-20; Vol. 1 §§11.5.2.6/11.5.3; REX
+§2.2.1.2/Table 2-4 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37r--canonical-long64-cvtsi2ss-register-operand-space),
+[plan](../plans/STAGE_2.md#s2-37r--canonical-long64-cvtsi2ss-register-operand-space), and
+[fixtures](../../tests/fixtures/x86/stage2/README.md#s2-37r-canonical-cvtsi2ss-register-space).

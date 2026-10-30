@@ -293,6 +293,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 cvtdq2pd_controls: input.fixture.cvtdq2pd_controls,
                 cvtsi2sd_r32_controls: input.fixture.cvtsi2sd_r32_controls,
                 cvtsi2sd_r64_controls: input.fixture.cvtsi2sd_r64_controls,
+                cvtsi2ss_controls: input.fixture.cvtsi2ss_controls,
                 fxsave64_cr0_controls: input.fixture.fxsave64_cr0_controls,
                 fxrstor64_cr0_controls: input.fixture.fxrstor64_cr0_controls,
                 rdtsc_source_calls: None,
@@ -8281,4 +8282,85 @@ fn cvtsi2sd_r64_independent_oracle_covers_signed_boundaries_ties_and_directed_ro
         independent_i64_to_binary64((1i64 << 53) + 3, 0).0,
         0x4340_0000_0000_0002
     );
+}
+
+#[test]
+fn cvtsi2ss_integer_oracle_covers_precision_boundaries_and_double_rounding() {
+    let vectors = [
+        (0, 0, 0x0000_0000, false),
+        (1, 0, 0x3f80_0000, false),
+        (-1, 0, 0xbf80_0000, false),
+        ((1i64 << 24) - 1, 0, 0x4b7f_ffff, false),
+        (-((1i64 << 24) - 1), 0, 0xcb7f_ffff, false),
+        (1i64 << 24, 0, 0x4b80_0000, false),
+        (-(1i64 << 24), 0, 0xcb80_0000, false),
+        ((1i64 << 24) + 1, 0, 0x4b80_0000, true),
+        ((1i64 << 24) + 3, 0, 0x4b80_0002, true),
+        (-((1i64 << 24) + 1), 0, 0xcb80_0000, true),
+        (-((1i64 << 24) + 1), 1, 0xcb80_0001, true),
+        (-((1i64 << 24) + 1), 2, 0xcb80_0000, true),
+        (-((1i64 << 24) + 1), 3, 0xcb80_0000, true),
+        (-((1i64 << 24) + 3), 0, 0xcb80_0002, true),
+        (i32::MAX as i64, 0, 0x4f00_0000, true),
+        (i32::MIN as i64, 0, 0xcf00_0000, false),
+        (i64::MAX, 0, 0x5f00_0000, true),
+        (i64::MAX, 1, 0x5eff_ffff, true),
+        (i64::MAX, 2, 0x5f00_0000, true),
+        (i64::MIN, 0, 0xdf00_0000, false),
+        ((1i64 << 55) + (1i64 << 31) + 1, 0, 0x5b00_0001, true),
+    ];
+    for (value, rc, bits, inexact) in vectors {
+        assert_eq!(
+            independent_i64_to_binary32(value, rc),
+            (bits, inexact),
+            "value={value}, RC={rc}"
+        );
+    }
+}
+
+#[test]
+fn cvtsi2ss_parser_covers_all_register_pairs_and_rejects_noncanonical_prefixes() {
+    for wide in [false, true] {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let mut bytes = vec![0xf3];
+                let rex = match (wide, destination >= 8, source >= 8) {
+                    (false, false, false) => None,
+                    (false, true, false) => Some(0x44),
+                    (false, false, true) => Some(0x41),
+                    (false, true, true) => Some(0x45),
+                    (true, false, false) => Some(0x48),
+                    (true, false, true) => Some(0x49),
+                    (true, true, false) => Some(0x4c),
+                    (true, true, true) => Some(0x4d),
+                };
+                if let Some(rex) = rex {
+                    bytes.push(rex);
+                }
+                bytes.extend_from_slice(&[
+                    0x0f,
+                    0x2a,
+                    0xc0 | ((destination & 7) << 3) | (source & 7),
+                ]);
+                let text = bytes
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                assert_eq!(
+                    cvtsi2ss_register_encoding(&text),
+                    Some((wide, destination, source, bytes.len() as u32))
+                );
+            }
+        }
+    }
+    for invalid in [
+        "f3400f2ac0",
+        "f4420f2ac0",
+        "f3490f2ac0c0",
+        "f30f2a00",
+        "f3660f2ac0",
+        "f20f2ac0",
+    ] {
+        assert_eq!(cvtsi2ss_register_encoding(invalid), None, "{invalid}");
+    }
 }

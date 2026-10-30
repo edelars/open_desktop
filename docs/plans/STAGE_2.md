@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последнее локальное подзадание S2-37q добавляет canonical Long64 CVTSI2SD register-space schema-v2 interpreter-only profile; это не закрывает общий S2-37, CPUID admission или physical acceptance. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последнее локальное подзадание S2-37r добавляет canonical Long64 CVTSI2SS register-space schema-v2 interpreter-only profile; это не закрывает общий S2-37, CPUID admission или physical acceptance. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -6660,6 +6660,48 @@ precise fault ordering, and the remaining MXCSR/SSE exception surface are not
 implemented or claimed. Final physical checks stay in the combined Mac mini
 substage.
 
+#### S2-37r — canonical Long64 CVTSI2SS register operand space
+
+The interpreter-only schema-v2 profile `s2-long-cvtsi2ss-registers-v1` admits
+512 canonical ModR/M.mod=3 forms: r32/r64 × XMM0–15 × GPR0–15. r32 uses `F3`
+for low registers and `F3 41/44/45` when the source and/or destination is
+extended; r64 uses `F3 48/49/4C/4D`, with W selecting signed i64. Redundant
+`40`, X, noncanonical W, repeated/reordered/other prefixes, memory, extra
+bytes, VEX and EVEX are profile refusals, not generalized architectural #UD
+claims. S2-37n/o/p/q remain separate profiles with their existing scope.
+
+The executor reads signed low32 or full signed i64, ignores high32 for r32,
+and preserves every source GPR. It rounds directly to binary32 using MXCSR.RC,
+updates only destination XMM low32, and preserves its upper96 and all other
+state. Either width can newly raise Precision. PE is sticky; PM=1 commits, and
+PM=0 commits PE before #XM (OSXMMEXCPT=1) or SIMD-generated #UD otherwise,
+without destination/RIP update or retirement. Old PE alone does not fault.
+Only MXCSR bits in `0x0000ffbf` are accepted; DAZ/reserved bits reject and FTZ
+does not affect conversion. SSE availability, CR0.EM/TS and CR4.OSFXSR gates
+follow full fetch and precede conversion at CPL0–3. No data-memory access is
+performed; RSP is an ordinary source. Generic capability and JIT/native/C/
+fragment execution remain denied.
+
+The schema oracle uses signed magnitude/u128, a 24-bit significand, explicit
+remainder/halfway tests and directed rounding; it does not call production
+conversion or host floating point. Literal anchors cover ±(2^24−1), ±2^24,
+±(2^24+1), ±(2^24+3), i32/i64 endpoints, halfway neighbors, exponent carry,
+and an integer where direct conversion differs from binary64 double rounding.
+Runner coverage iterates all 512 forms with distinct GPR/XMM sentinels,
+upper96/source preservation, both-width precision matrices, RSP, prerequisite
+gates, malformed forms, result/control tampering and JIT/native denial. ISA
+coverage additionally executes signed boundary, halfway/tie, i64 carry and
+direct-vs-double-rounding literals across RC; an exact old-PE/PM=0 case must
+complete. It also checks STOP, zero budget and truncated fetch before
+prerequisites. Memory forms and other modes/prefixes remain open.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CVTSI2SS` pp. 3-238–3-239, Type 3
+Table 2-15/Table 2-20 p. 2-28; Vol. 1 §§11.5.2.6 and 11.5.3; REX §2.2.1.2
+and Table 2-4 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37r--canonical-long64-cvtsi2ss-register-operand-space),
+[report](../reports/STAGE_2_REPORT.md#s2-37r--canonical-long64-cvtsi2ss-register-operand-space),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37r-canonical-cvtsi2ss-register-space).
+
 #### S2-37 required legacy SSE/SSE2 arithmetic, comparison and conversion inventory
 
 **Profile decision (2026-10-29):** the selected synthetic CPU target is Generic
@@ -6694,7 +6736,7 @@ inventory.
 | CMPSS | `F3 0F C2 /r ib` | SSE | XMM, m32; low 32-bit mask | 3-189 | missing |
 | COMISD | `66 0F 2F /r` | SSE2 | XMM, m64; EFLAGS | 3-199 | missing |
 | COMISS | `NP 0F 2F /r` | SSE | XMM, m32; EFLAGS | 3-201 | missing |
-| CVTDQ2PD | `F3 0F E6 /r` | SSE2 | m64 / low 2×i32 → 2×f64 | 3-208 | S2-37m, exact reg-only |
+| CVTDQ2PD | `F3 0F E6 /r` | SSE2 | m64 / low 2×i32 → 2×f64 | 3-208 | S2-37m exact XMM0/XMM1; S2-37p canonical 256 XMM register pairs |
 | CVTDQ2PS | `NP 0F 5B /r` | SSE2 | XMM, m128; 4×i32 → 4×f32 | 3-211 | missing |
 | CVTPD2DQ | `F2 0F E6 /r` | SSE2 | XMM, m128; 2×f64 → low 2×i32 | 3-214 | missing |
 | CVTPD2PI | `66 0F 2D /r` | SSE2 | XMM, m128 → mm; 2×f64 → 2×i32 | 3-218 | missing |
@@ -6706,8 +6748,8 @@ inventory.
 | CVTPS2PI | `NP 0F 2D /r` | SSE | XMM, m64 → mm; 2×f32 → 2×i32 | 3-231 | missing |
 | CVTSD2SI | `F2 0F 2D /r`; `F2 REX.W 0F 2D /r` | SSE2 | m64 → r32 / r64 | 3-232 | missing |
 | CVTSD2SS | `F2 0F 5A /r` | SSE2 | XMM, m64; f64 → low f32 | 3-234 | missing |
-| CVTSI2SD | `F2 0F 2A /r`; `F2 REX.W 0F 2A /r` | SSE2 | r32/m32 or r64/m64 → low f64 | 3-236 | S2-37n, exact `C0` r32; S2-37o, exact `48 C0` r64 only |
-| CVTSI2SS | `F3 0F 2A /r`; `F3 REX.W 0F 2A /r` | SSE | r32/m32 or r64/m64 → low f32 | 3-238 | missing |
+| CVTSI2SD | `F2 0F 2A /r`; `F2 REX.W 0F 2A /r` | SSE2 | r32/m32 or r64/m64 → low f64 | 3-236 | S2-37n/o exact forms; S2-37q canonical 512 register forms |
+| CVTSI2SS | `F3 0F 2A /r`; `F3 REX.W 0F 2A /r` | SSE | r32/m32 or r64/m64 → low f32 | 3-238 | S2-37r canonical 512 Long64 register forms |
 | CVTSS2SD | `F3 0F 5A /r` | SSE2 | XMM, m32; f32 → low f64 | 3-240 | missing |
 | CVTSS2SI | `F3 0F 2D /r`; `F3 REX.W 0F 2D /r` | SSE | m32 → r32 / r64 | 3-242 | missing |
 | CVTTPD2DQ | `66 0F E6 /r` | SSE2 | XMM, m128; 2×f64 → low 2×i32 | 3-244 | missing |
