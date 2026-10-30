@@ -12865,3 +12865,32 @@ Normative sources: Intel SDM Rev. 093 Vol. 2A CMPPS pp. 3-175–3-184, Table 3-7
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 1
 Table 11-1, §4.9.2 and §§11.5.2.1–2/11.5.3
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+
+## S2-37ab — canonical Long64 CVTSS2SI register space
+
+The bounded schema-v2 profile `s2-long-cvtss2si-registers-v1` accepts exactly
+512 canonical register encodings: r32/r64 destination × XMM0–15 low32 source.
+`F3 0F 2D /r` selects r32; `F3 REX.W 0F 2D /r` selects r64. ModR/M.mod=3
+is mandatory; REX.R extends the GPR destination and REX.B the XMM source.
+Noncanonical prefixes, REX.X, memory, trailing bytes, VEX and EVEX are local
+profile refusals. Only the interpreter profile is admitted.
+
+The operation reads only source XMM low32 and applies MXCSR.RC. r32 writes zero
+extended bits to the destination GPR. All XMM state, unrelated GPRs and RFLAGS
+are preserved. Masked Invalid writes integer indefinite; exact signed minimum
+is valid and can be distinguished by IE. Invalid sets IE and suppresses PE;
+valid fractional rounding sets PE. Sticky IE/PE update precedes unmasked #XM or
+SIMD-generated #UD. An unmasked new event suppresses destination, RIP advance
+and retirement atomically; old sticky status alone does not fault. CVTSS2SI does
+not signal DE for subnormal input, including when DM is unmasked. Full fetch
+precedes SSE/EM/OSFXSR #UD and then TS #NM, uniformly at CPL0–3. No data-memory
+access occurs. DAZ/reserved MXCSR settings are refused by this local profile.
+JIT, native, generic, C and fragment paths remain closed. Memory forms, other
+modes/prefixes and physical acceptance are not claimed; parent S2-37/S2-38 stay
+open and hardware acceptance remains in the combined final stage.
+
+The fixture oracle independently parses and rounds raw binary32 fields using
+integer arithmetic. It does not call production conversion helpers. Provenance:
+Intel SDM Rev. 093 Vol. 2A `CVTSS2SI` pp. 3-242–3-243; Vol. 1 §11.5.2.2
+explicitly excludes this conversion from denormal exception signaling
+([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).

@@ -1005,6 +1005,16 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only legacy `F3 0F 2D /r` signed binary32-to-r32 conversion.
+    Cvtss2siR32Register {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only legacy `F3 REX.W 0F 2D /r` signed binary32-to-r64 conversion.
+    Cvtss2siR64Register {
+        destination: u8,
+        source: u8,
+    },
     /// Local-only legacy `0F 5D /r` XMM-register form with masked IE/DE status.
     MinpsRegisterMasked {
         destination: u8,
@@ -2037,7 +2047,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
             || (opcode.map == OpcodeMap::Escape0f
                 && matches!(
                     opcode.byte,
-                    0x2a | 0x2e | 0x2f | 0x5a | 0x5b | 0x5f | 0xc2 | 0xe6
+                    0x2a | 0x2d | 0x2e | 0x2f | 0x5a | 0x5b | 0x5f | 0xc2 | 0xe6
                 ))
             || matches!((opcode.map, opcode.byte),
             (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9c | 0x9d | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa7 | 0xa8 | 0xa9 | 0xaa | 0xab | 0xac | 0xad | 0xae | 0xaf | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe8 | 0xe9 | 0xeb | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf4 | 0xf6 | 0xf7 | 0xfa | 0xfb | 0xfc | 0xfd)
@@ -3340,6 +3350,27 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && matches!(prefixes.rex, Some(0x48 | 0x49 | 0x4c | 0x4d))
             && prefix_bytes[0] == 0xf3
             && prefix_bytes[1] == prefixes.rex.unwrap();
+        let cvtss2si_r32_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x2d
+            && prefixes.group1 == Some(0xf3)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 1 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && matches!(prefixes.rex, Some(0x41 | 0x44 | 0x45))
+                    && prefix_bytes[0] == 0xf3
+                    && prefix_bytes[1] == prefixes.rex.unwrap());
+        let cvtss2si_r64_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x2d
+            && prefixes.group1 == Some(0xf3)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && prefix_count == 2
+            && matches!(prefixes.rex, Some(0x48 | 0x49 | 0x4c | 0x4d))
+            && prefix_bytes[0] == 0xf3
+            && prefix_bytes[1] == prefixes.rex.unwrap();
         let maxss_register_masked = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x5f
             && prefixes.group1 == Some(0xf3)
@@ -3416,6 +3447,13 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && !cvtsi2sd_r64_register
             && !cvtsi2ss_r32_register
             && !cvtsi2ss_r64_register
+        {
+            return Err(self.unsupported(opcode));
+        }
+        if opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x2d
+            && !cvtss2si_r32_register
+            && !cvtss2si_r64_register
         {
             return Err(self.unsupported(opcode));
         }
@@ -3517,6 +3555,8 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !cvtsi2sd_r64_register
                 && !cvtsi2ss_r32_register
                 && !cvtsi2ss_r64_register
+                && !cvtss2si_r32_register
+                && !cvtss2si_r64_register
                 && !cmpss_register
                 && !cmpsd_register
                 && !cmppd_register
@@ -3830,6 +3870,26 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 Operation::Cvtsi2ssR64Register {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x2d) if cvtss2si_r32_register => {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::Cvtss2siR32Register {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x2d) if cvtss2si_r64_register => {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::Cvtss2siR64Register {
                     destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                     source: (modrm & 7) | ((rex & 1) << 3),
                 }

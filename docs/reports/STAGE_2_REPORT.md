@@ -18002,4 +18002,50 @@ changed the quiet-bit mask in the existing CMPSD and CMPPD binary64 testkit
 classifiers. Restored the binary64 fraction-bit-51 mask (`0x0008_0000_0000_0000`);
 CMPSS/CMPPS retain the binary32 fraction-bit-22 mask (`0x0040_0000`). Added
 explicit CMPSD and CMPPD checks that QNaN does not set IE for predicate 0 and
-SNaN does set IE. Re-review remains pending.
+SNaN does set IE. Sol-medium re-review confirmed both masks and assertions;
+the full 412-test `od-testkit` suite passed independently.
+
+## S2-37ab — canonical Long64 CVTSS2SI register space
+
+Implemented interpreter-only schema-v2 profile `s2-long-cvtss2si-registers-v1`
+for 512 canonical register forms. The decoder uses F3 0F 2D /r for r32 and F3
+REX.W 0F 2D /r for r64, with ModR/M.mod=3 and canonical REX.R/B extension.
+Execution reads XMM low32, applies MXCSR.RC via `Binary32::to_i32/to_i64`,
+zero-extends r32 results, and preserves all other GPR/XMM/RFLAGS state. IE and PE
+are distinct new events: invalid yields integer indefinite and suppresses PE;
+valid inexact conversion raises PE. Sticky status commits before unmasked #XM or
+SIMD #UD, while destination/RIP/retirement remain suppressed. Subnormal input
+with DM unmasked produces no DE. Fetch/gates occur before conversion and no data
+memory is accessed. DAZ/reserved MXCSR settings, unsupported encodings and
+JIT/native/generic/C/fragment execution remain refused.
+
+The testkit has a separate integer-only raw-bit parser and rounding oracle.
+Runner coverage constructs all 512 selector pairs with distinct XMM low32
+values, checks r32 zero-extension and source selection, and executes both-width
+rounding, signed boundaries around ±2^31 and ±2^63, invalid/precision priority,
+exact minimum versus indefinite, sticky status, masked and unmasked faults, and
+the subnormal/DM boundary. OSXMMEXCPT=0 produces SIMD #UD for an unmasked event.
+The interpreter checks complete fetch and gate priority at CPL0–3, plus STOP,
+zero budget, truncated fetch, DAZ/reserved MXCSR refusal, and cross-profile
+denial. JIT/native denial and tampered control/fault metadata are covered. No
+physical oracle or Mac mini execution was performed. Memory
+forms and broader CPU acceptance remain open. Parent S2-37/S2-38 remain open.
+
+Checks run:
+
+- `cargo test -p od-testkit cvtss2si --offline` — 2 focused oracle/parser tests passed.
+- `cargo test -p od-isa cvtss2si_register_space_gate_priority --offline` — passed at all CPLs and REX classes.
+- `cargo test -p od-isa cvtss2si_stop_budget_and_truncation --offline` — passed.
+- `cargo test -p od-isa cvtss2si_refuses_daz_reserved_mxcsr_and_generic_execution --offline` — passed, including CVTSS2SI/CVTSI2SS profile separation.
+- `cargo test -p od-runner cvtss2si_canonical_register_space --offline` — passed across 512 forms and exception boundaries.
+- `cargo test -p od-runner cvtsi2ss_canonical_register_space --offline` — passed after preserving the existing S2-37r control-echo validation.
+- `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, and `git diff --check` — passed.
+- `python3 tools/check_layout.py` — only the pre-existing unmapped root `.git` and two broken historical oracle manifest links were reported.
+- `graphify update .` — completed.
+
+Independent Sol-medium review initially identified four issues: preserved CVTSI2SS control-echo validation, explicit CVTSS2SI runtime MXCSR refusal, separate runtime admission, and stronger source/rounding coverage. These were fixed; re-review was clean, with no remaining findings. The reviewer independently reran CVTSS2SI runtime refusal tests, the all-512 runner test and the CVTSI2SS regression test. Sources: Intel SDM Rev.
+093 Vol. 2A `CVTSS2SI` pp. 3-242–3-243 and Vol. 1 §11.5.2.2
+([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37ab--canonical-long64-cvtss2si-register-space),
+[plan](../plans/STAGE_2.md#s2-37ab--canonical-long64-cvtss2si-register-space), and
+[fixture guide](../../tests/fixtures/x86/stage2/README.md#s2-37ab-canonical-cvtss2si-register-space).

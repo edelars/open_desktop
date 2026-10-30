@@ -6484,3 +6484,19 @@ Parent S2-37/S2-38 remain open; hardware acceptance is deferred to the final
 combined stage. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37aa--canonical-long64-cmpps-xmm-register-pairs),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37aa--canonical-long64-cmpps-xmm-register-pairs),
 and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37aa--canonical-long64-cmpps-xmm-register-pairs).
+
+### S2-37ab canonical CVTSS2SI register space
+
+The schema-v2 profile `s2-long-cvtss2si-registers-v1` parses all 512 canonical
+r32/r64 GPR destination × XMM source pairs. The oracle independently reads raw
+binary32 fields, rounds integer magnitudes for MXCSR.RC and classifies invalid
+range without using production conversions or host floating point. Runner tests
+cover selector mappings, destination zero-extension, preservation, IE/PE masks,
+invalid-over-precision priority, exact signed minima versus indefinite,
+subnormal input with DM unmasked, fault atomicity and backend denial. No DE is
+reported for subnormals. Full fetch and SSE/EM/OSFXSR then TS ordering are
+checked by the interpreter profile. Memory forms, other modes/prefixes and
+physical acceptance remain open. Sources: Intel SDM Rev. 093 Vol. 2A pp.
+3-242–3-243; Vol. 1 §11.5.2.2 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ab--canonical-long64-cvtss2si-register-space)
+and [plan](../../../../docs/plans/STAGE_2.md#s2-37ab--canonical-long64-cvtss2si-register-space).

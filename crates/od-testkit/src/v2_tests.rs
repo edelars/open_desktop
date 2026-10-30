@@ -303,6 +303,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 cvtsi2sd_r32_controls: input.fixture.cvtsi2sd_r32_controls,
                 cvtsi2sd_r64_controls: input.fixture.cvtsi2sd_r64_controls,
                 cvtsi2ss_controls: input.fixture.cvtsi2ss_controls,
+                cvtss2si_controls: input.fixture.cvtss2si_controls,
                 fxsave64_cr0_controls: input.fixture.fxsave64_cr0_controls,
                 fxrstor64_cr0_controls: input.fixture.fxrstor64_cr0_controls,
                 rdtsc_source_calls: None,
@@ -8371,5 +8372,87 @@ fn cvtsi2ss_parser_covers_all_register_pairs_and_rejects_noncanonical_prefixes()
         "f20f2ac0",
     ] {
         assert_eq!(cvtsi2ss_register_encoding(invalid), None, "{invalid}");
+    }
+}
+
+#[test]
+fn cvtss2si_integer_oracle_covers_signed_boundaries_rounding_and_event_priority() {
+    let cases = [
+        (0x0000_0000, 0, false, 0, false, false),
+        (0x8000_0000, 0, false, 0, false, false),
+        (0x3fc0_0000, 0, false, 2, false, true), // +1.5 nearest even
+        (0x3fc0_0000, 1, false, 1, false, true),
+        (0x3fc0_0000, 2, false, 2, false, true),
+        (0x3fc0_0000, 3, false, 1, false, true),
+        (0x3fbf_ffff, 0, false, 1, false, true), // adjacent below +1.5
+        (0x3fc0_0001, 0, false, 2, false, true), // adjacent above +1.5
+        (0xbfc0_0000, 0, false, u64::MAX - 1, false, true), // -2
+        (0xcf00_0000, 0, false, 0xffff_ffff_8000_0000, false, false),
+        (0xdf00_0000, 0, true, 0x8000_0000_0000_0000, false, false),
+        (0xdf00_0000, 0, false, 0x8000_0000, true, false),
+        (0x4f00_0000, 0, false, 0x8000_0000, true, false),
+        (0x4eff_ffff, 0, false, 0x0000_0000_7fff_ff80, false, false),
+        (0x4f00_0001, 0, false, 0x8000_0000, true, false),
+        (0x5eff_ffff, 0, true, 0x7fff_ff80_0000_0000, false, false),
+        (0x5f00_0000, 0, true, 0x8000_0000_0000_0000, true, false),
+        (0xdf00_0001, 0, true, 0x8000_0000_0000_0000, true, false),
+        (0x7f80_0000, 0, true, 0x8000_0000_0000_0000, true, false),
+        (0x7fc0_0001, 0, false, 0x8000_0000, true, false),
+        (0x7f80_0001, 0, true, 0x8000_0000_0000_0000, true, false),
+        (0x0000_0001, 0, true, 0, false, true), // subnormal: inexact only, never DE
+    ];
+    for (bits, rc, wide, result, invalid, inexact) in cases {
+        assert_eq!(
+            independent_binary32_to_integer(bits, rc, wide),
+            (result, invalid, inexact),
+            "bits={bits:08x} RC={rc} width={wide}"
+        );
+    }
+}
+
+#[test]
+fn cvtss2si_parser_covers_all_512_pairs_and_rejects_noncanonical_forms() {
+    for wide in [false, true] {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let mut bytes = vec![0xf3];
+                let rex = match (wide, destination >= 8, source >= 8) {
+                    (false, false, false) => None,
+                    (false, true, false) => Some(0x44),
+                    (false, false, true) => Some(0x41),
+                    (false, true, true) => Some(0x45),
+                    (true, false, false) => Some(0x48),
+                    (true, false, true) => Some(0x49),
+                    (true, true, false) => Some(0x4c),
+                    (true, true, true) => Some(0x4d),
+                };
+                if let Some(rex) = rex {
+                    bytes.push(rex);
+                }
+                bytes.extend_from_slice(&[
+                    0x0f,
+                    0x2d,
+                    0xc0 | ((destination & 7) << 3) | (source & 7),
+                ]);
+                let text = bytes
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                assert_eq!(
+                    cvtss2si_register_encoding(&text),
+                    Some((wide, destination, source, bytes.len() as u32))
+                );
+            }
+        }
+    }
+    for bytes in [
+        "f3400f2dc0",
+        "f3420f2dc0",
+        "f30f2d00",
+        "f3660f2dc0",
+        "f20f2dc0",
+        "f30f2dc0c0",
+    ] {
+        assert_eq!(cvtss2si_register_encoding(bytes), None, "{bytes}");
     }
 }

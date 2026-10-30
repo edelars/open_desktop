@@ -505,6 +505,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37y | Local-only canonical Long64 CMPSD XMM register-pair profile; all eight predicates, raw binary64, bounded IE/DE and unmasked destination suppression; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean after denial-test correction |
 | [x] | S2-37z | Local-only canonical Long64 CMPPD XMM register pairs; all eight predicates, packed binary64 lanes, independent IE/DE accumulation and atomic destination suppression; JIT/native closed | Independent Sol-medium review clean; final combined physical stage remains outstanding |
 | [x] | S2-37aa | Local-only canonical Long64 CMPPS XMM register pairs; all eight predicates, four binary32 lanes, independent IE/DE accumulation and atomic destination suppression; JIT/native closed | Independent Sol-medium review clean after binary64-oracle regression fix; final combined physical stage remains outstanding |
+| [x] | S2-37ab | Local-only canonical Long64 CVTSS2SI register forms; r32/r64 conversion using MXCSR.RC, IE/PE only and atomic unmasked exit; JIT/native closed | Independent Sol-medium review clean after runtime-admission and coverage fixes |
 | [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j/k/l: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j/k/l; independent review |
 | [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
@@ -6785,7 +6786,7 @@ inventory.
 | CVTSI2SD | `F2 0F 2A /r`; `F2 REX.W 0F 2A /r` | SSE2 | r32/m32 or r64/m64 → low f64 | 3-236 | S2-37n/o exact forms; S2-37q canonical 512 register forms |
 | CVTSI2SS | `F3 0F 2A /r`; `F3 REX.W 0F 2A /r` | SSE | r32/m32 or r64/m64 → low f32 | 3-238 | S2-37r canonical 512 Long64 register forms |
 | CVTSS2SD | `F3 0F 5A /r` | SSE2 | XMM, m32; f32 → low f64 | 3-240 | S2-37t, bounded register-only |
-| CVTSS2SI | `F3 0F 2D /r`; `F3 REX.W 0F 2D /r` | SSE | m32 → r32 / r64 | 3-242 | missing |
+| CVTSS2SI | `F3 0F 2D /r`; `F3 REX.W 0F 2D /r` | SSE | m32 → r32 / r64 | 3-242 | S2-37ab, bounded register-only |
 | CVTTPD2DQ | `66 0F E6 /r` | SSE2 | XMM, m128; 2×f64 → low 2×i32 | 3-244 | missing |
 | CVTTPD2PI | `66 0F 2C /r` | SSE2 | XMM, m128 → mm; 2×f64 → 2×i32 | 3-248 | missing |
 | CVTTPS2DQ | `F3 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-249 | missing |
@@ -13116,3 +13117,38 @@ Rev. 093 Vol. 2A CMPPS pp. 3-175–3-184, Table 3-7
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 1
 Table 11-1, §4.9.2 and §§11.5.2.1–2/11.5.3
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+
+
+#### S2-37ab — canonical Long64 CVTSS2SI register space
+
+Implement schema-v2 interpreter-only profile `s2-long-cvtss2si-registers-v1`
+for 512 canonical `F3 0F 2D /r` (`r32`) and `F3 REX.W 0F 2D /r` (`r64`)
+register forms: every GPR destination × XMM source. Require ModR/M.mod=3.
+REX.R extends the GPR destination and REX.B extends the XMM source. Admit only
+canonical REX encodings, reject REX.X, memory, redundant/reordered/other prefixes,
+trailing bytes, VEX and EVEX as local profile refusals. The complete instruction
+must be fetched before SSE/EM/OSFXSR #UD then TS #NM gates; gates have the same
+order at CPL0–3. No data-memory callback is permitted.
+
+Read only XMM source low32 and round to signed i32/i64 using MXCSR.RC. The
+independent schema oracle parses raw binary32 bits and performs its own integer
+rounding/classification; it must not call production `Binary32::to_i32/to_i64`.
+The interpreter reuses those production value helpers. For r32, write the
+zero-extended 32-bit result to the full GPR. Preserve source XMM, all other XMMs,
+all unrelated GPRs and RFLAGS. Masked Invalid writes the width-specific integer
+indefinite. Exact signed minimum remains distinguishable from Invalid by IE.
+Invalid suppresses PE; valid inexact rounding raises PE. New IE/PE sticky bits
+are committed before #XM (OSXMMEXCPT=1) or SIMD-generated #UD, while destination,
+RIP and retirement are suppressed atomically. Old sticky bits alone do not fault.
+Subnormal inputs do not raise DE, including with DM unmasked. DAZ/reserved MXCSR
+bits may be refused by the local profile.
+
+Exercise all 512 encodings and aliases, all RC modes, zero/subnormal, halfway
+and adjacent values, infinities/NaNs, representable neighbors of ±2^31 and
+±2^63, exact minima versus indefinite, IE/PE masks and old sticky state,
+DM-unmasked no-DE, gate/fetch/CPL ordering, atomic faults, strict malformed
+forms, output/control/fault-metadata tampering and JIT/native/generic/C/fragment
+denial. Memory sources, other modes/prefixes, physical acceptance, and parent
+S2-37/S2-38 remain open. Hardware acceptance is deferred to the combined final
+stage. Source: Intel SDM Rev. 093 Vol. 2A `CVTSS2SI` pp. 3-242–3-243 and Vol. 1
+§11.5.2.2 (the instruction does not signal DE) ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
