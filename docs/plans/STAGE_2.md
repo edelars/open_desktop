@@ -502,6 +502,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37v | Local-only canonical Long64 COMISS/UCOMISS XMM register-pair profile; NaN-priority IE/DE, unordered flags, unmasked atomic flag exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37w | Local-only canonical Long64 COMISD/UCOMISD XMM register-pair profile; raw binary64 relation, NaN-priority IE/DE, unmasked atomic flag exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean after oracle metadata fix |
 | [x] | S2-37x | Local-only canonical Long64 CMPSS XMM register-pair profile; all eight predicates, raw binary32, bounded IE/DE and unmasked destination suppression; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
+| [x] | S2-37y | Local-only canonical Long64 CMPSD XMM register-pair profile; all eight predicates, raw binary64, bounded IE/DE and unmasked destination suppression; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean after denial-test correction |
 | [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j/k/l: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j/k/l; independent review |
 | [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
@@ -6763,7 +6764,7 @@ inventory.
 | ADDSS | `F3 0F 58 /r` | SSE | XMM, m32; low f32 | 3-24 | missing |
 | CMPPD | `66 0F C2 /r ib` | SSE2 | XMM, m128; 2×64-bit masks | 3-168 | missing |
 | CMPPS | `NP 0F C2 /r ib` | SSE | XMM, m128; 4×32-bit masks | 3-175 | missing |
-| CMPSD | `F2 0F C2 /r ib` | SSE2 | XMM, m64; low 64-bit mask | 3-185 | missing |
+| CMPSD | `F2 0F C2 /r ib` | SSE2 | XMM, m64; low 64-bit mask | 3-185 | S2-37y, bounded register-only |
 | CMPSS | `F3 0F C2 /r ib` | SSE | XMM, m32; low 32-bit mask | 3-189 | S2-37x, bounded register-only |
 | COMISD | `66 0F 2F /r` | SSE2 | XMM, m64; EFLAGS | 3-199 | S2-37w, bounded register-only |
 | COMISS | `NP 0F 2F /r` | SSE | XMM, m32; EFLAGS | 3-201 | S2-37v, bounded register-only |
@@ -13012,3 +13013,38 @@ predicate table. Hardware acceptance remains deferred to the final combined
 stage. Sources: Intel SDM Rev. 093 Vol. 2A CMPSS pp. 3-189–3-192, Table 3-8
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 1
 §4.9.2 and §11.5.3 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+
+
+#### S2-37y — canonical Long64 CMPSD XMM register pairs
+
+Implement schema-v2 interpreter-only profile `s2-long-cmpsd-registers-v1`
+for `F2 0F C2 /r ib`, all 256 XMM pairs and predicates 0–7. Low-register
+forms use the canonical 5-byte encoding. Extended operands require exactly
+REX `41`, `44`, or `45` after F2 (length 6). Reject REX.W/X, redundant or
+reordered prefixes, memory, trailing bytes, VEX, EVEX and immediate values
+above 7 as local profile refusals; do not claim architectural #UD for high
+immediate bits. Require ModR/M.mod=3, one executable mapping, budget one and
+checked stop RIP.
+
+Snapshot both XMM sources and classify their low64 raw binary64 values without
+host FP. Use the same eight legacy predicate meanings as CMPSS. Completion
+writes `0xffffffffffffffff` or zero to destination low64 and preserves its
+high64 and all other state. SNaN always raises new IE; QNaN raises IE for
+predicates 1, 2, 5 and 6. A NaN operand takes priority over the other operand's
+subnormal and suppresses new DE; otherwise either subnormal raises DE. OR new
+IE/DE into old sticky status. Only newly unmasked events fault; commit status
+before #XM when OSXMMEXCPT is set or SIMD #UD otherwise, while suppressing
+destination write, RIP advance and retirement. Full fetch precedes SSE2/EM/
+OSFXSR #UD then TS #NM at CPL0–3. Accept every RC/FTZ/mask/sticky setting and
+reject DAZ and reserved MXCSR bits. JIT/native/generic/C/fragment admission
+remains closed; parent S2-37/S2-38 stays open.
+
+Coverage constructs all 2048 encodings and checks aliases, predicate truth,
+raw binary64 classes, NaN/denormal priority, masks/sticky state, destination
+high64, fault atomicity, gates, fetch, CPL, malformed bytes, tampering and
+backend denial. The fixture oracle independently classifies raw u64 values and
+computes order and predicates. Hardware acceptance remains deferred to the
+final combined stage. Sources: Intel SDM Rev. 093 Vol. 2A CMPSD pp. 3-185–3-188,
+Table 3-8 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199));
+Vol. 1 Table 11-1, §4.9.2 and §§11.5.2.1–2/11.5.3
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).

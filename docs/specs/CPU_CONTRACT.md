@@ -12749,3 +12749,50 @@ Normative sources: Intel SDM Rev. 093 Vol. 2A CMPSS pp. 3-189–3-192, Table 3-8
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 1
 §4.9.2 NaN-before-denormal priority and §11.5.3
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+
+## S2-37y — canonical Long64 CMPSD XMM register pairs
+
+The schema-v2 interpreter-only profile `s2-long-cmpsd-registers-v1` admits
+legacy `F2 0F C2 /r ib` with ModR/M.mod=3, all 256 XMM pairs, and immediate
+predicates 0–7. Low register pairs use the canonical 5-byte encoding. Extended
+operands use exactly REX `41`, `44`, or `45` after F2 (6 bytes). The fixture
+parser independently derives opcode, registers, predicate and length. One
+executable mapping, one-instruction budget and checked stop RIP are required.
+Other/repeated/reordered prefixes, REX.W/X, memory, trailing bytes, VEX/EVEX,
+and immediate values above 7 are local profile refusals; no architectural #UD
+claim is made for high immediate bits.
+
+Both XMM inputs are snapshotted; only low64 is consumed. Comparison uses raw
+binary64 classification and signed-magnitude ordering, with +0 and -0 equal.
+Predicate bits 0–7 mean, in order: ordered equal, ordered less, ordered
+less-or-equal, unordered, unordered-or-not-equal, unordered-or-not-less,
+unordered-or-not-less-or-equal, ordered. Completion writes all ones or zero to
+destination low64 and preserves destination high64 and every other
+register/state field.
+
+SNaN raises new IE for every predicate. QNaN raises new IE for predicates 1,
+2, 5, and 6. If either operand is NaN, new DE from a subnormal other operand
+is suppressed; otherwise either subnormal raises DE. New IE/DE are ORed with
+old sticky status. Existing sticky bits alone do not fault. Only a newly raised,
+unmasked event exits: commit MXCSR status first, return #XM when
+CR4.OSXMMEXCPT=1 or SIMD-generated #UD otherwise, and preserve destination,
+RIP and retirement. Full instruction fetch precedes SSE2 availability/CR0.EM/
+CR4.OSFXSR #UD and then CR0.TS #NM at CPL0–3. RC and FTZ do not affect compare;
+the profile accepts every RC/FTZ/mask/sticky combination, while rejecting DAZ
+and reserved MXCSR bits. JIT, native, generic CPUID, C ABI and fragment
+admission remain closed. Memory forms, other modes, physical acceptance and
+parent S2-37/S2-38 remain open; hardware acceptance is deferred to the final
+combined stage.
+
+The independent fixture oracle classifies raw u64 binary64 values and applies
+its own ordering and predicate table without calling production comparison
+code. Coverage builds all 2048 encodings and checks truth relations and
+register aliases; raw zero, finite, infinity, subnormal, QNaN and SNaN classes;
+NaN/denormal priority; masks and sticky status; destination high64; fault
+atomicity; gates, fetch and CPL; malformed bytes, result tampering and backend
+denial.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CMPSD pp. 3-185–3-188, Table 3-8
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 1
+Table 11-1, §4.9.2 NaN-before-denormal priority and §§11.5.2.1–2/11.5.3
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).

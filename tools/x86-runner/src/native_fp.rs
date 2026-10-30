@@ -29,6 +29,7 @@ pub(crate) fn native_profile_local_only(profile: od_testkit::v2::Profile) -> boo
             | od_testkit::v2::Profile::LongCvtps2pdRegistersV1
             | od_testkit::v2::Profile::LongComissUcomissRegistersV1
             | od_testkit::v2::Profile::LongCmpssRegistersV1
+            | od_testkit::v2::Profile::LongCmpsdRegistersV1
             | od_testkit::v2::Profile::LongComisdUcomisdRegistersV1
             | od_testkit::v2::Profile::LongX87SelectorsStateV1
             | od_testkit::v2::Profile::LongCr0FpInitV1
@@ -264,6 +265,7 @@ mod tests {
             Profile::LongLretqCpl0ValidV1,
             Profile::LongXorpdRegV1,
             Profile::LongCmpssRegistersV1,
+            Profile::LongCmpsdRegistersV1,
             Profile::LongXorpdPrerequisitesV1,
             Profile::LongMinssInvalidControlsV1,
             Profile::LongMinssUnmaskedDenormalV1,

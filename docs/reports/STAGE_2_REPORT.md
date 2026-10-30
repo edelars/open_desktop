@@ -17855,3 +17855,50 @@ Vol. 2A CMPSS pp. 3-189–3-192, Table 3-8
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37x--canonical-long64-cmpss-xmm-register-pairs),
 [plan](../plans/STAGE_2.md#s2-37x--canonical-long64-cmpss-xmm-register-pairs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37x-canonical-cmpss-register-pairs).
+
+## S2-37y — canonical Long64 CMPSD XMM register pairs
+
+Implemented schema-v2 interpreter-only profile `s2-long-cmpsd-registers-v1`
+for legacy `F2 0F C2 /r ib`, all 256 XMM pairs and predicates 0–7. The decoder
+and schema validator admit only canonical 5-byte low-register or 6-byte
+extended-register encodings, with exactly REX `41`, `44`, or `45` after F2.
+Memory, REX.W/X, duplicate/reordered/redundant prefixes, trailing bytes,
+VEX/EVEX and immediate values above 7 are local refusals. The independent
+fixture oracle classifies raw binary64 bits and performs its own signed
+magnitude comparison and legacy predicate computation.
+
+The interpreter snapshots both XMM operands, uses only low64, treats signed
+zeros equally, writes the all-one or zero 64-bit mask and preserves destination
+high64 and all other state. It applies SNaN/QNaN IE behavior, NaN-before-DE
+priority, MXCSR sticky status, newly-unmasked #XM/SIMD #UD delivery and
+destination/RIP/retirement atomicity. The bounded profile validates supported
+MXCSR bits with DAZ clear, and checks SSE2/EM/OSFXSR before TS after full fetch,
+at CPL0–3. JIT and native remain denied; no generic CPUID, C ABI or fragment
+admission was added. A direct generic-interpreter check also returns
+Unsupported for CMPSD, and the native profile classifier keeps the profile
+denied. Parent S2-37/S2-38 remain open; physical acceptance is deferred to the
+final combined stage.
+
+Independent Sol-medium review is pending.
+
+Checks run:
+
+- `cargo test -p od-runner --test fixture_v2 cmpsd_register_pairs_predicates_raw_classes_exceptions_and_denial --offline` — passed, including all 2,048 encodings, raw binary64 classes, exception matrix and RC/FTZ combinations.
+- `cargo test -p od-isa cmpsd_register_profile_fetch_gates_and_cpl_are_bounded --offline` — passed.
+- `cargo test -p od-x86-runner native_fp::tests::narrow_xorpd_is_not_blocked_with_existing_sse_and_x87_profiles_denied --offline` — passed, including CMPSD native-profile denial.
+- `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, and `git diff --check` — passed.
+- `python3 tools/check_layout.py` — reports the pre-existing unmapped root `.git` entry and two broken historical oracle manifest links; no new layout issue was reported.
+- `graphify update .` — completed and refreshed the graph.
+
+Independent Sol-medium review found no production semantic defects. It caught
+that a direct generic-denial assertion was accidentally attached to the CMPSS
+test; the assertion was moved to the CMPSD gate test with explicit F2 bytes,
+and targeted re-review confirmed the correction.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CMPSD pp. 3-185–3-188,
+Table 3-8 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199));
+Vol. 1 Table 11-1, §4.9.2 and §§11.5.2.1–2/11.5.3
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37y--canonical-long64-cmpsd-xmm-register-pairs),
+[plan](../plans/STAGE_2.md#s2-37y--canonical-long64-cmpsd-xmm-register-pairs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37y-canonical-cmpsd-register-pairs).

@@ -6436,3 +6436,19 @@ CPUID admission, physical acceptance, and parent S2-37/S2-38 remain open.
 See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37x--canonical-long64-cmpss-xmm-register-pairs),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37x--canonical-long64-cmpss-xmm-register-pairs),
 and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37x--canonical-long64-cmpss-xmm-register-pairs).
+
+### S2-37y canonical CMPSD register pairs
+
+`s2_37y_cmpsd_registers.case.json` is the handwritten schema-v2
+`s2-long-cmpsd-registers-v1` anchor for canonical `F2 0F C2 C1 01`. The
+independent fixture oracle classifies raw binary64 values and computes
+signed-magnitude ordering without calling production comparison code. Runner
+coverage builds all 2048 XMM-pair/predicate encodings and checks truth classes,
+QNaN/SNaN signaling, subnormal priority, exception masks/sticky bits, high64
+preservation, fault atomicity, gate/fetch/CPL behavior, malformed forms,
+tampering and JIT/native denial. The interpreter-only profile does not claim
+memory forms, generic CPUID admission or physical acceptance. Parent S2-37 and
+S2-38 remain open; hardware acceptance is deferred to the final combined
+stage. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37y--canonical-long64-cmpsd-xmm-register-pairs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37y--canonical-long64-cmpsd-xmm-register-pairs),
+and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37y--canonical-long64-cmpsd-xmm-register-pairs).
