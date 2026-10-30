@@ -293,6 +293,12 @@ fn result(input: &LoadedFixture) -> RunResult {
                 cvtdq2pd_controls: input.fixture.cvtdq2pd_controls,
                 cvtdq2ps_controls: input.fixture.cvtdq2ps_controls,
                 cvtps2dq_controls: input.fixture.cvtps2dq_controls,
+                cvttps2dq_controls: input.fixture.cvttps2dq_controls,
+                cvtpd2dq_controls: input.fixture.cvtpd2dq_controls,
+                cvttpd2dq_controls: input.fixture.cvttpd2dq_controls,
+                sqrtss_controls: input.fixture.sqrtss_controls,
+                sqrtps_controls: input.fixture.sqrtps_controls,
+                sqrtpd_controls: input.fixture.sqrtpd_controls,
                 cvtss2sd_controls: input.fixture.cvtss2sd_controls,
                 cvtps2pd_controls: input.fixture.cvtps2pd_controls,
                 comiss_ucomiss_controls: input.fixture.comiss_ucomiss_controls,
@@ -8430,6 +8436,449 @@ fn cvtps2dq_raw_lane_oracle_keeps_invalid_and_valid_precision_events_separate() 
             (0xffff_ffff_8000_0000, false, false),
             "exact -2^31 is valid"
         );
+    }
+}
+
+#[test]
+fn cvttps2dq_raw_lane_oracle_truncates_toward_zero_independent_of_rc() {
+    for raw in [
+        0x3fc0_0000, // +1.5
+        0xbfc0_0000, // -1.5
+        0x0000_0001, // positive subnormal
+        0x8000_0001, // negative subnormal
+        0x4f00_0000, // +2^31, out of range after truncation
+        0xcf00_0000, // exact -2^31
+        0x7fc0_0001, // QNaN
+        0x7f80_0000, // +infinity
+    ] {
+        let mut expected = None;
+        for rc in 0..4 {
+            let mxcsr = 0x1f80 | (rc << 13);
+            let observed = independent_binary32_to_integer_truncate(raw, mxcsr, false);
+            if let Some(expected) = expected {
+                assert_eq!(observed, expected, "raw={raw:08x}, RC={rc}");
+            } else {
+                expected = Some(observed);
+            }
+            assert_eq!(observed, expected.unwrap(), "raw={raw:08x}, RC={rc}");
+        }
+    }
+    assert_eq!(
+        independent_binary32_to_integer_truncate(0x3fc0_0000, 0x1f80, false),
+        (1, false, true),
+        "+1.5 truncates to +1 and raises PE"
+    );
+    assert_eq!(
+        independent_binary32_to_integer_truncate(0xbfc0_0000, 0x3f80, false),
+        (u64::MAX, false, true),
+        "-1.5 truncates to -1 and raises PE"
+    );
+    assert_eq!(
+        independent_binary32_to_integer_truncate(0xcf00_0000, 0x7f80, false),
+        (0xffff_ffff_8000_0000, false, false),
+        "exact -2^31 remains valid"
+    );
+    assert_eq!(
+        independent_binary32_to_integer_truncate(0x4f00_0000, 0x9f80, false),
+        (0x8000_0000, true, false),
+        "+2^31 raises IE without PE"
+    );
+}
+
+#[test]
+fn cvtpd2dq_independent_oracle_rounds_before_i32_range_check() {
+    let cases = [
+        (
+            0x3ff8_0000_0000_0000,
+            [Some(2), Some(1), Some(2), Some(1)],
+            [true; 4],
+        ), // +1.5
+        (
+            0xbff8_0000_0000_0000,
+            [Some(-2), Some(-2), Some(-1), Some(-1)],
+            [true; 4],
+        ), // -1.5
+        (
+            0x41df_ffff_ffe0_0000,
+            [None, Some(2_147_483_647), None, Some(2_147_483_647)],
+            [false, true, false, true],
+        ), // +2147483647.5
+        (
+            0xc1e0_0000_0001_0000,
+            [
+                Some(-2_147_483_648),
+                None,
+                Some(-2_147_483_648),
+                Some(-2_147_483_648),
+            ],
+            [true, false, true, true],
+        ), // -2147483648.5
+    ];
+    for (raw, expected_values, expected_inexact) in cases {
+        for rc in 0..4 {
+            let (bits, observed_invalid, observed_inexact) =
+                independent_binary64_to_integer(raw, rc, false);
+            let expected_value = expected_values[rc as usize];
+            assert_eq!(
+                observed_invalid,
+                expected_value.is_none(),
+                "raw={raw:016x} RC={rc}"
+            );
+            assert_eq!(
+                observed_inexact, expected_inexact[rc as usize],
+                "raw={raw:016x} RC={rc}"
+            );
+            let expected = expected_value.unwrap_or(i32::MIN) as u32;
+            assert_eq!(bits as u32, expected, "raw={raw:016x} RC={rc}");
+        }
+    }
+    for rc in 0..4 {
+        assert_eq!(
+            independent_binary64_to_integer(0xc1e0_0000_0000_0000, rc, false),
+            (0xffff_ffff_8000_0000, false, false),
+            "exact -2^31 remains valid"
+        );
+        assert_eq!(
+            independent_binary64_to_integer(0x41e0_0000_0000_0000, rc, false),
+            (0x8000_0000, true, false),
+            "+2^31 is invalid without PE"
+        );
+    }
+}
+
+#[test]
+fn cvtpd2dq_parser_covers_all_register_pairs_and_rejects_neighbor_forms() {
+    for destination in 0u8..16 {
+        for source in 0u8..16 {
+            let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+            let mut bytes = vec![0xf2];
+            if destination >= 8 || source >= 8 {
+                bytes.push(0x40 | ((destination >> 1) & 4) | (source >> 3));
+            }
+            bytes.extend([0x0f, 0xe6, modrm]);
+            let code = bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            assert_eq!(
+                cvtpd2dq_register_encoding(&code),
+                Some((destination, source, bytes.len() as u32)),
+                "{code}"
+            );
+        }
+    }
+    for code in [
+        "f30fe6c1", // neighboring CVTDQ2PD
+        "66f20fe6c1",
+        "f2f20fe6c1",
+        "41f20fe6c1",
+        "f2480fe6c1",
+        "f2420fe6c1",
+        "f2400fe6c1",
+        "f20fe600",   // memory
+        "f20fe6c190", // trailing byte
+        "c5f9e6c1",
+        "62f17d08e6c1",
+    ] {
+        assert_eq!(cvtpd2dq_register_encoding(code), None, "{code}");
+    }
+}
+
+#[test]
+fn cvttpd2dq_run_result_validate_requires_own_snapshot_controls_only() {
+    let input = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_37ai_cvttpd2dq_ie_lane0_pe_lane1.case.json"
+    ))
+    .unwrap();
+    let valid = result(&input);
+    assert!(valid.validate().is_ok());
+
+    let mut missing = valid.clone();
+    snapshot(&mut missing).cvttpd2dq_controls = None;
+    assert!(missing.validate().is_err());
+
+    let mut foreign = result(&loaded());
+    snapshot(&mut foreign).cvttpd2dq_controls = input.fixture.cvttpd2dq_controls;
+    assert!(foreign.validate().is_err());
+}
+
+#[test]
+fn cvttpd2dq_independent_oracle_is_toward_zero_for_all_mxcsr_rc_values() {
+    let cases = [
+        (0x3ff8_0000_0000_0000, 1u32, false, true), // +1.5 -> +1, PE
+        (0xbff8_0000_0000_0000, 0xffff_ffffu32, false, true), // -1.5 -> -1, PE
+        (0xc1e0_0000_0000_0000, 0x8000_0000, false, false), // exact -2^31
+        (0x41e0_0000_0000_0000, 0x8000_0000, true, false), // +2^31
+        (0x7ff0_0000_0000_0000, 0x8000_0000, true, false), // +infinity
+        (0x7ff8_0000_0000_0001, 0x8000_0000, true, false), // qNaN
+        (0x0000_0000_0000_0001, 0, false, true),    // tiny positive
+    ];
+    for (raw, expected, invalid, inexact) in cases {
+        for rc in 0..4 {
+            assert_eq!(
+                independent_binary64_to_integer(raw, 3, false),
+                (
+                    if invalid {
+                        u64::from(expected)
+                    } else {
+                        i64::from(expected as i32) as u64
+                    },
+                    invalid,
+                    inexact
+                ),
+                "raw={raw:016x} RC={rc}"
+            );
+        }
+    }
+}
+
+#[test]
+fn cvttpd2dq_parser_covers_all_register_pairs_and_rejects_neighbor_forms() {
+    for destination in 0u8..16 {
+        for source in 0u8..16 {
+            let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+            let mut bytes = vec![0x66];
+            if destination >= 8 || source >= 8 {
+                bytes.push(0x40 | ((destination >> 1) & 4) | (source >> 3));
+            }
+            bytes.extend([0x0f, 0xe6, modrm]);
+            let code = bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            assert_eq!(
+                cvttpd2dq_register_encoding(&code),
+                Some((destination, source, bytes.len() as u32)),
+                "{code}"
+            );
+        }
+    }
+    for code in [
+        "f20fe6c1",
+        "f30fe6c1",
+        "66660fe6c1",
+        "41660fe6c1",
+        "66480fe6c1",
+        "66420fe6c1",
+        "66400fe6c1",
+        "660fe600",
+        "660fe6c190",
+        "c5f9e6c1",
+        "62f17d08e6c1",
+    ] {
+        assert_eq!(cvttpd2dq_register_encoding(code), None, "{code}");
+    }
+}
+
+#[test]
+fn sqrtss_parser_and_oracle_cover_register_space_and_special_values() {
+    for destination in 0u8..16 {
+        for source in 0u8..16 {
+            let mut bytes = vec![0xf3];
+            if destination >= 8 || source >= 8 {
+                bytes.push(0x40 | ((destination >> 1) & 4) | (source >> 3));
+            }
+            bytes.extend([0x0f, 0x51, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+            let code = bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            assert_eq!(
+                sqrtss_register_encoding(&code),
+                Some((destination, source, bytes.len() as u32)),
+                "{code}"
+            );
+        }
+    }
+    for code in ["f30f51c1", "f3410f51c1", "f3440f51c1", "f3450f51c1"] {
+        assert!(sqrtss_register_encoding(code).is_some(), "{code}");
+    }
+    for code in [
+        "f20f51c1",
+        "f3660f51c1",
+        "66f30f51c1",
+        "f3480f51c1",
+        "f3420f51c1",
+        "f3400f51c1",
+        "f30f5100",
+        "f30f51c190",
+        "c5f87ec1",
+        "62f17e0851c1",
+    ] {
+        assert_eq!(sqrtss_register_encoding(code), None, "{code}");
+    }
+    assert_eq!(
+        independent_sqrtss(0x4080_0000, 0x1f80),
+        (0x4000_0000, false, false, false)
+    );
+    for (rc, expected) in [
+        (0u32, 0x3fb5_04f3),
+        (1, 0x3fb5_04f3),
+        (2, 0x3fb5_04f4),
+        (3, 0x3fb5_04f3),
+    ] {
+        assert_eq!(
+            independent_sqrtss(0x4000_0000, 0x1f80 | (rc << 13)),
+            (expected, false, false, true)
+        );
+    }
+    assert_eq!(
+        independent_sqrtss(0xbf80_0000, 0x1f80),
+        (0xffc0_0000, true, false, false)
+    );
+    assert_eq!(
+        independent_sqrtss(0x8000_0000, 0x1f80),
+        (0x8000_0000, false, false, false)
+    );
+    assert_eq!(
+        independent_sqrtss(0x7f80_0001, 0x1f80),
+        (0x7fc0_0001, true, false, false)
+    );
+    assert_eq!(
+        independent_sqrtss(0x7fc0_1234, 0x1f80),
+        (0x7fc0_1234, false, false, false)
+    );
+    assert_eq!(independent_sqrtss(0x0000_0001, 0x1f80).1, false);
+    assert_eq!(independent_sqrtss(0x8000_0001, 0x1f80).1, true);
+    assert_eq!(independent_sqrtss(0x8000_0001, 0x1f80).2, false);
+}
+
+#[test]
+fn sqrtps_parser_and_packed_raw_oracle_aggregate_lane_events() {
+    for destination in 0u8..16 {
+        for source in 0u8..16 {
+            let mut bytes = Vec::new();
+            if destination >= 8 || source >= 8 {
+                bytes.push(0x40 | ((destination >> 1) & 4) | (source >> 3));
+            }
+            bytes.extend([0x0f, 0x51, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+            let code = bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            assert_eq!(
+                sqrtps_register_encoding(&code),
+                Some((destination, source, bytes.len() as u32)),
+                "{code}"
+            );
+        }
+    }
+    for code in ["0f51c1", "410f51c1", "440f51c1", "450f51c1"] {
+        assert!(sqrtps_register_encoding(code).is_some(), "{code}");
+    }
+    for code in [
+        "f30f51c1",
+        "660f51c1",
+        "f20f51c1",
+        "400f51c1",
+        "480f51c1",
+        "420f51c1",
+        "0f5100",
+        "0f51c190",
+        "c5f87851c1",
+        "62f17c0851c1",
+    ] {
+        assert_eq!(sqrtps_register_encoding(code), None, "{code}");
+    }
+
+    let (values, ie, de, pe) =
+        independent_sqrtps([0x8000_0001, 0x0000_0001, 0x4000_0000, 0x4080_0000], 0x1f80);
+    assert!(ie && de && pe);
+    assert_eq!(values[0], 0xffc0_0000);
+    assert_eq!(values[2], 0x3fb5_04f3);
+    assert_eq!(values[3], 0x4000_0000);
+    let (_, negative_ie, negative_de, _) = independent_sqrtps([0x8000_0001, 0, 0, 0], 0x1f80);
+    assert!(negative_ie);
+    assert!(!negative_de);
+    let (_, snan_ie, subnormal_de, mixed_pe) =
+        independent_sqrtps([0x7f80_0001, 0x0000_0001, 0x4000_0000, 0x4080_0000], 0x1f80);
+    assert!(snan_ie && subnormal_de && mixed_pe);
+    let (special_values, special_ie, special_de, special_pe) =
+        independent_sqrtps([0x8000_0000, 0xffc0_1234, 0xff80_0000, 0x7f80_0000], 0x1f80);
+    assert_eq!(
+        special_values,
+        [0x8000_0000, 0xffc0_1234, 0xffc0_0000, 0x7f80_0000]
+    );
+    assert!(special_ie);
+    assert!(!special_de && !special_pe);
+    let (snan_values, signaling_ie, _, _) = independent_sqrtps([0x7f80_0001, 0, 0, 0], 0x1f80);
+    assert!(signaling_ie);
+    assert_eq!(snan_values[0], 0x7fc0_0001);
+    for (rc, expected) in [
+        (0u32, 0x3fb5_04f3),
+        (1, 0x3fb5_04f3),
+        (2, 0x3fb5_04f4),
+        (3, 0x3fb5_04f3),
+    ] {
+        assert_eq!(
+            independent_sqrtps([0x4000_0000, 0, 0, 0], 0x1f80 | (rc << 13)).0[0],
+            expected
+        );
+    }
+}
+
+#[test]
+fn sqrtpd_parser_and_independent_binary64_oracle_cover_pairs_and_aggregate_events() {
+    for destination in 0u8..16 {
+        for source in 0u8..16 {
+            let mut bytes = vec![0x66];
+            if destination >= 8 || source >= 8 {
+                bytes.push(0x40 | ((destination >> 1) & 4) | (source >> 3));
+            }
+            bytes.extend([0x0f, 0x51, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+            let code = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+            assert_eq!(
+                sqrtpd_register_encoding(&code),
+                Some((destination, source, bytes.len() as u32)),
+                "{code}"
+            );
+        }
+    }
+    for code in ["660f51c1", "66410f51c1", "66440f51c1", "66450f51c1"] {
+        assert!(sqrtpd_register_encoding(code).is_some(), "{code}");
+    }
+    for code in [
+        "0f51c1",
+        "f30f51c1",
+        "f2660f51c1",
+        "66660f51c1",
+        "66400f51c1",
+        "66480f51c1",
+        "66420f51c1",
+        "660f5100",
+        "660f51c190",
+        "c5fd51c1",
+        "62f1fd0851c1",
+    ] {
+        assert_eq!(sqrtpd_register_encoding(code), None, "{code}");
+    }
+    let (minimum, _, de, pe) = independent_sqrtpd_lane(1, 0x1f80);
+    assert_eq!(minimum, 0x1e6000_0000_0000_00);
+    assert!(
+        de && !pe,
+        "sqrt(min subnormal) is exact; DE remains a pre-event"
+    );
+    let (_, _, de, pe) = independent_sqrtpd_lane(2, 0x1f80);
+    assert!(de && pe);
+    let (values, ie, de, pe) = independent_sqrtpd([0x7ff0_0000_0000_0001, 2], 0x1f80);
+    assert!(ie && de && pe);
+    assert_eq!(values[0], 0x7ff8_0000_0000_0001);
+    let (values, ie, de, pe) =
+        independent_sqrtpd([0xfff8_1234_5678_9abc, 0x4010_0000_0000_0000], 0x1f80);
+    assert!(!ie && !de && !pe);
+    assert_eq!(values, [0xfff8_1234_5678_9abc, 0x4000_0000_0000_0000]);
+    let (values, ie, de, pe) = independent_sqrtpd([0x8000_0000_0000_0001, 0], 0x1f80);
+    assert!(ie && !de && !pe);
+    assert_eq!(values[0], 0xfff8_0000_0000_0000);
+    for (rc, expected) in [
+        (0, 0x3ff6_a09e_667f_3bcd),
+        (1, 0x3ff6_a09e_667f_3bcc),
+        (2, 0x3ff6_a09e_667f_3bcd),
+        (3, 0x3ff6_a09e_667f_3bcc),
+    ] {
+        let (v, _, _, pe) = independent_sqrtpd_lane(0x4000_0000_0000_0000, 0x1f80 | (rc << 13));
+        assert_eq!(v, expected);
+        assert!(pe);
     }
 }
 

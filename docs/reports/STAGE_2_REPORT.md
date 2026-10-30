@@ -15425,6 +15425,17 @@ x86-runner all-target compile check, and `cargo fmt --all -- --check` passed.
 The Linux-only native-denial test was compile-checked, not executed on this host.
 Parent S2-34 remains open; physical SSE2 execution is `not_run`.
 
+## S2-35.12 — local PADDSW XMM register slice
+
+Implemented exact local diagnostic profile `s2-long-paddsw-reg-v1` for legacy
+`66 [one optional REX.R/B] 0F ED /r`, ModR/M.mod=3. Eight little-endian signed
+word lanes use widened i32 addition and clamp to `[-32768, 32767]`; destination
+XMM and RIP are the only modified architectural state. Strict schema/decoder
+negatives, all XMM register pairs, exhaustive lhs values against the seven rhs
+boundaries, literal fixture, atomic failures, and JIT/native denial are included.
+Parent S2-34, S2-35, and `S2-35 → S2-34` remain open. Mac mini/SSH tests are
+deferred to the final combined substage. Validation results: pending.
+
 ## S2-34.22 — local MOVUPD `[RAX],XMM` store profile
 
 Added an independent schema-v2 local profile for exact `66 [REX.R] 0F 11 /r`
@@ -18201,3 +18212,163 @@ The separate Sol-medium review found no remaining defects and rechecked the
 execution was run; it remains part of the combined final stage. Source: Intel
 SDM Rev. 093 Vol. 2A CVTPS2DQ pp. 3-225–3-227; Vol. 1
 §§11.5.3.2–3 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+S2-34.22 verification (2026-10-28): `cargo test -p od-isa movupd_store_rax
+--offline` passed (3 focused tests: all 16 source registers/exact single write,
+invalid canonical/overflow ranges, write failures/missing SSE/truncated fetch);
+`cargo test -p od-testkit movupd_memory_store_profile --offline` passed (1 strict
+schema case, including prefix/address neighbors and budget/stop validation);
+`cargo test -p od-runner --test fixture_v2 local_movupd_memory_store_fixture
+--offline` passed (1 interpreter/JIT-denial fixture test). `cargo fmt --all
+-- --check`, `cargo check --workspace --all-targets --offline`, Linux
+`cargo check -p od-x86-runner --all-targets --target
+x86_64-unknown-linux-gnu --offline`, `git diff --check`, and `graphify update .`
+passed. The native denial target was compile-checked only; physical x86 remains
+`not_run`. Write-error checks assert CPU-state preservation, not memory rollback
+for arbitrary `GuestMemory` implementations.
+
+### S2-37ag — CVTTPS2DQ register-pair interpreter profile (2026-10-30)
+
+Implemented strict schema-v2 profile `s2-long-cvttps2dq-registers-v1` for F3
+`0F 5B /r` with canonical optional REX only when an XMM index is extended,
+register-direct ModR/M and all 256 register pairs. The interpreter snapshots
+all four source lanes and performs binary32-to-signed-dword conversion with
+TowardZero independently of MXCSR.RC. Signed-range validation follows
+truncation; exact −2^31 is valid and masked invalid lanes produce
+`0x80000000`. New invalid/precision status follows the adjacent CVTPS2DQ
+packed exception sequencing. Full fetch precedes SSE2/EM/OSFXSR and TS gates;
+CPL0–3 are admitted and no data callback is made. Unmasked new exceptions
+suppress the whole XMM result, RIP and retirement. Runtime admission remains
+interpreter-only; JIT/native/C/fragment/generic paths and physical execution are
+not claimed.
+
+Focused verification passed:
+
+- `cargo test -p od-runner --test fixture_v2 cvttps2dq_register_pairs_and_ie_pe_ordering_matrix --offline` — 1 integration test passed; all 256 register pairs and 10,368 lane-event/RC/mask/OSXMMEXCPT/sticky-status cases, literal IE-before-PE fixture, malformed encodings and profile/runtime denials.
+- `cargo test -p od-testkit cvttps2dq_prerequisites_fetch_order_cpl_stop_and_budget_make_no_data_callbacks --offline` — 1 test passed, covering full-fetch and gate ordering for CPL0–3, stop/budget behavior and absence of data callbacks.
+- `cargo test -p od-testkit cvttps2dq_raw_lane_oracle_truncates_toward_zero_independent_of_rc --offline` — 1 independent raw-u32 oracle test passed.
+- `cargo fmt --all -- --check`, `cargo check -p od-isa -p od-testkit -p od-runner --all-targets --offline`, `cargo check --workspace --all-targets --offline`, `python3 tools/check_layout.py`, and `git diff --check` passed.
+- `graphify update .` refreshed the code graph after implementation.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTTPS2DQ pp. 3-249–3-251 and Vol. 1
+§§11.5.3.2–3 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+No physical hardware execution was run; it remains part of the combined final
+stage.
+
+
+### S2-37ah — CVTPD2DQ register-pair interpreter profile (2026-10-30)
+
+Implemented the strict schema-v2 interpreter-only profile
+`s2-long-cvtpd2dq-registers-v1` for all 256 canonical Long64 XMM register
+pairs using `F2 0F E6 /r`, ModR/M.mod=3, and optional canonical REX only for
+extended indices. It is separately admitted from F3 `CVTDQ2PD`; JIT, native, C,
+fragment and generic paths remain closed. Both source binary64 lanes are
+snapshotted as raw bits and converted to signed i32 using MXCSR.RC with
+round-before-range-check semantics. Exact −2^31 remains valid; masked invalid
+uses integer indefinite. Packed IE/PE follows IE-before-PE priority and
+suppresses the full destination/RIP/retirement on newly unmasked faults. Full
+instruction fetch precedes SSE2/EM/OSFXSR and TS gates at CPL0–3; no data
+callbacks occur. The local profile refuses DAZ and reserved MXCSR bits.
+
+Focused verification passed:
+
+- `cargo test -p od-isa cvtpd2dq_decodes_all_canonical_register_pairs_and_rejects_neighbors --offline` — canonical pairs, exact REX extensions, independent CVTDQ2PD admission and malformed-neighbor rejection.
+- `cargo test -p od-testkit cvtpd2dq --offline` — 3/3 raw-u64 oracle, parser all-pairs and fetch/gate/CPL/STOP/budget tests.
+- `cargo test -p od-runner cvtpd2dq_register_pairs_and_ie_pe_ordering_matrix --offline` — 1 test passed: literal IE-before-PE case, all 256 pairs, 1,152 two-lane event/control/sticky combinations, alias snapshot, zeroed destination high64, rounding/range boundaries, cross-denial, malformed forms and metadata tampering.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTPD2DQ pp. 3-214–3-217 and Vol. 1
+§§11.5.3.2–3 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+Workspace checks and Graphify update are reported after completion. Physical
+acceptance remains in the combined final stage.
+
+
+### S2-37ai — CVTTPD2DQ register-pair interpreter profile (2026-10-30)
+
+Implemented the strict schema-v2 interpreter-only profile
+`s2-long-cvttpd2dq-registers-v1` for all 256 canonical Long64 XMM register
+pairs encoded as `66 0F E6 /r`, with ModR/M.mod=3 and canonical optional REX
+for extended registers. It is separately admitted from F2 `CVTPD2DQ` and F3
+`CVTDQ2PD`; generic, JIT, native, C ABI and fragment paths remain closed. Both
+raw binary64 lanes are snapshotted and truncated to signed i32 toward zero
+regardless of MXCSR.RC. The profile preserves RC, range-checks after
+truncation, accepts exact −2^31, returns integer indefinite for masked invalid,
+aggregates IE/PE with IE priority, preserves full destination/RIP/retirement
+on unmasked fault and zeroes destination high64 on success. Full fetch precedes
+SSE2/EM/OSFXSR and TS gates at CPL0–3; no data callbacks are made. DAZ and
+reserved MXCSR may be refused; FTZ is irrelevant.
+
+Focused verification passed:
+
+- `cargo test -p od-isa cvttpd2dq --offline` — 3/3 decode and execution checks, including all canonical pairs, alias-safe TowardZero, RC invariance, high64 zeroing and DAZ/reserved refusal.
+- `cargo test -p od-testkit cvttpd2dq_ --offline` — 4/4 standalone result validation, independent raw-u64 oracle, canonical parser, and fetch/gate/CPL/STOP/budget/no-data-callback checks.
+- `cargo test -p od-runner cvttpd2dq_register_pairs_and_ie_pe_ordering_matrix --offline` — passed the literal IE-before-PE fixture, all 256 register pairs and 1,152 two-lane IE/PE/RC/control/sticky combinations, plus malformed/tampering/cross-profile/backend denials.
+
+`cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`,
+`python3 tools/check_layout.py`, `git diff --check` and `graphify update .` all
+completed successfully. No physical hardware execution was run; that remains in
+the combined final stage.
+Source: Intel SDM Rev. 093 Vol. 2A CVTTPD2DQ pp. 3-244–3-247 and Vol. 1
+§§11.5.3.2–3 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+
+
+### S2-37aj — SQRTSS register-pair interpreter profile (2026-10-30)
+
+Implemented schema-v2 interpreter-only profile `s2-long-sqrtss-registers-v1` for all 256 canonical Long64 `F3 [REX] 0F 51 /r` XMM register pairs. Strict encoding accepts four-byte low-register forms and five-byte extended forms requiring REX `41`, `44`, or `45` directly after F3; memory, REX.W/X/40, other/reordered/duplicate prefixes, trailing bytes, VEX and EVEX are rejected. Generic, JIT, native, C ABI and fragment execution remain closed.
+
+The source low32 is snapshotted before commit; MXCSR.RC selects rounding and only destination low32 changes. High96 and unrelated architectural state are retained. DAZ/reserved MXCSR encodings are refused; all RCs, FTZ, masks and prior sticky bits are accepted. The local raw helper preserves signed zero, preserves QNaN bits, quiets SNaN by setting the quiet bit with IE, and returns IE plus `0xffc00000` for negative nonzero values. This is the helper's value policy and is not a hardware NaN payload guarantee. Positive subnormal reports precompute DE; if masked, calculation continues and can set PE. Negative subnormal follows the other-invalid path and reports IE only; that terminal SQRTSS path does not also report DE even when IM is masked. Unmasked DE stops before calculation and PE. Unmasked SIMD outcomes commit newly raised status before #XM when OSXMMEXCPT=1 or SIMD-generated #UD otherwise, while destination/RIP/retirement remain atomic. Full fetch precedes SSE/EM/OSFXSR #UD and TS #NM; there are no data callbacks. FTZ is irrelevant because finite positive square-root results are normal.
+
+Local verification passed:
+
+- `cargo test -p od-isa sqrtss_register_decodes_all_xmm_pairs_and_rejects_other_encodings --offline` — 2 tests passed, including all 256 canonical pair decodes and malformed-neighbor rejection; the paired RSQRTSS decoder test also passed.
+- `cargo test -p od-isa sqrtss_fetch_and_sse_gates_are_cpl_independent --offline` — passed truncated-fetch priority and SSE/EM/OSFXSR #UD / TS #NM atomicity with CS RPL 0–3.
+- `cargo test -p od-testkit sqrtss_parser_and_oracle_cover_register_space_and_special_values --offline` — passed the all-pair schema parser and independent integer-square-root raw-u32 oracle, including all four RC modes, signed zero, NaNs, infinities, negative inputs and signed subnormals.
+- `cargo test -p od-runner sqrtss_literal_fixture_executes_only_in_interpreter_profile --offline` — passed the literal exact-square fixture and JIT/native denial.
+- `cargo test -p od-runner sqrtss_all_pairs_events_controls_and_sticky_status --offline` — passed all 256 destination/source pairs, 8 input classes × IM/DM/PM × OSXMMEXCPT, live execution with all four RC values and FTZ set, four SSE/CR gates and 8 prior-sticky combinations. Result validation checks exception vector, status, full-state atomicity, RIP and retirement.
+
+Общие проверки прошли: `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, `python3 tools/check_layout.py`, `git diff --check`, `graphify update .`. Независимый review ожидает передачи; его результат будет добавлен после review. Физическое исполнение x86 не запускалось, physical acceptance остаётся в combined final stage. Memory forms, other execution modes, DAZ и reserved MXCSR values находятся вне этого локального профиля. Sources: Intel SDM Rev. 093 Vol. 2B SQRTSS pp. 4-669–4-670 ([Vol. 2B](https://cdrdv2.intel.com/v1/dl/getContent/671241)); Vol. 1 §4.9.2, §§11.5.2.1–.2 and 11.5.3.1 ([Vol. 1](https://cdrdv2.intel.com/v1/dl/getContent/671436)); Vol. 3A Table 7-8 ([Vol. 3A](https://cdrdv2.intel.com/v1/dl/getContent/671190)); Intel Floating-Point Reference Sheet v2.13 ([official PDF](https://cdrdv2-public.intel.com/786447/floating-point-reference-sheet-for-intel-architecture.pdf)).
+
+
+### S2-37ak — SQRTPS register-pair interpreter profile (2026-10-30)
+
+Implemented strict schema-v2 interpreter-only profile `s2-long-sqrtps-registers-v1` for all 256 canonical Long64 `0F 51 /r` register pairs. Low forms are three bytes; extended indices require exactly one REX `41`, `44`, or `45` before `0F` for length four. Mandatory/other/redundant/reordered prefixes, REX.W/X/40, memory forms, trailing bytes, VEX and EVEX are refused. Generic, JIT, native, C ABI and fragment execution remain closed. SQRTPS gates on SSE (not SSE2), CR0.EM/CR4.OSFXSR, then CR0.TS.
+
+Execution snapshots all four source lanes and replaces all 128 destination bits only on successful completion. The profile rejects DAZ and reserved MXCSR bits; it accepts all RC modes, FTZ, masks and old sticky bits. Per lane, negative nonzero finite/infinity and SNaN raise precompute IE; negative subnormal is terminal IE-only for that lane. QNaN, including negative QNaN, does not raise IE. SNaN quieting and NaN sign/payload bits follow the local `Binary32::sqrt_raw_result` policy and are not asserted as hardware payload guarantees. A positive subnormal contributes precompute DE. IE and DE aggregate across all lanes before computation: if any new pre-event is unmasked, all generated IE/DE bits are committed and no new PE is computed or recorded. If pre-events are masked, all four results are computed with MXCSR.RC and PE aggregates afterward. Unmasked status commits before #XM when OSXMMEXCPT=1 or SIMD-generated #UD otherwise; every unmasked event suppresses the full XMM destination, RIP and retirement. FTZ does not alter finite positive square-root outputs.
+
+The schema-v2 oracle independently classifies raw `u32` lanes and uses integer square-root rounding, with packed event aggregation independent of the interpreter. Focused local verification passed:
+
+- `cargo test -p od-isa sqrtps_ --offline` — 6 passed, including all 256 decoder pairs, malformed neighbors, direct public runtime MXCSR admission, SSE/EM/OSFXSR/TS gates, fetch-before-gate, no data callbacks, pre-event aggregation and atomicity.
+- `cargo test -p od-isa sqrtss --offline` — 5 passed; neighboring SQRTSS controls and existing runtime profile still pass after the invalid/NaN classifier update.
+- `cargo test -p od-testkit sqrtps_parser_and_packed_raw_oracle_aggregate_lane_events --offline` — passed parser coverage for 256 register pairs and raw-u32 lane value/event/RC checks.
+- `cargo test -p od-runner sqrtps_literal_fixture_executes_only_in_interpreter_profile --offline` — passed the literal fixture, result/control tamper checks, DAZ/reserved rejection and JIT/native denial.
+- `cargo test -p od-runner sqrtps_all_pairs_lane_events_and_control_matrix --offline` — passed all destination/source pairs, per-lane placement of IE/DE/PE and special classes, all 24 cross-lane IE|DE|PE permutations × IM/DM/PM/OSXMMEXCPT, RC/FTZ, old sticky flags, full-state result/exception validation and backend denial.
+
+The full workspace/layout checks and independent review remain pending. No physical x86 execution was performed, and this local evidence is not physical acceptance. Memory forms and other execution modes remain outside the profile; parent S2-37/S2-38 remain open. Sources: Intel SDM Rev. 093 Vol. 2B SQRTPS pp. 4-664–4-666 ([Vol. 2B](https://cdrdv.intel.com/v1/dl/getContent/671241)); Vol. 1 §§11.5.2.1–.2 and 11.5.3.1–.3 ([Vol. 1](https://cdrdv.intel.com/v1/dl/getContent/671436)); Vol. 3A Event 19 and Table 7-8 ([Vol. 3A](https://cdrdv.intel.com/v1/dl/getContent/671190)); Intel Floating-Point Reference Sheet v2.13 ([PDF](https://cdrdv2-public.intel.com/786447/floating-point-reference-sheet-for-intel-architecture.pdf)).
+
+### S2-37al — SQRTPD register-pair interpreter profile (2026-10-30)
+
+Implemented strict schema-v2 profile `s2-long-sqrtpd-registers-v1` for all 256
+canonical Long64 register pairs using `66 0F 51 /r`, ModR/M.mod=3, and exact
+four-/five-byte forms. Memory, noncanonical prefixes, REX.W/X/40, trailing
+bytes, VEX and EVEX are refused. The runtime uses SSE2/EM/OSFXSR before TS
+ordering after full fetch and never issues data callbacks. JIT/native/C ABI/
+fragment/generic paths remain closed.
+
+The interpreter snapshots both raw binary64 lanes and commits the entire XMM
+only on success. IE/DE are pre-events aggregated across lanes; any newly
+unmasked pre-event commits all generated IE/DE and suppresses PE. With masked
+pre-events it computes both roots and aggregates PE. New unmasked exceptions
+commit sticky bits and suppress destination, RIP and retirement; existing
+sticky status alone does not fault. The strict local profile rejects DAZ and
+reserved MXCSR bits, accepts RC/FTZ/masks/stickies, and does not promise a
+hardware-specific NaN payload policy. The independent schema oracle uses
+integer-only raw-u64 square-root rounding.
+
+Focused evidence so far: the od-isa packed all-pairs/event-priority test passed;
+the od-isa public runtime DAZ/reserved-MXCSR and SSE2 gate/fetch-order test
+passed; the od-testkit parser/oracle test passed (including exact `sqrt(0x1)`
+with DE only and `sqrt(0x2)` with DE+PE); the runner literal/all-256-pair and
+lane-order control-matrix test passed. These are local tests, not physical
+acceptance. Workspace-wide checks and independent review are pending. Physical
+SQRTPD execution, memory operands, other modes and parent S2-37/S2-38 remain
+open. Sources: Intel SDM Rev. 093 Vol. 2B SQRTPD pp. 4-661–4-663 (Type 2,
+Table 2-19); Vol. 1 §§11.5.3.1–.3; Vol. 3A Event 19/Table 7-8; Floating-Point
+Reference Sheet v2.13 pp. 1–2.

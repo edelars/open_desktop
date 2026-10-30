@@ -940,6 +940,30 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only legacy `F2 0F E6 /r` packed binary64-to-signed-i32 conversion.
+    Cvtpd2dqRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only legacy `66 0F E6 /r` truncating packed binary64-to-signed-i32 form.
+    Cvttpd2dqRegister {
+        destination: u8,
+        source: u8,
+    },
+    SqrtssRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only legacy `0F 51 /r` packed binary32 square root.
+    SqrtpsRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only legacy `66 0F 51 /r` packed binary64 square root.
+    SqrtpdRegister {
+        destination: u8,
+        source: u8,
+    },
     /// Local-only legacy `0F 5B /r` signed packed-dword-to-binary32 form.
     Cvtdq2psRegister {
         destination: u8,
@@ -947,6 +971,11 @@ pub enum Operation {
     },
     /// Local-only legacy `66 0F 5B /r` packed binary32-to-signed-i32 conversion.
     Cvtps2dqRegister {
+        destination: u8,
+        source: u8,
+    },
+    /// Local-only legacy `F3 0F 5B /r` packed binary32-to-signed-i32 conversion.
+    Cvttps2dqRegister {
         destination: u8,
         source: u8,
     },
@@ -2082,7 +2111,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
             || (opcode.map == OpcodeMap::Escape0f
                 && matches!(
                     opcode.byte,
-                    0x2a | 0x2c | 0x2d | 0x2e | 0x2f | 0x5a | 0x5b | 0x5f | 0xc2 | 0xe6
+                    0x2a | 0x2c | 0x2d | 0x2e | 0x2f | 0x51 | 0x5a | 0x5b | 0x5f | 0xc2 | 0xe6
                 ))
             || matches!((opcode.map, opcode.byte),
             (OpcodeMap::Primary, 0x50..=0x5f | 0x68 | 0x6a | 0x69 | 0x6b | 0x70..=0x7f | 0x8c | 0x8e | 0x8f | 0x9c | 0x9d | 0x98 | 0x99 | 0xb0..=0xbf | 0x84..=0x8b | 0x8d | 0x90..=0x97 | 0xa0..=0xa7 | 0xa8 | 0xa9 | 0xaa | 0xab | 0xac | 0xad | 0xae | 0xaf | 0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xd0..=0xd3 | 0xd8 | 0xd9 | 0xda | 0xdb | 0xdc | 0xdd | 0xde | 0xdf | 0xc6 | 0xc7 | 0x63 | 0xe8 | 0xe9 | 0xeb | 0x80 | 0x81 | 0x83 | 0xfe | 0xff | 0xf4 | 0xf6 | 0xf7 | 0xfa | 0xfb | 0xfc | 0xfd)
@@ -3248,6 +3277,68 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     && prefix_bytes[0] == 0xf3
                     && prefix_bytes[1] == prefixes.rex.unwrap()
                     && prefixes.rex.unwrap() & 0x0a == 0);
+        let cvtpd2dq_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xe6
+            && prefixes.group1 == Some(0xf2)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 1 && prefix_bytes[0] == 0xf2 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && prefix_bytes[0] == 0xf2
+                    && prefixes
+                        .rex
+                        .is_some_and(|rex| matches!(rex, 0x41 | 0x44 | 0x45))
+                    && prefix_bytes[1] == prefixes.rex.unwrap());
+        let cvttpd2dq_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xe6
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 1 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && prefix_bytes[0] == 0x66
+                    && prefixes
+                        .rex
+                        .is_some_and(|rex| matches!(rex, 0x41 | 0x44 | 0x45))
+                    && prefix_bytes[1] == prefixes.rex.unwrap());
+        let sqrtss_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x51
+            && prefixes.group1 == Some(0xf3)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 1 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && prefix_bytes[0] == 0xf3
+                    && prefixes
+                        .rex
+                        .is_some_and(|rex| matches!(rex, 0x41 | 0x44 | 0x45))
+                    && prefix_bytes[1] == prefixes.rex.unwrap());
+        let sqrtps_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x51
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 0 && prefixes.rex.is_none()
+                || prefix_count == 1
+                    && matches!(prefixes.rex, Some(0x41 | 0x44 | 0x45))
+                    && prefix_bytes[0] == prefixes.rex.unwrap());
+        let sqrtpd_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x51
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 1 && prefix_bytes[0] == 0x66 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && prefix_bytes[0] == 0x66
+                    && prefixes
+                        .rex
+                        .is_some_and(|rex| matches!(rex, 0x41 | 0x44 | 0x45))
+                    && prefix_bytes[1] == prefixes.rex.unwrap());
         let cvtdq2ps_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x5b
             && prefixes.group1.is_none()
@@ -3267,6 +3358,19 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && (prefix_count == 1 && prefix_bytes[0] == 0x66 && prefixes.rex.is_none()
                 || prefix_count == 2
                     && prefix_bytes[0] == 0x66
+                    && prefixes
+                        .rex
+                        .is_some_and(|rex| matches!(rex, 0x41 | 0x44 | 0x45))
+                    && prefix_bytes[1] == prefixes.rex.unwrap());
+        let cvttps2dq_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x5b
+            && prefixes.group1 == Some(0xf3)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 1 && prefix_bytes[0] == 0xf3 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && prefix_bytes[0] == 0xf3
                     && prefixes
                         .rex
                         .is_some_and(|rex| matches!(rex, 0x41 | 0x44 | 0x45))
@@ -3524,6 +3628,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
             return Err(self.unsupported(opcode));
         }
         if opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x51
+            && !sqrtss_register
+            && !sqrtps_register
+            && !sqrtpd_register
+        {
+            return Err(self.unsupported(opcode));
+        }
+        if opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x53
             && !rcpss_register
             && !rcpps_register
@@ -3549,7 +3661,13 @@ impl<M: GuestMemory> Fetch<'_, M> {
         {
             return Err(self.unsupported(opcode));
         }
-        if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0xe6 && !cvtdq2pd_register {
+        if opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xe6
+            && !cvtdq2pd_register
+            && !cvtpd2dq_register
+            && !cvttpd2dq_register
+            && !sqrtss_register
+        {
             return Err(self.unsupported(opcode));
         }
         if opcode.map == OpcodeMap::Escape0f
@@ -3674,6 +3792,10 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !maxss_register_masked
                 && !maxsd_register_masked
                 && !cvtdq2pd_register
+                && !cvtpd2dq_register
+                && !cvttpd2dq_register
+                && !sqrtss_register
+                && !cvttps2dq_register
                 && !cvtss2sd_register
                 && !cvtsi2sd_r32_register
                 && !cvtsi2sd_r64_register
@@ -3856,6 +3978,59 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     source: (modrm & 7) | ((rex & 1) << 3),
                 }
             }
+            (OpcodeMap::Escape0f, 0xe6) if cvtpd2dq_register => {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::Cvtpd2dqRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0xe6) if cvttpd2dq_register => {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::Cvttpd2dqRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x51) if sqrtss_register => {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                let rex = prefixes.rex.unwrap_or(0x40);
+                Operation::SqrtssRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x51) if sqrtps_register => {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                let rex = prefixes.rex.unwrap_or(0x40);
+                Operation::SqrtpsRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x51) if sqrtpd_register => {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                let rex = prefixes.rex.unwrap_or(0x40);
+                Operation::SqrtpdRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
             (OpcodeMap::Escape0f, 0x5b) if cvtdq2ps_register => {
                 let modrm = self.byte()?;
                 if modrm >> 6 != 3 {
@@ -3872,6 +4047,16 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 Operation::Cvtps2dqRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x5b) if cvttps2dq_register => {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::Cvttps2dqRegister {
                     destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                     source: (modrm & 7) | ((rex & 1) << 3),
                 }
@@ -10020,7 +10205,6 @@ mod tests {
             &[0x2e, 0xf3, 0x0f, 0x52, 0xc1][..], // segment override
             &[0x67, 0xf3, 0x0f, 0x52, 0xc1][..], // address-size override
             &[0xf0, 0xf3, 0x0f, 0x52, 0xc1][..], // lock prefix
-            &[0xf3, 0x0f, 0x51, 0xc1][..],       // SQRTSS neighbor
             &[0xf3, 0x0f, 0x52][..],
             &[0xf3, 0x45, 0x0f, 0x52][..], // truncated ModR/M
             &[0xf3, 0x0f][..],
@@ -10028,6 +10212,170 @@ mod tests {
             &[0xc5, 0xf8, 0x52, 0xc1][..],             // VEX
             &[0xc4, 0xe1, 0x7a, 0x52, 0xc1][..],       // VEX
             &[0x62, 0xf1, 0x7e, 0x08, 0x52, 0xc1][..], // EVEX
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn sqrtss_register_decodes_all_xmm_pairs_and_rejects_other_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 3) << 2) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut code = vec![0xf3];
+                if destination >= 8 || source >= 8 {
+                    code.push(rex);
+                }
+                code.extend([0x0f, 0x51, modrm]);
+                let mut memory = Memory::new(&code);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::SqrtssRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, code.len() as u8);
+                if destination < 8 && source < 8 {
+                    let mut bare = Memory::new(&[0xf3, 0x0f, 0x51, modrm]);
+                    assert_eq!(bare.decode().unwrap().operation, decoded.operation);
+                }
+            }
+        }
+
+        let mut rcpss = Memory::new(&[0xf3, 0x0f, 0x53, 0xc1]);
+        assert_eq!(
+            rcpss.decode().unwrap().operation,
+            Operation::RcpssRegister {
+                destination: 0,
+                source: 1
+            }
+        );
+        let mut rsqrtps = Memory::new(&[0x0f, 0x52, 0xc1]);
+        assert_eq!(
+            rsqrtps.decode().unwrap().operation,
+            Operation::RsqrtpsRegister {
+                destination: 0,
+                source: 1
+            }
+        );
+
+        for bytes in [
+            &[0xf3, 0x40, 0x0f, 0x51, 0xc1][..],       // redundant REX
+            &[0xf3, 0x0f, 0x51, 0x01][..],             // memory operand
+            &[0xf3, 0x48, 0x0f, 0x51, 0xc1][..],       // REX.W
+            &[0xf3, 0x42, 0x0f, 0x51, 0xc1][..],       // REX.X
+            &[0xf3, 0x40, 0x41, 0x0f, 0x51, 0xc1][..], // multiple REX
+            &[0x40, 0xf3, 0x0f, 0x51, 0xc1][..],       // nonadjacent REX
+            &[0xf3, 0x66, 0x0f, 0x51, 0xc1][..],       // operand-size prefix
+            &[0x66, 0xf3, 0x0f, 0x51, 0xc1][..],       // wrong prefix order
+            &[0xf2, 0x0f, 0x51, 0xc1][..],
+            &[0x2e, 0xf3, 0x0f, 0x51, 0xc1][..], // segment override
+            &[0x67, 0xf3, 0x0f, 0x51, 0xc1][..], // address-size override
+            &[0xf0, 0xf3, 0x0f, 0x51, 0xc1][..], // lock prefix
+            &[0xf3, 0x0f, 0x51][..],
+            &[0xf3, 0x45, 0x0f, 0x51][..], // truncated ModR/M
+            &[0xf3, 0x0f][..],
+            &[0xf3][..],
+            &[0xc5, 0xf8, 0x51, 0xc1][..],             // VEX
+            &[0xc4, 0xe1, 0x7a, 0x51, 0xc1][..],       // VEX
+            &[0x62, 0xf1, 0x7e, 0x08, 0x51, 0xc1][..], // EVEX
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn sqrtps_register_decodes_all_xmm_pairs_and_rejects_other_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 1) & 4) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut code = Vec::new();
+                if destination >= 8 || source >= 8 {
+                    code.push(rex);
+                }
+                code.extend([0x0f, 0x51, modrm]);
+                let mut memory = Memory::new(&code);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::SqrtpsRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, code.len() as u8);
+            }
+        }
+
+        for bytes in [
+            &[0x40, 0x0f, 0x51, 0xc1][..],       // redundant REX
+            &[0x0f, 0x51, 0x01][..],             // memory operand
+            &[0x48, 0x0f, 0x51, 0xc1][..],       // REX.W
+            &[0x42, 0x0f, 0x51, 0xc1][..],       // REX.X
+            &[0x40, 0x41, 0x0f, 0x51, 0xc1][..], // multiple REX
+            &[0xf2, 0x0f, 0x51, 0xc1][..],
+            &[0x2e, 0x0f, 0x51, 0xc1][..], // segment override
+            &[0x67, 0x0f, 0x51, 0xc1][..], // address-size override
+            &[0xf0, 0x0f, 0x51, 0xc1][..], // lock prefix
+            &[0x0f, 0x51][..],
+            &[0x45, 0x0f, 0x51][..],                   // truncated ModR/M
+            &[0xc5, 0xf8, 0x51, 0xc1][..],             // VEX
+            &[0xc4, 0xe1, 0x78, 0x51, 0xc1][..],       // VEX
+            &[0x62, 0xf1, 0x7c, 0x08, 0x51, 0xc1][..], // EVEX
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+        let mut sqrtss = Memory::new(&[0xf3, 0x0f, 0x51, 0xc1]);
+        assert_eq!(
+            sqrtss.decode().unwrap().operation,
+            Operation::SqrtssRegister {
+                destination: 0,
+                source: 1
+            }
+        );
+    }
+
+    #[test]
+    fn sqrtpd_register_decodes_all_xmm_pairs_and_rejects_other_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 1) & 4) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut code = vec![0x66];
+                if destination >= 8 || source >= 8 {
+                    code.push(rex);
+                }
+                code.extend([0x0f, 0x51, modrm]);
+                let mut memory = Memory::new(&code);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::SqrtpdRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, code.len() as u8);
+            }
+        }
+        for bytes in [
+            &[0x66, 0x40, 0x0f, 0x51, 0xc1][..],
+            &[0x66, 0x42, 0x0f, 0x51, 0xc1][..],
+            &[0x66, 0x48, 0x0f, 0x51, 0xc1][..],
+            &[0x40, 0x66, 0x0f, 0x51, 0xc1][..],
+            &[0x66, 0xf2, 0x0f, 0x51, 0xc1][..],
+            &[0xf3, 0x66, 0x0f, 0x51, 0xc1][..],
+            &[0x66, 0x0f, 0x51][..],
+            &[0x66, 0x0f, 0x51, 0x01][..],
+            &[0xc5, 0xfd, 0x51, 0xc1][..],
+            &[0x62, 0xf1, 0xfd, 0x08, 0x51, 0xc1][..],
         ] {
             let mut memory = Memory::new(bytes);
             assert!(memory.decode().is_err(), "{bytes:02x?}");
@@ -10137,7 +10485,6 @@ mod tests {
             &[0x2e, 0x0f, 0x52, 0xc1][..],       // segment override
             &[0x67, 0x0f, 0x52, 0xc1][..],       // address-size override
             &[0xf0, 0x0f, 0x52, 0xc1][..],       // LOCK prefix
-            &[0x0f, 0x51, 0xc1][..],             // SQRTPS neighbor
             &[0x0f, 0x52][..],
             &[0x40, 0x0f, 0x52][..],                   // truncated ModR/M
             &[0xc5, 0xf8, 0x52, 0xc1][..],             // VEX
@@ -10147,6 +10494,14 @@ mod tests {
             let mut memory = Memory::new(bytes);
             assert!(memory.decode().is_err(), "{bytes:02x?}");
         }
+        let mut sqrtps = Memory::new(&[0x0f, 0x51, 0xc1]);
+        assert_eq!(
+            sqrtps.decode().unwrap().operation,
+            Operation::SqrtpsRegister {
+                destination: 0,
+                source: 1
+            }
+        );
     }
 
     #[test]
@@ -19365,5 +19720,116 @@ mod tests {
             }
         );
         assert_eq!(instruction.length, 4);
+    }
+
+    #[test]
+    fn cvtpd2dq_decodes_all_canonical_register_pairs_and_rejects_neighbors() {
+        for destination in 0u8..16 {
+            for source in 0u8..16 {
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut bytes = vec![0xf2];
+                if destination >= 8 || source >= 8 {
+                    bytes.push(0x40 | ((destination >> 1) & 4) | (source >> 3));
+                }
+                bytes.extend_from_slice(&[0x0f, 0xe6, modrm]);
+                let instruction = Memory::new(&bytes).decode().unwrap();
+                assert_eq!(instruction.length as usize, bytes.len());
+                assert_eq!(
+                    instruction.operation,
+                    Operation::Cvtpd2dqRegister {
+                        destination,
+                        source
+                    },
+                    "{bytes:02x?}"
+                );
+            }
+        }
+
+        assert!(matches!(
+            Memory::new(&[0xf3, 0x0f, 0xe6, 0xc1])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::Cvtdq2pdRegister { .. }
+        )); // The adjacent F3 form keeps its independent CVTDQ2PD admission.
+
+        for bytes in [
+            &[0xf2, 0x0f, 0xe6, 0x00][..],             // memory operand
+            &[0xf2, 0x48, 0x0f, 0xe6, 0xc1][..],       // REX.W
+            &[0xf2, 0x42, 0x0f, 0xe6, 0xc1][..],       // REX.X
+            &[0xf2, 0x40, 0x0f, 0xe6, 0xc1][..],       // unnecessary REX
+            &[0xf2, 0xf2, 0x0f, 0xe6, 0xc1][..],       // repeated mandatory prefix
+            &[0x41, 0xf2, 0x0f, 0xe6, 0xc1][..],       // reordered REX
+            &[0x66, 0xf2, 0x0f, 0xe6, 0xc1][..],       // additional prefix
+            &[0xc5, 0xf9, 0xe6, 0xc1][..],             // VEX
+            &[0x62, 0xf1, 0x7d, 0x08, 0xe6, 0xc1][..], // EVEX
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cvttpd2dq_decodes_all_canonical_register_pairs_and_rejects_neighbors() {
+        for destination in 0u8..16 {
+            for source in 0u8..16 {
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut bytes = vec![0x66];
+                if destination >= 8 || source >= 8 {
+                    bytes.push(0x40 | ((destination >> 1) & 4) | (source >> 3));
+                }
+                bytes.extend_from_slice(&[0x0f, 0xe6, modrm]);
+                let instruction = Memory::new(&bytes).decode().unwrap();
+                assert_eq!(instruction.length as usize, bytes.len());
+                assert_eq!(
+                    instruction.operation,
+                    Operation::Cvttpd2dqRegister {
+                        destination,
+                        source
+                    },
+                    "{bytes:02x?}"
+                );
+            }
+        }
+
+        assert!(matches!(
+            Memory::new(&[0xf2, 0x0f, 0xe6, 0xc1])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::Cvtpd2dqRegister { .. }
+        )); // The adjacent F2 form keeps its independent CVTPD2DQ admission.
+        assert!(matches!(
+            Memory::new(&[0xf3, 0x0f, 0xe6, 0xc1])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::Cvtdq2pdRegister { .. }
+        )); // The adjacent F3 form keeps its independent CVTDQ2PD admission.
+
+        for bytes in [
+            &[0x66, 0x0f, 0xe6, 0x00][..],             // memory operand
+            &[0x66, 0x48, 0x0f, 0xe6, 0xc1][..],       // REX.W
+            &[0x66, 0x42, 0x0f, 0xe6, 0xc1][..],       // REX.X
+            &[0x66, 0x40, 0x0f, 0xe6, 0xc1][..],       // unnecessary REX
+            &[0x66, 0x66, 0x0f, 0xe6, 0xc1][..],       // repeated mandatory prefix
+            &[0x41, 0x66, 0x0f, 0xe6, 0xc1][..],       // reordered REX
+            &[0xf2, 0x66, 0x0f, 0xe6, 0xc1][..],       // additional prefix
+            &[0xc5, 0xfd, 0xe6, 0xc1][..],             // VEX
+            &[0x62, 0xf1, 0x7d, 0x08, 0xe6, 0xc1][..], // EVEX
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
     }
 }

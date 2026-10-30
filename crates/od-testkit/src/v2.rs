@@ -264,6 +264,18 @@ pub enum Profile {
     LongCvtdq2psRegistersV1,
     #[serde(rename = "s2-long-cvtps2dq-registers-v1")]
     LongCvtps2dqRegistersV1,
+    #[serde(rename = "s2-long-cvttps2dq-registers-v1")]
+    LongCvttps2dqRegistersV1,
+    #[serde(rename = "s2-long-cvtpd2dq-registers-v1")]
+    LongCvtpd2dqRegistersV1,
+    #[serde(rename = "s2-long-cvttpd2dq-registers-v1")]
+    LongCvttpd2dqRegistersV1,
+    #[serde(rename = "s2-long-sqrtss-registers-v1")]
+    LongSqrtssRegistersV1,
+    #[serde(rename = "s2-long-sqrtps-registers-v1")]
+    LongSqrtpsRegistersV1,
+    #[serde(rename = "s2-long-sqrtpd-registers-v1")]
+    LongSqrtpdRegistersV1,
     #[serde(rename = "s2-long-cvtss2sd-registers-v1")]
     LongCvtss2sdRegistersV1,
     #[serde(rename = "s2-long-cvtps2pd-registers-v1")]
@@ -1291,6 +1303,12 @@ impl IntegerState {
                     | Profile::LongCvtdq2pdRegistersV1
                     | Profile::LongCvtdq2psRegistersV1
                     | Profile::LongCvtps2dqRegistersV1
+                    | Profile::LongCvttps2dqRegistersV1
+                    | Profile::LongCvtpd2dqRegistersV1
+                    | Profile::LongCvttpd2dqRegistersV1
+                    | Profile::LongSqrtssRegistersV1
+                    | Profile::LongSqrtpsRegistersV1
+                    | Profile::LongSqrtpdRegistersV1
                     | Profile::LongCvtss2sdRegistersV1
                     | Profile::LongCvtps2pdRegistersV1
                     | Profile::LongComissUcomissRegistersV1
@@ -1493,6 +1511,12 @@ impl IntegerState {
                 | Profile::LongCvtdq2pdRegistersV1
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtps2dqRegistersV1
+                | Profile::LongCvttps2dqRegistersV1
+                | Profile::LongCvtpd2dqRegistersV1
+                | Profile::LongCvttpd2dqRegistersV1
+                | Profile::LongSqrtssRegistersV1
+                | Profile::LongSqrtpsRegistersV1
+                | Profile::LongSqrtpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -1646,6 +1670,12 @@ impl IntegerState {
                 | Profile::LongCvtdq2pdRegistersV1
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtps2dqRegistersV1
+                | Profile::LongCvttps2dqRegistersV1
+                | Profile::LongCvtpd2dqRegistersV1
+                | Profile::LongCvttpd2dqRegistersV1
+                | Profile::LongSqrtssRegistersV1
+                | Profile::LongSqrtpsRegistersV1
+                | Profile::LongSqrtpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -1981,6 +2011,12 @@ impl IntegerState {
             | Profile::LongCvtdq2pdRegistersV1
             | Profile::LongCvtdq2psRegistersV1
             | Profile::LongCvtps2dqRegistersV1
+            | Profile::LongCvttps2dqRegistersV1
+            | Profile::LongCvtpd2dqRegistersV1
+            | Profile::LongCvttpd2dqRegistersV1
+            | Profile::LongSqrtssRegistersV1
+            | Profile::LongSqrtpsRegistersV1
+            | Profile::LongSqrtpdRegistersV1
             | Profile::LongCvtss2sdRegistersV1
             | Profile::LongCvtps2pdRegistersV1
             | Profile::LongCvtsi2sdR32ExactV1
@@ -2140,6 +2176,12 @@ impl IntegerState {
                 | Profile::LongCvtdq2pdRegistersV1
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtps2dqRegistersV1
+                | Profile::LongCvttps2dqRegistersV1
+                | Profile::LongCvtpd2dqRegistersV1
+                | Profile::LongCvttpd2dqRegistersV1
+                | Profile::LongSqrtssRegistersV1
+                | Profile::LongSqrtpsRegistersV1
+                | Profile::LongSqrtpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -2311,6 +2353,12 @@ impl IntegerState {
                 | Profile::LongCvtdq2pdRegistersV1
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtps2dqRegistersV1
+                | Profile::LongCvttps2dqRegistersV1
+                | Profile::LongCvtpd2dqRegistersV1
+                | Profile::LongCvttpd2dqRegistersV1
+                | Profile::LongSqrtssRegistersV1
+                | Profile::LongSqrtpsRegistersV1
+                | Profile::LongSqrtpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -2491,6 +2539,12 @@ impl IntegerState {
                 | Profile::LongCvtdq2pdRegistersV1
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtps2dqRegistersV1
+                | Profile::LongCvttps2dqRegistersV1
+                | Profile::LongCvtpd2dqRegistersV1
+                | Profile::LongCvttpd2dqRegistersV1
+                | Profile::LongSqrtssRegistersV1
+                | Profile::LongSqrtpsRegistersV1
+                | Profile::LongSqrtpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -2678,6 +2732,12 @@ impl IntegerState {
                 | Profile::LongCvtdq2pdRegistersV1
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtps2dqRegistersV1
+                | Profile::LongCvttps2dqRegistersV1
+                | Profile::LongCvtpd2dqRegistersV1
+                | Profile::LongCvttpd2dqRegistersV1
+                | Profile::LongSqrtssRegistersV1
+                | Profile::LongSqrtpsRegistersV1
+                | Profile::LongSqrtpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -3495,6 +3555,12 @@ impl IntegerState {
                 | Profile::LongCvtdq2pdRegistersV1
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtps2dqRegistersV1
+                | Profile::LongCvttps2dqRegistersV1
+                | Profile::LongCvtpd2dqRegistersV1
+                | Profile::LongCvttpd2dqRegistersV1
+                | Profile::LongSqrtssRegistersV1
+                | Profile::LongSqrtpsRegistersV1
+                | Profile::LongSqrtpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -3639,6 +3705,12 @@ impl IntegerState {
                 | Profile::LongCvtdq2pdRegistersV1
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtps2dqRegistersV1
+                | Profile::LongCvttps2dqRegistersV1
+                | Profile::LongCvtpd2dqRegistersV1
+                | Profile::LongCvttpd2dqRegistersV1
+                | Profile::LongSqrtssRegistersV1
+                | Profile::LongSqrtpsRegistersV1
+                | Profile::LongSqrtpdRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
@@ -3892,6 +3964,18 @@ pub struct Fixture {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtps2dq_controls: Option<Cvtdq2psControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cvttps2dq_controls: Option<Cvttps2dqControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cvtpd2dq_controls: Option<Cvtpd2dqControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cvttpd2dq_controls: Option<Cvttpd2dqControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqrtss_controls: Option<SqrtssControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqrtps_controls: Option<SqrtpsControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqrtpd_controls: Option<SqrtpdControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtss2sd_controls: Option<Cvtss2sdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtps2pd_controls: Option<Cvtps2pdControlSnapshot>,
@@ -4046,6 +4130,24 @@ pub struct Cvtdq2psControlSnapshot {
     pub cr4_osfxsr: bool,
     pub cr4_osxmmexcpt: bool,
 }
+
+/// Separate control field for the CVTTPS2DQ runtime profile.
+pub type Cvttps2dqControlSnapshot = Cvtdq2psControlSnapshot;
+
+/// Separate gate and exception-delivery control echo for CVTPD2DQ.
+pub type Cvtpd2dqControlSnapshot = Cvtdq2psControlSnapshot;
+pub type Cvttpd2dqControlSnapshot = Cvtdq2psControlSnapshot;
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SqrtssControlSnapshot {
+    pub sse_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+pub type SqrtpsControlSnapshot = SqrtssControlSnapshot;
+pub type SqrtpdControlSnapshot = Cvtdq2psControlSnapshot;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -5738,6 +5840,306 @@ impl Fixture {
                 "only valid for CVTPS2DQ register-space profile",
             ));
         }
+        if self.profile == Profile::LongCvttps2dqRegistersV1 {
+            let _ = self.cvttps2dq_controls.ok_or_else(|| {
+                invalid("cvttps2dq_controls", "required by the CVTTPS2DQ profile")
+            })?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by the CVTTPS2DQ profile"))?;
+            let (_, _, length) =
+                cvttps2dq_register_encoding(&code.initial_bytes_hex).ok_or_else(|| {
+                    invalid(
+                        "memory.code",
+                        "outside canonical CVTTPS2DQ register profile",
+                    )
+                })?;
+            let start = self.initial_state.rip.get();
+            if code.guest_address.get() != start
+                || code.length != length
+                || !code.permissions.execute
+                || self.memory.len() != 1
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(u64::from(length))
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "CVTTPS2DQ requires one canonical executable encoding, budget 1, and stop RIP entry+length",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .expect("SSE required by CVTTPS2DQ")
+                .mxcsr
+                .get();
+            if mxcsr & !0x0000_ffbf != 0 || mxcsr & (1 << 6) != 0 {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "CVTTPS2DQ requires supported MXCSR bits and rejects DAZ",
+                ));
+            }
+        } else if self.cvttps2dq_controls.is_some() {
+            return Err(invalid(
+                "cvttps2dq_controls",
+                "only valid for CVTTPS2DQ register-space profile",
+            ));
+        }
+        if self.profile == Profile::LongCvtpd2dqRegistersV1 {
+            let _ = self
+                .cvtpd2dq_controls
+                .ok_or_else(|| invalid("cvtpd2dq_controls", "required by the CVTPD2DQ profile"))?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by the CVTPD2DQ profile"))?;
+            let (_, _, length) =
+                cvtpd2dq_register_encoding(&code.initial_bytes_hex).ok_or_else(|| {
+                    invalid("memory.code", "outside canonical CVTPD2DQ register profile")
+                })?;
+            let start = self.initial_state.rip.get();
+            if code.guest_address.get() != start
+                || code.length != length
+                || !code.permissions.execute
+                || self.memory.len() != 1
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(u64::from(length))
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "CVTPD2DQ requires one canonical executable encoding, budget 1, and stop RIP entry+length",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .expect("SSE required by CVTPD2DQ")
+                .mxcsr
+                .get();
+            if mxcsr & !0x0000_ffbf != 0 || mxcsr & (1 << 6) != 0 {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "CVTPD2DQ requires supported MXCSR bits and rejects DAZ",
+                ));
+            }
+        } else if self.cvtpd2dq_controls.is_some() {
+            return Err(invalid(
+                "cvtpd2dq_controls",
+                "only valid for CVTPD2DQ register-space profile",
+            ));
+        }
+        if self.profile == Profile::LongCvttpd2dqRegistersV1 {
+            let _ = self.cvttpd2dq_controls.ok_or_else(|| {
+                invalid("cvttpd2dq_controls", "required by the CVTTPD2DQ profile")
+            })?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by the CVTTPD2DQ profile"))?;
+            let (_, _, length) =
+                cvttpd2dq_register_encoding(&code.initial_bytes_hex).ok_or_else(|| {
+                    invalid(
+                        "memory.code",
+                        "outside canonical CVTTPD2DQ register profile",
+                    )
+                })?;
+            let start = self.initial_state.rip.get();
+            if code.guest_address.get() != start
+                || code.length != length
+                || !code.permissions.execute
+                || self.memory.len() != 1
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(u64::from(length))
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "CVTTPD2DQ requires one canonical executable encoding, budget 1, and stop RIP entry+length",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .expect("SSE required by CVTTPD2DQ")
+                .mxcsr
+                .get();
+            if mxcsr & !0x0000_ffbf != 0 || mxcsr & (1 << 6) != 0 {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "CVTTPD2DQ requires supported MXCSR bits and rejects DAZ",
+                ));
+            }
+        } else if self.cvttpd2dq_controls.is_some() {
+            return Err(invalid(
+                "cvttpd2dq_controls",
+                "only valid for CVTTPD2DQ register-space profile",
+            ));
+        }
+        if self.profile == Profile::LongSqrtssRegistersV1 {
+            let _ = self
+                .sqrtss_controls
+                .ok_or_else(|| invalid("sqrtss_controls", "required by the SQRTSS profile"))?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by the SQRTSS profile"))?;
+            let (_, _, length) =
+                sqrtss_register_encoding(&code.initial_bytes_hex).ok_or_else(|| {
+                    invalid("memory.code", "outside canonical SQRTSS register profile")
+                })?;
+            let start = self.initial_state.rip.get();
+            if code.guest_address.get() != start
+                || code.length != length
+                || !code.permissions.execute
+                || self.memory.len() != 1
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(u64::from(length))
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "SQRTSS requires one canonical executable encoding, budget 1, and stop RIP entry+length",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .expect("SSE required by SQRTSS")
+                .mxcsr
+                .get();
+            if mxcsr & !0x0000_ffbf != 0 || mxcsr & (1 << 6) != 0 {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "SQRTSS requires supported MXCSR bits and rejects DAZ",
+                ));
+            }
+        } else if self.sqrtss_controls.is_some() {
+            return Err(invalid(
+                "sqrtss_controls",
+                "only valid for SQRTSS register-space profile",
+            ));
+        }
+        if self.profile == Profile::LongSqrtpsRegistersV1 {
+            let _ = self
+                .sqrtps_controls
+                .ok_or_else(|| invalid("sqrtps_controls", "required by the SQRTPS profile"))?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by the SQRTPS profile"))?;
+            let (_, _, length) =
+                sqrtps_register_encoding(&code.initial_bytes_hex).ok_or_else(|| {
+                    invalid("memory.code", "outside canonical SQRTPS register profile")
+                })?;
+            let start = self.initial_state.rip.get();
+            if code.guest_address.get() != start
+                || code.length != length
+                || !code.permissions.execute
+                || self.memory.len() != 1
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(u64::from(length))
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "SQRTPS requires one canonical executable encoding, budget 1, and stop RIP entry+length",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .expect("SSE required by SQRTPS")
+                .mxcsr
+                .get();
+            if mxcsr & !0x0000_ffbf != 0 || mxcsr & (1 << 6) != 0 {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "SQRTPS requires supported MXCSR bits and rejects DAZ",
+                ));
+            }
+        } else if self.sqrtps_controls.is_some() {
+            return Err(invalid(
+                "sqrtps_controls",
+                "only valid for SQRTPS register-space profile",
+            ));
+        }
+        if self.profile == Profile::LongSqrtpdRegistersV1 {
+            let _ = self
+                .sqrtpd_controls
+                .ok_or_else(|| invalid("sqrtpd_controls", "required by the SQRTPD profile"))?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by the SQRTPD profile"))?;
+            let (_, _, length) =
+                sqrtpd_register_encoding(&code.initial_bytes_hex).ok_or_else(|| {
+                    invalid("memory.code", "outside canonical SQRTPD register profile")
+                })?;
+            let start = self.initial_state.rip.get();
+            if code.guest_address.get() != start
+                || code.length != length
+                || !code.permissions.execute
+                || self.memory.len() != 1
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(u64::from(length))
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "SQRTPD requires one canonical executable encoding, budget 1, and stop RIP entry+length",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .expect("SSE2 required by SQRTPD")
+                .mxcsr
+                .get();
+            if mxcsr & !0x0000_ffbf != 0 || mxcsr & (1 << 6) != 0 {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "SQRTPD requires supported MXCSR bits and rejects DAZ",
+                ));
+            }
+        } else if self.sqrtpd_controls.is_some() {
+            return Err(invalid(
+                "sqrtpd_controls",
+                "only valid for SQRTPD register-space profile",
+            ));
+        }
         if self.profile == Profile::LongCvtss2sdRegistersV1 {
             let _ = self
                 .cvtss2sd_controls
@@ -6828,6 +7230,21 @@ impl Fixture {
                 }
                 Profile::LongCvtps2dqRegistersV1 => {
                     cvtps2dq_register_encoding(&code_bytes).map(|(_, _, length)| length)
+                }
+                Profile::LongCvttps2dqRegistersV1 => {
+                    cvttps2dq_register_encoding(&code_bytes).map(|(_, _, length)| length)
+                }
+                Profile::LongCvtpd2dqRegistersV1 => {
+                    cvtpd2dq_register_encoding(&code_bytes).map(|(_, _, length)| length)
+                }
+                Profile::LongCvttpd2dqRegistersV1 => {
+                    cvttpd2dq_register_encoding(&code_bytes).map(|(_, _, length)| length)
+                }
+                Profile::LongSqrtpsRegistersV1 => {
+                    sqrtps_register_encoding(&code_bytes).map(|(_, _, length)| length)
+                }
+                Profile::LongSqrtpdRegistersV1 => {
+                    sqrtpd_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
                 Profile::LongCvtss2sdRegistersV1 => {
                     cvtss2sd_register_encoding(&code_bytes).map(|(_, _, length)| length)
@@ -8784,6 +9201,12 @@ impl Fixture {
             cvtdq2pd_controls: None,
             cvtdq2ps_controls: None,
             cvtps2dq_controls: None,
+            cvttps2dq_controls: None,
+            cvtpd2dq_controls: None,
+            cvttpd2dq_controls: None,
+            sqrtss_controls: None,
+            sqrtps_controls: None,
+            sqrtpd_controls: None,
             cvtss2sd_controls: None,
             cvtps2pd_controls: None,
             comiss_ucomiss_controls: None,
@@ -8895,6 +9318,18 @@ pub struct Snapshot {
     pub cvtdq2ps_controls: Option<Cvtdq2psControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtps2dq_controls: Option<Cvtdq2psControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cvttps2dq_controls: Option<Cvttps2dqControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cvtpd2dq_controls: Option<Cvtpd2dqControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cvttpd2dq_controls: Option<Cvttpd2dqControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqrtss_controls: Option<SqrtssControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqrtps_controls: Option<SqrtpsControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqrtpd_controls: Option<SqrtpdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtss2sd_controls: Option<Cvtss2sdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -9190,6 +9625,84 @@ impl RunResult {
             return Err(invalid(
                 "snapshot.cvtps2dq_controls",
                 "only valid for CVTPS2DQ profile",
+            ));
+        }
+        if self.profile == Profile::LongCvttps2dqRegistersV1 {
+            if snapshot.cvttps2dq_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.cvttps2dq_controls",
+                    "required by the CVTTPS2DQ profile",
+                ));
+            }
+        } else if snapshot.cvttps2dq_controls.is_some() {
+            return Err(invalid(
+                "snapshot.cvttps2dq_controls",
+                "only valid for CVTTPS2DQ profile",
+            ));
+        }
+        if self.profile == Profile::LongCvtpd2dqRegistersV1 {
+            if snapshot.cvtpd2dq_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.cvtpd2dq_controls",
+                    "required by the CVTPD2DQ profile",
+                ));
+            }
+        } else if snapshot.cvtpd2dq_controls.is_some() {
+            return Err(invalid(
+                "snapshot.cvtpd2dq_controls",
+                "only valid for the CVTPD2DQ profile",
+            ));
+        }
+        if self.profile == Profile::LongCvttpd2dqRegistersV1 {
+            if snapshot.cvttpd2dq_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.cvttpd2dq_controls",
+                    "required by the CVTTPD2DQ profile",
+                ));
+            }
+        } else if snapshot.cvttpd2dq_controls.is_some() {
+            return Err(invalid(
+                "snapshot.cvttpd2dq_controls",
+                "only valid for the CVTTPD2DQ profile",
+            ));
+        }
+        if self.profile == Profile::LongSqrtssRegistersV1 {
+            if snapshot.sqrtss_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.sqrtss_controls",
+                    "required by the SQRTSS profile",
+                ));
+            }
+        } else if snapshot.sqrtss_controls.is_some() {
+            return Err(invalid(
+                "snapshot.sqrtss_controls",
+                "only valid for the SQRTSS profile",
+            ));
+        }
+        if self.profile == Profile::LongSqrtpsRegistersV1 {
+            if snapshot.sqrtps_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.sqrtps_controls",
+                    "required by the SQRTPS profile",
+                ));
+            }
+        } else if snapshot.sqrtps_controls.is_some() {
+            return Err(invalid(
+                "snapshot.sqrtps_controls",
+                "only valid for the SQRTPS profile",
+            ));
+        }
+        if self.profile == Profile::LongSqrtpdRegistersV1 {
+            if snapshot.sqrtpd_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.sqrtpd_controls",
+                    "required by the SQRTPD profile",
+                ));
+            }
+        } else if snapshot.sqrtpd_controls.is_some() {
+            return Err(invalid(
+                "snapshot.sqrtpd_controls",
+                "only valid for the SQRTPD profile",
             ));
         }
         if self.profile == Profile::LongCvtss2sdRegistersV1 {
@@ -9656,6 +10169,99 @@ impl RunResult {
             }
             if loaded.fixture.profile == Profile::LongCvtps2dqRegistersV1 {
                 validate_cvtps2dq_registers_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.cvttps2dq_controls,
+                value.cvttps2dq_controls,
+            ) {
+                (Profile::LongCvttps2dqRegistersV1, Some(input), Some(output))
+                    if input == output => {}
+                (Profile::LongCvttps2dqRegistersV1, _, _) => {
+                    return Err(FormatError::CaseMismatch("cvttps2dq_controls"));
+                }
+                (_, None, None) => {}
+                _ => return Err(FormatError::CaseMismatch("cvttps2dq_controls")),
+            }
+            if loaded.fixture.profile == Profile::LongCvttps2dqRegistersV1 {
+                validate_cvttps2dq_registers_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.cvtpd2dq_controls,
+                value.cvtpd2dq_controls,
+            ) {
+                (Profile::LongCvtpd2dqRegistersV1, Some(input), Some(output))
+                    if input == output => {}
+                (Profile::LongCvtpd2dqRegistersV1, _, _) => {
+                    return Err(FormatError::CaseMismatch("cvtpd2dq_controls"));
+                }
+                (_, None, None) => {}
+                _ => return Err(FormatError::CaseMismatch("cvtpd2dq_controls")),
+            }
+            if loaded.fixture.profile == Profile::LongCvtpd2dqRegistersV1 {
+                validate_cvtpd2dq_registers_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.cvttpd2dq_controls,
+                value.cvttpd2dq_controls,
+            ) {
+                (Profile::LongCvttpd2dqRegistersV1, Some(input), Some(output))
+                    if input == output => {}
+                (Profile::LongCvttpd2dqRegistersV1, _, _) => {
+                    return Err(FormatError::CaseMismatch("cvttpd2dq_controls"));
+                }
+                (_, None, None) => {}
+                _ => return Err(FormatError::CaseMismatch("cvttpd2dq_controls")),
+            }
+            if loaded.fixture.profile == Profile::LongCvttpd2dqRegistersV1 {
+                validate_cvttpd2dq_registers_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.sqrtss_controls,
+                value.sqrtss_controls,
+            ) {
+                (Profile::LongSqrtssRegistersV1, Some(input), Some(output)) if input == output => {}
+                (Profile::LongSqrtssRegistersV1, _, _) => {
+                    return Err(FormatError::CaseMismatch("sqrtss_controls"));
+                }
+                (_, None, None) => {}
+                _ => return Err(FormatError::CaseMismatch("sqrtss_controls")),
+            }
+            if loaded.fixture.profile == Profile::LongSqrtssRegistersV1 {
+                validate_sqrtss_registers_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.sqrtps_controls,
+                value.sqrtps_controls,
+            ) {
+                (Profile::LongSqrtpsRegistersV1, Some(input), Some(output)) if input == output => {}
+                (Profile::LongSqrtpsRegistersV1, _, _) => {
+                    return Err(FormatError::CaseMismatch("sqrtps_controls"));
+                }
+                (_, None, None) => {}
+                _ => return Err(FormatError::CaseMismatch("sqrtps_controls")),
+            }
+            if loaded.fixture.profile == Profile::LongSqrtpsRegistersV1 {
+                validate_sqrtps_registers_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.sqrtpd_controls,
+                value.sqrtpd_controls,
+            ) {
+                (Profile::LongSqrtpdRegistersV1, Some(input), Some(output)) if input == output => {}
+                (Profile::LongSqrtpdRegistersV1, _, _) => {
+                    return Err(FormatError::CaseMismatch("sqrtpd_controls"));
+                }
+                (_, None, None) => {}
+                _ => return Err(FormatError::CaseMismatch("sqrtpd_controls")),
+            }
+            if loaded.fixture.profile == Profile::LongSqrtpdRegistersV1 {
+                validate_sqrtpd_registers_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
@@ -11520,6 +12126,15 @@ fn independent_binary32_to_integer(raw: u32, rc: u32, wide: bool) -> (u64, bool,
     (value, false, rem)
 }
 
+/// Independent CVTT conversion oracle: truncate toward zero irrespective of MXCSR.RC.
+fn independent_binary32_to_integer_truncate(
+    raw: u32,
+    _mxcsr: u32,
+    wide: bool,
+) -> (u64, bool, bool) {
+    independent_binary32_to_integer(raw, 3, wide)
+}
+
 fn independent_binary64_to_integer(raw: u64, rc: u32, wide: bool) -> (u64, bool, bool) {
     let negative = raw >> 63 != 0;
     let exponent = (raw >> 52) & 0x7ff;
@@ -12024,6 +12639,861 @@ fn validate_cvtps2dq_registers_result(
             && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
         (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
         _ => return Err(FormatError::CaseMismatch("CVTPS2DQ outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_cvttps2dq_registers_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .cvttps2dq_controls
+        .ok_or(FormatError::CaseMismatch("cvttps2dq_controls"))?;
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    let (destination, source, length) = cvttps2dq_register_encoding(&code.initial_bytes_hex)
+        .ok_or(FormatError::CaseMismatch("CVTTPS2DQ encoding"))?;
+    let source_bytes = decode_bytes(&initial_sse.xmm[usize::from(source)])?;
+    let old_mxcsr = initial_sse.mxcsr.get() as u32;
+    let mut expected_destination = [0u8; 16];
+    let mut new_ie = false;
+    let mut new_pe = false;
+    for lane in 0..4 {
+        let offset = lane * 4;
+        let raw = u32::from_le_bytes(
+            source_bytes[offset..offset + 4]
+                .try_into()
+                .map_err(|_| FormatError::CaseMismatch("state.sse.xmm"))?,
+        );
+        let (bits, invalid, inexact) =
+            independent_binary32_to_integer_truncate(raw, old_mxcsr, false);
+        new_ie |= invalid;
+        new_pe |= !invalid && inexact;
+        expected_destination[offset..offset + 4].copy_from_slice(&(bits as u32).to_le_bytes());
+    }
+    let unmasked_ie = new_ie && old_mxcsr & (1 << 7) == 0;
+    let unmasked_pe = new_pe && old_mxcsr & (1 << 12) == 0;
+    let gate_vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let unmasked_ie = gate_vector.is_none() && unmasked_ie;
+    let unmasked_pe = gate_vector.is_none() && unmasked_pe;
+    let fault_vector = gate_vector.or_else(|| {
+        if unmasked_ie || unmasked_pe {
+            Some(if controls.cr4_osxmmexcpt { 19 } else { 6 })
+        } else {
+            None
+        }
+    });
+    if !matches!(
+        (fault_vector.is_some(), fixture.expected_exit),
+        (true, ExpectedExit::Exception) | (false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("CVTTPS2DQ expected exit"));
+    }
+    let mut expected_state = fixture.initial_state.clone();
+    if gate_vector.is_none() {
+        let sse = expected_state
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        let committed_status = if unmasked_ie {
+            1
+        } else {
+            u32::from(new_ie) | (u32::from(new_pe) << 5)
+        };
+        sse.mxcsr = HexU64(u64::from(old_mxcsr | committed_status));
+        if !unmasked_ie && !unmasked_pe {
+            sse.xmm[usize::from(destination)] = crate::memory::encode_bytes(&expected_destination);
+            expected_state.rip = HexU64(
+                fixture
+                    .initial_state
+                    .rip
+                    .get()
+                    .checked_add(u64::from(length))
+                    .ok_or(FormatError::CaseMismatch("CVTTPS2DQ stop overflow"))?,
+            );
+        }
+    }
+    let expected_memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected_state
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != expected_memory
+    {
+        return Err(FormatError::CaseMismatch("CVTTPS2DQ output state"));
+    }
+    let expected_count = u64::from(fault_vector.is_none());
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(expected_count),
+        })
+    {
+        return Err(FormatError::CaseMismatch("CVTTPS2DQ retirement count"));
+    }
+    match (fault_vector, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == Observation::Unavailable {
+                    reason: "exception has no architectural error code".into(),
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("CVTTPS2DQ outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_cvtpd2dq_registers_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .cvtpd2dq_controls
+        .ok_or(FormatError::CaseMismatch("cvtpd2dq_controls"))?;
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    let (destination, source, length) = cvtpd2dq_register_encoding(&code.initial_bytes_hex)
+        .ok_or(FormatError::CaseMismatch("CVTPD2DQ encoding"))?;
+    let source_bytes = decode_bytes(&initial_sse.xmm[usize::from(source)])?;
+    let old_mxcsr = initial_sse.mxcsr.get() as u32;
+    let rc = (old_mxcsr >> 13) & 3;
+    let mut expected_destination = [0u8; 16];
+    let mut new_ie = false;
+    let mut new_pe = false;
+    for lane in 0..2 {
+        let offset = lane * 8;
+        let raw = u64::from_le_bytes(
+            source_bytes[offset..offset + 8]
+                .try_into()
+                .map_err(|_| FormatError::CaseMismatch("state.sse.xmm"))?,
+        );
+        let (bits, invalid, inexact) = independent_binary64_to_integer(raw, rc, false);
+        new_ie |= invalid;
+        new_pe |= !invalid && inexact;
+        expected_destination[lane * 4..lane * 4 + 4].copy_from_slice(&(bits as u32).to_le_bytes());
+    }
+    let unmasked_ie = new_ie && old_mxcsr & (1 << 7) == 0;
+    let unmasked_pe = new_pe && old_mxcsr & (1 << 12) == 0;
+    let gate_vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let unmasked_ie = gate_vector.is_none() && unmasked_ie;
+    let unmasked_pe = gate_vector.is_none() && unmasked_pe;
+    let fault_vector = gate_vector.or_else(|| {
+        if unmasked_ie || unmasked_pe {
+            Some(if controls.cr4_osxmmexcpt { 19 } else { 6 })
+        } else {
+            None
+        }
+    });
+    if !matches!(
+        (fault_vector.is_some(), fixture.expected_exit),
+        (true, ExpectedExit::Exception) | (false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("CVTPD2DQ expected exit"));
+    }
+    let mut expected_state = fixture.initial_state.clone();
+    if gate_vector.is_none() {
+        let sse = expected_state
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        let committed_status = if unmasked_ie {
+            1
+        } else {
+            u32::from(new_ie) | (u32::from(new_pe) << 5)
+        };
+        sse.mxcsr = HexU64(u64::from(old_mxcsr | committed_status));
+        if !unmasked_ie && !unmasked_pe {
+            sse.xmm[usize::from(destination)] = crate::memory::encode_bytes(&expected_destination);
+            expected_state.rip = HexU64(
+                fixture
+                    .initial_state
+                    .rip
+                    .get()
+                    .checked_add(u64::from(length))
+                    .ok_or(FormatError::CaseMismatch("CVTPD2DQ stop overflow"))?,
+            );
+        }
+    }
+    let expected_memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected_state
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != expected_memory
+    {
+        return Err(FormatError::CaseMismatch("CVTPD2DQ output state"));
+    }
+    let expected_count = u64::from(fault_vector.is_none());
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(expected_count),
+        })
+    {
+        return Err(FormatError::CaseMismatch("CVTPD2DQ retirement count"));
+    }
+    match (fault_vector, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == Observation::Unavailable {
+                    reason: "exception has no architectural error code".into(),
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("CVTPD2DQ outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_cvttpd2dq_registers_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .cvttpd2dq_controls
+        .ok_or(FormatError::CaseMismatch("cvttpd2dq_controls"))?;
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    let (destination, source, length) = cvttpd2dq_register_encoding(&code.initial_bytes_hex)
+        .ok_or(FormatError::CaseMismatch("CVTTPD2DQ encoding"))?;
+    let source_bytes = decode_bytes(&initial_sse.xmm[usize::from(source)])?;
+    let old_mxcsr = initial_sse.mxcsr.get() as u32;
+    let rc = 3;
+    let mut expected_destination = [0u8; 16];
+    let mut new_ie = false;
+    let mut new_pe = false;
+    for lane in 0..2 {
+        let offset = lane * 8;
+        let raw = u64::from_le_bytes(
+            source_bytes[offset..offset + 8]
+                .try_into()
+                .map_err(|_| FormatError::CaseMismatch("state.sse.xmm"))?,
+        );
+        let (bits, invalid, inexact) = independent_binary64_to_integer(raw, rc, false);
+        new_ie |= invalid;
+        new_pe |= !invalid && inexact;
+        expected_destination[lane * 4..lane * 4 + 4].copy_from_slice(&(bits as u32).to_le_bytes());
+    }
+    let unmasked_ie = new_ie && old_mxcsr & (1 << 7) == 0;
+    let unmasked_pe = new_pe && old_mxcsr & (1 << 12) == 0;
+    let gate_vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let unmasked_ie = gate_vector.is_none() && unmasked_ie;
+    let unmasked_pe = gate_vector.is_none() && unmasked_pe;
+    let fault_vector = gate_vector.or_else(|| {
+        if unmasked_ie || unmasked_pe {
+            Some(if controls.cr4_osxmmexcpt { 19 } else { 6 })
+        } else {
+            None
+        }
+    });
+    if !matches!(
+        (fault_vector.is_some(), fixture.expected_exit),
+        (true, ExpectedExit::Exception) | (false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("CVTTPD2DQ expected exit"));
+    }
+    let mut expected_state = fixture.initial_state.clone();
+    if gate_vector.is_none() {
+        let sse = expected_state
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        let committed_status = if unmasked_ie {
+            1
+        } else {
+            u32::from(new_ie) | (u32::from(new_pe) << 5)
+        };
+        sse.mxcsr = HexU64(u64::from(old_mxcsr | committed_status));
+        if !unmasked_ie && !unmasked_pe {
+            sse.xmm[usize::from(destination)] = crate::memory::encode_bytes(&expected_destination);
+            expected_state.rip = HexU64(
+                fixture
+                    .initial_state
+                    .rip
+                    .get()
+                    .checked_add(u64::from(length))
+                    .ok_or(FormatError::CaseMismatch("CVTTPD2DQ stop overflow"))?,
+            );
+        }
+    }
+    let expected_memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected_state
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != expected_memory
+    {
+        return Err(FormatError::CaseMismatch("CVTTPD2DQ output state"));
+    }
+    let expected_count = u64::from(fault_vector.is_none());
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(expected_count),
+        })
+    {
+        return Err(FormatError::CaseMismatch("CVTTPD2DQ retirement count"));
+    }
+    match (fault_vector, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == Observation::Unavailable {
+                    reason: "exception has no architectural error code".into(),
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("CVTTPD2DQ outcome/exception")),
+    }
+    Ok(())
+}
+
+/// Raw-bit SQRTSS oracle kept independent of od-isa's floating-point helpers.
+fn independent_sqrtss(raw: u32, mxcsr: u32) -> (u32, bool, bool, bool) {
+    let sign = raw >> 31 != 0;
+    let exponent = (raw >> 23) & 0xff;
+    let fraction = raw & 0x7f_ffff;
+    if exponent == 0xff {
+        if fraction == 0 {
+            return if sign {
+                (0xffc0_0000, true, false, false)
+            } else {
+                (raw, false, false, false)
+            };
+        }
+        let signaling = fraction & 0x40_0000 == 0;
+        return (
+            if signaling { raw | 0x40_0000 } else { raw },
+            signaling,
+            false,
+            false,
+        );
+    }
+    if exponent == 0 && fraction == 0 {
+        return (raw, false, false, false);
+    }
+    if sign {
+        return (0xffc0_0000, true, false, false);
+    }
+    let denormal = exponent == 0;
+    let (mut significand, mut unbiased) = if denormal {
+        (fraction, -126i32)
+    } else {
+        ((1 << 23) | fraction, exponent as i32 - 127)
+    };
+    while significand < (1 << 23) {
+        significand <<= 1;
+        unbiased -= 1;
+    }
+    let odd = unbiased.rem_euclid(2) != 0;
+    let radicand = u64::from(significand) << (if odd { 24 } else { 23 });
+    let (mut low, mut high) = (0u64, 1u64 << 25);
+    while low + 1 < high {
+        let mid = (low + high) / 2;
+        if mid * mid <= radicand {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    let root = low;
+    let remainder = radicand - root * root;
+    let rc = (mxcsr >> 13) & 3;
+    let increment = match rc {
+        0 => 4 * radicand > (2 * root + 1) * (2 * root + 1),
+        1 => false,
+        2 => remainder != 0,
+        _ => false,
+    };
+    let mut rounded = root + u64::from(increment);
+    let mut out_exp = unbiased.div_euclid(2) + 127;
+    if rounded == (1 << 24) {
+        rounded >>= 1;
+        out_exp += 1;
+    }
+    let bits = ((out_exp as u32) << 23) | ((rounded as u32) & 0x7f_ffff);
+    (bits, false, denormal, remainder != 0)
+}
+
+/// Raw-u32 SQRTPS oracle: classify and aggregate all pre-events before PE.
+/// Lane values are produced by the independent integer square-root routine,
+/// never by the od-isa operation or a host floating-point instruction.
+fn independent_sqrtps(raw: [u32; 4], mxcsr: u32) -> ([u32; 4], bool, bool, bool) {
+    let mut values = [0u32; 4];
+    let mut ie = false;
+    let mut de = false;
+    let mut pe = false;
+    for (index, lane) in raw.into_iter().enumerate() {
+        let sign = lane >> 31 != 0;
+        let exponent = (lane >> 23) & 0xff;
+        let fraction = lane & 0x7f_ffff;
+        if sign && exponent != 0xff && (exponent != 0 || fraction != 0)
+            || exponent == 0xff && fraction == 0 && sign
+            || exponent == 0xff && fraction != 0 && fraction & 0x40_0000 == 0
+        {
+            ie = true;
+        } else if exponent == 0 && fraction != 0 {
+            de = true;
+        }
+        let (result, _, _, inexact) = independent_sqrtss(lane, mxcsr);
+        values[index] = result;
+        pe |= inexact;
+    }
+    (values, ie, de, pe)
+}
+
+fn validate_sqrtss_registers_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .sqrtss_controls
+        .ok_or(FormatError::CaseMismatch("sqrtss_controls"))?;
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    let (destination, source, length) = sqrtss_register_encoding(&code.initial_bytes_hex)
+        .ok_or(FormatError::CaseMismatch("SQRTSS encoding"))?;
+    let source_bytes = decode_bytes(&initial_sse.xmm[usize::from(source)])?;
+    let old_mxcsr = initial_sse.mxcsr.get() as u32;
+    let raw = u32::from_le_bytes(
+        source_bytes[..4]
+            .try_into()
+            .map_err(|_| FormatError::CaseMismatch("state.sse.xmm"))?,
+    );
+    let (result_bits, new_ie, new_de, computed_pe) = independent_sqrtss(raw, old_mxcsr);
+    let mut expected_destination = decode_bytes(&initial_sse.xmm[usize::from(destination)])?;
+    expected_destination[..4].copy_from_slice(&result_bits.to_le_bytes());
+    let unmasked_ie = new_ie && old_mxcsr & (1 << 7) == 0;
+    let unmasked_de = new_de && old_mxcsr & (1 << 8) == 0 && !unmasked_ie;
+    let new_pe = computed_pe && !unmasked_ie && !unmasked_de;
+    let unmasked_pe = new_pe && old_mxcsr & (1 << 12) == 0;
+    let gate_vector = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let unmasked_ie = gate_vector.is_none() && unmasked_ie;
+    let unmasked_de = gate_vector.is_none() && unmasked_de;
+    let unmasked_pe = gate_vector.is_none() && unmasked_pe;
+    let fault_vector = gate_vector.or_else(|| {
+        if unmasked_ie || unmasked_de || unmasked_pe {
+            Some(if controls.cr4_osxmmexcpt { 19 } else { 6 })
+        } else {
+            None
+        }
+    });
+    if !matches!(
+        (fault_vector.is_some(), fixture.expected_exit),
+        (true, ExpectedExit::Exception) | (false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("SQRTSS expected exit"));
+    }
+    let mut expected_state = fixture.initial_state.clone();
+    if gate_vector.is_none() {
+        let sse = expected_state
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        sse.mxcsr = HexU64(u64::from(
+            old_mxcsr | u32::from(new_ie) | (u32::from(new_de) << 1) | (u32::from(new_pe) << 5),
+        ));
+        if !unmasked_ie && !unmasked_de && !unmasked_pe {
+            sse.xmm[usize::from(destination)] = crate::memory::encode_bytes(&expected_destination);
+            expected_state.rip = HexU64(
+                fixture
+                    .initial_state
+                    .rip
+                    .get()
+                    .checked_add(u64::from(length))
+                    .ok_or(FormatError::CaseMismatch("SQRTSS stop overflow"))?,
+            );
+        }
+    }
+    let expected_memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected_state {
+        return Err(FormatError::CaseMismatch("SQRTSS state"));
+    }
+    if snapshot.rflags_defined != HexU64(INTEGER_FLAGS) {
+        return Err(FormatError::CaseMismatch("SQRTSS defined flags"));
+    }
+    if snapshot.memory != expected_memory {
+        return Err(FormatError::CaseMismatch("SQRTSS memory"));
+    }
+    let expected_count = u64::from(fault_vector.is_none());
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(expected_count),
+        })
+    {
+        return Err(FormatError::CaseMismatch("SQRTSS retirement count"));
+    }
+    match (fault_vector, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == Observation::Unavailable {
+                    reason: "exception has no architectural error code".into(),
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("SQRTSS outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_sqrtps_registers_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .sqrtps_controls
+        .ok_or(FormatError::CaseMismatch("sqrtps_controls"))?;
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    let (destination, source, length) = sqrtps_register_encoding(&code.initial_bytes_hex)
+        .ok_or(FormatError::CaseMismatch("SQRTPS encoding"))?;
+    let source_bytes = decode_bytes(&initial_sse.xmm[usize::from(source)])?;
+    let raw = std::array::from_fn(|lane| {
+        u32::from_le_bytes(source_bytes[lane * 4..lane * 4 + 4].try_into().unwrap())
+    });
+    let old_mxcsr = initial_sse.mxcsr.get() as u32;
+    let (values, new_ie, new_de, computed_pe) = independent_sqrtps(raw, old_mxcsr);
+    let unmasked_ie = new_ie && old_mxcsr & (1 << 7) == 0;
+    let unmasked_de = new_de && old_mxcsr & (1 << 8) == 0;
+    let unmasked_pre = unmasked_ie || unmasked_de;
+    let new_pe = computed_pe && !unmasked_pre;
+    let unmasked_pe = new_pe && old_mxcsr & (1 << 12) == 0;
+    let gate_vector = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let fault_vector = gate_vector.or_else(|| {
+        if unmasked_pre || unmasked_pe {
+            Some(if controls.cr4_osxmmexcpt { 19 } else { 6 })
+        } else {
+            None
+        }
+    });
+    if !matches!(
+        (fault_vector.is_some(), fixture.expected_exit),
+        (true, ExpectedExit::Exception) | (false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("SQRTPS expected exit"));
+    }
+    let mut expected_state = fixture.initial_state.clone();
+    if gate_vector.is_none() {
+        let sse = expected_state
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        sse.mxcsr = HexU64(u64::from(
+            old_mxcsr | u32::from(new_ie) | (u32::from(new_de) << 1) | (u32::from(new_pe) << 5),
+        ));
+        if !unmasked_pre && !unmasked_pe {
+            let mut expected_destination = [0u8; 16];
+            for (lane, value) in values.into_iter().enumerate() {
+                expected_destination[lane * 4..lane * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            }
+            sse.xmm[usize::from(destination)] = crate::memory::encode_bytes(&expected_destination);
+            expected_state.rip = HexU64(
+                fixture
+                    .initial_state
+                    .rip
+                    .get()
+                    .checked_add(u64::from(length))
+                    .ok_or(FormatError::CaseMismatch("SQRTPS stop overflow"))?,
+            );
+        }
+    }
+    let expected_memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected_state {
+        return Err(FormatError::CaseMismatch("SQRTPS state"));
+    }
+    if snapshot.rflags_defined != HexU64(INTEGER_FLAGS) {
+        return Err(FormatError::CaseMismatch("SQRTPS defined flags"));
+    }
+    if snapshot.memory != expected_memory {
+        return Err(FormatError::CaseMismatch("SQRTPS memory"));
+    }
+    let expected_count = u64::from(fault_vector.is_none());
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(expected_count),
+        })
+    {
+        return Err(FormatError::CaseMismatch("SQRTPS retirement count"));
+    }
+    match (fault_vector, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == Observation::Unavailable {
+                    reason: "exception has no architectural error code".into(),
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("SQRTPS outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_sqrtpd_registers_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .sqrtpd_controls
+        .ok_or(FormatError::CaseMismatch("sqrtpd_controls"))?;
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    let (destination, source, length) = sqrtpd_register_encoding(&code.initial_bytes_hex)
+        .ok_or(FormatError::CaseMismatch("SQRTPD encoding"))?;
+    let source_bytes = decode_bytes(&initial_sse.xmm[usize::from(source)])?;
+    let raw = std::array::from_fn(|lane| {
+        u64::from_le_bytes(source_bytes[lane * 8..lane * 8 + 8].try_into().unwrap())
+    });
+    let old_mxcsr = initial_sse.mxcsr.get() as u32;
+    let (values, new_ie, new_de, computed_pe) = independent_sqrtpd(raw, old_mxcsr);
+    let unmasked_ie = new_ie && old_mxcsr & (1 << 7) == 0;
+    let unmasked_de = new_de && old_mxcsr & (1 << 8) == 0;
+    let unmasked_pre = unmasked_ie || unmasked_de;
+    let new_pe = computed_pe && !unmasked_pre;
+    let unmasked_pe = new_pe && old_mxcsr & (1 << 12) == 0;
+    let gate_vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let fault_vector = gate_vector.or_else(|| {
+        if unmasked_pre || unmasked_pe {
+            Some(if controls.cr4_osxmmexcpt { 19 } else { 6 })
+        } else {
+            None
+        }
+    });
+    if !matches!(
+        (fault_vector.is_some(), fixture.expected_exit),
+        (true, ExpectedExit::Exception) | (false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("SQRTPD expected exit"));
+    }
+    let mut expected_state = fixture.initial_state.clone();
+    if gate_vector.is_none() {
+        let sse = expected_state
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        sse.mxcsr = HexU64(u64::from(
+            old_mxcsr | u32::from(new_ie) | (u32::from(new_de) << 1) | (u32::from(new_pe) << 5),
+        ));
+        if !unmasked_pre && !unmasked_pe {
+            let mut expected_destination = [0u8; 16];
+            for (lane, value) in values.into_iter().enumerate() {
+                expected_destination[lane * 8..lane * 8 + 8].copy_from_slice(&value.to_le_bytes());
+            }
+            sse.xmm[usize::from(destination)] = crate::memory::encode_bytes(&expected_destination);
+            expected_state.rip = HexU64(
+                fixture
+                    .initial_state
+                    .rip
+                    .get()
+                    .checked_add(u64::from(length))
+                    .ok_or(FormatError::CaseMismatch("SQRTPD stop overflow"))?,
+            );
+        }
+    }
+    let expected_memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected_state {
+        return Err(FormatError::CaseMismatch("SQRTPD state"));
+    }
+    if snapshot.rflags_defined != HexU64(INTEGER_FLAGS) {
+        return Err(FormatError::CaseMismatch("SQRTPD defined flags"));
+    }
+    if snapshot.memory != expected_memory {
+        return Err(FormatError::CaseMismatch("SQRTPD memory"));
+    }
+    let expected_count = u64::from(fault_vector.is_none());
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(expected_count),
+        })
+    {
+        return Err(FormatError::CaseMismatch("SQRTPD retirement count"));
+    }
+    match (fault_vector, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == Observation::Unavailable {
+                    reason: "exception has no architectural error code".into(),
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("SQRTPD outcome/exception")),
     }
     Ok(())
 }
@@ -13793,6 +15263,9 @@ pub fn compare(
     if a.cvtps2dq_controls != b.cvtps2dq_controls {
         differences.push("cvtps2dq_controls".into());
     }
+    if a.cvttps2dq_controls != b.cvttps2dq_controls {
+        differences.push("cvttps2dq_controls".into());
+    }
     if a.cvtdq2ps_controls != loaded.fixture.cvtdq2ps_controls {
         differences.push("left.cvtdq2ps_controls".into());
     }
@@ -13802,8 +15275,32 @@ pub fn compare(
     if a.cvtps2dq_controls != loaded.fixture.cvtps2dq_controls {
         differences.push("left.cvtps2dq_controls".into());
     }
+    if a.cvttps2dq_controls != loaded.fixture.cvttps2dq_controls {
+        differences.push("left.cvttps2dq_controls".into());
+    }
     if b.cvtps2dq_controls != loaded.fixture.cvtps2dq_controls {
         differences.push("right.cvtps2dq_controls".into());
+    }
+    if b.cvttps2dq_controls != loaded.fixture.cvttps2dq_controls {
+        differences.push("right.cvttps2dq_controls".into());
+    }
+    if a.cvtpd2dq_controls != b.cvtpd2dq_controls {
+        differences.push("cvtpd2dq_controls".into());
+    }
+    if a.cvttpd2dq_controls != b.cvttpd2dq_controls {
+        differences.push("cvttpd2dq_controls".into());
+    }
+    if a.cvttpd2dq_controls != loaded.fixture.cvttpd2dq_controls {
+        differences.push("left.cvttpd2dq_controls".into());
+    }
+    if b.cvttpd2dq_controls != loaded.fixture.cvttpd2dq_controls {
+        differences.push("right.cvttpd2dq_controls".into());
+    }
+    if a.cvtpd2dq_controls != loaded.fixture.cvtpd2dq_controls {
+        differences.push("left.cvtpd2dq_controls".into());
+    }
+    if b.cvtpd2dq_controls != loaded.fixture.cvtpd2dq_controls {
+        differences.push("right.cvtpd2dq_controls".into());
     }
     if a.cvtps2pd_controls != b.cvtps2pd_controls {
         differences.push("cvtps2pd_controls".into());
@@ -15180,6 +16677,237 @@ fn cvtdq2pd_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
     Some((destination, source, bytes.len() as u32))
 }
 
+/// Independently parse canonical Long64 CVTPD2DQ register bytes.
+fn cvtpd2dq_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (rex, opcode_offset) = match bytes.as_slice() {
+        [0xf2, 0x0f, 0xe6, modrm] if modrm >> 6 == 3 => (0u8, 1usize),
+        [0xf2, rex, 0x0f, 0xe6, modrm] if matches!(*rex, 0x41 | 0x44 | 0x45) && modrm >> 6 == 3 => {
+            (*rex, 2usize)
+        }
+        _ => return None,
+    };
+    let modrm = *bytes.last()?;
+    let destination = ((modrm >> 3) & 7) | (((rex >> 2) & 1) << 3);
+    let source = (modrm & 7) | ((rex & 1) << 3);
+    let needs_rex = destination >= 8 || source >= 8;
+    if needs_rex != (opcode_offset == 2)
+        || (rex & 4 != 0) != (destination >= 8)
+        || (rex & 1 != 0) != (source >= 8)
+        || rex & 0x0a != 0
+    {
+        return None;
+    }
+    Some((destination, source, bytes.len() as u32))
+}
+
+fn cvttpd2dq_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (rex, opcode_offset) = match bytes.as_slice() {
+        [0x66, 0x0f, 0xe6, modrm] if modrm >> 6 == 3 => (0u8, 1usize),
+        [0x66, rex, 0x0f, 0xe6, modrm] if matches!(*rex, 0x41 | 0x44 | 0x45) && modrm >> 6 == 3 => {
+            (*rex, 2usize)
+        }
+        _ => return None,
+    };
+    let modrm = *bytes.last()?;
+    let destination = ((modrm >> 3) & 7) | (((rex >> 2) & 1) << 3);
+    let source = (modrm & 7) | ((rex & 1) << 3);
+    let needs_rex = destination >= 8 || source >= 8;
+    if needs_rex != (opcode_offset == 2)
+        || (rex & 4 != 0) != (destination >= 8)
+        || (rex & 1 != 0) != (source >= 8)
+        || rex & 0x0a != 0
+    {
+        return None;
+    }
+    Some((destination, source, bytes.len() as u32))
+}
+
+fn sqrtss_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (rex, opcode_offset) = match bytes.as_slice() {
+        [0xf3, 0x0f, 0x51, modrm] if modrm >> 6 == 3 => (0u8, 1usize),
+        [0xf3, rex, 0x0f, 0x51, modrm] if matches!(*rex, 0x41 | 0x44 | 0x45) && modrm >> 6 == 3 => {
+            (*rex, 2usize)
+        }
+        _ => return None,
+    };
+    let modrm = *bytes.last()?;
+    let destination = ((modrm >> 3) & 7) | (((rex >> 2) & 1) << 3);
+    let source = (modrm & 7) | ((rex & 1) << 3);
+    let needs_rex = destination >= 8 || source >= 8;
+    if needs_rex != (opcode_offset == 2)
+        || (rex & 4 != 0) != (destination >= 8)
+        || (rex & 1 != 0) != (source >= 8)
+        || rex & 0x0a != 0
+    {
+        return None;
+    }
+    Some((destination, source, bytes.len() as u32))
+}
+
+fn sqrtps_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (rex, modrm) = match bytes.as_slice() {
+        [0x0f, 0x51, modrm] => (0u8, *modrm),
+        [rex, 0x0f, 0x51, modrm] if matches!(*rex, 0x41 | 0x44 | 0x45) => (*rex, *modrm),
+        _ => return None,
+    };
+    if modrm >> 6 != 3 {
+        return None;
+    }
+    let destination = ((modrm >> 3) & 7) | (((rex >> 2) & 1) << 3);
+    let source = (modrm & 7) | ((rex & 1) << 3);
+    let needs_rex = destination >= 8 || source >= 8;
+    if needs_rex != (bytes.len() == 4)
+        || (rex & 4 != 0) != (destination >= 8)
+        || (rex & 1 != 0) != (source >= 8)
+        || rex & 0x0a != 0
+    {
+        return None;
+    }
+    Some((destination, source, bytes.len() as u32))
+}
+
+fn sqrtpd_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (rex, modrm) = match bytes.as_slice() {
+        [0x66, 0x0f, 0x51, modrm] => (0u8, *modrm),
+        [0x66, rex, 0x0f, 0x51, modrm] if matches!(*rex, 0x41 | 0x44 | 0x45) => (*rex, *modrm),
+        _ => return None,
+    };
+    if modrm >> 6 != 3 {
+        return None;
+    }
+    let destination = ((modrm >> 3) & 7) | (((rex >> 2) & 1) << 3);
+    let source = (modrm & 7) | ((rex & 1) << 3);
+    if (destination >= 8 || source >= 8) != (bytes.len() == 5)
+        || (rex & 4 != 0) != (destination >= 8)
+        || (rex & 1 != 0) != (source >= 8)
+        || rex & 0x0a != 0
+    {
+        return None;
+    }
+    Some((destination, source, bytes.len() as u32))
+}
+
+fn independent_sqrtpd_lane(raw: u64, mxcsr: u32) -> (u64, bool, bool, bool) {
+    let sign = raw >> 63 != 0;
+    let exp_field = (raw >> 52) & 0x7ff;
+    let fraction = raw & 0x000f_ffff_ffff_ffff;
+    let quiet = fraction & (1 << 51) != 0;
+    if exp_field == 0x7ff {
+        if fraction != 0 {
+            return (
+                if quiet { raw } else { raw | (1 << 51) },
+                !quiet,
+                false,
+                false,
+            );
+        }
+        if sign {
+            return (0xfff8_0000_0000_0000, true, false, false);
+        }
+        return (raw, false, false, false);
+    }
+    if raw & 0x7fff_ffff_ffff_ffff == 0 {
+        return (raw, false, false, false);
+    }
+    if sign {
+        return (0xfff8_0000_0000_0000, true, false, false);
+    }
+    let denormal = exp_field == 0;
+    let (mut sig, mut exponent) = if denormal {
+        (fraction, -1022i32)
+    } else {
+        ((1u64 << 52) | fraction, exp_field as i32 - 1023)
+    };
+    while sig < (1u64 << 52) {
+        sig <<= 1;
+        exponent -= 1;
+    }
+    let result_exp = exponent.div_euclid(2);
+    let shift = 52 + exponent.rem_euclid(2) as u32;
+    let radicand = u128::from(sig) << shift;
+    let mut low = 0u64;
+    let mut high = 1u64 << 54;
+    while low + 1 < high {
+        let mid = low + (high - low) / 2;
+        if u128::from(mid) * u128::from(mid) <= radicand {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    let remainder = radicand - u128::from(low) * u128::from(low);
+    let inexact = remainder != 0;
+    let rc = (mxcsr >> 13) & 3;
+    let round_up = match rc {
+        0 => {
+            let lhs = 4 * radicand;
+            let mid = u128::from(2 * low + 1);
+            lhs > mid * mid || (lhs == mid * mid && low & 1 != 0)
+        }
+        2 => inexact,
+        _ => false,
+    };
+    let mut rounded = low + u64::from(round_up);
+    let mut out_exp = result_exp;
+    if rounded == (1u64 << 53) {
+        rounded >>= 1;
+        out_exp += 1;
+    }
+    let result = (((out_exp + 1023) as u64) << 52) | (rounded & 0x000f_ffff_ffff_ffff);
+    (result, false, denormal, inexact)
+}
+
+fn independent_sqrtpd(raw: [u64; 2], mxcsr: u32) -> ([u64; 2], bool, bool, bool) {
+    let mut values = [0u64; 2];
+    let mut ie = false;
+    let mut de = false;
+    let mut pe = false;
+    for (index, lane) in raw.into_iter().enumerate() {
+        let (_, lane_ie, lane_de, _) = independent_sqrtpd_lane(lane, mxcsr);
+        ie |= lane_ie;
+        de |= lane_de;
+        let (value, _, _, lane_pe) = independent_sqrtpd_lane(lane, mxcsr);
+        values[index] = value;
+        pe |= lane_pe;
+    }
+    (values, ie, de, pe)
+}
+
 /// Independently parse the canonical Long64 CVTDQ2PS register byte forms.
 fn cvtdq2ps_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
     if code_bytes.len() % 2 != 0 {
@@ -15222,6 +16950,36 @@ fn cvtps2dq_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
     let (rex, modrm) = match bytes.as_slice() {
         [0x66, 0x0f, 0x5b, modrm] => (0u8, *modrm),
         [0x66, rex, 0x0f, 0x5b, modrm] if matches!(*rex, 0x41 | 0x44 | 0x45) => (*rex, *modrm),
+        _ => return None,
+    };
+    if modrm >> 6 != 3 {
+        return None;
+    }
+    let destination = ((modrm >> 3) & 7) | (((rex >> 2) & 1) << 3);
+    let source = (modrm & 7) | ((rex & 1) << 3);
+    let needs_rex = destination >= 8 || source >= 8;
+    if needs_rex != (bytes.len() == 5)
+        || (rex & 4 != 0) != (destination >= 8)
+        || (rex & 1 != 0) != (source >= 8)
+        || rex & 0x0a != 0
+    {
+        return None;
+    }
+    Some((destination, source, bytes.len() as u32))
+}
+
+/// Independently parse canonical Long64 CVTTPS2DQ register bytes.
+fn cvttps2dq_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (rex, modrm) = match bytes.as_slice() {
+        [0xf3, 0x0f, 0x5b, modrm] => (0u8, *modrm),
+        [0xf3, rex, 0x0f, 0x5b, modrm] if matches!(*rex, 0x41 | 0x44 | 0x45) => (*rex, *modrm),
         _ => return None,
     };
     if modrm >> 6 != 3 {

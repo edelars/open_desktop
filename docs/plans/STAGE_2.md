@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последнее локальное подзадание S2-37af добавляет canonical Long64 CVTPS2DQ register-space schema-v2 interpreter-only profile; соседние S2-37s/t/u/v/w добавляют другие register-space profiles. Это не закрывает общий S2-37, CPUID admission или physical acceptance. Локальная проверка S2-37af включает 10 368 комбинаций event/mask/control/sticky-state, прямой unmasked-IE fixture и независимое Sol-medium review; аппаратная проверка остаётся в общей финальной подстадии. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последнее локальное подзадание S2-37ak добавляет строгий schema-v2 SQRTPS XMM register-pair interpreter profile рядом с S2-37aj SQRTSS, S2-37ai CVTTPD2DQ и соседними S2-37s/t/u/v/w register-space profiles. Локальные проверки охватывают пары, RC, межlane IE/DE/PE priority и controls; это не закрывает общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -510,6 +510,12 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37ad | Local-only canonical Long64 CVTTSS2SI register forms; r32/r64 TowardZero conversion independent of MXCSR.RC; JIT/native closed | Independent Sol-medium review clean after parser and coverage corrections; physical acceptance remains in final stage |
 | [x] | S2-37ae | Local-only canonical Long64 CVTTSD2SI register forms; r32/r64 TowardZero conversion independent of MXCSR.RC; JIT/native closed | Independent Sol-medium review clean; physical acceptance remains in final stage |
 | [x] | S2-37af | Local-only canonical Long64 CVTPS2DQ register-pair profile; packed IE-before-PE ordering, whole-XMM atomic unmasked exit; JIT/native closed | Independent Sol-medium review clean; hardware validation remains in combined final stage |
+| [x] | S2-37ag | Local-only canonical Long64 CVTTPS2DQ register-pair profile; fixed TowardZero, packed IE-before-PE ordering, whole-XMM atomic unmasked exit; JIT/native closed | Focused local verification; physical acceptance remains in combined final stage |
+| [x] | S2-37ah | Local-only canonical Long64 CVTPD2DQ register-pair profile; MXCSR.RC packed conversion and IE-before-PE atomic exit; JIT/native closed | Focused local verification; physical acceptance remains in combined final stage |
+| [x] | S2-37ai | Local-only canonical Long64 CVTTPD2DQ register-pair profile; fixed TowardZero independent of MXCSR.RC, packed IE-before-PE atomic exit; JIT/native closed | Focused local verification; physical acceptance remains in combined final stage |
+| [x] | S2-37aj | Strict schema-v2 canonical Long64 SQRTSS XMM register-pair profile; MXCSR.RC, low32 result/high96 preservation, ordered IE/DE/PE and atomic unmasked exit; JIT/native closed | S2-36aa, S2-38 exception policy; independent review clean after runtime MXCSR admission and negative-subnormal documentation fixes; physical acceptance remains in combined final stage |
+| [x] | S2-37ak | Strict schema-v2 canonical Long64 SQRTPS XMM register-pair profile; MXCSR.RC, four-lane pre-IE/DE aggregation before PE and whole-XMM atomic unmasked exit; JIT/native closed | S2-37aj raw sqrt reference and S2-38 exception policy; independent review clean; physical acceptance remains open |
+| [x] | S2-37al | Strict schema-v2 canonical Long64 SQRTPD XMM register-pair profile; binary64 two-lane IE/DE pre-event aggregation before PE and whole-XMM atomic exit; independent review clean; physical acceptance remains open | S2-37aj raw sqrt reference and S2-38 exception policy |
 | [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j/k/l: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j/k/l; independent review |
 | [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
@@ -6777,7 +6783,7 @@ inventory.
 | COMISS | `NP 0F 2F /r` | SSE | XMM, m32; EFLAGS | 3-201 | S2-37v, bounded register-only |
 | CVTDQ2PD | `F3 0F E6 /r` | SSE2 | m64 / low 2×i32 → 2×f64 | 3-208 | S2-37m exact XMM0/XMM1; S2-37p canonical 256 XMM register pairs |
 | CVTDQ2PS | `NP 0F 5B /r` | SSE2 | XMM, m128; 4×i32 → 4×f32 | 3-211 | S2-37s, bounded register-only |
-| CVTPD2DQ | `F2 0F E6 /r` | SSE2 | XMM, m128; 2×f64 → low 2×i32 | 3-214 | missing |
+| CVTPD2DQ | `F2 0F E6 /r` | SSE2 | XMM, m128; 2×f64 → low 2×i32 | 3-214 | S2-37ah, bounded register-only |
 | CVTPD2PI | `66 0F 2D /r` | SSE2 | XMM, m128 → mm; 2×f64 → 2×i32 | 3-218 | missing |
 | CVTPD2PS | `66 0F 5A /r` | SSE2 | XMM, m128; 2×f64 → low 2×f32 | 3-219 | missing |
 | CVTPI2PD | `66 0F 2A /r` | SSE2 | mm/m64 → XMM; 2×i32 → 2×f64 | 3-223 | missing |
@@ -6792,9 +6798,9 @@ inventory.
 | CVTSS2SD | `F3 0F 5A /r` | SSE2 | XMM, m32; f32 → low f64 | 3-240 | S2-37t, bounded register-only |
 | CVTSS2SI | `F3 0F 2D /r`; `F3 REX.W 0F 2D /r` | SSE | m32 → r32 / r64 | 3-242 | S2-37ab, bounded register-only |
 | CVTTSS2SI | `F3 0F 2C /r`; `F3 REX.W 0F 2C /r` | SSE | m32 → r32 / r64 | 3-255 | S2-37ad, bounded register-only |
-| CVTTPD2DQ | `66 0F E6 /r` | SSE2 | XMM, m128; 2×f64 → low 2×i32 | 3-244 | missing |
+| CVTTPD2DQ | `66 0F E6 /r` | SSE2 | XMM, m128; 2×f64 → low 2×i32 | 3-244 | S2-37ai, bounded register-only |
 | CVTTPD2PI | `66 0F 2C /r` | SSE2 | XMM, m128 → mm; 2×f64 → 2×i32 | 3-248 | missing |
-| CVTTPS2DQ | `F3 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-249 | missing |
+| CVTTPS2DQ | `F3 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-249 | S2-37ag, bounded register-only |
 | CVTTPS2PI | `NP 0F 2C /r` | SSE | XMM, m64 → mm; 2×f32 → 2×i32 | 3-252 | missing |
 | CVTTSD2SI | `F2 0F 2C /r`; `F2 REX.W 0F 2C /r` | SSE2 | m64 → r32 / r64 | 3-253 | S2-37ae, bounded register-only |
 | DIVPD | `66 0F 5E /r` | SSE2 | XMM, m128; 2×f64 | 3-267 | missing |
@@ -13284,3 +13290,154 @@ cross-denial. Memory `m128`, other modes, physical acceptance, and parent
 S2-37/S2-38 stay open; physical hardware evidence is part of the combined final
 stage. Sources: Intel SDM Rev. 093 Vol. 2A CVTPS2DQ pp. 3-225–3-227; Vol. 1
 §§11.5.3.2–3 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+
+#### S2-37ag — canonical Long64 CVTTPS2DQ XMM register pairs
+
+Implement schema-v2 interpreter-only profile `s2-long-cvttps2dq-registers-v1`
+for all 256 canonical Long64 XMM destination/source pairs: `F3 0F 5B /r`,
+ModR/M.mod=3, and exactly one REX `41`, `44`, or `45` after F3 when either
+register index is 8–15. Reject memory, REX.W/X/40, reordered/repeated or other
+prefixes, trailing bytes, VEX and EVEX as local profile refusals. Keep runtime
+admission separate from CVTPS2DQ and CVTDQ2PS; JIT/native/C/fragment/generic
+paths remain closed.
+
+Snapshot all four raw binary32 source lanes. Convert each to signed i32 by
+truncating toward zero regardless of MXCSR.RC, preserve RC, and range-check
+after truncation. Masked invalid returns integer indefinite `0x80000000`; exact
+−2^31 is valid. Aggregate IE from invalid lanes and PE only from valid inexact
+lanes. If any new IE is unmasked, commit IE and fault before adding new PE from
+other lanes. With IM set, invalid lanes do not suppress PE from valid inexact
+lanes; commit IE|PE and let PM control the post-computation fault. Preserve old
+sticky bits. Only new unmasked IE/PE faults; suppress the full XMM destination,
+RIP advance and retirement, then deliver #XM with OSXMMEXCPT or SIMD-generated
+#UD otherwise. The conversion raises no DE; this local profile rejects DAZ and
+ignores FTZ.
+
+Fetch the full instruction before SSE2/EM/OSFXSR #UD and then TS #NM gates at
+CPL0–3. No data-memory callback is permitted. The independent schema oracle
+parses raw `u32` values and performs TowardZero integer conversion without
+production helpers or host floating point. Cover every register pair, RC
+invariance, signed fractions/bounds, subnormals, NaN/infinity, IE/PE lane order,
+old sticky flags, the full four-lane `{none,IE,PE}` × control matrix,
+atomicity, gates/fetch/CPL/STOP/budget, malformed input, metadata tampering and
+backend denial. Memory sources, other modes, physical acceptance and parent
+S2-37/S2-38 remain open. Hardware evidence belongs to the combined final stage.
+Source: Intel SDM Rev. 093 Vol. 2A CVTTPS2DQ pp. 3-249–3-251 and Vol. 1
+§§11.5.3.2–3 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+
+
+#### S2-37ah — canonical Long64 CVTPD2DQ XMM register pairs
+
+Implement strict schema-v2 interpreter-only profile
+`s2-long-cvtpd2dq-registers-v1` for all 256 canonical Long64 XMM
+destination/source pairs: `F2 0F E6 /r`, ModR/M.mod=3, with exactly one
+REX `41`, `44`, or `45` after F2 only when either index is extended. Reject
+memory, noncanonical/reordered/repeated prefixes, REX.W/X/40, trailing bytes,
+VEX and EVEX. Keep profile admission separate from F3 `CVTDQ2PD`; generic,
+JIT, native, C and fragment paths remain closed.
+
+Snapshot both raw binary64 source lanes before conversion. Round to signed i32
+using MXCSR.RC, then range-check. Masked invalid yields `0x80000000`; exact
+−2^31 remains valid. Aggregate IE and PE across packed lanes. A newly
+unmasked IE commits IE and faults before PE; if IE is masked, PE from valid
+inexact lanes can aggregate with IE. Preserve old sticky flags. Unmasked new IE
+or PE suppresses the complete XMM destination, RIP and retirement. On success,
+the two signed i32 results occupy destination bits 0–63 and destination bits
+64–127 are zero; a fault preserves all 128 destination bits. Full fetch
+precedes SSE2/EM/OSFXSR #UD and TS #NM at CPL0–3; no data callbacks occur.
+The profile may refuse DAZ/reserved MXCSR bits; FTZ is irrelevant.
+
+Use an independent raw-u64 oracle. Cover all 256 pairs, alias/source snapshot,
+two-lane event × RC × IM/PM × OSXMMEXCPT × old IE/PE matrix (1,152 cases),
+rounding/range boundaries, IE-before-PE lane order, masked aggregation,
+atomicity, gates/fetch/CPL/STOP/budget, malformed input, metadata tampering and
+backend cross-denial. Memory m128, other modes, physical acceptance and parent
+S2-37/S2-38 remain open. Sources: Intel SDM Rev. 093 Vol. 2A CVTPD2DQ
+pp. 3-214–3-217 and Vol. 1 §§11.5.3.2–3
+([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+
+
+#### S2-37ai — canonical Long64 CVTTPD2DQ XMM register pairs
+
+Implement strict schema-v2 interpreter-only profile
+`s2-long-cvttpd2dq-registers-v1` for all 256 canonical Long64 XMM
+destination/source pairs: `66 0F E6 /r`, ModR/M.mod=3, with exactly one
+REX `41`, `44`, or `45` after 66 only when either index is extended. Reject
+memory, noncanonical/reordered/repeated prefixes, REX.W/X/40, trailing bytes,
+VEX and EVEX. Keep profile admission separate from F2 `CVTPD2DQ` and F3
+`CVTDQ2PD`; JIT, native, C, fragment and generic paths remain closed.
+
+Snapshot both raw binary64 source lanes before conversion. Truncate to signed
+i32 toward zero independently of MXCSR.RC and preserve RC, then range-check.
+Masked invalid yields `0x80000000`; exact −2^31 remains valid. Aggregate IE and
+PE across packed lanes. A newly unmasked IE commits IE and faults before PE; if
+IE is masked, PE from valid inexact lanes can aggregate with IE. Preserve old
+sticky flags. Unmasked new IE or PE suppresses the complete XMM destination,
+RIP and retirement. On success the two signed i32 results occupy the
+destination low 64 bits and its high 64 bits are zero. The profile may refuse
+DAZ/reserved MXCSR; FTZ is irrelevant.
+
+Full fetch precedes SSE2/EM/OSFXSR #UD and TS #NM at CPL0–3; no data callbacks
+occur. The independent raw-u64 oracle uses TowardZero integer conversion with
+no production conversion or host FP. Cover all 256 pairs, RC invariance,
+signed fractions/bounds, subnormal, NaN/infinity, IE/PE lane priority, masked
+aggregation, atomicity, gate/fetch/CPL/STOP/budget, malformed input, metadata
+tampering and backend cross-denial. Memory m128, other modes, physical
+acceptance and parent S2-37/S2-38 remain open. Sources: Intel SDM Rev. 093 Vol.
+2A CVTTPD2DQ pp. 3-244–3-247 and Vol. 1 §§11.5.3.2–3
+([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+
+
+#### S2-37aj — canonical Long64 SQRTSS XMM register pairs
+
+Implement strict schema-v2 interpreter-only profile `s2-long-sqrtss-registers-v1` for all 256 canonical Long64 XMM destination/source pairs: `F3 0F 51 /r`, ModR/M.mod=3. Extended indices require exactly REX `41`, `44`, or `45` immediately after F3; low-register forms use length 4 and extended forms length 5. Reject memory, REX.W/X/40 (including redundant bare REX), duplicate/reordered prefixes, trailing bytes, VEX and EVEX. Keep JIT/native/C/fragment and generic dispatch closed.
+
+Snapshot source low32 before write, use MXCSR.RC, preserve destination high96 and unrelated state. DAZ and reserved MXCSR bits may be refused; all four RC modes, FTZ, six exception masks and sticky bits are accepted. For DAZ=0, positive subnormal input raises precomputation DE; a masked DE allows computation to continue and may add postcomputation PE. A negative nonzero input (including negative subnormal and negative infinity) takes SQRTSS's terminal invalid-result path: it raises IE only, does not also consider DE even when IM masks IE, and produces the Intel indefinite `0xffc00000` when masked. SNaN is quieted and raises IE; QNaN passes without IE under the local raw helper's sign/payload-preserving policy. Do not claim a hardware-specific NaN payload policy. Positive finite inexact results raise PE and follow MXCSR.RC. FTZ does not affect this result domain because every positive finite square root is normal.
+
+Commit sticky flags before unmasked SIMD #XM when OSXMMEXCPT=1 or SIMD-generated #UD otherwise. SQRTSS invalid negative inputs take the terminal IE path and do not also report DE; for positive subnormals, unmasked DE stops before computation, so no PE is committed. Unmasked PE is postcompute. Every unmasked outcome preserves destination, RIP and retirement. Full instruction fetch precedes SSE/EM/OSFXSR #UD and TS #NM at CPL0–3; this profile issues no data callbacks. Use an independent raw-u32 integer-square-root oracle, covering all register pairs, RC, input classes, pre/post exception ordering, masks/stickies, gates, atomicity, malformed encodings, result tampering and backend denial. Memory forms, other execution modes, physical acceptance and parent S2-37/S2-38 remain open. Sources: Intel SDM Rev. 093 Vol. 2B SQRTSS pp. 4-669–4-670; Vol. 1 §4.9.2 and §§11.5.2.1–.2, 11.5.3.1–.2; Vol. 3A Table 7-8; Floating-Point Reference Sheet v2.13, pp. 1–2.
+
+#### S2-37ak — canonical Long64 SQRTPS XMM register pairs
+
+Implement strict schema-v2 interpreter-only profile `s2-long-sqrtps-registers-v1` for all 256 canonical Long64 XMM destination/source pairs: `0F 51 /r`, ModR/M.mod=3. Low forms are three bytes; extended indices require exactly one REX `41`, `44`, or `45` immediately before `0F`, for length four. Reject `66`/`F2`/`F3`, other/redundant/reordered prefixes, REX.W/X/40, memory, trailing bytes, VEX and EVEX. Keep JIT/native/C/fragment and generic dispatch closed. This instruction uses the SSE availability gate, not SSE2.
+
+Snapshot all four source lanes before writing and replace all 128 destination bits on success. Use MXCSR.RC independently per lane; preserve other architectural state. Reject DAZ and reserved MXCSR bits, accept all RC modes, FTZ, exception masks and prior sticky bits. For each lane, negative nonzero values including negative subnormal and negative infinity take terminal other-invalid IE only; SNaN raises IE, QNaN does not. Positive subnormal contributes pre-DE. Aggregate IE and DE across lanes before deciding whether to compute: if any new pre-event is unmasked, commit all new IE/DE sticky bits and fault without adding any new PE. If all new pre-events are masked, compute all lanes, aggregate PE and then apply PM. Commit all generated sticky bits before #XM when OSXMMEXCPT=1 or SIMD-generated #UD otherwise; any unmasked event suppresses all destination lanes, RIP and retirement. Old sticky bits alone do not fault. FTZ cannot change finite positive square-root outputs, which are normal.
+
+Full fetch precedes SSE/EM/OSFXSR #UD and TS #NM at CPL0–3; no data callbacks occur. Use an independent raw-u32 integer-square-root oracle that performs packed lane classification/aggregation itself, not four architectural SQRTSS executions. Cover all 256 pairs and aliases, four lane positions/orderings, cross-lane IE/DE/PE priority, all exception masks and OSXMMEXCPT, RC/FTZ, sticky flags, NaNs/zeros/infinities/subnormals, full-XMM atomicity, fetch/gates/CPL/STOP/budget/no-callback behavior, malformed bytes, metadata tampering and backend denial. Memory forms, other modes, physical acceptance, S2-37 and S2-38 remain open. Sources: Intel SDM Rev. 093 Vol. 2B SQRTPS pp. 4-664–4-666; Vol. 1 §§11.5.2.1–.2 and 11.5.3.1–.3; Vol. 3A Event 19 and Table 7-8; Floating-Point Reference Sheet v2.13 pp. 1–2.
+
+#### S2-37al — canonical Long64 SQRTPD XMM register pairs
+
+Implement strict schema-v2 interpreter-only profile `s2-long-sqrtpd-registers-v1`
+for all 256 Long64 XMM destination/source pairs using `66 0F 51 /r` and
+ModR/M.mod=3. Low-register forms are four bytes; an extended destination or
+source requires exactly one REX `41`, `44`, or `45` immediately after `66` and
+has length five. Refuse memory, repeated/reordered/other prefixes, REX.W/X/40,
+F2/F3, trailing bytes, VEX and EVEX. Keep JIT/native/C/fragment/generic paths
+closed. SQRTPD uses SSE2/EM/OSFXSR #UD gates after full fetch, followed by TS
+#NM at CPL0–3; it performs no data callbacks.
+
+Snapshot both binary64 lanes before writing and replace the complete 128-bit
+destination only on success. Apply MXCSR.RC independently. The local profile
+rejects DAZ and reserved MXCSR bits, while accepting all RC values, FTZ, masks
+and prior sticky flags. SNaN raises IE and is quieted while preserving its
+source sign and payload under the local raw helper's policy; QNaN passes
+without IE. Negative non-NaN nonzero values (including negative subnormal and
+negative infinity) take the terminal other-invalid path and raise IE only;
+masked invalid produces `0xfff8000000000000`. A positive subnormal contributes
+DE. Aggregate both lanes' IE/DE before calculation. If a
+new pre-event is unmasked, commit all generated IE/DE flags and fault before
+adding any PE. Otherwise compute both lanes and aggregate PE; an unmasked PE
+faults after calculation. Preserve old sticky bits; old flags alone do not
+fault. All unmasked outcomes suppress both destination lanes, RIP advance and
+retirement. FTZ cannot alter nonzero positive square-root outputs because
+those results are normal. The schema oracle independently uses raw-u64
+integer-square-root rounding, not a production helper or host FP.
+
+Focused local tests cover the 256 register pairs, aliasing, packed event
+aggregation and fault atomicity, MXCSR admission, SSE2/EM/OSFXSR/TS and fetch
+ordering, parser refusals, independent oracle classes/RC and a literal runner
+fixture with interpreter-only backend denial. Full project checks and
+independent review are tracked in the report before marking this inventory
+item complete. Physical acceptance, memory forms, other execution modes and
+parent S2-37/S2-38 remain open. Sources: Intel SDM Rev. 093 Vol. 2B SQRTPD
+pp. 4-661–4-663 (Type 2, Table 2-19); Vol. 1 §§11.5.3.1–.3; Vol. 3A Event 19
+and Table 7-8; Intel Floating-Point Reference Sheet v2.13 pp. 1–2.

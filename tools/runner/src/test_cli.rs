@@ -4,8 +4,12 @@ use std::io::{self, Write};
 use std::process::{Command, ExitCode};
 
 use od_isa::execute::{
-    Cvttss2siRegistersControls, run_with_cvttsd2si_registers_controls,
-    run_with_cvttss2si_registers_controls,
+    Cvttpd2dqControls, Cvttps2dqControls, Cvttss2siRegistersControls, SqrtpdControls,
+    SqrtpsControls, SqrtssControls, run_with_cvtpd2dq_register_controls,
+    run_with_cvttpd2dq_register_controls, run_with_cvttps2dq_register_controls,
+    run_with_cvttsd2si_registers_controls, run_with_cvttss2si_registers_controls,
+    run_with_sqrtpd_register_controls, run_with_sqrtps_register_controls,
+    run_with_sqrtss_register_controls,
 };
 use od_isa::{CpuState, ExecutionResult, interpret};
 use od_testkit::case::{Fixture, LoadedFixture};
@@ -518,6 +522,12 @@ fn expected_native_xorpd_oracle(
                 cvtdq2pd_controls: None,
                 cvtdq2ps_controls: None,
                 cvtps2dq_controls: None,
+                cvttps2dq_controls: None,
+                cvtpd2dq_controls: None,
+                cvttpd2dq_controls: None,
+                sqrtss_controls: None,
+                sqrtps_controls: None,
+                sqrtpd_controls: None,
                 cvtss2sd_controls: None,
                 cvtps2pd_controls: None,
                 comiss_ucomiss_controls: None,
@@ -1015,8 +1025,8 @@ fn execute_fixture_v2(
     use od_isa::execute::{
         CmppdControls, CmppsControls, CmpsdControls, CmpssControls, ComisdUcomisdControls,
         ComissUcomissControls, Cr0Profile, Cr4Profile, Cvtdq2pdControls, Cvtdq2psControls,
-        Cvtps2dqControls, Cvtps2pdControls, Cvtsd2siRegistersControls, Cvtsi2sdR32Controls,
-        Cvtsi2sdR64Controls, Cvtsi2ssRegistersControls, Cvtss2sdControls,
+        Cvtpd2dqControls, Cvtps2dqControls, Cvtps2pdControls, Cvtsd2siRegistersControls,
+        Cvtsi2sdR32Controls, Cvtsi2sdR64Controls, Cvtsi2ssRegistersControls, Cvtss2sdControls,
         Cvtss2siRegistersControls, Fxrstor64Cr0Controls, Fxsave64Cr0Controls,
         MaxpdUnmaskedControls, MaxpsUnmaskedControls, MaxsdUnmaskedControls, MaxssUnmaskedControls,
         MinpdUnmaskedControls, MinpsUnmaskedControls, MinsdUnmaskedControls, MinssInvalidControls,
@@ -1580,6 +1590,114 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongCvttps2dqRegistersV1 {
+        let controls = loaded
+            .fixture
+            .cvttps2dq_controls
+            .expect("validated CVTTPS2DQ controls");
+        run_with_cvttps2dq_register_controls(
+            &mut state,
+            memory,
+            config,
+            Cvttps2dqControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
+    } else if loaded.fixture.profile == v2::Profile::LongCvtpd2dqRegistersV1 {
+        let controls = loaded
+            .fixture
+            .cvtpd2dq_controls
+            .expect("validated CVTPD2DQ controls");
+        run_with_cvtpd2dq_register_controls(
+            &mut state,
+            memory,
+            config,
+            Cvtpd2dqControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
+    } else if loaded.fixture.profile == v2::Profile::LongCvttpd2dqRegistersV1 {
+        let controls = loaded
+            .fixture
+            .cvttpd2dq_controls
+            .expect("validated CVTTPD2DQ controls");
+        run_with_cvttpd2dq_register_controls(
+            &mut state,
+            memory,
+            config,
+            Cvttpd2dqControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
+    } else if loaded.fixture.profile == v2::Profile::LongSqrtssRegistersV1 {
+        let controls = loaded
+            .fixture
+            .sqrtss_controls
+            .expect("validated SQRTSS controls");
+        run_with_sqrtss_register_controls(
+            &mut state,
+            memory,
+            config,
+            SqrtssControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
+    } else if loaded.fixture.profile == v2::Profile::LongSqrtpsRegistersV1 {
+        let controls = loaded
+            .fixture
+            .sqrtps_controls
+            .expect("validated SQRTPS controls");
+        run_with_sqrtps_register_controls(
+            &mut state,
+            memory,
+            config,
+            SqrtpsControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
+    } else if loaded.fixture.profile == v2::Profile::LongSqrtpdRegistersV1 {
+        let controls = loaded
+            .fixture
+            .sqrtpd_controls
+            .expect("validated SQRTPD controls");
+        run_with_sqrtpd_register_controls(
+            &mut state,
+            memory,
+            config,
+            SqrtpdControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongCvtps2pdRegistersV1 {
         let controls = loaded
             .fixture
@@ -1931,6 +2049,12 @@ fn execute_fixture_v2(
                 cvtdq2pd_controls: loaded.fixture.cvtdq2pd_controls,
                 cvtdq2ps_controls: loaded.fixture.cvtdq2ps_controls,
                 cvtps2dq_controls: loaded.fixture.cvtps2dq_controls,
+                cvttps2dq_controls: loaded.fixture.cvttps2dq_controls,
+                cvtpd2dq_controls: loaded.fixture.cvtpd2dq_controls,
+                cvttpd2dq_controls: loaded.fixture.cvttpd2dq_controls,
+                sqrtss_controls: loaded.fixture.sqrtss_controls,
+                sqrtps_controls: loaded.fixture.sqrtps_controls,
+                sqrtpd_controls: loaded.fixture.sqrtpd_controls,
                 cvtss2sd_controls: loaded.fixture.cvtss2sd_controls,
                 cvtps2pd_controls: loaded.fixture.cvtps2pd_controls,
                 comiss_ucomiss_controls: loaded.fixture.comiss_ucomiss_controls,
@@ -3109,6 +3233,12 @@ mod tests {
                     cvtdq2pd_controls: input.fixture.cvtdq2pd_controls,
                     cvtdq2ps_controls: input.fixture.cvtdq2ps_controls,
                     cvtps2dq_controls: input.fixture.cvtps2dq_controls,
+                    cvttps2dq_controls: input.fixture.cvttps2dq_controls,
+                    cvtpd2dq_controls: input.fixture.cvtpd2dq_controls,
+                    cvttpd2dq_controls: input.fixture.cvttpd2dq_controls,
+                    sqrtss_controls: input.fixture.sqrtss_controls,
+                    sqrtps_controls: input.fixture.sqrtps_controls,
+                    sqrtpd_controls: input.fixture.sqrtpd_controls,
                     cvtss2sd_controls: input.fixture.cvtss2sd_controls,
                     cvtps2pd_controls: input.fixture.cvtps2pd_controls,
                     comiss_ucomiss_controls: input.fixture.comiss_ucomiss_controls,

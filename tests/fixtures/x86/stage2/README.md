@@ -6541,3 +6541,75 @@ cross-product.
 Only register forms are in scope. Source: Intel SDM Rev. 093 Vol. 2A
 CVTPS2DQ pp. 3-225–3-227 and Vol. 1 §§11.5.3.2–3
 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+
+### S2-37ag canonical CVTTPS2DQ register pairs
+
+`s2_37ag_cvttps2dq_ie_lane0_pe_lane3.case.json` is a literal canonical
+`F3 0F 5B /r` XMM0,XMM1 fixture. Lane 0 contains +2^31 and raises unmasked IE;
+lane 3 contains 1.5 and would raise PE. It checks that IE commits before PE
+from another valid lane, while XMM/RIP and retirement remain unchanged on the
+fault. The schema-v2 runner covers all 256 register pairs and the complete
+four-lane `{none,IE,PE}` event/control matrix, including RC invariance and
+TowardZero results. Only register forms are in scope. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ag--canonical-long64-cvttps2dq-register-pairs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37ag--canonical-long64-cvttps2dq-xmm-register-pairs)
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ag--canonical-long64-cvttps2dq-xmm-register-pairs).
+Source: Intel SDM Rev. 093 Vol. 2A CVTTPS2DQ pp. 3-249–3-251; Vol. 1
+§§11.5.3.2–3 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+
+
+### S2-37ah canonical CVTPD2DQ register pairs
+
+`s2_37ah_cvtpd2dq_ie_lane0_pe_lane1.case.json` is a literal canonical
+`F2 0F E6 /r` XMM0,XMM1 fixture. Lane 0 contains +2^31 and raises unmasked
+IE; lane 1 contains 1.5 and would raise PE. It verifies IE-only sticky status
+and unchanged XMM/RIP with zero retirement on the fault. The runner covers all
+256 register pairs and 1,152 two-lane IE/PE event, rounding, mask,
+OSXMMEXCPT and prior-sticky combinations, including masked-IE PE aggregation,
+alias snapshot, boundaries, profile cross-denial and JIT/native denial. Only
+register forms are in scope. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ah--canonical-long64-cvtpd2dq-xmm-register-pairs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37ah--canonical-long64-cvtpd2dq-xmm-register-pairs)
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ah--cvtpd2dq-register-pair-interpreter-profile-2026-10-30).
+Source: Intel SDM Rev. 093 Vol. 2A CVTPD2DQ pp. 3-214–3-217 and Vol. 1
+§§11.5.3.2–3 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+
+
+### S2-37ai canonical CVTTPD2DQ register pairs
+
+`s2_37ai_cvttpd2dq_ie_lane0_pe_lane1.case.json` is a literal canonical
+`66 0F E6 /r` XMM0,XMM1 fixture. Lane 0 contains +2^31 and raises unmasked
+IE; lane 1 contains 1.5 and would raise PE. It verifies IE-only sticky status
+and unchanged XMM/RIP with zero retirement on the fault. The runner covers all
+256 register pairs and 1,152 two-lane IE/PE/RC, control and prior-sticky
+combinations, including RC invariance, masked-IE PE aggregation, alias snapshot,
+boundaries, profile cross-denial and JIT/native denial. Only register forms
+are in scope. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ai--canonical-long64-cvttpd2dq-xmm-register-pairs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37ai--canonical-long64-cvttpd2dq-xmm-register-pairs)
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ai--cvttpd2dq-register-pair-interpreter-profile-2026-10-30).
+Source: Intel SDM Rev. 093 Vol. 2A CVTTPD2DQ pp. 3-244–3-247 and Vol. 1
+§§11.5.3.2–3 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+
+
+### S2-37aj canonical SQRTSS register-pair profile
+
+`s2_37aj_sqrtss_xmm0_xmm1.case.json` is a literal `F3 0F 51 /r` Long64 register fixture. The schema-v2 interpreter-only profile accepts exactly canonical four-byte low-register and five-byte extended-register encodings for all 256 pairs. It snapshots source low32, uses MXCSR.RC, preserves destination high96 and unrelated state, and aggregates masked IE/DE/PE while delivering unmasked priority outcomes atomically. The fixture contains an exact square-root success and high-bit sentinels; runner coverage exercises register routing, input classes, controls, sticky status and JIT/native denial. DAZ/reserved MXCSR values, memory forms, other modes and physical acceptance remain outside scope. NaN payload behavior is a local raw-helper policy, not a hardware payload claim. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37aj--canonical-long64-sqrtss-xmm-register-pairs), [plan](../../../../docs/plans/STAGE_2.md#s2-37aj--canonical-long64-sqrtss-xmm-register-pairs) and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37aj--sqrtss-register-pair-interpreter-profile-2026-10-30). Sources: Intel SDM Rev. 093 Vol. 2B SQRTSS pp. 4-669–4-670; Vol. 1 §4.9.2, §§11.5.2.1–.2 and 11.5.3.1; Vol. 3A Table 7-8; Floating-Point Reference Sheet v2.13.
+
+
+### S2-37ak canonical SQRTPS register-pair profile
+
+`s2_37ak_sqrtps_xmm0_xmm1.case.json` is a literal `0F 51 /r` Long64 XMM0,XMM1 fixture with four source lanes (4.0, 2.0, 1.0, 0.25). It exercises exact and inexact lane results, MXCSR.PE, full 128-bit destination replacement, and interpreter-only backend admission. The strict schema-v2 profile covers all 256 register pairs and canonical three-/four-byte forms; DAZ/reserved MXCSR values, memory forms, other modes and physical acceptance are out of scope. Runner coverage exercises all lane positions and IE/DE/PE permutations across IM/DM/PM/OSXMMEXCPT, all four RC values, FTZ, prior sticky flags, NaN/zero/infinity/subnormal/invalid inputs, gate/fetch/atomicity behavior and JIT/native denial. When a pre-event in any lane is unmasked, all generated IE/DE flags commit before fault and no PE is added. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ak--canonical-long64-sqrtps-xmm-register-pairs), [plan](../../../../docs/plans/STAGE_2.md#s2-37ak--canonical-long64-sqrtps-xmm-register-pairs) and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ak--sqrtps-register-pair-interpreter-profile-2026-10-30). Sources: Intel SDM Rev. 093 Vol. 2B SQRTPS pp. 4-664–4-666; Vol. 1 §§11.5.2.1–.2 and 11.5.3.1–.3; Vol. 3A Event 19/Table 7-8; Floating-Point Reference Sheet v2.13.
+
+### S2-37al canonical SQRTPD register-pair profile
+
+`s2_37al_sqrtpd_xmm0_xmm1.case.json` is a literal `66 0F 51 /r` Long64
+XMM0,XMM1 fixture. Its two binary64 lanes are 2.0 and 4.0, exercising an
+inexact and exact square root, MXCSR.PE, full 128-bit destination replacement,
+and interpreter-only execution. The strict schema-v2 profile covers all 256
+register pairs and canonical four-/five-byte encodings. DAZ/reserved MXCSR,
+memory forms, other modes and physical acceptance are out of scope. Local tests
+exercise lane order, aggregate IE/DE before PE, mask/OSXMMEXCPT behavior, RC,
+FTZ, prior sticky flags, MXCSR rejection, gate/fetch ordering and JIT/native
+denial. Sources: Intel SDM Rev. 093 Vol. 2B SQRTPD pp. 4-661–4-663 (Type 2,
+Table 2-19); Vol. 1 §§11.5.3.1–.3; Vol. 3A Event 19/Table 7-8; Floating-Point
+Reference Sheet v2.13 pp. 1–2. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37al--canonical-long64-sqrtpd-xmm-register-pairs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37al--canonical-long64-sqrtpd-xmm-register-pairs),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37al--sqrtpd-register-pair-interpreter-profile-2026-10-30).
