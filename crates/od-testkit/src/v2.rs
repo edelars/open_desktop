@@ -243,6 +243,8 @@ pub enum Profile {
     LongMinpdUnmaskedDenormalV1,
     #[serde(rename = "s2-long-minps-unmasked-denormal-v1")]
     LongMinpsUnmaskedDenormalV1,
+    #[serde(rename = "s2-long-maxps-unmasked-denormal-v1")]
+    LongMaxpsUnmaskedDenormalV1,
     #[serde(rename = "s2-long-maxpd-unmasked-denormal-v1")]
     LongMaxpdUnmaskedDenormalV1,
     #[serde(rename = "s2-long-native-xorpd-xmm0-xmm1-v1")]
@@ -1102,6 +1104,7 @@ impl IntegerState {
                     | Profile::LongMaxsdUnmaskedDenormalV1
                     | Profile::LongMinpdUnmaskedDenormalV1
                     | Profile::LongMinpsUnmaskedDenormalV1
+                    | Profile::LongMaxpsUnmaskedDenormalV1
                     | Profile::LongMaxpdUnmaskedDenormalV1
                     | Profile::LongAndpdRegV1
                     | Profile::LongOrpdRegV1
@@ -1233,6 +1236,7 @@ impl IntegerState {
                     | Profile::LongMaxsdUnmaskedDenormalV1
                     | Profile::LongMinpdUnmaskedDenormalV1
                     | Profile::LongMinpsUnmaskedDenormalV1
+                    | Profile::LongMaxpsUnmaskedDenormalV1
                     | Profile::LongMaxpdUnmaskedDenormalV1
                     | Profile::LongNativeXorpdXmm0Xmm1V1
                     | Profile::LongAndpdRegV1
@@ -1414,6 +1418,7 @@ impl IntegerState {
                 | Profile::LongMaxsdUnmaskedDenormalV1
                 | Profile::LongMinpdUnmaskedDenormalV1
                 | Profile::LongMinpsUnmaskedDenormalV1
+                | Profile::LongMaxpsUnmaskedDenormalV1
                 | Profile::LongMaxpdUnmaskedDenormalV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -1546,6 +1551,7 @@ impl IntegerState {
                 | Profile::LongMaxsdUnmaskedDenormalV1
                 | Profile::LongMinpdUnmaskedDenormalV1
                 | Profile::LongMinpsUnmaskedDenormalV1
+                | Profile::LongMaxpsUnmaskedDenormalV1
                 | Profile::LongMaxpdUnmaskedDenormalV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
@@ -1860,6 +1866,7 @@ impl IntegerState {
             | Profile::LongMaxsdUnmaskedDenormalV1
             | Profile::LongMinpdUnmaskedDenormalV1
             | Profile::LongMinpsUnmaskedDenormalV1
+            | Profile::LongMaxpsUnmaskedDenormalV1
             | Profile::LongMaxpdUnmaskedDenormalV1
             | Profile::LongNativeXorpdXmm0Xmm1V1
             | Profile::LongAndpdRegV1
@@ -2004,6 +2011,7 @@ impl IntegerState {
                 | Profile::LongMaxsdUnmaskedDenormalV1
                 | Profile::LongMinpdUnmaskedDenormalV1
                 | Profile::LongMinpsUnmaskedDenormalV1
+                | Profile::LongMaxpsUnmaskedDenormalV1
                 | Profile::LongMaxpdUnmaskedDenormalV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
@@ -2154,6 +2162,7 @@ impl IntegerState {
                 | Profile::LongMaxsdUnmaskedDenormalV1
                 | Profile::LongMinpdUnmaskedDenormalV1
                 | Profile::LongMinpsUnmaskedDenormalV1
+                | Profile::LongMaxpsUnmaskedDenormalV1
                 | Profile::LongMaxpdUnmaskedDenormalV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
@@ -2313,6 +2322,7 @@ impl IntegerState {
                 | Profile::LongMaxsdUnmaskedDenormalV1
                 | Profile::LongMinpdUnmaskedDenormalV1
                 | Profile::LongMinpsUnmaskedDenormalV1
+                | Profile::LongMaxpsUnmaskedDenormalV1
                 | Profile::LongMaxpdUnmaskedDenormalV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
@@ -2479,6 +2489,7 @@ impl IntegerState {
                 | Profile::LongMaxsdUnmaskedDenormalV1
                 | Profile::LongMinpdUnmaskedDenormalV1
                 | Profile::LongMinpsUnmaskedDenormalV1
+                | Profile::LongMaxpsUnmaskedDenormalV1
                 | Profile::LongMaxpdUnmaskedDenormalV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
@@ -2982,6 +2993,7 @@ impl IntegerState {
                 | Profile::LongMaxsdUnmaskedDenormalV1
                 | Profile::LongMinpdUnmaskedDenormalV1
                 | Profile::LongMinpsUnmaskedDenormalV1
+                | Profile::LongMaxpsUnmaskedDenormalV1
                 | Profile::LongMaxpdUnmaskedDenormalV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -3116,6 +3128,7 @@ impl IntegerState {
                 | Profile::LongMaxsdUnmaskedDenormalV1
                 | Profile::LongMinpdUnmaskedDenormalV1
                 | Profile::LongMinpsUnmaskedDenormalV1
+                | Profile::LongMaxpsUnmaskedDenormalV1
                 | Profile::LongMaxpdUnmaskedDenormalV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -3273,6 +3286,7 @@ impl IntegerState {
                 | Profile::LongMaxsdUnmaskedDenormalV1
                 | Profile::LongMinpdUnmaskedDenormalV1
                 | Profile::LongMinpsUnmaskedDenormalV1
+                | Profile::LongMaxpsUnmaskedDenormalV1
                 | Profile::LongMaxpdUnmaskedDenormalV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
@@ -3396,6 +3410,7 @@ impl IntegerState {
                 | Profile::LongMaxsdUnmaskedDenormalV1
                 | Profile::LongMinpdUnmaskedDenormalV1
                 | Profile::LongMinpsUnmaskedDenormalV1
+                | Profile::LongMaxpsUnmaskedDenormalV1
                 | Profile::LongMaxpdUnmaskedDenormalV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
@@ -3621,6 +3636,8 @@ pub struct Fixture {
     /// Immutable MINPS gate inputs, echoed only for S2-38k.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minps_unmasked_controls: Option<MinpsUnmaskedControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maxps_unmasked_controls: Option<MaxpsUnmaskedControlSnapshot>,
     /// Immutable MAXPD gate inputs, echoed only for S2-38j.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maxpd_unmasked_controls: Option<MaxpdUnmaskedControlSnapshot>,
@@ -3705,6 +3722,16 @@ pub struct MinpdUnmaskedControlSnapshot {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MinpsUnmaskedControlSnapshot {
+    pub sse_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MaxpsUnmaskedControlSnapshot {
     pub sse_available: bool,
     pub cr0_em: bool,
     pub cr0_ts: bool,
@@ -5050,6 +5077,55 @@ impl Fixture {
                 "only valid for the MINPS unmasked-denormal profile",
             ));
         }
+        if self.profile == Profile::LongMaxpsUnmaskedDenormalV1 {
+            let _ = self.maxps_unmasked_controls.ok_or_else(|| {
+                invalid("maxps_unmasked_controls", "required by the MAXPS profile")
+            })?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by the MAXPS profile"))?;
+            let start = self.initial_state.rip.get();
+            if code.guest_address.get() != start
+                || code.length != 3
+                || !code.permissions.execute
+                || !code.initial_bytes_hex.eq_ignore_ascii_case("0f5fc1")
+                || self.memory.len() != 1
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(3)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "MAXPS fixtures require exactly 0F 5F C1, one executable code mapping, budget 1, and stop RIP entry+3",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .expect("MAXPS SSE state required above")
+                .mxcsr
+                .get();
+            if mxcsr & 0xffff_0000 != 0
+                || mxcsr & 0x0000_1e00 != 0x0000_1e00
+                || mxcsr & 0x0000_8040 != 0
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "MAXPS requires reserved bits clear, ZE/OE/UE/PE masks set, and DAZ/FTZ clear; IM, DM, RC and sticky status may vary",
+                ));
+            }
+        } else if self.maxps_unmasked_controls.is_some() {
+            return Err(invalid(
+                "maxps_unmasked_controls",
+                "only valid for the MAXPS unmasked-denormal profile",
+            ));
+        }
         if self.profile == Profile::LongMaxpdUnmaskedDenormalV1 {
             let _ = self.maxpd_unmasked_controls.ok_or_else(|| {
                 invalid("maxpd_unmasked_controls", "required by the MAXPD profile")
@@ -5421,6 +5497,7 @@ impl Fixture {
                 Profile::LongMaxsdUnmaskedDenormalV1 => maxsd_register_masked_length(&code_bytes),
                 Profile::LongMinpdUnmaskedDenormalV1 => minpd_register_masked_length(&code_bytes),
                 Profile::LongMinpsUnmaskedDenormalV1 => minps_exact_unmasked_length(&code_bytes),
+                Profile::LongMaxpsUnmaskedDenormalV1 => maxps_exact_unmasked_length(&code_bytes),
                 Profile::LongMaxpdUnmaskedDenormalV1 => maxpd_register_masked_length(&code_bytes),
                 Profile::LongMinsdMaskedRegV1 => minsd_register_masked_length(&code_bytes),
                 Profile::LongMaxsdMaskedRegV1 => maxsd_register_masked_length(&code_bytes),
@@ -7331,6 +7408,7 @@ impl Fixture {
             maxsd_unmasked_controls: None,
             minpd_unmasked_controls: None,
             minps_unmasked_controls: None,
+            maxps_unmasked_controls: None,
             maxpd_unmasked_controls: None,
             fxsave64_cr0_controls: None,
             fxrstor64_cr0_controls: None,
@@ -7419,6 +7497,8 @@ pub struct Snapshot {
     /// Immutable MINPS gate inputs, echoed only for S2-38k.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minps_unmasked_controls: Option<MinpsUnmaskedControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maxps_unmasked_controls: Option<MaxpsUnmaskedControlSnapshot>,
     /// Immutable MAXPD gate inputs, echoed only for S2-38j.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maxpd_unmasked_controls: Option<MaxpdUnmaskedControlSnapshot>,
@@ -7640,6 +7720,19 @@ impl RunResult {
                 "only valid for the MINPS profile",
             ));
         }
+        if self.profile == Profile::LongMaxpsUnmaskedDenormalV1 {
+            if snapshot.maxps_unmasked_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.maxps_unmasked_controls",
+                    "required by the MAXPS profile",
+                ));
+            }
+        } else if snapshot.maxps_unmasked_controls.is_some() {
+            return Err(invalid(
+                "snapshot.maxps_unmasked_controls",
+                "only valid for the MAXPS profile",
+            ));
+        }
         if self.profile == Profile::LongMaxpdUnmaskedDenormalV1 {
             if snapshot.maxpd_unmasked_controls.is_none() {
                 return Err(invalid(
@@ -7839,6 +7932,22 @@ impl RunResult {
             }
             if loaded.fixture.profile == Profile::LongMinpsUnmaskedDenormalV1 {
                 validate_minps_unmasked_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.maxps_unmasked_controls,
+                value.maxps_unmasked_controls,
+            ) {
+                (Profile::LongMaxpsUnmaskedDenormalV1, Some(input), Some(output))
+                    if input == output => {}
+                (Profile::LongMaxpsUnmaskedDenormalV1, _, _) => {
+                    return Err(FormatError::CaseMismatch("maxps_unmasked_controls"));
+                }
+                (_, None, None) => {}
+                _ => return Err(FormatError::CaseMismatch("maxps_unmasked_controls")),
+            }
+            if loaded.fixture.profile == Profile::LongMaxpsUnmaskedDenormalV1 {
+                validate_maxps_unmasked_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
@@ -9254,6 +9363,150 @@ fn validate_minps_unmasked_result(
     Ok(())
 }
 
+fn independent_maxps_result_bits(lhs: u32, rhs: u32) -> u32 {
+    let is_nan = |bits: u32| (bits >> 23) & 0xff == 0xff && bits & 0x7f_ffff != 0;
+    if is_nan(lhs) || is_nan(rhs) || lhs == rhs || lhs & !(1 << 31) == 0 && rhs & !(1 << 31) == 0 {
+        return rhs;
+    }
+    if f32::from_bits(lhs) > f32::from_bits(rhs) {
+        lhs
+    } else {
+        rhs
+    }
+}
+
+fn validate_maxps_unmasked_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .maxps_unmasked_controls
+        .ok_or(FormatError::CaseMismatch("maxps_unmasked_controls"))?;
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let lhs_bytes = decode_bytes(&initial_sse.xmm[0])?;
+    let rhs_bytes = decode_bytes(&initial_sse.xmm[1])?;
+    let mut expected_xmm0 = lhs_bytes.clone();
+    let mut lane_invalid = [false; 4];
+    let mut lane_denormal = [false; 4];
+    for lane in 0..4 {
+        let offset = lane * 4;
+        let lhs = u32::from_le_bytes(
+            lhs_bytes[offset..offset + 4]
+                .try_into()
+                .map_err(|_| FormatError::CaseMismatch("state.sse.xmm"))?,
+        );
+        let rhs = u32::from_le_bytes(
+            rhs_bytes[offset..offset + 4]
+                .try_into()
+                .map_err(|_| FormatError::CaseMismatch("state.sse.xmm"))?,
+        );
+        lane_invalid[lane] = [lhs, rhs]
+            .into_iter()
+            .any(|bits| ((bits >> 23) & 0xff) == 0xff && bits & 0x7f_ffff != 0);
+        lane_denormal[lane] = [lhs, rhs]
+            .into_iter()
+            .any(|bits| ((bits >> 23) & 0xff) == 0 && bits & 0x7f_ffff != 0);
+        if let Some(encoded) = fixture.case_id.strip_prefix("s2_38l_maxps_matrix_") {
+            let fields: Vec<_> = encoded.split('_').collect();
+            let actual = match (lane_invalid[lane], lane_denormal[lane]) {
+                (false, false) => "n",
+                (true, false) => "i",
+                (false, true) => "d",
+                (true, true) => "id",
+            };
+            if fields.len() != 8 || fields[lane + 1] != actual {
+                return Err(FormatError::CaseMismatch("MAXPS lane class in case_id"));
+            }
+        }
+        expected_xmm0[offset..offset + 4]
+            .copy_from_slice(&independent_maxps_result_bits(lhs, rhs).to_le_bytes());
+    }
+    let mxcsr = initial_sse.mxcsr.get() as u32;
+    let any_invalid = lane_invalid.into_iter().any(|flag| flag);
+    let any_denormal = lane_denormal.into_iter().any(|flag| flag);
+    let im = mxcsr & (1 << 7) != 0;
+    let dm = mxcsr & (1 << 8) != 0;
+    let unmasked = any_invalid && !im || any_denormal && !dm;
+    let masked_de = (0..4).any(|lane| lane_denormal[lane] && !lane_invalid[lane]);
+    let reported_de = if unmasked { any_denormal } else { masked_de };
+    let gate_vector = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let fault_vector =
+        gate_vector.or_else(|| unmasked.then_some(if controls.cr4_osxmmexcpt { 19 } else { 6 }));
+    if !matches!(
+        (fault_vector.is_some(), fixture.expected_exit),
+        (true, ExpectedExit::Exception) | (false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("MAXPS expected exit"));
+    }
+    let mut expected_state = fixture.initial_state.clone();
+    if gate_vector.is_none() {
+        let sse = expected_state
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        sse.mxcsr = HexU64(u64::from(
+            mxcsr | u32::from(any_invalid) | (u32::from(reported_de) << 1),
+        ));
+        if fault_vector.is_none() {
+            sse.xmm[0] = crate::memory::encode_bytes(&expected_xmm0);
+            expected_state.rip = HexU64(fixture.initial_state.rip.get() + 3);
+        }
+    }
+    if snapshot.state != expected_state
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory
+            != fixture
+                .memory
+                .iter()
+                .map(|region| MemoryRegionSnapshot {
+                    region_id: region.region_id.clone(),
+                    guest_address: region.guest_address,
+                    bytes_hex: region.initial_bytes_hex.clone(),
+                })
+                .collect::<Vec<_>>()
+    {
+        return Err(FormatError::CaseMismatch("MAXPS output state"));
+    }
+    let expected_count = if fault_vector.is_some() { 0 } else { 1 };
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(expected_count),
+        })
+    {
+        return Err(FormatError::CaseMismatch("MAXPS retirement count"));
+    }
+    match (fault_vector, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == Observation::Unavailable {
+                    reason: "exception has no architectural error code".into(),
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("MAXPS outcome/exception")),
+    }
+    Ok(())
+}
+
 fn independent_maxpd_result_bits(lhs: u64, rhs: u64) -> u64 {
     let is_nan = |bits: u64| (bits >> 52) & 0x7ff == 0x7ff && bits & ((1u64 << 52) - 1) != 0;
     if is_nan(lhs)
@@ -9781,6 +10034,15 @@ pub fn compare(
     }
     if a.minpd_unmasked_controls != b.minpd_unmasked_controls {
         differences.push("minpd_unmasked_controls".into());
+    }
+    if a.maxps_unmasked_controls != b.maxps_unmasked_controls {
+        differences.push("maxps_unmasked_controls".into());
+    }
+    if a.maxps_unmasked_controls != loaded.fixture.maxps_unmasked_controls {
+        differences.push("left.maxps_unmasked_controls".into());
+    }
+    if b.maxps_unmasked_controls != loaded.fixture.maxps_unmasked_controls {
+        differences.push("right.maxps_unmasked_controls".into());
     }
     if a.minps_unmasked_controls != b.minps_unmasked_controls {
         differences.push("minps_unmasked_controls".into());
@@ -11388,6 +11650,10 @@ fn minps_register_masked_length(code_bytes: &str) -> Option<u32> {
 
 fn minps_exact_unmasked_length(code_bytes: &str) -> Option<u32> {
     (decode_bytes(code_bytes).ok()?.as_slice() == [0x0f, 0x5d, 0xc1]).then_some(3)
+}
+
+fn maxps_exact_unmasked_length(code_bytes: &str) -> Option<u32> {
+    (decode_bytes(code_bytes).ok()?.as_slice() == [0x0f, 0x5f, 0xc1]).then_some(3)
 }
 
 fn maxps_register_masked_length(code_bytes: &str) -> Option<u32> {

@@ -17292,3 +17292,44 @@ contract](../specs/CPU_CONTRACT.md#s2-38k--exact-minps-unmasked-invalid-and-deno
 [plan](../plans/STAGE_2.md#s2-38k--exact-long64-minps-xmm0xmm1-unmasked-invalid-and-denormal-exit),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38k-local-minps-unmasked-invalid-and-denormal),
 and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38k-exact-minps-unmasked-imdm-profile).
+
+## S2-38l exact Long64 MAXPS unmasked IM/DM profile
+
+Added the separate interpreter-only schema-v2 profile
+`s2-long-maxps-unmasked-denormal-v1` for exact `0F 5F C1`. It snapshots both
+XMM inputs and computes all four raw binary32 lane results/events before global
+disposition. Any newly unmasked IE/DE retains full XMM0 and RIP, records every
+discovered raw IE/DE sticky bit, retires zero instructions and reports one #XM
+or #UD according to CR4.OSXMMEXCPT. Masked completion filters DE only in lanes
+that also raised IE and commits all of XMM0 atomically. MAXPS result selection
+preserves source 2 for NaNs, source-2 SNaN bits, equal values and signed-zero
+ties; finite unequal values select source 1 only when greater. Existing masked
+MAXPS/MINPS behavior remains unchanged.
+
+The ISA test covers all 2048 `{none,I,D,I+D}^4 × IM × DM × OSXMMEXCPT`
+combinations and all 32 SSE/CR0/CR4 control combinations across CPL0–3. It
+also checks gate precedence, truncation, exact-form and prefix negatives, no
+data-memory callbacks, zero budget, initial STOP and StopRequested. A positive
+exact-form case completes without x87 state.
+Thirty-two schema-v2 fixtures include sixteen lane/control anchors and sixteen
+selector/status anchors. The independent validator uses a separate raw-bit MAX
+comparator, verifies the encoded matrix lane classes against the raw operands,
+and checks exception, status, retirement and full-state results. The runner
+asserts literal XMM output bits for all sixteen selector anchors and rejects a
+fixture whose lane-class label was tampered. Independent Sol medium review
+reported no remaining findings. Runner coverage
+confirms JIT/native denial and rejects a tampered lane-class label.
+
+Verification passed: focused MAXPS unmasked ISA tests (2), full `od-isa` tests
+(1476), the MAXPS fixture integration test (1), full schema-v2 runner fixture
+suite (386), `od-testkit` tests (408), masked MAXPS/MINPS regressions (4 each),
+MINPD/MAXPD unmasked regressions (2 each), MAXSS/MINSS unmasked regressions
+(2/3), `cargo fmt --all -- --check`, `cargo check --workspace --all-targets
+--offline`, `git diff --check`, and `graphify update .`. Layout validation reports
+only the existing ISSUE-023 checkout pointer and two missing historical oracle
+manifest links. No physical or Mac mini execution was performed. S2-00 and
+Stage 2 remain open. Normative sources: Intel SDM Rev. 093 Vol. 2B MAXPS pp.
+4-8–4-10, Vol. 2A Table 2-19, and Vol. 1 §§4.9.2, 11.5.3.1–3. See the [CPU
+contract](../specs/CPU_CONTRACT.md#s2-38l--exact-maxps-unmasked-invalid-and-denormal-exit),
+[plan](../plans/STAGE_2.md), [fixture notes](../../tests/fixtures/x86/stage2/README.md),
+and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38l-exact-maxps-unmasked-imdm-profile).

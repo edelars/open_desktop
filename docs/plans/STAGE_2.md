@@ -506,6 +506,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38i | Exact Long64 `MINPD XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, 2-lane raw exception aggregation and atomic XMM suppression; interpreter-only | S2-37k, S2-38h control policy after MINPD-specific SDM review; independent review clean |
 | [x] | S2-38j | Exact Long64 `MAXPD XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, MAXPD-specific raw selector and 2-lane exception aggregation; interpreter-only | S2-37l, S2-38i control policy after MAXPD-specific SDM review; independent review clean |
 | [x] | S2-38k | Exact Long64 `MINPS XMM0,XMM1` unmasked IM/DM exit; strict schema-v2 profile, four-lane raw event aggregation and atomic XMM suppression; interpreter-only | S2-37g, S2-38j control policy after MINPS-specific SDM review; independent Sol medium review clean |
+| [x] | S2-38l | Exact Long64 `MAXPS XMM0,XMM1` unmasked IM/DM exit; distinct strict schema-v2 profile, four-lane raw event aggregation and atomic XMM suppression; interpreter-only | S2-37h, S2-38k control policy after MAXPS-specific Rev. 093 review; independent Sol medium review clean |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |

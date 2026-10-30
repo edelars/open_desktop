@@ -146,6 +146,16 @@ pub struct MinpsUnmaskedControls {
     pub cr4_osxmmexcpt: bool,
 }
 
+/// Explicit SSE and exception-delivery controls for exact S2-38l MAXPS.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MaxpsUnmaskedControls {
+    pub sse_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
 /// Explicit SSE2 and exception-delivery controls for exact S2-38j MAXPD.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MaxpdUnmaskedControls {
@@ -229,6 +239,7 @@ struct ExecutionProfiles<'a> {
     maxsd_unmasked: Option<MaxsdUnmaskedControls>,
     minpd_unmasked: Option<MinpdUnmaskedControls>,
     minps_unmasked: Option<MinpsUnmaskedControls>,
+    maxps_unmasked: Option<MaxpsUnmaskedControls>,
     maxpd_unmasked: Option<MaxpdUnmaskedControls>,
     fx_cr0: Option<FxCr0GateControls>,
     unmasked_minss_denormal: bool,
@@ -1027,6 +1038,7 @@ pub fn run_with_maxss_unmasked_controls(
             maxsd_unmasked: None,
             minpd_unmasked: None,
             minps_unmasked: None,
+            maxps_unmasked: None,
             maxpd_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
@@ -1071,6 +1083,7 @@ pub fn run_with_minsd_unmasked_controls(
             maxsd_unmasked: None,
             minpd_unmasked: None,
             minps_unmasked: None,
+            maxps_unmasked: None,
             maxpd_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
@@ -1115,6 +1128,7 @@ pub fn run_with_maxsd_unmasked_controls(
             maxsd_unmasked: Some(controls),
             minpd_unmasked: None,
             minps_unmasked: None,
+            maxps_unmasked: None,
             maxpd_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
@@ -1159,6 +1173,7 @@ pub fn run_with_minpd_unmasked_controls(
             maxsd_unmasked: None,
             minpd_unmasked: Some(controls),
             minps_unmasked: None,
+            maxps_unmasked: None,
             maxpd_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
@@ -1203,6 +1218,52 @@ pub fn run_with_minps_unmasked_controls(
             maxsd_unmasked: None,
             minpd_unmasked: None,
             minps_unmasked: Some(controls),
+            maxps_unmasked: None,
+            maxpd_unmasked: None,
+            fx_cr0: None,
+            unmasked_minss_denormal: false,
+            rdtsc: None,
+            swapgs: None,
+            cli: None,
+            sti: None,
+            halt: None,
+            cr0: None,
+            cr4: None,
+        },
+        StepRuntime {
+            rdtsc_source: None,
+            sti_sequence: None,
+            exact_hlt_only: false,
+            stop_requested: &mut stop_requested,
+        },
+    )
+}
+
+/// Execute exact `0F 5F C1` MAXPS with bounded unmasked IM/DM delivery.
+pub fn run_with_maxps_unmasked_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: MaxpsUnmaskedControls,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_configured(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        ExecutionProfiles {
+            cpuid: None,
+            msr: None,
+            sep: None,
+            xorpd: None,
+            minss_invalid: None,
+            maxss_unmasked: None,
+            minsd_unmasked: None,
+            maxsd_unmasked: None,
+            minpd_unmasked: None,
+            minps_unmasked: None,
+            maxps_unmasked: Some(controls),
             maxpd_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
@@ -1247,6 +1308,7 @@ pub fn run_with_maxpd_unmasked_controls(
             maxsd_unmasked: None,
             minpd_unmasked: None,
             minps_unmasked: None,
+            maxps_unmasked: None,
             maxpd_unmasked: Some(controls),
             fx_cr0: None,
             unmasked_minss_denormal: false,
@@ -1291,6 +1353,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             maxsd_unmasked: None,
             minpd_unmasked: None,
             minps_unmasked: None,
+            maxps_unmasked: None,
             maxpd_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: true,
@@ -1388,6 +1451,7 @@ pub fn run_with_efer_rdmsr_profile(
             maxsd_unmasked: None,
             minpd_unmasked: None,
             minps_unmasked: None,
+            maxps_unmasked: None,
             maxpd_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
@@ -1641,6 +1705,7 @@ pub fn run_with_cr0_profile(
             maxsd_unmasked: None,
             minpd_unmasked: None,
             minps_unmasked: None,
+            maxps_unmasked: None,
             maxpd_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
@@ -1686,6 +1751,7 @@ pub fn run_with_cr4_profile(
             maxsd_unmasked: None,
             minpd_unmasked: None,
             minps_unmasked: None,
+            maxps_unmasked: None,
             maxpd_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: profile == Cr4Profile::FpInitThenFxrstor64MinssLong64V1,
@@ -1965,6 +2031,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             maxsd_unmasked: None,
             minpd_unmasked: None,
             minps_unmasked: None,
+            maxps_unmasked: None,
             maxpd_unmasked: None,
             fx_cr0: fx_cr0_gate_controls,
             unmasked_minss_denormal,
@@ -2194,6 +2261,7 @@ pub fn step_with_cr0_profile(
             maxsd_unmasked: None,
             minpd_unmasked: None,
             minps_unmasked: None,
+            maxps_unmasked: None,
             maxpd_unmasked: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
@@ -2481,6 +2549,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             maxsd_unmasked: None,
             minpd_unmasked: None,
             minps_unmasked: None,
+            maxps_unmasked: None,
             maxpd_unmasked: None,
             fx_cr0: fx_cr0_gate_controls,
             unmasked_minss_denormal,
@@ -2521,6 +2590,7 @@ fn step_configured(
         minpd_unmasked: configured_minpd_controls,
         maxpd_unmasked: configured_maxpd_controls,
         minps_unmasked: configured_minps_controls,
+        maxps_unmasked: configured_maxps_controls,
         fx_cr0: fx_cr0_gate_controls,
         unmasked_minss_denormal,
         rdtsc: rdtsc_controls,
@@ -3109,6 +3179,36 @@ fn step_configured(
             }));
         }
     }
+    if let Some(controls) = configured_maxps_controls {
+        let exact_maxps = instruction.operation
+            == (Operation::MaxpsRegisterMasked {
+                destination: 0,
+                source: 1,
+            })
+            && instruction.length == 3
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x5f
+            && instruction.prefixes == Prefixes::default();
+        if !exact_maxps {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        let fault_vector = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+            Some(6)
+        } else if controls.cr0_ts {
+            Some(7)
+        } else {
+            None
+        };
+        if let Some(vector) = fault_vector {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+    }
     if let Some(controls) = configured_maxpd_controls {
         let exact_maxpd = instruction.operation
             == (Operation::MaxpdRegisterMasked {
@@ -3662,18 +3762,24 @@ fn step_configured(
                 })
         {
             minss_unmasked_denormal_mxcsr_supported(sse.mxcsr)
-        } else if configured_minpd_controls.is_some()
+        } else if (configured_minpd_controls.is_some()
             && instruction.operation
                 == (Operation::MinpdRegisterMasked {
                     destination: 0,
                     source: 1,
-                })
-            || configured_minps_controls.is_some()
+                }))
+            || (configured_minps_controls.is_some()
                 && instruction.operation
                     == (Operation::MinpsRegisterMasked {
                         destination: 0,
                         source: 1,
-                    })
+                    }))
+            || (configured_maxps_controls.is_some()
+                && instruction.operation
+                    == (Operation::MaxpsRegisterMasked {
+                        destination: 0,
+                        source: 1,
+                    }))
         {
             minss_unmasked_denormal_mxcsr_supported(sse.mxcsr)
         } else if configured_maxpd_controls.is_some()
@@ -4149,6 +4255,10 @@ fn step_configured(
         | Operation::ImulImmediate { .. }
         | Operation::Divide { .. }
         | Operation::Shift { .. } => true,
+        Operation::MaxpsRegisterMasked {
+            destination: 0,
+            source: 1,
+        } if configured_maxps_controls.is_some() => state.sse.is_some(),
         Operation::MovupsRegister { .. }
         | Operation::MovapsRegister { .. }
         | Operation::MovapsReverseRegister { .. }
@@ -7691,16 +7801,26 @@ fn step_configured(
                         destination: 0,
                         source: 1,
                     });
-            if minps_unmasked_profile {
+            let maxps_unmasked_profile = maximum
+                && configured_maxps_controls.is_some()
+                && instruction.operation
+                    == (Operation::MaxpsRegisterMasked {
+                        destination: 0,
+                        source: 1,
+                    });
+            if minps_unmasked_profile || maxps_unmasked_profile {
                 let any_invalid = lane_invalid.into_iter().any(|flag| flag);
                 let any_denormal = lane_denormal.into_iter().any(|flag| flag);
                 let unmasked_invalid = any_invalid && old_mxcsr & (1 << 7) == 0;
                 let unmasked_denormal = any_denormal && old_mxcsr & (1 << 8) == 0;
                 if unmasked_invalid || unmasked_denormal {
                     sse.mxcsr = old_mxcsr | u32::from(any_invalid) | (u32::from(any_denormal) << 1);
-                    let controls = configured_minps_controls.expect("MINPS controls selected");
+                    let osxmmexcpt = configured_minps_controls
+                        .map(|c| c.cr4_osxmmexcpt)
+                        .or_else(|| configured_maxps_controls.map(|c| c.cr4_osxmmexcpt))
+                        .expect("MINPS/MAXPS controls selected");
                     return Ok(StepOutcome::Fault(ArchitecturalFault {
-                        vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                        vector: if osxmmexcpt { 19 } else { 6 },
                         error_code: None,
                         linear_address: None,
                     }));
@@ -99457,7 +99577,7 @@ mod swapgs_profile_tests {
             &[0xf3, 0x0f, 0x5d, 0xc1],
             &[0x40, 0x0f, 0x5d, 0xc1],
             &[0x0f, 0x5d, 0x01],
-            &[0x0f, 0x5f, 0xc1],
+            &[0x0f, 0x5d, 0xc1],
         ] {
             let mut memory = Memory::at(bytes, 0x76a0);
             let mut state = LongModeState::default();
@@ -99485,9 +99605,198 @@ mod swapgs_profile_tests {
     }
 
     #[test]
+    fn maxps_unmasked_gates_fetch_exact_form_and_privilege() {
+        let controls =
+            |sse_available, cr0_em, cr0_ts, cr4_osfxsr, cr4_osxmmexcpt| MaxpsUnmaskedControls {
+                sse_available,
+                cr0_em,
+                cr0_ts,
+                cr4_osfxsr,
+                cr4_osxmmexcpt,
+            };
+        for sse_available in [false, true] {
+            for cr0_em in [false, true] {
+                for cr0_ts in [false, true] {
+                    for cr4_osfxsr in [false, true] {
+                        for cr4_osxmmexcpt in [false, true] {
+                            let c =
+                                controls(sse_available, cr0_em, cr0_ts, cr4_osfxsr, cr4_osxmmexcpt);
+                            for privilege in [
+                                PrivilegeLevel::Ring0,
+                                PrivilegeLevel::Ring1,
+                                PrivilegeLevel::Ring2,
+                                PrivilegeLevel::Ring3,
+                            ] {
+                                let mut memory = Memory::at(&[0x0f, 0x5f, 0xc1], 0x7680);
+                                let mut state = LongModeState::default();
+                                state.rip = 0x7680;
+                                state.sse = Some(SseState {
+                                    xmm: [[0x5a; 16]; 16],
+                                    mxcsr: 0x1e00,
+                                });
+                                let before = state.clone();
+                                let result = run_with_maxps_unmasked_controls(
+                                    &mut state,
+                                    &mut memory,
+                                    RunConfig {
+                                        instruction_budget: 1,
+                                        stop_rip: Some(0x7683),
+                                        context: AccessContext {
+                                            privilege,
+                                            ..AccessContext::default()
+                                        },
+                                    },
+                                    c,
+                                    || false,
+                                );
+                                let expected_vector = if !sse_available || cr0_em || !cr4_osfxsr {
+                                    Some(6)
+                                } else if cr0_ts {
+                                    Some(7)
+                                } else {
+                                    None
+                                };
+                                if let Some(vector) = expected_vector {
+                                    assert_eq!(
+                                        result.exit,
+                                        RunExit::Fault(ArchitecturalFault {
+                                            vector,
+                                            error_code: None,
+                                            linear_address: None
+                                        })
+                                    );
+                                    assert_eq!(result.instructions_executed, 0);
+                                    assert_eq!(state, before);
+                                } else {
+                                    assert_eq!(result.exit, RunExit::StopAddress);
+                                    assert_eq!(result.instructions_executed, 1);
+                                    assert_eq!(state.rip, 0x7683);
+                                }
+                                assert!(memory.accesses.is_empty());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for length in 0..3usize {
+            let mut memory = Memory::at(&[0x0f, 0x5f, 0xc1][..length], 0x7690);
+            let mut state = LongModeState::default();
+            state.rip = 0x7690;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1e00,
+            });
+            let before = state.clone();
+            let result = run_with_maxps_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                controls(false, true, true, false, false),
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::MemoryError(MemoryError::Unmapped {
+                    address: 0x7690 + length as u64,
+                    access: crate::memory::AccessKind::Fetch
+                })
+            );
+            assert_eq!(state, before);
+        }
+        let mut memory = Memory::at(&[0x0f, 0x5f, 0xc1], 0x7698);
+        let mut state = LongModeState::default();
+        state.rip = 0x7698;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1e00,
+        });
+        let result = run_with_maxps_unmasked_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x769b),
+                context: AccessContext::default(),
+            },
+            controls(true, false, false, true, true),
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.rip, 0x769b);
+        assert!(memory.accesses.is_empty());
+
+        for (budget, stop_rip, stop_requested, expected) in [
+            (0, None, false, RunExit::InstructionBudgetExhausted),
+            (1, Some(0x7698), false, RunExit::StopAddress),
+            (1, None, true, RunExit::StopRequested),
+        ] {
+            let mut memory = Memory::at(&[0x0f, 0x5f, 0xc1], 0x7698);
+            let mut state = LongModeState::default();
+            state.rip = 0x7698;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1e00,
+            });
+            let before = state.clone();
+            let result = run_with_maxps_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                controls(true, false, false, true, true),
+                || stop_requested,
+            );
+            assert_eq!(result.exit, expected);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        for bytes in [
+            &[0x66, 0x0f, 0x5f, 0xc1][..],
+            &[0xf2, 0x0f, 0x5f, 0xc1],
+            &[0xf3, 0x0f, 0x5f, 0xc1],
+            &[0x40, 0x0f, 0x5f, 0xc1],
+            &[0x0f, 0x5f, 0x01],
+            &[0x0f, 0x5d, 0xc1],
+        ] {
+            let mut memory = Memory::at(bytes, 0x76a0);
+            let mut state = LongModeState::default();
+            state.rip = 0x76a0;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1e00,
+            });
+            let before = state.clone();
+            let result = run_with_maxps_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x76a0 + bytes.len() as u64),
+                    context: AccessContext::default(),
+                },
+                controls(true, false, false, true, true),
+                || false,
+            );
+            assert!(matches!(result.exit, RunExit::Unsupported { .. }));
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
     fn minps_unmasked_four_lane_exception_matrix_and_atomic_suppression() {
         // Literal class table: raw IE, raw DE, and operands chosen so MINPS
-        // source-2 forwarding and the finite minimum have distinct results.
+        // source-2 forwarding and finite maximum have distinct results.
         let classes = [
             (0x3f80_0000u32, 0x4000_0000u32, false, false),
             (0x7fc1_2345, 0x4000_0000, true, false),
@@ -99571,6 +99880,105 @@ mod swapgs_profile_tests {
                                             } else {
                                                 item.1
                                             };
+                                            assert_eq!(
+                                                state.sse.as_ref().unwrap().xmm[0]
+                                                    [lane * 4..lane * 4 + 4],
+                                                expected.to_le_bytes()
+                                            );
+                                        }
+                                    }
+                                    let masked_de = lanes.iter().any(|item| item.3 && !item.2);
+                                    let status_de = if fault { raw_de } else { masked_de };
+                                    assert_eq!(
+                                        state.sse.as_ref().unwrap().mxcsr,
+                                        mxcsr | u32::from(raw_ie) | (u32::from(status_de) << 1)
+                                    );
+                                    assert!(memory.accesses.is_empty());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn maxps_unmasked_four_lane_exception_matrix_and_atomic_suppression() {
+        // Literal class table: raw IE, raw DE, and operands chosen so MAXPS
+        // source-2 forwarding and finite maximum have distinct results.
+        let classes = [
+            // lhs, rhs, raw IE, raw DE, independently specified MAXPS result
+            (0x3f80_0000u32, 0x4000_0000u32, false, false, 0x4000_0000u32),
+            (0x7fc1_2345, 0x4000_0000, true, false, 0x4000_0000),
+            (0x0000_0001, 0x4000_0000, false, true, 0x4000_0000),
+            (0x7fc1_2345, 0x0000_0001, true, true, 0x0000_0001),
+        ];
+        for a in classes {
+            for b in classes {
+                for c in classes {
+                    for d in classes {
+                        for im in [false, true] {
+                            for dm in [false, true] {
+                                for osxmmexcpt in [false, true] {
+                                    let lanes = [a, b, c, d];
+                                    let code = [0x0f, 0x5f, 0xc1];
+                                    let mut memory = Memory::at(&code, 0x7600);
+                                    let mut state = LongModeState::default();
+                                    state.rip = 0x7600;
+                                    state.x87 = Some(X87State::fixture_seed());
+                                    let mut xmm = [[0x5a; 16]; 16];
+                                    for (lane, item) in lanes.iter().enumerate() {
+                                        xmm[0][lane * 4..lane * 4 + 4]
+                                            .copy_from_slice(&item.0.to_le_bytes());
+                                        xmm[1][lane * 4..lane * 4 + 4]
+                                            .copy_from_slice(&item.1.to_le_bytes());
+                                    }
+                                    let mxcsr =
+                                        0x1e00 | (u32::from(im) << 7) | (u32::from(dm) << 8) | 0x12;
+                                    state.sse = Some(SseState { xmm, mxcsr });
+                                    let before = state.clone();
+                                    let raw_ie = lanes.iter().any(|item| item.2);
+                                    let raw_de = lanes.iter().any(|item| item.3);
+                                    let fault = raw_ie && !im || raw_de && !dm;
+                                    let result = run_with_maxps_unmasked_controls(
+                                        &mut state,
+                                        &mut memory,
+                                        RunConfig {
+                                            instruction_budget: 1,
+                                            stop_rip: Some(0x7603),
+                                            context: AccessContext::default(),
+                                        },
+                                        MaxpsUnmaskedControls {
+                                            sse_available: true,
+                                            cr0_em: false,
+                                            cr0_ts: false,
+                                            cr4_osfxsr: true,
+                                            cr4_osxmmexcpt: osxmmexcpt,
+                                        },
+                                        || false,
+                                    );
+                                    if fault {
+                                        assert_eq!(
+                                            result.exit,
+                                            RunExit::Fault(ArchitecturalFault {
+                                                vector: if osxmmexcpt { 19 } else { 6 },
+                                                error_code: None,
+                                                linear_address: None
+                                            })
+                                        );
+                                        assert_eq!(result.instructions_executed, 0);
+                                        assert_eq!(state.rip, before.rip);
+                                        assert_eq!(
+                                            state.sse.as_ref().unwrap().xmm,
+                                            before.sse.as_ref().unwrap().xmm
+                                        );
+                                    } else {
+                                        assert_eq!(result.exit, RunExit::StopAddress);
+                                        assert_eq!(result.instructions_executed, 1);
+                                        assert_eq!(state.rip, 0x7603);
+                                        for (lane, item) in lanes.iter().enumerate() {
+                                            let expected = item.4;
                                             assert_eq!(
                                                 state.sse.as_ref().unwrap().xmm[0]
                                                     [lane * 4..lane * 4 + 4],

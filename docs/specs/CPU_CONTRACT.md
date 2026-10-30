@@ -12229,3 +12229,37 @@ Table 2-19 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199));
 Vol. 1 §§4.9.2, 11.5.3.1–3
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)). See the
 [plan](../plans/STAGE_2.md#s2-38k--exact-long64-minps-xmm0xmm1-unmasked-invalid-and-denormal-exit).
+
+## S2-38l — exact MAXPS unmasked invalid and denormal exit
+
+The interpreter-only profile `s2-long-maxps-unmasked-denormal-v1` admits only
+Long64 `0F 5F C1` (`MAXPS XMM0,XMM1`), one executable code region, budget one
+and stop RIP `entry+3`. Immutable controls record SSE availability, CR0.EM/TS,
+CR4.OSFXSR and CR4.OSXMMEXCPT. Complete fetch precedes #UD for missing SSE,
+CR0.EM or CR4.OSFXSR, then #NM for CR0.TS; CPL does not change these gates.
+A newly unmasked SIMD event reports #XM when OSXMMEXCPT is set and #UD when it
+is clear.
+
+The supported MXCSR subset requires reserved bits, DAZ and FTZ clear; ZE/OE/UE/PE
+masked. IM, DM, RC and prior sticky flags may vary. Both XMM inputs are
+snapshotted and all four binary32 lanes are precomputed before global event
+disposition. MAXPS returns raw SRC2 for either NaN, equal values and signed-zero
+ties; a source-2 SNaN is forwarded unchanged. Otherwise it selects SRC1 only
+when SRC1 is greater than SRC2. An unmasked IE or DE preserves full XMM0 and RIP,
+sets every discovered raw IE/DE sticky flag, retires zero instructions and
+reports one exception. Masked completion applies IE-over-DE only within each
+lane and commits all of XMM0 atomically. Existing masked MAXPS is unchanged.
+
+The 2048-case ISA matrix crosses `{none,I,D,I+D}^4`, IM, DM and OSXMMEXCPT.
+Thirty-two literal schema-v2 fixtures cover lane/control anchors and source
+selection cases; the independent validator derives lane events and MAXPS result
+bits without calling the production selector. Exact-form, gate-order, CPL,
+fetch/truncation, STOP/budget, no-memory-callback and JIT/native-denial checks
+are included. Other MAXPS forms, memory, prefixes, DAZ/FTZ, handler continuation,
+transitions and physical execution remain outside this profile.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2B MAXPS pp. 4-8–4-10
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241)); Vol. 2A
+Table 2-19 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199));
+Vol. 1 §§4.9.2, 11.5.3.1–3
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).

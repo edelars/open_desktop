@@ -509,6 +509,7 @@ fn expected_native_xorpd_oracle(
                 maxsd_unmasked_controls: None,
                 minpd_unmasked_controls: None,
                 minps_unmasked_controls: None,
+                maxps_unmasked_controls: None,
                 maxpd_unmasked_controls: None,
                 fxsave64_cr0_controls: None,
                 fxrstor64_cr0_controls: None,
@@ -993,18 +994,18 @@ fn execute_fixture_v2(
 ) -> od_testkit::v2::RunResult {
     use od_isa::execute::{
         Cr0Profile, Cr4Profile, Fxrstor64Cr0Controls, Fxsave64Cr0Controls, MaxpdUnmaskedControls,
-        MaxsdUnmaskedControls, MaxssUnmaskedControls, MinpdUnmaskedControls, MinpsUnmaskedControls,
-        MinsdUnmaskedControls, MinssInvalidControls, RdtscControls, RunConfig, RunExit,
-        XorpdPrerequisiteState, run, run_with_cli_profile, run_with_cr0_profile,
-        run_with_efer_rdmsr_profile, run_with_fxrstor64_cr0_controls,
+        MaxpsUnmaskedControls, MaxsdUnmaskedControls, MaxssUnmaskedControls, MinpdUnmaskedControls,
+        MinpsUnmaskedControls, MinsdUnmaskedControls, MinssInvalidControls, RdtscControls,
+        RunConfig, RunExit, XorpdPrerequisiteState, run, run_with_cli_profile,
+        run_with_cr0_profile, run_with_efer_rdmsr_profile, run_with_fxrstor64_cr0_controls,
         run_with_fxsave64_cr0_controls, run_with_halt_profile, run_with_kernel_gs_base_profile,
-        run_with_maxpd_unmasked_controls, run_with_maxsd_unmasked_controls,
-        run_with_maxss_unmasked_controls, run_with_minpd_unmasked_controls,
-        run_with_minps_unmasked_controls, run_with_minsd_unmasked_controls,
-        run_with_minss_invalid_controls, run_with_minss_unmasked_denormal_controls,
-        run_with_msr_profile, run_with_rdtsc_source, run_with_rep_continuation,
-        run_with_sep_profile, run_with_sti_profile, run_with_swapgs_profile,
-        run_with_xorpd_prerequisites,
+        run_with_maxpd_unmasked_controls, run_with_maxps_unmasked_controls,
+        run_with_maxsd_unmasked_controls, run_with_maxss_unmasked_controls,
+        run_with_minpd_unmasked_controls, run_with_minps_unmasked_controls,
+        run_with_minsd_unmasked_controls, run_with_minss_invalid_controls,
+        run_with_minss_unmasked_denormal_controls, run_with_msr_profile, run_with_rdtsc_source,
+        run_with_rep_continuation, run_with_sep_profile, run_with_sti_profile,
+        run_with_swapgs_profile, run_with_xorpd_prerequisites,
     };
     use od_testkit::v2;
     use std::time::{Duration, Instant};
@@ -1449,6 +1450,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongMaxpsUnmaskedDenormalV1 {
+        let controls = loaded
+            .fixture
+            .maxps_unmasked_controls
+            .expect("validated MAXPS profile has explicit controls");
+        run_with_maxps_unmasked_controls(
+            &mut state,
+            memory,
+            config,
+            MaxpsUnmaskedControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongMaxpdUnmaskedDenormalV1 {
         let controls = loaded
             .fixture
@@ -1525,6 +1544,7 @@ fn execute_fixture_v2(
                 maxsd_unmasked_controls: loaded.fixture.maxsd_unmasked_controls,
                 minpd_unmasked_controls: loaded.fixture.minpd_unmasked_controls,
                 minps_unmasked_controls: loaded.fixture.minps_unmasked_controls,
+                maxps_unmasked_controls: loaded.fixture.maxps_unmasked_controls,
                 maxpd_unmasked_controls: loaded.fixture.maxpd_unmasked_controls,
                 fxsave64_cr0_controls: loaded.fixture.fxsave64_cr0_controls,
                 fxrstor64_cr0_controls: loaded.fixture.fxrstor64_cr0_controls,
@@ -2686,6 +2706,7 @@ mod tests {
                     maxsd_unmasked_controls: input.fixture.maxsd_unmasked_controls,
                     minpd_unmasked_controls: input.fixture.minpd_unmasked_controls,
                     minps_unmasked_controls: input.fixture.minps_unmasked_controls,
+                    maxps_unmasked_controls: input.fixture.maxps_unmasked_controls,
                     maxpd_unmasked_controls: input.fixture.maxpd_unmasked_controls,
                     fxsave64_cr0_controls: input.fixture.fxsave64_cr0_controls,
                     fxrstor64_cr0_controls: input.fixture.fxrstor64_cr0_controls,

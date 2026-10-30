@@ -17311,6 +17311,182 @@ fn minps_unmasked_four_lane_anchors_validate_independent_results_and_denials() {
 }
 
 #[test]
+fn maxps_unmasked_four_lane_anchors_validate_independent_results_and_denials() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let literal_outputs: &[(&str, [u32; 4])] = &[
+        (
+            "distinguish_min_from_max",
+            [0x3f800000, 0x40000000, 0x40000000, 0x40400000],
+        ),
+        (
+            "equal_finite_source2",
+            [0x40490fdb, 0xc005bf0a, 0x3f800000, 0x40000000],
+        ),
+        (
+            "masked_qnan_source2",
+            [0xffc12345, 0x40000000, 0x40800000, 0x40800000],
+        ),
+        (
+            "masked_snan_source2",
+            [0xff812345, 0x40000000, 0x40800000, 0x40800000],
+        ),
+        (
+            "negative_infinity",
+            [0xbf800000, 0x3f800000, 0x3f800000, 0x40000000],
+        ),
+        ("negative_zero_tie_source2", [0, 0x40000000, 0, 0x40000000]),
+        (
+            "positive_infinity",
+            [0x7f800000, 0x3f800000, 0x7f800000, 0x40000000],
+        ),
+        (
+            "positive_zero_tie_source2",
+            [0x80000000, 0x40000000, 0, 0x40000000],
+        ),
+        (
+            "qnan_source1_lane2",
+            [0x40000000, 0x40000000, 0x40800000, 0x40800000],
+        ),
+        (
+            "qnan_source2_lane3_payload_sign",
+            [0x40000000, 0x40000000, 0x40800000, 0xffc54321],
+        ),
+        (
+            "same_lane_qnan_subnormal",
+            [0x40000000, 0x40000000, 1, 0x40800000],
+        ),
+        (
+            "snan_source1_lane3",
+            [0x40000000, 0x40000000, 0x40800000, 0x3f800000],
+        ),
+        (
+            "snan_source2_lane2",
+            [0x40000000, 0x40000000, 0x7f812345, 0x40800000],
+        ),
+        (
+            "split_invalid_and_denormal",
+            [0x40000000, 0x40000000, 0x40800000, 0x40800000],
+        ),
+        (
+            "sticky_status_only",
+            [0x40000000, 0x40000000, 0x40800000, 0x40800000],
+        ),
+        (
+            "subnormal_lane3",
+            [0x40000000, 0x40000000, 0x40800000, 0x3f800000],
+        ),
+    ];
+    let mut paths: Vec<_> = fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("s2_38l_maxps_")
+        })
+        .collect();
+    paths.sort();
+    assert_eq!(
+        paths.len(),
+        32,
+        "MAXPS lane, event-control, NaN, zero and finite anchors"
+    );
+    let mut denial_source = None;
+    let mut representative = None;
+    for path in paths {
+        let source = fs::read(path).unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongMaxpsUnmaskedDenormalV1
+        );
+        assert_eq!(
+            od_testkit::v2::compare(&input, &result, &result).unwrap(),
+            Vec::<String>::new()
+        );
+        let Observation::Available { value } = &result.snapshot else {
+            panic!("snapshot unavailable")
+        };
+        assert_eq!(
+            value.maxps_unmasked_controls,
+            input.fixture.maxps_unmasked_controls
+        );
+        if let Some(name) = input.fixture.case_id.strip_prefix("s2_38l_maxps_special_") {
+            let expected = literal_outputs
+                .iter()
+                .find(|(candidate, _)| *candidate == name)
+                .expect("special MAXPS fixture has a literal output table entry")
+                .1;
+            let bytes = decode_xmm_literal(&value.state.sse.as_ref().unwrap().xmm[0]);
+            for lane in 0..4 {
+                assert_eq!(
+                    u32::from_le_bytes(bytes[lane * 4..lane * 4 + 4].try_into().unwrap()),
+                    expected[lane],
+                    "{name} lane {lane}"
+                );
+            }
+        }
+        if input
+            .fixture
+            .case_id
+            .ends_with("special_sticky_status_only")
+        {
+            let mxcsr = input
+                .fixture
+                .initial_state
+                .sse
+                .as_ref()
+                .unwrap()
+                .mxcsr
+                .get();
+            assert_eq!(mxcsr & 3, 3, "sticky-only fixture seeds both IE and DE");
+        }
+        if denial_source.is_none() {
+            denial_source = Some(source.clone());
+        }
+        if representative.is_none() {
+            representative = Some((input.clone(), result.clone()));
+        }
+    }
+    let source = denial_source.unwrap();
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(&source, backend, 4);
+        assert!(
+            matches!(denied.outcome, Outcome::Unsupported { .. }),
+            "{backend} must deny MAXPS profile"
+        );
+    }
+    let (input, result) = representative.unwrap();
+    let mut missing = input.fixture.clone();
+    missing.maxps_unmasked_controls = None;
+    assert!(missing.validate().is_err());
+    for wrong in [
+        "660f5fc1", "f20f5fc1", "f30f5fc1", "400f5fc1", "0f5f01", "0f5dc1",
+    ] {
+        let mut malformed = input.fixture.clone();
+        malformed.memory[0].initial_bytes_hex = wrong.into();
+        assert!(
+            malformed.validate().is_err(),
+            "admitted unexpected MAXPS form {wrong}"
+        );
+    }
+    let mut tampered = result.clone();
+    let Observation::Available { value } = &mut tampered.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    let controls = value.maxps_unmasked_controls.as_mut().unwrap();
+    controls.cr4_osxmmexcpt = !controls.cr4_osxmmexcpt;
+    assert!(od_testkit::v2::compare(&input, &result, &tampered).is_err());
+    let mut mislabeled = input.clone();
+    mislabeled.fixture.case_id = mislabeled.fixture.case_id.replace("_n_n_n_n_", "_i_n_n_n_");
+    let mut relabeled_result = result.clone();
+    relabeled_result.case_id = mislabeled.fixture.case_id.clone();
+    assert!(relabeled_result.validate_for(&mislabeled).is_err());
+}
+
+#[test]
 fn maxpd_unmasked_two_lane_cross_product_validates_independent_results_and_denials() {
     let root =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");

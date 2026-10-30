@@ -6243,3 +6243,13 @@ native reject the profile; no physical run is claimed. Sources and scope are
 listed in the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38k--exact-minps-unmasked-invalid-and-denormal-exit),
 [plan](../../../../docs/plans/STAGE_2.md#s2-38k--exact-long64-minps-xmm0xmm1-unmasked-invalid-and-denormal-exit),
 and [fixture format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-38k-exact-minps-unmasked-imdm-profile).
+
+### S2-38l local MAXPS unmasked invalid and denormal
+
+The 32 literal `s2_38l_maxps_*.case.json` inputs use exact `0f5fc1`, Long64,
+budget one, a single executable mapping and stop RIP `entry+3`. The sixteen
+lane/control anchors exercise four binary32 lanes with event classes `{none,
+I,D,I+D}` and IM/DM/OSXMMEXCPT combinations; the sixteen selector/status anchors
+cover QNaN/SNaN on either operand, raw source-2 payload/sign, signed-zero and
+equal ties, infinities, finite MAX-vs-MIN selection, lane-local IE priority,
+split IE/DE and prior sticky flags. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38l--exact-maxps-unmasked-invalid-and-denormal-exit).

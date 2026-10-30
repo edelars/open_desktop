@@ -1319,3 +1319,15 @@ retirement, control echoes and exception metadata. JIT/native reject the
 profile. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38k--exact-minps-unmasked-invalid-and-denormal-exit),
 [plan](../plans/STAGE_2.md#s2-38k--exact-long64-minps-xmm0xmm1-unmasked-invalid-and-denormal-exit),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38k-local-minps-unmasked-invalid-and-denormal).
+
+## S2-38l exact MAXPS unmasked IM/DM profile
+
+The strict schema-v2 profile is `s2-long-maxps-unmasked-denormal-v1`, exact
+bytes `0f5fc1`, budget one, one executable code mapping, and stop RIP `entry+3`.
+`maxps_unmasked_controls` records SSE availability and immutable CR0/CR4 gate
+inputs; result snapshots echo them. Thirty-two literal fixtures anchor raw
+lane event classes and MAXPS-specific selector behavior. Validation uses an
+independent raw-bit comparator and checks raw event aggregation, same-lane IE
+priority on masked completion, full XMM suppression on an unmasked event,
+exception vector, RIP, retirement and control echo. JIT and native backends
+deny this local interpreter-only profile.
