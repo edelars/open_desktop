@@ -13,9 +13,10 @@ use od_isa::long_decode::{
 
 use crate::block::{
     self, AdmittedInstructionBoundaries, BlockStopReason, BranchTargetResolution, BuildOutcome,
-    DecodeBoundary, DecodedInstruction, S0_09NopAddRaxImm8Admission, S0_09NopAdmission,
-    S0_09NopCmpRaxImm8Admission, S0_09NopDecRaxAdmission, S0_09NopIncRaxAdmission,
-    S0_09NopLeaRaxRbxAdmission, S0_09NopLeaRaxRbxDisp8Admission, S0_09NopLeaRaxRbxRcxAdmission,
+    DecodeBoundary, DecodedInstruction, NativeRegisterV1Admission, NativeRegisterV1Instruction,
+    S0_09NopAddRaxImm8Admission, S0_09NopAdmission, S0_09NopCmpRaxImm8Admission,
+    S0_09NopDecRaxAdmission, S0_09NopIncRaxAdmission, S0_09NopLeaRaxRbxAdmission,
+    S0_09NopLeaRaxRbxDisp8Admission, S0_09NopLeaRaxRbxRcxAdmission,
     S0_09NopLeaRaxRipDisp32Admission, S0_09NopMovRaxImm32Admission, S0_09NopNegRaxAdmission,
     S0_09NopNotRaxAdmission, S0_09NopSubRaxImm8Admission, S0_09NopXchgRaxRbxAdmission,
 };
@@ -225,6 +226,7 @@ pub(crate) fn lower_for_native_lea_rax_rbx(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -251,6 +253,7 @@ pub(crate) fn lower_for_native_lea_rax_rbx_disp8(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -273,6 +276,7 @@ pub(crate) fn lower_for_native_xchg_rax_rbx(
         None,
         None,
         Some(admission),
+        None,
         None,
         None,
         None,
@@ -343,6 +347,7 @@ pub(crate) fn lower_for_native_lea_rax_rbx_rcx(
         None,
         Some(admission),
         None,
+        None,
     )
 }
 
@@ -369,6 +374,7 @@ pub(crate) fn lower_for_native_lea_rax_rip_disp32(
         None,
         None,
         Some(admission),
+        None,
     )
 }
 
@@ -432,6 +438,34 @@ pub(crate) fn lower_for_native_mov_rax_imm32(
         Some(admission),
         None,
         None,
+        None,
+    )
+}
+
+pub(crate) fn lower_for_native_register_v1(
+    outcome: &BuildOutcome,
+    admission: &NativeRegisterV1Admission,
+) -> Result<LoweringOutcome, LoweringError> {
+    lower_with_admission_and_lea(
+        outcome,
+        Some(admission.boundaries()),
+        None,
+        None,
+        None,
+        false,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(admission),
     )
 }
 
@@ -468,6 +502,7 @@ fn lower_with_admission(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -490,6 +525,7 @@ fn lower_with_admission_and_lea(
     native_mov_rax_imm32_admission: Option<&S0_09NopMovRaxImm32Admission>,
     native_lea_rax_rbx_rcx_admission: Option<&S0_09NopLeaRaxRbxRcxAdmission>,
     native_lea_rax_rip_disp32_admission: Option<&S0_09NopLeaRaxRipDisp32Admission>,
+    native_register_v1_admission: Option<&NativeRegisterV1Admission>,
 ) -> Result<LoweringOutcome, LoweringError> {
     let block = match outcome {
         BuildOutcome::NoBlock(no_block) => {
@@ -674,6 +710,9 @@ fn lower_with_admission_and_lea(
                                 && destination.size() == od_isa::OperandSize::Qword
                                 && value == expected)
                     })
+            }) || native_register_v1_admission.is_some_and(|admission| {
+                admission.admits_nop(*guest_rip)
+                    && matches!(decoded.operation, DecodedOperation::Nop)
             }) =>
         {
             (
@@ -761,6 +800,11 @@ fn lower_with_admission_and_lea(
             .is_some_and(|proof| proof.admits_sub_rax_imm8(instruction.guest_rip));
         let admitted_native_mov_rax_imm32 = native_mov_rax_imm32_admission
             .and_then(|proof| proof.mov_rax_imm32_value(instruction.guest_rip));
+        let union_native =
+            native_register_v1_admission.and_then(|proof| proof.instruction(instruction.guest_rip));
+        let union_decoded_matches = native_register_v1_admission.is_some_and(|proof| {
+            proof.validates_decoded(instruction.guest_rip, instruction.decoded)
+        });
         if !admitted_native_inc
             && !admitted_native_dec
             && !admitted_native_neg
@@ -774,6 +818,7 @@ fn lower_with_admission_and_lea(
             && !admitted_native_cmp_rax_imm8
             && !admitted_native_sub_rax_imm8
             && admitted_native_mov_rax_imm32.is_none()
+            && union_native.is_none()
             && !block::is_s0_09_form(instruction.decoded)
             && !block::is_checked_qword_load_form(instruction.decoded)
             && !block::is_checked_qword_store_form(instruction.decoded)
@@ -782,21 +827,35 @@ fn lower_with_admission_and_lea(
                 guest_rip: instruction.guest_rip,
             });
         }
+        if native_register_v1_admission.is_some() && !union_decoded_matches {
+            return Err(LoweringError::InvalidDecodedForm {
+                guest_rip: instruction.guest_rip,
+            });
+        }
         records.push(GuestInstruction {
             guest_rip: instruction.guest_rip,
             next_rip: instruction.next_rip,
         });
-        if admitted_native_inc {
+        if admitted_native_inc || union_native == Some(NativeRegisterV1Instruction::IncRax) {
             lower_exact_inc_rax(instruction, index, &mut next_temp, &mut operations)?;
-        } else if admitted_native_dec {
+        } else if admitted_native_dec || union_native == Some(NativeRegisterV1Instruction::DecRax) {
             lower_exact_dec_rax(instruction, index, &mut next_temp, &mut operations)?;
-        } else if admitted_native_neg {
+        } else if admitted_native_neg || union_native == Some(NativeRegisterV1Instruction::NegRax) {
             lower_exact_neg_rax(instruction, index, &mut next_temp, &mut operations)?;
-        } else if admitted_native_not {
+        } else if admitted_native_not || union_native == Some(NativeRegisterV1Instruction::NotRax) {
             lower_exact_not_rax(instruction, index, &mut next_temp, &mut operations)?;
-        } else if admitted_native_lea {
+        } else if admitted_native_lea
+            || union_native == Some(NativeRegisterV1Instruction::LeaRaxRbx)
+        {
             lower_exact_lea_rax_rbx(instruction, index, &mut next_temp, &mut operations)?;
-        } else if let Some(displacement) = admitted_native_lea_disp8 {
+        } else if let Some(displacement) =
+            admitted_native_lea_disp8.or_else(|| match union_native {
+                Some(NativeRegisterV1Instruction::LeaRaxRbxDisp8(displacement)) => {
+                    Some(displacement)
+                }
+                _ => None,
+            })
+        {
             lower_exact_lea_rax_rbx_disp8(
                 instruction,
                 index,
@@ -804,9 +863,18 @@ fn lower_with_admission_and_lea(
                 &mut next_temp,
                 &mut operations,
             )?;
-        } else if admitted_native_lea_sib {
+        } else if admitted_native_lea_sib
+            || union_native == Some(NativeRegisterV1Instruction::LeaRaxRbxRcx)
+        {
             lower_exact_lea_rax_rbx_rcx(instruction, index, &mut next_temp, &mut operations)?;
-        } else if let Some(displacement) = admitted_native_lea_rip_disp32 {
+        } else if let Some(displacement) =
+            admitted_native_lea_rip_disp32.or_else(|| match union_native {
+                Some(NativeRegisterV1Instruction::LeaRaxRipDisp32(displacement)) => {
+                    Some(displacement)
+                }
+                _ => None,
+            })
+        {
             lower_exact_lea_rax_rip_disp32(
                 instruction,
                 index,
@@ -814,11 +882,22 @@ fn lower_with_admission_and_lea(
                 &mut next_temp,
                 &mut operations,
             )?;
-        } else if admitted_native_xchg {
+        } else if admitted_native_xchg
+            || union_native == Some(NativeRegisterV1Instruction::XchgRaxRbx)
+        {
             lower_exact_xchg_rax_rbx(instruction, index, &mut next_temp, &mut operations)?;
-        } else if admitted_native_add_rax_imm8 {
+        } else if admitted_native_add_rax_imm8
+            || matches!(
+                union_native,
+                Some(NativeRegisterV1Instruction::AddRaxImm8(_))
+            )
+        {
             let admitted_value = native_add_rax_imm8_admission
                 .and_then(|proof| proof.add_rax_imm8_value(instruction.guest_rip))
+                .or_else(|| match union_native {
+                    Some(NativeRegisterV1Instruction::AddRaxImm8(value)) => Some(value),
+                    _ => None,
+                })
                 .ok_or(LoweringError::InvalidDecodedForm {
                     guest_rip: instruction.guest_rip,
                 })?;
@@ -829,9 +908,18 @@ fn lower_with_admission_and_lea(
                 &mut next_temp,
                 &mut operations,
             )?;
-        } else if admitted_native_cmp_rax_imm8 {
+        } else if admitted_native_cmp_rax_imm8
+            || matches!(
+                union_native,
+                Some(NativeRegisterV1Instruction::CmpRaxImm8(_))
+            )
+        {
             let admitted_value = native_cmp_rax_imm8_admission
                 .and_then(|proof| proof.cmp_rax_imm8_value(instruction.guest_rip))
+                .or_else(|| match union_native {
+                    Some(NativeRegisterV1Instruction::CmpRaxImm8(value)) => Some(value),
+                    _ => None,
+                })
                 .ok_or(LoweringError::InvalidDecodedForm {
                     guest_rip: instruction.guest_rip,
                 })?;
@@ -842,9 +930,18 @@ fn lower_with_admission_and_lea(
                 &mut next_temp,
                 &mut operations,
             )?;
-        } else if admitted_native_sub_rax_imm8 {
+        } else if admitted_native_sub_rax_imm8
+            || matches!(
+                union_native,
+                Some(NativeRegisterV1Instruction::SubRaxImm8(_))
+            )
+        {
             let admitted_value = native_sub_rax_imm8_admission
                 .and_then(|proof| proof.sub_rax_imm8_value(instruction.guest_rip))
+                .or_else(|| match union_native {
+                    Some(NativeRegisterV1Instruction::SubRaxImm8(value)) => Some(value),
+                    _ => None,
+                })
                 .ok_or(LoweringError::InvalidDecodedForm {
                     guest_rip: instruction.guest_rip,
                 })?;
@@ -855,7 +952,10 @@ fn lower_with_admission_and_lea(
                 &mut next_temp,
                 &mut operations,
             )?;
-        } else if let Some(value) = admitted_native_mov_rax_imm32 {
+        } else if let Some(value) = admitted_native_mov_rax_imm32.or_else(|| match union_native {
+            Some(NativeRegisterV1Instruction::MovRaxImm32(value)) => Some(value),
+            _ => None,
+        }) {
             lower_exact_mov_rax_imm32(instruction, index, value, &mut next_temp, &mut operations)?;
         } else {
             lower_instruction(instruction, index, &mut next_temp, &mut operations)?;

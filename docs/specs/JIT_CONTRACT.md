@@ -1629,6 +1629,31 @@ data callbacks. Evidence is local differential only; no physical fixture is
 claimed. Mini/performance remain deferred until Stage 3 ends. See
 [S3-33m report](../reports/STAGE_3_S3-33m_2026-10-30.md).
 
+### S3-33n: opt-in composed exact `NativeRegisterV1`
+
+`NativeRegisterV1Admission` is a separate uncached whole-code witness for the
+union of restricted S0-09, the already admitted bare NOP interpreter fallback,
+and only the exact native forms committed in S3-33a–m: `INC/DEC/NEG/NOT RAX`,
+`ADD/CMP/SUB RAX,sign-extended imm8`, `MOV RAX,sign-extended imm32`,
+`XCHG RAX,RBX`, and the four exact RAX LEA forms (`[RBX]`, `[RBX+disp8]`,
+`[RBX+RCX]`, `[RIP+disp32]`). Their byte patterns and operand constraints
+remain those recorded by the individual S3-33a–m sections. No other widths,
+registers, prefixes, memory data operations or encoding alternatives are
+implied. Existing standalone admission APIs remain unchanged.
+
+Admission decodes the complete immutable code view once, records exact
+instruction starts and binds each additional form to the existing exact
+predicate plus decoder-owned operands and source bytes. All branch targets
+must be exact decoded starts or the exclusive code end; an interior target is
+rejected across all admitted variable instruction lengths. Only exact bare
+NOPs can take the already admitted interpreter fallback. Eager and
+demand-flags-candidate compile/dispatch APIs remain explicitly selected and
+uncached. Lowering uses existing per-form semantic handlers; this profile adds
+no new x86 semantics and does not change the default profile.
+
+Mixed-block parity, pending-statepoint, ordered-pair corpus, exact local gate,
+and full-suite results are recorded in the [S3-33n report](../reports/STAGE_3_S3-33n_2026-10-30.md).
+
 ### S3-29d: uncached arithmetic-to-checked-load handoff
 
 The bounded host fixture composes existing eager and demand-flags native

@@ -5,11 +5,12 @@ use od_isa::memory::AccessContext;
 use crate::allocator::{Allocation, AllocatorConfig, AllocatorError, HelperBoundaryPosition};
 use crate::block::{
     self, AdmittedInstructionBoundaries, BlockLimits, BlockStopReason, BuildError, BuildOutcome,
-    CodeView, DecodeBoundary, S0_09NopAddRaxImm8Admission, S0_09NopAdmission,
-    S0_09NopCmpRaxImm8Admission, S0_09NopDecRaxAdmission, S0_09NopIncRaxAdmission,
-    S0_09NopLeaRaxRbxAdmission, S0_09NopLeaRaxRbxDisp8Admission, S0_09NopLeaRaxRbxRcxAdmission,
-    S0_09NopLeaRaxRipDisp32Admission, S0_09NopMovRaxImm32Admission, S0_09NopNegRaxAdmission,
-    S0_09NopNotRaxAdmission, S0_09NopSubRaxImm8Admission, S0_09NopXchgRaxRbxAdmission,
+    CodeView, DecodeBoundary, NativeRegisterV1Admission, S0_09NopAddRaxImm8Admission,
+    S0_09NopAdmission, S0_09NopCmpRaxImm8Admission, S0_09NopDecRaxAdmission,
+    S0_09NopIncRaxAdmission, S0_09NopLeaRaxRbxAdmission, S0_09NopLeaRaxRbxDisp8Admission,
+    S0_09NopLeaRaxRbxRcxAdmission, S0_09NopLeaRaxRipDisp32Admission, S0_09NopMovRaxImm32Admission,
+    S0_09NopNegRaxAdmission, S0_09NopNotRaxAdmission, S0_09NopSubRaxImm8Admission,
+    S0_09NopXchgRaxRbxAdmission,
 };
 use crate::block_emitter::{
     BlockEmitterError, EmittedCheckedLoadBlockV2, EmittedCheckedStoreBlockV2, EmittedRuntimeBlock,
@@ -73,6 +74,8 @@ pub enum BlockCompileError {
     DispatchBlockBoundaryNotAdmitted { rip: u64 },
     NopAdmissionDoesNotMatchCode,
     NopEntryNotAdmitted { entry_rip: u64 },
+    NativeRegisterV1AdmissionDoesNotMatchCode,
+    NativeRegisterV1EntryNotAdmitted { entry_rip: u64 },
 }
 
 /// Build and compile a single bounded block with the current runtime profile.
@@ -1326,6 +1329,82 @@ fn compile_native_mov_rax_imm32_inner(
     compile_lowered(code.code_end(), lowered, strategy)
 }
 
+/// Compile the bounded S3-33n exact-form union eagerly. This API is uncached
+/// and opt-in; it does not alter `compile_block` or existing admissions.
+pub fn compile_block_for_native_register_v1(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &NativeRegisterV1Admission,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    compile_native_register_v1_inner(
+        code,
+        entry_rip,
+        admission,
+        crate::block_emitter::FlagMaterializationStrategy::Eager,
+    )
+}
+
+/// Compile an uncached demand-flags candidate for the exact S3-33n union.
+pub fn compile_block_for_native_register_v1_demand_flags_candidate(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &NativeRegisterV1Admission,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    compile_native_register_v1_inner(
+        code,
+        entry_rip,
+        admission,
+        crate::block_emitter::FlagMaterializationStrategy::DemandDrivenCandidate,
+    )
+}
+
+fn compile_native_register_v1_inner(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &NativeRegisterV1Admission,
+    strategy: crate::block_emitter::FlagMaterializationStrategy,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    if !admission.matches_code(code) {
+        return Err(BlockCompileError::NativeRegisterV1AdmissionDoesNotMatchCode);
+    }
+    if !admission.contains(entry_rip) {
+        return Err(BlockCompileError::NativeRegisterV1EntryNotAdmitted { entry_rip });
+    }
+    let built = block::build_block_for_native_register_v1(
+        code,
+        entry_rip,
+        AccessContext::default(),
+        BlockLimits::default(),
+    )
+    .map_err(BlockCompileError::Build)?;
+    let lowered = match lowering::lower_for_native_register_v1(&built, admission)
+        .map_err(BlockCompileError::Lowering)?
+    {
+        LoweringOutcome::Program(lowered) => lowered,
+        LoweringOutcome::NoNativePrefix {
+            rip,
+            reason,
+            deferred_error,
+        } => {
+            return Ok(BlockCompileOutcome::NoNativePrefix {
+                rip,
+                reason,
+                deferred_error,
+            });
+        }
+    };
+    if let BuildOutcome::Block(block) = &built {
+        for instruction in &block.instructions {
+            for rip in [instruction.guest_rip, instruction.next_rip] {
+                if !admission.contains(rip) {
+                    return Err(BlockCompileError::DispatchBlockBoundaryNotAdmitted { rip });
+                }
+            }
+        }
+    }
+    compile_lowered(code.code_end(), lowered, strategy)
+}
+
 fn compile_native_dec_rax_inner(
     code: CodeView<'_>,
     entry_rip: u64,
@@ -2416,6 +2495,70 @@ mod tests {
             }));
             assert!(compiled.emitted().pc_map().ranges().iter().any(|range| {
                 range.guest_rip == crate::statepoints::GuestRipSource::Fixed(0xB504)
+            }));
+            assert!(compiled.emitted().safe_entry_provenance());
+        }
+    }
+
+    #[test]
+    fn native_register_v1_mixed_compiler_preserves_statepoints_and_boundaries() {
+        let code = [
+            0x48, 0x83, 0xc0, 0x80, // ADD RAX, -128 (full flag writer)
+            0x48, 0x87, 0xd8, // XCHG RAX, RBX (preserving op)
+            0x48, 0x8d, 0x43, 0x80, // LEA RAX, [RBX-128]
+            0x48, 0x8d, 0x05, 0x01, 0x00, 0x00, 0x00, // RIP-relative LEA
+            0x74, 0x00, // branch consumes flags and targets code end
+        ];
+        let view = CodeView::new(0xC000, &code).unwrap();
+        let admission = NativeRegisterV1Admission::from_code(view).unwrap();
+        let mut changed = code;
+        changed[3] ^= 1;
+        assert!(matches!(
+            compile_block_for_native_register_v1(
+                CodeView::new(0xC000, &changed).unwrap(),
+                0xC000,
+                &admission,
+            ),
+            Err(BlockCompileError::NativeRegisterV1AdmissionDoesNotMatchCode)
+        ));
+        assert!(matches!(
+            compile_block_for_native_register_v1(
+                CodeView::new(0xC000, &code[..code.len() - 1]).unwrap(),
+                0xC000,
+                &admission,
+            ),
+            Err(BlockCompileError::NativeRegisterV1AdmissionDoesNotMatchCode)
+        ));
+        assert!(matches!(
+            compile_block_for_native_register_v1(view, 0xC001, &admission),
+            Err(BlockCompileError::NativeRegisterV1EntryNotAdmitted { entry_rip: 0xC001 })
+        ));
+        for candidate in [false, true] {
+            let outcome = if candidate {
+                compile_block_for_native_register_v1_demand_flags_candidate(
+                    view, 0xC000, &admission,
+                )
+            } else {
+                compile_block_for_native_register_v1(view, 0xC000, &admission)
+            }
+            .unwrap();
+            let BlockCompileOutcome::Compiled(compiled) = outcome else {
+                panic!("mixed NativeRegisterV1 block should compile");
+            };
+            assert_eq!(compiled.code_end(), view.code_end());
+            assert_eq!(compiled.emitted().pc_map().instruction_count(), 5);
+            let map = compiled.emitted().pc_map();
+            let rip_lea = 0xC000 + 11;
+            assert!(map.ranges().iter().any(|range| {
+                range.guest_rip == crate::statepoints::GuestRipSource::Fixed(rip_lea)
+                    && range.phase != crate::statepoints::StatePhase::Exit
+            }));
+            assert_eq!(map.boundaries().len(), 5);
+            assert!(map.boundaries().iter().any(|boundary| {
+                matches!(boundary.rip,
+                    crate::statepoints::GuestRipBoundary::BranchSelection { target_rip, fallthrough_rip }
+                    if target_rip == view.code_end() && fallthrough_rip == view.code_end())
+                    && boundary.snapshot == crate::statepoints::SnapshotAdmissibility::CanonicalBoundary
             }));
             assert!(compiled.emitted().safe_entry_provenance());
         }

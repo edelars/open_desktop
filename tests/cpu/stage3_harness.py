@@ -318,6 +318,18 @@ ADDITIONAL_TEST_GATES = (
         "s3_33m_native_lea_rax_rip_disp32_host", "local_acceptance", "od-host",
         "tests::native_lea_rax_rip_disp32_matches_interpreter_without_data_access",
     ),
+    (
+        "s3_33n_native_register_v1_admission", "local_acceptance", "od-jit",
+        "block::tests::native_register_v1_admission_is_exact_and_combines_all_committed_forms",
+    ),
+    (
+        "s3_33n_native_register_v1_compiler", "local_acceptance", "od-jit",
+        "block_compile::tests::native_register_v1_mixed_compiler_preserves_statepoints_and_boundaries",
+    ),
+    (
+        "s3_33n_native_register_v1_host", "local_acceptance", "od-host",
+        "tests::native_register_v1_mixed_matches_interpreter_and_bounded_ordered_pair_corpus",
+    ),
 )
 RUST_TEST_GATES = (
     *(

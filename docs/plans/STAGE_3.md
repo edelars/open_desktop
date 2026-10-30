@@ -254,6 +254,7 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-31 | Прямые связи блоков, если оправданы | S3-25, S3-28, S3-30 |
 | [ ] | S3-32 | Локальные IR-преобразования, если оправданы | S3-03, S3-27, S3-30 |
 | [ ] | S3-33 | Расширение lowering по готовности S2 | S3-27, S3-29; готовый interpreter/native subset |
+| [partial] | S3-33n | Composed uncached `NativeRegisterV1` admission/lowering for committed S3-33a–m forms | Existing exact admissions; implementation and acceptance evidence pending |
 | [ ] | S3-34 | Corpus, reducer и негативные проверки | S3-24–S3-33 в принятой конфигурации |
 | [partial] | S3-34f | Exact local acceptance gates for bounded S3-28/29/38 slices | S3-34e, S3-28a/b, S3-29a–e, S3-38a; full suite gates remain open |
 | [partial] | S3-34i | Exact local gates for native arithmetic slices | S3-34e, S3-33a–d; full S3-34 gates remain open |
@@ -2554,6 +2555,40 @@ callbacks. Результат — только local differential evidence; от
 подтверждение exact bytes не заявляется. Stage 2 и owner/MMU вне scope; Mini и
 performance остаются not_run до конца Stage 3. См.
 [S3-33m report](../reports/STAGE_3_S3-33m_2026-10-30.md).
+
+#### S3-33n. Composed exact native register profile
+
+Add one separate opt-in, uncached `NativeRegisterV1` admission and eager /
+demand-flags-candidate compile/dispatch path. Its accepted language is exactly
+the union of the restricted S0-09 baseline, the already admitted bare NOP
+interpreter fallback, and the exact extra forms committed in S3-33a–m:
+
+- `48 FF C0` / `48 FF C8` / `48 F7 D8` / `48 F7 D0` (`INC` / `DEC` / `NEG` / `NOT RAX`);
+- `48 83 C0 ib` / `48 83 F8 ib` / `48 83 E8 ib` (`ADD` / `CMP` / `SUB RAX,sign-extended imm8`);
+- `48 C7 C0 id` (`MOV RAX,sign-extended imm32`), `48 87 D8` (`XCHG RAX,RBX`);
+- `48 8D 03`, `48 8D 43 db`, `48 8D 04 0B`, and `48 8D 05 dd dd dd dd`
+  (the four committed RAX LEA forms).
+
+Use one complete-code decode/admission witness and one instruction-boundary
+map; do not compose whole-program admission calls in series. Bind each admitted
+extra to its existing exact predicate, source bytes, decoded operands and
+signed displacement/immediate. Reject every other width, register, prefix,
+memory data operation, encoding variant and any branch target in an instruction
+interior across these variable lengths. Only a bare admitted NOP may route to
+the interpreter. Lower each admitted form through its existing exact semantic
+handler; leave every isolated S3-33a–m admission/API unchanged.
+
+The targeted admission, mixed compiler/statepoint, and host parity gates have
+passed. The five-instruction mixed compiler case remains below the existing
+4096-byte emission cap and checks eager/candidate pending-ZF taken and
+fallthrough MOV paths, STOP/budget boundaries, and bare-NOP fallback/control.
+The host gate compares eager/candidate execution with the interpreter over
+exactly 169 ordered pairs from 13 forms using seed `0x5333_336e_7265_6731`;
+failure output includes seed, pair, bytes, and initial state. Harness
+self-checks passed 28/28. Independent review and the full local suite remain
+pending. Mini, performance, Stage 2 and owner/MMU checks remain `not_run` or
+outside this slice. See
+[S3-33n report](../reports/STAGE_3_S3-33n_2026-10-30.md).
 
 ## 9. Проверка, производительность и интеграция
 

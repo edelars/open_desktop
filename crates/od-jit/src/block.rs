@@ -29,6 +29,7 @@ enum BlockBuildProfile {
     S0_09NativeCmpRaxImm8,
     S0_09NativeSubRaxImm8,
     S0_09NativeMovRaxImm32,
+    S0_09NativeRegisterV1,
     CheckedQwordLoad,
     CheckedQwordStore,
     CheckedQwordMemoryPair,
@@ -259,6 +260,41 @@ pub struct S0_09NopMovRaxImm32Admission {
     boundaries: AdmittedInstructionBoundaries,
     nop_rips: Vec<u64>,
     mov_rax_imm32_values: Vec<(u64, u64)>,
+}
+
+/// Opt-in union of the committed exact native register forms in S3-33a–m,
+/// the S0-09 baseline, and the exact bare-NOP interpreter handoff.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeRegisterV1Admission {
+    boundaries: AdmittedInstructionBoundaries,
+    instructions: Vec<NativeRegisterV1AdmittedInstruction>,
+    nop_rips: Vec<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NativeRegisterV1Instruction {
+    IncRax,
+    DecRax,
+    NegRax,
+    NotRax,
+    AddRaxImm8(u64),
+    CmpRaxImm8(u64),
+    SubRaxImm8(u64),
+    MovRaxImm32(u64),
+    XchgRaxRbx,
+    LeaRaxRbx,
+    LeaRaxRbxDisp8(i64),
+    LeaRaxRbxRcx,
+    LeaRaxRipDisp32(i64),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NativeRegisterV1AdmittedInstruction {
+    rip: u64,
+    next_rip: u64,
+    decoded: Instruction,
+    source_bytes: Vec<u8>,
+    native: Option<NativeRegisterV1Instruction>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1563,6 +1599,191 @@ impl S0_09NopMovRaxImm32Admission {
     }
 }
 
+impl NativeRegisterV1Admission {
+    /// Admit one complete immutable view in a single decoder pass. The stored
+    /// records bind each boundary to its decoder result, exact source bytes,
+    /// and (for the added native forms) the already-decoded operand value.
+    pub fn from_code(code: CodeView<'_>) -> Result<Self, S0_09NopAdmissionError> {
+        let mut rip = code.base_rip();
+        let mut boundaries = Vec::new();
+        let mut instructions = Vec::new();
+        let mut nop_rips = Vec::new();
+
+        while rip < code.code_end() {
+            let offset = usize::try_from(rip - code.base_rip())
+                .map_err(|_| S0_09NopAdmissionError::RangeOverflow { rip, length: 0 })?;
+            let mut memory = CodeMemory::full_code(code);
+            let decoded = long_decode::decode(&mut memory, rip, AccessContext::default())
+                .map_err(|error| S0_09NopAdmissionError::Decode { rip, error })?;
+            if !(1..=15).contains(&decoded.length) {
+                return Err(S0_09NopAdmissionError::InvalidLength {
+                    rip,
+                    length: decoded.length,
+                });
+            }
+            let next_rip = rip.checked_add(u64::from(decoded.length)).ok_or(
+                S0_09NopAdmissionError::RangeOverflow {
+                    rip,
+                    length: decoded.length,
+                },
+            )?;
+            if next_rip > code.code_end() {
+                return Err(S0_09NopAdmissionError::RangeOverflow {
+                    rip,
+                    length: decoded.length,
+                });
+            }
+            let source_bytes = code.bytes()[offset..offset + usize::from(decoded.length)].to_vec();
+            let native = native_register_v1_instruction(decoded, &source_bytes);
+            let nop = is_exact_bare_nop(decoded, source_bytes[0]);
+            if !nop && native.is_none() && !is_s0_09_form(decoded) {
+                return Err(S0_09NopAdmissionError::UnsupportedInstruction { rip });
+            }
+            if nop {
+                nop_rips.push(rip);
+            }
+            boundaries.push(rip);
+            instructions.push(NativeRegisterV1AdmittedInstruction {
+                rip,
+                next_rip,
+                decoded,
+                source_bytes,
+                native,
+            });
+            rip = next_rip;
+        }
+        boundaries.push(code.code_end());
+
+        for instruction in &instructions {
+            let Operation::Branch { displacement, .. } = instruction.decoded.operation else {
+                continue;
+            };
+            let target = instruction
+                .next_rip
+                .wrapping_add_signed(i64::from(displacement));
+            if !boundaries.contains(&target) {
+                return Err(S0_09NopAdmissionError::BranchTargetNotBoundary {
+                    rip: instruction.rip,
+                    target,
+                });
+            }
+        }
+
+        Ok(Self {
+            boundaries: AdmittedInstructionBoundaries {
+                code_base: code.base_rip(),
+                code_end: code.code_end(),
+                code_bytes: code.bytes().to_vec(),
+                boundaries,
+            },
+            instructions,
+            nop_rips,
+        })
+    }
+
+    pub(crate) fn boundaries(&self) -> &AdmittedInstructionBoundaries {
+        &self.boundaries
+    }
+
+    pub(crate) fn matches_code(&self, code: CodeView<'_>) -> bool {
+        self.boundaries.matches_code(code)
+    }
+
+    pub(crate) fn contains(&self, rip: u64) -> bool {
+        self.boundaries.contains(rip)
+    }
+
+    pub(crate) fn admits_nop(&self, rip: u64) -> bool {
+        self.nop_rips.contains(&rip)
+    }
+
+    pub(crate) fn instruction(&self, rip: u64) -> Option<NativeRegisterV1Instruction> {
+        self.instructions
+            .iter()
+            .find(|instruction| instruction.rip == rip)
+            .and_then(|instruction| {
+                let _captured_source = &instruction.source_bytes;
+                Some(instruction.native?)
+            })
+    }
+
+    pub(crate) fn validates_decoded(&self, rip: u64, decoded: Instruction) -> bool {
+        self.instructions
+            .iter()
+            .find(|instruction| instruction.rip == rip)
+            .is_some_and(|instruction| instruction.decoded == decoded)
+    }
+}
+
+fn native_register_v1_instruction(
+    decoded: Instruction,
+    bytes: &[u8],
+) -> Option<NativeRegisterV1Instruction> {
+    if is_exact_inc_rax(decoded, bytes) {
+        Some(NativeRegisterV1Instruction::IncRax)
+    } else if is_exact_dec_rax(decoded, bytes) {
+        Some(NativeRegisterV1Instruction::DecRax)
+    } else if is_exact_neg_rax(decoded, bytes) {
+        Some(NativeRegisterV1Instruction::NegRax)
+    } else if is_exact_not_rax(decoded, bytes) {
+        Some(NativeRegisterV1Instruction::NotRax)
+    } else if is_exact_add_rax_imm8(decoded, bytes) {
+        let Operation::Arithmetic {
+            src: Operand::Immediate(value),
+            ..
+        } = decoded.operation
+        else {
+            return None;
+        };
+        Some(NativeRegisterV1Instruction::AddRaxImm8(value))
+    } else if is_exact_cmp_rax_imm8(decoded, bytes) {
+        let Operation::Arithmetic {
+            src: Operand::Immediate(value),
+            ..
+        } = decoded.operation
+        else {
+            return None;
+        };
+        Some(NativeRegisterV1Instruction::CmpRaxImm8(value))
+    } else if is_exact_sub_rax_imm8(decoded, bytes) {
+        let Operation::Arithmetic {
+            src: Operand::Immediate(value),
+            ..
+        } = decoded.operation
+        else {
+            return None;
+        };
+        Some(NativeRegisterV1Instruction::SubRaxImm8(value))
+    } else if is_exact_mov_rax_imm32(decoded, bytes) {
+        let Operation::MovImmediate { value, .. } = decoded.operation else {
+            return None;
+        };
+        Some(NativeRegisterV1Instruction::MovRaxImm32(value))
+    } else if is_exact_xchg_rax_rbx(decoded, bytes) {
+        Some(NativeRegisterV1Instruction::XchgRaxRbx)
+    } else if is_exact_lea_rax_rbx(decoded, bytes) {
+        Some(NativeRegisterV1Instruction::LeaRaxRbx)
+    } else if is_exact_lea_rax_rbx_disp8(decoded, bytes) {
+        let Operation::Lea { src, .. } = decoded.operation else {
+            return None;
+        };
+        Some(NativeRegisterV1Instruction::LeaRaxRbxDisp8(
+            src.displacement,
+        ))
+    } else if is_exact_lea_rax_rbx_rcx(decoded, bytes) {
+        Some(NativeRegisterV1Instruction::LeaRaxRbxRcx)
+    } else if is_exact_lea_rax_rip_disp32(decoded, bytes) {
+        let Operation::Lea { src, .. } = decoded.operation else {
+            return None;
+        };
+        Some(NativeRegisterV1Instruction::LeaRaxRipDisp32(
+            src.displacement,
+        ))
+    } else {
+        None
+    }
+}
+
 pub(crate) fn is_exact_mov_rax_imm32(instruction: Instruction, bytes: &[u8]) -> bool {
     matches!(instruction.operation,
         Operation::MovImmediate { dst: Operand::Register(dst), .. }
@@ -2271,6 +2492,21 @@ pub(crate) fn build_block_for_native_mov_rax_imm32(
     )
 }
 
+pub(crate) fn build_block_for_native_register_v1(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    context: AccessContext,
+    limits: BlockLimits,
+) -> Result<BuildOutcome, BuildError> {
+    build_block_with_profile(
+        code,
+        entry_rip,
+        context,
+        limits,
+        BlockBuildProfile::S0_09NativeRegisterV1,
+    )
+}
+
 /// Build one exact checked-qword-load candidate. This profile is opt-in and
 /// stops after its first instruction; it does not widen the S0-09 block path.
 pub(crate) fn build_checked_qword_load_block(
@@ -2912,6 +3148,9 @@ fn build_block_with_profile(
             is_s0_09_form(decoded) || is_exact_sub_rax_imm8(decoded, &code.bytes[guest_offset..])
         } else if profile == BlockBuildProfile::S0_09NativeMovRaxImm32 {
             is_s0_09_form(decoded) || is_exact_mov_rax_imm32(decoded, &code.bytes[guest_offset..])
+        } else if profile == BlockBuildProfile::S0_09NativeRegisterV1 {
+            is_s0_09_form(decoded)
+                || native_register_v1_instruction(decoded, &code.bytes[guest_offset..]).is_some()
         } else {
             is_s0_09_form(decoded)
         };
@@ -3000,7 +3239,8 @@ fn build_block_with_profile(
             | BlockBuildProfile::S0_09NativeLeaRaxRipDisp32
             | BlockBuildProfile::S0_09NativeXchgRaxRbx
             | BlockBuildProfile::S0_09NativeAddRaxImm8
-            | BlockBuildProfile::S0_09NativeCmpRaxImm8 => false,
+            | BlockBuildProfile::S0_09NativeCmpRaxImm8
+            | BlockBuildProfile::S0_09NativeRegisterV1 => false,
             BlockBuildProfile::S0_09NativeSubRaxImm8
             | BlockBuildProfile::S0_09NativeMovRaxImm32 => false,
         };
@@ -4130,6 +4370,127 @@ mod tests {
                 Err(BuildError::InvalidLimits { .. })
             ));
         }
+    }
+
+    #[test]
+    fn native_register_v1_admission_is_exact_and_combines_all_committed_forms() {
+        let forms: [&[u8]; 13] = [
+            &[0x48, 0xff, 0xc0],
+            &[0x48, 0xff, 0xc8],
+            &[0x48, 0xf7, 0xd8],
+            &[0x48, 0xf7, 0xd0],
+            &[0x48, 0x83, 0xc0, 0x80],
+            &[0x48, 0x83, 0xf8, 0x7f],
+            &[0x48, 0x83, 0xe8, 0xff],
+            &[0x48, 0xc7, 0xc0, 0x00, 0x00, 0x00, 0x80],
+            &[0x48, 0x87, 0xd8],
+            &[0x48, 0x8d, 0x03],
+            &[0x48, 0x8d, 0x43, 0x80],
+            &[0x48, 0x8d, 0x04, 0x0b],
+            &[0x48, 0x8d, 0x05, 0x01, 0x00, 0x00, 0x00],
+        ];
+        let mut bytes = vec![0x90, 0x48, 0xb8, 1, 0, 0, 0, 0, 0, 0, 0];
+        for form in forms {
+            bytes.extend_from_slice(form);
+        }
+        let view = CodeView::new(0x1200, &bytes).unwrap();
+        let admission = NativeRegisterV1Admission::from_code(view).unwrap();
+        assert!(admission.admits_nop(0x1200));
+        assert_eq!(admission.boundaries.boundaries.len(), 16);
+        assert!(admission.boundaries.contains(view.code_end()));
+        assert!(matches!(
+            admission.instruction(0x1200 + 11),
+            Some(NativeRegisterV1Instruction::IncRax)
+        ));
+        let native_count = admission
+            .instructions
+            .iter()
+            .filter(|instruction| instruction.native.is_some())
+            .count();
+        assert_eq!(native_count, 13);
+        assert_eq!(
+            admission.instruction(0x1200 + 11 + 12),
+            Some(NativeRegisterV1Instruction::AddRaxImm8((-128i64) as u64))
+        );
+        assert_eq!(
+            admission.instruction(view.code_end() - 7),
+            Some(NativeRegisterV1Instruction::LeaRaxRipDisp32(1))
+        );
+
+        macro_rules! assert_old_admission_rejects_foreign_form {
+            ($admission:ty, $index:expr) => {{
+                let mut isolated = forms[$index].to_vec();
+                isolated.extend_from_slice(forms[($index + 1) % forms.len()]);
+                let isolated_view = CodeView::new(0x1a00, &isolated).unwrap();
+                assert!(matches!(
+                    <$admission>::from_code(isolated_view),
+                    Err(S0_09NopAdmissionError::UnsupportedInstruction { .. })
+                ));
+            }};
+        }
+        assert_old_admission_rejects_foreign_form!(S0_09NopIncRaxAdmission, 0);
+        assert_old_admission_rejects_foreign_form!(S0_09NopDecRaxAdmission, 1);
+        assert_old_admission_rejects_foreign_form!(S0_09NopNegRaxAdmission, 2);
+        assert_old_admission_rejects_foreign_form!(S0_09NopNotRaxAdmission, 3);
+        assert_old_admission_rejects_foreign_form!(S0_09NopAddRaxImm8Admission, 4);
+        assert_old_admission_rejects_foreign_form!(S0_09NopCmpRaxImm8Admission, 5);
+        assert_old_admission_rejects_foreign_form!(S0_09NopSubRaxImm8Admission, 6);
+        assert_old_admission_rejects_foreign_form!(S0_09NopMovRaxImm32Admission, 7);
+        assert_old_admission_rejects_foreign_form!(S0_09NopXchgRaxRbxAdmission, 8);
+        assert_old_admission_rejects_foreign_form!(S0_09NopLeaRaxRbxAdmission, 9);
+        assert_old_admission_rejects_foreign_form!(S0_09NopLeaRaxRbxDisp8Admission, 10);
+        assert_old_admission_rejects_foreign_form!(S0_09NopLeaRaxRbxRcxAdmission, 11);
+        assert_old_admission_rejects_foreign_form!(S0_09NopLeaRaxRipDisp32Admission, 12);
+
+        for foreign in [
+            &[0x48, 0xff, 0xc1][..],             // INC RCX
+            &[0x49, 0xff, 0xc0][..],             // different REX
+            &[0x48, 0x8d, 0x83, 0, 0, 0, 0][..], // disp32 variant
+            &[0x48, 0x89, 0x03][..],             // memory data operation
+        ] {
+            let view = CodeView::new(0x2200, foreign).unwrap();
+            assert!(matches!(
+                NativeRegisterV1Admission::from_code(view),
+                Err(S0_09NopAdmissionError::UnsupportedInstruction { rip: 0x2200 })
+            ));
+        }
+
+        let interior_targets: [(&[u8], usize); 4] = [
+            (&[0x48, 0xff, 0xc0], 3),
+            (&[0x48, 0x83, 0xc0, 0x01], 4),
+            (&[0x48, 0xc7, 0xc0, 0x01, 0, 0, 0], 7),
+            (&[0x48, 0xb8, 1, 0, 0, 0, 0, 0, 0, 0], 10),
+        ];
+        for (form, length) in interior_targets {
+            for interior_offset in 1..length {
+                let mut branch = vec![0x74, interior_offset as u8];
+                branch.extend_from_slice(form);
+                let target = 0x3200 + 2 + interior_offset as u64;
+                assert!(matches!(
+                    NativeRegisterV1Admission::from_code(
+                        CodeView::new(0x3200, &branch).unwrap()
+                    ),
+                    Err(S0_09NopAdmissionError::BranchTargetNotBoundary {
+                        target: actual,
+                        ..
+                    }) if actual == target
+                ));
+            }
+        }
+        let branch_over_variable_lengths = [
+            0x74, 0x04, 0x48, 0x83, 0xc0, 0x01, 0x48, 0x8d, 0x05, 0, 0, 0, 0,
+        ];
+        let branch_admission = NativeRegisterV1Admission::from_code(
+            CodeView::new(0x4200, &branch_over_variable_lengths).unwrap(),
+        )
+        .unwrap();
+        assert!(branch_admission.contains(0x4206));
+
+        let isolated = [0x48, 0xff, 0xc0, 0x48, 0xff, 0xc8];
+        assert!(matches!(
+            S0_09NopIncRaxAdmission::from_code(CodeView::new(0x5200, &isolated).unwrap()),
+            Err(S0_09NopAdmissionError::UnsupportedInstruction { rip: 0x5203 })
+        ));
     }
 }
 

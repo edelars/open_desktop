@@ -311,6 +311,15 @@ separate and uncached. This proves register exchange only; it makes no memory
 atomicity claim. Mini and performance checks remain deferred until Stage 3
 ends. See [S3-33i report](../../docs/reports/STAGE_3_S3-33i_2026-10-30.md).
 
+S3-33n adds a separate opt-in, uncached `NativeRegisterV1Admission` that
+composes only restricted S0-09, the existing bare-NOP interpreter fallback,
+and the exact native forms already committed by S3-33a–m. It uses one
+complete-code admission/boundary witness and reuses the existing exact
+per-instruction lowering semantics. Eager and demand-flags-candidate compile
+and dispatch are explicit APIs; isolated exact profile admissions remain
+unchanged. Implementation and verification status are tracked in the
+[S3-33n report](../../docs/reports/STAGE_3_S3-33n_2026-10-30.md).
+
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).
 Проверки корректности и измерений по задачам этапа — в

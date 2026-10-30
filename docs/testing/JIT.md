@@ -287,6 +287,40 @@ differential only and has no physical fixture claim. Mini/performance remain
 deferred until Stage 3 ends. See
 [S3-33m report](../reports/STAGE_3_S3-33m_2026-10-30.md).
 
+## S3-33n: composed exact native register profile
+
+Run the three S3-33n exact gates through `python3
+tests/cpu/stage3_harness.py --suite local`: union admission,
+mixed compiler/statepoints, and host full-state parity/corpus. The admission
+gate checks the exact union of restricted S0-09, bare NOP fallback, and the
+already committed S3-33a–m forms; it also reruns the old isolated profile
+negative witnesses to ensure foreign extras remain rejected there. Check all
+variable-length boundary starts, branch targets at starts and instruction
+interiors, exact-code binding, truncation, and disallowed register/width/prefix
+and memory-data variants.
+
+The compiler gate mixes many or all admitted forms, branches across their exact
+boundaries, and places RIP-relative LEA after a differently sized predecessor.
+Compare eager and demand-flags-candidate snapshots and PC maps, including a
+pending full writer → partial writer → flags-preserving operation → XCHG →
+branch chain. Exercise STOP/budget immediately before and after every opcode
+boundary, plus bare-NOP fallback and control behavior.
+
+The host gate compares complete interpreter/native state, flags and definedness,
+RIP, and total/native/interpreter retirement. It includes decoder-owned
+immediates/displacements, pending/saved operands across the XCHG/branch path,
+and a bounded deterministic ordered-pair corpus over the 13 exact extra forms.
+The targeted host test passed exactly 169 ordered pairs with seed
+`0x5333_336e_7265_6731`; failures print seed, pair, bytes, and initial state.
+The mixed compiler case passed with five instructions under the existing
+4096-byte cap. Eager and candidate paths cover pending-ZF taken and fallthrough
+through distinct MOV paths, STOP/budget boundaries, and bare-NOP fallback /
+control. The three targeted Rust identities passed, as did 28/28 harness
+self-checks. Independent review and the full local suite remain pending. Mini,
+performance, Stage 2, and owner/MMU checks remain `not_run` or outside this
+slice. See
+[S3-33n report](../reports/STAGE_3_S3-33n_2026-10-30.md).
+
 ## Срез A: один register-only блок
 
 1. Использовать только точные S0-09 формы из JIT contract и fixtures с

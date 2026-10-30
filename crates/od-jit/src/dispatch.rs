@@ -9,7 +9,9 @@ use od_isa::execute::StepOutcome;
 use od_isa::memory::{AccessContext, MemoryError};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use crate::block::{AdmittedInstructionBoundaries, CodeMemory, CodeView};
+use crate::block::{
+    AdmittedInstructionBoundaries, CodeMemory, CodeView, NativeRegisterV1Admission,
+};
 use crate::block_compile::{
     BlockCompileError, BlockCompileOutcome, build_dispatch_block, compile_block_for_dispatch,
     compile_block_for_native_add_rax_imm8,
@@ -29,6 +31,8 @@ use crate::block_compile::{
     compile_block_for_native_mov_rax_imm32_demand_flags_candidate,
     compile_block_for_native_neg_rax, compile_block_for_native_neg_rax_demand_flags_candidate,
     compile_block_for_native_not_rax, compile_block_for_native_not_rax_demand_flags_candidate,
+    compile_block_for_native_register_v1,
+    compile_block_for_native_register_v1_demand_flags_candidate,
     compile_block_for_native_sub_rax_imm8,
     compile_block_for_native_sub_rax_imm8_demand_flags_candidate,
     compile_block_for_native_xchg_rax_rbx,
@@ -1550,6 +1554,48 @@ pub fn run_with_nop_fallback_demand_flags_candidate<E: ControlledBlockExecutor>(
     )
 }
 
+/// Run the opt-in S3-33n exact-form union without a shared translation cache.
+/// Only admitted bare NOP instructions are handed to the interpreter.
+pub fn run_with_native_register_v1<E: ControlledBlockExecutor>(
+    code: CodeView<'_>,
+    admission: &NativeRegisterV1Admission,
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    executor: &mut E,
+) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
+    run_with_nop_fallback_strategy(
+        code,
+        FallbackAdmission::NativeRegisterV1(admission),
+        state,
+        total_budget,
+        control,
+        executor,
+        NopFallbackCompilation::NativeRegisterV1,
+    )
+}
+
+/// Demand-flags correctness candidate for [`run_with_native_register_v1`].
+/// It remains uncached; eager compilation is the reference path.
+pub fn run_with_native_register_v1_demand_flags_candidate<E: ControlledBlockExecutor>(
+    code: CodeView<'_>,
+    admission: &NativeRegisterV1Admission,
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    executor: &mut E,
+) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
+    run_with_nop_fallback_strategy(
+        code,
+        FallbackAdmission::NativeRegisterV1(admission),
+        state,
+        total_budget,
+        control,
+        executor,
+        NopFallbackCompilation::NativeRegisterV1DemandFlagsCandidate,
+    )
+}
+
 /// Opt-in uncached dispatcher that admits exact `INC RAX` interpreter
 /// handoffs between native S0-09 prefixes. Existing NOP-only APIs remain
 /// bounded by their original admission type.
@@ -2143,6 +2189,8 @@ enum NopFallbackCompilation {
     NativeSubRaxImm8DemandFlagsCandidate,
     NativeMovRaxImm32,
     NativeMovRaxImm32DemandFlagsCandidate,
+    NativeRegisterV1,
+    NativeRegisterV1DemandFlagsCandidate,
 }
 
 #[derive(Clone, Copy)]
@@ -2161,6 +2209,7 @@ enum FallbackAdmission<'a> {
     NopCmpRaxImm8(&'a CmpRaxImm8InterpreterFallbackAdmission),
     NopSubRaxImm8(&'a SubRaxImm8InterpreterFallbackAdmission),
     NopMovRaxImm32(&'a MovRaxImm32InterpreterFallbackAdmission),
+    NativeRegisterV1(&'a NativeRegisterV1Admission),
 }
 
 impl FallbackAdmission<'_> {
@@ -2180,6 +2229,7 @@ impl FallbackAdmission<'_> {
             Self::NopCmpRaxImm8(admission) => admission.matches_code(code),
             Self::NopSubRaxImm8(admission) => admission.matches_code(code),
             Self::NopMovRaxImm32(admission) => admission.matches_code(code),
+            Self::NativeRegisterV1(admission) => admission.matches_code(code),
         }
     }
     fn contains(self, rip: u64) -> bool {
@@ -2198,6 +2248,7 @@ impl FallbackAdmission<'_> {
             Self::NopCmpRaxImm8(admission) => admission.contains(rip),
             Self::NopSubRaxImm8(admission) => admission.contains(rip),
             Self::NopMovRaxImm32(admission) => admission.contains(rip),
+            Self::NativeRegisterV1(admission) => admission.contains(rip),
         }
     }
     fn admits_nop(self, rip: u64) -> bool {
@@ -2216,10 +2267,15 @@ impl FallbackAdmission<'_> {
             Self::NopCmpRaxImm8(admission) => admission.admits_nop(rip),
             Self::NopSubRaxImm8(admission) => admission.admits_nop(rip),
             Self::NopMovRaxImm32(admission) => admission.admits_nop(rip),
+            Self::NativeRegisterV1(admission) => admission.admits_nop(rip),
         }
     }
     fn admits_inc_rax(self, rip: u64) -> bool {
         match self {
+            Self::NativeRegisterV1(admission) => matches!(
+                admission.instruction(rip),
+                Some(crate::block::NativeRegisterV1Instruction::IncRax)
+            ),
             Self::Nop(_)
             | Self::NopDecRax(_)
             | Self::NopNegRax(_)
@@ -2238,6 +2294,10 @@ impl FallbackAdmission<'_> {
     }
     fn admits_dec_rax(self, rip: u64) -> bool {
         match self {
+            Self::NativeRegisterV1(admission) => matches!(
+                admission.instruction(rip),
+                Some(crate::block::NativeRegisterV1Instruction::DecRax)
+            ),
             Self::Nop(_)
             | Self::NopIncRax(_)
             | Self::NopNegRax(_)
@@ -2256,66 +2316,112 @@ impl FallbackAdmission<'_> {
     }
     fn admits_neg_rax(self, rip: u64) -> bool {
         match self {
+            Self::NativeRegisterV1(admission) => matches!(
+                admission.instruction(rip),
+                Some(crate::block::NativeRegisterV1Instruction::NegRax)
+            ),
             Self::NopNegRax(admission) => admission.admits_neg_rax(rip),
             _ => false,
         }
     }
     fn admits_not_rax(self, rip: u64) -> bool {
         match self {
+            Self::NativeRegisterV1(admission) => matches!(
+                admission.instruction(rip),
+                Some(crate::block::NativeRegisterV1Instruction::NotRax)
+            ),
             Self::NopNotRax(admission) => admission.admits_not_rax(rip),
             _ => false,
         }
     }
     fn admits_lea_rax_rbx(self, rip: u64) -> bool {
         match self {
+            Self::NativeRegisterV1(admission) => matches!(
+                admission.instruction(rip),
+                Some(crate::block::NativeRegisterV1Instruction::LeaRaxRbx)
+            ),
             Self::NopLeaRaxRbx(admission) => admission.admits_lea_rax_rbx(rip),
             _ => false,
         }
     }
     fn admits_lea_rax_rbx_disp8(self, rip: u64) -> bool {
         match self {
+            Self::NativeRegisterV1(admission) => matches!(
+                admission.instruction(rip),
+                Some(crate::block::NativeRegisterV1Instruction::LeaRaxRbxDisp8(_))
+            ),
             Self::NopLeaRaxRbxDisp8(admission) => admission.admits_lea_rax_rbx_disp8(rip),
             _ => false,
         }
     }
     fn admits_lea_rax_rbx_rcx(self, rip: u64) -> bool {
         match self {
+            Self::NativeRegisterV1(admission) => matches!(
+                admission.instruction(rip),
+                Some(crate::block::NativeRegisterV1Instruction::LeaRaxRbxRcx)
+            ),
             Self::NopLeaRaxRbxRcx(admission) => admission.admits_lea_rax_rbx_rcx(rip),
             _ => false,
         }
     }
     fn admits_lea_rax_rip_disp32(self, rip: u64) -> bool {
         match self {
+            Self::NativeRegisterV1(admission) => matches!(
+                admission.instruction(rip),
+                Some(crate::block::NativeRegisterV1Instruction::LeaRaxRipDisp32(
+                    _
+                ))
+            ),
             Self::NopLeaRaxRipDisp32(admission) => admission.admits_lea_rax_rip_disp32(rip),
             _ => false,
         }
     }
     fn admits_xchg_rax_rbx(self, rip: u64) -> bool {
         match self {
+            Self::NativeRegisterV1(admission) => matches!(
+                admission.instruction(rip),
+                Some(crate::block::NativeRegisterV1Instruction::XchgRaxRbx)
+            ),
             Self::NopXchgRaxRbx(admission) => admission.admits_xchg_rax_rbx(rip),
             _ => false,
         }
     }
     fn admits_add_rax_imm8(self, rip: u64) -> bool {
         match self {
+            Self::NativeRegisterV1(admission) => matches!(
+                admission.instruction(rip),
+                Some(crate::block::NativeRegisterV1Instruction::AddRaxImm8(_))
+            ),
             Self::NopAddRaxImm8(admission) => admission.admits_add_rax_imm8(rip),
             _ => false,
         }
     }
     fn admits_cmp_rax_imm8(self, rip: u64) -> bool {
         match self {
+            Self::NativeRegisterV1(admission) => matches!(
+                admission.instruction(rip),
+                Some(crate::block::NativeRegisterV1Instruction::CmpRaxImm8(_))
+            ),
             Self::NopCmpRaxImm8(admission) => admission.admits_cmp_rax_imm8(rip),
             _ => false,
         }
     }
     fn admits_sub_rax_imm8(self, rip: u64) -> bool {
         match self {
+            Self::NativeRegisterV1(admission) => matches!(
+                admission.instruction(rip),
+                Some(crate::block::NativeRegisterV1Instruction::SubRaxImm8(_))
+            ),
             Self::NopSubRaxImm8(admission) => admission.admits_sub_rax_imm8(rip),
             _ => false,
         }
     }
     fn admits_mov_rax_imm32(self, rip: u64) -> bool {
         match self {
+            Self::NativeRegisterV1(admission) => matches!(
+                admission.instruction(rip),
+                Some(crate::block::NativeRegisterV1Instruction::MovRaxImm32(_))
+            ),
             Self::NopMovRaxImm32(admission) => admission.admits_mov_rax_imm32(rip),
             _ => false,
         }
@@ -2367,6 +2473,16 @@ fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
 
         let compiled =
             match (admission, compilation) {
+                (
+                    FallbackAdmission::NativeRegisterV1(admission),
+                    NopFallbackCompilation::NativeRegisterV1,
+                ) => compile_block_for_native_register_v1(code, state.rip, admission),
+                (
+                    FallbackAdmission::NativeRegisterV1(admission),
+                    NopFallbackCompilation::NativeRegisterV1DemandFlagsCandidate,
+                ) => compile_block_for_native_register_v1_demand_flags_candidate(
+                    code, state.rip, admission,
+                ),
                 (FallbackAdmission::Nop(admission), NopFallbackCompilation::Eager) => {
                     compile_block_for_nop_fallback(code, state.rip, admission)
                 }
@@ -2697,6 +2813,11 @@ fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
         let block = match compiled {
             BlockCompileOutcome::Compiled(block) => block,
             BlockCompileOutcome::NoNativePrefix { rip, .. } => {
+                if matches!(admission, FallbackAdmission::NativeRegisterV1(_))
+                    && !admission.admits_nop(rip)
+                {
+                    return Err(DispatchError::NoNativePrefix { rip });
+                }
                 if !(admission.admits_nop(rip)
                     || admission.admits_inc_rax(rip)
                     || admission.admits_dec_rax(rip)
@@ -2773,16 +2894,21 @@ fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
                         blocks_executed,
                     );
                 }
-                if !(admission.admits_nop(rip)
-                    || admission.admits_inc_rax(rip)
-                    || admission.admits_dec_rax(rip)
-                    || admission.admits_neg_rax(rip)
-                    || admission.admits_lea_rax_rbx(rip)
-                    || admission.admits_lea_rax_rbx_disp8(rip)
-                    || admission.admits_lea_rax_rbx_rcx(rip)
-                    || admission.admits_lea_rax_rip_disp32(rip)
-                    || admission.admits_add_rax_imm8(rip))
-                {
+                let fallback_admitted =
+                    if matches!(admission, FallbackAdmission::NativeRegisterV1(_)) {
+                        admission.admits_nop(rip)
+                    } else {
+                        admission.admits_nop(rip)
+                            || admission.admits_inc_rax(rip)
+                            || admission.admits_dec_rax(rip)
+                            || admission.admits_neg_rax(rip)
+                            || admission.admits_lea_rax_rbx(rip)
+                            || admission.admits_lea_rax_rbx_disp8(rip)
+                            || admission.admits_lea_rax_rbx_rcx(rip)
+                            || admission.admits_lea_rax_rip_disp32(rip)
+                            || admission.admits_add_rax_imm8(rip)
+                    };
+                if !fallback_admitted {
                     return Err(DispatchError::InterpreterInstructionNotAdmitted { rip });
                 }
                 if let Some(exit) = step_admitted_fallback(
@@ -2914,6 +3040,9 @@ fn step_admitted_fallback<E>(
     let is_add_rax_imm8 = admission.admits_add_rax_imm8(rip);
     let is_cmp_rax_imm8 = admission.admits_cmp_rax_imm8(rip);
     let is_mov_rax_imm32 = admission.admits_mov_rax_imm32(rip);
+    if matches!(admission, FallbackAdmission::NativeRegisterV1(_)) && !is_nop {
+        return Err(DispatchError::InterpreterInstructionNotAdmitted { rip });
+    }
     if !admission.matches_code(code)
         || !(is_nop
             || is_inc_rax

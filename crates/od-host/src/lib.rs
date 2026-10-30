@@ -72956,4 +72956,468 @@ mod tests {
         assert_eq!(stop_after_result.retired_native, 1);
         assert_eq!(stop_after_result.retired_interpreter, 0);
     }
+
+    #[test]
+    fn native_register_v1_mixed_matches_interpreter_and_bounded_ordered_pair_corpus() {
+        let _guard = jit_test_lock();
+        use od_isa::memory::{AccessKind, GuestMemory};
+
+        struct CodeOnly<'a> {
+            base: u64,
+            bytes: &'a [u8],
+        }
+        impl GuestMemory for CodeOnly<'_> {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                address
+                    .checked_sub(self.base)
+                    .and_then(|offset| self.bytes.get(offset as usize))
+                    .copied()
+                    .ok_or(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Fetch,
+                    })
+            }
+            fn read(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: &[u8],
+            ) -> Result<(), MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+
+        const SEED: u64 = 0x5333_336e_7265_6731;
+        const FORMS: [&[u8]; 13] = [
+            &[0x48, 0xff, 0xc0],
+            &[0x48, 0xff, 0xc8],
+            &[0x48, 0xf7, 0xd8],
+            &[0x48, 0xf7, 0xd0],
+            &[0x48, 0x83, 0xc0, 0x80],
+            &[0x48, 0x83, 0xf8, 0x7f],
+            &[0x48, 0x83, 0xe8, 0xff],
+            &[0x48, 0xc7, 0xc0, 0x00, 0x00, 0x00, 0x80],
+            &[0x48, 0x87, 0xd8],
+            &[0x48, 0x8d, 0x03],
+            &[0x48, 0x8d, 0x43, 0x80],
+            &[0x48, 0x8d, 0x04, 0x0b],
+            &[0x48, 0x8d, 0x05, 0x01, 0x00, 0x00, 0x00],
+        ];
+        let stop = AtomicU8::new(0);
+        let control = od_jit::dispatch::DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let base = 0xD000;
+        let mut corpus_count = 0usize;
+        let mut branch_taken_count = 0usize;
+        let mut branch_fallthrough_count = 0usize;
+        for (left_index, left) in FORMS.iter().enumerate() {
+            for (right_index, right) in FORMS.iter().enumerate() {
+                let mut code = left.to_vec();
+                code.extend_from_slice(right);
+                code.extend_from_slice(&[
+                    0x74, 0x0a, // JZ skips a distinct fallthrough MOV
+                    0x48, 0xb8, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x75,
+                    0x00, // JNZ to the exact code-end boundary
+                ]);
+                let view = CodeView::new(base, &code).unwrap();
+                let admission = od_jit::block::NativeRegisterV1Admission::from_code(view).unwrap();
+                let mut random = SEED
+                    ^ (left_index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                    ^ (right_index as u64).wrapping_mul(0xd1b5_4a32_d192_ed03);
+                let mut initial = od_isa::LongModeState::default();
+                initial.rip = base;
+                for (register, value) in initial.gpr.iter_mut().enumerate() {
+                    random ^= random << 13;
+                    random ^= random >> 7;
+                    random ^= random << 17;
+                    *value = random ^ ((register as u64) << 48);
+                }
+                initial.rflags = 0x202 | ((random >> 9) & 0x8d5);
+                let mut expected = initial.clone();
+                let mut memory = CodeOnly { base, bytes: &code };
+                let mut steps = 0u64;
+                while expected.rip < view.code_end() {
+                    assert!(matches!(
+                        od_isa::execute::step(&mut expected, &mut memory, AccessContext::default())
+                            .unwrap(),
+                        od_isa::execute::StepOutcome::Advanced
+                            | od_isa::execute::StepOutcome::Branched
+                    ));
+                    steps += 1;
+                    assert!(
+                        steps <= 5,
+                        "corpus seed={SEED:#x}, pair=({left_index},{right_index})"
+                    );
+                }
+                if expected.rflags & (1 << 6) != 0 {
+                    branch_taken_count += 1;
+                } else {
+                    branch_fallthrough_count += 1;
+                }
+                for candidate in [false, true] {
+                    let mut actual = initial.clone();
+                    let result = if candidate {
+                        od_jit::dispatch::run_with_native_register_v1_demand_flags_candidate(
+                            view, &admission, &mut actual, 5, control, &mut PublishedBlockExecutor,
+                        )
+                    } else {
+                        od_jit::dispatch::run_with_native_register_v1(
+                            view, &admission, &mut actual, 5, control, &mut PublishedBlockExecutor,
+                        )
+                    }
+                    .unwrap_or_else(|error| panic!(
+                        "S3-33n corpus failure seed={SEED:#x}, pair=({left_index},{right_index}), candidate={candidate}, bytes={code:02x?}, initial={initial:?}: {error:?}"
+                    ));
+                    assert_eq!(
+                        actual, expected,
+                        "seed={SEED:#x}, pair=({left_index},{right_index}), candidate={candidate}, bytes={code:02x?}, initial={initial:?}"
+                    );
+                    assert_eq!(result.retired_native, steps);
+                    assert_eq!(result.retired_interpreter, 0);
+                    assert_eq!(result.remaining_budget, 5 - steps);
+                }
+                corpus_count += 1;
+            }
+        }
+        assert_eq!(corpus_count, 169, "ordered pair corpus count changed");
+        assert!(branch_taken_count > 0);
+        assert!(branch_fallthrough_count > 0);
+
+        // A full flag writer, partial flag writer, preserving operation, XCHG,
+        // then branch verifies the pending definedness and saved operands path.
+        let pending = [
+            0x48, 0x83, 0xc0, 0x01, // full flag writer
+            0x48, 0xff, 0xc8, // partial flag writer (preserves CF)
+            0x48, 0x8d, 0x04, 0x0b, // preserving LEA
+            0x48, 0x87, 0xd8, // XCHG
+            0x74, 0x0a, // branch skips a distinct fallthrough MOV
+            0x48, 0xb8, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x75,
+            0x00, // JNZ to code end consumes the same flags
+        ];
+        let view = CodeView::new(base + 0x1000, &pending).unwrap();
+        let admission = od_jit::block::NativeRegisterV1Admission::from_code(view).unwrap();
+        for (initial_rax, branch_taken) in [(0, true), (u64::MAX, false)] {
+            let mut initial = od_isa::LongModeState::default();
+            initial.rip = view.base_rip();
+            initial.gpr[0] = initial_rax;
+            initial.gpr[3] = 0x1111_2222_3333_4444;
+            initial.gpr[1] = 0x0102_0304_0506_0708;
+            initial.rflags = 0x202 | (1 << 0) | (1 << 10);
+            let mut expected = initial.clone();
+            let mut memory = CodeOnly {
+                base: view.base_rip(),
+                bytes: &pending,
+            };
+            let mut expected_steps = 0;
+            while expected.rip < view.code_end() {
+                od_isa::execute::step(&mut expected, &mut memory, AccessContext::default())
+                    .unwrap();
+                expected_steps += 1;
+            }
+            assert_eq!(expected_steps, if branch_taken { 6 } else { 7 });
+            assert_eq!(expected.gpr[0] == 0x1122_3344_5566_7788, !branch_taken);
+            for candidate in [false, true] {
+                let mut actual = initial.clone();
+                let result = if candidate {
+                    od_jit::dispatch::run_with_native_register_v1_demand_flags_candidate(
+                        view,
+                        &admission,
+                        &mut actual,
+                        7,
+                        control,
+                        &mut PublishedBlockExecutor,
+                    )
+                } else {
+                    od_jit::dispatch::run_with_native_register_v1(
+                        view,
+                        &admission,
+                        &mut actual,
+                        7,
+                        control,
+                        &mut PublishedBlockExecutor,
+                    )
+                }
+                .unwrap();
+                assert_eq!(
+                    actual, expected,
+                    "candidate={candidate}, initial_rax={initial_rax:#x}"
+                );
+                assert_eq!(result.retired_native, expected_steps);
+                assert_eq!(result.retired_interpreter, 0);
+            }
+        }
+
+        let mut budget_initial = od_isa::LongModeState::default();
+        budget_initial.rip = view.base_rip();
+        budget_initial.gpr[0] = u64::MAX;
+        budget_initial.gpr[3] = 0x1111_2222_3333_4444;
+        budget_initial.gpr[1] = 0x0102_0304_0506_0708;
+        budget_initial.rflags = 0x202 | (1 << 0) | (1 << 10);
+        for budget in 0..=7 {
+            let mut expected = od_isa::LongModeState::default();
+            expected.clone_from(&budget_initial);
+            let initial = budget_initial.clone();
+            let mut memory = CodeOnly {
+                base: view.base_rip(),
+                bytes: &pending,
+            };
+            for _ in 0..budget {
+                od_isa::execute::step(&mut expected, &mut memory, AccessContext::default())
+                    .unwrap();
+            }
+            for candidate in [false, true] {
+                let mut actual = initial.clone();
+                let result = if candidate {
+                    od_jit::dispatch::run_with_native_register_v1_demand_flags_candidate(
+                        view,
+                        &admission,
+                        &mut actual,
+                        budget,
+                        control,
+                        &mut PublishedBlockExecutor,
+                    )
+                } else {
+                    od_jit::dispatch::run_with_native_register_v1(
+                        view,
+                        &admission,
+                        &mut actual,
+                        budget,
+                        control,
+                        &mut PublishedBlockExecutor,
+                    )
+                }
+                .unwrap();
+                assert_eq!(
+                    actual, expected,
+                    "budget boundary {budget}, candidate={candidate}"
+                );
+                assert_eq!(result.retired_native, budget);
+                assert_eq!(result.retired_interpreter, 0);
+                assert_eq!(
+                    result.exit,
+                    if budget == 7 {
+                        od_jit::dispatch::DispatchExit::CodeEnd
+                    } else {
+                        od_jit::dispatch::DispatchExit::BudgetExhausted
+                    }
+                );
+            }
+        }
+
+        for stop_offset in [0, 4, 7, 11, 14, 16, 26] {
+            let stop_rip = view.base_rip() + stop_offset;
+            let stop_control = od_jit::dispatch::DispatchControl {
+                stop_rip: Some(stop_rip),
+                stop_requested: &stop,
+                event_requested: None,
+            };
+            let mut expected = od_isa::LongModeState::default();
+            expected.clone_from(&budget_initial);
+            let initial = expected.clone();
+            let mut memory = CodeOnly {
+                base: view.base_rip(),
+                bytes: &pending,
+            };
+            while expected.rip < stop_rip {
+                od_isa::execute::step(&mut expected, &mut memory, AccessContext::default())
+                    .unwrap();
+            }
+            for candidate in [false, true] {
+                let mut actual = initial.clone();
+                let result = if candidate {
+                    od_jit::dispatch::run_with_native_register_v1_demand_flags_candidate(
+                        view,
+                        &admission,
+                        &mut actual,
+                        7,
+                        stop_control,
+                        &mut PublishedBlockExecutor,
+                    )
+                } else {
+                    od_jit::dispatch::run_with_native_register_v1(
+                        view,
+                        &admission,
+                        &mut actual,
+                        7,
+                        stop_control,
+                        &mut PublishedBlockExecutor,
+                    )
+                }
+                .unwrap();
+                assert_eq!(
+                    actual, expected,
+                    "STOP boundary {stop_offset}, candidate={candidate}"
+                );
+                assert_eq!(
+                    result.retired_native,
+                    match stop_offset {
+                        0 => 0,
+                        4 => 1,
+                        7 => 2,
+                        11 => 3,
+                        14 => 4,
+                        16 => 5,
+                        26 => 6,
+                        _ => unreachable!(),
+                    }
+                );
+                assert_eq!(result.retired_interpreter, 0);
+                assert_eq!(
+                    result.exit,
+                    od_jit::dispatch::DispatchExit::Runtime(
+                        od_jit::runtime::RuntimeExitTag::StopAddress
+                    )
+                );
+            }
+        }
+
+        let nop_code = [0x48, 0x83, 0xc0, 0x01, 0x90];
+        let nop_view = CodeView::new(base + 0x2000, &nop_code).unwrap();
+        let nop_admission = od_jit::block::NativeRegisterV1Admission::from_code(nop_view).unwrap();
+        let mut nop_initial = od_isa::LongModeState::default();
+        nop_initial.rip = nop_view.base_rip();
+        nop_initial.gpr[0] = u64::MAX;
+        let mut nop_expected = nop_initial.clone();
+        let mut nop_memory = CodeOnly {
+            base: nop_view.base_rip(),
+            bytes: &nop_code,
+        };
+        while nop_expected.rip < nop_view.code_end() {
+            od_isa::execute::step(&mut nop_expected, &mut nop_memory, AccessContext::default())
+                .unwrap();
+        }
+        for candidate in [false, true] {
+            let mut nop_state = nop_initial.clone();
+            let nop_result = if candidate {
+                od_jit::dispatch::run_with_native_register_v1_demand_flags_candidate(
+                    nop_view,
+                    &nop_admission,
+                    &mut nop_state,
+                    2,
+                    control,
+                    &mut PublishedBlockExecutor,
+                )
+            } else {
+                od_jit::dispatch::run_with_native_register_v1(
+                    nop_view,
+                    &nop_admission,
+                    &mut nop_state,
+                    2,
+                    control,
+                    &mut PublishedBlockExecutor,
+                )
+            }
+            .unwrap();
+            assert_eq!(nop_state, nop_expected, "candidate={candidate}");
+            assert_eq!(nop_result.retired_native, 1);
+            assert_eq!(nop_result.retired_interpreter, 1);
+        }
+
+        let nop_stop_control = od_jit::dispatch::DispatchControl {
+            stop_rip: Some(nop_view.base_rip() + 4),
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let nop_before_fallback = nop_initial.clone();
+        let mut nop_expected_before_fallback = nop_initial;
+        let mut nop_memory = CodeOnly {
+            base: nop_view.base_rip(),
+            bytes: &nop_code,
+        };
+        od_isa::execute::step(
+            &mut nop_expected_before_fallback,
+            &mut nop_memory,
+            AccessContext::default(),
+        )
+        .unwrap();
+        for candidate in [false, true] {
+            let mut state = nop_before_fallback.clone();
+            let result = if candidate {
+                od_jit::dispatch::run_with_native_register_v1_demand_flags_candidate(
+                    nop_view,
+                    &nop_admission,
+                    &mut state,
+                    2,
+                    nop_stop_control,
+                    &mut PublishedBlockExecutor,
+                )
+            } else {
+                od_jit::dispatch::run_with_native_register_v1(
+                    nop_view,
+                    &nop_admission,
+                    &mut state,
+                    2,
+                    nop_stop_control,
+                    &mut PublishedBlockExecutor,
+                )
+            }
+            .unwrap();
+            assert_eq!(state, nop_expected_before_fallback, "candidate={candidate}");
+            assert_eq!(result.retired_native, 1);
+            assert_eq!(result.retired_interpreter, 0);
+            assert_eq!(
+                result.exit,
+                od_jit::dispatch::DispatchExit::Runtime(
+                    od_jit::runtime::RuntimeExitTag::StopAddress
+                )
+            );
+        }
+    }
 }
