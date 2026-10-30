@@ -17950,3 +17950,56 @@ Table 11-1, §4.9.2 and §§11.5.2.1–2/11.5.3
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37z--canonical-long64-cmppd-xmm-register-pairs),
 [plan](../plans/STAGE_2.md#s2-37z--canonical-long64-cmppd-xmm-register-pairs), and
 [fixture guide](../../tests/fixtures/x86/stage2/README.md#s2-37z-canonical-cmppd-register-pairs).
+
+
+## S2-37aa — canonical Long64 CMPPS XMM register pairs
+
+Implemented the schema-v2 interpreter-only profile
+`s2-long-cmpps-registers-v1` for legacy `0F C2 /r ib`. It covers all 256 XMM
+pairs and eight predicates with canonical 4-byte low-register and 5-byte
+extended encodings. The interpreter snapshots both XMM inputs and compares all
+four raw binary32 lanes independently, without host floating point. It emits
+per-lane all-one/zero masks, preserves unrelated state, accumulates IE/DE
+independently across lanes, and commits sticky status before an unmasked #XM or
+SIMD #UD while suppressing the whole destination, RIP and retirement. Fetch,
+SSE/EM/OSFXSR then TS ordering is bounded at CPL0–3. Unsupported prefixes,
+memory, DAZ/reserved MXCSR, and JIT/native/generic/C/fragment admission remain
+closed. Parent S2-37/S2-38 remain open; physical acceptance is deferred.
+
+Coverage includes all 2,048 register/predicate encodings, raw binary32 classes
+in each lane position, predicate outcomes, cross-lane NaN/subnormal exception
+combinations, masks/sticky bits, atomic fault state, fetch/gates/CPL, malformed
+forms, tampering and backend denial. The schema-v2 oracle independently
+classifies raw u32 values and computes expected lane masks.
+
+Checks run:
+
+- `cargo test -p od-runner --test fixture_v2 cmpps_register_pairs_predicates_raw_classes_exceptions_and_denial --offline` — passed (2,048 encodings plus lane/class/exception matrix).
+- `cargo test -p od-isa cmpps_register_profile_fetch_gates_and_cpl_are_bounded --offline` — passed.
+- `cargo fmt --all -- --check` and `cargo check --workspace --all-targets --offline` — passed.
+- `git diff --check` — passed.
+- `python3 tools/check_layout.py` — reports only existing issues: unmapped root `.git` and two broken historical oracle manifest links; no new layout/link errors.
+- `graphify update .` — completed.
+
+Independent Sol-medium review found and the author fixed a binary64 test-oracle
+regression: CMPPD/CMPSD QNaN classification now uses fraction bit 51 while
+CMPPS/CMPSS use binary32 fraction bit 22. Dedicated QNaN/SNaN assertions catch
+that distinction outside the exhaustive loops. Re-review is clean; the reviewer
+also independently ran all 412 `od-testkit` tests. Final combined physical
+acceptance remains pending. Normative sources: Intel SDM Rev. 093 Vol. 2A
+CMPPS pp. 3-175–3-184, Table 3-7
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 1
+Table 11-1, §4.9.2 and §§11.5.2.1–2/11.5.3
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37aa--canonical-long64-cmpps-xmm-register-pairs),
+[plan](../plans/STAGE_2.md#s2-37aa--canonical-long64-cmpps-xmm-register-pairs), and
+[fixture guide](../../tests/fixtures/x86/stage2/README.md#s2-37aa-canonical-cmpps-register-pairs).
+
+### S2-37aa follow-up: binary64 oracle quiet-bit correction
+
+Independent review found that the CMPSS-to-CMPPS oracle adaptation had also
+changed the quiet-bit mask in the existing CMPSD and CMPPD binary64 testkit
+classifiers. Restored the binary64 fraction-bit-51 mask (`0x0008_0000_0000_0000`);
+CMPSS/CMPPS retain the binary32 fraction-bit-22 mask (`0x0040_0000`). Added
+explicit CMPSD and CMPPD checks that QNaN does not set IE for predicate 0 and
+SNaN does set IE. Re-review remains pending.

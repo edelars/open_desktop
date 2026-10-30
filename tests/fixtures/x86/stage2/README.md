@@ -6468,3 +6468,19 @@ and S2-38 remain open; hardware acceptance is deferred to the final combined
 stage. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37z--canonical-long64-cmppd-xmm-register-pairs),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37z--canonical-long64-cmppd-xmm-register-pairs),
 and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37z--canonical-long64-cmppd-xmm-register-pairs).
+
+
+### S2-37aa canonical CMPPS register pairs
+
+`s2_37aa_cmpps_registers.case.json` is the handwritten schema-v2
+`s2-long-cmpps-registers-v1` anchor for canonical `0F C2 C1 01`. The independent
+fixture oracle classifies and orders each raw binary32 lane itself. Runner
+coverage constructs all 2,048 XMM-pair/predicate encodings and checks raw class
+combinations in every lane, predicates, independent cross-lane exception
+aggregation, sticky/mask behavior, full-destination atomicity, fetch/gates/CPL,
+malformed forms, control tampering and JIT/native denial. The bounded profile
+does not claim memory forms, generic CPUID admission or physical acceptance.
+Parent S2-37/S2-38 remain open; hardware acceptance is deferred to the final
+combined stage. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37aa--canonical-long64-cmpps-xmm-register-pairs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37aa--canonical-long64-cmpps-xmm-register-pairs),
+and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37aa--canonical-long64-cmpps-xmm-register-pairs).

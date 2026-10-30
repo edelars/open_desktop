@@ -979,6 +979,12 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only legacy `0F C2 /r ib` packed single comparison.
+    CmppsRegister {
+        predicate: u8,
+        destination: u8,
+        source: u8,
+    },
     /// Local-only legacy `F2 0F 2A /r` signed r32-to-binary64 form.
     Cvtsi2sdR32Register {
         destination: u8,
@@ -3260,6 +3266,16 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     && matches!(prefixes.rex, Some(0x41 | 0x44 | 0x45))
                     && prefix_bytes[0] == 0x66
                     && prefix_bytes[1] == prefixes.rex.unwrap());
+        let cmpps_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xc2
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 0 && prefixes.rex.is_none()
+                || prefix_count == 1
+                    && matches!(prefixes.rex, Some(0x41 | 0x44 | 0x45))
+                    && prefix_bytes[0] == prefixes.rex.unwrap());
         let comisd_ucomisd_register = opcode.map == OpcodeMap::Escape0f
             && matches!(opcode.byte, 0x2e | 0x2f)
             && prefixes.group1.is_none()
@@ -3504,6 +3520,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !cmpss_register
                 && !cmpsd_register
                 && !cmppd_register
+                && !cmpps_register
                 && !movsd_register
                 && !movsd_store_register
                 && !movsd_memory_load
@@ -3747,6 +3764,21 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 Operation::CmppdRegister {
+                    predicate,
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0xc2) if cmpps_register => {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                let predicate = self.byte()?;
+                if predicate > 7 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::CmppsRegister {
                     predicate,
                     destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                     source: (modrm & 7) | ((rex & 1) << 3),

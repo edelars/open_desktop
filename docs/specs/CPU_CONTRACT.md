@@ -12831,3 +12831,37 @@ Normative sources: Intel SDM Rev. 093 Vol. 2A CMPPD pp. 3-168–3-174, Table 3-7
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 1
 Table 11-1, §4.9.2 and §§11.5.2.1–2/11.5.3
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+
+
+## S2-37aa — canonical Long64 CMPPS XMM register pairs
+
+The local schema-v2 interpreter profile `s2-long-cmpps-registers-v1` admits
+legacy `0F C2 /r ib` for every XMM register pair and predicate 0–7. It accepts
+only canonical 4-byte low-register and 5-byte extended encodings; the latter
+use exactly REX `41`, `44`, or `45` before `0F`. Memory operands, other REX
+bits, redundant/reordered prefixes, trailing bytes, VEX/EVEX, and imm8 above 7
+are local profile refusals, not claims of architectural #UD for reserved
+immediate bits. The executable fixture maps one instruction, sets budget 1 and
+checks the following RIP.
+
+Both complete source XMM registers are snapshotted. Each of the four raw
+binary32 lanes is compared using one of the eight legacy predicates and
+independently produces `0xffffffff` or zero. Signed zeros compare equal. SNaN
+raises IE; QNaN raises IE for predicates 1, 2, 5 and 6. A NaN suppresses DE
+only in its own lane, so exceptions aggregate independently across all lanes.
+New IE/DE are ORed with sticky status. A newly unmasked exception commits
+status first, then delivers #XM when OSXMMEXCPT is set or SIMD #UD otherwise,
+without writing any destination lane, advancing RIP or retiring. Completion
+writes all four mask lanes while preserving unrelated state.
+
+After full instruction fetch, missing SSE, CR0.EM or CR4.OSFXSR produces #UD;
+CR0.TS then produces #NM at CPL0–3. DAZ/reserved MXCSR bits are local
+refusals; RC, FTZ, exception masks and prior sticky bits are admitted. Only
+the interpreter profile is admitted. JIT/native, generic CPUID, C ABI and
+fragment paths remain closed; parent S2-37/S2-38 remain open. Memory forms and
+physical acceptance are outside this bounded profile.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CMPPS pp. 3-175–3-184, Table 3-7
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 1
+Table 11-1, §4.9.2 and §§11.5.2.1–2/11.5.3
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
