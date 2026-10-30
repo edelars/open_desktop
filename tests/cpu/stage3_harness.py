@@ -58,6 +58,7 @@ SELF_TEST_NAMES = (
     "test_stage1_child_fingerprint_and_both_builds_are_pinned",
     "test_manual_frozen_input_and_result_bind_to_parent_manifest",
     "test_rust_test_manifest_rejects_a_missing_mandatory_gate",
+    "test_s3_33_native_gates_are_pinned_once_in_manifest_steps_and_summary",
     "test_rust_gate_summary_rejects_an_omitted_mandatory_gate",
     "test_rust_gate_summary_rejects_forged_passed_evidence",
     "test_rust_gate_rejects_zero_match_ignored_and_failed_runs",
@@ -160,6 +161,42 @@ ADDITIONAL_TEST_GATES = (
     (
         "abi_busy_invalid_state_output_preservation", "local_acceptance", "od-host",
         "tests::c_abi_reports_live_process_mapping_as_busy",
+    ),
+    (
+        "s3_33a_native_inc_rax_host", "local_acceptance", "od-host",
+        "tests::native_inc_rax_fallback_carries_canonical_flags_into_native_branches",
+    ),
+    (
+        "s3_33a_native_inc_rax_compiler", "local_acceptance", "od-jit",
+        "block_compile::tests::native_inc_rax_is_opt_in_and_compiles_following_branch_consumers",
+    ),
+    (
+        "s3_33b_native_dec_rax_host", "local_acceptance", "od-host",
+        "tests::native_dec_rax_preserves_cf_and_matches_interpreter_branches",
+    ),
+    (
+        "s3_33b_native_dec_rax_compiler", "local_acceptance", "od-jit",
+        "block_compile::tests::native_dec_rax_is_opt_in_and_compiles_following_branch_consumers",
+    ),
+    (
+        "s3_33c_native_neg_rax_host", "local_acceptance", "od-host",
+        "tests::native_neg_rax_replaces_full_pending_flags_and_matches_interpreter",
+    ),
+    (
+        "s3_33c_native_neg_rax_compiler", "local_acceptance", "od-jit",
+        "block_compile::tests::native_neg_rax_is_opt_in_and_compiles_following_branch_consumers",
+    ),
+    (
+        "s3_33d_native_add_rax_imm8_host", "local_acceptance", "od-host",
+        "tests::native_add_rax_imm8_matches_interpreter_full_state_and_pending_branch",
+    ),
+    (
+        "s3_33d_native_add_rax_imm8_compiler", "local_acceptance", "od-jit",
+        "block_compile::tests::native_add_rax_imm8_compiles_eager_and_candidate_branch_consumers",
+    ),
+    (
+        "s3_33d_native_add_rax_imm8_admission", "local_acceptance", "od-jit",
+        "block::tests::add_rax_imm8_admission_covers_signed_byte_range_and_rejects_neighbors",
     ),
 )
 RUST_TEST_GATES = (
@@ -273,6 +310,8 @@ PROCESS_SOURCE_PATHS = (
 LOCAL_RUST_TEST_SOURCES = (
     "crates/od-host/tests/memory_corpus.rs",
     "crates/od-host/src/lib.rs",
+    "crates/od-jit/src/block.rs",
+    "crates/od-jit/src/block_compile.rs",
     "crates/od-jit/src/dispatch.rs",
     "tests/cpu/stage3_harness.py",
     "tests/cpu/test_stage3_harness.py",

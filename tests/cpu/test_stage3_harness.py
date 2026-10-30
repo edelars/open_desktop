@@ -302,6 +302,44 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "exact required Rust test gates"):
             harness.validate_rust_test_manifest(manifest)
 
+    def test_s3_33_native_gates_are_pinned_once_in_manifest_steps_and_summary(self):
+        expected_steps = [
+            "s3_33a_native_inc_rax_host",
+            "s3_33a_native_inc_rax_compiler",
+            "s3_33b_native_dec_rax_host",
+            "s3_33b_native_dec_rax_compiler",
+            "s3_33c_native_neg_rax_host",
+            "s3_33c_native_neg_rax_compiler",
+            "s3_33d_native_add_rax_imm8_host",
+            "s3_33d_native_add_rax_imm8_compiler",
+            "s3_33d_native_add_rax_imm8_admission",
+        ]
+        gates = [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_33")]
+        manifest_gates = [
+            gate for gate in harness.rust_test_gate_manifest()
+            if gate["step"].startswith("s3_33")
+        ]
+        self.assertEqual([gate[0] for gate in gates], expected_steps)
+        self.assertEqual([gate["step"] for gate in manifest_gates], expected_steps)
+        self.assertEqual([name for name in harness.LOCAL_STEPS if name.startswith("s3_33")], expected_steps)
+        self.assertEqual(len({gate[3] for gate in gates}), len(expected_steps))
+        self.assertIn("crates/od-jit/src/block.rs", harness.LOCAL_RUST_TEST_SOURCES)
+        self.assertIn("crates/od-jit/src/block_compile.rs", harness.LOCAL_RUST_TEST_SOURCES)
+
+        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+            log_dir = Path(temporary)
+            with mock.patch.object(harness, "source_fingerprint", return_value="a" * 64):
+                summary = passing_final_summary(harness.new_run_id(), log_dir)
+            acceptance_steps = summary["suites"]["local_acceptance"]["tests"]
+            self.assertEqual(
+                [name for name in acceptance_steps if name.startswith("s3_33")],
+                expected_steps,
+            )
+            summary_identities = [
+                summary["steps"][name]["test_identity"] for name in expected_steps
+            ]
+            self.assertEqual(len(set(summary_identities)), len(expected_steps))
+
     def test_rust_gate_summary_rejects_an_omitted_mandatory_gate(self):
         with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
             steps = passing_rust_gate_steps(Path(temporary))
@@ -313,13 +351,23 @@ class Stage3HarnessValidationTests(unittest.TestCase):
     def test_rust_gate_summary_rejects_forged_passed_evidence(self):
         with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
             steps = passing_rust_gate_steps(Path(temporary))
-            step_name, _, _, _ = harness.ADDITIONAL_TEST_GATES[0]
+            step_name, _, package, _ = harness.ADDITIONAL_TEST_GATES[0]
             steps[step_name]["output_tail"] = "test tests::unrelated_test ... ok\n"
             with self.assertRaisesRegex(harness.HarnessError, step_name):
                 harness.validate_required_rust_test_evidence(steps)
 
             steps = passing_rust_gate_steps(Path(temporary))
             steps[step_name]["argv"] = harness.rust_test_argv("od-host", "tests::unrelated_test")
+            with self.assertRaisesRegex(harness.HarnessError, step_name):
+                harness.validate_required_rust_test_evidence(steps)
+
+            steps = passing_rust_gate_steps(Path(temporary))
+            steps[step_name]["package"] = "od-host" if package == "od-jit" else "od-jit"
+            with self.assertRaisesRegex(harness.HarnessError, step_name):
+                harness.validate_required_rust_test_evidence(steps)
+
+            steps = passing_rust_gate_steps(Path(temporary))
+            steps[step_name]["test_identity"] = "tests::unrelated_test"
             with self.assertRaisesRegex(harness.HarnessError, step_name):
                 harness.validate_required_rust_test_evidence(steps)
 
