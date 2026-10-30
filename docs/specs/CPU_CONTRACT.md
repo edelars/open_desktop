@@ -13537,3 +13537,53 @@ Memory operands, other modes, full unmasked OE/UE behavior, and parent
 S2-37/S2-38 remain open. Sources: Intel SDM Rev. 093 Vol. 2B MULSD
 pp. 4-148–4-149; Vol. 2A Type 3/Table 2-20; Vol. 1 §§4.9.1.4–.6, 11.5.3 and
 DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel Floating-Point Reference Sheet v2.13.
+
+## S2-37au — bounded masked-range Long64 MULSS XMM register pairs
+
+The strict schema-v2 interpreter-only profile `s2-long-mulss-registers-v1`
+admits canonical Long64 `F3 0F 59 /r` register forms with ModR/M.mod=3 and
+covers all 256 XMM register pairs. Low-index forms are four bytes; extended
+indices require one REX `41`, `44`, or `45` immediately after F3, for five bytes.
+Memory operands, `66`/F2, reordered/repeated/redundant prefixes, REX.W/X/40,
+trailing bytes, VEX and EVEX are rejected. Full instruction fetch precedes
+SSE/EM/OSFXSR #UD and TS #NM gates at CPL0–3. No data callbacks occur. JIT,
+native, C ABI, fragment and generic paths remain closed. MULSS is the scalar
+Type 3 form in Intel SDM Rev. 093 Vol. 2A Table 2-20.
+
+Schema and runtime require MXCSR.OM=1 and MXCSR.UM=1 because complete unmasked
+overflow/underflow delivery is outside this bounded profile. DAZ and reserved
+MXCSR bits are rejected; all RC modes, FTZ, IM/DM/PM and old sticky flags are
+accepted. Both XMM operands are snapshotted. Only destination.low32 is
+multiplied by source.low32; destination.high96 is preserved and source.high96 is
+ignored for computation and exception classification. The result sign is the
+XOR of operand signs. NaN selection uses the first original operand and quiets
+a selected SNaN; any SNaN raises IE, while QNaN alone does not. NaNs suppress
+DE. Zero×infinity raises IE and returns masked indefinite `0xffc00000`.
+Otherwise either low32 subnormal operand raises precompute DE, including
+zero×subnormal and infinity×subnormal.
+
+A newly unmasked IE or DE commits only generated pre-event sticky bits and
+faults without changing XMM, RIP or retirement. With pre-events masked,
+`Binary32::multiply_raw_result` computes under MXCSR.RC. Masked overflow records
+OE|PE. Underflow and FTZ use `tiny_after_precision_rounding` (WPR exponent), not
+the exact product or final encoded exponent. The midpoint
+`0x00800000 × 0x3f7fffff` raises UE|PE for every RC setting; RN/RU produce
+minimum-normal, RD/RZ maximum-subnormal, and FTZ flushes to positive zero. For
+the adjacent product `0x00800001 × 0x3f7ffffe`, RN/RU produce minimum-normal
+with PE only regardless of FTZ; RD/RZ produce maximum-subnormal with UE|PE or
+positive zero under FTZ. An unmasked post-rounding PM event commits status
+before #XM when OSXMMEXCPT=1 or SIMD-generated #UD otherwise, preserving the
+complete XMM and RIP. Old sticky flags alone do not fault.
+
+The independent schema oracle uses integer arithmetic through the testkit's
+independent finite-lane routine, with a scalar wrapper and no host FP or
+production arithmetic helper. Local checks cover all pairs and aliases, high96
+poison/preservation, RC×FTZ boundaries, halfway rounding, signed overflow and
+rounding, NaN/SNaN selection, invalid/subnormal cases, masked and unmasked
+pre-events, post-PM atomicity, sticky flags, gates/fetch/CPL/no-callback
+behavior, malformed encodings, result tampering and backend denial. These local
+checks do not establish physical acceptance. Memory operands, other modes, full
+unmasked OE/UE behavior and parent S2-37/S2-38 remain open. Sources: Intel SDM
+Rev. 093 Vol. 2B MULSS pp. 4-150–4-151; Vol. 2A Type 3/Table 2-20; Vol. 1
+§§4.9.1.4–.6, 11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel
+Floating-Point Reference Sheet v2.13.

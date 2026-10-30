@@ -6825,7 +6825,7 @@ inventory.
 | MULPD | `66 0F 59 /r` | SSE2 | XMM, m128; 2×f64 | 4-142 | S2-37ar register-only, OM=UM=1 masked-range; WPR tininess after precision rounding; memory and full unmasked OE/UE missing |
 | MULPS | `NP 0F 59 /r` | SSE | XMM, m128; 4×f32 | 4-145 | S2-37as register-only, OM=UM=1 masked-range; WPR tininess after precision rounding; memory and full unmasked OE/UE missing |
 | MULSD | `F2 0F 59 /r` | SSE2 | XMM, m64; low f64 | 4-148 | S2-37at register-only, OM=UM=1 masked-range; WPR tininess after precision rounding; memory and full unmasked OE/UE missing |
-| MULSS | `F3 0F 59 /r` | SSE | XMM, m32; low f32 | 4-150 | missing |
+| MULSS | `F3 0F 59 /r` | SSE | XMM, m32; low f32 | 4-150 | S2-37au register-only, OM=UM=1 masked-range; WPR tininess after precision rounding; memory and full unmasked OE/UE missing |
 | RCPPS | `NP 0F 53 /r` | SSE | XMM, m128; 4×f32 | 4-538 | S2-37d, bounded |
 | RCPSS | `F3 0F 53 /r` | SSE | XMM, m32; low f32 | 4-540 | S2-37b, bounded |
 | RSQRTPS | `NP 0F 52 /r` | SSE | XMM, m128; 4×f32 | 4-594 | S2-37c, bounded |
@@ -13792,3 +13792,41 @@ other modes, full unmasked OE/UE behavior and parent S2-37/S2-38 remain open.
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37at--bounded-masked-range-long64-mulsd-xmm-register-pairs),
 [report](../reports/STAGE_2_REPORT.md#s2-37at--mulsd-register-pair-interpreter-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37at-bounded-masked-range-mulsd-register-pair-profile).
+
+#### S2-37au — bounded masked-range Long64 MULSS XMM register pairs
+
+Implement strict schema-v2 interpreter-only profile
+`s2-long-mulss-registers-v1` for canonical Long64 `F3 0F 59 /r`, ModR/M.mod=3,
+covering all 256 XMM register pairs. Low forms are four bytes; extended indices
+require one REX `41`, `44`, or `45` immediately after F3, for five bytes. Reject
+memory, 66/F2, reordered/repeated/redundant prefixes, REX.W/X/40, trailing
+bytes, VEX and EVEX. Fetch fully before SSE/EM/OSFXSR #UD and then TS #NM at
+CPL0–3; issue no data callbacks. Keep JIT/native/C ABI/fragment/generic paths
+closed. MULSS is scalar Type 3, Table 2-20.
+
+Require MXCSR.OM=1 and MXCSR.UM=1; reject DAZ and reserved MXCSR bits while
+accepting all RC, FTZ, IM/DM/PM and prior sticky flags. Snapshot both XMM
+operands, multiply only destination.low32 by source.low32, preserve destination
+high96, and ignore source high96. Select the first original NaN, quiet a selected
+SNaN and raise IE for either SNaN; QNaN alone does not raise IE and any NaN
+suppresses DE. Zero×infinity raises IE and returns `0xffc00000`; otherwise any
+low32 subnormal operand raises DE. Newly unmasked IE/DE commits generated
+pre-event status and faults before arithmetic. Use `Binary32::multiply_raw_result`
+with MXCSR.RC when pre-events are masked. Masked overflow raises OE|PE. Use
+`tiny_after_precision_rounding` for tininess/FTZ. At the midpoint
+`0x00800000 × 0x3f7fffff`, every RC raises UE|PE; RN/RU produce minimum-normal,
+RD/RZ maximum-subnormal, and FTZ returns positive zero. For the adjacent
+`0x00800001 × 0x3f7ffffe`, RN/RU produce minimum-normal with PE only regardless
+of FTZ; RD/RZ produce maximum-subnormal with UE|PE or zero under FTZ. Post-event
+PM commits flags before #XM or SIMD-generated #UD and preserves XMM/RIP/retirement.
+
+Use an independent raw-u32 scalar oracle through the testkit's independent
+finite-lane routine, with no host FP or production helper. Cover aliases, high96
+poison/preservation, all RC×FTZ boundaries, halfway vectors, signed result
+rounding, NaN/SNaN, invalid and denormal pre-events, pre/post atomicity,
+stickies, gates/fetch/CPL/no-callback behavior, malformed/tampered results and
+backend denial. Local checks do not establish physical acceptance. Memory
+forms, other modes, full unmasked OE/UE behavior and parent S2-37/S2-38 remain
+open. See [CPU contract](../specs/CPU_CONTRACT.md#s2-37au--bounded-masked-range-long64-mulss-xmm-register-pairs),
+[report](../reports/STAGE_2_REPORT.md#s2-37au--mulss-register-pair-interpreter-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37au-bounded-masked-range-mulss-register-pair-profile).

@@ -284,6 +284,8 @@ pub enum Profile {
     LongMulpdRegistersV1,
     #[serde(rename = "s2-long-mulsd-registers-v1")]
     LongMulsdRegistersV1,
+    #[serde(rename = "s2-long-mulss-registers-v1")]
+    LongMulssRegistersV1,
     #[serde(rename = "s2-long-mulps-registers-v1")]
     LongMulpsRegistersV1,
     #[serde(rename = "s2-long-subps-registers-v1")]
@@ -1329,6 +1331,7 @@ impl IntegerState {
                     | Profile::LongSubpdRegistersV1
                     | Profile::LongMulpdRegistersV1
                     | Profile::LongMulsdRegistersV1
+                    | Profile::LongMulssRegistersV1
                     | Profile::LongMulpsRegistersV1
                     | Profile::LongSubpsRegistersV1
                     | Profile::LongSubsdRegistersV1
@@ -1545,6 +1548,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongMulsdRegistersV1
+                | Profile::LongMulssRegistersV1
                 | Profile::LongMulpsRegistersV1
                 | Profile::LongSubpsRegistersV1
                 | Profile::LongSubsdRegistersV1
@@ -1712,6 +1716,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongMulsdRegistersV1
+                | Profile::LongMulssRegistersV1
                 | Profile::LongMulpsRegistersV1
                 | Profile::LongSubpsRegistersV1
                 | Profile::LongSubsdRegistersV1
@@ -2061,6 +2066,7 @@ impl IntegerState {
             | Profile::LongSubpdRegistersV1
             | Profile::LongMulpdRegistersV1
             | Profile::LongMulsdRegistersV1
+            | Profile::LongMulssRegistersV1
             | Profile::LongMulpsRegistersV1
             | Profile::LongSubpsRegistersV1
             | Profile::LongSubsdRegistersV1
@@ -2234,6 +2240,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongMulsdRegistersV1
+                | Profile::LongMulssRegistersV1
                 | Profile::LongMulpsRegistersV1
                 | Profile::LongSubpsRegistersV1
                 | Profile::LongSubsdRegistersV1
@@ -2419,6 +2426,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongMulsdRegistersV1
+                | Profile::LongMulssRegistersV1
                 | Profile::LongMulpsRegistersV1
                 | Profile::LongSubpsRegistersV1
                 | Profile::LongSubsdRegistersV1
@@ -2613,6 +2621,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongMulsdRegistersV1
+                | Profile::LongMulssRegistersV1
                 | Profile::LongMulpsRegistersV1
                 | Profile::LongSubpsRegistersV1
                 | Profile::LongSubsdRegistersV1
@@ -2814,6 +2823,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongMulsdRegistersV1
+                | Profile::LongMulssRegistersV1
                 | Profile::LongMulpsRegistersV1
                 | Profile::LongSubpsRegistersV1
                 | Profile::LongSubsdRegistersV1
@@ -3645,6 +3655,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongMulsdRegistersV1
+                | Profile::LongMulssRegistersV1
                 | Profile::LongMulpsRegistersV1
                 | Profile::LongSubpsRegistersV1
                 | Profile::LongSubsdRegistersV1
@@ -3803,6 +3814,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongMulsdRegistersV1
+                | Profile::LongMulssRegistersV1
                 | Profile::LongMulpsRegistersV1
                 | Profile::LongSubpsRegistersV1
                 | Profile::LongSubsdRegistersV1
@@ -4080,6 +4092,8 @@ pub struct Fixture {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mulsd_controls: Option<MulsdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mulss_controls: Option<MulssControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mulps_controls: Option<SubpsControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subps_controls: Option<SubpsControlSnapshot>,
@@ -4264,6 +4278,7 @@ pub type SqrtsdControlSnapshot = Cvtdq2psControlSnapshot;
 pub type SubpdControlSnapshot = Cvtdq2psControlSnapshot;
 pub type MulpdControlSnapshot = Cvtdq2psControlSnapshot;
 pub type MulsdControlSnapshot = Cvtdq2psControlSnapshot;
+pub type MulssControlSnapshot = SubpsControlSnapshot;
 pub type SubsdControlSnapshot = Cvtdq2psControlSnapshot;
 pub type SubssControlSnapshot = SubpsControlSnapshot;
 
@@ -6473,6 +6488,58 @@ impl Fixture {
                 "only valid for MULSD register-space profile",
             ));
         }
+        if self.profile == Profile::LongMulssRegistersV1 {
+            let _ = self
+                .mulss_controls
+                .ok_or_else(|| invalid("mulss_controls", "required by the MULSS profile"))?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by the MULSS profile"))?;
+            let (_, _, length) =
+                mulss_register_encoding(&code.initial_bytes_hex).ok_or_else(|| {
+                    invalid("memory.code", "outside canonical MULSS register profile")
+                })?;
+            let start = self.initial_state.rip.get();
+            if code.guest_address.get() != start
+                || code.length != length
+                || !code.permissions.execute
+                || self.memory.len() != 1
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(u64::from(length))
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "MULSS requires one canonical executable encoding, budget 1, and stop RIP entry+length",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .expect("SSE required by MULSS")
+                .mxcsr
+                .get();
+            if mxcsr & !0x0000_ffbf != 0
+                || mxcsr & (1 << 6) != 0
+                || mxcsr & ((1 << 10) | (1 << 11)) != ((1 << 10) | (1 << 11))
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "MULSS requires supported MXCSR bits, DAZ=0, OM=1, and UM=1",
+                ));
+            }
+        } else if self.mulss_controls.is_some() {
+            return Err(invalid(
+                "mulss_controls",
+                "only valid for MULSS register-space profile",
+            ));
+        }
         if self.profile == Profile::LongMulpsRegistersV1 {
             let _ = self
                 .mulps_controls
@@ -7798,6 +7865,9 @@ impl Fixture {
                 }
                 Profile::LongMulsdRegistersV1 => {
                     mulsd_register_encoding(&code_bytes).map(|(_, _, length)| length)
+                }
+                Profile::LongMulssRegistersV1 => {
+                    mulss_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
                 Profile::LongMulpsRegistersV1 => {
                     mulps_register_encoding(&code_bytes).map(|(_, _, length)| length)
@@ -9773,6 +9843,7 @@ impl Fixture {
             subpd_controls: None,
             mulpd_controls: None,
             mulsd_controls: None,
+            mulss_controls: None,
             mulps_controls: None,
             subps_controls: None,
             subsd_controls: None,
@@ -9908,6 +9979,8 @@ pub struct Snapshot {
     pub mulpd_controls: Option<MulpdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mulsd_controls: Option<MulsdControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mulss_controls: Option<MulssControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mulps_controls: Option<SubpsControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -10341,6 +10414,19 @@ impl RunResult {
             return Err(invalid(
                 "snapshot.mulsd_controls",
                 "only valid for the MULSD profile",
+            ));
+        }
+        if self.profile == Profile::LongMulssRegistersV1 {
+            if snapshot.mulss_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.mulss_controls",
+                    "required by the MULSS profile",
+                ));
+            }
+        } else if snapshot.mulss_controls.is_some() {
+            return Err(invalid(
+                "snapshot.mulss_controls",
+                "only valid for the MULSS profile",
             ));
         }
         if self.profile == Profile::LongMulpsRegistersV1 {
@@ -11006,6 +11092,18 @@ impl RunResult {
             }
             match (
                 loaded.fixture.profile,
+                loaded.fixture.mulss_controls,
+                value.mulss_controls,
+            ) {
+                (Profile::LongMulssRegistersV1, Some(input), Some(output)) if input == output => {}
+                (Profile::LongMulssRegistersV1, _, _) => {
+                    return Err(FormatError::CaseMismatch("mulss_controls"));
+                }
+                (_, None, None) => {}
+                _ => return Err(FormatError::CaseMismatch("mulss_controls")),
+            }
+            match (
+                loaded.fixture.profile,
                 loaded.fixture.mulps_controls,
                 value.mulps_controls,
             ) {
@@ -11064,6 +11162,8 @@ impl RunResult {
                 validate_mulpd_registers_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongMulsdRegistersV1 {
                 validate_mulsd_registers_result(loaded, self, value)?;
+            } else if loaded.fixture.profile == Profile::LongMulssRegistersV1 {
+                validate_mulss_registers_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongMulpsRegistersV1 {
                 validate_mulps_registers_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongSubpsRegistersV1 {
@@ -14816,6 +14916,133 @@ fn validate_mulsd_registers_result(
             && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
         (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
         _ => return Err(FormatError::CaseMismatch("MULSD outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_mulss_registers_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .mulss_controls
+        .ok_or(FormatError::CaseMismatch("mulss_controls"))?;
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    let (destination, source, length) = mulss_register_encoding(&code.initial_bytes_hex)
+        .ok_or(FormatError::CaseMismatch("MULSS encoding"))?;
+    let lhs_bytes = decode_bytes(&initial_sse.xmm[usize::from(destination)])?;
+    let rhs_bytes = decode_bytes(&initial_sse.xmm[usize::from(source)])?;
+    let lhs = u32::from_le_bytes(lhs_bytes[..4].try_into().unwrap());
+    let rhs = u32::from_le_bytes(rhs_bytes[..4].try_into().unwrap());
+    let old_mxcsr = initial_sse.mxcsr.get() as u32;
+    let (value, new_ie, new_de, new_oe, new_ue, new_pe) = independent_mulss(lhs, rhs, old_mxcsr);
+    let unmasked_ie = new_ie && old_mxcsr & (1 << 7) == 0;
+    let unmasked_de = new_de && old_mxcsr & (1 << 8) == 0;
+    let unmasked_pre = unmasked_ie || unmasked_de;
+    let unmasked_oe = new_oe && old_mxcsr & (1 << 10) == 0;
+    let unmasked_ue = new_ue && old_mxcsr & (1 << 11) == 0;
+    let unmasked_pe = new_pe && old_mxcsr & (1 << 12) == 0;
+    let gate_vector = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let fault_vector = gate_vector.or_else(|| {
+        if unmasked_pre || unmasked_oe || unmasked_ue || unmasked_pe {
+            Some(if controls.cr4_osxmmexcpt { 19 } else { 6 })
+        } else {
+            None
+        }
+    });
+    if !matches!(
+        (fault_vector.is_some(), fixture.expected_exit),
+        (true, ExpectedExit::Exception) | (false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("MULSS expected exit"));
+    }
+    let mut expected_state = fixture.initial_state.clone();
+    if gate_vector.is_none() {
+        let sse = expected_state
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        sse.mxcsr = HexU64(u64::from(
+            old_mxcsr
+                | u32::from(new_ie)
+                | (u32::from(new_de) << 1)
+                | (u32::from(new_oe) << 3)
+                | (u32::from(new_ue) << 4)
+                | (u32::from(new_pe) << 5),
+        ));
+        if !unmasked_pre && !unmasked_oe && !unmasked_ue && !unmasked_pe {
+            let mut expected_destination = lhs_bytes.clone();
+            expected_destination[..4].copy_from_slice(&value.to_le_bytes());
+            sse.xmm[usize::from(destination)] = crate::memory::encode_bytes(&expected_destination);
+            expected_state.rip = HexU64(
+                fixture
+                    .initial_state
+                    .rip
+                    .get()
+                    .checked_add(u64::from(length))
+                    .ok_or(FormatError::CaseMismatch("MULSS stop overflow"))?,
+            );
+        }
+    }
+    let expected_memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected_state {
+        return Err(FormatError::CaseMismatch("MULSS state"));
+    }
+    if snapshot.rflags_defined != HexU64(INTEGER_FLAGS) {
+        return Err(FormatError::CaseMismatch("MULSS defined flags"));
+    }
+    if snapshot.memory != expected_memory {
+        return Err(FormatError::CaseMismatch("MULSS memory"));
+    }
+    let expected_count = u64::from(fault_vector.is_none());
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(expected_count),
+        })
+    {
+        return Err(FormatError::CaseMismatch("MULSS retirement count"));
+    }
+    match (fault_vector, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == Observation::Unavailable {
+                    reason: "exception has no architectural error code".into(),
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("MULSS outcome/exception")),
     }
     Ok(())
 }
@@ -18750,6 +18977,34 @@ fn mulsd_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
     Some((destination, source, bytes.len() as u32))
 }
 
+fn mulss_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (rex, modrm) = match bytes.as_slice() {
+        [0xf3, 0x0f, 0x59, modrm] => (0u8, *modrm),
+        [0xf3, rex, 0x0f, 0x59, modrm] if matches!(*rex, 0x41 | 0x44 | 0x45) => (*rex, *modrm),
+        _ => return None,
+    };
+    if modrm >> 6 != 3 {
+        return None;
+    }
+    let destination = ((modrm >> 3) & 7) | (((rex >> 2) & 1) << 3);
+    let source = (modrm & 7) | ((rex & 1) << 3);
+    if (destination >= 8 || source >= 8) != (bytes.len() == 5)
+        || (rex & 4 != 0) != (destination >= 8)
+        || (rex & 1 != 0) != (source >= 8)
+        || rex & 0x0a != 0
+    {
+        return None;
+    }
+    Some((destination, source, bytes.len() as u32))
+}
+
 fn mulps_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
     if code_bytes.len() % 2 != 0 {
         return None;
@@ -19366,6 +19621,17 @@ fn independent_mulps_lane(lhs: u32, rhs: u32, mxcsr: u32) -> (u32, bool, bool, b
         pe = true;
     }
     (value, false, de, oe, ue, pe)
+}
+
+fn independent_mulss(lhs: u32, rhs: u32, mxcsr: u32) -> (u32, bool, bool, bool, bool, bool) {
+    // Scalar oracle wrapper: only the low 32-bit lane participates.
+    let lane = independent_mulps_lane(lhs, rhs, mxcsr);
+    let unmasked_ie = lane.1 && mxcsr & (1 << 7) == 0;
+    let unmasked_de = lane.2 && mxcsr & (1 << 8) == 0;
+    if unmasked_ie || unmasked_de {
+        return (lane.0, lane.1, lane.2, false, false, false);
+    }
+    lane
 }
 
 fn independent_mulps(

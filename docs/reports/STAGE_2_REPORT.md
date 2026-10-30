@@ -18698,3 +18698,54 @@ modes and complete unmasked OE/UE delivery remain open; parent S2-37/S2-38 are
 not closed. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37at--bounded-masked-range-long64-mulsd-xmm-register-pairs),
 [plan](../plans/STAGE_2.md#s2-37at--bounded-masked-range-long64-mulsd-xmm-register-pairs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37at-bounded-masked-range-mulsd-register-pair-profile).
+
+## S2-37au — MULSS register-pair interpreter profile
+
+Implemented the strict schema-v2 `s2-long-mulss-registers-v1` interpreter profile
+for canonical Long64 `F3 0F 59 /r` register pairs. The decoder and profile admit
+all 256 XMM pairs, including extended registers with canonical REX, and reject
+memory and noncanonical forms. Runtime gates use SSE (without an SSE2
+requirement), then EM/OSFXSR #UD and TS #NM after full instruction fetch. The
+profile issues no data callbacks and remains unavailable to JIT/native paths.
+
+The scalar result is `old_destination.low32 * source.low32`; destination.high96
+is preserved and source.high96 is ignored. `Binary32::multiply_raw_result`
+provides masked-range rounding. The implementation classifies first-NaN and
+SNaN invalid events, zero×infinity indefinite, and low32 subnormal denormal
+operands; unmasked IE/DE precede arithmetic, while unmasked PM commits status
+but preserves XMM/RIP/retirement. Tininess and FTZ use the precision-rounded
+unbounded exponent. MXCSR requires OM=UM=1 and DAZ=0; RC, FTZ, IM/DM/PM and
+sticky flags are accepted.
+
+Added the literal `s2_37au_mulss_xmm0_xmm1.case.json` fixture and an independent
+raw-u32 scalar oracle that reuses the testkit's independent finite-lane
+arithmetic. Focused coverage includes all 256 aliases, upper96 poison and
+preservation, both WPR min-normal boundaries across all RC×FTZ combinations,
+positive/negative halfway products, exact tiny and FTZ, NaN/SNaN selection,
+QNaN DE suppression, zero×infinity, unmasked IE/DE, post-PM atomicity, malformed
+schema input, result tampering and backend denial. ISA tests cover decoder
+forms, runtime gates at CPL0–3, full-fetch priority and no data callbacks.
+
+Checks passed:
+
+- `cargo test -p od-isa mulss_ --offline` — 3 passed
+- `cargo test -p od-isa mulsd --offline` — 3 passed
+- `cargo test -p od-runner --test fixture_v2 mulss_register_profile --offline` — passed with boundary, exception, gates, schema and tamper coverage
+- `cargo test -p od-runner --test fixture_v2 mul --offline` — 11 passed, including MULSS/MULSD/MULPD/MULPS
+- `cargo test -p od-runner --test fixture_v2 sub --offline` — 35 passed, including SUBPD/SUBPS/SUBSD/SUBSS
+- `cargo test -p od-testkit --offline` — 434 passed
+- `cargo fmt --all -- --check`
+- `cargo check --workspace --all-targets --offline`
+- `git diff --check`
+- `graphify update .`
+
+Independent gpt-6.1-sol/high review found no remaining findings. Its runner
+invocation timed out; the focused local runner test passed in the final run.
+
+Local checks do not establish physical acceptance. Memory operands, other modes,
+complete unmasked OE/UE behavior and parent S2-37/S2-38 remain open. Sources:
+Intel SDM Rev. 093 Vol. 2B MULSS pp. 4-150–4-151; Vol. 2A Type 3/Table 2-20;
+Vol. 1 §§4.9.1.4–.6, 11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel
+Floating-Point Reference Sheet v2.13. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37au--bounded-masked-range-long64-mulss-xmm-register-pairs),
+[plan](../plans/STAGE_2.md#s2-37au--bounded-masked-range-long64-mulss-xmm-register-pairs), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37au-bounded-masked-range-mulss-register-pair-profile).

@@ -6774,3 +6774,25 @@ MULSD pp. 4-148–4-149; Vol. 2A Type 3/Table 2-20; Vol. 1 §§4.9.1.4–.6,
 Reference Sheet v2.13. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37at--bounded-masked-range-long64-mulsd-xmm-register-pairs),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37at--bounded-masked-range-long64-mulsd-xmm-register-pairs),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37at--mulsd-register-pair-interpreter-profile).
+
+### S2-37au bounded masked-range MULSS register-pair profile
+
+`s2_37au_mulss_xmm0_xmm1.case.json` is a literal canonical `F3 0F 59 /r`
+Long64 scalar binary32 multiply. It checks `3.0×1.0`, preserves destination
+high96 and ignores source high96. The schema-v2 profile covers all 256 XMM
+pairs, requires OM=UM=1, rejects DAZ/reserved MXCSR bits, and accepts all RC,
+FTZ, IM/DM/PM and old sticky flags. Its independent raw-u32 integer oracle
+reuses the independent finite-lane arithmetic and has a scalar wrapper; it uses
+no host FP or production arithmetic helper. Focused tests cover aliases,
+source/destination high-half poison, both WPR minimum-normal boundaries under
+all RC×FTZ combinations, positive and negative halfway rounding, exact tiny and
+FTZ, NaN/SNaN selection, QNaN DE suppression, zero×infinity, unmasked IE/DE
+pre-events, unmasked PM atomicity, gates and fetch priority at CPL0–3, no data
+callbacks, malformed encodings, result tampering and JIT/native denial. Local
+checks do not establish physical acceptance; memory operands, other modes and
+full unmasked OE/UE delivery remain outside this slice. Sources: Intel SDM
+Rev. 093 Vol. 2B MULSS pp. 4-150–4-151; Vol. 2A Type 3/Table 2-20; Vol. 1
+§§4.9.1.4–.6 and 11.5.3; Vol. 3A Event 19/Table 7-8; Intel Floating-Point
+Reference Sheet v2.13. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37au--bounded-masked-range-long64-mulss-xmm-register-pairs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37au--bounded-masked-range-long64-mulss-xmm-register-pairs), and
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37au--mulss-register-pair-interpreter-profile).
