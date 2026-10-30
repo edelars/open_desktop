@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последнее локальное подзадание S2-37ap добавляет ограниченный masked-range SUBSD XMM register-pair interpreter profile после S2-37an SUBPD и S2-37ao SUBPS. Эти три register-only профиля требуют OM=UM=1, поэтому покрывают masked overflow/underflow, но не полную семантику unmasked OE/UE. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последнее локальное подзадание S2-37ar добавляет ограниченный masked-range MULPD XMM register-pair interpreter profile после SUBPD/SUBPS/SUBSD/SUBSS. Профили требуют OM=UM=1; MULPD underflow и FTZ определяются по WPR exponent после precision rounding, а не по exact-product exponent. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -520,6 +520,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37an | Strict schema-v2 canonical Long64 SUBPD XMM register pairs; bounded masked-range profile admits only OM=UM=1, covers masked OE/UE/PE and IE/DE pre-event aggregation; JIT/native closed | S2-37ah raw binary64 conversion reference and S2-38 exception policy; independent review clean; physical acceptance remains open |
 | [x] | S2-37ao | Strict schema-v2 canonical Long64 SUBPS XMM register pairs; SSE-gated four-lane raw binary32 subtraction; OM=UM=1 masked-range, atomic IE/DE/OE/UE/PE; JIT/native closed | S2-37an profile pattern and S2-38 exception ordering; focused checks/workspace check passed; initial and follow-up independent reviews clean; physical acceptance remains open |
 | [x] | S2-37ap | Strict schema-v2 canonical Long64 SUBSD XMM register pairs; scalar binary64 subtraction with preserved destination high64; OM=UM=1 masked-range, atomic IE/DE/OE/UE/PE; JIT/native closed | Focused tests, SUBPD/SUBPS regressions, formatting and workspace check passed; independent review clean; physical acceptance remains open |
+| [x] | S2-37ar | Strict schema-v2 canonical Long64 MULPD XMM register-pair profile; WPR exponent defines tininess/FTZ after precision rounding, including directed min-normal boundaries; OM=UM=1; JIT/native closed | Tininess erratum fixed; focused binary32/binary64 helper and MULPD/SUBPD/SUBPS/SUBSD/SUBSS regressions, workspace check passed; independent Sol-high review clean |
 | [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j/k/l: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j/k/l; independent review |
 | [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
@@ -13673,14 +13674,23 @@ including zero×subnormal and infinity×subnormal. Aggregate IE/DE for both lane
 before arithmetic; an unmasked pre-event commits only generated IE/DE and
 preserves XMM, RIP and retirement. With pre-events masked, use the production
 raw binary64 multiply helper and MXCSR.RC. Overflow records OE|PE under this
-OM=1 profile. Detect exact-product tininess before rounding: inexact tiny results
-set UE|PE even when directed rounding produces minimum-normal, and FTZ flushes
-the tiny result to XOR-signed zero with UE|PE. Aggregate and commit status
+OM=1 profile. Determine tininess from the exponent of the precision-rounded
+result with unbounded exponent (WPR.exp), not from the exact product exponent.
+For `0x0010000000000001 × 0x3feffffffffffffe`, RN/RU produce minimum-normal
+with PE only regardless of FTZ; RD/RZ produce maximum-subnormal with UE|PE, or
+positive zero with UE|PE under FTZ. The separate midpoint product
+`minimum-normal × (1−2^-53)` remains tiny after precision rounding and retains
+UE|PE in every RC mode. FTZ flushes a nonzero result whose WPR exponent is tiny.
+Aggregate and commit status
 before unmasked PE delivery; preserve the complete destination on faults.
+The adjacent SUBPD profile already classifies tininess from the production
+precision-rounded unbounded-exponent diagnostic; this erratum changes MULPD's
+incorrect exact-product override only.
 
 The schema oracle must independently multiply raw finite significands with
-integer arithmetic, separate exact exponent/tininess from final rounding, and
-perform only one precision rounding; do not use host FP or production helpers.
+integer arithmetic, round to precision with unbounded exponent to classify
+tininess, then apply bounded subnormal rounding; do not use host FP or
+production helpers.
 Cover all pairs and aliases, NaN ordering/quieting, inf/zero/subnormal cases,
 XOR signs, exact/inexact tiny results and FTZ, all RC modes, production halfway
 rounding, signed overflow direction, pre/post event priority, sticky flags,

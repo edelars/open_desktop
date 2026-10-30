@@ -25338,8 +25338,9 @@ fn mulpd_literal_pair_rounding_and_backend_denial() {
         assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
     }
 
-    // The exact product is minimum-normal minus half a subnormal ulp. Tininess
-    // and UE|PE are determined before rounding, including RN/RU -> minimum-normal.
+    // The exact product is minimum-normal minus half a subnormal ulp. Its
+    // precision-rounded unbounded-exponent result is still tiny in every RC,
+    // so it raises UE|PE even when bounded rounding produces minimum-normal.
     for rc in 0u32..4 {
         for ftz in [false, true] {
             let mut case = input.fixture.clone();
@@ -25389,6 +25390,55 @@ fn mulpd_literal_pair_rounding_and_backend_denial() {
                 0x30,
                 "rc={rc} ftz={ftz}"
             );
+        }
+    }
+
+    // Here the exact product is min-normal*(1-2^-104), but rounding to
+    // destination precision with an unbounded exponent produces min-normal
+    // for RN/RU. Tininess therefore depends on RC and FTZ cannot flush those
+    // normal WPR results; RD/RZ remain tiny and FTZ flushes their max-subnormal.
+    for rc in 0u32..4 {
+        for ftz in [false, true] {
+            let mut case = input.fixture.clone();
+            let sse = case.initial_state.sse.as_mut().unwrap();
+            let encode = |raw: u64| {
+                raw.to_le_bytes()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            };
+            sse.xmm[0].replace_range(0..16, &encode(0x0010_0000_0000_0001));
+            sse.xmm[0].replace_range(16..32, &encode(0x3ff0_0000_0000_0000));
+            sse.xmm[1].replace_range(0..16, &encode(0x3fef_ffff_ffff_fffe));
+            sse.xmm[1].replace_range(16..32, &encode(0x3ff0_0000_0000_0000));
+            sse.mxcsr = HexU64(u64::from(
+                0x1f80 | (rc << 13) | if ftz { 1 << 15 } else { 0 },
+            ));
+            case.case_id = format!("s2_37ar_wpr_tininess_rc{rc}_ftz{ftz}");
+            let input_bytes = serde_json::to_vec(&case).unwrap();
+            let (loaded, result) = run(&input_bytes, "interpreter", 0);
+            od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+            let output_snapshot = snapshot(&result);
+            let sse = output_snapshot.state.sse.as_ref().unwrap();
+            let actual = u64::from_le_bytes(
+                (0..8)
+                    .map(|index| {
+                        u8::from_str_radix(&sse.xmm[0][index * 2..index * 2 + 2], 16).unwrap()
+                    })
+                    .collect::<Vec<_>>()
+                    .try_into()
+                    .unwrap(),
+            );
+            let tiny = rc == 1 || rc == 3;
+            let expected = if tiny && ftz {
+                0
+            } else if tiny {
+                0x000f_ffff_ffff_ffff
+            } else {
+                0x0010_0000_0000_0000
+            };
+            assert_eq!(actual, expected, "rc={rc} ftz={ftz}");
+            assert_eq!(sse.mxcsr.get() & 0x30, if tiny { 0x30 } else { 0x20 });
         }
     }
 

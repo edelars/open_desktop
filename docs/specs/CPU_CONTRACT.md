@@ -13331,8 +13331,10 @@ produce the indefinite when masked. Otherwise a subnormal operand contributes
 precompute DE. IE and DE aggregate across lanes before computation; any newly
 unmasked pre-event commits all generated IE/DE and suppresses every new OE/UE/PE
 and the full-XMM result. When pre-events are masked, both lanes compute under
-MXCSR.RC. Masked overflow records OE|PE; an inexact tiny result records UE|PE,
-and FTZ can flush a tiny result to signed zero while adding UE|PE. New sticky
+MXCSR.RC. Masked overflow records OE|PE; an inexact result whose precision-
+rounded unbounded-exponent value (WPR.exp) is below minimum-normal records
+UE|PE. FTZ can flush a tiny nonzero result to signed zero while adding UE|PE.
+New sticky
 flags are committed before an unmasked #XM (OSXMMEXCPT=1) or SIMD-generated #UD
 otherwise. Unmasked outcomes preserve the complete destination, RIP and
 retirement; old sticky flags alone do not fault. Success replaces the whole
@@ -13416,21 +13418,25 @@ DE, including zero×subnormal and infinity×subnormal. IE/DE aggregate across bo
 lanes before arithmetic. A newly unmasked pre-event commits generated IE/DE
 only and leaves full XMM, RIP and retirement unchanged. With pre-events masked,
 MULPD uses the deterministic production raw binary64 multiply helper and
-MXCSR.RC. Masked overflow records OE|PE. Exact-product tininess is tested before
-rounding: an inexact tiny result records UE|PE even if RN/RU rounds it to
-minimum-normal. FTZ flushes an exact-tiny result to XOR-signed zero with UE|PE.
-Post-rounding PE is aggregated, committed before unmasked #XM (OSXMMEXCPT=1)
+MXCSR.RC. Masked overflow records OE|PE. Tininess is determined from the
+precision-rounded result with an unbounded exponent (WPR.exp), not the exact
+product exponent. For `0x0010000000000001 × 0x3feffffffffffffe`, RN/RU produce
+minimum-normal with PE only, independent of FTZ; RD/RZ produce maximum-subnormal
+with UE|PE, or positive zero with UE|PE when FTZ is enabled. The midpoint
+`minimum-normal × (1−2^-53)` remains tiny after precision rounding and retains
+UE|PE in every RC mode. FTZ flushes a nonzero result whose WPR exponent is tiny
+to XOR-signed zero. Post-rounding PE is aggregated, committed before unmasked #XM (OSXMMEXCPT=1)
 or SIMD-generated #UD otherwise, and preserves XMM/RIP/retirement on fault.
 Old sticky status alone never faults. Successful execution atomically replaces
 the complete destination XMM.
 
-The schema oracle independently multiplies raw-u64 finite significands, tracks
-the exact exponent and tininess separately, and performs one integer rounding;
-it uses neither host floating point nor production arithmetic helpers. The
-literal fixture and local tests cover strict decode and all 256 aliases,
-integer-oracle validation, production halfway rounding, minimum-normal boundary
-with UE|PE in all RC modes and FTZ signed-zero behavior, full destination
-atomicity, and JIT/native denial. This is local evidence, not physical
+The schema oracle independently multiplies raw-u64 finite significands, rounds
+to precision with an unbounded exponent to classify tininess, and then applies
+bounded subnormal rounding; it uses neither host floating point nor production
+arithmetic helpers. The literal fixture and local tests cover strict decode
+and all 256 aliases, integer-oracle validation, production halfway rounding,
+the WPR near-minimum-normal boundary and the separate midpoint boundary across
+RC/FTZ, full destination atomicity, and JIT/native denial. This is local evidence, not physical
 acceptance. Memory forms, other modes, full unmasked OE/UE behavior and parent
 S2-37/S2-38 remain open. Sources: Intel SDM Rev. 093 Vol. 2B MULPD
 pp. 4-142–4-143; Vol. 2A Type 2/Table 2-19; Vol. 1 §§4.9.1.4–.6, 11.5.3 and

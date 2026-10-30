@@ -6719,9 +6719,13 @@ schema-v2 profile covers all 256 register pairs, requires MXCSR.OM=1 and
 MXCSR.UM=1, rejects DAZ/reserved bits, and accepts all RC modes, FTZ, IM/DM/PM
 and old sticky flags. Its independent raw-u64 integer oracle has no host FP or
 production arithmetic helper. Local tests cover register aliases, halfway
-rounding, the exact `minimum-normal×(1−2^-53)` underflow boundary for every RC
-and FTZ setting, atomic full-XMM replacement, and interpreter-only backend
-denial. This is local evidence, not physical acceptance; memory operands, other
+rounding, the separate `minimum-normal×(1−2^-53)` midpoint and the
+`0x0010000000000001×0x3feffffffffffffe` WPR tininess boundary for every RC and
+FTZ setting, atomic full-XMM replacement, and interpreter-only backend denial.
+The latter classifies underflow from the precision-rounded unbounded-exponent
+result: RN/RU keep minimum-normal with PE only; RD/RZ return maximum-subnormal
+with UE|PE or signed zero under FTZ. This is local evidence, not physical
+acceptance; memory operands, other
 modes and full unmasked OE/UE behavior remain outside the slice. Sources: Intel
 SDM Rev. 093 Vol. 2B MULPD pp. 4-142–4-143; Vol. 2A Type 2/Table 2-19;
 Vol. 1 §§4.9.1.4–.6, 11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel

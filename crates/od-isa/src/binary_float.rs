@@ -8404,6 +8404,49 @@ mod tests {
     }
 
     #[test]
+    fn multiply_tininess_uses_precision_rounded_unbounded_exponent_for_binary32_and_64() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let cases = [
+            (Nearest, 0x0010_0000_0000_0000, false),
+            (Down, 0x000f_ffff_ffff_ffff, true),
+            (Up, 0x0010_0000_0000_0000, false),
+            (Zero, 0x000f_ffff_ffff_ffff, true),
+        ];
+        for (mode, expected, tiny) in cases {
+            let result = Binary64::multiply_raw_result(
+                Binary64::from_bits(0x0010_0000_0000_0001),
+                Binary64::from_bits(0x3fef_ffff_ffff_fffe),
+                mode,
+            );
+            assert_eq!(result.value().to_bits(), expected, "mode={mode:?}");
+            assert!(result.inexact(), "mode={mode:?}");
+            assert_eq!(
+                result.tiny_after_precision_rounding(),
+                tiny,
+                "mode={mode:?}"
+            );
+
+            let result = Binary32::multiply_raw_result(
+                Binary32::from_bits(0x0080_0001),
+                Binary32::from_bits(0x3f7f_fffe),
+                mode,
+            );
+            let expected32 = if tiny { 0x007f_ffff } else { 0x0080_0000 };
+            assert_eq!(result.value().to_bits(), expected32, "mode={mode:?}");
+            assert!(result.inexact(), "mode={mode:?}");
+            assert_eq!(
+                result.tiny_after_precision_rounding(),
+                tiny,
+                "mode={mode:?}"
+            );
+        }
+    }
+
+    #[test]
     fn raw_binary32_division_special_class_matrix_is_literal() {
         use RationalRoundingMode::NearestTiesEven as Nearest;
 

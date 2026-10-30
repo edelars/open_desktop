@@ -13281,34 +13281,14 @@ fn step_configured(
                 let lhs_value = Binary64::from_bits(lhs[lane]);
                 let rhs_value = Binary64::from_bits(rhs[lane]);
                 let computed = Binary64::multiply_raw_result(lhs_value, rhs_value, rounding);
-                let tiny_before_rounding = match (
-                    lhs_value.class(),
-                    rhs_value.class(),
-                    lhs_value.normalize_finite(),
-                    rhs_value.normalize_finite(),
-                ) {
-                    (
-                        BinaryClass::Normal | BinaryClass::Subnormal,
-                        BinaryClass::Normal | BinaryClass::Subnormal,
-                        Some(lhs_finite),
-                        Some(rhs_finite),
-                    ) => {
-                        let (_, exponent, magnitude) =
-                            crate::binary_float::multiply_finite_significands(
-                                lhs_finite, rhs_finite,
-                            );
-                        exponent + (127 - magnitude.leading_zeros() as i32) - 127 < -1022
-                    }
-                    _ => false,
-                };
                 let mut raw = computed.value().to_bits();
                 new_oe |= computed.overflow();
                 // This profile admits OM=1 only; the masked overflow response
                 // raises both OE and PE even when the exact significand fit.
                 new_pe |= computed.inexact() || computed.overflow();
-                // Use exact-product tininess because directed rounding can produce
-                // minimum-normal while the exact result remains tiny.
-                let tiny = tiny_before_rounding || computed.tiny_after_precision_rounding();
+                // Underflow and FTZ use the exponent after precision rounding
+                // with an unbounded exponent (WPR.exp), not the exact product.
+                let tiny = computed.tiny_after_precision_rounding();
                 if flush_to_zero && tiny && raw & 0x7fff_ffff_ffff_ffff != 0 {
                     raw &= 1 << 63;
                     new_ue = true;

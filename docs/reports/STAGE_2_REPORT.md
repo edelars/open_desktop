@@ -18580,21 +18580,31 @@ Execution is interpreter-only, uses pre-execution snapshots and the existing
 raw binary64 multiplication helper, and replaces the whole destination only
 after both lanes pass exception processing. MXCSR OM=UM=1 is required; DAZ and
 reserved bits are rejected. The independent testkit oracle uses raw integer
-significands and one final rounding without host FP or production helpers. Exact
-product tininess is tracked before rounding so minimum-normal directed results
-still set UE|PE; FTZ turns this boundary into signed zero.
+significands and no host FP or production helpers. A tininess erratum corrected
+runtime and oracle behavior to use the exponent of the precision-rounded result
+with unbounded exponent (WPR.exp), not the exact product exponent. For
+`0x0010000000000001 × 0x3feffffffffffffe`, RN/RU produce minimum-normal with
+PE only independent of FTZ; RD/RZ produce maximum-subnormal with UE|PE, or
+positive zero with UE|PE under FTZ. The distinct midpoint product
+`minimum-normal × (1−2^-53)` remains tiny after precision rounding and retains
+UE|PE in every RC mode. SUBPD already used the production
+`tiny_after_precision_rounding` diagnostic and its runner regression remains
+unchanged.
 
 The literal fixture verifies exact and inexact lanes, integer-oracle state
 validation and backend denial. Focused tests passed for every decoder register
 pair and alias, production execution for all 256 pairs, runtime gate/MXCSR and
-fetch priority, the minimum-normal×(1−2^-53) boundary under all RC settings
+fetch priority, both minimum-normal product boundaries under all RC settings
 with FTZ on and off, signed overflow direction under all RC settings, and
-JIT/native rejection. Runner tests also cover NaN ordering/quieting, DE/IE
-priority, post-PE atomicity, oracle shift-128 and rounded-overflow boundaries.
-The adjacent SUBPS, SUBPD, SUBSD and SUBSS regressions passed. `cargo fmt --all
--- --check`, `cargo check --workspace --all-targets --offline`, `git diff
---check` and `graphify update .` passed. Independent Sol-high re-review found
-no remaining findings after removal of a temporary test diagnostic. Physical
+JIT/native rejection. The raw binary32/binary64 multiplication helper test
+also verifies WPR tininess for both precisions. The MULPD runner's
+`mulpd_literal_pair_rounding_and_backend_denial` covers the new all-RC×FTZ
+boundary and the retained midpoint; `mulpd_integer_oracle_handles_tiny_shift128_and_overflow_rounding_boundary`
+still passes. The SUBPD, SUBPS, SUBSD and SUBSS runner regressions passed.
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`git diff --check` and `graphify update .` passed. Independent Sol-high review
+of the tininess correction found no concrete findings and did not independently
+rerun the local commands. Physical
 acceptance, memory forms, other modes and full unmasked overflow/underflow
 behavior remain open; parent S2-37/S2-38 are not closed. See the [CPU
 contract](../specs/CPU_CONTRACT.md#s2-37ar--bounded-masked-range-long64-mulpd-xmm-register-pairs),

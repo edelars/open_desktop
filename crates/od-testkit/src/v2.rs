@@ -18657,13 +18657,16 @@ fn independent_mulpd_finite_lane(lhs: u64, rhs: u64, mxcsr: u32) -> (u64, bool, 
     let top = 127 - exact.leading_zeros() as i32;
     let mut unbiased = top + power;
     let rc = (mxcsr >> 13) & 3;
-    if unbiased >= -1022 {
-        let (mut significand, inexact) =
-            independent_mul_round_power_of_two(exact, 52 - top, rc, sign);
-        if significand == (1u128 << 53) {
-            significand >>= 1;
-            unbiased += 1;
-        }
+    let (mut significand, precision_inexact) =
+        independent_mul_round_power_of_two(exact, 52 - top, rc, sign);
+    if significand == (1u128 << 53) {
+        significand >>= 1;
+        unbiased += 1;
+    }
+    // Tininess is based on the exponent of the precision-rounded result
+    // before applying the destination's bounded exponent range.
+    let tiny_after_precision_rounding = unbiased < -1022;
+    if !tiny_after_precision_rounding {
         if unbiased > 1023 {
             let to_inf = rc == 0 || rc == 1 && sign || rc == 2 && !sign;
             let expfrac = if to_inf {
@@ -18676,11 +18679,11 @@ fn independent_mulpd_finite_lane(lhs: u64, rhs: u64, mxcsr: u32) -> (u64, bool, 
         let raw = (u64::from(sign) << 63)
             | (((unbiased + 1023) as u64) << 52)
             | ((significand as u64) & 0x000f_ffff_ffff_ffff);
-        (raw, false, inexact, false)
+        (raw, false, precision_inexact, false)
     } else {
         let (rounded, inexact) = independent_mul_round_power_of_two(exact, power + 1074, rc, sign);
         let raw = (u64::from(sign) << 63) | (rounded.min(1u128 << 52) as u64);
-        (raw, true, inexact, false)
+        (raw, tiny_after_precision_rounding, inexact, false)
     }
 }
 
