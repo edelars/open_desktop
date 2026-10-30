@@ -824,7 +824,7 @@ pub fn compile_ir_memory_store_then_load_block_v2(
     compile_ir_memory_two_site_block_v2(code, entry_rip)
 }
 
-/// Compile one of the two exact reviewed qword-memory pairs.
+/// Compile one exact reviewed qword-memory pair.
 pub fn compile_ir_memory_two_site_block_v2(
     code: CodeView<'_>,
     entry_rip: u64,
@@ -833,7 +833,9 @@ pub fn compile_ir_memory_two_site_block_v2(
         || code.len() != 6
         || !matches!(
             code.bytes(),
-            [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b] | [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02]
+            [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b]
+                | [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02]
+                | [0x48, 0x8b, 0x03, 0x48, 0x8b, 0x0b]
         )
     {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
@@ -841,32 +843,43 @@ pub fn compile_ir_memory_two_site_block_v2(
     let second_rip = entry_rip
         .checked_add(3)
         .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?;
-    let store_view = CodeView::new(entry_rip, &code.bytes()[..3])
+    let first_view = CodeView::new(entry_rip, &code.bytes()[..3])
         .map_err(|_| MemoryLoadCompileErrorV2::UnsupportedForm)?;
-    let load_view = CodeView::new(second_rip, &code.bytes()[3..])
+    let second_view = CodeView::new(second_rip, &code.bytes()[3..])
         .map_err(|_| MemoryLoadCompileErrorV2::UnsupportedForm)?;
-    let load_then_store = code.bytes()[..3] == [0x48, 0x8b, 0x03];
-    let (first_operation, second_operation) = if load_then_store {
-        (MemorySiteOperationV2::Load, MemorySiteOperationV2::Store)
-    } else {
+    let store_then_load = code.bytes() == [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b];
+    let load_then_store = code.bytes() == [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02];
+    let (first_operation, second_operation) = if store_then_load {
         (MemorySiteOperationV2::Store, MemorySiteOperationV2::Load)
+    } else {
+        (
+            MemorySiteOperationV2::Load,
+            if load_then_store {
+                MemorySiteOperationV2::Store
+            } else {
+                MemorySiteOperationV2::Load
+            },
+        )
     };
-    let (mut first, _) = checked_memory_metadata_v2(store_view, entry_rip, first_operation)?;
-    let (mut second, _) = checked_memory_metadata_v2(load_view, second_rip, second_operation)?;
-    let operands_match = if load_then_store {
+    let (mut first, _) = checked_memory_metadata_v2(first_view, entry_rip, first_operation)?;
+    let (mut second, _) = checked_memory_metadata_v2(second_view, second_rip, second_operation)?;
+    let rbx = od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx);
+    let operands_match = if store_then_load {
+        first.source() == Some(0)
+            && first.operand().base == rbx
+            && second.destination() == Some(1)
+            && second.operand().base == rbx
+    } else if load_then_store {
         first.destination() == Some(0)
-            && first.operand().base
-                == od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+            && first.operand().base == rbx
             && second.source() == Some(0)
             && second.operand().base
                 == od_isa::long_decode::AddressBase::Register(od_isa::Register::Rdx)
     } else {
-        first.source() == Some(0)
-            && first.operand().base
-                == od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+        first.destination() == Some(0)
+            && first.operand().base == rbx
             && second.destination() == Some(1)
-            && second.operand().base
-                == od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+            && second.operand().base == rbx
     };
     if !operands_match {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
@@ -883,10 +896,12 @@ pub fn compile_ir_memory_two_site_block_v2(
             .try_into()
             .map_err(|_| MemoryLoadCompileErrorV2::UnsupportedForm)?,
         sites: [first, second],
-        sequence: if load_then_store {
+        sequence: if store_then_load {
+            crate::runtime::MemoryPairSequenceV2::StoreThenLoad
+        } else if load_then_store {
             crate::runtime::MemoryPairSequenceV2::LoadThenStore
         } else {
-            crate::runtime::MemoryPairSequenceV2::StoreThenLoad
+            crate::runtime::MemoryPairSequenceV2::LoadThenLoad
         },
         pc_map: emitted.pc_map().clone(),
     })
@@ -1599,6 +1614,54 @@ mod tests {
         assert_eq!(block.sites()[1].guest_rip(), 0x3003);
         assert_eq!(block.sites()[1].next_rip(), 0x3006);
         assert_eq!(block.pc_map().instruction_count(), 2);
+    }
+
+    #[test]
+    fn ir_load_then_load_is_one_typed_two_site_entry() {
+        let bytes = [0x48, 0x8b, 0x03, 0x48, 0x8b, 0x0b];
+        let block =
+            compile_ir_memory_two_site_block_v2(CodeView::new(0x5000, &bytes).unwrap(), 0x5000)
+                .unwrap();
+        assert_eq!(
+            block.sequence(),
+            crate::runtime::MemoryPairSequenceV2::LoadThenLoad
+        );
+        assert_eq!(block.source_bytes(), &bytes);
+        assert_eq!(block.sites()[0].instruction_index(), 0);
+        assert_eq!(block.sites()[0].operation(), MemorySiteOperationV2::Load);
+        assert_eq!(block.sites()[0].destination(), Some(0));
+        assert_eq!(block.sites()[0].guest_rip(), 0x5000);
+        assert_eq!(block.sites()[0].next_rip(), 0x5003);
+        assert_eq!(block.sites()[1].instruction_index(), 1);
+        assert_eq!(block.sites()[1].operation(), MemorySiteOperationV2::Load);
+        assert_eq!(block.sites()[1].destination(), Some(1));
+        assert_eq!(block.sites()[1].guest_rip(), 0x5003);
+        assert_eq!(block.sites()[1].next_rip(), 0x5006);
+        assert_eq!(block.pc_map().instruction_count(), 2);
+        assert_eq!(
+            block
+                .pc_map()
+                .ranges()
+                .iter()
+                .filter(|range| range.phase == crate::statepoints::StatePhase::HelperCall)
+                .filter_map(|range| range.instruction_index)
+                .collect::<Vec<_>>(),
+            [0, 1]
+        );
+
+        for unsupported in [
+            [0x48, 0x8b, 0x03, 0x48, 0x8b, 0x13], // RDX destination
+            [0x48, 0x8b, 0x0b, 0x48, 0x8b, 0x03], // reversed destination order
+            [0x48, 0x8b, 0x03, 0x48, 0x89, 0x0b], // load-store alias shape
+        ] {
+            assert!(
+                compile_ir_memory_two_site_block_v2(
+                    CodeView::new(0x5000, &unsupported).unwrap(),
+                    0x5000
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

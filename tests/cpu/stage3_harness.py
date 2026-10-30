@@ -66,6 +66,7 @@ LIFECYCLE_TESTS = (
     "active_code_v3_guards_faults_aliases_and_committed_stop_are_precise",
     "active_code_v3_slot_survives_capacity_two_invalidation_and_safe_reuse",
     "active_code_v3_architectural_write_fault_matches_interpreter_and_is_atomic",
+    "ir_two_load_pair_preserves_callbacks_faults_and_continuation",
 )
 
 LOCAL_STEPS = ("harness_self_tests", "stage1_dispatch", "memory_corpus", *LIFECYCLE_TESTS)

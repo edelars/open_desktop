@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-20h/S3-20i/S3-20j/S3-20k/S3-20l/S3-20m/S3-20n/S3-20o/S3-20p/S3-20q/S3-20r/S3-20s/S3-20t/S3-20u/S3-20v/S3-20w/S3-20x/S3-20y/S3-20z/S3-20aa/S3-20ab/S3-20ac/S3-20ad/S3-20ae/S3-20af/S3-20ag/S3-20ah/S3-20ai/S3-20aj/S3-20ak/S3-20al/S3-20am/S3-20an/S3-20ao/S3-20ap/S3-20aq/S3-20ar/S3-20as/S3-20at/S3-20au/S3-20av/S3-20aw/S3-20ax/S3-20ay/S3-20az/S3-20ba/S3-20bb/S3-20bc/S3-20bd/S3-20be/S3-20bf/S3-20bg/S3-20bh/S3-20bi/S3-20bj/S3-20bk/S3-20bl/S3-20bm/S3-20bn/S3-20bo/S3-20bp/S3-20bq/S3-20br/S3-20bs/S3-20bt/S3-20bu/S3-20bv/S3-20bw/S3-20bx/S3-20ca/S3-20cb/S3-20cc/S3-20cd/S3-20ce/S3-20cf/S3-20cg/S3-20ch/S3-20ci/S3-20cj/S3-20ck/S3-20cl/S3-20cm/S3-26a/S3-26b/S3-26c/S3-26d/S3-27a/S3-27b/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-24b/S3-25a/S3-25b реализованы как bounded partial slices; S3-20cm реализован как bounded optional slice, не gate этапа. Общие memory lowering и S3-19/S3-20/S3-22/S3-23/S3-24/S3-25/S3-26/S3-27 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-20h/S3-20i/S3-20j/S3-20k/S3-20l/S3-20m/S3-20n/S3-20o/S3-20p/S3-20q/S3-20r/S3-20s/S3-20t/S3-20u/S3-20v/S3-20w/S3-20x/S3-20y/S3-20z/S3-20aa/S3-20ab/S3-20ac/S3-20ad/S3-20ae/S3-20af/S3-20ag/S3-20ah/S3-20ai/S3-20aj/S3-20ak/S3-20al/S3-20am/S3-20an/S3-20ao/S3-20ap/S3-20aq/S3-20ar/S3-20as/S3-20at/S3-20au/S3-20av/S3-20aw/S3-20ax/S3-20ay/S3-20az/S3-20ba/S3-20bb/S3-20bc/S3-20bd/S3-20be/S3-20bf/S3-20bg/S3-20bh/S3-20bi/S3-20bj/S3-20bk/S3-20bl/S3-20bm/S3-20bn/S3-20bo/S3-20bp/S3-20bq/S3-20br/S3-20bs/S3-20bt/S3-20bu/S3-20bv/S3-20bw/S3-20bx/S3-20ca/S3-20cb/S3-20cc/S3-20cd/S3-20ce/S3-20cf/S3-20cg/S3-20ch/S3-20ci/S3-20cj/S3-20ck/S3-20cl/S3-20cm/S3-26a/S3-26b/S3-26c/S3-26d/S3-26e/S3-27a/S3-27b/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-24b/S3-25a/S3-25b реализованы как bounded partial slices; S3-20cm реализован как bounded optional slice, не gate этапа. Общие memory lowering и S3-19/S3-20/S3-22/S3-23/S3-24/S3-25/S3-26/S3-27 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -148,7 +148,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-19 | Checked memory/helper bridge | S3-08, S3-16; S2-04/08 |
 | [partial] | S3-19a | Invocation-local checked helper ABI и native probe | Узкий standalone slice внутри S3-19; production block exits остаются открыты |
 | [partial] | S3-19b | Production V2 block/helper path для одного MOV r64 load | Точный `48 8B /r`, base/dst RAX..RBX; без cache/general IR |
-| [partial] | S3-20 | Memory lowering и partial registers; проверенные MOV qword load/store slices и два точных bounded two-site pair | S3-19; interpreter соответствующих форм |
+| [partial] | S3-20 | Memory lowering и partial registers; проверенные MOV qword load/store slices и три точных bounded two-site pair | S3-19; interpreter соответствующих форм |
 | [partial] | S3-20b | Production V2 MOV qword store с private-RAM unsafe entry | Точный `48 89 /r`, source/base RAX..RBX; остальные stores и executable aliases запрещены |
 | [partial] | S3-20c | Один-byte SIB extension для V2 MOV qword load/store | ModRM `mod=00,r/m=100`; base/index/data RAX..RBX, scale 1/2/4/8, no displacement |
 | [partial] | S3-20d | Signed disp8/disp32 для direct и SIB V2 MOV load/store | ModRM `mod=00/01/10`; source lengths 3/4/7 direct и 4/5/8 SIB; прочие address forms отвергаются |
@@ -158,6 +158,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20h / S3-26a | Checked qword load через общий BasicBlock → typed IR → allocator → runtime emitter | Только `48 8B /r`, ModRM `mod=00`, data/base RAX..RBX, без SIB/displacement; V1/direct V2 остаются отдельными |
 | [partial] | S3-20i / S3-26b | Checked qword store через общий BasicBlock → typed IR → allocator → runtime emitter | Только `48 89 /r`, ModRM `mod=00`, source/base RAX..RBX; отдельный typed entry, no replay после helper write |
 | [partial] | S3-20j / S3-26c / S3-20k / S3-26d | Один generated entry для ровно двух exact pairs: `48 89 03; 48 8B 0B` и `48 8B 03; 48 89 02` | Только private synchronous ordinary RAM; two guest commits; STOP/fault/budget continuation bounded; singleton APIs сохранены |
+| [partial] | S3-26e | Exact native load→load pair `48 8B 03; 48 8B 0B`; две отдельные checked reads `[RBX]` в RAX и RCX | Callback trace, full interpreter parity, second-site partial fault/retry, STOP/budget/event guards; private ordinary RAM only |
 | [partial] | S3-20l | RIP-relative qword MOV через shared IR и bounded memory dispatcher | Только singleton `48 8B/89 /r`, ModRM `mod=00,r/m=101`, disp32, data RAX..RBX; exact 7-byte source; no wider block/prefix/SIB |
 | [partial] | S3-20m | Direct-base signed disp8/disp32 MOV через shared IR и bounded dispatcher | Только singleton `48 8B/89 /r`, ModRM `mod=01/10`, base/data RAX..RBX, exact length 4/7; no SIB/prefix/wider block |
 | [partial] | S3-20n | No-displacement SIB MOV через shared IR и bounded dispatcher | Только `48 8B/89 /r sib`, ModRM `mod=00,r/m=100`, data/base/index RAX..RBX, scale 1/2/4/8, ровно 4 bytes |
@@ -1122,6 +1123,29 @@ STOP, budget, continuation после изменения source RAM, guards и t
 Slice остаётся private synchronous ordinary RAM без branch, code aliases, MMIO,
 atomics, произвольных multi-site blocks или performance claim. См.
 [S3-20j/S3-26c/S3-20k/S3-26d report](../reports/STAGE_3_S3-20j_2026-10-27.md).
+
+#### S3-26e. Exact load→load two-site checked-memory entry
+
+Add exactly `48 8B 03 48 8B 0B` (`MOV RAX, [RBX]; MOV RCX, [RBX]`) to the
+existing typed two-site path. Keep two helper sites even though the effective
+address is equal: guest callback order must be read(A), read(A), and the second
+read must not be coalesced. Both loads have independent GPR commits and exact
+RIP boundaries `A`, `A+3`, and `A+6`. The shared entry accepts the first RIP or
+the second-instruction continuation only.
+
+Acceptance compares full CPU/RAM state with two interpreter steps and records
+both callback address/width pairs. Cover first-site fault, second-site fault
+after committing RAX, a second-site backend error, and singleton load retry at
+`A+3` without repeating the first read. Check budget 0/1/2, pre-entry STOP,
+stop-RIP at the second instruction, STOP from the first callback, and the
+existing S3-28b event boundary: when the first read raises an event, both reads
+finish before yield if STOP/fault do not terminate earlier and budget remains.
+The event stays pending and yields before a following instruction. Keep all
+other memory-pair forms rejected. This is private synchronous ordinary RAM;
+the read callback trace is a contract probe, not an MMIO/device model. Update
+the local S3-34e lifecycle list with the exact host test identity. Full S3-26,
+S3-27, owner/MMU behavior and Stage 3 remain open. See the
+[S3-26e report](../reports/STAGE_3_S3-26e_2026-10-30.md).
 
 #### S3-20l. RIP-relative MOV in shared IR and bounded dispatch
 

@@ -76,6 +76,7 @@ pub enum MemorySiteOperationV2 {
 pub enum MemoryPairSequenceV2 {
     StoreThenLoad,
     LoadThenStore,
+    LoadThenLoad,
 }
 
 /// Immutable per-block description for one verifier-approved memory operation.

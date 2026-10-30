@@ -117,6 +117,23 @@ Mini and performance checks remain deferred to the end of Stage 3. This is uncac
 
 ## Протокол и доказательства
 
+### Bounded S3-26e repeated load pair
+
+Run `cargo test -p od-jit --lib ir_load_then_load_is_one_typed_two_site_entry`
+and `cargo test -p od-host --lib
+ir_two_load_pair_preserves_callbacks_faults_and_continuation`. The only added
+pair is `48 8B 03 48 8B 0B` (`MOV RAX,[RBX]; MOV RCX,[RBX]`); its native callback
+trace must contain exactly two qword reads at the same address, and full CPU
+state/RAM must match two independent interpreter steps. Check first-site and
+second-site architectural faults, a second-site backend error, partial RAX
+commit, singleton load retry at the second RIP without repeating site 0,
+budgets 0/1/2, pre-entry STOP, stop-RIP at site 1, callback STOP, and an event
+raised by the first read. The event case uses remaining budget and a following
+instruction; both reads commit before `EventPending` is returned, without
+clearing the event. The exact host test is also required by the S3-34e local
+harness. This is fixture-only private ordinary RAM: the trace proves two helper
+calls, not device/MMIO behavior, full S3-26/S3-27, or physical x86 semantics.
+
 ### Bounded S3-27b next fetch after memory pair
 
 The native fixture runs either exact two-site pair through the generated entry,

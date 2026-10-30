@@ -384,7 +384,32 @@ pub(crate) fn exact_checked_memory_pair(block: &crate::block::BasicBlock) -> boo
             && operand.address_size == od_isa::OperandSize::Qword
             && operand.size == od_isa::OperandSize::Qword
     );
-    store_to_load || load_to_store
+    let load_to_load = matches!(
+        first.decoded.operation,
+        DecodedOperation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Memory(operand),
+        } if destination.register() == od_isa::Register::Rax
+            && destination.size() == od_isa::OperandSize::Qword
+            && operand.base == od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+            && operand.index.is_none()
+            && operand.displacement == 0
+            && operand.address_size == od_isa::OperandSize::Qword
+            && operand.size == od_isa::OperandSize::Qword
+    ) && matches!(
+        second.decoded.operation,
+        DecodedOperation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Memory(operand),
+        } if destination.register() == od_isa::Register::Rcx
+            && destination.size() == od_isa::OperandSize::Qword
+            && operand.base == od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+            && operand.index.is_none()
+            && operand.displacement == 0
+            && operand.address_size == od_isa::OperandSize::Qword
+            && operand.size == od_isa::OperandSize::Qword
+    );
+    store_to_load || load_to_store || load_to_load
 }
 
 #[derive(Clone)]
@@ -625,6 +650,55 @@ mod tests {
                 },
             ]
         ));
+    }
+
+    #[test]
+    fn lowers_exact_load_then_load_as_two_committed_memory_effects() {
+        let outcome = block::build_checked_qword_two_site_block(
+            CodeView::new(BASE, &[0x48, 0x8b, 0x03, 0x48, 0x8b, 0x0b]).unwrap(),
+            BASE,
+            AccessContext::default(),
+            BlockLimits::default(),
+        )
+        .unwrap();
+        let lowered = match lower(&outcome).unwrap() {
+            LoweringOutcome::Program(program) => program,
+            other => panic!("expected program, got {other:?}"),
+        };
+        assert_eq!(lowered.program.guest_instructions.len(), 2);
+        assert!(matches!(
+            lowered.program.operations.as_slice(),
+            [
+                Operation::BeginInstruction { index: 0 },
+                Operation::CheckedLoad { dst: TempId(0), .. },
+                Operation::WriteGpr {
+                    register: GuestGpr(0),
+                    src: TempId(0),
+                    width: IntWidth::W64,
+                },
+                Operation::CommitInstruction { index: 0 },
+                Operation::BeginInstruction { index: 1 },
+                Operation::CheckedLoad { dst: TempId(1), .. },
+                Operation::WriteGpr {
+                    register: GuestGpr(1),
+                    src: TempId(1),
+                    width: IntWidth::W64,
+                },
+                Operation::CommitInstruction { index: 1 },
+                Operation::Exit {
+                    kind: ExitKind::BlockComplete,
+                    target_rip: 0x1006,
+                },
+            ]
+        ));
+        assert_eq!(ir::verify(&lowered.program), Ok(()));
+
+        let mut missing_first_commit = lowered.program.clone();
+        missing_first_commit.operations.remove(3);
+        assert!(ir::verify(&missing_first_commit).is_err());
+        let mut early_second_commit = lowered.program.clone();
+        early_second_commit.operations.swap(5, 7);
+        assert!(ir::verify(&early_second_commit).is_err());
     }
 
     #[test]

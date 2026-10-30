@@ -332,6 +332,22 @@ aliases, MMIO, atomic operations, concurrent access, and arbitrary multi-site
 blocks. No performance claim is made. Evidence is in the
 [two-sequence report](../reports/STAGE_3_S3-20j_2026-10-27.md).
 
+#### S3-26e: exact two-load pair
+
+One additional exact two-site sequence is admitted: `48 8B 03 48 8B 0B`
+(`MOV RAX, [RBX]; MOV RCX, [RBX]`). Each site performs a separate checked read
+from the same effective address; a callback or memory read may not be merged
+because the addresses compare equal. Each instruction has its own helper site,
+GPR commit, RIP boundary and retirement. A second-site fault/backend error
+preserves the first load and resumes at `A+3`; the ordinary singleton load may
+retry that second instruction without replaying the first read. STOP and budget
+guards retain their existing second-boundary order. An event raised by the
+first callback is sampled only after the bounded pair returns, unless an
+earlier STOP/fault/backend outcome wins. This is a private synchronous ordinary
+RAM fixture; the callback trace is not an MMIO/device model. Other load-load or
+multi-site sequences remain unsupported. Full S3-26/S3-27 and physical x86
+acceptance remain open. See the [S3-26e report](../reports/STAGE_3_S3-26e_2026-10-30.md).
+
 #### S3-20l: RIP-relative qword MOV through shared IR and bounded dispatch
 
 The admitted singleton is exactly seven bytes: `48 8B /r disp32` or

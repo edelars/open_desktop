@@ -818,7 +818,24 @@ pub fn emit_two_memory_runtime_block_v2(
         && *target_rip == program.guest_instructions[1].next_rip
         && supported_load_then_store_operands(*load_operand, *store_operand)
     );
-    if program.guest_instructions.len() != 2 || (!store_then_load && !load_then_store) {
+    let load_then_load = matches!(program.operations.as_slice(), [
+        Operation::BeginInstruction { index: 0 },
+        Operation::CheckedLoad { dst: first_temp, operand: first_operand },
+        Operation::WriteGpr { register: GuestGpr(0), src: first_src, width: IntWidth::W64 },
+        Operation::CommitInstruction { index: 0 },
+        Operation::BeginInstruction { index: 1 },
+        Operation::CheckedLoad { dst: second_temp, operand: second_operand },
+        Operation::WriteGpr { register: GuestGpr(1), src: second_src, width: IntWidth::W64 },
+        Operation::CommitInstruction { index: 1 },
+        Operation::Exit { kind: ExitKind::BlockComplete, target_rip },
+    ] if first_src == first_temp
+        && second_src == second_temp
+        && *target_rip == program.guest_instructions[1].next_rip
+        && supported_load_then_load_operands(*first_operand, *second_operand)
+    );
+    if program.guest_instructions.len() != 2
+        || (!store_then_load && !load_then_store && !load_then_load)
+    {
         return Err(BlockEmitterError::UnsupportedShape {
             instruction_index: 0,
         });
@@ -843,6 +860,8 @@ pub fn emit_two_memory_runtime_block_v2(
             instruction_index: 0,
         });
     };
+    let first_is_load = load_then_store || load_then_load;
+    let second_is_load = store_then_load || load_then_load;
     let mut encoder = Encoder::new();
     let epilogue = encoder.new_label()?;
     let run_store = encoder.new_label()?;
@@ -928,7 +947,7 @@ pub fn emit_two_memory_runtime_block_v2(
         store_failed,
     )?;
     let store_commit = code_offset(&encoder)?;
-    if load_then_store {
+    if first_is_load {
         emit_saved_pointer_load(&mut encoder, FRAME_RUNTIME_CONTEXT_POINTER, xreg(16)?)?;
         encoder.ldr_x(
             XRegOrZero::Reg(xreg(13)?),
@@ -990,13 +1009,13 @@ pub fn emit_two_memory_runtime_block_v2(
         &mut encoder,
         &mut ranges,
         allocation,
-        if load_then_store { 5 } else { 4 },
+        if store_then_load { 4 } else { 5 },
         1,
         second.guest_rip,
         load_failed,
     )?;
     let load_commit = code_offset(&encoder)?;
-    if !load_then_store {
+    if second_is_load {
         emit_saved_pointer_load(&mut encoder, FRAME_RUNTIME_CONTEXT_POINTER, xreg(16)?)?;
         encoder.ldr_x(
             XRegOrZero::Reg(xreg(13)?),
@@ -1164,6 +1183,22 @@ fn supported_load_then_store_operands(
                 && operand.address_size == OperandSize::Qword
                 && operand.size == OperandSize::Qword
         })
+}
+
+fn supported_load_then_load_operands(
+    first: od_isa::long_decode::MemoryOperand,
+    second: od_isa::long_decode::MemoryOperand,
+) -> bool {
+    use od_isa::OperandSize;
+    use od_isa::long_decode::AddressBase;
+    [first, second].into_iter().all(|operand| {
+        operand.base == AddressBase::Register(od_isa::Register::Rbx)
+            && operand.index.is_none()
+            && operand.scale == 1
+            && operand.displacement == 0
+            && operand.address_size == OperandSize::Qword
+            && operand.size == OperandSize::Qword
+    })
 }
 
 fn emit_checked_memory_site_call(
