@@ -18571,3 +18571,32 @@ Vol. 2A Type 3/Table 2-20 and Vol. 2B SUBSS pp. 4-695–4-696; Vol. 1
 contract](../specs/CPU_CONTRACT.md#s2-37aq--bounded-masked-range-long64-subss-xmm-register-pairs),
 [plan](../plans/STAGE_2.md#s2-37aq--bounded-masked-range-long64-subss-xmm-register-pairs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37aq-bounded-masked-range-subss-register-pair).
+
+## S2-37ar — MULPD register-pair interpreter profile (2026-10-30)
+
+Implemented strict schema-v2 profile `s2-long-mulpd-registers-v1` for
+canonical Long64 register-only `66 0F 59 /r`, including all 256 XMM pairs.
+Execution is interpreter-only, uses pre-execution snapshots and the existing
+raw binary64 multiplication helper, and replaces the whole destination only
+after both lanes pass exception processing. MXCSR OM=UM=1 is required; DAZ and
+reserved bits are rejected. The independent testkit oracle uses raw integer
+significands and one final rounding without host FP or production helpers. Exact
+product tininess is tracked before rounding so minimum-normal directed results
+still set UE|PE; FTZ turns this boundary into signed zero.
+
+The literal fixture verifies exact and inexact lanes, integer-oracle state
+validation and backend denial. Focused tests passed for every decoder register
+pair and alias, production execution for all 256 pairs, runtime gate/MXCSR and
+fetch priority, the minimum-normal×(1−2^-53) boundary under all RC settings
+with FTZ on and off, signed overflow direction under all RC settings, and
+JIT/native rejection. Runner tests also cover NaN ordering/quieting, DE/IE
+priority, post-PE atomicity, oracle shift-128 and rounded-overflow boundaries.
+The adjacent SUBPS, SUBPD, SUBSD and SUBSS regressions passed. `cargo fmt --all
+-- --check`, `cargo check --workspace --all-targets --offline`, `git diff
+--check` and `graphify update .` passed. Independent Sol-high re-review found
+no remaining findings after removal of a temporary test diagnostic. Physical
+acceptance, memory forms, other modes and full unmasked overflow/underflow
+behavior remain open; parent S2-37/S2-38 are not closed. See the [CPU
+contract](../specs/CPU_CONTRACT.md#s2-37ar--bounded-masked-range-long64-mulpd-xmm-register-pairs),
+[plan](../plans/STAGE_2.md#s2-37ar--bounded-masked-range-long64-mulpd-xmm-register-pairs)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ar-bounded-masked-range-mulpd-register-pair-profile).

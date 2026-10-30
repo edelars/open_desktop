@@ -25312,3 +25312,325 @@ fn cvttsd2si_register_profile_truncates_raw_binary64_across_512_forms() {
         assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
     }
 }
+
+#[test]
+fn mulpd_literal_pair_rounding_and_backend_denial() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_37ar_mulpd_xmm0_xmm1.case.json");
+    let bytes = fs::read(path).unwrap();
+    let (input, result) = run(&bytes, "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let Observation::Available {
+        value: literal_snapshot,
+    } = &result.snapshot
+    else {
+        panic!("snapshot available")
+    };
+    let sse = literal_snapshot.state.sse.as_ref().unwrap();
+    assert_eq!(sse.xmm[0], "0000000000000840020000000000f83f");
+    assert_eq!(sse.mxcsr.get(), 0x1fa0);
+    assert_eq!(
+        result.instructions_executed,
+        Observation::Available { value: HexU64(1) }
+    );
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(&bytes, backend, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+    }
+
+    // The exact product is minimum-normal minus half a subnormal ulp. Tininess
+    // and UE|PE are determined before rounding, including RN/RU -> minimum-normal.
+    for rc in 0u32..4 {
+        for ftz in [false, true] {
+            let mut case = input.fixture.clone();
+            let sse = case.initial_state.sse.as_mut().unwrap();
+            let encode = |raw: u64| {
+                raw.to_le_bytes()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            };
+            sse.xmm[0].replace_range(0..16, &encode(0x0010_0000_0000_0000));
+            sse.xmm[0].replace_range(16..32, &encode(0x3ff0_0000_0000_0000));
+            sse.xmm[1].replace_range(0..16, &encode(0x3fef_ffff_ffff_ffff));
+            sse.xmm[1].replace_range(16..32, &encode(0x3ff0_0000_0000_0000));
+            sse.mxcsr = HexU64(u64::from(
+                0x1f80 | (rc << 13) | if ftz { 1 << 15 } else { 0 },
+            ));
+            case.case_id = format!("s2_37ar_tiny_tie_rc{rc}_ftz{ftz}");
+            let input_bytes = serde_json::to_vec(&case).unwrap();
+            let (loaded, result) = run(&input_bytes, "interpreter", 0);
+            od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+            let output_snapshot = snapshot(&result);
+            let actual = u64::from_le_bytes(
+                (0..8)
+                    .map(|index| {
+                        u8::from_str_radix(
+                            &output_snapshot.state.sse.as_ref().unwrap().xmm[0]
+                                [index * 2..index * 2 + 2],
+                            16,
+                        )
+                        .unwrap()
+                    })
+                    .collect::<Vec<_>>()
+                    .try_into()
+                    .unwrap(),
+            );
+            let expected = if ftz {
+                0
+            } else if rc == 0 || rc == 2 {
+                0x0010_0000_0000_0000
+            } else {
+                0x000f_ffff_ffff_ffff
+            };
+            assert_eq!(actual, expected, "rc={rc} ftz={ftz}");
+            assert_eq!(
+                output_snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 0x30,
+                0x30,
+                "rc={rc} ftz={ftz}"
+            );
+        }
+    }
+
+    // Overflow direction depends on both RC and the exact result sign.
+    for rc in 0u32..4 {
+        for negative in [false, true] {
+            let mut case = input.fixture.clone();
+            let sse = case.initial_state.sse.as_mut().unwrap();
+            let encode = |raw: u64| {
+                raw.to_le_bytes()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            };
+            let sign = if negative { 1u64 << 63 } else { 0 };
+            sse.xmm[0].replace_range(0..16, &encode(0x7fef_ffff_ffff_ffff | sign));
+            sse.xmm[0].replace_range(16..32, &encode(0x3ff0_0000_0000_0000));
+            sse.xmm[1].replace_range(0..16, &encode(0x4000_0000_0000_0000));
+            sse.xmm[1].replace_range(16..32, &encode(0x3ff0_0000_0000_0000));
+            sse.mxcsr = HexU64(u64::from(0x1f80 | (rc << 13)));
+            case.case_id = format!("s2_37ar_overflow_rc{rc}_negative{negative}");
+            let input_bytes = serde_json::to_vec(&case).unwrap();
+            let (loaded, result) = run(&input_bytes, "interpreter", 0);
+            od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+            let output = snapshot(&result);
+            let raw = u64::from_le_bytes(
+                (0..8)
+                    .map(|index| {
+                        u8::from_str_radix(
+                            &output.state.sse.as_ref().unwrap().xmm[0][index * 2..index * 2 + 2],
+                            16,
+                        )
+                        .unwrap()
+                    })
+                    .collect::<Vec<_>>()
+                    .try_into()
+                    .unwrap(),
+            );
+            let to_inf = rc == 0 || rc == 1 && negative || rc == 2 && !negative;
+            let expected = sign
+                | if to_inf {
+                    0x7ff0_0000_0000_0000
+                } else {
+                    0x7fef_ffff_ffff_ffff
+                };
+            assert_eq!(raw, expected, "rc={rc} negative={negative}");
+            assert_eq!(output.state.sse.as_ref().unwrap().mxcsr.get() & 0x28, 0x28);
+        }
+    }
+}
+
+#[test]
+fn mulpd_nan_priority_pre_events_post_atomicity_and_tamper() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_37ar_mulpd_xmm0_xmm1.case.json");
+    let bytes = fs::read(path).unwrap();
+    let (base, _) = run(&bytes, "interpreter", 0);
+    let fixture = base.fixture.clone();
+    let write_lane = |case: &mut Fixture, xmm: usize, lane: usize, raw: u64| {
+        let encoded = raw
+            .to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        case.initial_state.sse.as_mut().unwrap().xmm[xmm]
+            .replace_range(lane * 16..lane * 16 + 16, &encoded);
+    };
+    let execute = |case: Fixture| {
+        let input = serde_json::to_vec(&case).unwrap();
+        let (loaded, result) = run(&input, "interpreter", 0);
+        od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+        (loaded, result)
+    };
+    let read_low = |xmm: &str| {
+        u64::from_le_bytes(
+            (0..8)
+                .map(|i| u8::from_str_radix(&xmm[i * 2..i * 2 + 2], 16).unwrap())
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        )
+    };
+
+    let qnan_left = 0x7ff8_0000_0000_1234;
+    let snan_right = 0x7ff0_0000_0000_4321;
+    for (name, lhs, rhs, selected, invalid) in [
+        ("lhs_q_rhs_s", qnan_left, snan_right, qnan_left, true),
+        (
+            "lhs_s_rhs_q",
+            snan_right,
+            qnan_left,
+            snan_right | (1 << 51),
+            true,
+        ),
+        (
+            "lhs_q_rhs_q",
+            qnan_left,
+            0xfff8_0000_0000_5678,
+            qnan_left,
+            false,
+        ),
+        (
+            "rhs_only_s",
+            0x3ff0_0000_0000_0000,
+            snan_right,
+            snan_right | (1 << 51),
+            true,
+        ),
+    ] {
+        let mut case = fixture.clone();
+        case.case_id = format!("s2_37ar_nan_{name}");
+        write_lane(&mut case, 0, 0, lhs);
+        write_lane(&mut case, 1, 0, rhs);
+        write_lane(&mut case, 0, 1, 0x3ff0_0000_0000_0000);
+        write_lane(&mut case, 1, 1, 0x3ff0_0000_0000_0000);
+        let (_, result) = execute(case);
+        let actual = read_low(&snapshot(&result).state.sse.as_ref().unwrap().xmm[0]);
+        assert_eq!(actual, selected, "{name}");
+        assert_eq!(
+            snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 1,
+            u64::from(invalid),
+            "{name}"
+        );
+    }
+
+    // An unmasked invalid in lane 0 commits IE and suppresses lane 1's PE.
+    let mut invalid = fixture.clone();
+    invalid.case_id = "s2_37ar_unmasked_ie_precedes_lane_pe".into();
+    invalid.expected_exit = ExpectedExit::Exception;
+    invalid.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f00);
+    write_lane(&mut invalid, 0, 0, 0);
+    write_lane(&mut invalid, 1, 0, 0x7ff0_0000_0000_0000);
+    write_lane(&mut invalid, 0, 1, 0x3ff0_0000_0000_0001);
+    write_lane(&mut invalid, 1, 1, 0x3ff8_0000_0000_0000);
+    let original_destination = invalid.initial_state.sse.as_ref().unwrap().xmm[0].clone();
+    let (_, result) = execute(invalid);
+    assert!(matches!(result.outcome, Outcome::Exception {}));
+    let output = snapshot(&result).state.sse.as_ref().unwrap();
+    assert_eq!(output.xmm[0], original_destination);
+    assert_eq!(output.mxcsr.get() & 0x3f, 1);
+
+    // An unmasked denormal in lane 0 also precedes a packed inexact result.
+    let mut denormal = fixture.clone();
+    denormal.case_id = "s2_37ar_unmasked_de_precedes_lane_pe".into();
+    denormal.expected_exit = ExpectedExit::Exception;
+    denormal.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1e80);
+    write_lane(&mut denormal, 0, 0, 0);
+    write_lane(&mut denormal, 1, 0, 1);
+    write_lane(&mut denormal, 0, 1, 0x3ff0_0000_0000_0001);
+    write_lane(&mut denormal, 1, 1, 0x3ff8_0000_0000_0000);
+    let original_destination = denormal.initial_state.sse.as_ref().unwrap().xmm[0].clone();
+    let (_, result) = execute(denormal);
+    assert!(matches!(result.outcome, Outcome::Exception {}));
+    let output = snapshot(&result).state.sse.as_ref().unwrap();
+    assert_eq!(output.xmm[0], original_destination);
+    assert_eq!(output.mxcsr.get() & 0x3f, 2);
+
+    // An unmasked post-compute PE commits status but not the destination.
+    let mut precision = fixture.clone();
+    precision.case_id = "s2_37ar_unmasked_pe_is_atomic".into();
+    precision.expected_exit = ExpectedExit::Exception;
+    precision.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x0f80);
+    write_lane(&mut precision, 0, 0, 0x3ff0_0000_0000_0001);
+    write_lane(&mut precision, 1, 0, 0x3ff8_0000_0000_0000);
+    let original_destination = precision.initial_state.sse.as_ref().unwrap().xmm[0].clone();
+    let (loaded, result) = execute(precision);
+    assert!(matches!(result.outcome, Outcome::Exception {}));
+    let output = snapshot(&result).state.sse.as_ref().unwrap();
+    assert_eq!(output.xmm[0], original_destination);
+    assert_eq!(output.mxcsr.get() & 0x3f, 0x20);
+
+    let mut tampered = result.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0] = "00".repeat(16);
+    }
+    assert!(tampered.validate_for(&loaded).is_err());
+}
+
+#[test]
+fn mulpd_integer_oracle_handles_tiny_shift128_and_overflow_rounding_boundary() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_37ar_mulpd_xmm0_xmm1.case.json");
+    let bytes = fs::read(path).unwrap();
+    let (input, _) = run(&bytes, "interpreter", 0);
+    let encode = |raw: u64| {
+        raw.to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let read_lane = |case_result: &RunResult| {
+        let raw = &snapshot(case_result).state.sse.as_ref().unwrap().xmm[0];
+        u64::from_le_bytes(
+            (0..8)
+                .map(|i| u8::from_str_radix(&raw[i * 2..i * 2 + 2], 16).unwrap())
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        )
+    };
+    for rc in 0u32..4 {
+        let mut tiny = input.fixture.clone();
+        tiny.case_id = format!("s2_37ar_subnormal_round_shift128_rc{rc}");
+        let sse = tiny.initial_state.sse.as_mut().unwrap();
+        sse.xmm[0].replace_range(0..16, &encode(1));
+        sse.xmm[0].replace_range(16..32, &encode(0x3ff0_0000_0000_0000));
+        sse.xmm[1].replace_range(0..16, &encode(0x3e70_0000_0000_0000));
+        sse.xmm[1].replace_range(16..32, &encode(0x3ff0_0000_0000_0000));
+        sse.mxcsr = HexU64(u64::from(0x1f80 | (rc << 13)));
+        let input_bytes = serde_json::to_vec(&tiny).unwrap();
+        let (loaded, result) = run(&input_bytes, "interpreter", 0);
+        od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+        assert_eq!(read_lane(&result), if rc == 2 { 1 } else { 0 }, "rc={rc}");
+        assert_eq!(
+            snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x30,
+            0x30
+        );
+
+        // This exact product is a little above max-finite but less than half an
+        // ulp away, so RN/RD/RZ round to max-finite without OE; RU overflows.
+        let mut near_overflow = input.fixture.clone();
+        near_overflow.case_id = format!("s2_37ar_near_overflow_rc{rc}");
+        let sse = near_overflow.initial_state.sse.as_mut().unwrap();
+        sse.xmm[0].replace_range(0..16, &encode(0x5fff_ffff_fbff_fffe));
+        sse.xmm[0].replace_range(16..32, &encode(0x3ff0_0000_0000_0000));
+        sse.xmm[1].replace_range(0..16, &encode(0x5fe0_0000_0200_0001));
+        sse.xmm[1].replace_range(16..32, &encode(0x3ff0_0000_0000_0000));
+        sse.mxcsr = HexU64(u64::from(0x1f80 | (rc << 13)));
+        let input_bytes = serde_json::to_vec(&near_overflow).unwrap();
+        let (loaded, result) = run(&input_bytes, "interpreter", 0);
+        od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+        let expected = if rc == 2 {
+            0x7ff0_0000_0000_0000
+        } else {
+            0x7fef_ffff_ffff_ffff
+        };
+        assert_eq!(read_lane(&result), expected, "near overflow rc={rc}");
+        let status = snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x28;
+        assert_eq!(
+            status,
+            if rc == 2 { 0x28 } else { 0x20 },
+            "near overflow rc={rc}"
+        );
+    }
+}

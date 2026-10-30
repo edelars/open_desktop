@@ -13391,3 +13391,47 @@ Vol. 2A Type 3, Table 2-20; Vol. 2B SUBSD instruction entry; Vol. 1 §§4.9.1.4�
 11.5.3; Vol. 3A Event 19/Table 7-8. See the [plan](../plans/STAGE_2.md#s2-37ap--bounded-masked-range-long64-subsd-xmm-register-pairs),
 [report](../reports/STAGE_2_REPORT.md#s2-37ap--subsd-register-pair-interpreter-profile-2026-10-30),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ap-bounded-masked-range-subsd-register-pair).
+
+## S2-37ar — bounded masked-range Long64 MULPD XMM register pairs
+
+The strict schema-v2 interpreter-only profile `s2-long-mulpd-registers-v1`
+admits all 256 canonical Long64 `66 0F 59 /r` XMM register pairs with
+ModR/M.mod=3. Low forms are four bytes; extended indices use exactly one REX
+`41`, `44` or `45` immediately after `66` and are five bytes. Memory, F2/F3,
+reordered/repeated/redundant prefixes, REX.W/X/40, trailing bytes, VEX and EVEX
+are refused. Full fetch precedes SSE2/EM/OSFXSR #UD and then TS #NM at CPL0–3;
+no data callbacks occur. JIT/native/C ABI/fragment/generic execution is closed.
+
+Schema and public runtime require MXCSR.OM=1 and MXCSR.UM=1 because complete
+unmasked overflow/underflow delivery is not represented by the available raw
+rounding diagnostics. DAZ and reserved MXCSR bits are rejected; all RC modes,
+FTZ, IM/DM/PM and old sticky flags are accepted.
+
+Each packed lane computes old destination × source from snapshots. Result sign
+is the XOR of source signs. NaN propagation uses original operand order: select
+the first NaN, quiet a selected SNaN, set IE for any SNaN, and do not set IE for
+QNaN alone. A NaN suppresses DE for its lane. Zero×infinity raises IE and
+returns `0xfff8000000000000`; otherwise a subnormal operand raises precompute
+DE, including zero×subnormal and infinity×subnormal. IE/DE aggregate across both
+lanes before arithmetic. A newly unmasked pre-event commits generated IE/DE
+only and leaves full XMM, RIP and retirement unchanged. With pre-events masked,
+MULPD uses the deterministic production raw binary64 multiply helper and
+MXCSR.RC. Masked overflow records OE|PE. Exact-product tininess is tested before
+rounding: an inexact tiny result records UE|PE even if RN/RU rounds it to
+minimum-normal. FTZ flushes an exact-tiny result to XOR-signed zero with UE|PE.
+Post-rounding PE is aggregated, committed before unmasked #XM (OSXMMEXCPT=1)
+or SIMD-generated #UD otherwise, and preserves XMM/RIP/retirement on fault.
+Old sticky status alone never faults. Successful execution atomically replaces
+the complete destination XMM.
+
+The schema oracle independently multiplies raw-u64 finite significands, tracks
+the exact exponent and tininess separately, and performs one integer rounding;
+it uses neither host floating point nor production arithmetic helpers. The
+literal fixture and local tests cover strict decode and all 256 aliases,
+integer-oracle validation, production halfway rounding, minimum-normal boundary
+with UE|PE in all RC modes and FTZ signed-zero behavior, full destination
+atomicity, and JIT/native denial. This is local evidence, not physical
+acceptance. Memory forms, other modes, full unmasked OE/UE behavior and parent
+S2-37/S2-38 remain open. Sources: Intel SDM Rev. 093 Vol. 2B MULPD
+pp. 4-142–4-143; Vol. 2A Type 2/Table 2-19; Vol. 1 §§4.9.1.4–.6, 11.5.3 and
+DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel Floating-Point Reference Sheet v2.13.

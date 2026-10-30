@@ -6709,3 +6709,22 @@ instruction entry; Vol. 1 §§4.9.1.4–.6, 11.5.3; Vol. 3A Event 19/Table 7-8.
 See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ap--bounded-masked-range-long64-subsd-xmm-register-pairs),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37ap--bounded-masked-range-long64-subsd-xmm-register-pairs)
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ap--subsd-register-pair-interpreter-profile-2026-10-30).
+
+### S2-37ar bounded masked-range MULPD register-pair profile
+
+`s2_37ar_mulpd_xmm0_xmm1.case.json` is a literal canonical `66 0F 59 /r`
+Long64 packed binary64 multiply. The fixture computes `3.0×1.0` exactly in
+lane 0 and `(1+2^-52)×1.5` with one final rounding in lane 1. The strict
+schema-v2 profile covers all 256 register pairs, requires MXCSR.OM=1 and
+MXCSR.UM=1, rejects DAZ/reserved bits, and accepts all RC modes, FTZ, IM/DM/PM
+and old sticky flags. Its independent raw-u64 integer oracle has no host FP or
+production arithmetic helper. Local tests cover register aliases, halfway
+rounding, the exact `minimum-normal×(1−2^-53)` underflow boundary for every RC
+and FTZ setting, atomic full-XMM replacement, and interpreter-only backend
+denial. This is local evidence, not physical acceptance; memory operands, other
+modes and full unmasked OE/UE behavior remain outside the slice. Sources: Intel
+SDM Rev. 093 Vol. 2B MULPD pp. 4-142–4-143; Vol. 2A Type 2/Table 2-19;
+Vol. 1 §§4.9.1.4–.6, 11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel
+Floating-Point Reference Sheet v2.13. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ar--bounded-masked-range-long64-mulpd-xmm-register-pairs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37ar--bounded-masked-range-long64-mulpd-xmm-register-pairs)
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ar--mulpd-register-pair-interpreter-profile-2026-10-30).
