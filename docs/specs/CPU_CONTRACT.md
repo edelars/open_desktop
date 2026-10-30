@@ -11484,6 +11484,42 @@ Physical acceptance remains in the combined final Mac mini substage. Normative
 source: Intel SDM Rev. 093 Vol. 1 Appendix D Tables D-9/D-13/D-15 and Vol. 2B
 MAXPD. See the [plan](../plans/STAGE_2.md#s2-37l--local-long64-register-only-legacy-maxpd-with-masked-status).
 
+## S2-37m — exact Long64 CVTDQ2PD XMM0,XMM1
+
+The interpreter-only schema-v2 profile `s2-long-cvtdq2pd-reg-exact-v1` accepts
+only `F3 0F E6 C1`, one executable code mapping, budget one, and stop RIP
+`entry+4`. It refuses memory operands, REX/register extensions, repeated or
+reordered prefixes, other ModR/M operands, VEX and EVEX encodings. These are
+profile refusals; they are not claims that every excluded encoding raises
+architectural #UD.
+
+The immutable profile controls are SSE2 availability, CR0.EM, CR0.TS and
+CR4.OSFXSR. Full fetch precedes #UD for absent SSE2, EM=1 or OSFXSR=0, then
+#NM for TS=1. The gates apply at CPL0–3. Either fault retires zero instructions,
+preserves the complete CPU snapshot and performs no data-memory access.
+
+On success, XMM1's low two signed dwords are sign-extended to i64 and converted
+exactly to binary64 in XMM0's low 128 bits. The source high64 is ignored, all
+of XMM0 is replaced, and XMM1, MXCSR, flags/definedness and unrelated CPU state
+are preserved. The schema supports MXCSR bits in `0x0000ffbf`; every rounding,
+exception mask, sticky status and FTZ combination has the same result. No SIMD
+FP exception, #XM/OSXMMEXCPT gate, x87/MMX state or transition is modeled.
+
+Six handwritten schema-v2 fixtures cover zero, ±1, i32 minimum/maximum,
+asymmetric lanes, values around 2^24, and integer patterns that resemble
+floating-point NaNs. The independent validator derives binary64 result bits
+from integer fields without calling the production conversion helper. CPU
+tests cover the full prerequisite matrix at CPL0–3, MXCSR combinations, fetch
+truncation, STOP/budget and malformed forms. JIT/native admission remains
+denied. Generic CPUID, memory forms, full S2-37 and physical acceptance remain
+open; Mac mini execution is reserved for the combined final hardware substage.
+Sources: Intel SDM Rev. 093 Vol. 2A CVTDQ2PD pp. 3-208–3-210; §2.5 Table 2-15
+p. 2-24 and §2.5.5 Table 2-22 p. 2-30
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)). See the
+[plan](../plans/STAGE_2.md#s2-37m--exact-long64-cvtdq2pd-xmm0xmm1),
+[report](../reports/STAGE_2_REPORT.md#s2-37m--exact-long64-cvtdq2pd-xmm0xmm1),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37m-local-cvtdq2pd).
+
 ## S2-38b — точечные SSE2 prerequisite gates для XORPD
 
 Schema-v2 profile `s2-long-xorpd-prerequisites-v1` принимает ровно одну

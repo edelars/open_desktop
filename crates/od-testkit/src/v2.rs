@@ -247,6 +247,8 @@ pub enum Profile {
     LongMaxpsUnmaskedDenormalV1,
     #[serde(rename = "s2-long-maxpd-unmasked-denormal-v1")]
     LongMaxpdUnmaskedDenormalV1,
+    #[serde(rename = "s2-long-cvtdq2pd-reg-exact-v1")]
+    LongCvtdq2pdRegExactV1,
     #[serde(rename = "s2-long-native-xorpd-xmm0-xmm1-v1")]
     LongNativeXorpdXmm0Xmm1V1,
     #[serde(rename = "s2-long-andpd-reg-v1")]
@@ -1238,6 +1240,7 @@ impl IntegerState {
                     | Profile::LongMinpsUnmaskedDenormalV1
                     | Profile::LongMaxpsUnmaskedDenormalV1
                     | Profile::LongMaxpdUnmaskedDenormalV1
+                    | Profile::LongCvtdq2pdRegExactV1
                     | Profile::LongNativeXorpdXmm0Xmm1V1
                     | Profile::LongAndpdRegV1
                     | Profile::LongOrpdRegV1
@@ -1420,6 +1423,7 @@ impl IntegerState {
                 | Profile::LongMinpsUnmaskedDenormalV1
                 | Profile::LongMaxpsUnmaskedDenormalV1
                 | Profile::LongMaxpdUnmaskedDenormalV1
+                | Profile::LongCvtdq2pdRegExactV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
                 | Profile::LongAndnpdRegV1
@@ -1553,6 +1557,7 @@ impl IntegerState {
                 | Profile::LongMinpsUnmaskedDenormalV1
                 | Profile::LongMaxpsUnmaskedDenormalV1
                 | Profile::LongMaxpdUnmaskedDenormalV1
+                | Profile::LongCvtdq2pdRegExactV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -1868,6 +1873,7 @@ impl IntegerState {
             | Profile::LongMinpsUnmaskedDenormalV1
             | Profile::LongMaxpsUnmaskedDenormalV1
             | Profile::LongMaxpdUnmaskedDenormalV1
+            | Profile::LongCvtdq2pdRegExactV1
             | Profile::LongNativeXorpdXmm0Xmm1V1
             | Profile::LongAndpdRegV1
             | Profile::LongOrpdRegV1
@@ -2013,6 +2019,7 @@ impl IntegerState {
                 | Profile::LongMinpsUnmaskedDenormalV1
                 | Profile::LongMaxpsUnmaskedDenormalV1
                 | Profile::LongMaxpdUnmaskedDenormalV1
+                | Profile::LongCvtdq2pdRegExactV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -2164,6 +2171,7 @@ impl IntegerState {
                 | Profile::LongMinpsUnmaskedDenormalV1
                 | Profile::LongMaxpsUnmaskedDenormalV1
                 | Profile::LongMaxpdUnmaskedDenormalV1
+                | Profile::LongCvtdq2pdRegExactV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -2324,6 +2332,7 @@ impl IntegerState {
                 | Profile::LongMinpsUnmaskedDenormalV1
                 | Profile::LongMaxpsUnmaskedDenormalV1
                 | Profile::LongMaxpdUnmaskedDenormalV1
+                | Profile::LongCvtdq2pdRegExactV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -2491,6 +2500,7 @@ impl IntegerState {
                 | Profile::LongMinpsUnmaskedDenormalV1
                 | Profile::LongMaxpsUnmaskedDenormalV1
                 | Profile::LongMaxpdUnmaskedDenormalV1
+                | Profile::LongCvtdq2pdRegExactV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -3288,6 +3298,7 @@ impl IntegerState {
                 | Profile::LongMinpsUnmaskedDenormalV1
                 | Profile::LongMaxpsUnmaskedDenormalV1
                 | Profile::LongMaxpdUnmaskedDenormalV1
+                | Profile::LongCvtdq2pdRegExactV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -3412,6 +3423,7 @@ impl IntegerState {
                 | Profile::LongMinpsUnmaskedDenormalV1
                 | Profile::LongMaxpsUnmaskedDenormalV1
                 | Profile::LongMaxpdUnmaskedDenormalV1
+                | Profile::LongCvtdq2pdRegExactV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -3641,6 +3653,9 @@ pub struct Fixture {
     /// Immutable MAXPD gate inputs, echoed only for S2-38j.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maxpd_unmasked_controls: Option<MaxpdUnmaskedControlSnapshot>,
+    /// Immutable CVTDQ2PD gate inputs, echoed for S2-37m.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cvtdq2pd_controls: Option<Cvtdq2pdControlSnapshot>,
     /// Explicit CR0 inputs required only by the exact S2-39f FXSAVE64 profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fxsave64_cr0_controls: Option<Fxsave64Cr0Snapshot>,
@@ -3747,6 +3762,15 @@ pub struct MaxpdUnmaskedControlSnapshot {
     pub cr0_ts: bool,
     pub cr4_osfxsr: bool,
     pub cr4_osxmmexcpt: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cvtdq2pdControlSnapshot {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -5175,6 +5199,52 @@ impl Fixture {
                 "only valid for the MAXPD unmasked-denormal profile",
             ));
         }
+        if self.profile == Profile::LongCvtdq2pdRegExactV1 {
+            let _ = self
+                .cvtdq2pd_controls
+                .ok_or_else(|| invalid("cvtdq2pd_controls", "required by the CVTDQ2PD profile"))?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by the CVTDQ2PD profile"))?;
+            let start = self.initial_state.rip.get();
+            if code.guest_address.get() != start
+                || code.length != 4
+                || !code.permissions.execute
+                || !code.initial_bytes_hex.eq_ignore_ascii_case("f30fe6c1")
+                || self.memory.len() != 1
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(4)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "CVTDQ2PD fixtures require exactly F3 0F E6 C1, one executable code mapping, budget 1, and stop RIP entry+4",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .expect("SSE required for CVTDQ2PD")
+                .mxcsr
+                .get();
+            if mxcsr & !0x0000_ffbf != 0 {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "CVTDQ2PD requires MXCSR reserved bits clear",
+                ));
+            }
+        } else if self.cvtdq2pd_controls.is_some() {
+            return Err(invalid(
+                "cvtdq2pd_controls",
+                "only valid for CVTDQ2PD profile",
+            ));
+        }
         if self.profile == Profile::LongMaxssUnmaskedDenormalV1 {
             let _ = self.maxss_unmasked_controls.ok_or_else(|| {
                 invalid("maxss_unmasked_controls", "required by the MAXSS profile")
@@ -5499,6 +5569,7 @@ impl Fixture {
                 Profile::LongMinpsUnmaskedDenormalV1 => minps_exact_unmasked_length(&code_bytes),
                 Profile::LongMaxpsUnmaskedDenormalV1 => maxps_exact_unmasked_length(&code_bytes),
                 Profile::LongMaxpdUnmaskedDenormalV1 => maxpd_register_masked_length(&code_bytes),
+                Profile::LongCvtdq2pdRegExactV1 => cvtdq2pd_register_length(&code_bytes),
                 Profile::LongMinsdMaskedRegV1 => minsd_register_masked_length(&code_bytes),
                 Profile::LongMaxsdMaskedRegV1 => maxsd_register_masked_length(&code_bytes),
                 Profile::LongMinpdMaskedRegV1 => minpd_register_masked_length(&code_bytes),
@@ -7410,6 +7481,7 @@ impl Fixture {
             minps_unmasked_controls: None,
             maxps_unmasked_controls: None,
             maxpd_unmasked_controls: None,
+            cvtdq2pd_controls: None,
             fxsave64_cr0_controls: None,
             fxrstor64_cr0_controls: None,
             rdtsc_controls: None,
@@ -7502,6 +7574,8 @@ pub struct Snapshot {
     /// Immutable MAXPD gate inputs, echoed only for S2-38j.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maxpd_unmasked_controls: Option<MaxpdUnmaskedControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cvtdq2pd_controls: Option<Cvtdq2pdControlSnapshot>,
     /// Immutable FXSAVE64 CR0 gate inputs, echoed only for S2-39f.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fxsave64_cr0_controls: Option<Fxsave64Cr0Snapshot>,
@@ -7746,6 +7820,19 @@ impl RunResult {
                 "only valid for the MAXPD profile",
             ));
         }
+        if self.profile == Profile::LongCvtdq2pdRegExactV1 {
+            if snapshot.cvtdq2pd_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.cvtdq2pd_controls",
+                    "required by the CVTDQ2PD profile",
+                ));
+            }
+        } else if snapshot.cvtdq2pd_controls.is_some() {
+            return Err(invalid(
+                "snapshot.cvtdq2pd_controls",
+                "only valid for the CVTDQ2PD profile",
+            ));
+        }
         if self.profile == Profile::LongMaxssUnmaskedDenormalV1 {
             if snapshot.maxss_unmasked_controls.is_none() {
                 return Err(invalid(
@@ -7964,6 +8051,22 @@ impl RunResult {
             }
             if loaded.fixture.profile == Profile::LongMaxpdUnmaskedDenormalV1 {
                 validate_maxpd_unmasked_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.cvtdq2pd_controls,
+                value.cvtdq2pd_controls,
+            ) {
+                (Profile::LongCvtdq2pdRegExactV1, Some(input), Some(output)) if input == output => {
+                }
+                (Profile::LongCvtdq2pdRegExactV1, _, _) => {
+                    return Err(FormatError::CaseMismatch("cvtdq2pd_controls"));
+                }
+                (_, None, None) => {}
+                _ => return Err(FormatError::CaseMismatch("cvtdq2pd_controls")),
+            }
+            if loaded.fixture.profile == Profile::LongCvtdq2pdRegExactV1 {
+                validate_cvtdq2pd_result(loaded, self, value)?;
             }
             if loaded.fixture.profile == Profile::LongEferRdmsrV1 {
                 let initial = &loaded.fixture.initial_state;
@@ -9523,6 +9626,110 @@ fn independent_maxpd_result_bits(lhs: u64, rhs: u64) -> u64 {
     }
 }
 
+fn independent_i32_to_binary64_bits(value: i32) -> u64 {
+    if value == 0 {
+        return 0;
+    }
+    let negative = value < 0;
+    let magnitude = i64::from(value).unsigned_abs();
+    let exponent = 63 - magnitude.leading_zeros() as u32;
+    let significand = magnitude << (52 - exponent);
+    (u64::from(negative) << 63)
+        | (u64::from(exponent + 1023) << 52)
+        | (significand & ((1u64 << 52) - 1))
+}
+
+fn validate_cvtdq2pd_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .cvtdq2pd_controls
+        .ok_or(FormatError::CaseMismatch("cvtdq2pd_controls"))?;
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let source = decode_bytes(&initial_sse.xmm[1])?;
+    let mut expected_xmm0 = [0u8; 16];
+    for lane in 0..2 {
+        let offset = lane * 4;
+        let value = i32::from_le_bytes(
+            source[offset..offset + 4]
+                .try_into()
+                .map_err(|_| FormatError::CaseMismatch("state.sse.xmm"))?,
+        );
+        expected_xmm0[lane * 8..lane * 8 + 8]
+            .copy_from_slice(&independent_i32_to_binary64_bits(value).to_le_bytes());
+    }
+    let gate_vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    if !matches!(
+        (gate_vector.is_some(), fixture.expected_exit),
+        (true, ExpectedExit::Exception) | (false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("CVTDQ2PD expected exit"));
+    }
+    let mut expected_state = fixture.initial_state.clone();
+    if gate_vector.is_none() {
+        let sse = expected_state
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        sse.xmm[0] = crate::memory::encode_bytes(&expected_xmm0);
+        expected_state.rip = HexU64(fixture.initial_state.rip.get() + 4);
+    }
+    let expected_memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected_state
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != expected_memory
+    {
+        return Err(FormatError::CaseMismatch("CVTDQ2PD output state"));
+    }
+    let expected_count = u64::from(gate_vector.is_none());
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(expected_count),
+        })
+    {
+        return Err(FormatError::CaseMismatch("CVTDQ2PD retirement count"));
+    }
+    match (gate_vector, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == Observation::Unavailable {
+                    reason: "exception has no architectural error code".into(),
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("CVTDQ2PD outcome/exception")),
+    }
+    Ok(())
+}
+
 fn validate_maxpd_unmasked_result(
     loaded: &LoadedFixture,
     result: &RunResult,
@@ -10067,6 +10274,15 @@ pub fn compare(
     }
     if b.maxpd_unmasked_controls != loaded.fixture.maxpd_unmasked_controls {
         differences.push("right.maxpd_unmasked_controls".into());
+    }
+    if a.cvtdq2pd_controls != b.cvtdq2pd_controls {
+        differences.push("cvtdq2pd_controls".into());
+    }
+    if a.cvtdq2pd_controls != loaded.fixture.cvtdq2pd_controls {
+        differences.push("left.cvtdq2pd_controls".into());
+    }
+    if b.cvtdq2pd_controls != loaded.fixture.cvtdq2pd_controls {
+        differences.push("right.cvtdq2pd_controls".into());
     }
     if a.minsd_unmasked_controls != loaded.fixture.minsd_unmasked_controls {
         differences.push("left.minsd_unmasked_controls".into());
@@ -11380,6 +11596,10 @@ fn packuswb_register_length(code_bytes: &str) -> Option<u32> {
         }
         _ => None,
     }
+}
+
+fn cvtdq2pd_register_length(code_bytes: &str) -> Option<u32> {
+    (decode_bytes(code_bytes).ok()?.as_slice() == [0xf3, 0x0f, 0xe6, 0xc1]).then_some(4)
 }
 
 fn punpckhqdq_register_length(code_bytes: &str) -> Option<u32> {

@@ -17333,3 +17333,46 @@ Stage 2 remain open. Normative sources: Intel SDM Rev. 093 Vol. 2B MAXPS pp.
 contract](../specs/CPU_CONTRACT.md#s2-38l--exact-maxps-unmasked-invalid-and-denormal-exit),
 [plan](../plans/STAGE_2.md), [fixture notes](../../tests/fixtures/x86/stage2/README.md),
 and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38l-exact-maxps-unmasked-imdm-profile).
+
+## S2-37m — exact Long64 CVTDQ2PD XMM0,XMM1
+
+Implemented decoder and interpreter support only through schema-v2 profile
+`s2-long-cvtdq2pd-reg-exact-v1` for exact bytes `F3 0F E6 C1`. The selected
+profile requires one executable mapping, budget one, stop RIP `entry+4`, and
+explicit echoed SSE2, CR0.EM/TS and CR4.OSFXSR controls. Complete-fetch gate
+ordering is #UD for absent SSE2/EM/OSFXSR, then #NM for TS, at CPL0–3. Faults
+preserve full CPU state and retire zero instructions.
+
+Success converts signed dwords XMM1[31:0] and XMM1[63:32] exactly to binary64
+and replaces all of XMM0. XMM1 high64 and all unrelated state are preserved;
+MXCSR is unchanged for supported bits `0x0000ffbf`. The independent schema
+validator constructs IEEE binary64 encodings from integer sign/magnitude and
+leading-bit position; it does not use the production `Binary64::from_i64`
+helper. Six handwritten fixtures cover zero, ±1, i32 endpoints, asymmetric
+lanes, values around 2^24 and NaN-like integer bit patterns. JIT/native fixture
+execution is explicitly refused.
+
+The profile refuses memory, REX/register-extension, repeated/reordered prefix,
+non-C1 ModR/M, VEX and EVEX forms without making architectural #UD claims for
+each exclusion. It does not enable generic CPUID SSE2 admission, implement
+other CVTDQ2PD forms, memory faults, JIT, C/fragment paths, or close S2-37.
+Physical validation remains reserved for the combined final Mac mini
+substage. Sources: Intel SDM Rev. 093 Vol. 2A CVTDQ2PD pp. 3-208–3-210; §2.5
+Table 2-15 p. 2-24 and §2.5.5 Table 2-22 p. 2-30
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37m--exact-long64-cvtdq2pd-xmm0xmm1),
+[plan](../plans/STAGE_2.md#s2-37m--exact-long64-cvtdq2pd-xmm0xmm1),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37m-local-cvtdq2pd).
+
+Verification passed: `cargo test -p od-isa --offline` (1,477 tests), focused
+CVTDQ2PD interpreter test, `cargo test -p od-testkit --offline` (408 tests),
+`cargo test -p od-runner --offline --test fixture_v2` (387 tests), focused
+six-fixture CVTDQ2PD runner test, `cargo check --workspace --all-targets
+--offline`, `cargo fmt --all -- --check`, `git diff --check`, and `graphify
+update .`. The focused CPU test also iterates every supported combination of
+MXCSR sticky status, exception masks, rounding control and FTZ. No physical or
+Mac mini execution was performed. `python3 tools/check_layout.py` remains
+nonzero in this managed worktree: it reports the root `.git` worktree pointer
+as unmapped and two missing historical oracle manifests referenced from the
+existing Stage 2 report; no new path/layout issue was reported. Those existing
+checkout/report references were not altered for this CPU profile.

@@ -6253,3 +6253,17 @@ I,D,I+D}` and IM/DM/OSXMMEXCPT combinations; the sixteen selector/status anchors
 cover QNaN/SNaN on either operand, raw source-2 payload/sign, signed-zero and
 equal ties, infinities, finite MAX-vs-MIN selection, lane-local IE priority,
 split IE/DE and prior sticky flags. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38l--exact-maxps-unmasked-invalid-and-denormal-exit).
+
+### S2-37m local CVTDQ2PD
+
+The six `s2_37m_cvtdq2pd_*.case.json` files are handwritten Long64
+`F3 0F E6 C1` fixtures with one executable mapping, budget one and stop RIP
+`entry+4`. They cover zero, ±1, i32 endpoints, asymmetric lane pairs, values
+around 2^24, and signed integers whose bit patterns resemble NaNs. XMM1 high64
+varies as an ignored source; MXCSR values vary within supported mask
+`0x0000ffbf`. The schema-v2 validator derives expected binary64 encodings from
+integer bits, independently of the production conversion helper. SSE2/CR0/CR4
+gate inputs are explicit and echoed in the result. JIT/native reject the
+profile; no C/fragment or physical hardware acceptance is claimed. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37m--exact-long64-cvtdq2pd-xmm0xmm1)
+and [plan](../../../../docs/plans/STAGE_2.md#s2-37m--exact-long64-cvtdq2pd-xmm0xmm1).

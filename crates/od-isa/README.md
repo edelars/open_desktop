@@ -43,6 +43,14 @@ does not promise hardware-exact result bits. JIT/native remain closed, and
 physical validation is reserved for the combined Mac mini substage. See the
 [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-37d-register-only-rcpps).
 
+S2-37m adds only exact Long64 `F3 0F E6 C1` CVTDQ2PD XMM0,XMM1 under a strict
+schema-v2 profile with explicit SSE2/CR0/CR4 gates. It converts two signed
+dwords to exact binary64, preserves MXCSR and unrelated state, and performs no
+data-memory access. The independent fixture validator uses integer-bit
+construction rather than the production conversion helper. Other encodings,
+generic CPUID, JIT/native, and physical acceptance remain out of scope. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37m--exact-long64-cvtdq2pd-xmm0xmm1).
+
 S2-10 добавляет C6/C7 immediate r/m, A0–A3 moffs, MOVSX/MOVSXD/MOVZX,
 LEA и register-only XCHG/NOP90 с сохранением flags. Пять дополнительных
 transfer программ и три прежних MOV cases прошли physical interpreter/native
