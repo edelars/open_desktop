@@ -11520,6 +11520,41 @@ p. 2-24 and §2.5.5 Table 2-22 p. 2-30
 [report](../reports/STAGE_2_REPORT.md#s2-37m--exact-long64-cvtdq2pd-xmm0xmm1),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37m-local-cvtdq2pd).
 
+## S2-37p — canonical Long64 CVTDQ2PD XMM register pairs
+
+The separate interpreter-only schema-v2 profile
+`s2-long-cvtdq2pd-registers-v1` accepts all 256 register pairs XMM0–15,
+including self-aliases. Canonical bytes are `F3 0F E6 /r` when both indices
+are low; `F3 41 0F E6 /r` when only the source is high; `F3 44 0F E6 /r`
+when only the destination is high; and `F3 45 0F E6 /r` when both are high.
+The independent schema parser derives the register indices and length from
+these bytes, requires ModR/M.mod=3, one executable code mapping, budget one,
+and stop RIP `entry+length`; address addition is checked for overflow. No
+redundant REX, REX.W/X, other/repeated/reordered prefixes, memory operand,
+VEX/EVEX encoding or trailing byte is admitted. Such exclusions are strict
+profile refusals, not architectural #UD claims.
+
+The source is snapshotted before the destination write. Its two low signed
+dwords are converted exactly to binary64 and replace the full destination;
+source high64 is ignored. Self-aliasing reads both lanes from initial state.
+All remaining XMM/GPR/flags/MXCSR and unrelated state are preserved. Supported
+MXCSR mask is `0x0000ffbf`; RC, masks, sticky status and FTZ do not change the
+result, and no FP event is generated. Four explicit controls (SSE2 available,
+CR0.EM, CR0.TS, CR4.OSFXSR) are echoed and gated after complete fetch: #UD for
+missing SSE2, EM, or OSFXSR, otherwise #NM for TS, at CPL0–3. Faults retire
+zero instructions, preserve the full snapshot and perform no data access.
+The existing exact S2-37m profile remains limited to XMM0,XMM1. JIT/native
+remain denied; this profile does not implement memory m64, other modes or
+encodings, generic CPUID readiness, physical acceptance, or remaining S2-00 /
+S2-38 parent requirements.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTDQ2PD pp. 3-208–3-210; §2.2.1.2
+pp. 2-8–2-9 and Table 2-4/Fig. 2-5
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)). See the
+[plan](../plans/STAGE_2.md#s2-37p--canonical-long64-cvtdq2pd-xmm-register-pairs),
+[report](../reports/STAGE_2_REPORT.md#s2-37p--canonical-long64-cvtdq2pd-xmm-register-pairs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37p-local-cvtdq2pd-register-pairs).
+
 ## S2-37n — exact Long64 CVTSI2SD XMM0,EAX
 
 The interpreter-only schema-v2 profile `s2-long-cvtsi2sd-r32-exact-v1` accepts

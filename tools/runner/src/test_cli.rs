@@ -1001,7 +1001,8 @@ fn execute_fixture_v2(
         MaxsdUnmaskedControls, MaxssUnmaskedControls, MinpdUnmaskedControls, MinpsUnmaskedControls,
         MinsdUnmaskedControls, MinssInvalidControls, RdtscControls, RunConfig, RunExit,
         XorpdPrerequisiteState, run, run_with_cli_profile, run_with_cr0_profile,
-        run_with_cvtdq2pd_controls, run_with_cvtsi2sd_r32_controls, run_with_cvtsi2sd_r64_controls,
+        run_with_cvtdq2pd_controls, run_with_cvtdq2pd_register_controls,
+        run_with_cvtsi2sd_r32_controls, run_with_cvtsi2sd_r64_controls,
         run_with_efer_rdmsr_profile, run_with_fxrstor64_cr0_controls,
         run_with_fxsave64_cr0_controls, run_with_halt_profile, run_with_kernel_gs_base_profile,
         run_with_maxpd_unmasked_controls, run_with_maxps_unmasked_controls,
@@ -1491,12 +1492,20 @@ fn execute_fixture_v2(
             },
             timeout,
         )
-    } else if loaded.fixture.profile == v2::Profile::LongCvtdq2pdRegExactV1 {
+    } else if matches!(
+        loaded.fixture.profile,
+        v2::Profile::LongCvtdq2pdRegExactV1 | v2::Profile::LongCvtdq2pdRegistersV1
+    ) {
         let controls = loaded
             .fixture
             .cvtdq2pd_controls
             .expect("validated CVTDQ2PD profile has explicit controls");
-        run_with_cvtdq2pd_controls(
+        let run = if loaded.fixture.profile == v2::Profile::LongCvtdq2pdRegExactV1 {
+            run_with_cvtdq2pd_controls
+        } else {
+            run_with_cvtdq2pd_register_controls
+        };
+        run(
             &mut state,
             memory,
             config,

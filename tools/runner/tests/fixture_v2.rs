@@ -17655,6 +17655,150 @@ fn maxpd_unmasked_two_lane_cross_product_validates_independent_results_and_denia
 }
 
 #[test]
+fn cvtdq2pd_register_profile_executes_and_validates_all_256_pairs() {
+    let template = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_37m_cvtdq2pd_asymmetric_pair.case.json"
+    );
+    for destination in 0..16u8 {
+        for source in 0..16u8 {
+            let mut json: serde_json::Value = serde_json::from_slice(template).unwrap();
+            json["case_id"] =
+                serde_json::Value::String(format!("s2_37p_cvtdq2pd_{destination}_{source}"));
+            json["profile"] = serde_json::Value::String("s2-long-cvtdq2pd-registers-v1".into());
+            let mut code = vec![0xf3];
+            if destination >= 8 || source >= 8 {
+                code.push(0x40 | ((destination >> 1) & 4) | (source >> 3));
+            }
+            code.extend_from_slice(&[0x0f, 0xe6, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+            json["memory"][0]["length"] = serde_json::json!(code.len());
+            json["memory"][0]["initial_bytes_hex"] =
+                serde_json::Value::String(code.iter().map(|byte| format!("{byte:02x}")).collect());
+            json["memory"][0]["comparison_mask_hex"] =
+                serde_json::Value::String("ff".repeat(code.len()));
+            let entry = u64::from_str_radix(
+                json["initial_state"]["rip"]
+                    .as_str()
+                    .unwrap()
+                    .trim_start_matches("0x"),
+                16,
+            )
+            .unwrap();
+            json["stop_rip"] =
+                serde_json::Value::String(format!("0x{:016x}", entry + code.len() as u64));
+            let mut xmm: Vec<String> = (0..16)
+                .map(|register| format!("{:02x}", register).repeat(16))
+                .collect();
+            xmm[usize::from(source)] = "78563412ffffffffdeadc0de12345678".into();
+            json["initial_state"]["sse"]["xmm"] = serde_json::to_value(xmm).unwrap();
+            let fixture_bytes = serde_json::to_vec(&json).unwrap();
+            let (input, output) = run(&fixture_bytes, "interpreter", 0);
+            assert_eq!(
+                od_testkit::v2::compare(&input, &output, &output).unwrap(),
+                Vec::<String>::new(),
+                "schema validation for XMM{destination},XMM{source}"
+            );
+            let Observation::Available { value } = &output.snapshot else {
+                panic!("snapshot unavailable")
+            };
+            assert_eq!(value.state.rip.get(), entry + code.len() as u64);
+            assert_eq!(
+                &value.state.sse.as_ref().unwrap().xmm[usize::from(destination)][..16],
+                "000000785634b241"
+            );
+            assert_eq!(
+                &value.state.sse.as_ref().unwrap().xmm[usize::from(destination)][16..],
+                "000000000000f0bf"
+            );
+        }
+    }
+
+    let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_37p_cvtdq2pd_xmm15_alias.case.json");
+    let source = fs::read(&fixture_path).unwrap();
+    let (input, output) = run(&source, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongCvtdq2pdRegistersV1
+    );
+    assert_eq!(
+        od_testkit::v2::compare(&input, &output, &output).unwrap(),
+        Vec::<String>::new()
+    );
+    let Observation::Available { value } = &output.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    assert_eq!(
+        value.state.sse.as_ref().unwrap().xmm[15],
+        "000000000000e0c1000000000000f0bf"
+    );
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(&source, backend, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+    }
+    let mut changed_controls = output.clone();
+    let Observation::Available { value } = &mut changed_controls.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.cvtdq2pd_controls.as_mut().unwrap().cr0_ts = true;
+    assert!(od_testkit::v2::compare(&input, &output, &changed_controls).is_err());
+    let mut changed_other_register = output.clone();
+    let Observation::Available { value } = &mut changed_other_register.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.state.sse.as_mut().unwrap().xmm[14].replace_range(..2, "ff");
+    assert!(od_testkit::v2::compare(&input, &output, &changed_other_register).is_err());
+
+    for malformed in [
+        "f3400fe6c1",
+        "f3480fe6c1",
+        "f3420fe6c1",
+        "f341410fe6c1",
+        "41f30fe6c1",
+        "f3410fe6c1aa",
+        "f30fe6c1aa",
+        "f30fe601",
+        "f20fe6c1",
+        "66f30fe6c1",
+        "f0f30fe6c1",
+        "c5f9e6c1",
+        "62f17d08e6c1",
+        "f3450f",
+    ] {
+        let mut invalid: serde_json::Value = serde_json::from_slice(&source).unwrap();
+        invalid["memory"][0]["initial_bytes_hex"] = serde_json::Value::String(malformed.into());
+        invalid["memory"][0]["length"] = serde_json::json!(malformed.len() / 2);
+        invalid["memory"][0]["comparison_mask_hex"] =
+            serde_json::Value::String("ff".repeat(malformed.len() / 2));
+        let entry = u64::from_str_radix(
+            invalid["initial_state"]["rip"]
+                .as_str()
+                .unwrap()
+                .trim_start_matches("0x"),
+            16,
+        )
+        .unwrap();
+        invalid["stop_rip"] =
+            serde_json::Value::String(format!("0x{:016x}", entry + (malformed.len() / 2) as u64));
+        assert!(
+            od_testkit::v2::Fixture::from_json(&serde_json::to_vec(&invalid).unwrap()).is_err(),
+            "accepted {malformed}"
+        );
+    }
+    let mut exact_profile_mismatch: serde_json::Value = serde_json::from_slice(&source).unwrap();
+    exact_profile_mismatch["profile"] =
+        serde_json::Value::String("s2-long-cvtdq2pd-reg-exact-v1".into());
+    assert!(
+        od_testkit::v2::Fixture::from_json(&serde_json::to_vec(&exact_profile_mismatch).unwrap())
+            .is_err()
+    );
+    let mut overflow: serde_json::Value = serde_json::from_slice(&source).unwrap();
+    overflow["initial_state"]["rip"] = serde_json::Value::String("0xffffffffffffffff".into());
+    overflow["memory"][0]["guest_address"] = serde_json::Value::String("0xffffffffffffffff".into());
+    overflow["stop_rip"] = serde_json::Value::Null;
+    assert!(od_testkit::v2::Fixture::from_json(&serde_json::to_vec(&overflow).unwrap()).is_err());
+}
+
+#[test]
 fn cvtdq2pd_exact_literals_validate_conversion_state_and_jit_denial() {
     let root =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");

@@ -6524,6 +6524,31 @@ Mac mini substage. Sources: Intel SDM Rev. 093 Vol. 2A CVTDQ2PD pp. 3-208–3-21
 [stage report](../reports/STAGE_2_REPORT.md#s2-37m--exact-long64-cvtdq2pd-xmm0xmm1),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37m-local-cvtdq2pd).
 
+#### S2-37p — canonical Long64 CVTDQ2PD XMM register pairs
+
+Implemented the sibling interpreter-only schema-v2 profile
+`s2-long-cvtdq2pd-registers-v1` accepts all 256 destination/source pairs
+XMM0–15, including aliases, with canonical encodings `F3 0F E6 /r` for two
+low registers and `F3 41/44/45 0F E6 /r` for source/destination/both high
+registers. The independent schema parser derives both register indices and
+instruction length from bytes; it requires one executable mapping, budget one,
+and stop RIP `entry+length`, with checked address arithmetic. The preceding
+S2-37m exact XMM0,XMM1 profile remains strict and unchanged.
+
+Execution snapshots the source before writing the full destination, converts
+the low two signed i32 lanes exactly to binary64, ignores source high64, and
+preserves all other state. MXCSR support, four explicit SSE2/CR0/CR4 gates,
+fault priority, and CPL0–3 behavior match S2-37m. JIT/native remain denied.
+Tests cover all register pairs and aliases, extension classes, gates and
+malformed/noncanonical forms. This is canonical register-pair coverage only;
+m64 memory, other modes/encodings, physical acceptance, and S2-00/S2-38 parent
+requirements remain open. Sources: Intel SDM Rev. 093 Vol. 2A CVTDQ2PD
+pp. 3-208–3-210; §2.2.1.2 pp. 2-8–2-9 and Table 2-4/Fig. 2-5
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37p--canonical-long64-cvtdq2pd-xmm-register-pairs),
+[report](../reports/STAGE_2_REPORT.md#s2-37p--canonical-long64-cvtdq2pd-xmm-register-pairs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37p-local-cvtdq2pd-register-pairs).
+
 #### S2-37n — exact Long64 CVTSI2SD XMM0,EAX
 
 The interpreter-only schema-v2 profile `s2-long-cvtsi2sd-r32-exact-v1` admits

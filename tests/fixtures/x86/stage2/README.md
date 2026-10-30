@@ -6268,6 +6268,21 @@ profile; no C/fragment or physical hardware acceptance is claimed. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37m--exact-long64-cvtdq2pd-xmm0xmm1)
 and [plan](../../../../docs/plans/STAGE_2.md#s2-37m--exact-long64-cvtdq2pd-xmm0xmm1).
 
+### S2-37p local CVTDQ2PD register pairs
+
+`s2_37p_cvtdq2pd_xmm15_alias.case.json` is a handwritten canonical
+`F3 45 0F E6 FF` XMM15,XMM15 self-alias fixture with one executable mapping,
+budget one and stop RIP `entry+5`. It checks that both signed dword lanes come
+from the initial XMM15 value and that its high qword is ignored. The runner
+test also generates all 256 canonical register pairs and validates the
+independent schema oracle, state preservation, and RIP. Malformed/redundant
+prefixes, REX.W/X, memory forms, trailing/truncated bytes, VEX/EVEX, and exact
+profile mismatches are rejected as local-profile refusals. JIT/native remain
+closed. This fixture documents canonical register-pair coverage only; memory
+m64 and physical acceptance are not claimed. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37p--canonical-long64-cvtdq2pd-xmm-register-pairs)
+and [plan](../../../../docs/plans/STAGE_2.md#s2-37p--canonical-long64-cvtdq2pd-xmm-register-pairs).
+
 ### S2-37n local CVTSI2SD r32
 
 Eight literal fixtures accept only Long64 `F2 0F 2A C0` with a single

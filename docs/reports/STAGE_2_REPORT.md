@@ -17377,6 +17377,43 @@ as unmapped and two missing historical oracle manifests referenced from the
 existing Stage 2 report; no new path/layout issue was reported. Those existing
 checkout/report references were not altered for this CPU profile.
 
+## S2-37p — canonical Long64 CVTDQ2PD XMM register pairs
+
+Added interpreter-only schema-v2 profile
+`s2-long-cvtdq2pd-registers-v1` for all 256 canonical Long64 register pairs,
+including aliasing. Schema validation independently derives destination,
+source and instruction length from the bytes, and checks the single executable
+mapping, budget one, stop address and overflow. S2-37m remains its strict
+XMM0,XMM1 profile. Execution snapshots source lanes before replacing the full
+destination, ignores source high64, preserves unrelated state and applies the
+same explicit SSE2/CR0/CR4 gate ordering as 37m. JIT/native are denied.
+
+Focused implementation coverage includes all 256 pairs, unique register
+sentinels, source high64 independence, self-alias data, all REX extension
+classes, CPL0–3 prerequisite combinations, supported MXCSR dimensions,
+schema/result validation and negative canonical-form cases. A handwritten
+XMM15 self-alias fixture is included. This slice covers canonical register
+forms only; memory m64, other modes/encodings, physical acceptance, and
+remaining S2-00/S2-38 parent requirements remain open. Source: Intel SDM Rev.
+093 Vol. 2A CVTDQ2PD pp. 3-208–3-210; §2.2.1.2 pp. 2-8–2-9 and Table 2-4/Fig. 2-5
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37p--canonical-long64-cvtdq2pd-xmm-register-pairs),
+[plan](../plans/STAGE_2.md#s2-37p--canonical-long64-cvtdq2pd-xmm-register-pairs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37p-local-cvtdq2pd-register-pairs).
+
+Verification passed: `cargo test -p od-isa --offline` (1,482 tests),
+`cargo test -p od-testkit --offline` (409 tests),
+`cargo test -p od-runner --offline --test fixture_v2` (390 tests),
+`cargo check --workspace --all-targets --offline`,
+`cargo fmt --all -- --check`, `git diff --check`, and `graphify update .`.
+The runner test generated and executed all 256 register pairs and checked the
+handwritten XMM15 alias fixture, schema/result control echo, unrelated-state
+tampering, malformed forms, and JIT/native denial. `python3
+tools/check_layout.py` remains nonzero on this managed worktree because `.git`
+is an unmapped root entry and the pre-existing report links refer to two absent
+historical oracle manifests; it reported no new path/layout issue. No physical
+x86 or Mac mini execution was performed.
+
 ## S2-37n — exact Long64 CVTSI2SD XMM0,EAX
 
 Implemented interpreter-only schema-v2 profile `s2-long-cvtsi2sd-r32-exact-v1`
