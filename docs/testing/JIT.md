@@ -748,3 +748,15 @@ interpreter at 2.019–2.053 µs per selected corpus sweep. The interpreter was
 about 6.0× faster on this register-only slice; S3-36 remains partial. Details
 and raw results are in the
 [S3-36a report](../reports/STAGE_3_S3-36a_2026-10-30.md).
+
+### S3-37a bounded FIFO16 corpus churn path
+
+`od-bench cache-churn` runs 128 full sweeps of the frozen S3-17 corpus on one
+retained production FIFO16 runtime and records per-sweep/cumulative cache
+counters and resident code/metadata and arena high-water. Its unoccupied-slot
+value is derived as capacity minus resident-entry high-water, not read from an
+allocator counter. The path is
+implemented but has not been run. It does not measure process RSS, teardown,
+independent runtime instances, SMC invalidation, or longer leak-free stress;
+S3-37 remains open. See the
+[S3-37a report](../reports/STAGE_3_S3-37a_2026-10-30.md).

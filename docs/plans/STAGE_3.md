@@ -2515,6 +2515,21 @@ workload matrix. See the [S3-36a report](../reports/STAGE_3_S3-36a_2026-10-30.md
 
 ### S3-37. Проверить cache churn и ресурсы
 
+#### S3-37a: bounded FIFO16 corpus churn observation path
+
+Implemented opt-in `od-bench cache-churn` for exactly 128 complete sweeps of
+the frozen S3-17 register-only corpus, using one retained production FIFO16
+runtime/cache/arena. It records per-sweep and cumulative cache hit/miss,
+compile/publication, and eviction counters, plus resident entry/code/logical
+metadata high-water and arena reservation plus a derived unoccupied-slot value
+(`capacity - resident entry high-water`). The latter is not read from an
+allocator availability counter. The
+runner requires observable eviction/recompile and uses the existing 30-minute
+limit. This is tooling-only; no run has been collected. Process RSS, runtime
+teardown, independent-instance lifecycle, SMC invalidation, and broader
+workloads remain unmeasured. It is not a leak-free stress result. See the
+[S3-37a implementation report](../reports/STAGE_3_S3-37a_2026-10-30.md).
+
 1. Выполнить длинную серию unique blocks, повторных invalidations, capacity evictions, SMC и mixed hit/miss workloads.
 2. Снимать executable bytes, metadata bytes, live/retired blocks, compile counts и доступные process memory показатели с описанием метода.
 3. Проверить освобождение после STOP/fault/destroy и несколько независимых runtime instances. Не смешивать peaks разных процессов с памятью одной VM.

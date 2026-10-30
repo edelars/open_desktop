@@ -296,6 +296,27 @@ the [S3-36a report](../reports/STAGE_3_S3-36a_2026-10-30.md). This path covers
 only a bounded register-only resident slice and does not complete the
 branch/helper/memory or resource portions of S3-36.
 
+### S3-37a: bounded production FIFO16 corpus churn observation
+
+`od-bench cache-churn` is an opt-in Apple Silicon macOS release command. It
+accepts only the frozen S3-17 case-list and trace, admits all 1,010 cases, and
+runs 128 complete corpus sweeps on one retained production FIFO16 runtime,
+cache, and arena. Each sweep records timed dispatch-call duration, input calls,
+native block executions, retirements, counter deltas, resident high-water,
+arena reservation, and a derived unoccupied-slot value (capacity minus
+resident-entry high-water, not an allocator counter). The report also records cumulative hit, miss,
+compile, publication, and eviction totals. The existing 30-minute process
+limit applies; runs fail unless the full work count and bounded FIFO
+eviction/recompile invariants are observed.
+
+The timing excludes fixture admission, per-case state cloning/reset and
+correctness validation, runtime initialization/teardown, and process launch.
+Process RSS and teardown/independent-instance lifecycle are not measured. This
+fixed corpus repetition is bounded capacity-churn evidence only; it is not a
+long leak-free stress result and does not cover SMC invalidation or broader
+workloads. The command is implemented but no run has been collected. See the
+[S3-37a implementation report](../reports/STAGE_3_S3-37a_2026-10-30.md).
+
 Recorded trace дополняется ограниченными synthetic-сценариями:
 1/8/64/512/4096 keys и observed unique count, hot loops на 1/8 keys, reverse
 unique sequence, alternating hit/miss, stale mapping/backing/execute

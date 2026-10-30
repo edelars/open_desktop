@@ -29,6 +29,7 @@ use crate::{
 
 const PAIRS: usize = 20;
 const FIRST_RUN_PAIRS: usize = 20;
+const CACHE_CHURN_SWEEPS: usize = 128;
 const MIN_SAMPLE: Duration = Duration::from_millis(200);
 const ARENA_SLOTS: usize = 16;
 const MAX_CASE_LIST_BYTES: usize = 4 * 1024 * 1024;
@@ -392,6 +393,60 @@ struct WarmRunReport {
     excluded_from_timing: String,
     variants: Vec<FirstRunVariantResult>,
     paired_interpreter_over_fifo_ratios: Vec<f64>,
+    total_elapsed_ns: u128,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+struct ChurnCounterDelta {
+    hits: u64,
+    misses: u64,
+    successful_compiles: u64,
+    successful_publications: u64,
+    evictions: u64,
+}
+
+#[derive(Serialize)]
+struct ChurnSweepReport {
+    sweep: usize,
+    timed_dispatch_elapsed_ns: u128,
+    input_calls: u64,
+    native_block_executions: u64,
+    retired_guest_instructions: u64,
+    counter_delta: ChurnCounterDelta,
+    resident_entries_high_water: usize,
+    resident_code_bytes_high_water: usize,
+    resident_logical_metadata_bytes_high_water: usize,
+    arena_unoccupied_slots_at_resident_high_water: usize,
+    arena_reserved_bytes: usize,
+}
+
+#[derive(Serialize)]
+struct CacheChurnReport {
+    schema: u32,
+    process_run: u8,
+    case_list_sha256: String,
+    trace_sha256: String,
+    capture_host: HostMetadata,
+    measure_host: HostMetadata,
+    inputs: usize,
+    visits: usize,
+    cache_capacity_entries: usize,
+    fixed_sweeps: usize,
+    timing_scope: String,
+    excluded_from_timing: String,
+    timed_dispatch_elapsed_ns: u128,
+    input_calls: u64,
+    native_block_executions: u64,
+    retired_guest_instructions: u64,
+    cumulative_counter_totals: ChurnCounterDelta,
+    resident_entries_high_water: usize,
+    resident_code_bytes_high_water: usize,
+    resident_logical_metadata_bytes_high_water: usize,
+    arena_unoccupied_slots_at_resident_high_water: usize,
+    arena_reserved_bytes: usize,
+    process_rss_bytes: Option<u64>,
+    teardown_or_independent_instance_lifecycle_measured: bool,
+    sweeps: Vec<ChurnSweepReport>,
     total_elapsed_ns: u128,
 }
 
@@ -809,6 +864,205 @@ pub fn run_warm_first_execution(
         total_elapsed_ns: started.elapsed().as_nanos(),
     };
     serde_json::to_value(report).map_err(|e| err(e.to_string()))
+}
+
+/// Records bounded capacity-churn counters for repeated execution of the
+/// frozen register-only corpus on one retained FIFO16 runtime.
+pub fn run_cache_churn(
+    case_list: &Path,
+    trace_path: &Path,
+    process_run: u8,
+) -> Result<serde_json::Value, BenchError> {
+    if cfg!(debug_assertions) {
+        return Err(err("cache-churn measurement requires a release build"));
+    }
+    if !(1..=3).contains(&process_run) {
+        return Err(err("process-run must be 1..=3"));
+    }
+    let started = Instant::now();
+    let list = read_bounded(case_list, MAX_CASE_LIST_BYTES, "case list")?;
+    let trace_raw = read_bounded(trace_path, crate::MAX_LOGICAL_BYTES, "trace")?;
+    if od_testkit::sha256_hex(&list) != FROZEN_CASE_LIST_SHA256
+        || od_testkit::sha256_hex(&trace_raw) != FROZEN_TRACE_SHA256
+    {
+        return Err(err(
+            "case list or trace does not match the frozen S3-17 corpus",
+        ));
+    }
+    let trace: RecordedTrace =
+        serde_json::from_slice(&trace_raw).map_err(|e| err(format!("trace JSON: {e}")))?;
+    if trace.visits.len() != 1_322 || trace.visits.len() > MAX_TOTAL_TRACE_VISITS {
+        return Err(err("frozen trace visit count mismatch"));
+    }
+    let cases = prepare_cases(&list, &trace, started)?;
+    if cases.len() != MAX_INPUTS {
+        return Err(err("cache-churn requires the complete frozen corpus"));
+    }
+
+    let scenario = Scenario {
+        name: "s3-17-frozen-corpus-cache-churn".into(),
+        input_indices: (0..cases.len()).collect(),
+        warmup_sweeps: 0,
+        minimum_measured_sweeps: 0,
+        cold_each_sweep: false,
+        selected_case_ids: cases.iter().map(|case| case.id.clone()).collect(),
+    };
+    let mut engine = Variant::new(VariantName::MultiFifo16)?;
+    if !engine.counters().cache_lookup_metrics_available {
+        return Err(err("FIFO cache counters are unavailable"));
+    }
+
+    let mut timed_dispatch_elapsed = Duration::ZERO;
+    let mut total_calls = 0u64;
+    let mut total_native_blocks = 0u64;
+    let mut total_retired = 0u64;
+    let mut totals = ChurnCounterDelta::default();
+    let mut resident_entries_high_water = 0usize;
+    let mut resident_code_bytes_high_water = 0usize;
+    let mut resident_logical_metadata_bytes_high_water = 0usize;
+    let mut arena_unoccupied_slots_at_resident_high_water = ARENA_SLOTS;
+    let mut arena_reserved_bytes = 0usize;
+    let mut sweeps = Vec::with_capacity(CACHE_CHURN_SWEEPS);
+
+    for index in 0..CACHE_CHURN_SWEEPS {
+        if started.elapsed() > MAX_RUN_TIME {
+            return Err(err("30 minute run limit exceeded during cache churn"));
+        }
+        let before = engine.counters();
+        let (elapsed, calls, native_blocks, retired, high) =
+            sweep(&mut engine, &cases, &scenario.input_indices, started)?;
+        let after = engine.counters();
+        let counter_delta = churn_counter_delta(after, before)?;
+        accumulate_churn_counters(&mut totals, counter_delta)?;
+        timed_dispatch_elapsed = timed_dispatch_elapsed.saturating_add(elapsed);
+        total_calls = total_calls
+            .checked_add(calls)
+            .ok_or_else(|| err("cache-churn call count overflow"))?;
+        total_native_blocks = total_native_blocks
+            .checked_add(native_blocks)
+            .ok_or_else(|| err("cache-churn block count overflow"))?;
+        total_retired = total_retired
+            .checked_add(retired)
+            .ok_or_else(|| err("cache-churn retirement count overflow"))?;
+        resident_entries_high_water = resident_entries_high_water.max(high.resident);
+        resident_code_bytes_high_water = resident_code_bytes_high_water.max(high.code_bytes);
+        resident_logical_metadata_bytes_high_water =
+            resident_logical_metadata_bytes_high_water.max(high.logical_bytes);
+        let unoccupied_at_resident_high_water = ARENA_SLOTS.saturating_sub(high.resident);
+        arena_unoccupied_slots_at_resident_high_water =
+            arena_unoccupied_slots_at_resident_high_water.min(unoccupied_at_resident_high_water);
+        arena_reserved_bytes = arena_reserved_bytes.max(high.arena_reserved_bytes);
+        sweeps.push(ChurnSweepReport {
+            sweep: index + 1,
+            timed_dispatch_elapsed_ns: elapsed.as_nanos(),
+            input_calls: calls,
+            native_block_executions: native_blocks,
+            retired_guest_instructions: retired,
+            counter_delta,
+            resident_entries_high_water: high.resident,
+            resident_code_bytes_high_water: high.code_bytes,
+            resident_logical_metadata_bytes_high_water: high.logical_bytes,
+            arena_unoccupied_slots_at_resident_high_water: unoccupied_at_resident_high_water,
+            arena_reserved_bytes: high.arena_reserved_bytes,
+        });
+    }
+
+    let expected_calls = u64::try_from(cases.len())
+        .ok()
+        .and_then(|count| count.checked_mul(CACHE_CHURN_SWEEPS as u64))
+        .ok_or_else(|| err("cache-churn expected call count overflow"))?;
+    if total_calls != expected_calls
+        || totals.evictions == 0
+        || totals.misses != totals.successful_compiles
+        || totals.successful_compiles != totals.successful_publications
+        || resident_entries_high_water > ARENA_SLOTS
+    {
+        return Err(err(
+            "cache-churn did not observe bounded FIFO eviction/recompile",
+        ));
+    }
+
+    let report = CacheChurnReport {
+        schema: 1,
+        process_run,
+        case_list_sha256: od_testkit::sha256_hex(&list),
+        trace_sha256: od_testkit::sha256_hex(&trace_raw),
+        capture_host: trace.capture_host.clone(),
+        measure_host: HostMetadata::current(),
+        inputs: trace.inputs.len(),
+        visits: trace.visits.len(),
+        cache_capacity_entries: ARENA_SLOTS,
+        fixed_sweeps: CACHE_CHURN_SWEEPS,
+        timing_scope: "sum of each production FIFO dispatch-call interval over complete frozen-corpus sweeps on one retained runtime/cache/arena; state cloning/reset and oracle validation occur outside timed calls".into(),
+        excluded_from_timing: "fixture/trace parsing and admission, interpreter oracle preparation, per-case state clone/reset, post-call validation, runtime initialization/teardown, and process launch".into(),
+        timed_dispatch_elapsed_ns: timed_dispatch_elapsed.as_nanos(),
+        input_calls: total_calls,
+        native_block_executions: total_native_blocks,
+        retired_guest_instructions: total_retired,
+        cumulative_counter_totals: totals,
+        resident_entries_high_water,
+        resident_code_bytes_high_water,
+        resident_logical_metadata_bytes_high_water,
+        arena_unoccupied_slots_at_resident_high_water,
+        arena_reserved_bytes,
+        process_rss_bytes: None,
+        teardown_or_independent_instance_lifecycle_measured: false,
+        sweeps,
+        total_elapsed_ns: started.elapsed().as_nanos(),
+    };
+    serde_json::to_value(report).map_err(|e| err(e.to_string()))
+}
+
+fn churn_counter_delta(after: Counters, before: Counters) -> Result<ChurnCounterDelta, BenchError> {
+    Ok(ChurnCounterDelta {
+        hits: after
+            .hits
+            .checked_sub(before.hits)
+            .ok_or_else(|| err("cache hit counter decreased"))?,
+        misses: after
+            .misses
+            .checked_sub(before.misses)
+            .ok_or_else(|| err("cache miss counter decreased"))?,
+        successful_compiles: after
+            .compiles
+            .checked_sub(before.compiles)
+            .ok_or_else(|| err("compile counter decreased"))?,
+        successful_publications: after
+            .publications
+            .checked_sub(before.publications)
+            .ok_or_else(|| err("publication counter decreased"))?,
+        evictions: after
+            .evictions
+            .checked_sub(before.evictions)
+            .ok_or_else(|| err("eviction counter decreased"))?,
+    })
+}
+
+fn accumulate_churn_counters(
+    total: &mut ChurnCounterDelta,
+    delta: ChurnCounterDelta,
+) -> Result<(), BenchError> {
+    total.hits = total
+        .hits
+        .checked_add(delta.hits)
+        .ok_or_else(|| err("cache-churn hit total overflow"))?;
+    total.misses = total
+        .misses
+        .checked_add(delta.misses)
+        .ok_or_else(|| err("cache-churn miss total overflow"))?;
+    total.successful_compiles = total
+        .successful_compiles
+        .checked_add(delta.successful_compiles)
+        .ok_or_else(|| err("cache-churn compile total overflow"))?;
+    total.successful_publications = total
+        .successful_publications
+        .checked_add(delta.successful_publications)
+        .ok_or_else(|| err("cache-churn publication total overflow"))?;
+    total.evictions = total
+        .evictions
+        .checked_add(delta.evictions)
+        .ok_or_else(|| err("cache-churn eviction total overflow"))?;
+    Ok(())
 }
 
 fn select_resident_case_count(all_cases: &[Case]) -> Result<(usize, usize), BenchError> {
