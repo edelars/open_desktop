@@ -258,6 +258,8 @@ pub enum Profile {
     LongCvtss2sdRegistersV1,
     #[serde(rename = "s2-long-cvtps2pd-registers-v1")]
     LongCvtps2pdRegistersV1,
+    #[serde(rename = "s2-long-comiss-ucomiss-registers-v1")]
+    LongComissUcomissRegistersV1,
     #[serde(rename = "s2-long-cvtsi2sd-r32-exact-v1")]
     LongCvtsi2sdR32ExactV1,
     #[serde(rename = "s2-long-cvtsi2sd-r64-exact-v1")]
@@ -1262,6 +1264,7 @@ impl IntegerState {
                     | Profile::LongCvtdq2psRegistersV1
                     | Profile::LongCvtss2sdRegistersV1
                     | Profile::LongCvtps2pdRegistersV1
+                    | Profile::LongComissUcomissRegistersV1
                     | Profile::LongCvtsi2sdR32ExactV1
                     | Profile::LongCvtsi2sdR64ExactV1
                     | Profile::LongCvtsi2sdRegistersV1
@@ -1453,6 +1456,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
+                | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
                 | Profile::LongCvtsi2sdRegistersV1
@@ -1595,6 +1599,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
+                | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
                 | Profile::LongCvtsi2sdRegistersV1
@@ -2073,6 +2078,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
+                | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
                 | Profile::LongCvtsi2sdRegistersV1
@@ -2233,6 +2239,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
+                | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
                 | Profile::LongCvtsi2sdRegistersV1
@@ -2402,6 +2409,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
+                | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
                 | Profile::LongCvtsi2sdRegistersV1
@@ -2578,6 +2586,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
+                | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
                 | Profile::LongCvtsi2sdRegistersV1
@@ -3384,6 +3393,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
+                | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
                 | Profile::LongCvtsi2sdRegistersV1
@@ -3517,6 +3527,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtps2pdRegistersV1
+                | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
                 | Profile::LongCvtsi2sdRegistersV1
@@ -3759,6 +3770,8 @@ pub struct Fixture {
     pub cvtss2sd_controls: Option<Cvtss2sdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtps2pd_controls: Option<Cvtps2pdControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comiss_ucomiss_controls: Option<ComissUcomissControlSnapshot>,
     /// Immutable CVTSI2SD r32 gate inputs and the irrelevant OSXMMEXCPT echo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtsi2sd_r32_controls: Option<Cvtsi2sdR32ControlSnapshot>,
@@ -3908,6 +3921,16 @@ pub struct Cvtss2sdControlSnapshot {
 #[serde(deny_unknown_fields)]
 pub struct Cvtps2pdControlSnapshot {
     pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComissUcomissControlSnapshot {
+    pub sse_available: bool,
     pub cr0_em: bool,
     pub cr0_ts: bool,
     pub cr4_osfxsr: bool,
@@ -5572,6 +5595,61 @@ impl Fixture {
                 "only valid for CVTPS2PD register-space profile",
             ));
         }
+        if self.profile == Profile::LongComissUcomissRegistersV1 {
+            let _ = self.comiss_ucomiss_controls.ok_or_else(|| {
+                invalid(
+                    "comiss_ucomiss_controls",
+                    "required by COMISS/UCOMISS profile",
+                )
+            })?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by COMISS/UCOMISS profile"))?;
+            let (_, _, _, length) = comiss_ucomiss_register_encoding(&code.initial_bytes_hex)
+                .ok_or_else(|| {
+                    invalid(
+                        "memory.code",
+                        "outside canonical COMISS/UCOMISS register profile",
+                    )
+                })?;
+            let start = self.initial_state.rip.get();
+            if code.guest_address.get() != start
+                || code.length != length
+                || !code.permissions.execute
+                || self.memory.len() != 1
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(u64::from(length))
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "COMISS/UCOMISS requires one canonical executable encoding, budget 1, and stop RIP entry+length",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .expect("SSE required by COMISS/UCOMISS")
+                .mxcsr
+                .get();
+            if mxcsr & !0x0000_ffbf != 0 || mxcsr & (1 << 6) != 0 {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "COMISS/UCOMISS requires supported MXCSR bits only and DAZ clear",
+                ));
+            }
+        } else if self.comiss_ucomiss_controls.is_some() {
+            return Err(invalid(
+                "comiss_ucomiss_controls",
+                "only valid for COMISS/UCOMISS register-space profile",
+            ));
+        }
         if self.profile == Profile::LongCvtsi2sdR32ExactV1 {
             let _ = self.cvtsi2sd_r32_controls.ok_or_else(|| {
                 invalid(
@@ -6127,6 +6205,9 @@ impl Fixture {
                 }
                 Profile::LongCvtps2pdRegistersV1 => {
                     cvtps2pd_register_encoding(&code_bytes).map(|(_, _, length)| length)
+                }
+                Profile::LongComissUcomissRegistersV1 => {
+                    comiss_ucomiss_register_encoding(&code_bytes).map(|(_, _, _, length)| length)
                 }
                 Profile::LongCvtsi2sdR32ExactV1 => cvtsi2sd_r32_register_length(&code_bytes),
                 Profile::LongCvtsi2sdR64ExactV1 => cvtsi2sd_r64_register_length(&code_bytes),
@@ -8051,6 +8132,7 @@ impl Fixture {
             cvtdq2ps_controls: None,
             cvtss2sd_controls: None,
             cvtps2pd_controls: None,
+            comiss_ucomiss_controls: None,
             cvtsi2sd_r32_controls: None,
             cvtsi2sd_r64_controls: None,
             cvtsi2ss_controls: None,
@@ -8154,6 +8236,8 @@ pub struct Snapshot {
     pub cvtss2sd_controls: Option<Cvtss2sdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtps2pd_controls: Option<Cvtps2pdControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comiss_ucomiss_controls: Option<ComissUcomissControlSnapshot>,
     /// Immutable CVTSI2SD r32 gate inputs and the irrelevant OSXMMEXCPT echo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtsi2sd_r32_controls: Option<Cvtsi2sdR32ControlSnapshot>,
@@ -8442,6 +8526,19 @@ impl RunResult {
             return Err(invalid(
                 "snapshot.cvtps2pd_controls",
                 "only valid for CVTPS2PD profile",
+            ));
+        }
+        if self.profile == Profile::LongComissUcomissRegistersV1 {
+            if snapshot.comiss_ucomiss_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.comiss_ucomiss_controls",
+                    "required by the COMISS/UCOMISS profile",
+                ));
+            }
+        } else if snapshot.comiss_ucomiss_controls.is_some() {
+            return Err(invalid(
+                "snapshot.comiss_ucomiss_controls",
+                "only valid for COMISS/UCOMISS profile",
             ));
         }
         if self.profile == Profile::LongCvtdq2psRegistersV1 {
@@ -8788,6 +8885,22 @@ impl RunResult {
             }
             if loaded.fixture.profile == Profile::LongCvtps2pdRegistersV1 {
                 validate_cvtps2pd_registers_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.comiss_ucomiss_controls,
+                value.comiss_ucomiss_controls,
+            ) {
+                (Profile::LongComissUcomissRegistersV1, Some(input), Some(output))
+                    if input == output => {}
+                (Profile::LongComissUcomissRegistersV1, _, _) => {
+                    return Err(FormatError::CaseMismatch("comiss_ucomiss_controls"));
+                }
+                (_, None, None) => {}
+                _ => return Err(FormatError::CaseMismatch("comiss_ucomiss_controls")),
+            }
+            if loaded.fixture.profile == Profile::LongComissUcomissRegistersV1 {
+                validate_comiss_ucomiss_registers_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
@@ -10974,6 +11087,174 @@ fn validate_cvtps2pd_registers_result(
             && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
         (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
         _ => return Err(FormatError::CaseMismatch("CVTPS2PD outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_comiss_ucomiss_registers_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .comiss_ucomiss_controls
+        .ok_or(FormatError::CaseMismatch("comiss_ucomiss_controls"))?;
+    let sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|r| r.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    let (unordered_quiet, destination, source, length) =
+        comiss_ucomiss_register_encoding(&code.initial_bytes_hex)
+            .ok_or(FormatError::CaseMismatch("COMISS/UCOMISS encoding"))?;
+    let lhs_bytes = decode_bytes(&sse.xmm[usize::from(destination)])?;
+    let rhs_bytes = decode_bytes(&sse.xmm[usize::from(source)])?;
+    let lhs = u32::from_le_bytes(
+        lhs_bytes[..4]
+            .try_into()
+            .map_err(|_| FormatError::CaseMismatch("state.sse.xmm"))?,
+    );
+    let rhs = u32::from_le_bytes(
+        rhs_bytes[..4]
+            .try_into()
+            .map_err(|_| FormatError::CaseMismatch("state.sse.xmm"))?,
+    );
+    let classify = |bits: u32| -> u8 {
+        let exp = (bits >> 23) & 0xff;
+        let frac = bits & 0x7f_ffff;
+        if exp == 0xff && frac != 0 {
+            if frac & 0x40_0000 != 0 { 3 } else { 4 }
+        } else if exp == 0 && frac != 0 {
+            2
+        } else {
+            0
+        }
+    };
+    let lc = classify(lhs);
+    let rc = classify(rhs);
+    let has_nan = matches!(lc, 3 | 4) || matches!(rc, 3 | 4);
+    let new_ie = if unordered_quiet {
+        lc == 4 || rc == 4
+    } else {
+        has_nan
+    };
+    // Rev. 093 §4.9.2 gives NaN higher priority than denormal for these compares.
+    let new_de = !has_nan && (lc == 2 || rc == 2);
+    let old_mxcsr = sse.mxcsr.get() as u32;
+    let gate = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let unmasked = gate.is_none()
+        && ((new_ie && old_mxcsr & (1 << 7) == 0) || (new_de && old_mxcsr & (1 << 8) == 0));
+    let fault = gate.or_else(|| unmasked.then_some(if controls.cr4_osxmmexcpt { 19 } else { 6 }));
+    if !matches!(
+        (fault.is_some(), fixture.expected_exit),
+        (true, ExpectedExit::Exception) | (false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("COMISS/UCOMISS expected exit"));
+    }
+    let mut expected = fixture.initial_state.clone();
+    if gate.is_none() {
+        let expected_sse = expected
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        expected_sse.mxcsr = HexU64(u64::from(
+            old_mxcsr | u32::from(new_ie) | (u32::from(new_de) << 1),
+        ));
+        if !unmasked {
+            let flags_mask = (1 << 0) | (1 << 2) | (1 << 4) | (1 << 6) | (1 << 7) | (1 << 11);
+            expected.rflags = HexU64(expected.rflags.get() & !flags_mask);
+            if has_nan {
+                expected.rflags = HexU64(expected.rflags.get() | (1 << 0) | (1 << 2) | (1 << 6));
+            } else {
+                // Compare signed magnitude from the encoded fields, without host FP.
+                let ordering = if lhs & 0x7fff_ffff == 0 && rhs & 0x7fff_ffff == 0 {
+                    core::cmp::Ordering::Equal
+                } else if lhs >> 31 != rhs >> 31 {
+                    if lhs >> 31 != 0 {
+                        core::cmp::Ordering::Less
+                    } else {
+                        core::cmp::Ordering::Greater
+                    }
+                } else if lhs >> 31 == 0 {
+                    (lhs & 0x7fff_ffff).cmp(&(rhs & 0x7fff_ffff))
+                } else {
+                    (rhs & 0x7fff_ffff).cmp(&(lhs & 0x7fff_ffff))
+                };
+                match ordering {
+                    core::cmp::Ordering::Less => {
+                        expected.rflags = HexU64(expected.rflags.get() | 1)
+                    }
+                    core::cmp::Ordering::Equal => {
+                        expected.rflags = HexU64(expected.rflags.get() | (1 << 6))
+                    }
+                    core::cmp::Ordering::Greater => {}
+                }
+            }
+            expected.rip = HexU64(
+                fixture
+                    .initial_state
+                    .rip
+                    .get()
+                    .checked_add(u64::from(length))
+                    .ok_or(FormatError::CaseMismatch("COMISS/UCOMISS stop overflow"))?,
+            );
+        }
+    }
+    let expected_memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != expected_memory
+    {
+        return Err(FormatError::CaseMismatch("COMISS/UCOMISS output state"));
+    }
+    let count = u64::from(fault.is_none());
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(count),
+        })
+    {
+        return Err(FormatError::CaseMismatch("COMISS/UCOMISS retirement count"));
+    }
+    match (fault, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == Observation::Unavailable {
+                    reason: "exception has no architectural error code".into(),
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => {
+            return Err(FormatError::CaseMismatch(
+                "COMISS/UCOMISS outcome/exception",
+            ));
+        }
     }
     Ok(())
 }
@@ -13448,6 +13729,36 @@ fn cvtps2pd_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
         return None;
     }
     Some((destination, source, bytes.len() as u32))
+}
+
+fn comiss_ucomiss_register_encoding(code_bytes: &str) -> Option<(bool, u8, u8, u32)> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (rex, opcode, modrm) = match bytes.as_slice() {
+        [0x0f, opcode @ (0x2e | 0x2f), modrm] => (0u8, *opcode, *modrm),
+        [rex, 0x0f, opcode @ (0x2e | 0x2f), modrm] if matches!(*rex, 0x41 | 0x44 | 0x45) => {
+            (*rex, *opcode, *modrm)
+        }
+        _ => return None,
+    };
+    if modrm >> 6 != 3 {
+        return None;
+    }
+    let destination = ((modrm >> 3) & 7) | (((rex >> 2) & 1) << 3);
+    let source = (modrm & 7) | ((rex & 1) << 3);
+    if (destination >= 8 || source >= 8) != (bytes.len() == 4)
+        || (rex & 4 != 0) != (destination >= 8)
+        || (rex & 1 != 0) != (source >= 8)
+        || rex & 0x0a != 0
+    {
+        return None;
+    }
+    Some((opcode == 0x2e, destination, source, bytes.len() as u32))
 }
 
 fn cvtsi2sd_r32_register_length(code_bytes: &str) -> Option<u32> {

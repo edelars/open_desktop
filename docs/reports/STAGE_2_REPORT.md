@@ -17713,3 +17713,56 @@ pp. 3-228–3-230, Tables 2-15/Table 2-20 p. 2-28; Vol. 1 Table D-11 and
 contract](../specs/CPU_CONTRACT.md#s2-37u--canonical-long64-cvtps2pd-xmm-register-pairs),
 [plan](../plans/STAGE_2.md#s2-37u--canonical-long64-cvtps2pd-xmm-register-pairs), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37u-canonical-cvtps2pd-register-pairs).
+
+## S2-37v — canonical Long64 COMISS and UCOMISS XMM register pairs
+
+Implemented schema-v2 interpreter profile `s2-long-comiss-ucomiss-registers-v1`
+for COMISS `0F 2F /r` and UCOMISS `0F 2E /r`, covering all 256 XMM register
+pairs per opcode. Canonical low-register encodings are 3 bytes; extended
+source/destination forms require exactly REX `41`, `44`, or `45` and are 4
+bytes. The independent fixture parser derives opcode variant, register indices
+and instruction length. One executable mapping, budget one and checked stop
+RIP are required; other prefixes, REX `40`/W/X, memory, trailing bytes, VEX
+and EVEX are refused by this local profile. Earlier profiles remain unchanged.
+
+The interpreter snapshots both source registers, reads only low32, compares
+raw binary32 encodings without host floating point, and leaves all XMM bits
+untouched. COMISS signals new IE for QNaN and SNaN; UCOMISS signals only for
+SNaN. NaN has priority over DE from a subnormal in the other input. New IE/DE
+are ORed into MXCSR; only newly raised unmasked events fault. Sticky status is
+committed before #XM or SIMD-generated #UD, while full RFLAGS, RIP and
+retirement remain unchanged. Masked completion sets the comparison flags and
+preserves every other RFLAGS bit. SSE/EM/OSFXSR #UD precedes TS #NM after full
+fetch. DAZ and unsupported MXCSR bits are refused; RC/FTZ do not affect this
+comparison.
+
+Coverage constructs both opcodes × all 256 XMM pairs with distinct register
+sentinels, and checks raw class pairs in both orders, zero/normal/infinity
+ordering, NaN/denormal priority, IM/DM × OSXMMEXCPT × prior sticky combinations,
+all prerequisite controls, CPL0–3, truncated fetch ordering, no data callbacks,
+malformed forms, result tampering, and JIT/native denial. The independent result
+validator uses raw classification and signed-magnitude ordering rather than a
+production compare helper. No physical or broader CPUID claim is made.
+
+Checks passed:
+
+- `cargo test -p od-isa -p od-testkit --offline` (1,494 ISA tests and 412 testkit tests passed)
+- `cargo test -p od-runner --test fixture_v2 comiss_ucomiss_register_pairs_raw_classes_exceptions_and_backend_denial --offline`
+- `cargo test -p od-isa comiss_ucomiss_profile_fetch_gates_and_cpl_are_bounded --offline`
+
+The implementation and oracle have not received independent review yet; the
+plan remains unchecked pending that review. The Linux x86_64 native denial test
+is platform-gated and was not run on this macOS host; `native_profile_local_only`
+includes this profile, while the interpreter fixture verifies JIT denial.
+`cargo fmt --all -- --check` and `cargo check --workspace --all-targets --offline`
+passed. `tools/check_layout.py` reported only the existing `.git` root entry and
+two unavailable historical oracle manifests (`stage2-20261022-230853-3684f650`
+and `stage1-20261022-230241-3b73e810`). Graphify was updated. Sources: Intel
+SDM Rev. 093 Vol. 2A COMISS pp. 3-201–3-202
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 2B
+UCOMISS pp. 4-735–4-736 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241));
+Vol. 1 Tables D-6/D-7, §4.9.2 and §§11.5.2.2/11.5.3
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37v--canonical-long64-comiss-and-ucomiss-xmm-register-pairs),
+[plan](../plans/STAGE_2.md#s2-37v--canonical-long64-comiss-and-ucomiss-xmm-register-pairs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37v-canonical-comiss-and-ucomiss-register-pairs).

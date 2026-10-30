@@ -6393,3 +6393,15 @@ encoding, tampering, JIT and native denial are covered. See the [CPU
 contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37u--canonical-long64-cvtps2pd-xmm-register-pairs),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37u--canonical-long64-cvtps2pd-xmm-register-pairs),
 and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37u--canonical-long64-cvtps2pd-xmm-register-pairs).
+
+### S2-37v canonical COMISS and UCOMISS register pairs
+
+`s2_37v_comiss_ucomiss_baseline.case.json` is a handwritten schema-v2
+`s2-long-comiss-ucomiss-registers-v1` anchor using canonical `COMISS XMM0,XMM1`.
+Its XMM state includes unrelated high96 bit patterns. The runner constructs both
+opcodes across all 256 register pairs and checks raw binary32 ordering, signed
+zero, infinities, QNaN/SNaN behavior, NaN-before-denormal priority, sticky
+status and exception masks. Gate/fetch/CPL/no-callback, malformed encoding,
+result tampering and JIT/native denial are covered. This local profile does not
+claim memory forms, generic CPUID admission, physical acceptance, or closure
+of parent S2-37/S2-38. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37v--canonical-long64-comiss-and-ucomiss-xmm-register-pairs), [plan](../../../../docs/plans/STAGE_2.md#s2-37v--canonical-long64-comiss-and-ucomiss-xmm-register-pairs), and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37v--canonical-long64-comiss-and-ucomiss-xmm-register-pairs).

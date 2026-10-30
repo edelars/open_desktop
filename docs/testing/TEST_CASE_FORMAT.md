@@ -1331,3 +1331,24 @@ independent raw-bit comparator and checks raw event aggregation, same-lane IE
 priority on masked completion, full XMM suppression on an unmasked event,
 exception vector, RIP, retirement and control echo. JIT and native backends
 deny this local interpreter-only profile.
+
+## S2-37v canonical COMISS and UCOMISS register-pair profile
+
+The profile string is `s2-long-comiss-ucomiss-registers-v1`.
+`comiss_ucomiss_controls` records SSE availability and immutable CR0/CR4 gate
+inputs, including OSXMMEXCPT; results echo it as
+`snapshot.comiss_ucomiss_controls`. The code must contain exactly one canonical
+COMISS or UCOMISS encoding, one executable mapping, budget 1, and checked stop
+RIP `entry+length`. The independent parser derives the opcode variant, XMM
+indices and length. MXCSR reserved bits and DAZ are rejected.
+
+The independent result validator classifies the two raw low32 encodings and
+computes ordered comparison flags without calling production comparison code.
+It checks NaN/denormal priority, new versus sticky IE/DE, masked completion,
+unmasked flag/RIP suppression, all XMM preservation, retirement, exception
+vector, and control echoes. Coverage includes all 512 encodings, both operand
+orders, both opcodes, the event-mask/OSXMMEXCPT/sticky matrix, gate/fetch/CPL
+checks, malformed forms, tampering and JIT/native denial. See the [CPU
+contract](../specs/CPU_CONTRACT.md#s2-37v--canonical-long64-comiss-and-ucomiss-xmm-register-pairs),
+[plan](../plans/STAGE_2.md#s2-37v--canonical-long64-comiss-and-ucomiss-xmm-register-pairs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37v-canonical-comiss-and-ucomiss-register-pairs).

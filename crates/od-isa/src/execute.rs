@@ -205,6 +205,16 @@ pub struct Cvtps2pdControls {
     pub cr4_osxmmexcpt: bool,
 }
 
+/// Explicit SSE and SIMD exception-delivery controls for COMISS/UCOMISS.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ComissUcomissControls {
+    pub sse_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
 /// Explicit prerequisites for the exact S2-37n CVTSI2SD r32 profile.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Cvtsi2sdR32Controls {
@@ -326,6 +336,7 @@ struct ExecutionProfiles<'a> {
     cvtdq2ps_registers: Option<Cvtdq2psControls>,
     cvtss2sd_registers: Option<Cvtss2sdControls>,
     cvtps2pd_registers: Option<Cvtps2pdControls>,
+    comiss_ucomiss_registers: Option<ComissUcomissControls>,
     cvtsi2sd_r32: Option<Cvtsi2sdR32Controls>,
     cvtsi2sd_r64: Option<Cvtsi2sdR64Controls>,
     cvtsi2sd_registers: Option<Cvtsi2sdRegistersControls>,
@@ -1134,6 +1145,7 @@ pub fn run_with_maxss_unmasked_controls(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: None,
@@ -1188,6 +1200,7 @@ pub fn run_with_minsd_unmasked_controls(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: None,
@@ -1242,6 +1255,7 @@ pub fn run_with_maxsd_unmasked_controls(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: None,
@@ -1296,6 +1310,7 @@ pub fn run_with_minpd_unmasked_controls(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: None,
@@ -1350,6 +1365,7 @@ pub fn run_with_minps_unmasked_controls(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: None,
@@ -1404,6 +1420,7 @@ pub fn run_with_maxps_unmasked_controls(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: None,
@@ -1458,6 +1475,7 @@ pub fn run_with_maxpd_unmasked_controls(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: None,
@@ -1512,6 +1530,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: Some(controls),
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: None,
@@ -1566,6 +1585,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: Some(controls),
             cvtsi2sd_registers: None,
@@ -1620,6 +1640,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: Some(controls),
@@ -1674,6 +1695,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: None,
@@ -1728,6 +1750,7 @@ pub fn run_with_cvtdq2pd_controls(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: None,
@@ -1782,6 +1805,7 @@ pub fn run_with_cvtdq2pd_register_controls(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: None,
@@ -1836,6 +1860,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             cvtdq2ps_registers: Some(controls),
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: None,
@@ -1890,6 +1915,7 @@ pub fn run_with_cvtss2sd_register_controls(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: Some(controls),
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: None,
@@ -1944,6 +1970,62 @@ pub fn run_with_cvtps2pd_register_controls(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: Some(controls),
+            comiss_ucomiss_registers: None,
+            cvtsi2sd_r32: None,
+            cvtsi2sd_r64: None,
+            cvtsi2sd_registers: None,
+            cvtsi2ss_registers: None,
+            fx_cr0: None,
+            unmasked_minss_denormal: false,
+            rdtsc: None,
+            swapgs: None,
+            cli: None,
+            sti: None,
+            halt: None,
+            cr0: None,
+            cr4: None,
+        },
+        StepRuntime {
+            rdtsc_source: None,
+            sti_sequence: None,
+            exact_hlt_only: false,
+            stop_requested: &mut stop_requested,
+        },
+    )
+}
+
+/// Execute the bounded canonical Long64 register-register COMISS/UCOMISS profile.
+pub fn run_with_comiss_ucomiss_register_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: ComissUcomissControls,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_configured(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        ExecutionProfiles {
+            cpuid: None,
+            msr: None,
+            sep: None,
+            xorpd: None,
+            minss_invalid: None,
+            maxss_unmasked: None,
+            minsd_unmasked: None,
+            maxsd_unmasked: None,
+            minpd_unmasked: None,
+            minps_unmasked: None,
+            maxps_unmasked: None,
+            maxpd_unmasked: None,
+            cvtdq2pd: None,
+            cvtdq2pd_registers: None,
+            cvtdq2ps_registers: None,
+            cvtss2sd_registers: None,
+            cvtps2pd_registers: None,
+            comiss_ucomiss_registers: Some(controls),
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: None,
@@ -1998,6 +2080,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: None,
@@ -2105,6 +2188,7 @@ pub fn run_with_efer_rdmsr_profile(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: None,
@@ -2368,6 +2452,7 @@ pub fn run_with_cr0_profile(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: None,
@@ -2423,6 +2508,7 @@ pub fn run_with_cr4_profile(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: None,
@@ -2712,6 +2798,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: None,
@@ -2951,6 +3038,7 @@ pub fn step_with_cr0_profile(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: None,
@@ -3248,6 +3336,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             cvtdq2ps_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
             cvtsi2sd_r32: None,
             cvtsi2sd_r64: None,
             cvtsi2sd_registers: None,
@@ -3295,6 +3384,7 @@ fn step_configured(
         cvtdq2ps_registers: configured_cvtdq2ps_register_controls,
         cvtss2sd_registers: configured_cvtss2sd_register_controls,
         cvtps2pd_registers: configured_cvtps2pd_register_controls,
+        comiss_ucomiss_registers: configured_comiss_ucomiss_controls,
         cvtsi2sd_r32: configured_cvtsi2sd_r32_controls,
         cvtsi2sd_r64: configured_cvtsi2sd_r64_controls,
         cvtsi2sd_registers: configured_cvtsi2sd_register_controls,
@@ -4148,6 +4238,51 @@ fn step_configured(
             }));
         }
     }
+    if let Some(controls) = configured_comiss_ucomiss_controls {
+        let is_canonical_register_form = matches!(
+            instruction.operation,
+            Operation::ComissUcomissRegister { destination, source, .. }
+                if instruction.length == if destination >= 8 || source >= 8 { 4 } else { 3 }
+                    && instruction.opcode.map == OpcodeMap::Escape0f
+                    && matches!(instruction.opcode.byte, 0x2e | 0x2f)
+                    && instruction.prefixes.group1.is_none()
+                    && instruction.prefixes.segment.is_none()
+                    && !instruction.prefixes.operand_override
+                    && !instruction.prefixes.address_override
+                    && instruction.prefixes.rex.map(|rex| rex & 0x4f)
+                        == if destination >= 8 || source >= 8 {
+                            Some(0x40 | (u8::from(destination >= 8) << 2) | u8::from(source >= 8))
+                        } else { None }
+        );
+        if !is_canonical_register_form {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        if state
+            .sse
+            .as_ref()
+            .is_some_and(|sse| sse.mxcsr & !0x0000_ffbf != 0 || sse.mxcsr & (1 << 6) != 0)
+        {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        let fault_vector = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+            Some(6)
+        } else if controls.cr0_ts {
+            Some(7)
+        } else {
+            None
+        };
+        if let Some(vector) = fault_vector {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+    }
     if let Some(controls) = configured_cvtsi2sd_r32_controls {
         let exact_cvtsi2sd = instruction.operation
             == (Operation::Cvtsi2sdR32Register {
@@ -4901,6 +5036,13 @@ fn step_configured(
             && matches!(instruction.operation, Operation::Cvtps2pdRegister { .. })
         {
             sse.mxcsr & !0x0000_ffbf == 0 && sse.mxcsr & (1 << 6) == 0
+        } else if configured_comiss_ucomiss_controls.is_some()
+            && matches!(
+                instruction.operation,
+                Operation::ComissUcomissRegister { .. }
+            )
+        {
+            sse.mxcsr & !0x0000_ffbf == 0 && sse.mxcsr & (1 << 6) == 0
         } else if configured_cvtsi2sd_r32_controls.is_some()
             && instruction.operation
                 == (Operation::Cvtsi2sdR32Register {
@@ -5420,6 +5562,10 @@ fn step_configured(
             state.sse.is_some()
         }
         Operation::Cvtps2pdRegister { .. } => false,
+        Operation::ComissUcomissRegister { .. } if configured_comiss_ucomiss_controls.is_some() => {
+            state.sse.is_some()
+        }
+        Operation::ComissUcomissRegister { .. } => false,
         Operation::Cvtsi2sdR32Register { .. }
             if configured_cvtsi2sd_r32_controls.is_some()
                 || configured_cvtsi2sd_register_controls.is_some() =>
@@ -9059,6 +9205,94 @@ fn step_configured(
             sse.xmm[usize::from(destination)] = result;
         }
         Operation::Cvtps2pdRegister { .. } => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        Operation::ComissUcomissRegister {
+            unordered_quiet,
+            destination,
+            source,
+        } if configured_comiss_ucomiss_controls.is_some() => {
+            let (lhs_bytes, rhs_bytes, old_mxcsr) = {
+                let sse = state.sse.as_ref().expect("COMISS state prevalidated");
+                (
+                    sse.xmm[usize::from(destination)],
+                    sse.xmm[usize::from(source)],
+                    sse.mxcsr,
+                )
+            };
+            let lhs = u32::from_le_bytes(lhs_bytes[..4].try_into().expect("low dword"));
+            let rhs = u32::from_le_bytes(rhs_bytes[..4].try_into().expect("low dword"));
+            let class = |raw: u32| {
+                let exponent = (raw >> 23) & 0xff;
+                let fraction = raw & 0x007f_ffff;
+                if exponent == 0xff && fraction != 0 {
+                    if fraction & 0x0040_0000 != 0 { 3 } else { 4 } // QNaN / SNaN
+                } else if exponent == 0 && fraction != 0 {
+                    2 // subnormal
+                } else {
+                    0 // ordered finite, zero, or infinity
+                }
+            };
+            let lhs_class = class(lhs);
+            let rhs_class = class(rhs);
+            let has_nan = lhs_class == 3 || lhs_class == 4 || rhs_class == 3 || rhs_class == 4;
+            let new_ie = if unordered_quiet {
+                lhs_class == 4 || rhs_class == 4
+            } else {
+                has_nan
+            };
+            // Intel's COMISS/UCOMISS exception priority suppresses DE when
+            // either operand is NaN; a NaN comparison itself is unordered.
+            let new_de = !has_nan && (lhs_class == 2 || rhs_class == 2);
+            let sse = state.sse.as_mut().expect("COMISS state prevalidated");
+            sse.mxcsr = old_mxcsr | u32::from(new_ie) | (u32::from(new_de) << 1);
+            let unmasked =
+                (new_ie && old_mxcsr & (1 << 7) == 0) || (new_de && old_mxcsr & (1 << 8) == 0);
+            if unmasked {
+                let controls = configured_comiss_ucomiss_controls.expect("profile controls");
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
+
+            let unordered = has_nan;
+            let ordered_cmp = |a: u32, b: u32| -> core::cmp::Ordering {
+                if a & 0x7fff_ffff == 0 && b & 0x7fff_ffff == 0 {
+                    return core::cmp::Ordering::Equal;
+                }
+                let sign_a = a >> 31;
+                let sign_b = b >> 31;
+                match (sign_a, sign_b) {
+                    (0, 1) => core::cmp::Ordering::Greater,
+                    (1, 0) => core::cmp::Ordering::Less,
+                    (0, 0) => (a & 0x7fff_ffff).cmp(&(b & 0x7fff_ffff)),
+                    (1, 1) => (b & 0x7fff_ffff).cmp(&(a & 0x7fff_ffff)),
+                    _ => unreachable!(),
+                }
+            };
+            let comparison = if unordered {
+                core::cmp::Ordering::Equal
+            } else {
+                ordered_cmp(lhs, rhs)
+            };
+            let flag_mask = (1 << 0) | (1 << 2) | (1 << 4) | (1 << 6) | (1 << 7) | (1 << 11);
+            state.rflags &= !flag_mask;
+            if unordered {
+                state.rflags |= (1 << 0) | (1 << 2) | (1 << 6);
+            } else {
+                match comparison {
+                    core::cmp::Ordering::Less => state.rflags |= 1 << 0,
+                    core::cmp::Ordering::Equal => state.rflags |= 1 << 6,
+                    core::cmp::Ordering::Greater => {}
+                }
+            }
+            *rflags_defined |= flag_mask & crate::INTEGER_FLAGS;
+        }
+        Operation::ComissUcomissRegister { .. } => {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -27476,7 +27710,11 @@ mod tests {
             },
             || false,
         );
-        assert!(matches!(result.exit, RunExit::Fault(_)));
+        assert!(
+            matches!(result.exit, RunExit::Fault(_)),
+            "truncated fetch should fault before gates: {:?}",
+            result.exit
+        );
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(faulted, before);
         let mut memory = Memory::at(&[0xd9], boundary.rip);
@@ -27813,7 +28051,11 @@ mod tests {
         );
         assert_eq!(state, before);
         assert_eq!(result.instructions_executed, 0);
-        assert!(matches!(result.exit, RunExit::Fault(_)));
+        assert!(
+            matches!(result.exit, RunExit::Fault(_)),
+            "truncated fetch: {:?}",
+            result.exit
+        );
 
         let mut truncated = LongModeState::default();
         truncated.rip = 0x9300;
@@ -103995,6 +104237,170 @@ mod swapgs_profile_tests {
         );
         assert_eq!(state.sse.as_ref().unwrap().xmm[0][8..], [0x6d; 8]);
         assert_eq!(state.sse.as_ref().unwrap().mxcsr & 3, 2);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn comiss_ucomiss_profile_fetch_gates_and_cpl_are_bounded() {
+        let code = [0x0f, 0x2f, 0xc1];
+        let controls = ComissUcomissControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        for privilege in [
+            PrivilegeLevel::Ring0,
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            let context = AccessContext {
+                privilege,
+                ..AccessContext::default()
+            };
+            let mut state = LongModeState::default();
+            state.rip = 0xa000;
+            state.rflags = 0x8d7;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let mut memory = Memory::at(&code, state.rip);
+            let result = run_with_comiss_ucomiss_register_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0xa003),
+                    context,
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::StopAddress);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(
+                state.rflags & ((1 << 0) | (1 << 2) | (1 << 4) | (1 << 6) | (1 << 7) | (1 << 11)),
+                1 << 6
+            );
+            assert_eq!(memory.fetches, vec![0xa000, 0xa001, 0xa002]);
+            assert!(memory.accesses.is_empty());
+        }
+
+        // Complete fetch has priority over #UD/#NM. Then SSE availability/EM/OSFXSR #UD precedes TS #NM.
+        let mut truncated = Memory::at(&code[..2], 0xa100);
+        let mut state = LongModeState::default();
+        state.rip = 0xa100;
+        state.rflags = 0x8d7;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let result = run_with_comiss_ucomiss_register_controls(
+            &mut state,
+            &mut truncated,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0xa103),
+                context: AccessContext::default(),
+            },
+            ComissUcomissControls {
+                sse_available: false,
+                cr0_em: false,
+                cr0_ts: true,
+                cr4_osfxsr: false,
+                cr4_osxmmexcpt: true,
+            },
+            || false,
+        );
+        assert!(!matches!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault { vector: 6 | 7, .. })
+        ));
+        assert_eq!(state, before);
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(truncated.fetches, vec![0xa100, 0xa101, 0xa102]);
+        assert!(truncated.accesses.is_empty());
+
+        let mut state = LongModeState::default();
+        state.rip = 0xa200;
+        state.rflags = 0x8d7;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let mut memory = Memory::at(&code, state.rip);
+        let result = run_with_comiss_ucomiss_register_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0xa203),
+                context: AccessContext::default(),
+            },
+            ComissUcomissControls {
+                sse_available: false,
+                cr0_em: false,
+                cr0_ts: true,
+                cr4_osfxsr: false,
+                cr4_osxmmexcpt: true,
+            },
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None
+            })
+        );
+        assert_eq!(state, before);
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(memory.fetches, vec![0xa200, 0xa201, 0xa202]);
+        assert!(memory.accesses.is_empty());
+
+        let mut state = LongModeState::default();
+        state.rip = 0xa300;
+        state.rflags = 0x8d7;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let mut memory = Memory::at(&code, state.rip);
+        let result = run_with_comiss_ucomiss_register_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0xa303),
+                context: AccessContext::default(),
+            },
+            ComissUcomissControls {
+                sse_available: true,
+                cr0_em: false,
+                cr0_ts: true,
+                cr4_osfxsr: true,
+                cr4_osxmmexcpt: false,
+            },
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 7,
+                error_code: None,
+                linear_address: None
+            })
+        );
+        assert_eq!(state, before);
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(memory.fetches, vec![0xa300, 0xa301, 0xa302]);
         assert!(memory.accesses.is_empty());
     }
 }

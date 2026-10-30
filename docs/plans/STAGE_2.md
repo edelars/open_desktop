@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последние локальные подзадания S2-37s/t/u добавляют canonical Long64 CVTDQ2PS/CVTSS2SD/CVTPS2PD register-space schema-v2 interpreter-only profiles; это не закрывает общий S2-37, CPUID admission или physical acceptance. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последние локальные подзадания S2-37s/t/u/v добавляют canonical Long64 CVTDQ2PS/CVTSS2SD/CVTPS2PD/COMISS/UCOMISS register-space schema-v2 interpreter-only profiles; это не закрывает общий S2-37, CPUID admission или physical acceptance. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -499,6 +499,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37s | Local-only canonical Long64 CVTDQ2PS register-space profile; aggregates four-lane Precision and suppresses the full destination on unmasked PE; JIT/native closed | S2-36 rounding, S2-38 PE policy; independent review |
 | [ ] | S2-37t | Local-only canonical Long64 CVTSS2SD XMM register-pair profile; raw binary32 widening with sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-38 IE/DE policy; independent review pending |
 | [ ] | S2-37u | Local-only canonical Long64 CVTPS2PD XMM register-pair profile; two-lane raw widening with aggregate sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-37t, S2-38 IE/DE policy; independent review pending |
+| [ ] | S2-37v | Local-only canonical Long64 COMISS/UCOMISS XMM register-pair profile; NaN-priority IE/DE, unordered flags, unmasked atomic flag exit; JIT/native closed | S2-38 IE/DE policy; independent review pending |
 | [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j/k/l: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j/k/l; independent review |
 | [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
@@ -12939,3 +12940,34 @@ physical acceptance, and parent S2-37/S2-38 remain open.
 
 Sources: Intel SDM Rev. 093 Vol. 2A CVTPS2PD pp. 3-228–3-230, Tables 2-15 and
 2-20 p. 2-28; Vol. 1 Table D-11 and §§11.5.3.1–3. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37u--canonical-long64-cvtps2pd-xmm-register-pairs), [report](../reports/STAGE_2_REPORT.md#s2-37u--canonical-long64-cvtps2pd-xmm-register-pairs), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37u-canonical-cvtps2pd-register-pairs).
+
+#### S2-37v — canonical Long64 COMISS and UCOMISS XMM register pairs
+
+Implement the strict schema-v2 interpreter-only profile
+`s2-long-comiss-ucomiss-registers-v1` for both `0F 2F /r` COMISS and
+`0F 2E /r` UCOMISS across all 256 XMM pairs. Accept canonical bare 3-byte
+forms for low registers and exactly REX `41`, `44`, or `45` 4-byte forms when
+either operand is extended; require ModR/M.mod=3, one executable mapping,
+budget one and checked stop RIP. The independent parser derives opcode,
+operands and length. Other prefixes, REX `40`/W/X, memory, trailing bytes,
+VEX and EVEX are profile refusals. Keep existing profiles unchanged.
+
+Snapshot both XMM operands and consume only low32. Classify raw binary32 bits;
+both signed zeros compare equal. COMISS raises new IE for QNaN or SNaN;
+UCOMISS raises it only for SNaN. If either input is NaN, suppress new DE from
+the other input. Otherwise either subnormal raises new DE. OR new sticky IE/DE
+into MXCSR. An applicable unmasked event updates sticky status first, then
+reports #XM or SIMD #UD according to OSXMMEXCPT while preserving full RFLAGS,
+RIP and retirement. On completion, unordered sets ZF/PF/CF, greater clears
+them, less sets CF, equal sets ZF; clear OF/SF/AF and preserve other flags and
+definedness. Full fetch precedes SSE/EM/OSFXSR #UD then TS #NM at CPL0–3.
+MXCSR reserved bits and DAZ are refused; RC/FTZ are irrelevant.
+
+The independent schema oracle parses opcode and raw source bits without the
+production comparison helper. Cover all 512 encodings, both operand orders,
+QNaN/SNaN and subnormal priority, infinities, signed zero, adjacent normals,
+exception-mask/OSXMMEXCPT/old-sticky combinations, ignored high96, fault atomicity,
+gates, fetch, CPL, tampering and backend denial. Do not claim memory forms,
+generic CPUID admission, physical validation, or completion of parent S2-37.
+Sources: Intel SDM Rev. 093 Vol. 2A COMISS pp. 3-201–3-202; Vol. 2B UCOMISS
+pp. 4-735–4-736; Vol. 1 Tables D-6/D-7, §4.9.2, §§11.5.2.2/11.5.3.

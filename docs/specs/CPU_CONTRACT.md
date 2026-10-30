@@ -12635,3 +12635,45 @@ and 2-20 p. 2-28; Vol. 1 Table D-11 and §§11.5.3.1–3. See the [stage
 plan](../plans/STAGE_2.md#s2-37u--canonical-long64-cvtps2pd-xmm-register-pairs),
 [report](../reports/STAGE_2_REPORT.md#s2-37u--canonical-long64-cvtps2pd-xmm-register-pairs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37u-canonical-cvtps2pd-register-pairs).
+
+## S2-37v — canonical Long64 COMISS and UCOMISS XMM register pairs
+
+The bounded interpreter-only schema-v2 profile is
+`s2-long-comiss-ucomiss-registers-v1`. It admits both COMISS `0F 2F /r` and
+UCOMISS `0F 2E /r`, all 256 XMM destination/source pairs, and ModR/M.mod=3.
+Low registers use the canonical 3-byte form; an extended destination and/or
+source requires exactly REX `44`, `41`, or `45`, respectively (length 4).
+The independent parser derives opcode, operand indices and length. One
+executable mapping, budget one and checked stop RIP `entry+length` are required.
+Other prefixes, REX `40`/W/X, memory, trailing bytes, VEX and EVEX are local
+profile refusals. Existing profiles remain immutable.
+
+Both XMM operands are snapshotted, but only each low32 is read. The full XMM
+register file remains unchanged. Raw binary32 comparison treats +0 and -0 as
+equal and orders finite values and infinities by sign and magnitude. On
+completion, unordered sets ZF/PF/CF, greater sets none, less sets CF, and equal
+sets ZF. OF/SF/AF are cleared; all other RFLAGS bits and their definedness are
+preserved.
+
+COMISS raises a new Invalid Operation for either QNaN or SNaN. UCOMISS raises
+it only for SNaN; QNaN alone completes unordered. A NaN in either operand has
+priority over a subnormal in the other operand and suppresses new Denormal
+status. In the absence of NaNs, either subnormal raises new DE. New IE/DE are
+ORed into old MXCSR sticky status; preexisting sticky bits alone do not fault.
+If an applicable event is unmasked, sticky status is committed before #XM
+when CR4.OSXMMEXCPT=1 or SIMD-generated #UD otherwise. The compare then
+preserves full old RFLAGS, RIP and zero retirement. Masked events commit status
+and comparison flags. No other new SIMD exception flag is generated.
+
+Full fetch precedes SSE availability/CR0.EM/CR4.OSFXSR #UD and then CR0.TS
+#NM, at CPL0–3. The control inputs, including OSXMMEXCPT, are echoed in the
+result. MXCSR accepts only bits in `0x0000ffbf`; DAZ is refused, and RC/FTZ are
+irrelevant. Only the interpreter profile accepts this operation. JIT, native,
+C ABI, fragment and generic CPUID admission remain closed. Memory forms, other
+modes, physical acceptance and the parent S2-37/S2-38 scope remain open.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A COMISS pp. 3-201–3-202
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 2B
+UCOMISS pp. 4-735–4-736 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241));
+Vol. 1 Tables D-6/D-7, §4.9.2 NaN-before-denormal priority, and
+§§11.5.2.2/11.5.3 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).

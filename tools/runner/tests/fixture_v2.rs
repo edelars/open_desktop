@@ -2,7 +2,8 @@
 use od_testkit::HexU64;
 use od_testkit::result::{Backend, MemoryRegionSnapshot, Observation};
 use od_testkit::v2::{
-    ExpectedExit, Fixture, LoadedFixture, Outcome, RunResult, Snapshot, StiShadowSnapshot,
+    ComissUcomissControlSnapshot, ExpectedExit, Fixture, LoadedFixture, Outcome, RunResult,
+    Snapshot, StiShadowSnapshot,
 };
 use std::fs;
 use std::process::{Command, Output};
@@ -19154,6 +19155,309 @@ fn cvtps2pd_register_pairs_raw_classes_and_exception_matrix() {
         vec![0xc5, 0xf8, 0x5a, 0xc1],
         vec![0x62, 0xf1, 0x7c, 0x08, 0x5a, 0xc1],
         vec![0x0f, 0xa2],
+    ] {
+        let mut case = fixture.clone();
+        case.memory[0].initial_bytes_hex = bad.iter().map(|b| format!("{b:02x}")).collect();
+        case.memory[0].length = bad.len() as u32;
+        case.memory[0].comparison_mask_hex = "ff".repeat(bad.len());
+        case.stop_rip = Some(HexU64(case.initial_state.rip.get() + bad.len() as u64));
+        assert!(case.validate().is_err(), "accepted malformed {bad:02x?}");
+    }
+    let mut daz = fixture.clone();
+    daz.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1fc0);
+    assert!(daz.validate().is_err());
+    assert!(matches!(
+        run(&fixture.to_json().unwrap(), "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+}
+
+#[test]
+fn comiss_ucomiss_register_pairs_raw_classes_exceptions_and_backend_denial() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_37v_comiss_ucomiss_baseline.case.json");
+    let fixture = Fixture::from_json(&fs::read(path).unwrap())
+        .unwrap()
+        .fixture;
+    let encode_low = |raw: u32, tail: u64| {
+        [
+            raw.to_le_bytes().as_slice(),
+            tail.to_le_bytes().as_slice(),
+            0xa5a5_5a5au32.to_le_bytes().as_slice(),
+        ]
+        .concat()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
+    };
+    let mut sample = fixture.clone();
+    sample.initial_state.sse.as_mut().unwrap().xmm[1] =
+        encode_low(0x3f80_0000, 0x7f80_0001_0000_0001);
+    let (input, result) = run(&sample.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let mut altered = result.clone();
+    let Observation::Available { value } = &mut altered.snapshot else {
+        panic!("snapshot available")
+    };
+    value.state.rflags = HexU64(value.state.rflags.get() ^ 1);
+    assert!(od_testkit::v2::compare(&input, &result, &altered).is_err());
+    let mut altered_controls = result.clone();
+    let Observation::Available { value } = &mut altered_controls.snapshot else {
+        panic!("snapshot available")
+    };
+    value
+        .comiss_ucomiss_controls
+        .as_mut()
+        .unwrap()
+        .cr4_osxmmexcpt = false;
+    assert!(od_testkit::v2::compare(&input, &result, &altered_controls).is_err());
+
+    // Both opcodes × every XMM destination/source pair, with distinct full-register sentinels.
+    for opcode in [0x2f, 0x2e] {
+        for destination in 0u8..16 {
+            for source in 0u8..16 {
+                let rex = match (destination >= 8, source >= 8) {
+                    (false, false) => None,
+                    (true, false) => Some(0x44),
+                    (false, true) => Some(0x41),
+                    (true, true) => Some(0x45),
+                };
+                let mut code = Vec::new();
+                if let Some(rex) = rex {
+                    code.push(rex);
+                }
+                code.extend([0x0f, opcode, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+                let mut case = fixture.clone();
+                case.memory[0].initial_bytes_hex =
+                    code.iter().map(|b| format!("{b:02x}")).collect();
+                case.memory[0].length = code.len() as u32;
+                case.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+                case.stop_rip = Some(HexU64(case.initial_state.rip.get() + code.len() as u64));
+                case.case_id = format!("s2_37v_pair_{opcode:02x}_{destination}_{source}");
+                let sse = case.initial_state.sse.as_mut().unwrap();
+                sse.xmm = std::array::from_fn(|r| {
+                    format!(
+                        "{:032x}",
+                        0xdead_beef_0000_0000_0000_0000_0000_0000u128 + r as u128
+                    )
+                });
+                sse.xmm[usize::from(destination)] = encode_low(0x3f80_0000, 0x7f80_0001_0000_0001);
+                sse.xmm[usize::from(source)] = encode_low(0x4000_0000, 0x7f80_0001_0000_0001);
+                sse.mxcsr = HexU64(0x1f80);
+                let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                od_testkit::v2::compare(&input, &result, &result).unwrap();
+            }
+        }
+    }
+
+    // Independent raw classes: ±0, adjacent normals, subnormal bounds, infinities, QNaN and SNaN.
+    let classes = [
+        0x0000_0000,
+        0x8000_0000,
+        0x3f80_0000,
+        0x3f80_0001,
+        0x007f_ffff,
+        0x0000_0001,
+        0x7f80_0000,
+        0xff80_0000,
+        0x7fc1_2345,
+        0xffc5_4321,
+        0x7f81_2345,
+        0xff80_0001,
+    ];
+    for opcode in [0x2f, 0x2e] {
+        for (left_i, left) in classes.iter().copied().enumerate() {
+            for (right_i, right) in classes.iter().copied().enumerate() {
+                for (lhs, rhs) in [(left, right), (right, left)] {
+                    let mut case = fixture.clone();
+                    case.memory[0].initial_bytes_hex = format!("0f{opcode:02x}c1");
+                    case.memory[0].length = 3;
+                    case.memory[0].comparison_mask_hex = "ffffff".into();
+                    case.stop_rip = Some(HexU64(case.initial_state.rip.get() + 3));
+                    case.case_id = format!(
+                        "s2_37v_class_{opcode:02x}_{left_i}_{right_i}_{}",
+                        lhs == left
+                    );
+                    let sse = case.initial_state.sse.as_mut().unwrap();
+                    sse.xmm[0] = encode_low(lhs, 0x7f80_0001_0000_0001);
+                    sse.xmm[1] = encode_low(rhs, 0x7f80_0001_0000_0001);
+                    sse.mxcsr = HexU64(0x1f80);
+                    let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                    od_testkit::v2::compare(&input, &result, &result).unwrap();
+                }
+            }
+        }
+    }
+
+    // NaN outranks denormal; COMISS signals for either NaN, UCOMISS only SNaN.
+    for opcode in [0x2f, 0x2e] {
+        for nan in [0x7fc1_2345, 0x7f81_2345] {
+            for (lhs, rhs) in [(nan, 1), (1, nan)] {
+                let mut case = fixture.clone();
+                case.memory[0].initial_bytes_hex = format!("0f{opcode:02x}c1");
+                case.initial_state.rflags = HexU64(0x8d7);
+                case.initial_state.sse.as_mut().unwrap().xmm[0] = encode_low(lhs, 0);
+                case.initial_state.sse.as_mut().unwrap().xmm[1] = encode_low(rhs, 0);
+                case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f00); // unmask IE and DE
+                case.expected_exit = if opcode == 0x2f || nan & 0x0040_0000 == 0 {
+                    ExpectedExit::Exception
+                } else {
+                    ExpectedExit::StopAddress
+                };
+                case.case_id = format!("s2_37v_priority_{opcode:02x}_{nan:08x}_{lhs:08x}");
+                let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                od_testkit::v2::compare(&input, &result, &result).unwrap();
+            }
+        }
+    }
+
+    // IM/DM × OSXMMEXCPT × prior IE/DE, with events on either operand.
+    for opcode in [0x2f, 0x2e] {
+        for (lhs, rhs) in [
+            (0x7fc1_2345, 1),
+            (1, 0x7fc1_2345),
+            (0x7f81_2345, 1),
+            (1, 0x7f81_2345),
+            (0x3f80_0000, 1),
+            (1, 0x3f80_0000),
+            (0x7fc1_2345, 0x3f80_0000),
+            (0x7f81_2345, 0x3f80_0000),
+        ] {
+            for im in [false, true] {
+                for dm in [false, true] {
+                    for osxmmexcpt in [false, true] {
+                        for old_ie in [false, true] {
+                            for old_de in [false, true] {
+                                let mut case = fixture.clone();
+                                case.memory[0].initial_bytes_hex = format!("0f{opcode:02x}c1");
+                                case.initial_state.rflags = HexU64(0x8d7);
+                                let sse = case.initial_state.sse.as_mut().unwrap();
+                                sse.xmm[0] = encode_low(lhs, 0x7f80_0001_0000_0001);
+                                sse.xmm[1] = encode_low(rhs, 0x7f80_0001_0000_0001);
+                                sse.mxcsr = HexU64(u64::from(
+                                    (0x1f80u32 & !0x180)
+                                        | (u32::from(im) << 7)
+                                        | (u32::from(dm) << 8)
+                                        | u32::from(old_ie)
+                                        | (u32::from(old_de) << 1),
+                                ));
+                                case.comiss_ucomiss_controls
+                                    .as_mut()
+                                    .unwrap()
+                                    .cr4_osxmmexcpt = osxmmexcpt;
+                                let nan = |raw: u32| {
+                                    raw & 0x7f80_0000 == 0x7f80_0000 && raw & 0x007f_ffff != 0
+                                };
+                                let signaling = |raw: u32| nan(raw) && raw & 0x0040_0000 == 0;
+                                let has_nan = nan(lhs) || nan(rhs);
+                                let new_ie = if opcode == 0x2f {
+                                    has_nan
+                                } else {
+                                    signaling(lhs) || signaling(rhs)
+                                };
+                                let new_de = !has_nan
+                                    && ((lhs & 0x7f80_0000 == 0 && lhs & 0x007f_ffff != 0)
+                                        || (rhs & 0x7f80_0000 == 0 && rhs & 0x007f_ffff != 0));
+                                let fault = (new_ie && !im) || (new_de && !dm);
+                                case.expected_exit = if fault {
+                                    ExpectedExit::Exception
+                                } else {
+                                    ExpectedExit::StopAddress
+                                };
+                                case.case_id = format!(
+                                    "s2_37v_mask_{opcode:02x}_{lhs:08x}_{rhs:08x}_{im}_{dm}_{osxmmexcpt}_{old_ie}_{old_de}"
+                                );
+                                let (input, result) =
+                                    run(&case.to_json().unwrap(), "interpreter", 0);
+                                od_testkit::v2::compare(&input, &result, &result).unwrap();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Gate priority/echo and both SIMD exception delivery paths. Old sticky bits do not fault.
+    for controls in [
+        ComissUcomissControlSnapshot {
+            sse_available: false,
+            cr0_em: false,
+            cr0_ts: true,
+            cr4_osfxsr: false,
+            cr4_osxmmexcpt: true,
+        },
+        ComissUcomissControlSnapshot {
+            sse_available: true,
+            cr0_em: true,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        },
+        ComissUcomissControlSnapshot {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: true,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        },
+        ComissUcomissControlSnapshot {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: false,
+            cr4_osxmmexcpt: true,
+        },
+    ] {
+        let mut case = fixture.clone();
+        case.comiss_ucomiss_controls = Some(controls);
+        case.expected_exit = ExpectedExit::Exception;
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+    }
+    for osxmmexcpt in [false, true] {
+        let mut case = fixture.clone();
+        case.comiss_ucomiss_controls
+            .as_mut()
+            .unwrap()
+            .cr4_osxmmexcpt = osxmmexcpt;
+        case.initial_state.sse.as_mut().unwrap().xmm[0] = encode_low(0x7fc1_2345, 0);
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f00);
+        case.expected_exit = ExpectedExit::Exception;
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        assert!(matches!(result.outcome, Outcome::Exception {}));
+    }
+    for old_sticky in [0x1f01, 0x1e82, 0x1e03] {
+        let mut sticky = fixture.clone();
+        sticky.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(old_sticky);
+        let (input, result) = run(&sticky.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    }
+
+    for rc in 0..4u32 {
+        for ftz in [false, true] {
+            let mut case = fixture.clone();
+            case.initial_state.sse.as_mut().unwrap().mxcsr =
+                HexU64(0x1f80 | (u64::from(rc) << 13) | (u64::from(ftz) << 15));
+            let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+        }
+    }
+
+    for bad in [
+        vec![0x40, 0x0f, 0x2f, 0xc1],
+        vec![0x48, 0x0f, 0x2e, 0xc1],
+        vec![0x42, 0x0f, 0x2f, 0xc1],
+        vec![0x66, 0x0f, 0x2f, 0xc1],
+        vec![0xf2, 0x0f, 0x2e, 0xc1],
+        vec![0xf3, 0x0f, 0x2f, 0xc1],
+        vec![0x67, 0x0f, 0x2f, 0xc1],
+        vec![0x0f, 0x2f, 0x01],
+        vec![0x0f, 0x2f, 0xc1, 0x90],
+        vec![0xc5, 0xf8, 0x2f, 0xc1],
+        vec![0x62, 0xf1, 0x7c, 0x08, 0x2e, 0xc1],
     ] {
         let mut case = fixture.clone();
         case.memory[0].initial_bytes_hex = bad.iter().map(|b| format!("{b:02x}")).collect();
