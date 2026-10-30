@@ -432,6 +432,20 @@ classes, performance policy, physical x86/Mini and Stage 2 remain outside this
 local profile. See the
 [S3-34f report](../reports/STAGE_3_S3-34f_2026-10-30.md).
 
+### S3-34j exact gates for S3-33e CMP imm8
+
+The local harness adds three exact acceptance gates for S3-33e: host
+full-state parity, eager/candidate compiler plus branch-consumer coverage, and
+exhaustive admission/rejection coverage. The input manifest, planned steps,
+and final summary each pin the three gates exactly once. Self-checks reject
+omission of every CMP gate from both manifest and final evidence; the existing
+validator continues to reject incorrect crate/identity/argv, zero or duplicate
+matches, ignored/failed/timed-out results, and forged `passed` evidence. These
+gates extend the S3-34i set to 22 exact gate identities across S3-33a–h; the
+local run and any unselected suites are documented in the
+[S3-34j report](../reports/STAGE_3_S3-34j_2026-10-30.md). This does not close
+S3-34 or Stage 3.
+
 Каждая новая строка support matrix получает literal positive/negative cases,
 точный сравниваемый state и внешний prerequisite. В отчёте сохранять git
 revision, build fingerprint, host/OS/toolchain, fixtures/corpus fingerprint,

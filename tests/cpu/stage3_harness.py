@@ -199,6 +199,18 @@ ADDITIONAL_TEST_GATES = (
         "block::tests::add_rax_imm8_admission_covers_signed_byte_range_and_rejects_neighbors",
     ),
     (
+        "s3_33e_native_cmp_rax_imm8_host", "local_acceptance", "od-host",
+        "tests::native_cmp_rax_imm8_matches_interpreter_and_preserves_gprs",
+    ),
+    (
+        "s3_33e_native_cmp_rax_imm8_compiler", "local_acceptance", "od-jit",
+        "block_compile::tests::native_cmp_rax_imm8_compiles_eager_and_candidate_branch_consumers",
+    ),
+    (
+        "s3_33e_native_cmp_rax_imm8_admission", "local_acceptance", "od-jit",
+        "block::tests::cmp_rax_imm8_admission_covers_signed_byte_range_and_rejects_neighbors",
+    ),
+    (
         "s3_33f_native_sub_rax_imm8_host", "local_acceptance", "od-host",
         "tests::native_sub_rax_imm8_matches_interpreter_full_state_and_pending_branch",
     ),

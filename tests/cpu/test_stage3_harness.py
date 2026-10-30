@@ -291,16 +291,25 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             harness.validate_stage1_manual_bindings(child_inputs, changed_path, parent)
 
     def test_rust_test_manifest_rejects_a_missing_mandatory_gate(self):
-        manifest = {
-            "gates": harness.rust_test_gate_manifest(),
-            "sources": [
-                {"path": name, "sha256": harness.sha256_file(harness.ROOT / name)}
-                for name in harness.LOCAL_RUST_TEST_SOURCES
-            ],
-        }
-        manifest["gates"].pop()
-        with self.assertRaisesRegex(harness.HarnessError, "exact required Rust test gates"):
-            harness.validate_rust_test_manifest(manifest)
+        for missing_step in (
+            harness.RUST_TEST_GATES[-1][0],
+            "s3_33e_native_cmp_rax_imm8_host",
+            "s3_33e_native_cmp_rax_imm8_compiler",
+            "s3_33e_native_cmp_rax_imm8_admission",
+        ):
+            manifest = {
+                "gates": harness.rust_test_gate_manifest(),
+                "sources": [
+                    {"path": name, "sha256": harness.sha256_file(harness.ROOT / name)}
+                    for name in harness.LOCAL_RUST_TEST_SOURCES
+                ],
+            }
+            manifest["gates"] = [
+                gate for gate in manifest["gates"] if gate["step"] != missing_step
+            ]
+            with self.subTest(missing_step=missing_step):
+                with self.assertRaisesRegex(harness.HarnessError, "exact required Rust test gates"):
+                    harness.validate_rust_test_manifest(manifest)
 
     def test_s3_33_native_gates_are_pinned_once_in_manifest_steps_and_summary(self):
         expected_steps = [
@@ -313,6 +322,9 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             "s3_33d_native_add_rax_imm8_host",
             "s3_33d_native_add_rax_imm8_compiler",
             "s3_33d_native_add_rax_imm8_admission",
+            "s3_33e_native_cmp_rax_imm8_host",
+            "s3_33e_native_cmp_rax_imm8_compiler",
+            "s3_33e_native_cmp_rax_imm8_admission",
             "s3_33f_native_sub_rax_imm8_host",
             "s3_33f_native_sub_rax_imm8_compiler",
             "s3_33f_native_sub_rax_imm8_admission",
@@ -333,6 +345,27 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         self.assertEqual([gate["step"] for gate in manifest_gates], expected_steps)
         self.assertEqual([name for name in harness.LOCAL_STEPS if name.startswith("s3_33")], expected_steps)
         self.assertEqual(len({gate[3] for gate in gates}), len(expected_steps))
+        expected_cmp_gates = {
+            "s3_33e_native_cmp_rax_imm8_host": (
+                "od-host", "tests::native_cmp_rax_imm8_matches_interpreter_and_preserves_gprs",
+            ),
+            "s3_33e_native_cmp_rax_imm8_compiler": (
+                "od-jit", "block_compile::tests::native_cmp_rax_imm8_compiles_eager_and_candidate_branch_consumers",
+            ),
+            "s3_33e_native_cmp_rax_imm8_admission": (
+                "od-jit", "block::tests::cmp_rax_imm8_admission_covers_signed_byte_range_and_rejects_neighbors",
+            ),
+        }
+        gate_by_name = {gate[0]: gate for gate in gates}
+        manifest_by_name = {gate["step"]: gate for gate in manifest_gates}
+        for step, (package, identity) in expected_cmp_gates.items():
+            self.assertEqual(gate_by_name[step][2:], (package, identity))
+            self.assertEqual(manifest_by_name[step]["package"], package)
+            self.assertEqual(manifest_by_name[step]["identity"], identity)
+            self.assertEqual(harness.rust_test_argv(package, identity), [
+                "cargo", "test", "--offline", "-p", package, "--lib", identity,
+                "--", "--exact", "--test-threads=1",
+            ])
         self.assertIn("crates/od-jit/src/block.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-jit/src/block_emitter.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-jit/src/block_compile.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -353,11 +386,17 @@ class Stage3HarnessValidationTests(unittest.TestCase):
 
     def test_rust_gate_summary_rejects_an_omitted_mandatory_gate(self):
         with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
-            steps = passing_rust_gate_steps(Path(temporary))
-            missing_step = harness.ADDITIONAL_TEST_GATES[0][0]
-            del steps[missing_step]
-            with self.assertRaisesRegex(harness.HarnessError, missing_step):
-                harness.validate_required_rust_test_evidence(steps)
+            for missing_step in (
+                harness.ADDITIONAL_TEST_GATES[0][0],
+                "s3_33e_native_cmp_rax_imm8_host",
+                "s3_33e_native_cmp_rax_imm8_compiler",
+                "s3_33e_native_cmp_rax_imm8_admission",
+            ):
+                steps = passing_rust_gate_steps(Path(temporary))
+                del steps[missing_step]
+                with self.subTest(missing_step=missing_step):
+                    with self.assertRaisesRegex(harness.HarnessError, missing_step):
+                        harness.validate_required_rust_test_evidence(steps)
 
     def test_rust_gate_summary_rejects_forged_passed_evidence(self):
         with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:

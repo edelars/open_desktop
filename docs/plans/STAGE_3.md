@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-20h/S3-20i/S3-20j/S3-20k/S3-20l/S3-20m/S3-20n/S3-20o/S3-20p/S3-20q/S3-20r/S3-20s/S3-20t/S3-20u/S3-20v/S3-20w/S3-20x/S3-20y/S3-20z/S3-20aa/S3-20ab/S3-20ac/S3-20ad/S3-20ae/S3-20af/S3-20ag/S3-20ah/S3-20ai/S3-20aj/S3-20ak/S3-20al/S3-20am/S3-20an/S3-20ao/S3-20ap/S3-20aq/S3-20ar/S3-20as/S3-20at/S3-20au/S3-20av/S3-20aw/S3-20ax/S3-20ay/S3-20az/S3-20ba/S3-20bb/S3-20bc/S3-20bd/S3-20be/S3-20bf/S3-20bg/S3-20bh/S3-20bi/S3-20bj/S3-20bk/S3-20bl/S3-20bm/S3-20bn/S3-20bo/S3-20bp/S3-20bq/S3-20br/S3-20bs/S3-20bt/S3-20bu/S3-20bv/S3-20bw/S3-20bx/S3-20ca/S3-20cb/S3-20cc/S3-20cd/S3-20ce/S3-20cf/S3-20cg/S3-20ch/S3-20ci/S3-20cj/S3-20ck/S3-20cl/S3-20cm/S3-26a/S3-26b/S3-26c/S3-26d/S3-26e/S3-27a/S3-27b/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-24b/S3-25a/S3-25b/S3-27c/S3-34f/S3-34h/S3-34i реализованы как bounded partial slices; S3-20cm реализован как bounded optional slice, не gate этапа. S3-27d ограничен partial slice для прямых singleton V2 load/store и не закрывает S3-27. S3-18d1 собрал три локальных dispatch/cache measurement runs без policy conclusion; S3-41a зафиксировала bounded acceptance evidence. Полный этап открыт. Общие memory lowering и S3-19/S3-20/S3-22/S3-23/S3-24/S3-25/S3-26/S3-27 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-20h/S3-20i/S3-20j/S3-20k/S3-20l/S3-20m/S3-20n/S3-20o/S3-20p/S3-20q/S3-20r/S3-20s/S3-20t/S3-20u/S3-20v/S3-20w/S3-20x/S3-20y/S3-20z/S3-20aa/S3-20ab/S3-20ac/S3-20ad/S3-20ae/S3-20af/S3-20ag/S3-20ah/S3-20ai/S3-20aj/S3-20ak/S3-20al/S3-20am/S3-20an/S3-20ao/S3-20ap/S3-20aq/S3-20ar/S3-20as/S3-20at/S3-20au/S3-20av/S3-20aw/S3-20ax/S3-20ay/S3-20az/S3-20ba/S3-20bb/S3-20bc/S3-20bd/S3-20be/S3-20bf/S3-20bg/S3-20bh/S3-20bi/S3-20bj/S3-20bk/S3-20bl/S3-20bm/S3-20bn/S3-20bo/S3-20bp/S3-20bq/S3-20br/S3-20bs/S3-20bt/S3-20bu/S3-20bv/S3-20bw/S3-20bx/S3-20ca/S3-20cb/S3-20cc/S3-20cd/S3-20ce/S3-20cf/S3-20cg/S3-20ch/S3-20ci/S3-20cj/S3-20ck/S3-20cl/S3-20cm/S3-26a/S3-26b/S3-26c/S3-26d/S3-26e/S3-27a/S3-27b/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-24b/S3-25a/S3-25b/S3-27c/S3-34f/S3-34h/S3-34i/S3-34j реализованы как bounded partial slices; S3-20cm реализован как bounded optional slice, не gate этапа. S3-27d ограничен partial slice для прямых singleton V2 load/store и не закрывает S3-27. S3-18d1 собрал три локальных dispatch/cache measurement runs без policy conclusion; S3-41a зафиксировала bounded acceptance evidence. Полный этап открыт. Общие memory lowering и S3-19/S3-20/S3-22/S3-23/S3-24/S3-25/S3-26/S3-27 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -257,6 +257,7 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-34 | Corpus, reducer и негативные проверки | S3-24–S3-33 в принятой конфигурации |
 | [partial] | S3-34f | Exact local acceptance gates for bounded S3-28/29/38 slices | S3-34e, S3-28a/b, S3-29a–e, S3-38a; full suite gates remain open |
 | [partial] | S3-34i | Exact local gates for native arithmetic slices | S3-34e, S3-33a–d; full S3-34 gates remain open |
+| [partial] | S3-34j | Add exact local gates for S3-33e CMP imm8 | S3-34i, S3-33e; full S3-34 gates remain open |
 | [partial] | S3-35 | Измерить холодное исполнение | S3-01, S3-34 |
 | [ ] | S3-36 | Измерить прогретое исполнение | S3-35 |
 | [ ] | S3-37 | Cache churn и ресурсы | S3-25, S3-34 |
@@ -2636,6 +2637,20 @@ the Rust and harness inputs remained unchanged. The run was `local_only`;
 Mini/physical x86, performance, owner-backed, and Stage 2 suites were
 `not_run`. This is a bounded extension and does not close S3-34 or Stage 3. See
 [S3-34i report](../reports/STAGE_3_S3-34i_2026-10-30.md).
+
+#### S3-34j. Add exact local gates for S3-33e CMP imm8
+
+Add three mandatory exact Cargo gates for the committed `CMP RAX, sign-extended
+imm8` profile: host full-state parity, eager/candidate compiler coverage, and
+exhaustive exact admission. The manifest, planned steps, and final local
+acceptance summary must contain all three identities exactly once, with the
+expected crate, full test identity, exact argv, and one passing test outcome.
+Self-checks must reject each omitted CMP gate from both the input manifest and
+the final gate evidence. Existing fail-closed checks for incorrect package,
+identity/argv, zero or duplicate matches, ignored/failed/timed-out tests, and
+forged pass evidence continue to apply. The follow-up run and its limits are
+recorded in the [S3-34j report](../reports/STAGE_3_S3-34j_2026-10-30.md); this
+bounded slice does not close S3-34 or Stage 3.
 
 ### S3-35. Измерить холодное исполнение
 
