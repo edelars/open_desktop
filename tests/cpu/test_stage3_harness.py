@@ -299,6 +299,11 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             "s3_33i_native_xchg_rax_rbx_emitter",
             "s3_33i_native_xchg_rax_rbx_compiler",
             "s3_33i_native_xchg_rax_rbx_host",
+            "s3_33g_native_not_rax_emitter",
+            "s3_33j_native_lea_rbx_disp8_admission",
+            "s3_33j_native_lea_rbx_disp8_emitter",
+            "s3_33j_native_lea_rbx_disp8_compiler",
+            "s3_33j_native_lea_rbx_disp8_host",
         )
         for missing_step in (harness.RUST_TEST_GATES[-1][0], *mandatory_steps):
             manifest = {
@@ -343,6 +348,10 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             "s3_33i_native_xchg_rax_rbx_emitter",
             "s3_33i_native_xchg_rax_rbx_compiler",
             "s3_33i_native_xchg_rax_rbx_host",
+            "s3_33j_native_lea_rbx_disp8_admission",
+            "s3_33j_native_lea_rbx_disp8_emitter",
+            "s3_33j_native_lea_rbx_disp8_compiler",
+            "s3_33j_native_lea_rbx_disp8_host",
         ]
         gates = [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_33")]
         manifest_gates = [
@@ -378,9 +387,33 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 "od-host", "tests::native_xchg_rax_rbx_matches_interpreter_and_preserves_flags",
             ),
         }
+        expected_not_gates = {
+            "s3_33g_native_not_rax_emitter": (
+                "od-jit", "block_emitter::tests::native_not_rax_preserving_subtract_emits_no_helper_for_register_homes",
+            ),
+        }
+        expected_lea_disp8_gates = {
+            "s3_33j_native_lea_rbx_disp8_admission": (
+                "od-jit", "block::tests::lea_rax_rbx_disp8_admission_covers_all_signed_bytes_and_rejects_neighbors",
+            ),
+            "s3_33j_native_lea_rbx_disp8_emitter": (
+                "od-jit", "block_emitter::tests::preserving_integer_support_is_limited_to_w64_add_or_subtract_with_result",
+            ),
+            "s3_33j_native_lea_rbx_disp8_compiler": (
+                "od-jit", "block_compile::tests::native_lea_rax_rbx_disp8_compiles_eager_and_candidate_without_memory_helper",
+            ),
+            "s3_33j_native_lea_rbx_disp8_host": (
+                "od-host", "tests::native_lea_rax_rbx_disp8_matches_interpreter_without_data_access",
+            ),
+        }
         gate_by_name = {gate[0]: gate for gate in gates}
         manifest_by_name = {gate["step"]: gate for gate in manifest_gates}
-        for step, (package, identity) in {**expected_cmp_gates, **expected_xchg_gates}.items():
+        for step, (package, identity) in {
+            **expected_cmp_gates,
+            **expected_not_gates,
+            **expected_xchg_gates,
+            **expected_lea_disp8_gates,
+        }.items():
             self.assertEqual(gate_by_name[step][2:], (package, identity))
             self.assertEqual(manifest_by_name[step]["package"], package)
             self.assertEqual(manifest_by_name[step]["identity"], identity)
@@ -416,6 +449,11 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 "s3_33i_native_xchg_rax_rbx_emitter",
                 "s3_33i_native_xchg_rax_rbx_compiler",
                 "s3_33i_native_xchg_rax_rbx_host",
+                "s3_33g_native_not_rax_emitter",
+                "s3_33j_native_lea_rbx_disp8_admission",
+                "s3_33j_native_lea_rbx_disp8_emitter",
+                "s3_33j_native_lea_rbx_disp8_compiler",
+                "s3_33j_native_lea_rbx_disp8_host",
             )
             for missing_step in (harness.ADDITIONAL_TEST_GATES[0][0], *mandatory_steps):
                 steps = passing_rust_gate_steps(Path(temporary))

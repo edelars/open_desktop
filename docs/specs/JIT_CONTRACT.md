@@ -1549,6 +1549,24 @@ semantics only and makes no memory-atomicity claim. Eager and demand-flags
 candidate APIs are separate and uncached. Mini and performance remain deferred
 until Stage 3 ends. See [S3-33i report](../reports/STAGE_3_S3-33i_2026-10-30.md).
 
+### S3-33j: opt-in exact native LEA RAX,[RBX+disp8]
+
+Separate uncached compiler/dispatcher entry points admit only bytes
+`48 8D 43 db`, with all 256 raw displacement bytes. Admission binds exact bytes
+to decoder-owned W64 RAX destination, address64, RBX base, no index, scale 1,
+and `i64::from(db as i8)` displacement. The existing no-displacement
+`48 8D 03` profile is unchanged and does not accept this encoding. Lowering
+reads RBX, adds the sign-extended displacement as W64 wrapping arithmetic with
+`FlagEffect::Preserve`, writes RAX, and commits once. It has no memory operation
+or data access, and performs no canonicality/fault check or helper call. Full
+RFLAGS/definedness and any pending-flags descriptor/operands remain unchanged.
+The preserving emitter path accepts only W64 Add/Subtract with a result;
+Compare, no-result, other widths, and other flag effects remain unsupported.
+Eager and demand-flags candidate APIs remain separate and uncached. Local
+differential coverage is specific to these exact bytes; no physical exact-byte
+confirmation is claimed. Mini and performance remain deferred until Stage 3
+ends. See [S3-33j report](../reports/STAGE_3_S3-33j_2026-10-30.md).
+
 ### S3-29d: uncached arithmetic-to-checked-load handoff
 
 The bounded host fixture composes existing eager and demand-flags native

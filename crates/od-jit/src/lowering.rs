@@ -15,8 +15,8 @@ use crate::block::{
     self, AdmittedInstructionBoundaries, BlockStopReason, BranchTargetResolution, BuildOutcome,
     DecodeBoundary, DecodedInstruction, S0_09NopAddRaxImm8Admission, S0_09NopAdmission,
     S0_09NopCmpRaxImm8Admission, S0_09NopDecRaxAdmission, S0_09NopIncRaxAdmission,
-    S0_09NopLeaRaxRbxAdmission, S0_09NopNegRaxAdmission, S0_09NopNotRaxAdmission,
-    S0_09NopSubRaxImm8Admission, S0_09NopXchgRaxRbxAdmission,
+    S0_09NopLeaRaxRbxAdmission, S0_09NopLeaRaxRbxDisp8Admission, S0_09NopNegRaxAdmission,
+    S0_09NopNotRaxAdmission, S0_09NopSubRaxImm8Admission, S0_09NopXchgRaxRbxAdmission,
 };
 use crate::ir::{
     self, BranchCondition, ExitKind, FlagEffect, GuestGpr, GuestInstruction, IntWidth, IntegerKind,
@@ -220,6 +220,30 @@ pub(crate) fn lower_for_native_lea_rax_rbx(
         None,
         Some(admission),
         None,
+        None,
+    )
+}
+
+pub(crate) fn lower_for_native_lea_rax_rbx_disp8(
+    outcome: &BuildOutcome,
+    admission: &S0_09NopLeaRaxRbxDisp8Admission,
+) -> Result<LoweringOutcome, LoweringError> {
+    lower_with_admission_and_lea(
+        outcome,
+        Some(admission.boundaries()),
+        None,
+        None,
+        None,
+        false,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(admission),
     )
 }
 
@@ -242,6 +266,7 @@ pub(crate) fn lower_for_native_xchg_rax_rbx(
         None,
         None,
         Some(admission),
+        None,
     )
 }
 
@@ -334,6 +359,7 @@ fn lower_with_admission(
         native_sub_rax_imm8_admission,
         None,
         None,
+        None,
     )
 }
 
@@ -352,6 +378,7 @@ fn lower_with_admission_and_lea(
     native_sub_rax_imm8_admission: Option<&S0_09NopSubRaxImm8Admission>,
     native_lea_rax_rbx_admission: Option<&S0_09NopLeaRaxRbxAdmission>,
     native_xchg_rax_rbx_admission: Option<&S0_09NopXchgRaxRbxAdmission>,
+    native_lea_rax_rbx_disp8_admission: Option<&S0_09NopLeaRaxRbxDisp8Admission>,
 ) -> Result<LoweringOutcome, LoweringError> {
     let block = match outcome {
         BuildOutcome::NoBlock(no_block) => {
@@ -465,6 +492,20 @@ fn lower_with_admission_and_lea(
                     && matches!(decoded.operation, DecodedOperation::Nop)
                     || admission.admits_lea_rax_rbx(*guest_rip)
                         && block::is_exact_lea_rax_rbx(*decoded, &[0x48, 0x8d, 0x03])
+            }) || native_lea_rax_rbx_disp8_admission.is_some_and(|admission| {
+                admission.admits_nop(*guest_rip)
+                    && matches!(decoded.operation, DecodedOperation::Nop)
+                    || admission.admits_lea_rax_rbx_disp8(*guest_rip)
+                        && matches!(decoded.operation,
+                            DecodedOperation::Lea { dst, src }
+                            if dst.register() == od_isa::Register::Rax
+                                && dst.size() == od_isa::OperandSize::Qword
+                                && src.base == od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+                                && src.index.is_none()
+                                && src.scale == 1
+                                && admission.lea_rbx_disp8_value(*guest_rip)
+                                    == Some(src.displacement)
+                        )
             }) || native_xchg_rax_rbx_admission.is_some_and(|admission| {
                 admission.admits_nop(*guest_rip)
                     && matches!(decoded.operation, DecodedOperation::Nop)
@@ -571,6 +612,8 @@ fn lower_with_admission_and_lea(
             .is_some_and(|proof| proof.admits_not_rax(instruction.guest_rip));
         let admitted_native_lea = native_lea_rax_rbx_admission
             .is_some_and(|proof| proof.admits_lea_rax_rbx(instruction.guest_rip));
+        let admitted_native_lea_disp8 = native_lea_rax_rbx_disp8_admission
+            .and_then(|proof| proof.lea_rbx_disp8_value(instruction.guest_rip));
         let admitted_native_xchg = native_xchg_rax_rbx_admission
             .is_some_and(|proof| proof.admits_xchg_rax_rbx(instruction.guest_rip));
         let admitted_native_add_rax_imm8 = native_add_rax_imm8_admission
@@ -584,6 +627,7 @@ fn lower_with_admission_and_lea(
             && !admitted_native_neg
             && !admitted_native_not
             && !admitted_native_lea
+            && admitted_native_lea_disp8.is_none()
             && !admitted_native_xchg
             && !admitted_native_add_rax_imm8
             && !admitted_native_cmp_rax_imm8
@@ -610,6 +654,14 @@ fn lower_with_admission_and_lea(
             lower_exact_not_rax(instruction, index, &mut next_temp, &mut operations)?;
         } else if admitted_native_lea {
             lower_exact_lea_rax_rbx(instruction, index, &mut next_temp, &mut operations)?;
+        } else if let Some(displacement) = admitted_native_lea_disp8 {
+            lower_exact_lea_rax_rbx_disp8(
+                instruction,
+                index,
+                displacement,
+                &mut next_temp,
+                &mut operations,
+            )?;
         } else if admitted_native_xchg {
             lower_exact_xchg_rax_rbx(instruction, index, &mut next_temp, &mut operations)?;
         } else if admitted_native_add_rax_imm8 {
@@ -1077,6 +1129,61 @@ fn lower_exact_lea_rax_rbx(
     operations.push(Operation::WriteGpr {
         register: crate::ir::GuestGpr(0),
         src: rbx,
+        width: IntWidth::W64,
+    });
+    operations.push(Operation::CommitInstruction { index });
+    Ok(())
+}
+
+fn lower_exact_lea_rax_rbx_disp8(
+    instruction: &DecodedInstruction,
+    index: usize,
+    displacement: i64,
+    next_temp: &mut u32,
+    operations: &mut Vec<Operation>,
+) -> Result<(), LoweringError> {
+    let invalid = || LoweringError::InvalidDecodedForm {
+        guest_rip: instruction.guest_rip,
+    };
+    let DecodedOperation::Lea { dst, src } = instruction.decoded.operation else {
+        return Err(invalid());
+    };
+    if dst.register() != od_isa::Register::Rax
+        || dst.size() != od_isa::OperandSize::Qword
+        || src.base != od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+        || src.index.is_some()
+        || src.scale != 1
+        || src.displacement != displacement
+        || src.address_size != od_isa::OperandSize::Qword
+        || src.size != od_isa::OperandSize::Qword
+    {
+        return Err(invalid());
+    }
+    operations.push(Operation::BeginInstruction { index });
+    let rbx = allocate_temp(next_temp);
+    operations.push(Operation::ReadGpr {
+        dst: rbx,
+        register: crate::ir::GuestGpr(3),
+        width: IntWidth::W64,
+    });
+    let displacement_value = allocate_temp(next_temp);
+    operations.push(Operation::Constant {
+        dst: displacement_value,
+        value: displacement as u64,
+        width: IntWidth::W64,
+    });
+    let result = allocate_temp(next_temp);
+    operations.push(Operation::Integer {
+        kind: IntegerKind::Add,
+        lhs: rbx,
+        rhs: displacement_value,
+        result: Some(result),
+        width: IntWidth::W64,
+        flags: FlagEffect::Preserve,
+    });
+    operations.push(Operation::WriteGpr {
+        register: crate::ir::GuestGpr(0),
+        src: result,
         width: IntWidth::W64,
     });
     operations.push(Operation::CommitInstruction { index });

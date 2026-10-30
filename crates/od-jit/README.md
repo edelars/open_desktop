@@ -249,6 +249,17 @@ demand-flags candidate compile/dispatch APIs remain uncached and opt-in. Mini
 and performance checks remain deferred until the end of Stage 3. See
 [S3-33h report](../../docs/reports/STAGE_3_S3-33h_2026-10-30.md).
 
+S3-33j adds separate eager/candidate uncached entry points for exact bare
+`LEA RAX,[RBX+disp8]` (`48 8D 43 db`). All 256 displacement bytes are admitted
+only when decoder metadata reports W64 RAX, address64, RBX base, no index,
+scale 1, and the same signed i8 displacement. It lowers to RBX read, signed
+constant, W64 preserving Add, RAX write, and one commit. It performs no data
+access, canonicality check, or helper call; flags and pending-writer state are
+preserved. The previous no-displacement profile remains distinct. Exact local
+differential evidence does not confirm physical source bytes; Mini and
+performance checks remain deferred until Stage 3 ends. See the
+[S3-33j report](../../docs/reports/STAGE_3_S3-33j_2026-10-30.md).
+
 S3-33i adds a separate uncached opt-in profile for the exact bare bytes
 `48 87 D8` (`XCHG RAX,RBX`). Admission checks both the decoded W64 register
 pair and all three source bytes; equivalent ModRM/short-register forms, self

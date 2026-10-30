@@ -203,6 +203,28 @@ register operation makes no memory-atomicity claim. Mini/performance checks
 remain deferred until the end of Stage 3. See the
 [S3-33i report](../reports/STAGE_3_S3-33i_2026-10-30.md).
 
+## S3-33j: exact native LEA RAX,[RBX+disp8]
+
+Run the admission, preserving-emitter, eager/candidate compiler, and host
+parity gates from `python3 tests/cpu/stage3_harness.py --suite local`. The
+profile admits only bare `48 8D 43 db` and all 256 displacement bytes, with
+decoder-owned W64 RAX, address64, RBX base, no index, scale 1, and exact
+sign-extended i8 displacement. It remains separate from the existing
+`48 8D 03` profile. Lowering uses `ReadGpr(RBX)`, a signed displacement
+constant, W64 `Add`/`Preserve` with a result, `WriteGpr(RAX)`, and one commit.
+No memory access, canonicality check, fault, helper, or flags update is part of
+LEA; full flags/definedness and pending-writer state stay intact.
+
+Admission rejects other registers, SIB, disp32, RIP-relative, width/address
+changes, prefixes, truncation, the old no-displacement encoding, and branches
+into the instruction. Host parity covers signed byte edges, wrapping, unmapped
+and noncanonical values, complete state, and retirement. Pending ADD/CMP → LEA
+→ JZ/JNZ, multiple LEAs, a following writer, terminal/fallback, STOP/budget,
+and PC-map cases are part of the bounded acceptance target. Exact local
+differential evidence does not confirm physical source bytes. Mini and
+performance checks remain deferred until Stage 3 ends; see the
+[S3-33j report](../reports/STAGE_3_S3-33j_2026-10-30.md).
+
 ## Срез A: один register-only блок
 
 1. Использовать только точные S0-09 формы из JIT contract и fixtures с
@@ -481,6 +503,17 @@ self-checks pin the crate and test identity, reject a missing gate and forged
 or incomplete passing evidence, and retain the prior 22 exact gates for S3-33a–h.
 The resulting set has 26 gates across S3-33a–i. See the
 [S3-33i report](../reports/STAGE_3_S3-33i_2026-10-30.md).
+
+### S3-34l exact gates for S3-33j disp8 LEA
+
+Four exact Cargo identities pin exhaustive admission, the W64 preserving
+integer emitter window, eager/candidate compilation, and host/interpreter
+parity. The manifest, planned steps, final summary, and self-checks require all
+four once while retaining every earlier gate identity; the NOT emitter
+identity is renamed to reflect that it remains the NOT regression. Exact
+package, test identity, argv, and passing result are validated. The resulting
+set has 30 gates across S3-33a–j. See the
+[S3-33j report](../reports/STAGE_3_S3-33j_2026-10-30.md).
 
 Каждая новая строка support matrix получает literal positive/negative cases,
 точный сравниваемый state и внешний prerequisite. В отчёте сохранять git

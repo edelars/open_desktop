@@ -228,7 +228,7 @@ ADDITIONAL_TEST_GATES = (
     ),
     (
         "s3_33g_native_not_rax_emitter", "local_acceptance", "od-jit",
-        "block_emitter::tests::preserving_integer_support_is_limited_to_w64_subtract_with_result",
+        "block_emitter::tests::native_not_rax_preserving_subtract_emits_no_helper_for_register_homes",
     ),
     (
         "s3_33g_native_not_rax_compiler", "local_acceptance", "od-jit",
@@ -265,6 +265,22 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_33i_native_xchg_rax_rbx_host", "local_acceptance", "od-host",
         "tests::native_xchg_rax_rbx_matches_interpreter_and_preserves_flags",
+    ),
+    (
+        "s3_33j_native_lea_rbx_disp8_admission", "local_acceptance", "od-jit",
+        "block::tests::lea_rax_rbx_disp8_admission_covers_all_signed_bytes_and_rejects_neighbors",
+    ),
+    (
+        "s3_33j_native_lea_rbx_disp8_emitter", "local_acceptance", "od-jit",
+        "block_emitter::tests::preserving_integer_support_is_limited_to_w64_add_or_subtract_with_result",
+    ),
+    (
+        "s3_33j_native_lea_rbx_disp8_compiler", "local_acceptance", "od-jit",
+        "block_compile::tests::native_lea_rax_rbx_disp8_compiles_eager_and_candidate_without_memory_helper",
+    ),
+    (
+        "s3_33j_native_lea_rbx_disp8_host", "local_acceptance", "od-host",
+        "tests::native_lea_rax_rbx_disp8_matches_interpreter_without_data_access",
     ),
 )
 RUST_TEST_GATES = (

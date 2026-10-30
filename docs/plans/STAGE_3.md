@@ -259,6 +259,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-34i | Exact local gates for native arithmetic slices | S3-34e, S3-33a–d; full S3-34 gates remain open |
 | [partial] | S3-34j | Add exact local gates for S3-33e CMP imm8 | S3-34i, S3-33e; full S3-34 gates remain open |
 | [partial] | S3-34k | Exact local gates for S3-33i XCHG RAX,RBX | S3-34j, S3-33i; full S3-34 gates remain open |
+| [partial] | S3-34l | Exact local gates for S3-33j LEA RAX,[RBX+disp8] | S3-34k, S3-33j; full S3-34 gates remain open |
 | [partial] | S3-35 | Измерить холодное исполнение | S3-01, S3-34 |
 | [ ] | S3-36 | Измерить прогретое исполнение | S3-35 |
 | [ ] | S3-37 | Cache churn и ресурсы | S3-25, S3-34 |
@@ -2479,6 +2480,33 @@ interpreter evidence относится только к локальной то�
 compiler и host parity. Mini и performance остаются отложены до конца этапа;
 S3-33 и Stage 3 открыты. См.
 [S3-33i report](../reports/STAGE_3_S3-33i_2026-10-30.md).
+
+#### S3-33j. Exact native LEA RAX,[RBX+disp8]
+
+Добавить отдельный opt-in uncached profile только для `48 8D 43 db`, все 256
+значений displacement byte. Admission проверяет decoder-owned W64 RAX,
+address64, base RBX, отсутствие index, scale 1, и точное равенство
+displacement sign-extended i8; `48 8D 03` остаётся отдельным профилем.
+Lowering: `ReadGpr(RBX)` → signed displacement constant → W64 `Add` с
+`Preserve` и результатом → `WriteGpr(RAX)` → один commit. Это wrapping
+register arithmetic: без memory operation, data access, canonicality/fault
+checks или helper; flags, definedness и pending-writer descriptor/operands
+не меняются. Eager/candidate compile/dispatch остаются раздельными.
+
+Admission должна исчерпывать все 256 байтов и отклонять другие destination/base,
+SIB, disp32, RIP-relative, address/operand width, prefixes, truncation,
+старую no-displacement форму и branch внутрь кодировки. Host differential
+сверяет полное состояние и retirement на displacement edges, wrapping и
+noncanonical/unmapped значения, с нулём data callbacks. Проверить pending
+ADD/CMP → LEA → JZ/JNZ, несколько LEA, последующий writer, terminal/fallback,
+budget/STOP до и после, а также PC map. Emitter допускает только W64 Add или
+Subtract с `Preserve` и результатом; прежние NOT/sub regression gates
+сохраняются. Четыре exact harness gates добавляют admission, preserving
+emitter, compiler и host identity; сохранены прежние identities, кроме
+намеренного переименования старого NOT emitter gate. Местная дифференциальная
+проверка подтверждает только эту exact encoding; физические байты не
+подтверждены. Mini/performance отложены до конца Stage 3. См.
+[S3-33j report](../reports/STAGE_3_S3-33j_2026-10-30.md).
 
 ## 9. Проверка, производительность и интеграция
 
