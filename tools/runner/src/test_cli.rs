@@ -512,6 +512,7 @@ fn expected_native_xorpd_oracle(
                 maxps_unmasked_controls: None,
                 maxpd_unmasked_controls: None,
                 cvtdq2pd_controls: None,
+                cvtsi2sd_r32_controls: None,
                 fxsave64_cr0_controls: None,
                 fxrstor64_cr0_controls: None,
                 rdtsc_source_calls: None,
@@ -994,11 +995,12 @@ fn execute_fixture_v2(
     memory: &mut od_testkit::memory::FlatMemory,
 ) -> od_testkit::v2::RunResult {
     use od_isa::execute::{
-        Cr0Profile, Cr4Profile, Cvtdq2pdControls, Fxrstor64Cr0Controls, Fxsave64Cr0Controls,
-        MaxpdUnmaskedControls, MaxpsUnmaskedControls, MaxsdUnmaskedControls, MaxssUnmaskedControls,
-        MinpdUnmaskedControls, MinpsUnmaskedControls, MinsdUnmaskedControls, MinssInvalidControls,
-        RdtscControls, RunConfig, RunExit, XorpdPrerequisiteState, run, run_with_cli_profile,
-        run_with_cr0_profile, run_with_cvtdq2pd_controls, run_with_efer_rdmsr_profile,
+        Cr0Profile, Cr4Profile, Cvtdq2pdControls, Cvtsi2sdR32Controls, Fxrstor64Cr0Controls,
+        Fxsave64Cr0Controls, MaxpdUnmaskedControls, MaxpsUnmaskedControls, MaxsdUnmaskedControls,
+        MaxssUnmaskedControls, MinpdUnmaskedControls, MinpsUnmaskedControls, MinsdUnmaskedControls,
+        MinssInvalidControls, RdtscControls, RunConfig, RunExit, XorpdPrerequisiteState, run,
+        run_with_cli_profile, run_with_cr0_profile, run_with_cvtdq2pd_controls,
+        run_with_cvtsi2sd_r32_controls, run_with_efer_rdmsr_profile,
         run_with_fxrstor64_cr0_controls, run_with_fxsave64_cr0_controls, run_with_halt_profile,
         run_with_kernel_gs_base_profile, run_with_maxpd_unmasked_controls,
         run_with_maxps_unmasked_controls, run_with_maxsd_unmasked_controls,
@@ -1505,6 +1507,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongCvtsi2sdR32ExactV1 {
+        let controls = loaded
+            .fixture
+            .cvtsi2sd_r32_controls
+            .expect("validated CVTSI2SD r32 profile has explicit controls");
+        run_with_cvtsi2sd_r32_controls(
+            &mut state,
+            memory,
+            config,
+            Cvtsi2sdR32Controls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else {
         run(&mut state, memory, config, timeout)
     };
@@ -1566,6 +1586,7 @@ fn execute_fixture_v2(
                 maxps_unmasked_controls: loaded.fixture.maxps_unmasked_controls,
                 maxpd_unmasked_controls: loaded.fixture.maxpd_unmasked_controls,
                 cvtdq2pd_controls: loaded.fixture.cvtdq2pd_controls,
+                cvtsi2sd_r32_controls: loaded.fixture.cvtsi2sd_r32_controls,
                 fxsave64_cr0_controls: loaded.fixture.fxsave64_cr0_controls,
                 fxrstor64_cr0_controls: loaded.fixture.fxrstor64_cr0_controls,
                 rdtsc_source_calls,
@@ -2729,6 +2750,7 @@ mod tests {
                     maxps_unmasked_controls: input.fixture.maxps_unmasked_controls,
                     maxpd_unmasked_controls: input.fixture.maxpd_unmasked_controls,
                     cvtdq2pd_controls: input.fixture.cvtdq2pd_controls,
+                    cvtsi2sd_r32_controls: input.fixture.cvtsi2sd_r32_controls,
                     fxsave64_cr0_controls: input.fixture.fxsave64_cr0_controls,
                     fxrstor64_cr0_controls: input.fixture.fxrstor64_cr0_controls,
                     rdtsc_source_calls: None,

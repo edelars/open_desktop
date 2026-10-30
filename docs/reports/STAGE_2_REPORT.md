@@ -17376,3 +17376,39 @@ nonzero in this managed worktree: it reports the root `.git` worktree pointer
 as unmapped and two missing historical oracle manifests referenced from the
 existing Stage 2 report; no new path/layout issue was reported. Those existing
 checkout/report references were not altered for this CPU profile.
+
+## S2-37n — exact Long64 CVTSI2SD XMM0,EAX
+
+Implemented interpreter-only schema-v2 profile `s2-long-cvtsi2sd-r32-exact-v1`
+for the single stream `F2 0F 2A C0`. It requires one executable mapping,
+budget one and stop RIP `entry+4`. The decoder exposes only XMM0,EAX; REX,
+r64, other indices, memory, prefix variants and other encodings remain profile
+refusals. The executor reads only RAX[31:0] as signed i32, sign-extends before
+`Binary64::from_i64`, writes XMM0 low64 and preserves the high64 and all other
+state. MXCSR mask is `0x0000ffbf`; DAZ/reserved bits reject. Explicit controls
+apply #UD for missing SSE2/EM/OSFXSR, then #NM for TS after fetch at CPL0–3.
+OSXMMEXCPT is echoed; both values have the same result and no new SIMD FP event
+for this always-exact r32 input.
+
+Eight literal schema-v2 fixtures cover 0, ±1, signed i32 endpoints, values on
+either side of 2^24, and equal EAX with different high RAX halves. The schema
+oracle independently assembles binary64 bits from signed integer magnitude,
+exponent and significand; it does not call the production conversion helper.
+The focused ISA test covers all prerequisite combinations at CPL0–3, all
+supported sticky/mask/RC/FTZ combinations, unsupported DAZ/reserved MXCSR,
+malformed/truncated forms, zero budget, state preservation and no data
+callbacks. Runner fixtures check result/control tampering and JIT/native denial.
+
+Checks run: `cargo test -p od-isa cvtsi2sd_r32_exact_profile --offline` and
+`cargo test -p od-runner cvtsi2sd_r32_exact_literals --offline`; the focused
+runner test passed. `cargo check -p od-runner --offline`, `cargo check --workspace --all-targets --offline`,
+`cargo fmt --all -- --check`, and `git diff --check` passed. `graphify update .`
+completed the code graph refresh. No layout check was needed because directory
+structure did not change. No Mac mini/SSH/native hardware
+validation was run; physical checks remain in the combined final batch. Source:
+Intel SDM Rev. 093 Vol. 2A `CVTSI2SD` pp. 3-236–3-237, Type 3 §2.5 Table 2-15,
+legacy gates §2.5.3 Table 2-20 p. 2-28
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)). See the
+[plan](../plans/STAGE_2.md#s2-37n--exact-long64-cvtsi2sd-xmm0eax),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37n--exact-long64-cvtsi2sd-xmm0eax),
+and [fixtures](../../tests/fixtures/x86/stage2/README.md#s2-37n-local-cvtsi2sd-r32).

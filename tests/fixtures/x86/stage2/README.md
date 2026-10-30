@@ -6267,3 +6267,17 @@ gate inputs are explicit and echoed in the result. JIT/native reject the
 profile; no C/fragment or physical hardware acceptance is claimed. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37m--exact-long64-cvtdq2pd-xmm0xmm1)
 and [plan](../../../../docs/plans/STAGE_2.md#s2-37m--exact-long64-cvtdq2pd-xmm0xmm1).
+
+### S2-37n local CVTSI2SD r32
+
+Eight literal fixtures accept only Long64 `F2 0F 2A C0` with a single
+executable mapping, budget one and stop RIP `entry+4`. They cover zero, ±1,
+i32 endpoints and values immediately below/above 2^24. Two `EAX=1` fixtures
+use different RAX high halves to prove the source width is exactly 32 bits.
+Each fixture seeds a sentinel XMM0 high qword; the independent schema oracle
+computes the expected low-qword binary64 bits directly from signed i32 input.
+Control echoes include OSXMMEXCPT to verify both values have no effect on this
+exactly representable input. Profile refusals do not generalize architectural
+#UD claims to excluded forms. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37n--exact-long64-cvtsi2sd-xmm0eax)
+and [plan](../../../../docs/plans/STAGE_2.md#s2-37n--exact-long64-cvtsi2sd-xmm0eax).

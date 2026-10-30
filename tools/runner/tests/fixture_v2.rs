@@ -17744,3 +17744,94 @@ fn cvtdq2pd_exact_literals_validate_conversion_state_and_jit_denial() {
     value.state.sse.as_mut().unwrap().xmm[0] = "00".repeat(16);
     assert!(od_testkit::v2::compare(&input, &result, &wrong_output).is_err());
 }
+
+#[test]
+fn cvtsi2sd_r32_exact_literals_use_eax_bits_preserve_state_and_deny_other_backends() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let mut paths: Vec<_> = fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("s2_37n_cvtsi2sd_r32_")
+        })
+        .collect();
+    paths.sort();
+    assert_eq!(paths.len(), 8, "handwritten CVTSI2SD r32 literals");
+    let expected = [
+        ("zero", "0000000000000000"),
+        ("plus_one_low", "000000000000f03f"),
+        ("plus_one_high", "000000000000f03f"),
+        ("minus_one", "000000000000f0bf"),
+        ("i32_min", "000000000000e0c1"),
+        ("i32_max", "0000c0ffffffdf41"),
+        ("around_2p24_below", "000000e0ffff6f41"),
+        ("around_2p24_above", "0000001000007041"),
+    ];
+    let mut denial_source = None;
+    let mut representative = None;
+    for path in paths {
+        let source = fs::read(&path).unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongCvtsi2sdR32ExactV1
+        );
+        assert_eq!(
+            od_testkit::v2::compare(&input, &result, &result).unwrap(),
+            Vec::<String>::new()
+        );
+        let Observation::Available { value } = &result.snapshot else {
+            panic!("snapshot unavailable")
+        };
+        let case = input
+            .fixture
+            .case_id
+            .strip_prefix("s2_37n_cvtsi2sd_r32_")
+            .unwrap();
+        let expected_bits = expected.iter().find(|(name, _)| *name == case).unwrap().1;
+        let xmm0 = &value.state.sse.as_ref().unwrap().xmm[0];
+        assert_eq!(&xmm0[..16], expected_bits, "literal low64 result: {case}");
+        let initial_xmm0 = &input.fixture.initial_state.sse.as_ref().unwrap().xmm[0];
+        assert_eq!(&xmm0[16..], &initial_xmm0[16..], "XMM0 high64: {case}");
+        assert_eq!(
+            value.state.gpr, input.fixture.initial_state.gpr,
+            "RAX and unrelated GPRs: {case}"
+        );
+        assert_eq!(
+            value.state.sse.as_ref().unwrap().mxcsr,
+            input.fixture.initial_state.sse.as_ref().unwrap().mxcsr
+        );
+        assert_eq!(value.state.rflags, input.fixture.initial_state.rflags);
+        denial_source.get_or_insert(source);
+        representative.get_or_insert((input.clone(), result.clone()));
+    }
+    let source = denial_source.unwrap();
+    let (_, jit) = run(&source, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    let (_, native) = run(&source, "native", 4);
+    assert!(matches!(native.outcome, Outcome::Unsupported { .. }));
+    let (input, result) = representative.unwrap();
+    let mut missing_controls = input.fixture.clone();
+    missing_controls.cvtsi2sd_r32_controls = None;
+    assert!(missing_controls.validate().is_err());
+    let mut wrong_form = input.fixture.clone();
+    wrong_form.memory[0].initial_bytes_hex = "f20f2ac1".into();
+    assert!(wrong_form.validate().is_err());
+    let mut wrong_echo = result.clone();
+    let Observation::Available { value } = &mut wrong_echo.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.cvtsi2sd_r32_controls.as_mut().unwrap().cr4_osxmmexcpt =
+        !value.cvtsi2sd_r32_controls.unwrap().cr4_osxmmexcpt;
+    assert!(od_testkit::v2::compare(&input, &result, &wrong_echo).is_err());
+    let mut wrong_output = result.clone();
+    let Observation::Available { value } = &mut wrong_output.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.state.sse.as_mut().unwrap().xmm[0].replace_range(..2, "ff");
+    assert!(od_testkit::v2::compare(&input, &result, &wrong_output).is_err());
+}

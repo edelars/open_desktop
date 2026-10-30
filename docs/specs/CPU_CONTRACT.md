@@ -11520,6 +11520,42 @@ p. 2-24 and §2.5.5 Table 2-22 p. 2-30
 [report](../reports/STAGE_2_REPORT.md#s2-37m--exact-long64-cvtdq2pd-xmm0xmm1),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37m-local-cvtdq2pd).
 
+## S2-37n — exact Long64 CVTSI2SD XMM0,EAX
+
+The interpreter-only schema-v2 profile `s2-long-cvtsi2sd-r32-exact-v1` accepts
+only Long64 `F2 0F 2A C0` (`CVTSI2SD XMM0,EAX`), one executable mapping, budget
+one, and stop RIP `entry+4`. REX/r64, other GPR/XMM indices, memory forms,
+extra/reordered/repeated prefixes, other encodings, VEX and EVEX are profile
+refusals, with no claim that each excluded form is architecturally #UD.
+
+Execution reads only RAX[31:0], interprets it as signed i32, sign-extends to
+i64 and converts exactly to binary64. It changes only XMM0[63:0], preserving
+XMM0[127:64], full RAX and all other state, including RFLAGS/definedness and
+MXCSR. Accepted MXCSR bits are `0x0000ffbf`; accepted RC, exception mask,
+sticky and FTZ variations preserve the result. DAZ is architecturally
+irrelevant to this integer source, but DAZ=1 is outside the local mask and is
+rejected. Since every signed i32 is exactly
+representable as binary64, this specific r32 form raises no newly generated
+SIMD FP Precision, Invalid or Denormal event. PE masking and OSXMMEXCPT do not
+produce #XM or #UD for this form. This is not a family-wide exception claim.
+
+Full fetch precedes #UD for missing SSE2, CR0.EM, or CR4.OSFXSR, followed by
+#NM for CR0.TS; the matrix applies at CPL0–3. Faults retire zero instructions,
+preserve the full CPU state and do not call the data-memory interface. The
+schema echoes OSXMMEXCPT and tests both values. Eight literal fixtures cover
+zero, ±1, i32 minimum/maximum, values around 2^24, different RAX high halves
+with identical EAX and XMM0 high64 preservation. The independent schema oracle
+computes result bits from the signed integer directly, without production
+conversion helpers. JIT and native admission remain closed. No r64, memory,
+generic CPUID or broader SSE2 support is implied.
+
+Source: Intel SDM Rev. 093 Vol. 2A `CVTSI2SD` pp. 3-236–3-237, Type 3 per
+§2.5 Table 2-15; legacy gates §2.5.3 Table 2-20 p. 2-28
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)). See the
+[plan](../plans/STAGE_2.md#s2-37n--exact-long64-cvtsi2sd-xmm0eax),
+[report](../reports/STAGE_2_REPORT.md#s2-37n--exact-long64-cvtsi2sd-xmm0eax),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37n-local-cvtsi2sd-r32).
+
 ## S2-38b — точечные SSE2 prerequisite gates для XORPD
 
 Schema-v2 profile `s2-long-xorpd-prerequisites-v1` принимает ровно одну

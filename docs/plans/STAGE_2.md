@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последнее локальное подзадание S2-37m добавляет exact Long64 CVTDQ2PD XMM0,XMM1 schema-v2 profile; это не закрывает общий S2-37, CPUID admission или physical acceptance. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последнее локальное подзадание S2-37n добавляет exact Long64 CVTSI2SD XMM0,EAX schema-v2 interpreter-only profile; это не закрывает общий S2-37, CPUID admission или physical acceptance. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -6524,6 +6524,37 @@ Mac mini substage. Sources: Intel SDM Rev. 093 Vol. 2A CVTDQ2PD pp. 3-208–3-21
 [stage report](../reports/STAGE_2_REPORT.md#s2-37m--exact-long64-cvtdq2pd-xmm0xmm1),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37m-local-cvtdq2pd).
 
+#### S2-37n — exact Long64 CVTSI2SD XMM0,EAX
+
+The interpreter-only schema-v2 profile `s2-long-cvtsi2sd-r32-exact-v1` admits
+only `F2 0F 2A C0` (`CVTSI2SD XMM0,EAX`), one executable mapping, budget one,
+and stop RIP `entry+4`. It rejects REX/r64, other register indices, memory,
+extra/reordered/repeated prefixes, other encodings, VEX and EVEX as profile
+refusals; these do not assert architectural #UD for every excluded form. It
+reads only RAX[31:0] as signed i32, sign-extends it, and performs exact
+binary64 conversion. It replaces only XMM0[63:0], preserving XMM0[127:64],
+full RAX, all unrelated state, RFLAGS/definedness and MXCSR. Supported MXCSR
+bits are `0x0000ffbf`; accepted RC, masks, sticky flags and FTZ variations do
+not affect the result. DAZ is architecturally irrelevant to this integer
+source, but DAZ=1 is outside the local mask and is rejected. This r32 input is
+always exactly representable, so this form raises no newly generated SIMD
+Precision, Invalid or Denormal exception; PE masking and OSXMMEXCPT
+do not create #XM/#UD. OSXMMEXCPT is echoed and both values are covered.
+Complete fetch precedes SSE2/EM/OSFXSR #UD, then TS #NM at CPL0–3. Faults do
+not retire, mutate state, or cause data-memory callbacks.
+
+Eight literal fixtures cover 0, ±1, i32 endpoints, both sides of 2^24, equal
+EAX with different RAX high halves, and full state preservation. The schema
+oracle independently derives binary64 bits from the signed integer. Tests cover
+all supported MXCSR combinations, prerequisite combinations at CPL0–3,
+malformed/truncated forms, STOP/zero budget and fail-closed JIT/native. Only
+this r32 register form is supported. Source: Intel SDM Rev. 093 Vol. 2A
+`CVTSI2SD` pp. 3-236–3-237, Type 3 §2.5 Table 2-15, legacy gates §2.5.3
+Table 2-20 p. 2-28 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37n--exact-long64-cvtsi2sd-xmm0eax),
+[stage report](../reports/STAGE_2_REPORT.md#s2-37n--exact-long64-cvtsi2sd-xmm0eax),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37n-local-cvtsi2sd-r32).
+
 #### S2-38a — consumed masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD status subset
 
 Only masked IE/DE sticky-status updates used by S2-37e/f/g/h/i/j/k/l are implemented.
@@ -6583,7 +6614,7 @@ inventory.
 | CVTPS2PI | `NP 0F 2D /r` | SSE | XMM, m64 → mm; 2×f32 → 2×i32 | 3-231 | missing |
 | CVTSD2SI | `F2 0F 2D /r`; `F2 REX.W 0F 2D /r` | SSE2 | m64 → r32 / r64 | 3-232 | missing |
 | CVTSD2SS | `F2 0F 5A /r` | SSE2 | XMM, m64; f64 → low f32 | 3-234 | missing |
-| CVTSI2SD | `F2 0F 2A /r`; `F2 REX.W 0F 2A /r` | SSE2 | r32/m32 or r64/m64 → low f64 | 3-236 | missing |
+| CVTSI2SD | `F2 0F 2A /r`; `F2 REX.W 0F 2A /r` | SSE2 | r32/m32 or r64/m64 → low f64 | 3-236 | S2-37n, exact `C0` r32 only |
 | CVTSI2SS | `F3 0F 2A /r`; `F3 REX.W 0F 2A /r` | SSE | r32/m32 or r64/m64 → low f32 | 3-238 | missing |
 | CVTSS2SD | `F3 0F 5A /r` | SSE2 | XMM, m32; f32 → low f64 | 3-240 | missing |
 | CVTSS2SI | `F3 0F 2D /r`; `F3 REX.W 0F 2D /r` | SSE | m32 → r32 / r64 | 3-242 | missing |
