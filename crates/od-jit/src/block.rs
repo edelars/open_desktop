@@ -26,6 +26,7 @@ enum BlockBuildProfile {
     S0_09NativeAddRaxImm8,
     S0_09NativeCmpRaxImm8,
     S0_09NativeSubRaxImm8,
+    S0_09NativeMovRaxImm32,
     CheckedQwordLoad,
     CheckedQwordStore,
     CheckedQwordMemoryPair,
@@ -230,6 +231,14 @@ pub struct S0_09NopSubRaxImm8Admission {
     boundaries: AdmittedInstructionBoundaries,
     nop_rips: Vec<u64>,
     sub_rax_imm8_values: Vec<(u64, u64)>,
+}
+
+/// Separate bounded admission for S0-09 plus exact bare `MOV RAX, sign-extended imm32`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct S0_09NopMovRaxImm32Admission {
+    boundaries: AdmittedInstructionBoundaries,
+    nop_rips: Vec<u64>,
+    mov_rax_imm32_values: Vec<(u64, u64)>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1251,6 +1260,132 @@ impl S0_09NopSubRaxImm8Admission {
     }
 }
 
+impl S0_09NopMovRaxImm32Admission {
+    /// Decode the full immutable view, admitting S0-09, bare NOP, and exact
+    /// `48 C7 C0 id` (`MOV RAX, sign-extended imm32`).
+    pub fn from_code(code: CodeView<'_>) -> Result<Self, S0_09NopAdmissionError> {
+        let mut rip = code.base_rip();
+        let mut boundaries = Vec::new();
+        let mut instructions = Vec::new();
+        let mut nop_rips = Vec::new();
+        let mut mov_rax_imm32_values = Vec::new();
+        while rip < code.code_end() {
+            let offset = usize::try_from(rip - code.base_rip())
+                .map_err(|_| S0_09NopAdmissionError::RangeOverflow { rip, length: 0 })?;
+            let mut memory = CodeMemory::full_code(code);
+            let instruction = long_decode::decode(&mut memory, rip, AccessContext::default())
+                .map_err(|error| S0_09NopAdmissionError::Decode { rip, error })?;
+            if !(1..=15).contains(&instruction.length) {
+                return Err(S0_09NopAdmissionError::InvalidLength {
+                    rip,
+                    length: instruction.length,
+                });
+            }
+            let next_rip = rip.checked_add(u64::from(instruction.length)).ok_or(
+                S0_09NopAdmissionError::RangeOverflow {
+                    rip,
+                    length: instruction.length,
+                },
+            )?;
+            if next_rip > code.code_end() {
+                return Err(S0_09NopAdmissionError::RangeOverflow {
+                    rip,
+                    length: instruction.length,
+                });
+            }
+            if is_exact_bare_nop(instruction, code.bytes()[offset]) {
+                nop_rips.push(rip);
+            } else if is_exact_mov_rax_imm32(instruction, &code.bytes()[offset..]) {
+                let Operation::MovImmediate { value, .. } = instruction.operation else {
+                    unreachable!("exact MOV immediate predicate guarantees its operation");
+                };
+                mov_rax_imm32_values.push((rip, value));
+            } else if !is_s0_09_form(instruction) {
+                return Err(S0_09NopAdmissionError::UnsupportedInstruction { rip });
+            }
+            boundaries.push(rip);
+            instructions.push((rip, next_rip, instruction));
+            rip = next_rip;
+        }
+        boundaries.push(code.code_end());
+        for (branch_rip, next_rip, instruction) in &instructions {
+            let Operation::Branch { displacement, .. } = instruction.operation else {
+                continue;
+            };
+            let target = next_rip.wrapping_add_signed(i64::from(displacement));
+            if !boundaries.contains(&target) {
+                return Err(S0_09NopAdmissionError::BranchTargetNotBoundary {
+                    rip: *branch_rip,
+                    target,
+                });
+            }
+        }
+        Ok(Self {
+            boundaries: AdmittedInstructionBoundaries {
+                code_base: code.base_rip(),
+                code_end: code.code_end(),
+                code_bytes: code.bytes().to_vec(),
+                boundaries,
+            },
+            nop_rips,
+            mov_rax_imm32_values,
+        })
+    }
+
+    pub(crate) fn boundaries(&self) -> &AdmittedInstructionBoundaries {
+        &self.boundaries
+    }
+
+    pub(crate) fn matches_code(&self, code: CodeView<'_>) -> bool {
+        self.boundaries.matches_code(code)
+    }
+
+    pub(crate) fn contains(&self, rip: u64) -> bool {
+        self.boundaries.contains(rip)
+    }
+
+    pub(crate) fn admits_nop(&self, rip: u64) -> bool {
+        self.nop_rips.contains(&rip)
+    }
+
+    pub(crate) fn admits_mov_rax_imm32(&self, rip: u64) -> bool {
+        self.mov_rax_imm32_values
+            .iter()
+            .any(|(admitted_rip, _)| *admitted_rip == rip)
+    }
+
+    pub(crate) fn mov_rax_imm32_value(&self, rip: u64) -> Option<u64> {
+        self.mov_rax_imm32_values
+            .iter()
+            .find_map(|(admitted_rip, value)| (*admitted_rip == rip).then_some(*value))
+    }
+}
+
+pub(crate) fn is_exact_mov_rax_imm32(instruction: Instruction, bytes: &[u8]) -> bool {
+    matches!(instruction.operation,
+        Operation::MovImmediate { dst: Operand::Register(dst), .. }
+        if dst.register() == od_isa::Register::Rax && dst.size() == OperandSize::Qword)
+        && instruction.opcode.map == OpcodeMap::Primary
+        && instruction.opcode.byte == 0xc7
+        && instruction.prefixes.rex == Some(0x48)
+        && instruction.prefixes.group1.is_none()
+        && instruction.prefixes.segment.is_none()
+        && !instruction.prefixes.operand_override
+        && !instruction.prefixes.address_override
+        && instruction.operand_size == OperandSize::Qword
+        && instruction.address_size == OperandSize::Qword
+        && instruction.length == 7
+        && bytes.get(..3) == Some(&[0x48, 0xc7, 0xc0])
+        && bytes.get(3..7).is_some_and(|immediate| {
+            let raw = u32::from_le_bytes([immediate[0], immediate[1], immediate[2], immediate[3]]);
+            let decoded = match instruction.operation {
+                Operation::MovImmediate { value, .. } => value,
+                _ => return false,
+            };
+            decoded == (raw as i32 as i64 as u64)
+        })
+}
+
 pub(crate) fn is_exact_cmp_rax_imm8(instruction: Instruction, bytes: &[u8]) -> bool {
     matches!(instruction.operation,
         Operation::Arithmetic { kind: ArithmeticKind::Cmp, dst: Operand::Register(dst), src: Operand::Immediate(_) }
@@ -1831,6 +1966,21 @@ pub(crate) fn build_block_for_native_sub_rax_imm8(
         context,
         limits,
         BlockBuildProfile::S0_09NativeSubRaxImm8,
+    )
+}
+
+pub(crate) fn build_block_for_native_mov_rax_imm32(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    context: AccessContext,
+    limits: BlockLimits,
+) -> Result<BuildOutcome, BuildError> {
+    build_block_with_profile(
+        code,
+        entry_rip,
+        context,
+        limits,
+        BlockBuildProfile::S0_09NativeMovRaxImm32,
     )
 }
 
@@ -2468,6 +2618,8 @@ fn build_block_with_profile(
             is_s0_09_form(decoded) || is_exact_cmp_rax_imm8(decoded, &code.bytes[guest_offset..])
         } else if profile == BlockBuildProfile::S0_09NativeSubRaxImm8 {
             is_s0_09_form(decoded) || is_exact_sub_rax_imm8(decoded, &code.bytes[guest_offset..])
+        } else if profile == BlockBuildProfile::S0_09NativeMovRaxImm32 {
+            is_s0_09_form(decoded) || is_exact_mov_rax_imm32(decoded, &code.bytes[guest_offset..])
         } else {
             is_s0_09_form(decoded)
         };
@@ -2555,7 +2707,8 @@ fn build_block_with_profile(
             | BlockBuildProfile::S0_09NativeXchgRaxRbx
             | BlockBuildProfile::S0_09NativeAddRaxImm8
             | BlockBuildProfile::S0_09NativeCmpRaxImm8 => false,
-            BlockBuildProfile::S0_09NativeSubRaxImm8 => false,
+            BlockBuildProfile::S0_09NativeSubRaxImm8
+            | BlockBuildProfile::S0_09NativeMovRaxImm32 => false,
         };
         if complete_bounded_profile {
             return Ok(finish(
@@ -2948,6 +3101,89 @@ mod tests {
         assert!(matches!(
             S0_09NopXchgRaxRbxAdmission::from_code(view),
             Err(S0_09NopAdmissionError::BranchTargetNotBoundary { target: 0x3d03, .. })
+        ));
+    }
+
+    #[test]
+    fn mov_rax_imm32_admission_sign_extends_and_rejects_neighbors() {
+        for raw in [
+            0x0000_0000u32,
+            0x0000_0001,
+            0xffff_ffff,
+            0x7fff_ffff,
+            0x8000_0000,
+            0x8000_0001,
+            0x1234_5678,
+            0x8765_4321,
+            0xaaaa_5555,
+            0x5555_aaaa,
+        ] {
+            let immediate = raw.to_le_bytes();
+            let bytes = [
+                0x48,
+                0xc7,
+                0xc0,
+                immediate[0],
+                immediate[1],
+                immediate[2],
+                immediate[3],
+            ];
+            let view = CodeView::new(0x2e00, &bytes).unwrap();
+            let admission = S0_09NopMovRaxImm32Admission::from_code(view).unwrap();
+            let expected = raw as i32 as i64 as u64;
+            assert!(admission.admits_mov_rax_imm32(0x2e00));
+            assert_eq!(admission.mov_rax_imm32_value(0x2e00), Some(expected));
+            assert!(!admission.admits_nop(0x2e00));
+            assert!(S0_09NopAdmission::from_code(view).is_err());
+
+            let mut memory = CodeMemory::full_code(view);
+            let decoded =
+                long_decode::decode(&mut memory, 0x2e00, AccessContext::default()).unwrap();
+            assert!(is_exact_mov_rax_imm32(decoded, &bytes));
+            if raw == 0x8765_4321 {
+                assert_eq!(expected, 0xffff_ffff_8765_4321);
+            }
+        }
+
+        let imm64 = [0x48, 0xb8, 0x21, 0x43, 0x65, 0x87, 0x00, 0x00, 0x00, 0x00];
+        let view = CodeView::new(0x2e80, &imm64).unwrap();
+        let mut memory = CodeMemory::full_code(view);
+        let decoded = long_decode::decode(&mut memory, 0x2e80, AccessContext::default()).unwrap();
+        assert!(!is_exact_mov_rax_imm32(decoded, &imm64));
+        // Existing baseline MOV RAX,imm64 remains a distinct accepted shape.
+        assert!(S0_09NopAdmission::from_code(view).is_ok());
+        assert!(S0_09NopMovRaxImm32Admission::from_code(view).is_ok());
+
+        for bytes in [
+            &[0x48, 0xc7, 0xc1, 1, 0, 0, 0][..],       // other destination
+            &[0x49, 0xc7, 0xc0, 1, 0, 0, 0][..],       // R8 destination
+            &[0x48, 0xc7, 0x00, 1, 0, 0, 0][..],       // memory destination
+            &[0x48, 0xc7, 0xc8, 1, 0, 0, 0][..],       // /1
+            &[0x48, 0xc7, 0xd0, 1, 0, 0, 0][..],       // /2
+            &[0xc7, 0xc0, 1, 0, 0, 0][..],             // W32 zero-extending form
+            &[0x66, 0x48, 0xc7, 0xc0, 1, 0, 0, 0][..], // operand override
+            &[0x67, 0x48, 0xc7, 0xc0, 1, 0, 0, 0][..], // address override
+            &[0x2e, 0x48, 0xc7, 0xc0, 1, 0, 0, 0][..], // segment prefix
+            &[0xf3, 0x48, 0xc7, 0xc0, 1, 0, 0, 0][..], // REP prefix
+            &[0x48, 0x40, 0xc7, 0xc0, 1, 0, 0, 0][..], // extra REX
+            &[0x48, 0xc6, 0xc0, 1][..],                // byte MOV immediate
+            &[0x48, 0xc7, 0xc0][..],
+            &[0x48, 0xc7, 0xc0, 1][..],
+            &[0x48, 0xc7, 0xc0, 1, 0][..],
+            &[0x48, 0xc7, 0xc0, 1, 0, 0][..],
+        ] {
+            let view = CodeView::new(0x2f00, bytes).unwrap();
+            assert!(
+                S0_09NopMovRaxImm32Admission::from_code(view).is_err(),
+                "{bytes:02x?}"
+            );
+        }
+
+        let branch_into_immediate = [0x74, 0x03, 0x48, 0xc7, 0xc0, 0, 0, 0, 0];
+        let view = CodeView::new(0x3e00, &branch_into_immediate).unwrap();
+        assert!(matches!(
+            S0_09NopMovRaxImm32Admission::from_code(view),
+            Err(S0_09NopAdmissionError::BranchTargetNotBoundary { target: 0x3e05, .. })
         ));
     }
 

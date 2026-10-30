@@ -2508,6 +2508,31 @@ emitter, compiler и host identity; сохранены прежние identities
 подтверждены. Mini/performance отложены до конца Stage 3. См.
 [S3-33j report](../reports/STAGE_3_S3-33j_2026-10-30.md).
 
+#### S3-33k. Exact native MOV RAX,sign-extended imm32
+
+Добавить отдельный opt-in uncached profile только для bare `48 C7 C0 id`,
+точно семь байтов. Admission проверяет decoder-owned `MovImmediate`, W64 RAX,
+`/0`, длину 7 и соответствие signed-extended decoded value исходным четырём
+little-endian bytes. Использовать сохранённый decoded value; не повторять
+расширение знака в JIT. Формы других `/digit`, destination/register/memory,
+width, prefixes, `C6`, truncation и branch внутрь imm32 не входят. Selector
+нового профиля отклоняет `48 B8 imm64`; прежний baseline B8 profile остаётся
+неизменным.
+
+Lowering — Constant→WriteGpr(RAX) и один commit; остальные GPR, RFLAGS и
+pending flags сохраняются, без arithmetic, data-memory access или helper.
+Host differential проверяет ADD/CMP→MOV→различимый JZ/JNZ.
+Eager/candidate compile и dispatch APIs отдельные. Проверить репрезентативные
+immediate/pattern values, full-state interpreter parity, сохранение флагов и
+pending ADD/CMP перед MOV с последующим JZ/JNZ, несколько MOV и последующих
+writers, exits/fallback, budget/STOP, truncation 1..6, PC map и отсутствие
+arithmetic/memory/helper операций; сохранить B8 baseline regression. Не
+заявлять exhaustive перебор 2^32 значений. Добавить admission/compiler/host
+exact gates и fail-closed omission checks. Точного физического oracle для
+`48 C7 C0` сейчас нет; зафиксировать только локальные differential evidence.
+Mini/performance отложены до конца Stage 3; Stage 2 и owner/MMU вне scope.
+См. [S3-33k report](../reports/STAGE_3_S3-33k_2026-10-30.md).
+
 ## 9. Проверка, производительность и интеграция
 
 ### S3-34. Собрать corpus и проверить сам harness

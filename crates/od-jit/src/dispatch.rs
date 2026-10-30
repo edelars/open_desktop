@@ -21,6 +21,8 @@ use crate::block_compile::{
     compile_block_for_native_lea_rax_rbx_demand_flags_candidate,
     compile_block_for_native_lea_rax_rbx_disp8,
     compile_block_for_native_lea_rax_rbx_disp8_demand_flags_candidate,
+    compile_block_for_native_mov_rax_imm32,
+    compile_block_for_native_mov_rax_imm32_demand_flags_candidate,
     compile_block_for_native_neg_rax, compile_block_for_native_neg_rax_demand_flags_candidate,
     compile_block_for_native_not_rax, compile_block_for_native_not_rax_demand_flags_candidate,
     compile_block_for_native_sub_rax_imm8,
@@ -107,6 +109,7 @@ pub use crate::block::S0_09NopDecRaxAdmission as DecRaxInterpreterFallbackAdmiss
 pub use crate::block::S0_09NopIncRaxAdmission as IncRaxInterpreterFallbackAdmission;
 pub use crate::block::S0_09NopLeaRaxRbxAdmission as LeaRaxRbxInterpreterFallbackAdmission;
 pub use crate::block::S0_09NopLeaRaxRbxDisp8Admission as LeaRaxRbxDisp8InterpreterFallbackAdmission;
+pub use crate::block::S0_09NopMovRaxImm32Admission as MovRaxImm32InterpreterFallbackAdmission;
 pub use crate::block::S0_09NopNegRaxAdmission as NegRaxInterpreterFallbackAdmission;
 pub use crate::block::S0_09NopNotRaxAdmission as NotRaxInterpreterFallbackAdmission;
 pub use crate::block::S0_09NopSubRaxImm8Admission as SubRaxImm8InterpreterFallbackAdmission;
@@ -1985,6 +1988,46 @@ pub fn run_with_native_sub_rax_imm8_demand_flags_candidate<E: ControlledBlockExe
     )
 }
 
+/// Opt-in uncached dispatcher for exact bare `MOV RAX, sign-extended imm32`.
+pub fn run_with_native_mov_rax_imm32<E: ControlledBlockExecutor>(
+    code: CodeView<'_>,
+    admission: &MovRaxImm32InterpreterFallbackAdmission,
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    executor: &mut E,
+) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
+    run_with_nop_fallback_strategy(
+        code,
+        FallbackAdmission::NopMovRaxImm32(admission),
+        state,
+        total_budget,
+        control,
+        executor,
+        NopFallbackCompilation::NativeMovRaxImm32,
+    )
+}
+
+/// Demand-flags candidate for exact bare `MOV RAX, sign-extended imm32`.
+pub fn run_with_native_mov_rax_imm32_demand_flags_candidate<E: ControlledBlockExecutor>(
+    code: CodeView<'_>,
+    admission: &MovRaxImm32InterpreterFallbackAdmission,
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    executor: &mut E,
+) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
+    run_with_nop_fallback_strategy(
+        code,
+        FallbackAdmission::NopMovRaxImm32(admission),
+        state,
+        total_budget,
+        control,
+        executor,
+        NopFallbackCompilation::NativeMovRaxImm32DemandFlagsCandidate,
+    )
+}
+
 #[derive(Clone, Copy)]
 enum NopFallbackCompilation {
     Eager,
@@ -2009,6 +2052,8 @@ enum NopFallbackCompilation {
     NativeCmpRaxImm8DemandFlagsCandidate,
     NativeSubRaxImm8,
     NativeSubRaxImm8DemandFlagsCandidate,
+    NativeMovRaxImm32,
+    NativeMovRaxImm32DemandFlagsCandidate,
 }
 
 #[derive(Clone, Copy)]
@@ -2024,6 +2069,7 @@ enum FallbackAdmission<'a> {
     NopAddRaxImm8(&'a AddRaxImm8InterpreterFallbackAdmission),
     NopCmpRaxImm8(&'a CmpRaxImm8InterpreterFallbackAdmission),
     NopSubRaxImm8(&'a SubRaxImm8InterpreterFallbackAdmission),
+    NopMovRaxImm32(&'a MovRaxImm32InterpreterFallbackAdmission),
 }
 
 impl FallbackAdmission<'_> {
@@ -2040,6 +2086,7 @@ impl FallbackAdmission<'_> {
             Self::NopAddRaxImm8(admission) => admission.matches_code(code),
             Self::NopCmpRaxImm8(admission) => admission.matches_code(code),
             Self::NopSubRaxImm8(admission) => admission.matches_code(code),
+            Self::NopMovRaxImm32(admission) => admission.matches_code(code),
         }
     }
     fn contains(self, rip: u64) -> bool {
@@ -2055,6 +2102,7 @@ impl FallbackAdmission<'_> {
             Self::NopAddRaxImm8(admission) => admission.contains(rip),
             Self::NopCmpRaxImm8(admission) => admission.contains(rip),
             Self::NopSubRaxImm8(admission) => admission.contains(rip),
+            Self::NopMovRaxImm32(admission) => admission.contains(rip),
         }
     }
     fn admits_nop(self, rip: u64) -> bool {
@@ -2070,6 +2118,7 @@ impl FallbackAdmission<'_> {
             Self::NopAddRaxImm8(admission) => admission.admits_nop(rip),
             Self::NopCmpRaxImm8(admission) => admission.admits_nop(rip),
             Self::NopSubRaxImm8(admission) => admission.admits_nop(rip),
+            Self::NopMovRaxImm32(admission) => admission.admits_nop(rip),
         }
     }
     fn admits_inc_rax(self, rip: u64) -> bool {
@@ -2082,7 +2131,8 @@ impl FallbackAdmission<'_> {
             | Self::NopLeaRaxRbxDisp8(_)
             | Self::NopXchgRaxRbx(_)
             | Self::NopAddRaxImm8(_)
-            | Self::NopCmpRaxImm8(_) => false,
+            | Self::NopCmpRaxImm8(_)
+            | Self::NopMovRaxImm32(_) => false,
             Self::NopSubRaxImm8(_) => false,
             Self::NopIncRax(admission) => admission.admits_inc_rax(rip),
         }
@@ -2097,7 +2147,8 @@ impl FallbackAdmission<'_> {
             | Self::NopLeaRaxRbxDisp8(_)
             | Self::NopXchgRaxRbx(_)
             | Self::NopAddRaxImm8(_)
-            | Self::NopCmpRaxImm8(_) => false,
+            | Self::NopCmpRaxImm8(_)
+            | Self::NopMovRaxImm32(_) => false,
             Self::NopSubRaxImm8(_) => false,
             Self::NopDecRax(admission) => admission.admits_dec_rax(rip),
         }
@@ -2147,6 +2198,12 @@ impl FallbackAdmission<'_> {
     fn admits_sub_rax_imm8(self, rip: u64) -> bool {
         match self {
             Self::NopSubRaxImm8(admission) => admission.admits_sub_rax_imm8(rip),
+            _ => false,
+        }
+    }
+    fn admits_mov_rax_imm32(self, rip: u64) -> bool {
+        match self {
+            Self::NopMovRaxImm32(admission) => admission.admits_mov_rax_imm32(rip),
             _ => false,
         }
     }
@@ -2454,6 +2511,21 @@ fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
                 ) => compile_block_for_native_sub_rax_imm8_demand_flags_candidate(
                     code, state.rip, admission,
                 ),
+                (FallbackAdmission::NopMovRaxImm32(_), NopFallbackCompilation::Eager)
+                | (
+                    FallbackAdmission::NopMovRaxImm32(_),
+                    NopFallbackCompilation::DemandFlagsCandidate,
+                ) => unreachable!("MOV imm32 admission is native-only"),
+                (
+                    FallbackAdmission::NopMovRaxImm32(admission),
+                    NopFallbackCompilation::NativeMovRaxImm32,
+                ) => compile_block_for_native_mov_rax_imm32(code, state.rip, admission),
+                (
+                    FallbackAdmission::NopMovRaxImm32(admission),
+                    NopFallbackCompilation::NativeMovRaxImm32DemandFlagsCandidate,
+                ) => compile_block_for_native_mov_rax_imm32_demand_flags_candidate(
+                    code, state.rip, admission,
+                ),
                 (
                     FallbackAdmission::Nop(_)
                     | FallbackAdmission::NopIncRax(_)
@@ -2496,7 +2568,8 @@ fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
                     || admission.admits_xchg_rax_rbx(rip)
                     || admission.admits_add_rax_imm8(rip)
                     || admission.admits_cmp_rax_imm8(rip)
-                    || admission.admits_sub_rax_imm8(rip))
+                    || admission.admits_sub_rax_imm8(rip)
+                    || admission.admits_mov_rax_imm32(rip))
                     || rip != state.rip
                 {
                     return Err(DispatchError::NoNativePrefix { rip });
@@ -2695,6 +2768,7 @@ fn step_admitted_fallback<E>(
     let is_lea_rax_rbx_disp8 = admission.admits_lea_rax_rbx_disp8(rip);
     let is_add_rax_imm8 = admission.admits_add_rax_imm8(rip);
     let is_cmp_rax_imm8 = admission.admits_cmp_rax_imm8(rip);
+    let is_mov_rax_imm32 = admission.admits_mov_rax_imm32(rip);
     if !admission.matches_code(code)
         || !(is_nop
             || is_inc_rax
@@ -2704,7 +2778,8 @@ fn step_admitted_fallback<E>(
             || is_lea_rax_rbx
             || is_lea_rax_rbx_disp8
             || is_add_rax_imm8
-            || is_cmp_rax_imm8)
+            || is_cmp_rax_imm8
+            || is_mov_rax_imm32)
     {
         return Err(DispatchError::InterpreterInstructionNotAdmitted { rip });
     }
@@ -2715,7 +2790,9 @@ fn step_admitted_fallback<E>(
         return Ok(Some(exit));
     }
 
-    let length = if is_add_rax_imm8 || is_cmp_rax_imm8 || is_lea_rax_rbx_disp8 {
+    let length = if is_mov_rax_imm32 {
+        7
+    } else if is_add_rax_imm8 || is_cmp_rax_imm8 || is_lea_rax_rbx_disp8 {
         4
     } else if is_inc_rax || is_dec_rax || is_neg_rax || is_not_rax || is_lea_rax_rbx {
         3

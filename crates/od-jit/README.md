@@ -260,6 +260,21 @@ differential evidence does not confirm physical source bytes; Mini and
 performance checks remain deferred until Stage 3 ends. See the
 [S3-33j report](../../docs/reports/STAGE_3_S3-33j_2026-10-30.md).
 
+S3-33k adds a separate uncached opt-in profile for exact bare `MOV RAX,
+sign-extended imm32` bytes `48 C7 C0 id` (seven bytes). Admission requires
+decoder-owned W64 RAX `/0`, exact length and exact opcode/register bytes, and
+checks that the decoder-owned immediate agrees with the little-endian source
+bytes. Lowering consumes the decoded signed-extended constant through
+Constant→WriteGpr and one commit, preserving all other GPRs, RFLAGS, and
+pending flag writer state without arithmetic, data-memory, or helper
+operations. Local parity covers preceding register ADD/CMP writers and JZ/JNZ
+consumers across MOV.
+Eager and demand-flags candidate compile/dispatch APIs remain separate. The
+existing `48 B8 imm64` profile is unchanged. Local evidence is specific to the
+exact new bytes; it does not establish a physical-x86 oracle for this encoding.
+Mini and performance checks remain deferred until Stage 3 ends. See the
+[S3-33k report](../../docs/reports/STAGE_3_S3-33k_2026-10-30.md).
+
 S3-33i adds a separate uncached opt-in profile for the exact bare bytes
 `48 87 D8` (`XCHG RAX,RBX`). Admission checks both the decoded W64 register
 pair and all three source bytes; equivalent ModRM/short-register forms, self

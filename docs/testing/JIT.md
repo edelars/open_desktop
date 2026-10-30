@@ -225,6 +225,30 @@ differential evidence does not confirm physical source bytes. Mini and
 performance checks remain deferred until Stage 3 ends; see the
 [S3-33j report](../reports/STAGE_3_S3-33j_2026-10-30.md).
 
+## S3-33k: exact native MOV RAX,sign-extended imm32
+
+Run the three exact admission, compiler and host parity gates from
+`python3 tests/cpu/stage3_harness.py --suite local`. The uncached opt-in profile
+admits only bare `48 C7 C0 id` (length 7), and verifies decoder-owned W64 RAX,
+`/0`, and agreement between the decoded signed-extended constant and source
+bytes. The existing `48 B8 imm64` baseline profile remains unchanged.
+
+The local cases sample immediate values and byte/bit patterns, verify
+little-endian decoding and sign extension, compare full state against the
+interpreter, and preserve architectural flags and pending ADD/CMP writer state
+across MOV. Distinguishable JZ/JNZ outcomes verify the previous writer's flags
+survive the MOV. Compiler
+checks cover eager and demand-flags candidate lowering, following branch
+consumers, PC-map entries, and `MOV;NOP` lowering to a `NeedInterpreter` exit.
+Host tests compare native `MOV;NOP` fallback retirement with the interpreter
+and cover budget/STOP before entry and immediately after the seven-byte MOV.
+Negative admission cases cover alternate
+register/group/width/prefix/C6/truncation and branch-interior forms. These are
+representative local differential checks, not an exhaustive enumeration of
+2^32 immediates or an exact physical-x86 oracle. Mini and performance checks
+remain deferred until Stage 3 ends; Stage 2 and owner/MMU are outside this
+slice. See the [S3-33k report](../reports/STAGE_3_S3-33k_2026-10-30.md).
+
 ## Срез A: один register-only блок
 
 1. Использовать только точные S0-09 формы из JIT contract и fixtures с

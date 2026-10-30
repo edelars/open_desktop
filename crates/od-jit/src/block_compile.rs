@@ -7,8 +7,9 @@ use crate::block::{
     self, AdmittedInstructionBoundaries, BlockLimits, BlockStopReason, BuildError, BuildOutcome,
     CodeView, DecodeBoundary, S0_09NopAddRaxImm8Admission, S0_09NopAdmission,
     S0_09NopCmpRaxImm8Admission, S0_09NopDecRaxAdmission, S0_09NopIncRaxAdmission,
-    S0_09NopLeaRaxRbxAdmission, S0_09NopLeaRaxRbxDisp8Admission, S0_09NopNegRaxAdmission,
-    S0_09NopNotRaxAdmission, S0_09NopSubRaxImm8Admission, S0_09NopXchgRaxRbxAdmission,
+    S0_09NopLeaRaxRbxAdmission, S0_09NopLeaRaxRbxDisp8Admission, S0_09NopMovRaxImm32Admission,
+    S0_09NopNegRaxAdmission, S0_09NopNotRaxAdmission, S0_09NopSubRaxImm8Admission,
+    S0_09NopXchgRaxRbxAdmission,
 };
 use crate::block_emitter::{
     BlockEmitterError, EmittedCheckedLoadBlockV2, EmittedCheckedStoreBlockV2, EmittedRuntimeBlock,
@@ -1100,6 +1101,81 @@ fn compile_native_sub_rax_imm8_inner(
     compile_lowered(code.code_end(), lowered, strategy)
 }
 
+/// Compile exact bare W64 `MOV RAX, sign-extended imm32` eagerly.
+pub fn compile_block_for_native_mov_rax_imm32(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopMovRaxImm32Admission,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    compile_native_mov_rax_imm32_inner(
+        code,
+        entry_rip,
+        admission,
+        crate::block_emitter::FlagMaterializationStrategy::Eager,
+    )
+}
+
+/// Compile the demand-flags candidate for exact bare MOV RAX, sign-extended imm32.
+pub fn compile_block_for_native_mov_rax_imm32_demand_flags_candidate(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopMovRaxImm32Admission,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    compile_native_mov_rax_imm32_inner(
+        code,
+        entry_rip,
+        admission,
+        crate::block_emitter::FlagMaterializationStrategy::DemandDrivenCandidate,
+    )
+}
+
+fn compile_native_mov_rax_imm32_inner(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopMovRaxImm32Admission,
+    strategy: crate::block_emitter::FlagMaterializationStrategy,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    if !admission.matches_code(code) {
+        return Err(BlockCompileError::NopAdmissionDoesNotMatchCode);
+    }
+    if !admission.contains(entry_rip) {
+        return Err(BlockCompileError::NopEntryNotAdmitted { entry_rip });
+    }
+    let built = block::build_block_for_native_mov_rax_imm32(
+        code,
+        entry_rip,
+        AccessContext::default(),
+        BlockLimits::default(),
+    )
+    .map_err(BlockCompileError::Build)?;
+    let lowered = match lowering::lower_for_native_mov_rax_imm32(&built, admission)
+        .map_err(BlockCompileError::Lowering)?
+    {
+        LoweringOutcome::Program(lowered) => lowered,
+        LoweringOutcome::NoNativePrefix {
+            rip,
+            reason,
+            deferred_error,
+        } => {
+            return Ok(BlockCompileOutcome::NoNativePrefix {
+                rip,
+                reason,
+                deferred_error,
+            });
+        }
+    };
+    if let BuildOutcome::Block(block) = &built {
+        for instruction in &block.instructions {
+            for rip in [instruction.guest_rip, instruction.next_rip] {
+                if !admission.contains(rip) {
+                    return Err(BlockCompileError::DispatchBlockBoundaryNotAdmitted { rip });
+                }
+            }
+        }
+    }
+    compile_lowered(code.code_end(), lowered, strategy)
+}
+
 fn compile_native_dec_rax_inner(
     code: CodeView<'_>,
     entry_rip: u64,
@@ -1984,6 +2060,77 @@ mod tests {
             }));
             assert!(compiled.emitted().safe_entry_provenance());
         }
+    }
+
+    #[test]
+    fn native_mov_rax_imm32_compiles_eager_and_candidate_without_flag_helpers() {
+        let code = [
+            0x48, 0xC7, 0xC0, 0x21, 0x43, 0x65, 0x87, // MOV RAX, sign-extended 0x87654321
+            0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00, // MOV RAX, 1
+            0x75, 0x00, // JNZ to code end, consuming incoming flags
+        ];
+        let view = CodeView::new(0xB700, &code).unwrap();
+        let admission = S0_09NopMovRaxImm32Admission::from_code(view).unwrap();
+        assert_eq!(
+            admission.mov_rax_imm32_value(0xB700),
+            Some(0xFFFF_FFFF_8765_4321)
+        );
+        for candidate in [false, true] {
+            let outcome = if candidate {
+                compile_block_for_native_mov_rax_imm32_demand_flags_candidate(
+                    view, 0xB700, &admission,
+                )
+            } else {
+                compile_block_for_native_mov_rax_imm32(view, 0xB700, &admission)
+            }
+            .unwrap();
+            let BlockCompileOutcome::Compiled(compiled) = outcome else {
+                panic!("native MOV-immediate/JNZ should compile");
+            };
+            assert_eq!(compiled.code_end(), 0xB710);
+            assert_eq!(compiled.emitted().pc_map().instruction_count(), 3);
+            assert!(compiled.emitted().pc_map().ranges().iter().any(|range| {
+                range.guest_rip == crate::statepoints::GuestRipSource::Fixed(0xB700)
+            }));
+            assert!(compiled.emitted().pc_map().ranges().iter().any(|range| {
+                range.guest_rip == crate::statepoints::GuestRipSource::Fixed(0xB707)
+            }));
+            assert!(compiled.emitted().safe_entry_provenance());
+        }
+
+        let mov_then_nop = [0x48, 0xC7, 0xC0, 1, 0, 0, 0, 0x90];
+        let fallback_view = CodeView::new(0xB800, &mov_then_nop).unwrap();
+        let fallback_admission = S0_09NopMovRaxImm32Admission::from_code(fallback_view).unwrap();
+        let fallback =
+            compile_block_for_native_mov_rax_imm32(fallback_view, 0xB800, &fallback_admission)
+                .unwrap();
+        let BlockCompileOutcome::Compiled(fallback) = fallback else {
+            panic!("an admitted MOV prefix should compile before NOP fallback");
+        };
+        assert_eq!(fallback.emitted().pc_map().instruction_count(), 1);
+        let built = block::build_block_for_native_mov_rax_imm32(
+            fallback_view,
+            0xB800,
+            AccessContext::default(),
+            BlockLimits::default(),
+        )
+        .unwrap();
+        let LoweringOutcome::Program(lowered) =
+            lowering::lower_for_native_mov_rax_imm32(&built, &fallback_admission).unwrap()
+        else {
+            panic!("MOV prefix should lower before the NOP fallback");
+        };
+        assert!(matches!(
+            lowered.program.operations.last(),
+            Some(Operation::Exit {
+                kind: crate::ir::ExitKind::NeedInterpreter,
+                target_rip: 0xB807,
+            })
+        ));
+        assert!(matches!(
+            compile_block(fallback_view, 0xB800).unwrap(),
+            BlockCompileOutcome::NoNativePrefix { .. }
+        ));
     }
 
     #[test]

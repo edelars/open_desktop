@@ -15,8 +15,9 @@ use crate::block::{
     self, AdmittedInstructionBoundaries, BlockStopReason, BranchTargetResolution, BuildOutcome,
     DecodeBoundary, DecodedInstruction, S0_09NopAddRaxImm8Admission, S0_09NopAdmission,
     S0_09NopCmpRaxImm8Admission, S0_09NopDecRaxAdmission, S0_09NopIncRaxAdmission,
-    S0_09NopLeaRaxRbxAdmission, S0_09NopLeaRaxRbxDisp8Admission, S0_09NopNegRaxAdmission,
-    S0_09NopNotRaxAdmission, S0_09NopSubRaxImm8Admission, S0_09NopXchgRaxRbxAdmission,
+    S0_09NopLeaRaxRbxAdmission, S0_09NopLeaRaxRbxDisp8Admission, S0_09NopMovRaxImm32Admission,
+    S0_09NopNegRaxAdmission, S0_09NopNotRaxAdmission, S0_09NopSubRaxImm8Admission,
+    S0_09NopXchgRaxRbxAdmission,
 };
 use crate::ir::{
     self, BranchCondition, ExitKind, FlagEffect, GuestGpr, GuestInstruction, IntWidth, IntegerKind,
@@ -221,6 +222,7 @@ pub(crate) fn lower_for_native_lea_rax_rbx(
         Some(admission),
         None,
         None,
+        None,
     )
 }
 
@@ -244,6 +246,7 @@ pub(crate) fn lower_for_native_lea_rax_rbx_disp8(
         None,
         None,
         Some(admission),
+        None,
     )
 }
 
@@ -266,6 +269,7 @@ pub(crate) fn lower_for_native_xchg_rax_rbx(
         None,
         None,
         Some(admission),
+        None,
         None,
     )
 }
@@ -330,6 +334,47 @@ pub(crate) fn lower_for_native_sub_rax_imm8(
     )
 }
 
+pub(crate) fn lower_for_native_mov_rax_imm32(
+    outcome: &BuildOutcome,
+    admission: &S0_09NopMovRaxImm32Admission,
+) -> Result<LoweringOutcome, LoweringError> {
+    if let BuildOutcome::Block(block) = outcome {
+        for instruction in &block.instructions {
+            if let Some(admitted_value) = admission.mov_rax_imm32_value(instruction.guest_rip) {
+                if !matches!(instruction.decoded.operation,
+                    DecodedOperation::MovImmediate {
+                        dst: Operand::Register(dst), value,
+                    } if dst.register() == od_isa::Register::Rax
+                        && dst.size() == od_isa::OperandSize::Qword
+                        && value == admitted_value)
+                {
+                    return Err(LoweringError::InvalidDecodedForm {
+                        guest_rip: instruction.guest_rip,
+                    });
+                }
+            }
+        }
+    }
+    lower_with_admission_and_lea(
+        outcome,
+        Some(admission.boundaries()),
+        None,
+        None,
+        None,
+        false,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(admission),
+    )
+}
+
 fn lower_with_admission(
     outcome: &BuildOutcome,
     admission: Option<&AdmittedInstructionBoundaries>,
@@ -360,6 +405,7 @@ fn lower_with_admission(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -379,6 +425,7 @@ fn lower_with_admission_and_lea(
     native_lea_rax_rbx_admission: Option<&S0_09NopLeaRaxRbxAdmission>,
     native_xchg_rax_rbx_admission: Option<&S0_09NopXchgRaxRbxAdmission>,
     native_lea_rax_rbx_disp8_admission: Option<&S0_09NopLeaRaxRbxDisp8Admission>,
+    native_mov_rax_imm32_admission: Option<&S0_09NopMovRaxImm32Admission>,
 ) -> Result<LoweringOutcome, LoweringError> {
     let block = match outcome {
         BuildOutcome::NoBlock(no_block) => {
@@ -541,6 +588,17 @@ fn lower_with_admission_and_lea(
                                 && destination.size() == od_isa::OperandSize::Qword
                                 && value == expected)
                         })
+            }) || native_mov_rax_imm32_admission.is_some_and(|admission| {
+                admission.admits_nop(*guest_rip)
+                    && matches!(decoded.operation, DecodedOperation::Nop)
+                    || admission.mov_rax_imm32_value(*guest_rip).is_some_and(|expected| {
+                        matches!(decoded.operation,
+                            DecodedOperation::MovImmediate {
+                                dst: Operand::Register(destination), value,
+                            } if destination.register() == od_isa::Register::Rax
+                                && destination.size() == od_isa::OperandSize::Qword
+                                && value == expected)
+                    })
             }) =>
         {
             (
@@ -622,6 +680,8 @@ fn lower_with_admission_and_lea(
             .is_some_and(|proof| proof.admits_cmp_rax_imm8(instruction.guest_rip));
         let admitted_native_sub_rax_imm8 = native_sub_rax_imm8_admission
             .is_some_and(|proof| proof.admits_sub_rax_imm8(instruction.guest_rip));
+        let admitted_native_mov_rax_imm32 = native_mov_rax_imm32_admission
+            .and_then(|proof| proof.mov_rax_imm32_value(instruction.guest_rip));
         if !admitted_native_inc
             && !admitted_native_dec
             && !admitted_native_neg
@@ -632,6 +692,7 @@ fn lower_with_admission_and_lea(
             && !admitted_native_add_rax_imm8
             && !admitted_native_cmp_rax_imm8
             && !admitted_native_sub_rax_imm8
+            && admitted_native_mov_rax_imm32.is_none()
             && !block::is_s0_09_form(instruction.decoded)
             && !block::is_checked_qword_load_form(instruction.decoded)
             && !block::is_checked_qword_store_form(instruction.decoded)
@@ -703,6 +764,8 @@ fn lower_with_admission_and_lea(
                 &mut next_temp,
                 &mut operations,
             )?;
+        } else if let Some(value) = admitted_native_mov_rax_imm32 {
+            lower_exact_mov_rax_imm32(instruction, index, value, &mut next_temp, &mut operations)?;
         } else {
             lower_instruction(instruction, index, &mut next_temp, &mut operations)?;
         }
@@ -901,6 +964,41 @@ fn deferred_error(reason: &BlockStopReason) -> Option<DecodeBoundary> {
         BlockStopReason::DecodeBoundary(boundary) => Some(boundary.clone()),
         _ => None,
     }
+}
+
+fn lower_exact_mov_rax_imm32(
+    instruction: &DecodedInstruction,
+    index: usize,
+    value: u64,
+    next_temp: &mut u32,
+    operations: &mut Vec<Operation>,
+) -> Result<(), LoweringError> {
+    let invalid = || LoweringError::InvalidDecodedForm {
+        guest_rip: instruction.guest_rip,
+    };
+    if !matches!(instruction.decoded.operation,
+        DecodedOperation::MovImmediate {
+            dst: Operand::Register(destination), value: decoded_value,
+        } if destination.register() == od_isa::Register::Rax
+            && destination.size() == od_isa::OperandSize::Qword
+            && decoded_value == value)
+    {
+        return Err(invalid());
+    }
+    operations.push(Operation::BeginInstruction { index });
+    let constant = allocate_temp(next_temp);
+    operations.push(Operation::Constant {
+        dst: constant,
+        width: IntWidth::W64,
+        value,
+    });
+    operations.push(Operation::WriteGpr {
+        register: crate::ir::GuestGpr(0),
+        src: constant,
+        width: IntWidth::W64,
+    });
+    operations.push(Operation::CommitInstruction { index });
+    Ok(())
 }
 
 fn lower_exact_inc_rax(

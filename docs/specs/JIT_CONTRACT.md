@@ -1567,6 +1567,29 @@ differential coverage is specific to these exact bytes; no physical exact-byte
 confirmation is claimed. Mini and performance remain deferred until Stage 3
 ends. See [S3-33j report](../reports/STAGE_3_S3-33j_2026-10-30.md).
 
+### S3-33k: opt-in exact native MOV RAX,sign-extended imm32
+
+Separate uncached compiler and dispatcher entry points admit only the seven
+bare bytes `48 C7 C0 id`, where `id` is the little-endian immediate. Admission
+binds these bytes to decoder-owned W64 `MovImmediate` with destination RAX,
+ModRM `/0`, and length 7; the decoder-owned signed-extended value must agree
+with the four source immediate bytes. No other opcode extension, register,
+memory destination, operand/address width, prefix, alternate `48 B8 imm64`
+encoding, or truncated source is admitted. The existing `48 B8 imm64`
+profile is unchanged.
+
+Lowering uses the decoder-owned signed-extended value as a W64 constant and
+performs `WriteGpr(RAX)` with one instruction commit. Every other GPR,
+incoming full RFLAGS/definedness, and pending flag-writer descriptor and
+operands are preserved. Local differential coverage includes preceding
+register ADD/CMP writers followed by MOV and JZ/JNZ consumers. The operation
+contains no arithmetic, data-memory access, or helper call.
+Eager and demand-flags candidate compile/dispatch APIs remain separate and
+uncached. Local differential coverage is specific to the exact bytes; no exact
+physical-x86 source-byte confirmation is claimed. Mini/performance checks
+remain deferred until Stage 3 ends. See
+[S3-33k report](../reports/STAGE_3_S3-33k_2026-10-30.md).
+
 ### S3-29d: uncached arithmetic-to-checked-load handoff
 
 The bounded host fixture composes existing eager and demand-flags native
