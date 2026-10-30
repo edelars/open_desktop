@@ -21621,6 +21621,274 @@ fn subpd_literal_pairs_and_bounded_range_exception_matrix() {
 }
 
 #[test]
+fn subsd_literal_scalar_pairs_oracle_and_backend_denial() {
+    use od_testkit::v2::{Profile, SubsdControlSnapshot};
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_37ap_subsd_xmm0_xmm1.case.json");
+    let bytes = fs::read(path).unwrap();
+    let (input, result) = run(&bytes, "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let Observation::Available { value: snapshot } = &result.snapshot else {
+        panic!("snapshot available")
+    };
+    assert_eq!(
+        snapshot.state.sse.as_ref().unwrap().xmm[0],
+        "0000000000000040000000000000f03f"
+    );
+    assert_eq!(snapshot.state.sse.as_ref().unwrap().mxcsr.get(), 0x1f80);
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(&bytes, backend, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+    }
+
+    let mut fixture = input.fixture.clone();
+    fixture.profile = Profile::LongSubsdRegistersV1;
+    fixture.subsd_controls = Some(SubsdControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: true,
+    });
+    let original_rip = fixture.initial_state.rip.get();
+    let set_lane = |case: &mut Fixture, xmm: usize, lane: usize, raw: u64| {
+        let encoded = raw
+            .to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        case.initial_state.sse.as_mut().unwrap().xmm[xmm]
+            .replace_range(lane * 16..lane * 16 + 16, &encoded);
+    };
+    let set_encoding = |case: &mut Fixture, destination: u8, source: u8| {
+        let mut bytes = vec![0xf2];
+        if destination >= 8 || source >= 8 {
+            bytes.push(0x40 | ((destination >> 1) & 4) | (source >> 3));
+        }
+        bytes.extend([0x0f, 0x5c, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+        case.memory[0].initial_bytes_hex = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        case.memory[0].length = bytes.len() as u32;
+        case.memory[0].comparison_mask_hex = "ff".repeat(bytes.len());
+        case.stop_rip = Some(HexU64(original_rip + bytes.len() as u64));
+        case.expected_exit = ExpectedExit::StopAddress;
+    };
+
+    for destination in 0u8..16 {
+        for source in 0u8..16 {
+            let mut case = fixture.clone();
+            set_encoding(&mut case, destination, source);
+            case.case_id = format!("s2_37ap_pair_{destination}_{source}");
+            case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+            set_lane(
+                &mut case,
+                usize::from(destination),
+                0,
+                0x4008_0000_0000_0000,
+            );
+            set_lane(
+                &mut case,
+                usize::from(destination),
+                1,
+                0x4000_0000_0000_0000 | u64::from(destination),
+            );
+            if destination != source {
+                set_lane(&mut case, usize::from(source), 0, 0x3ff0_0000_0000_0000);
+            }
+            if destination != source {
+                set_lane(&mut case, usize::from(source), 1, 0x7ff0_0000_0000_0001); // Ignored signaling-NaN poison.
+            }
+            let (input, output) = run(&case.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&input, &output, &output).unwrap();
+            let Observation::Available { value: snapshot } = output.snapshot else {
+                panic!("snapshot available")
+            };
+            let xmm = &snapshot.state.sse.as_ref().unwrap().xmm[usize::from(destination)];
+            let low = if destination == source {
+                0u64
+            } else {
+                0x4000_0000_0000_0000
+            };
+            assert_eq!(
+                &xmm[..16],
+                &format!(
+                    "{}",
+                    low.to_le_bytes()
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<String>()
+                )
+            );
+            assert_eq!(
+                &xmm[16..],
+                &format!(
+                    "{}",
+                    (0x4000_0000_0000_0000u64 | u64::from(destination))
+                        .to_le_bytes()
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<String>()
+                )
+            );
+        }
+    }
+
+    let run_vector = |name: &str, lhs: u64, rhs: u64, mxcsr: u32, expected_exit: ExpectedExit| {
+        let mut case = fixture.clone();
+        case.case_id = format!("s2_37ap_{name}");
+        case.expected_exit = expected_exit;
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(u64::from(mxcsr));
+        set_lane(&mut case, 0, 0, lhs);
+        set_lane(&mut case, 1, 0, rhs);
+        let (loaded, output) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&loaded, &output, &output).unwrap();
+        output
+    };
+    let quiet = run_vector(
+        "qnan",
+        0x7ff8_0000_0000_1234,
+        0x3ff0_0000_0000_0000,
+        0x1f80,
+        ExpectedExit::StopAddress,
+    );
+    let Observation::Available { value } = quiet.snapshot else {
+        panic!("snapshot available")
+    };
+    assert!(value.state.sse.unwrap().xmm[0].starts_with("341200000000f87f"));
+    let snan = run_vector(
+        "snan",
+        0x7ff0_0000_0000_0001,
+        0x3ff0_0000_0000_0000,
+        0x1f80,
+        ExpectedExit::StopAddress,
+    );
+    let Observation::Available { value } = snan.snapshot else {
+        panic!("snapshot available")
+    };
+    assert_eq!(value.state.sse.unwrap().mxcsr.get() & 0x3f, 1);
+    let invalid_inf = run_vector(
+        "invalid_infinities",
+        0x7ff0_0000_0000_0000,
+        0x7ff0_0000_0000_0000,
+        0x1f80,
+        ExpectedExit::StopAddress,
+    );
+    let Observation::Available { value } = invalid_inf.snapshot else {
+        panic!("snapshot available")
+    };
+    assert_eq!(&value.state.sse.unwrap().xmm[0][..16], "000000000000f8ff");
+    let denormal = run_vector("denormal", 1, 0, 0x1f80, ExpectedExit::StopAddress);
+    let Observation::Available { value } = denormal.snapshot else {
+        panic!("snapshot available")
+    };
+    assert_eq!(value.state.sse.unwrap().mxcsr.get() & 0x3f, 2);
+    let ftz = run_vector("ftz_tiny", 1, 0, 0x9f80, ExpectedExit::StopAddress);
+    let Observation::Available { value } = ftz.snapshot else {
+        panic!("snapshot available")
+    };
+    assert_eq!(value.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f, 0x32);
+    assert_eq!(&value.state.sse.unwrap().xmm[0][..16], "0000000000000000");
+    let overflow = run_vector(
+        "masked_overflow",
+        0x7fef_ffff_ffff_ffff,
+        0xffef_ffff_ffff_ffff,
+        0x1f80,
+        ExpectedExit::StopAddress,
+    );
+    let Observation::Available { value } = overflow.snapshot else {
+        panic!("snapshot available")
+    };
+    assert_eq!(value.state.sse.unwrap().mxcsr.get() & 0x3f, 0x28);
+    let inexact_fault = run_vector(
+        "unmasked_precision",
+        0x3ff0_0000_0000_0000,
+        0x3c90_0000_0000_0000,
+        0x0f80,
+        ExpectedExit::Exception,
+    );
+    let Observation::Available { value } = inexact_fault.snapshot else {
+        panic!("snapshot available")
+    };
+    let Observation::Available {
+        value: Some(exception),
+    } = value.exception
+    else {
+        panic!("exception available")
+    };
+    assert_eq!(exception.vector, 19);
+    assert_eq!(value.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f, 0x20);
+    assert_eq!(
+        value.state.sse.as_ref().unwrap().xmm[0],
+        "000000000000f03f000000000000f03f"
+    );
+    let de_fault = run_vector("unmasked_denormal", 1, 0, 0x1e80, ExpectedExit::Exception);
+    let Observation::Available { value } = de_fault.snapshot else {
+        panic!("snapshot available")
+    };
+    assert_eq!(value.state.sse.unwrap().mxcsr.get() & 0x3f, 2);
+    let de_before_pe = run_vector(
+        "de_before_pe",
+        0x3ff0_0000_0000_0000,
+        1,
+        0x1e80,
+        ExpectedExit::Exception,
+    );
+    let Observation::Available { value } = &de_before_pe.snapshot else {
+        panic!("snapshot available")
+    };
+    assert_eq!(value.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f, 2);
+    assert_eq!(count(&de_before_pe), 0);
+    assert_eq!(
+        value.state.sse.as_ref().unwrap().xmm[0],
+        "000000000000f03f000000000000f03f"
+    );
+    let de_then_pe = run_vector(
+        "masked_de_then_unmasked_pe",
+        0x3ff0_0000_0000_0000,
+        1,
+        0x0f80,
+        ExpectedExit::Exception,
+    );
+    let Observation::Available { value } = &de_then_pe.snapshot else {
+        panic!("snapshot available")
+    };
+    assert_eq!(value.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f, 0x22);
+    assert_eq!(count(&de_then_pe), 0);
+    assert_eq!(
+        value.state.sse.as_ref().unwrap().xmm[0],
+        "000000000000f03f000000000000f03f"
+    );
+    let unmasked_ie = run_vector(
+        "unmasked_snan",
+        0x7ff0_0000_0000_0001,
+        0x3ff0_0000_0000_0000,
+        0x1f00,
+        ExpectedExit::Exception,
+    );
+    let Observation::Available { value } = &unmasked_ie.snapshot else {
+        panic!("snapshot available")
+    };
+    assert_eq!(value.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f, 1);
+    assert_eq!(count(&unmasked_ie), 0);
+    assert_eq!(
+        value.state.sse.as_ref().unwrap().xmm[0],
+        "010000000000f07f000000000000f03f"
+    );
+    let mut bad = fixture.clone();
+    bad.memory[0].initial_bytes_hex = "f2660f5cc1".into();
+    bad.memory[0].length = 5;
+    bad.memory[0].comparison_mask_hex = "ff".repeat(5);
+    bad.stop_rip = Some(HexU64(original_rip + 5));
+    assert!(bad.validate().is_err());
+
+    let mut tampered = result.clone();
+    let Observation::Available { value } = &mut tampered.snapshot else {
+        panic!("snapshot available")
+    };
+    value.state.sse.as_mut().unwrap().xmm[0].replace_range(0..16, "0000000000001040");
+    assert!(od_testkit::v2::compare(&input, &result, &tampered).is_err());
+}
+
+#[test]
 fn cvtss2sd_register_pairs_raw_classes_and_exception_matrix() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/x86/stage2/s2_37t_cvtss2sd_asymmetric_register_pair.case.json");

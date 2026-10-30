@@ -294,6 +294,16 @@ pub struct SubpsControls {
     pub cr4_osxmmexcpt: bool,
 }
 
+/// Explicit SSE2 and SIMD exception-delivery controls for bounded SUBSD.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SubsdControls {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
 /// Explicit SSE2 and SIMD exception-delivery controls for CVTSS2SD.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Cvtss2sdControls {
@@ -512,6 +522,7 @@ struct ExecutionProfiles<'a> {
     sqrtpd_registers: Option<SqrtpdControls>,
     subpd_registers: Option<SubpdControls>,
     subps_registers: Option<SubpsControls>,
+    subsd_registers: Option<SubsdControls>,
     cvtss2sd_registers: Option<Cvtss2sdControls>,
     cvtps2pd_registers: Option<Cvtps2pdControls>,
     comiss_ucomiss_registers: Option<ComissUcomissControls>,
@@ -1340,6 +1351,7 @@ pub fn run_with_maxss_unmasked_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -1414,6 +1426,7 @@ pub fn run_with_minsd_unmasked_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -1488,6 +1501,7 @@ pub fn run_with_maxsd_unmasked_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -1562,6 +1576,7 @@ pub fn run_with_minpd_unmasked_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -1636,6 +1651,7 @@ pub fn run_with_minps_unmasked_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -1710,6 +1726,7 @@ pub fn run_with_maxps_unmasked_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -1784,6 +1801,7 @@ pub fn run_with_maxpd_unmasked_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -1858,6 +1876,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -1932,6 +1951,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -2006,6 +2026,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -2080,6 +2101,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -2154,6 +2176,7 @@ pub fn run_with_cvtss2si_registers_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -2228,6 +2251,7 @@ pub fn run_with_cvttss2si_registers_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -2301,6 +2325,7 @@ pub fn run_with_cvtsd2si_registers_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -2376,6 +2401,7 @@ pub fn run_with_cvttsd2si_registers_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -2450,6 +2476,7 @@ pub fn run_with_cvtdq2pd_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -2524,6 +2551,7 @@ pub fn run_with_cvtdq2pd_register_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -2598,6 +2626,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -2672,6 +2701,7 @@ pub fn run_with_cvtps2dq_register_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -2746,6 +2776,7 @@ pub fn run_with_cvttps2dq_register_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -2820,6 +2851,7 @@ pub fn run_with_cvtpd2dq_register_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -2894,6 +2926,7 @@ pub fn run_with_cvttpd2dq_register_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -2968,6 +3001,7 @@ pub fn run_with_cvtss2sd_register_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: Some(controls),
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -3042,6 +3076,7 @@ pub fn run_with_cvtps2pd_register_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: Some(controls),
             comiss_ucomiss_registers: None,
@@ -3116,6 +3151,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: Some(controls),
@@ -3190,6 +3226,7 @@ pub fn run_with_cmpss_register_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -3264,6 +3301,7 @@ pub fn run_with_cmpsd_register_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -3338,6 +3376,7 @@ pub fn run_with_cmppd_register_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -3411,6 +3450,7 @@ pub fn run_with_cmpps_register_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -3485,6 +3525,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -3612,6 +3653,7 @@ pub fn run_with_efer_rdmsr_profile(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -3895,6 +3937,7 @@ pub fn run_with_cr0_profile(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -3970,6 +4013,7 @@ pub fn run_with_cr4_profile(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -4279,6 +4323,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -4538,6 +4583,7 @@ pub fn step_with_cr0_profile(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -4855,6 +4901,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -4929,6 +4976,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -5005,6 +5053,7 @@ pub fn run_with_sqrtss_register_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -5079,6 +5128,7 @@ pub fn run_with_sqrtsd_register_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -5153,6 +5203,7 @@ pub fn run_with_sqrtps_register_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -5227,6 +5278,7 @@ pub fn run_with_sqrtpd_register_controls(
             sqrtpd_registers: Some(controls),
             subpd_registers: None,
             subps_registers: None,
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -5301,6 +5353,82 @@ pub fn run_with_subpd_register_controls(
             sqrtpd_registers: None,
             subpd_registers: Some(controls),
             subps_registers: None,
+            subsd_registers: None,
+            cvtss2sd_registers: None,
+            cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
+            cmpss_registers: None,
+            cmpsd_registers: None,
+            cmppd_registers: None,
+            cmpps_registers: None,
+            comisd_ucomisd_registers: None,
+            cvtsi2sd_r32: None,
+            cvtsi2sd_r64: None,
+            cvtsi2sd_registers: None,
+            cvtsi2ss_registers: None,
+            cvtss2si_registers: None,
+            cvttss2si_registers: None,
+            cvtsd2si_registers: None,
+            cvttsd2si_registers: None,
+            fx_cr0: None,
+            unmasked_minss_denormal: false,
+            rdtsc: None,
+            swapgs: None,
+            cli: None,
+            sti: None,
+            halt: None,
+            cr0: None,
+            cr4: None,
+        },
+        StepRuntime {
+            rdtsc_source: None,
+            sti_sequence: None,
+            exact_hlt_only: false,
+            stop_requested: &mut stop_requested,
+        },
+    )
+}
+
+/// Execute one canonical Long64 register SUBSD form with explicit gates.
+pub fn run_with_subsd_register_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: SubsdControls,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_configured(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        ExecutionProfiles {
+            cpuid: None,
+            msr: None,
+            sep: None,
+            xorpd: None,
+            minss_invalid: None,
+            maxss_unmasked: None,
+            minsd_unmasked: None,
+            maxsd_unmasked: None,
+            minpd_unmasked: None,
+            minps_unmasked: None,
+            maxps_unmasked: None,
+            maxpd_unmasked: None,
+            cvtdq2pd: None,
+            cvtdq2pd_registers: None,
+            cvtdq2ps_registers: None,
+            cvtps2dq_registers: None,
+            cvttps2dq_registers: None,
+            cvtpd2dq_registers: None,
+            cvttpd2dq_registers: None,
+            sqrtss_registers: None,
+            sqrtsd_registers: None,
+            sqrtps_registers: None,
+            sqrtpd_registers: None,
+            subpd_registers: None,
+            subps_registers: None,
+            subsd_registers: Some(controls),
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -5375,6 +5503,7 @@ pub fn run_with_subps_register_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subps_registers: Some(controls),
+            subsd_registers: None,
             cvtss2sd_registers: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
@@ -5442,6 +5571,7 @@ fn step_configured(
         sqrtpd_registers: configured_sqrtpd_register_controls,
         subpd_registers: configured_subpd_register_controls,
         subps_registers: configured_subps_register_controls,
+        subsd_registers: configured_subsd_register_controls,
         cvtss2sd_registers: configured_cvtss2sd_register_controls,
         cvtps2pd_registers: configured_cvtps2pd_register_controls,
         comiss_ucomiss_registers: configured_comiss_ucomiss_controls,
@@ -6523,6 +6653,42 @@ fn step_configured(
                     && instruction.prefixes.group1.is_none()
                     && instruction.prefixes.segment.is_none()
                     && instruction.prefixes.operand_override
+                    && !instruction.prefixes.address_override
+                    && instruction.prefixes.rex.map(|rex| rex & 0x4f)
+                        == if destination >= 8 || source >= 8 {
+                            Some(0x40 | (u8::from(destination >= 8) << 2) | u8::from(source >= 8))
+                        } else { None }
+        );
+        if !is_canonical_register_form {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        let fault_vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+            Some(6)
+        } else if controls.cr0_ts {
+            Some(7)
+        } else {
+            None
+        };
+        if let Some(vector) = fault_vector {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+    }
+    if let Some(controls) = configured_subsd_register_controls {
+        let is_canonical_register_form = matches!(
+            instruction.operation,
+            Operation::SubsdRegister { destination, source }
+                if instruction.length == if destination >= 8 || source >= 8 { 5 } else { 4 }
+                    && instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0x5c
+                    && instruction.prefixes.group1 == Some(0xf2)
+                    && instruction.prefixes.segment.is_none()
+                    && !instruction.prefixes.operand_override
                     && !instruction.prefixes.address_override
                     && instruction.prefixes.rex.map(|rex| rex & 0x4f)
                         == if destination >= 8 || source >= 8 {
@@ -7760,6 +7926,7 @@ fn step_configured(
             | Operation::SqrtpdRegister { .. }
             | Operation::SubpdRegister { .. }
             | Operation::SubpsRegister { .. }
+            | Operation::SubsdRegister { .. }
             | Operation::Cvtss2sdRegister { .. }
             | Operation::Cvtps2pdRegister { .. }
             | Operation::CmpssRegister { .. }
@@ -7806,6 +7973,7 @@ fn step_configured(
             | Operation::SqrtpdRegister { .. }
             | Operation::SubpdRegister { .. }
             | Operation::SubpsRegister { .. }
+            | Operation::SubsdRegister { .. }
             | Operation::Cvtss2sdRegister { .. }
             | Operation::Cvtps2pdRegister { .. }
             | Operation::CmpssRegister { .. }
@@ -7939,6 +8107,12 @@ fn step_configured(
             sse.mxcsr & !0x0000_ffbf == 0 && sse.mxcsr & (1 << 6) == 0
         } else if configured_subpd_register_controls.is_some()
             && matches!(instruction.operation, Operation::SubpdRegister { .. })
+        {
+            sse.mxcsr & !0x0000_ffbf == 0
+                && sse.mxcsr & (1 << 6) == 0
+                && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
+        } else if configured_subsd_register_controls.is_some()
+            && matches!(instruction.operation, Operation::SubsdRegister { .. })
         {
             sse.mxcsr & !0x0000_ffbf == 0
                 && sse.mxcsr & (1 << 6) == 0
@@ -8559,6 +8733,10 @@ fn step_configured(
         Operation::SubpsRegister { .. } if configured_subps_register_controls.is_some() => {
             state.sse.is_some()
         }
+        Operation::SubsdRegister { .. } if configured_subsd_register_controls.is_some() => {
+            state.sse.is_some()
+        }
+        Operation::SubsdRegister { .. } => false,
         Operation::SubpsRegister { .. } => false,
         Operation::Cvtss2sdRegister { .. } if configured_cvtss2sd_register_controls.is_some() => {
             state.sse.is_some()
@@ -12676,6 +12854,88 @@ fn step_configured(
                 }));
             }
             sse.xmm[usize::from(destination)] = result;
+        }
+        Operation::SubsdRegister {
+            destination,
+            source,
+        } if configured_subsd_register_controls.is_some() => {
+            let (destination_xmm, source_xmm, old_mxcsr) = {
+                let sse = state.sse.as_ref().expect("SUBSD state prevalidated");
+                (
+                    sse.xmm[usize::from(destination)],
+                    sse.xmm[usize::from(source)],
+                    sse.mxcsr,
+                )
+            };
+            let lhs = u64::from_le_bytes(destination_xmm[..8].try_into().unwrap());
+            let rhs = u64::from_le_bytes(source_xmm[..8].try_into().unwrap());
+            let lhs_class = Binary64::from_bits(lhs).class();
+            let rhs_class = Binary64::from_bits(rhs).class();
+            let lhs_nan = matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+            let rhs_nan = matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+            let new_ie;
+            let new_de;
+            if lhs_nan || rhs_nan {
+                new_ie = lhs_class == BinaryClass::SignalingNaN
+                    || rhs_class == BinaryClass::SignalingNaN;
+                new_de = false;
+            } else {
+                let opposite_infinities = lhs_class == BinaryClass::Infinity
+                    && rhs_class == BinaryClass::Infinity
+                    && ((lhs ^ (rhs ^ (1u64 << 63))) >> 63) != 0;
+                new_ie = opposite_infinities;
+                new_de = !opposite_infinities
+                    && (lhs_class == BinaryClass::Subnormal || rhs_class == BinaryClass::Subnormal);
+            }
+            let controls = configured_subsd_register_controls.expect("profile controls");
+            let sse = state.sse.as_mut().expect("SUBSD state prevalidated");
+            if new_ie && old_mxcsr & (1 << 7) == 0 || new_de && old_mxcsr & (1 << 8) == 0 {
+                sse.mxcsr = old_mxcsr | u32::from(new_ie) | (u32::from(new_de) << 1);
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
+            let rounding = cvtss2si_rounding_mode(old_mxcsr);
+            let computed = Binary64::subtract_raw_result(
+                Binary64::from_bits(lhs),
+                Binary64::from_bits(rhs),
+                rounding,
+            );
+            let mut raw = computed.value().to_bits();
+            let new_oe = computed.overflow();
+            let mut new_pe = computed.inexact() || computed.overflow();
+            let tiny = computed.tiny_after_precision_rounding();
+            let mut new_ue = tiny && computed.inexact();
+            if old_mxcsr & (1 << 15) != 0
+                && tiny
+                && raw & 0x7ff0_0000_0000_0000 == 0
+                && raw & 0x000f_ffff_ffff_ffff != 0
+            {
+                raw &= 1 << 63;
+                new_ue = true;
+                new_pe = true;
+            }
+            sse.mxcsr = old_mxcsr
+                | u32::from(new_ie)
+                | (u32::from(new_de) << 1)
+                | (u32::from(new_oe) << 3)
+                | (u32::from(new_ue) << 4)
+                | (u32::from(new_pe) << 5);
+            if new_pe && old_mxcsr & (1 << 12) == 0 {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
+            sse.xmm[usize::from(destination)][..8].copy_from_slice(&raw.to_le_bytes());
+        }
+        Operation::SubsdRegister { .. } => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
         }
         Operation::SubpsRegister {
             destination,
@@ -111379,6 +111639,251 @@ mod swapgs_profile_tests {
                     })
                 );
                 assert_eq!(state, before);
+                assert!(memory.accesses.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn subsd_public_runtime_preserves_scalar_upper_half_rounds_and_gates() {
+        let code = [0xf2, 0x0f, 0x5c, 0xc1];
+        let rip = 0x27400;
+        let controls = SubsdControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        for (rc, expected) in [
+            (0, 0x3ff0_0000_0000_0000),
+            (1, 0x3fef_ffff_ffff_ffff),
+            (2, 0x3ff0_0000_0000_0000),
+            (3, 0x3fef_ffff_ffff_ffff),
+        ] {
+            let mut xmm = [[0x5a; 16]; 16];
+            xmm[0][..8].copy_from_slice(&0x3ff0_0000_0000_0000u64.to_le_bytes());
+            xmm[0][8..].copy_from_slice(&[0xa5; 8]);
+            xmm[1][..8].copy_from_slice(&0x3c90_0000_0000_0000u64.to_le_bytes());
+            xmm[1][8..].copy_from_slice(&1u64.to_le_bytes());
+            let mut state = LongModeState::default();
+            state.rip = rip;
+            state.sse = Some(SseState {
+                xmm,
+                mxcsr: 0x1f80 | (rc << 13),
+            });
+            let mut memory = Memory::at(&code, rip);
+            let result = run_with_subsd_register_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(rip + 4),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::StopAddress);
+            assert_eq!(
+                u64::from_le_bytes(state.sse.as_ref().unwrap().xmm[0][..8].try_into().unwrap()),
+                expected
+            );
+            assert_eq!(&state.sse.as_ref().unwrap().xmm[0][8..], &[0xa5; 8]);
+            assert_eq!(state.sse.as_ref().unwrap().mxcsr & 0x3f, 0x20);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut state = LongModeState::default();
+        state.rip = rip;
+        let mut xmm = [[0; 16]; 16];
+        xmm[0] = [0x71; 16];
+        xmm[0][..8].copy_from_slice(&0x3ff0_0000_0000_0000u64.to_le_bytes());
+        xmm[1][..8].copy_from_slice(&0x3c90_0000_0000_0000u64.to_le_bytes());
+        let original = xmm[0];
+        state.sse = Some(SseState { xmm, mxcsr: 0x0f80 }); // PM=0; OM=UM=1.
+        let mut memory = Memory::at(&code, rip);
+        let result = run_with_subsd_register_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(rip + 4),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 19,
+                error_code: None,
+                linear_address: None
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state.sse.as_ref().unwrap().xmm[0], original);
+        assert_eq!(state.sse.as_ref().unwrap().mxcsr & 0x3b, 0x20);
+        assert_eq!(state.rip, rip);
+
+        let mut no_xm_state = LongModeState::default();
+        no_xm_state.rip = rip;
+        let mut no_xm_xmm = [[0; 16]; 16];
+        no_xm_xmm[0] = original;
+        no_xm_xmm[1][..8].copy_from_slice(&0x3c90_0000_0000_0000u64.to_le_bytes());
+        no_xm_state.sse = Some(SseState {
+            xmm: no_xm_xmm,
+            mxcsr: 0x0f80,
+        });
+        let mut no_xm_memory = Memory::at(&code, rip);
+        let no_xm_result = run_with_subsd_register_controls(
+            &mut no_xm_state,
+            &mut no_xm_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(rip + 4),
+                context: AccessContext::default(),
+            },
+            SubsdControls {
+                cr4_osxmmexcpt: false,
+                ..controls
+            },
+            || false,
+        );
+        assert_eq!(
+            no_xm_result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None
+            })
+        );
+        assert_eq!(no_xm_state.sse.as_ref().unwrap().xmm[0], original);
+        assert_eq!(no_xm_state.sse.as_ref().unwrap().mxcsr & 0x3b, 0x20);
+
+        let mut short_state = LongModeState::default();
+        short_state.rip = rip;
+        short_state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before_short = short_state.clone();
+        let mut short_memory = Memory::at(&code[..3], rip);
+        let short = run_with_subsd_register_controls(
+            &mut short_state,
+            &mut short_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(rip + 4),
+                context: AccessContext::default(),
+            },
+            SubsdControls {
+                sse2_available: false,
+                ..controls
+            },
+            || false,
+        );
+        assert!(matches!(short.exit, RunExit::MemoryError(_)));
+        assert_eq!(short_state, before_short);
+
+        for mxcsr in [
+            0x1f80 & !(1 << 10),
+            0x1f80 & !(1 << 11),
+            0x1fc0,
+            0x0040_1f80,
+        ] {
+            let mut refused = LongModeState::default();
+            refused.rip = rip;
+            refused.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr,
+            });
+            let before = refused.clone();
+            let mut memory = Memory::at(&code, rip);
+            let result = run_with_subsd_register_controls(
+                &mut refused,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(rip + 4),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert!(matches!(result.exit, RunExit::Unsupported { .. }));
+            assert_eq!(refused, before);
+        }
+
+        for (gates, vector) in [
+            (
+                SubsdControls {
+                    sse2_available: false,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                SubsdControls {
+                    cr0_em: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                SubsdControls {
+                    cr4_osfxsr: false,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                SubsdControls {
+                    cr0_ts: true,
+                    ..controls
+                },
+                7,
+            ),
+        ] {
+            for cpl in 0..=3 {
+                let mut gated = LongModeState::default();
+                gated.rip = rip;
+                gated.cs_selector = Some(cpl);
+                gated.sse = Some(SseState {
+                    xmm: [[0x5a; 16]; 16],
+                    mxcsr: 0x1fc0,
+                });
+                let before = gated.clone();
+                let mut memory = Memory::at(&code, rip);
+                let result = run_with_subsd_register_controls(
+                    &mut gated,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(rip + 4),
+                        context: AccessContext {
+                            privilege: match cpl {
+                                0 => PrivilegeLevel::Ring0,
+                                1 => PrivilegeLevel::Ring1,
+                                2 => PrivilegeLevel::Ring2,
+                                _ => PrivilegeLevel::Ring3,
+                            },
+                            ..AccessContext::default()
+                        },
+                    },
+                    gates,
+                    || false,
+                );
+                assert_eq!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector,
+                        error_code: None,
+                        linear_address: None
+                    })
+                );
+                assert_eq!(gated, before);
                 assert!(memory.accesses.is_empty());
             }
         }

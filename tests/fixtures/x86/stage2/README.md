@@ -6669,3 +6669,23 @@ Event 19/Table 7-8; Intel
 Floating-Point Reference Sheet v2.13. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37an--bounded-masked-range-long64-subpd-xmm-register-pairs),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37an--bounded-masked-range-long64-subpd-xmm-register-pairs)
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37an--subpd-register-pair-interpreter-profile-2026-10-30).
+
+### S2-37ap bounded masked-range SUBSD register-pair profile
+
+`s2_37ap_subsd_xmm0_xmm1.case.json` is a literal `F2 0F 5C /r` Long64
+XMM0,XMM1 scalar binary64 subtraction. Its low64 computes 3.0−1.0; the
+destination high64 remains 1.0 and the source high64 contains a signaling-NaN
+poison that must be ignored. The strict schema-v2 profile covers all 256
+canonical register pairs and requires MXCSR.OM=1 and MXCSR.UM=1; DAZ/reserved
+bits are rejected while RC, FTZ, IM/DM/PM and previous sticky flags are accepted.
+The independent oracle uses raw-u64 integer subtraction and rounding. Local
+checks cover all register pairs and aliases, high-half preservation/ignoring,
+all production RC modes, NaNs, infinity-invalid, subnormal, FTZ tiny output,
+masked overflow, unmasked PM/DM atomicity, fetch/gates/CPL, result tampering and
+interpreter-only backend denial. This is local evidence, not physical acceptance.
+Memory operands, other modes and full unmasked OE/UE behavior remain outside the
+slice. Sources: Intel SDM Rev. 093 Vol. 2A Type 3, Table 2-20; Vol. 2B SUBSD
+instruction entry; Vol. 1 §§4.9.1.4–.6, 11.5.3; Vol. 3A Event 19/Table 7-8.
+See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ap--bounded-masked-range-long64-subsd-xmm-register-pairs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37ap--bounded-masked-range-long64-subsd-xmm-register-pairs)
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ap--subsd-register-pair-interpreter-profile-2026-10-30).

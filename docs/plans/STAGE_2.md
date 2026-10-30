@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последнее локальное подзадание S2-37ao добавляет ограниченный masked-range SUBPS XMM register-pair interpreter profile после S2-37an SUBPD. SUBPS принимает только OM=UM=1, поэтому покрывает masked overflow/underflow, но не полную семантику unmasked OE/UE. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последнее локальное подзадание S2-37ap добавляет ограниченный masked-range SUBSD XMM register-pair interpreter profile после S2-37an SUBPD и S2-37ao SUBPS. Эти три register-only профиля требуют OM=UM=1, поэтому покрывают masked overflow/underflow, но не полную семантику unmasked OE/UE. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -519,6 +519,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37am | Strict schema-v2 canonical Long64 SQRTSD XMM register-pair profile; bounded DAZ/reserved-MXCSR admission, low64-only binary64 result/high64 preservation and scalar IE/DE/PE ordering; independent review clean; physical acceptance remains open | S2-37aj raw sqrt reference and S2-38 exception policy |
 | [x] | S2-37an | Strict schema-v2 canonical Long64 SUBPD XMM register pairs; bounded masked-range profile admits only OM=UM=1, covers masked OE/UE/PE and IE/DE pre-event aggregation; JIT/native closed | S2-37ah raw binary64 conversion reference and S2-38 exception policy; independent review clean; physical acceptance remains open |
 | [x] | S2-37ao | Strict schema-v2 canonical Long64 SUBPS XMM register pairs; SSE-gated four-lane raw binary32 subtraction; OM=UM=1 masked-range, atomic IE/DE/OE/UE/PE; JIT/native closed | S2-37an profile pattern and S2-38 exception ordering; focused checks/workspace check passed; initial and follow-up independent reviews clean; physical acceptance remains open |
+| [x] | S2-37ap | Strict schema-v2 canonical Long64 SUBSD XMM register pairs; scalar binary64 subtraction with preserved destination high64; OM=UM=1 masked-range, atomic IE/DE/OE/UE/PE; JIT/native closed | Focused tests, SUBPD/SUBPS regressions, formatting and workspace check passed; independent review clean; physical acceptance remains open |
 | [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j/k/l: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j/k/l; independent review |
 | [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
@@ -6832,7 +6833,7 @@ inventory.
 | SQRTSS | `F3 0F 51 /r` | SSE | XMM, m32; low f32 | 4-669 | S2-37aj register-only, bounded MXCSR; memory missing |
 | SUBPD | `66 0F 5C /r` | SSE2 | XMM, m128; 2×f64 | 4-687 | S2-37an register-only, OM=UM=1 masked-range; full unmasked OE/UE and memory missing |
 | SUBPS | `NP 0F 5C /r` | SSE | XMM, m128; 4×f32 | 4-690 | S2-37ao register-only, OM=UM=1 masked-range; full unmasked OE/UE and memory missing |
-| SUBSD | `F2 0F 5C /r` | SSE2 | XMM, m64; low f64 | 4-693 | missing |
+| SUBSD | `F2 0F 5C /r` | SSE2 | XMM, m64; low f64 | 4-693 | S2-37ap canonical register-only, low64 result/high64 preserved, OM=UM=1 masked-range; memory and full unmasked OE/UE missing |
 | SUBSS | `F3 0F 5C /r` | SSE | XMM, m32; low f32 | 4-695 | missing |
 | UCOMISD | `66 0F 2E /r` | SSE2 | XMM, m64; EFLAGS | 4-733 | S2-37w, bounded register-only |
 | UCOMISS | `NP 0F 2E /r` | SSE | XMM, m32; EFLAGS | 4-735 | S2-37v, bounded register-only |
@@ -13524,6 +13525,48 @@ modes, and parent S2-37/S2-38 remain open. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37ao--bounded-masked-range-long64-subps-xmm-register-pairs),
 [report](../reports/STAGE_2_REPORT.md#s2-37ao--subps-register-pair-interpreter-profile-2026-10-30),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ao-bounded-masked-range-subps-register-pair).
+
+
+#### S2-37ap — bounded masked-range Long64 SUBSD XMM register pairs
+
+Implement strict schema-v2 interpreter-only profile
+`s2-long-subsd-registers-v1` for canonical Long64 `F2 0F 5C /r`,
+ModR/M.mod=3, covering all 256 XMM destination/source pairs. Low forms are
+four bytes; extended indices require exactly one REX `41`, `44`, or `45`
+immediately after F2 and are five bytes. Reject memory, 66/F3, reordered,
+repeated or redundant prefixes, REX.W/X/40, trailing bytes, VEX and EVEX.
+Fetch the full instruction before SSE2/EM/OSFXSR #UD and TS #NM gates at CPL0–3;
+no data callbacks are issued. JIT/native/C ABI/fragment/generic paths remain
+closed. This is the scalar Type 3 form, distinct from packed SUBPD Type 2
+(Intel SDM Rev. 093 Vol. 2A Table 2-20).
+
+Require MXCSR.OM=1 and MXCSR.UM=1 in schema and public runtime because the
+current raw rounding result cannot distinguish exact-significand overflow from
+the bounded masked-overflow response with OM=0. Reject DAZ and reserved bits;
+accept all RC values, FTZ, IM/DM/PM and prior sticky flags. Do not claim full
+unmasked OE/UE behavior. Snapshot destination and source XMM before execution.
+Compute only destination.low64 minus source.low64; preserve destination.high64
+bit-for-bit and ignore source.high64 for arithmetic and exception classification.
+Classify NaNs before negating the rhs: select the first NaN in destination/source
+order, quiet SNaN, raise IE if either operand is signaling, and suppress DE for
+any NaN. Same-sign infinity subtraction raises IE and returns the masked
+indefinite. Otherwise any low64 subnormal operand raises DE. Aggregate IE/DE
+before arithmetic; newly unmasked IE/DE commits generated sticky bits and faults
+without changing XMM, RIP or retirement. With pre-events masked, compute using
+MXCSR.RC; masked overflow raises OE|PE and an inexact tiny result raises UE|PE.
+FTZ flushes a tiny result to signed zero with UE|PE. An unmasked PM exit commits
+status before #XM or SIMD-generated #UD and preserves the full destination.
+Old sticky flags alone do not fault.
+
+The schema oracle uses a separate raw-u64 integer implementation, not host FP or
+the production helper. Focused local checks cover all 256 register pairs, alias
+snapshots, poisoned/ignored source high64, preserved destination high64, NaN,
+infinity, signed zero, subnormal, FTZ, overflow, all production RC modes,
+pre/post atomicity, gates/fetch/CPL and backend denial. These checks are local,
+not physical acceptance. Memory source, other modes, full unmasked OE/UE
+behavior and parent S2-37/S2-38 remain open. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37ap--bounded-masked-range-long64-subsd-xmm-register-pairs),
+[report](../reports/STAGE_2_REPORT.md#s2-37ap--subsd-register-pair-interpreter-profile-2026-10-30),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ap-bounded-masked-range-subsd-register-pair).
 
 #### S2-37an — bounded masked-range Long64 SUBPD XMM register pairs
 

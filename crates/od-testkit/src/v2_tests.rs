@@ -302,6 +302,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 sqrtpd_controls: input.fixture.sqrtpd_controls,
                 subpd_controls: input.fixture.subpd_controls,
                 subps_controls: input.fixture.subps_controls,
+                subsd_controls: input.fixture.subsd_controls,
                 cvtss2sd_controls: input.fixture.cvtss2sd_controls,
                 cvtps2pd_controls: input.fixture.cvtps2pd_controls,
                 comiss_ucomiss_controls: input.fixture.comiss_ucomiss_controls,

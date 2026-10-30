@@ -18498,3 +18498,40 @@ and Vol. 2A p. 2-27 ([official SDM](https://cdrdv.intel.com/v1/dl/getContent/671
 Vol. 1 §§4.9.1.4–.6, 11.5.3 and DAZ/FTZ ([Vol. 1](https://cdrdv.intel.com/v1/dl/getContent/671436));
 Vol. 3A Event 19/Table 7-8 ([Vol. 3A](https://cdrdv.intel.com/v1/dl/getContent/671190));
 Intel Floating-Point Reference Sheet v2.13 ([PDF](https://cdrdv.intel.com/v1/dl/getContent/786447?fileName=floating-point-reference-sheet-for-intel-architecture.pdf)).
+
+### S2-37ap — SUBSD register-pair interpreter profile (2026-10-30)
+
+Implemented the strict schema-v2 interpreter-only profile
+`s2-long-subsd-registers-v1` for all 256 canonical Long64 `F2 0F 5C /r` XMM
+register pairs. It rejects memory, alternate/redundant/reordered prefixes,
+REX.W/X/40, trailing bytes, VEX and EVEX. Full fetch precedes SSE2/EM/OSFXSR
+#UD and TS #NM gates at CPL0–3. The profile makes no data callbacks and remains
+closed to JIT/native/C ABI/fragment/generic execution.
+
+The bounded masked-range contract requires MXCSR.OM=1 and MXCSR.UM=1; it rejects
+DAZ/reserved bits and accepts all RC, FTZ, IM/DM/PM and sticky settings. Both XMMs
+are snapshotted; only old destination.low64 minus source.low64 is computed,
+destination.high64 is preserved bit-for-bit, and source.high64 is ignored. NaNs
+are selected before RHS sign inversion, with destination NaN priority, SNaN
+quieting/IE, QNaN without IE alone, and NaN suppression of DE. Same-sign
+infinities produce IE/indefinite; otherwise low64 subnormals produce DE. New
+IE/DE precede arithmetic. Masked overflow contributes OE|PE, inexact tiny
+results UE|PE, and FTZ flushes tiny results to signed zero. Unmasked events commit
+sticky status but preserve full XMM/RIP/retirement.
+
+Local evidence: the literal fixture and runner test pass; the runner checks all
+256 register pairs and aliases, source-high poison and destination-high
+preservation, QNaN/SNaN, infinity-invalid, denormal, FTZ, masked overflow,
+unmasked PM/DM atomicity, result tampering and JIT/native denial. The raw-u64
+integer schema oracle is independent of the production arithmetic helper. The
+production runtime test passes all four RC halfway cases, PM atomicity, SSE2/EM/
+OSFXSR/TS gates at CPL0–3 and no data callbacks. The decoder test passes all 256
+pairs and malformed prefix/memory/VEX/EVEX refusals. `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`git diff --check` and `graphify update .` passed. Independent review was clean with the fixture provenance, DE-before-PE/IM=0 coverage and CPL context corrections applied.
+This is local evidence, not physical acceptance;
+memory operands, other modes, full unmasked OE/UE and parent S2-37/S2-38 remain
+open. Sources: Intel SDM Rev. 093 Vol. 2A Type 3, Table 2-20; Vol. 2B SUBSD
+instruction entry; Vol. 1 §§4.9.1.4–.6, 11.5.3; Vol. 3A Event 19/Table 7-8.
+See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37ap--bounded-masked-range-long64-subsd-xmm-register-pairs),
+[plan](../plans/STAGE_2.md#s2-37ap--bounded-masked-range-long64-subsd-xmm-register-pairs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ap-bounded-masked-range-subsd-register-pair).
