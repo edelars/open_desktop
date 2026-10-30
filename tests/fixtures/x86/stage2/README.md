@@ -6452,3 +6452,19 @@ S2-38 remain open; hardware acceptance is deferred to the final combined
 stage. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37y--canonical-long64-cmpsd-xmm-register-pairs),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37y--canonical-long64-cmpsd-xmm-register-pairs),
 and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37y--canonical-long64-cmpsd-xmm-register-pairs).
+
+
+### S2-37z canonical CMPPD register pairs
+
+`s2_37z_cmppd_registers.case.json` is the handwritten schema-v2
+`s2-long-cmppd-registers-v1` anchor for canonical `66 0F C2 C1 01`. The
+independent fixture oracle classifies and orders each raw binary64 lane itself.
+Runner coverage builds all 2,048 XMM-pair/predicate encodings and checks truth
+classes, QNaN/SNaN signaling, independent lane exception accumulation in both
+orders, exception masks/sticky bits, full-destination atomicity, gate/fetch/CPL
+behavior, malformed forms, tampering and JIT/native denial. The profile does not
+claim memory forms, generic CPUID admission or physical acceptance. Parent S2-37
+and S2-38 remain open; hardware acceptance is deferred to the final combined
+stage. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37z--canonical-long64-cmppd-xmm-register-pairs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37z--canonical-long64-cmppd-xmm-register-pairs),
+and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37z--canonical-long64-cmppd-xmm-register-pairs).

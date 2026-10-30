@@ -17904,3 +17904,49 @@ Vol. 1 Table 11-1, §4.9.2 and §§11.5.2.1–2/11.5.3
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37y--canonical-long64-cmpsd-xmm-register-pairs),
 [plan](../plans/STAGE_2.md#s2-37y--canonical-long64-cmpsd-xmm-register-pairs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37y-canonical-cmpsd-register-pairs).
+
+
+## S2-37z — canonical Long64 CMPPD XMM register pairs
+
+Implemented schema-v2 interpreter-only profile `s2-long-cmppd-registers-v1`
+for legacy `66 0F C2 /r ib`, covering all 256 XMM pairs and predicates 0–7.
+Only canonical 5-byte low-register encodings and 6-byte extended encodings with
+REX `41`, `44`, or `45` after `66` are admitted. Memory, REX.W/X, malformed or
+extra prefixes, trailing bytes, VEX/EVEX and imm8 above 7 are local refusals.
+The interpreter snapshots both sources and computes both raw binary64 masks. It
+aggregates IE/DE per lane, so a NaN in one lane does not hide a denormal in the
+other. Newly unmasked exceptions commit sticky status and suppress the entire
+destination, RIP advance and retirement before #XM/SIMD #UD. SSE2/EM/OSFXSR
+then TS gates occur after full fetch at CPL0–3. DAZ/reserved MXCSR bits are
+refused; RC/FTZ and old sticky/mask combinations are accepted. JIT/native and
+generic/C/fragment paths remain denied. Parent S2-37/S2-38 stay open; physical
+acceptance is deferred to the final combined stage.
+
+Coverage: all 2,048 XMM-pair/predicate encodings, raw class/predicate cases,
+per-lane exception combinations in both lane orders, sticky/mask behavior,
+atomicity, fetch/gates/CPL, malformed encoding, result tampering and backend
+denial. The testkit oracle has its own raw-u64 classifier, ordering and
+predicate evaluation.
+
+Checks run:
+
+- `cargo test -p od-runner --test fixture_v2 cmppd_register_pairs_predicates_raw_classes_exceptions_and_denial --offline` — passed, including all 2,048 register/predicate encodings and raw binary64 class/predicate coverage in both lanes.
+- `cargo test -p od-isa cmppd_register_profile_packed_lanes_fetch_gates_and_cpl_are_bounded --offline` — passed.
+- `cargo test -p od-x86-runner native_fp::tests::narrow_xorpd_is_not_blocked_with_existing_sse_and_x87_profiles_denied --offline` — passed, including CMPPD native-profile denial.
+- `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`, and `git diff --check` — passed.
+- `python3 tools/check_layout.py` — reports the pre-existing unmapped root `.git` entry and two broken historical oracle manifest links; no new layout issue was reported.
+- `graphify update .` — completed and refreshed the graph.
+
+Independent Sol-medium review found no defects; the reviewer also reran the
+focused CMPPD ISA test successfully. The full encoding/class matrix and workspace
+checks were not independently rerun during review. Local/macOS execution is not
+physical hardware acceptance; that validation remains deferred to the final
+combined stage.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CMPPD pp. 3-168–3-174, Table 3-7
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 1
+Table 11-1, §4.9.2 and §§11.5.2.1–2/11.5.3
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37z--canonical-long64-cmppd-xmm-register-pairs),
+[plan](../plans/STAGE_2.md#s2-37z--canonical-long64-cmppd-xmm-register-pairs), and
+[fixture guide](../../tests/fixtures/x86/stage2/README.md#s2-37z-canonical-cmppd-register-pairs).

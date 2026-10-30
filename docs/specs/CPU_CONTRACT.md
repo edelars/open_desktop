@@ -12796,3 +12796,38 @@ Normative sources: Intel SDM Rev. 093 Vol. 2A CMPSD pp. 3-185–3-188, Table 3-8
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 1
 Table 11-1, §4.9.2 NaN-before-denormal priority and §§11.5.2.1–2/11.5.3
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+
+
+## S2-37z — canonical Long64 CMPPD XMM register pairs
+
+The local schema-v2 interpreter profile `s2-long-cmppd-registers-v1` admits
+legacy `66 0F C2 /r ib` for every XMM register pair and predicate 0–7. It accepts
+only canonical low-register length-5 and extended length-6 encodings; the latter
+use exactly REX `41`, `44`, or `45` after `66`. Memory operands, other REX bits,
+redundant/reordered prefixes, trailing bytes, VEX/EVEX, and imm8 above 7 are
+profile refusals, not claims of architectural #UD for reserved immediate bits.
+The executable fixture maps exactly one instruction, sets budget 1 and checks
+the following RIP.
+
+Both complete source XMM registers are snapshotted before execution. The two
+raw binary64 lanes each compare according to one of the eight legacy predicates
+and independently produce `0xffffffffffffffff` or zero. Signed zeros compare
+equal. SNaN raises IE; QNaN raises IE for predicates 1, 2, 5 and 6. A NaN only
+suppresses DE in its own lane, so exception flags aggregate across lanes. New
+IE/DE are ORed with sticky status. A newly unmasked exception commits MXCSR
+status first, then delivers #XM when OSXMMEXCPT is set or SIMD #UD otherwise,
+without writing either result lane, advancing RIP or retiring. Completion writes
+both destination lanes and preserves flags/unrelated state.
+
+After complete instruction fetch, missing SSE2, CR0.EM or missing CR4.OSFXSR
+produces #UD; CR0.TS then produces #NM, at CPL0–3. DAZ/reserved MXCSR bits are
+profile refusals; RC, FTZ, exception masks and prior sticky bits are admitted.
+Only the interpreter profile is admitted. JIT/native, generic CPUID, C ABI and
+fragment paths remain closed, and parent S2-37/S2-38 remain open. Memory forms
+and hardware acceptance are outside this bounded profile; physical validation
+is deferred to the final combined substage.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CMPPD pp. 3-168–3-174, Table 3-7
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 1
+Table 11-1, §4.9.2 and §§11.5.2.1–2/11.5.3
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)).

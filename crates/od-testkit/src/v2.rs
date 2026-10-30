@@ -104,6 +104,7 @@ pub const PROFILE_RSQRTPS_REGISTER: &str = "s2-long-rsqrtps-reg-v1";
 pub const PROFILE_RCPPS_REGISTER: &str = "s2-long-rcpps-reg-v1";
 pub const PROFILE_CMPSS_REGISTERS: &str = "s2-long-cmpss-registers-v1";
 pub const PROFILE_CMPSD_REGISTERS: &str = "s2-long-cmpsd-registers-v1";
+pub const PROFILE_CMPPD_REGISTERS: &str = "s2-long-cmppd-registers-v1";
 pub const PROFILE_MINSS_MASKED_REGISTER: &str = "s2-long-minss-reg-masked-v1";
 pub const PROFILE_MINSS_INVALID_CONTROLS: &str = "s2-long-minss-invalid-controls-v1";
 pub const PROFILE_MINSS_UNMASKED_DENORMAL: &str = "s2-long-minss-unmasked-denormal-v1";
@@ -266,6 +267,8 @@ pub enum Profile {
     LongCmpssRegistersV1,
     #[serde(rename = "s2-long-cmpsd-registers-v1")]
     LongCmpsdRegistersV1,
+    #[serde(rename = "s2-long-cmppd-registers-v1")]
+    LongCmppdRegistersV1,
     #[serde(rename = "s2-long-comisd-ucomisd-registers-v1")]
     LongComisdUcomisdRegistersV1,
     #[serde(rename = "s2-long-cvtsi2sd-r32-exact-v1")]
@@ -1275,6 +1278,7 @@ impl IntegerState {
                     | Profile::LongComissUcomissRegistersV1
                     | Profile::LongCmpssRegistersV1
                     | Profile::LongCmpsdRegistersV1
+                    | Profile::LongCmppdRegistersV1
                     | Profile::LongComisdUcomisdRegistersV1
                     | Profile::LongCvtsi2sdR32ExactV1
                     | Profile::LongCvtsi2sdR64ExactV1
@@ -1470,6 +1474,7 @@ impl IntegerState {
                 | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCmpssRegistersV1
                 | Profile::LongCmpsdRegistersV1
+                | Profile::LongCmppdRegistersV1
                 | Profile::LongComisdUcomisdRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
@@ -1616,6 +1621,7 @@ impl IntegerState {
                 | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCmpssRegistersV1
                 | Profile::LongCmpsdRegistersV1
+                | Profile::LongCmppdRegistersV1
                 | Profile::LongComisdUcomisdRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
@@ -2098,6 +2104,7 @@ impl IntegerState {
                 | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCmpssRegistersV1
                 | Profile::LongCmpsdRegistersV1
+                | Profile::LongCmppdRegistersV1
                 | Profile::LongComisdUcomisdRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
@@ -2262,6 +2269,7 @@ impl IntegerState {
                 | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCmpssRegistersV1
                 | Profile::LongCmpsdRegistersV1
+                | Profile::LongCmppdRegistersV1
                 | Profile::LongComisdUcomisdRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
@@ -2435,6 +2443,7 @@ impl IntegerState {
                 | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCmpssRegistersV1
                 | Profile::LongCmpsdRegistersV1
+                | Profile::LongCmppdRegistersV1
                 | Profile::LongComisdUcomisdRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
@@ -2615,6 +2624,7 @@ impl IntegerState {
                 | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCmpssRegistersV1
                 | Profile::LongCmpsdRegistersV1
+                | Profile::LongCmppdRegistersV1
                 | Profile::LongComisdUcomisdRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
@@ -3425,6 +3435,7 @@ impl IntegerState {
                 | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCmpssRegistersV1
                 | Profile::LongCmpsdRegistersV1
+                | Profile::LongCmppdRegistersV1
                 | Profile::LongComisdUcomisdRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
@@ -3562,6 +3573,7 @@ impl IntegerState {
                 | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCmpssRegistersV1
                 | Profile::LongCmpsdRegistersV1
+                | Profile::LongCmppdRegistersV1
                 | Profile::LongComisdUcomisdRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
@@ -3813,6 +3825,8 @@ pub struct Fixture {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cmpsd_controls: Option<CmpsdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmppd_controls: Option<CmpsdControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comisd_ucomisd_controls: Option<ComisdUcomisdControlSnapshot>,
     /// Immutable CVTSI2SD r32 gate inputs and the irrelevant OSXMMEXCPT echo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3998,6 +4012,8 @@ pub struct CmpsdControlSnapshot {
     pub cr4_osfxsr: bool,
     pub cr4_osxmmexcpt: bool,
 }
+
+pub type CmppdControlSnapshot = CmpsdControlSnapshot;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -5824,6 +5840,57 @@ impl Fixture {
                 "only valid for CMPSD register-space profile",
             ));
         }
+        if self.profile == Profile::LongCmppdRegistersV1 {
+            let _ = self
+                .cmppd_controls
+                .ok_or_else(|| invalid("cmppd_controls", "required by the CMPPD profile"))?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by the CMPPD profile"))?;
+            let (_, _, _, length) =
+                cmppd_register_encoding(&code.initial_bytes_hex).ok_or_else(|| {
+                    invalid("memory.code", "outside canonical CMPPD register profile")
+                })?;
+            let start = self.initial_state.rip.get();
+            let bytes = decode_bytes(&code.initial_bytes_hex)?;
+            if code.guest_address.get() != start
+                || code.length != length
+                || !code.permissions.execute
+                || self.memory.len() != 1
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(u64::from(length))
+                || bytes.len() != length as usize
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "CMPPD requires one canonical executable encoding, budget 1, and stop RIP entry+length",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .expect("SSE required by CMPPD")
+                .mxcsr
+                .get();
+            if mxcsr & !0x0000_ffbf != 0 || mxcsr & (1 << 6) != 0 {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "CMPPD requires supported MXCSR bits only and DAZ clear",
+                ));
+            }
+        } else if self.cmppd_controls.is_some() {
+            return Err(invalid(
+                "cmppd_controls",
+                "only valid for CMPPD register-space profile",
+            ));
+        }
         if self.profile == Profile::LongComisdUcomisdRegistersV1 {
             let _ = self.comisd_ucomisd_controls.ok_or_else(|| {
                 invalid(
@@ -6443,6 +6510,9 @@ impl Fixture {
                 }
                 Profile::LongCmpsdRegistersV1 => {
                     cmpsd_register_encoding(&code_bytes).map(|(_, _, _, length)| length)
+                }
+                Profile::LongCmppdRegistersV1 => {
+                    cmppd_register_encoding(&code_bytes).map(|(_, _, _, length)| length)
                 }
                 Profile::LongComisdUcomisdRegistersV1 => {
                     comisd_ucomisd_register_encoding(&code_bytes).map(|(_, _, _, length)| length)
@@ -8373,6 +8443,7 @@ impl Fixture {
             comiss_ucomiss_controls: None,
             cmpss_controls: None,
             cmpsd_controls: None,
+            cmppd_controls: None,
             comisd_ucomisd_controls: None,
             cvtsi2sd_r32_controls: None,
             cvtsi2sd_r64_controls: None,
@@ -8483,6 +8554,8 @@ pub struct Snapshot {
     pub cmpss_controls: Option<CmpssControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cmpsd_controls: Option<CmpsdControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmppd_controls: Option<CmpsdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comisd_ucomisd_controls: Option<ComisdUcomisdControlSnapshot>,
     /// Immutable CVTSI2SD r32 gate inputs and the irrelevant OSXMMEXCPT echo.
@@ -8812,6 +8885,19 @@ impl RunResult {
             return Err(invalid(
                 "snapshot.cmpsd_controls",
                 "only valid for CMPSD profile",
+            ));
+        }
+        if self.profile == Profile::LongCmppdRegistersV1 {
+            if snapshot.cmppd_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.cmppd_controls",
+                    "required by the CMPPD profile",
+                ));
+            }
+        } else if snapshot.cmppd_controls.is_some() {
+            return Err(invalid(
+                "snapshot.cmppd_controls",
+                "only valid for CMPPD profile",
             ));
         }
         if self.profile == Profile::LongComisdUcomisdRegistersV1 {
@@ -9217,6 +9303,21 @@ impl RunResult {
             }
             if loaded.fixture.profile == Profile::LongCmpsdRegistersV1 {
                 validate_cmpsd_registers_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.cmppd_controls,
+                value.cmppd_controls,
+            ) {
+                (Profile::LongCmppdRegistersV1, Some(input), Some(output)) if input == output => {}
+                (Profile::LongCmppdRegistersV1, _, _) => {
+                    return Err(FormatError::CaseMismatch("cmppd_controls"));
+                }
+                (_, None, None) => {}
+                _ => return Err(FormatError::CaseMismatch("cmppd_controls")),
+            }
+            if loaded.fixture.profile == Profile::LongCmppdRegistersV1 {
+                validate_cmppd_registers_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
@@ -14153,6 +14254,36 @@ fn cmpsd_register_encoding(code_bytes: &str) -> Option<(u8, u8, u8, u32)> {
     Some((predicate, destination, source, bytes.len() as u32))
 }
 
+fn cmppd_register_encoding(code_bytes: &str) -> Option<(u8, u8, u8, u32)> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (rex, modrm, predicate) = match bytes.as_slice() {
+        [0x66, 0x0f, 0xc2, modrm, predicate] => (0u8, *modrm, *predicate),
+        [0x66, rex, 0x0f, 0xc2, modrm, predicate] if matches!(*rex, 0x41 | 0x44 | 0x45) => {
+            (*rex, *modrm, *predicate)
+        }
+        _ => return None,
+    };
+    if modrm >> 6 != 3 || predicate > 7 {
+        return None;
+    }
+    let destination = ((modrm >> 3) & 7) | (((rex >> 2) & 1) << 3);
+    let source = (modrm & 7) | ((rex & 1) << 3);
+    if (destination >= 8 || source >= 8) != (bytes.len() == 6)
+        || (rex & 4 != 0) != (destination >= 8)
+        || (rex & 1 != 0) != (source >= 8)
+        || rex & 0x0a != 0
+    {
+        return None;
+    }
+    Some((predicate, destination, source, bytes.len() as u32))
+}
+
 fn validate_cmpss_registers_result(
     loaded: &LoadedFixture,
     result: &RunResult,
@@ -14504,6 +14635,210 @@ fn validate_cmpsd_registers_result(
             && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
         (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
         _ => return Err(FormatError::CaseMismatch("CMPSD outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_cmppd_registers_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .cmppd_controls
+        .ok_or(FormatError::CaseMismatch("cmppd_controls"))?;
+    let sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    let (predicate, destination, source, length) = cmppd_register_encoding(&code.initial_bytes_hex)
+        .ok_or(FormatError::CaseMismatch("CMPPD encoding"))?;
+    let xmm = sse
+        .xmm
+        .iter()
+        .map(|encoded| decode_bytes(encoded))
+        .collect::<Result<Vec<_>, _>>()?;
+    let lhs = [
+        u64::from_le_bytes(
+            xmm[usize::from(destination)][..8]
+                .try_into()
+                .map_err(|_| FormatError::CaseMismatch("state.sse.xmm"))?,
+        ),
+        u64::from_le_bytes(
+            xmm[usize::from(destination)][8..16]
+                .try_into()
+                .map_err(|_| FormatError::CaseMismatch("state.sse.xmm"))?,
+        ),
+    ];
+    let rhs = [
+        u64::from_le_bytes(
+            xmm[usize::from(source)][..8]
+                .try_into()
+                .map_err(|_| FormatError::CaseMismatch("state.sse.xmm"))?,
+        ),
+        u64::from_le_bytes(
+            xmm[usize::from(source)][8..16]
+                .try_into()
+                .map_err(|_| FormatError::CaseMismatch("state.sse.xmm"))?,
+        ),
+    ];
+    let compare_binary64 = |left: u64, right: u64| {
+        let magnitude = 0x7fff_ffff_ffff_ffff;
+        if left & magnitude == 0 && right & magnitude == 0 {
+            core::cmp::Ordering::Equal
+        } else if left >> 63 != right >> 63 {
+            if left >> 63 == 0 {
+                core::cmp::Ordering::Greater
+            } else {
+                core::cmp::Ordering::Less
+            }
+        } else if left >> 63 == 0 {
+            (left & magnitude).cmp(&(right & magnitude))
+        } else {
+            (right & magnitude).cmp(&(left & magnitude))
+        }
+    };
+    let classify = |bits: u64| -> u8 {
+        let exponent = (bits >> 52) & 0x7ff;
+        let fraction = bits & 0x000f_ffff_ffff_ffff;
+        match (exponent, fraction) {
+            (0x7ff, fraction) if fraction != 0 => {
+                if fraction & 0x0008_0000_0000_0000 != 0 {
+                    3
+                } else {
+                    4
+                }
+            }
+            (0, fraction) if fraction != 0 => 2,
+            _ => 0,
+        }
+    };
+    let signal_qnan = matches!(predicate, 1 | 2 | 5 | 6);
+    let mut lane_results = [0u64; 2];
+    let mut raised_invalid = false;
+    let mut raised_denormal = false;
+    for lane in 0..2 {
+        let left_kind = classify(lhs[lane]);
+        let right_kind = classify(rhs[lane]);
+        let unordered = matches!(left_kind, 3 | 4) || matches!(right_kind, 3 | 4);
+        raised_invalid |= left_kind == 4
+            || right_kind == 4
+            || (signal_qnan && (left_kind == 3 || right_kind == 3));
+        // Each packed lane raises DE independently; NaN suppresses only its own lane.
+        raised_denormal |= !unordered && (left_kind == 2 || right_kind == 2);
+        let ordering = compare_binary64(lhs[lane], rhs[lane]);
+        let truth = match predicate {
+            0 => !unordered && ordering == core::cmp::Ordering::Equal,
+            1 => !unordered && ordering == core::cmp::Ordering::Less,
+            2 => {
+                !unordered
+                    && matches!(
+                        ordering,
+                        core::cmp::Ordering::Less | core::cmp::Ordering::Equal
+                    )
+            }
+            3 => unordered,
+            4 => unordered || ordering != core::cmp::Ordering::Equal,
+            5 => unordered || ordering != core::cmp::Ordering::Less,
+            6 => unordered || ordering == core::cmp::Ordering::Greater,
+            7 => !unordered,
+            _ => unreachable!("CMPPD encoding parser bounds predicate"),
+        };
+        lane_results[lane] = if truth { u64::MAX } else { 0 };
+    }
+    let old_mxcsr = sse.mxcsr.get() as u32;
+    let gate = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let unmasked = gate.is_none()
+        && ((raised_invalid && old_mxcsr & (1 << 7) == 0)
+            || (raised_denormal && old_mxcsr & (1 << 8) == 0));
+    let fault = gate.or_else(|| unmasked.then_some(if controls.cr4_osxmmexcpt { 19 } else { 6 }));
+    if !matches!(
+        (fault.is_some(), fixture.expected_exit),
+        (true, ExpectedExit::Exception) | (false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("CMPPD expected exit"));
+    }
+    let mut expected = fixture.initial_state.clone();
+    if gate.is_none() {
+        let expected_sse = expected
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        expected_sse.mxcsr = HexU64(u64::from(
+            old_mxcsr | u32::from(raised_invalid) | (u32::from(raised_denormal) << 1),
+        ));
+        if !unmasked {
+            let masks = lane_results
+                .iter()
+                .flat_map(|mask| mask.to_le_bytes())
+                .collect::<Vec<_>>();
+            let mask_hex = masks
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let index = usize::from(destination);
+            expected_sse.xmm[index] = format!("{mask_hex}{}", &expected_sse.xmm[index][32..]);
+            expected.rip = HexU64(
+                fixture
+                    .initial_state
+                    .rip
+                    .get()
+                    .checked_add(u64::from(length))
+                    .ok_or(FormatError::CaseMismatch("CMPPD stop overflow"))?,
+            );
+        }
+    }
+    let expected_memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != expected_memory
+    {
+        return Err(FormatError::CaseMismatch("CMPPD output state"));
+    }
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(u64::from(fault.is_none())),
+        })
+    {
+        return Err(FormatError::CaseMismatch("CMPPD retirement count"));
+    }
+    match (fault, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == Observation::Unavailable {
+                    reason: "exception has no architectural error code".into(),
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("CMPPD outcome/exception")),
     }
     Ok(())
 }
