@@ -268,6 +268,31 @@ workloads. Full pipeline component timings, warm execution and resource gates
 remain open. Legacy fragment timing remains omitted because equivalent
 admission and semantics were not established for this corpus.
 
+### S3-36a: bounded resident warm register-only execution
+
+`od-bench warm-first-run` is an opt-in Apple Silicon macOS release benchmark
+for a deterministic prefix of the frozen S3-17 cases that fits within the
+FIFO(16) cache. It validates and admits the full frozen case list and trace,
+then selects complete cases from the prefix until their summed per-case
+`unique_entries` budget reaches the cache capacity. This conservative sum is
+an upper bound, not the global count of distinct cache keys. It prewarms one FIFO runtime outside timed
+samples and retains that runtime through calibration and measurement. Timed
+dispatcher calls must report cache hits with zero additional misses, compiles,
+publications, or evictions. Each sample resets guest state from the same
+fixture values and validates full outcomes outside the timed call intervals.
+Interpreter samples run the same selected cases and work. Samples alternate
+order, use a common calibrated sweep count, and report raw counts, normalized
+medians/range/IQR, cache counters and paired per-sweep ratios.
+
+The complete 1,010-case frozen corpus is unsuitable as a resident warm sample:
+FIFO(16) capacity is smaller than the active working set. A recorded cold
+corpus sweep observed 1,320 misses/compiles and only 2 hits, so repeating the
+whole corpus would measure churn/recompilation, not steady-state cache hits.
+This path covers only a bounded register-only resident slice. No measurement
+has been collected; it supports no performance conclusion and does not complete
+the branch/helper/memory or resource portions of S3-36. See the
+[S3-36a implementation report](../reports/STAGE_3_S3-36a_2026-10-30.md).
+
 Recorded trace дополняется ограниченными synthetic-сценариями:
 1/8/64/512/4096 keys и observed unique count, hot loops на 1/8 keys, reverse
 unique sequence, alternating hit/miss, stale mapping/backing/execute

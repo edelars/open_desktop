@@ -297,6 +297,7 @@ struct Report {
 enum FirstRunVariantName {
     Interpreter,
     Fifo16ColdBlockDispatcher,
+    Fifo16WarmBlockDispatcher,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -350,6 +351,38 @@ struct FirstRunReport {
     measure_host: HostMetadata,
     inputs: usize,
     visits: usize,
+    calibration_sweeps: Vec<usize>,
+    paired_calibration_attempts: usize,
+    measured_series_restarts: Vec<FirstRunSeriesRestart>,
+    measured_pairs: usize,
+    common_sweeps_per_sample: usize,
+    timing_scope: String,
+    excluded_from_timing: String,
+    variants: Vec<FirstRunVariantResult>,
+    paired_interpreter_over_fifo_ratios: Vec<f64>,
+    total_elapsed_ns: u128,
+}
+
+#[derive(Serialize)]
+struct WarmRunReport {
+    schema: u32,
+    process_run: u8,
+    case_list_sha256: String,
+    trace_sha256: String,
+    capture_host: HostMetadata,
+    measure_host: HostMetadata,
+    inputs: usize,
+    visits: usize,
+    selected_cases: usize,
+    selected_entry_budget: usize,
+    selected_case_ids: Vec<String>,
+    cache_capacity_entries: usize,
+    warmup_dispatch_elapsed_ns: u128,
+    warmup_cache_hits: u64,
+    warmup_cache_misses: u64,
+    warmup_successful_compiles: u64,
+    warmup_successful_publications: u64,
+    warmup_evictions: u64,
     calibration_sweeps: Vec<usize>,
     paired_calibration_attempts: usize,
     measured_series_restarts: Vec<FirstRunSeriesRestart>,
@@ -610,6 +643,331 @@ pub fn run_cold_first_execution(
         total_elapsed_ns: started.elapsed().as_nanos(),
     };
     serde_json::to_value(report).map_err(|e| err(e.to_string()))
+}
+
+/// Measures repeated execution of a deterministic resident subset of the frozen
+/// register-only corpus. The full corpus exceeds FIFO16 capacity and is not a
+/// valid no-compile warm workload.
+pub fn run_warm_first_execution(
+    case_list: &Path,
+    trace_path: &Path,
+    process_run: u8,
+) -> Result<serde_json::Value, BenchError> {
+    if cfg!(debug_assertions) {
+        return Err(err("warm-first-run measurement requires a release build"));
+    }
+    if !(1..=3).contains(&process_run) {
+        return Err(err("process-run must be 1..=3"));
+    }
+    let started = Instant::now();
+    let list = read_bounded(case_list, MAX_CASE_LIST_BYTES, "case list")?;
+    let trace_raw = read_bounded(trace_path, crate::MAX_LOGICAL_BYTES, "trace")?;
+    if od_testkit::sha256_hex(&list) != FROZEN_CASE_LIST_SHA256
+        || od_testkit::sha256_hex(&trace_raw) != FROZEN_TRACE_SHA256
+    {
+        return Err(err(
+            "case list or trace does not match the frozen S3-17 corpus",
+        ));
+    }
+    let trace: RecordedTrace =
+        serde_json::from_slice(&trace_raw).map_err(|e| err(format!("trace JSON: {e}")))?;
+    if trace.visits.len() != 1_322 || trace.visits.len() > MAX_TOTAL_TRACE_VISITS {
+        return Err(err("frozen trace visit count mismatch"));
+    }
+    let all_cases = prepare_cases(&list, &trace, started)?;
+    if all_cases.len() != MAX_INPUTS {
+        return Err(err("warm-first-run requires the complete frozen corpus"));
+    }
+    let (selected_case_count, selected_entry_budget) = select_resident_case_count(&all_cases)?;
+    let cases = &all_cases[..selected_case_count];
+
+    // Warm the sole FIFO runtime once; the same runtime remains alive through
+    // calibration and all measured samples. This work is recorded but untimed.
+    let mut engine = Variant::new(VariantName::MultiFifo16)?;
+    let warmup = warm_fifo_sweep(&mut engine, &cases, started)?;
+    let warmup_counters = warmup.counters;
+    if warmup_counters.misses == 0
+        || warmup_counters.compiles == 0
+        || warmup_counters.compiles != warmup_counters.misses
+        || warmup_counters.publications != warmup_counters.compiles
+        || warmup_counters.evictions != 0
+        || warmup_counters.resident > ARENA_SLOTS
+    {
+        return Err(err(
+            "FIFO warmup did not establish the expected resident cache",
+        ));
+    }
+
+    let mut calibration_elapsed = [Duration::ZERO; 2];
+    let mut calibration_sweeps = [0usize; 2];
+    let mut calibration_order = 0usize;
+    while calibration_elapsed
+        .iter()
+        .any(|elapsed| *elapsed < MIN_SAMPLE)
+    {
+        if started.elapsed() > MAX_RUN_TIME {
+            return Err(err("30 minute run limit exceeded during warm calibration"));
+        }
+        let fifo_first = calibration_order % 2 == 0;
+        calibration_order = calibration_order.saturating_add(1);
+        for variant_index in if fifo_first { [0, 1] } else { [1, 0] } {
+            if calibration_elapsed[variant_index] >= MIN_SAMPLE {
+                continue;
+            }
+            if variant_index == 0 {
+                let sample = measure_warm_fifo_sample(0, 0, 1, &cases, &mut engine, started)?;
+                calibration_elapsed[0] = calibration_elapsed[0].saturating_add(
+                    Duration::from_nanos(u64::try_from(sample.elapsed_ns).unwrap_or(u64::MAX)),
+                );
+            } else {
+                let sample = measure_interpreter_sample(0, 1, 1, &cases, started)?;
+                calibration_elapsed[1] = calibration_elapsed[1].saturating_add(
+                    Duration::from_nanos(u64::try_from(sample.elapsed_ns).unwrap_or(u64::MAX)),
+                );
+            }
+            calibration_sweeps[variant_index] = calibration_sweeps[variant_index]
+                .checked_add(1)
+                .ok_or_else(|| err("warm calibration sweep count overflow"))?;
+        }
+    }
+    let initial_repetitions = calibration_sweeps.into_iter().max().unwrap_or(1).max(1);
+    let (repetitions, paired_calibration_attempts) =
+        calibrate_common_warm_sweeps(&cases, started, initial_repetitions, &mut engine)?;
+
+    let measured = collect_first_run_series(repetitions, FIRST_RUN_PAIRS, |pair, sweeps| {
+        if started.elapsed() > MAX_RUN_TIME {
+            return Err(err("30 minute run limit exceeded during warm samples"));
+        }
+        let fifo_first = pair % 2 == 0;
+        let (fifo_order, interpreter_order) = if fifo_first { (0, 1) } else { (1, 0) };
+        if fifo_first {
+            Ok((
+                measure_warm_fifo_sample(pair, fifo_order, sweeps, &cases, &mut engine, started)?,
+                measure_interpreter_sample(pair, interpreter_order, sweeps, &cases, started)?,
+            ))
+        } else {
+            let interpreter =
+                measure_interpreter_sample(pair, interpreter_order, sweeps, &cases, started)?;
+            let fifo =
+                measure_warm_fifo_sample(pair, fifo_order, sweeps, &cases, &mut engine, started)?;
+            Ok((fifo, interpreter))
+        }
+    })?;
+
+    let fifo_result = summarize_first_run(
+        FirstRunVariantName::Fifo16WarmBlockDispatcher,
+        measured.fifo_samples,
+    );
+    let interpreter_result = summarize_first_run(
+        FirstRunVariantName::Interpreter,
+        measured.interpreter_samples,
+    );
+    let fifo_by_pair: std::collections::HashMap<usize, u128> = fifo_result
+        .samples
+        .iter()
+        .map(|sample| (sample.pair, sample.elapsed_ns))
+        .collect();
+    let ratios = interpreter_result
+        .samples
+        .iter()
+        .map(|sample| {
+            // Both variants use the same calibrated sweep count per pair, so
+            // the raw elapsed ratio avoids integer normalization truncation.
+            let interpreter = sample.elapsed_ns as f64;
+            let fifo = fifo_by_pair[&sample.pair] as f64;
+            interpreter / fifo
+        })
+        .collect();
+    let report = WarmRunReport {
+        schema: 1,
+        process_run,
+        case_list_sha256: od_testkit::sha256_hex(&list),
+        trace_sha256: od_testkit::sha256_hex(&trace_raw),
+        capture_host: trace.capture_host.clone(),
+        measure_host: HostMetadata::current(),
+        inputs: trace.inputs.len(),
+        visits: trace.visits.len(),
+        selected_cases: cases.len(),
+        selected_entry_budget,
+        selected_case_ids: cases.iter().map(|case| case.id.clone()).collect(),
+        cache_capacity_entries: ARENA_SLOTS,
+        warmup_dispatch_elapsed_ns: warmup.execution.as_nanos(),
+        warmup_cache_hits: warmup_counters.hits,
+        warmup_cache_misses: warmup_counters.misses,
+        warmup_successful_compiles: warmup_counters.compiles,
+        warmup_successful_publications: warmup_counters.publications,
+        warmup_evictions: warmup_counters.evictions,
+        calibration_sweeps: calibration_sweeps.to_vec(),
+        paired_calibration_attempts,
+        measured_series_restarts: measured.restarts,
+        measured_pairs: FIRST_RUN_PAIRS,
+        common_sweeps_per_sample: measured.common_sweeps,
+        timing_scope: "per-sample sum of FIFO dispatch-call intervals on one prewarmed, resident FIFO16 runtime and interpreter-call intervals over the same selected cases; per-case state cloning/reset and output validation occur outside timed call intervals".into(),
+        excluded_from_timing: "fixture/trace parsing and admission, initial FIFO cache warmup, interpreter oracle preparation, per-case state clone/reset, post-call result validation, runtime initialization/teardown, and process launch".into(),
+        variants: vec![fifo_result, interpreter_result],
+        paired_interpreter_over_fifo_ratios: ratios,
+        total_elapsed_ns: started.elapsed().as_nanos(),
+    };
+    serde_json::to_value(report).map_err(|e| err(e.to_string()))
+}
+
+fn select_resident_case_count(all_cases: &[Case]) -> Result<(usize, usize), BenchError> {
+    let mut selected = 0usize;
+    let mut entries = 0usize;
+    for case in all_cases {
+        if case.unique_entries > ARENA_SLOTS {
+            if selected == 0 {
+                return Err(err("first frozen case exceeds FIFO16 capacity"));
+            }
+            break;
+        }
+        let Some(next_entries) = entries.checked_add(case.unique_entries) else {
+            return Err(err("selected warm entry count overflow"));
+        };
+        if next_entries > ARENA_SLOTS {
+            break;
+        }
+        entries = next_entries;
+        selected += 1;
+    }
+    if selected < 2 || entries == 0 {
+        return Err(err(
+            "frozen corpus has too few cases for a resident warm slice",
+        ));
+    }
+    Ok((selected, entries))
+}
+
+struct WarmSweep {
+    execution: Duration,
+    calls: u64,
+    retired: u64,
+    native_blocks: u64,
+    counters: Counters,
+}
+
+fn warm_fifo_sweep(
+    engine: &mut Variant,
+    cases: &[Case],
+    started: Instant,
+) -> Result<WarmSweep, BenchError> {
+    let mut execution = Duration::ZERO;
+    let mut retired = 0u64;
+    let mut native_blocks = 0u64;
+    for case in cases {
+        if started.elapsed() > MAX_RUN_TIME {
+            return Err(err("30 minute run limit exceeded during warm FIFO sweep"));
+        }
+        let mut state = case.initial.clone();
+        let call_started = Instant::now();
+        let result = engine.call(case, &mut state)?;
+        execution = execution.saturating_add(call_started.elapsed());
+        validate_dispatch_result(case, &state, &result)?;
+        retired = retired
+            .checked_add(result.retired_instructions)
+            .ok_or_else(|| err("warm FIFO retirement count overflow"))?;
+        native_blocks = native_blocks
+            .checked_add(result.blocks_executed)
+            .ok_or_else(|| err("warm FIFO native block count overflow"))?;
+    }
+    Ok(WarmSweep {
+        execution,
+        calls: cases.len() as u64,
+        retired,
+        native_blocks,
+        counters: engine.counters(),
+    })
+}
+
+fn measure_warm_fifo_sample(
+    pair: usize,
+    order: usize,
+    repetitions: usize,
+    cases: &[Case],
+    engine: &mut Variant,
+    started: Instant,
+) -> Result<FirstRunSample, BenchError> {
+    let before = engine.counters();
+    let mut execution = Duration::ZERO;
+    let mut calls = 0u64;
+    let mut retired = 0u64;
+    let mut native_blocks = 0u64;
+    for _ in 0..repetitions {
+        let sweep = warm_fifo_sweep(engine, cases, started)?;
+        execution = execution.saturating_add(sweep.execution);
+        calls = calls
+            .checked_add(sweep.calls)
+            .ok_or_else(|| err("warm FIFO call count overflow"))?;
+        retired = retired
+            .checked_add(sweep.retired)
+            .ok_or_else(|| err("warm FIFO retirement count overflow"))?;
+        native_blocks = native_blocks
+            .checked_add(sweep.native_blocks)
+            .ok_or_else(|| err("warm FIFO native block count overflow"))?;
+    }
+    let after = engine.counters();
+    let hits = after.hits.saturating_sub(before.hits);
+    let misses = after.misses.saturating_sub(before.misses);
+    let compiles = after.compiles.saturating_sub(before.compiles);
+    let publications = after.publications.saturating_sub(before.publications);
+    let evictions = after.evictions.saturating_sub(before.evictions);
+    if hits == 0 || misses != 0 || compiles != 0 || publications != 0 || evictions != 0 {
+        return Err(err(
+            "warm FIFO sample was not a resident cache-hit-only pass",
+        ));
+    }
+    Ok(FirstRunSample {
+        pair,
+        order,
+        sweeps: repetitions,
+        calls,
+        retired_guest_instructions: retired,
+        native_block_executions: native_blocks,
+        initialization_ns: 0,
+        execution_ns: execution.as_nanos(),
+        elapsed_ns: execution.as_nanos(),
+        cache_hits: hits,
+        cache_misses: misses,
+        successful_compiles: compiles,
+        successful_publications: publications,
+        evictions,
+        resident_entries_high_water: after.resident,
+        resident_code_bytes_high_water: after.code_bytes,
+        resident_logical_metadata_bytes_high_water: after.logical_bytes,
+        arena_reserved_bytes: after.arena_reserved_bytes,
+    })
+}
+
+fn calibrate_common_warm_sweeps(
+    cases: &[Case],
+    started: Instant,
+    mut repetitions: usize,
+    engine: &mut Variant,
+) -> Result<(usize, usize), BenchError> {
+    let mut attempts = 0usize;
+    loop {
+        if started.elapsed() > MAX_RUN_TIME {
+            return Err(err(
+                "30 minute run limit exceeded during warm paired calibration",
+            ));
+        }
+        let (fifo, interpreter) = if attempts % 2 == 0 {
+            (
+                measure_warm_fifo_sample(0, 0, repetitions, cases, engine, started)?,
+                measure_interpreter_sample(0, 1, repetitions, cases, started)?,
+            )
+        } else {
+            let interpreter = measure_interpreter_sample(0, 1, repetitions, cases, started)?;
+            let fifo = measure_warm_fifo_sample(0, 0, repetitions, cases, engine, started)?;
+            (fifo, interpreter)
+        };
+        attempts = attempts.saturating_add(1);
+        let next = next_paired_sample_sweeps(repetitions, fifo.elapsed_ns, interpreter.elapsed_ns)?;
+        match next {
+            Some(next) => repetitions = next,
+            None => return Ok((repetitions, attempts)),
+        }
+    }
 }
 
 struct FirstRunSeriesSamples {

@@ -2488,6 +2488,23 @@ are established for these same inputs. See the
 
 ### S3-36. Измерить прогретое исполнение
 
+#### S3-36a: bounded resident warm register-only path
+
+Implemented opt-in `od-bench warm-first-run` for a deterministic prefix of the
+frozen S3-17 register-only corpus whose conservative sum of per-case
+`unique_entries` fits FIFO(16); shared keys may make the actual resident set
+smaller. The report records the full corpus fingerprints and selected case
+IDs. A complete 1,010-case sweep cannot serve as a resident warm sample: the
+FIFO cache holds 16 entries and the collected cold corpus sweep observed 1,320
+misses/compiles and only 2 hits. The runner prewarms one persistent runtime,
+verifies that measured sweeps have hits and zero
+miss/compile/publication/eviction deltas, alternates interpreter and cached
+dispatcher samples, and validates each reset execution outside the timed
+calls. This is a measurement path only; no warm benchmark has been run and no
+performance conclusion is supported. It covers register-only cases and does
+not complete S3-36's branch/helper/memory workload matrix. See the
+[S3-36a implementation report](../reports/STAGE_3_S3-36a_2026-10-30.md).
+
 1. Прогреть cache вне timed samples и подтвердить hit/compile counters. Повторять одинаковую гостевую работу с корректным reset initial state.
 2. Измерять полный steady-state runtime path с lookup/dispatcher/helpers/flags и exits, а не только одну ARM64 arithmetic instruction.
 3. Чередовать варианты, применять повторные calibrated samples, сохранять raw elapsed/work counts, median и разброс; при пересекающемся шуме не утверждать speedup.

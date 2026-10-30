@@ -731,3 +731,18 @@ interpreter at 0.164–0.166 ms. The raw results and exclusions are in the
 [S3-35a report](../reports/STAGE_3_S3-35a_2026-10-30.md). This is one bounded
 cold workload; S3-35 remains partial and warm/performance acceptance remain
 open. Mini/physical and Stage 2 checks are outside this slice.
+
+### S3-36a resident warm register-only benchmark path
+
+`od-bench warm-first-run` selects a deterministic prefix of the frozen S3-17
+cases whose summed per-case unique-entry budget fits the FIFO(16) cache. This
+budget is conservative and is not the count of globally distinct cache keys.
+It warms one runtime
+before calibration and keeps it alive through alternating interpreter and
+dispatcher samples. Every measured dispatcher sample checks for hits and zero
+misses, compiles, publications, and evictions; state reset and result validation
+stay outside timed calls. The full 1,010-case corpus churns FIFO16 and cannot
+provide the resident warm evidence this path measures. This implementation has
+not yet collected warm timings and covers register-only cases only; it does
+not complete S3-36 or establish a performance result. Details are in the
+[S3-36a implementation report](../reports/STAGE_3_S3-36a_2026-10-30.md).

@@ -152,10 +152,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("cold-first-run requires native Apple Silicon macOS execution".into());
             }
         }
+        "warm-first-run" => {
+            let case_list = case_list.ok_or("warm-first-run requires --case-list PATH")?;
+            let trace = trace_path.ok_or("warm-first-run requires --trace PATH")?;
+            let output = output.ok_or("warm-first-run requires --output PATH")?;
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                let value = od_bench::dispatch_cache::run_warm_first_execution(
+                    &case_list,
+                    &trace,
+                    process_run,
+                )?;
+                od_bench::dispatch_cache::write_atomic(&output, &value)?;
+            }
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                let _ = (case_list, trace, output);
+                return Err("warm-first-run requires native Apple Silicon macOS execution".into());
+            }
+        }
         _ => {
             print_usage();
             return Err(
-                "expected record, measure, synthetic, dispatch-cache, or cold-first-run".into(),
+                "expected record, measure, synthetic, dispatch-cache, cold-first-run, or warm-first-run".into(),
             );
         }
     }
@@ -178,6 +197,7 @@ fn write_json(
 fn print_usage() {
     eprintln!(
         "Usage:\n  od-bench record --case-list PATH [--output trace.json]\n  od-bench measure --trace trace.json [--process-run 1..3] [--output report.json]\n  od-bench synthetic [--process-run 1..3] [--output report.json]\n  od-bench dispatch-cache --case-list PATH --trace trace.json --process-run 1..3 --output report.json\n  od-bench cold-first-run --case-list PATH --trace trace.json --process-run 1..3 --output report.json\n\
+  od-bench warm-first-run --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
          `record` requires macOS ARM64. `measure` rebuilds all keys before timing."
     );
 }
