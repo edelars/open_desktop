@@ -89,13 +89,39 @@ def passing_final_summary(run_id: str, log_dir: Path):
     steps = passing_rust_gate_steps(log_dir)
     for name in ("harness_self_tests", "stage1_dispatch", "memory_corpus"):
         steps[name] = {"status": "passed"}
+    gate_name = "memory_s3_34h_exact_gate"
+    gate_output = f"test {harness.MEMORY_EXACT_GATE} ... ok\n"
+    gate_log = log_dir / f"{gate_name}.log"
+    gate_log.write_text(gate_output)
+    steps[gate_name] = {
+        "name": gate_name,
+        "status": "passed",
+        "argv": [
+            "cargo", "test", "--offline", "-p", "od-host", "--test", "memory_corpus",
+            harness.MEMORY_EXACT_GATE, "--", "--exact", "--test-threads=1",
+        ],
+        "returncode": 0,
+        "failure": None,
+        "test_identity": harness.MEMORY_EXACT_GATE,
+        "test_outcomes": {harness.MEMORY_EXACT_GATE: "ok"},
+        "output_tail": gate_output,
+        "output_sha256": harness.sha256_bytes(gate_output.encode()),
+        "log": gate_log.relative_to(harness.ROOT).as_posix(),
+    }
+    steps["memory_corpus"]["test_outcomes"] = {}
     lifecycle = [step for step, suite, _, _ in harness.RUST_TEST_GATES if suite == "local_lifecycle"]
     acceptance = [step for step, suite, _, _ in harness.RUST_TEST_GATES if suite == "local_acceptance"]
     suites = {name: {"status": "not_run"} for name in harness.UNSELECTED_SUITES}
     suites["local_lifecycle"] = {"status": "passed", "tests": lifecycle}
     suites["local_acceptance"] = {"status": "passed", "tests": acceptance}
     suites["stage1_dispatch"] = {"status": "local_only"}
-    suites["memory_corpus"] = {"status": "passed"}
+    suites["memory_corpus"] = {
+        "status": "passed",
+        "unique_inputs": 3600,
+        "replays_per_input": 2,
+        "test_outcomes": {},
+        "s3_34h_exact_gate": steps[gate_name],
+    }
     suites[harness.PROCESS_SUITE_NAME] = {"status": "not_run"}
     for name in harness.PROCESS_SUITE_STEPS:
         steps[name] = {"status": "not_run"}
@@ -153,6 +179,30 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 required,
                 {"saved_case"},
             )
+
+    def test_s3_34h_exact_gate_requires_exact_identity_and_argv(self):
+        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+            log_path = Path(temporary) / "gate.log"
+            output = f"test {harness.MEMORY_EXACT_GATE} ... ok\n"
+            log_path.write_text(output)
+            step = {
+                "name": "memory_s3_34h_exact_gate",
+                "argv": [
+                    "cargo", "test", "--offline", "-p", "od-host", "--test", "memory_corpus",
+                    harness.MEMORY_EXACT_GATE, "--", "--exact", "--test-threads=1",
+                ],
+                "returncode": 0,
+                "failure": None,
+                "test_identity": harness.MEMORY_EXACT_GATE,
+                "test_outcomes": {harness.MEMORY_EXACT_GATE: "ok"},
+                "output_tail": output,
+                "output_sha256": harness.sha256_bytes(output.encode()),
+                "log": log_path.relative_to(harness.ROOT).as_posix(),
+            }
+            harness.validate_memory_exact_gate_evidence(step)
+            step["argv"] = ["cargo", "test"]
+            with self.assertRaisesRegex(harness.HarnessError, "invocation is missing or forged"):
+                harness.validate_memory_exact_gate_evidence(step)
 
     def test_allowed_environment_replay_tests_do_not_hide_unexpected_ignored_tests(self):
         output = (

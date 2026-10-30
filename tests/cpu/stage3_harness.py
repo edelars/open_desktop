@@ -28,6 +28,7 @@ RUN_ID_PATTERN = re.compile(r"stage3-\d{8}-\d{6}-[0-9a-f]{10}")
 
 MEMORY_REQUIRED_TESTS = {
     "fixed_seed_memory_corpus_matches_interpreter_twice_per_input",
+    "reducer_preserves_load_pair_site_fault_boundary_and_mismatch_class",
     "named_fault_stop_budget_and_continuation_cases_are_separate",
     "comparator_rejects_corruption_and_serializes_named_diagnostics",
     "bounded_reducer_is_deterministic_preserves_class_and_saves_report",
@@ -36,10 +37,11 @@ MEMORY_REQUIRED_TESTS = {
     "generic_reducer_can_clear_marker_when_comparator_allows_candidate",
     "mismatch_report_preserves_empty_first_and_mismatching_continuation_phases",
     "replay_envelope_round_trips_and_rejects_malformed_reports",
-    "replay_success_fault_stop_budget_and_continuation_for_both_sequences",
+    "replay_success_fault_stop_budget_and_continuation_for_all_sequences",
     "saved_mismatch_report_replays_and_preserves_original_classes",
     "replay_refuses_to_claim_equivalence_without_native_backend",
 }
+MEMORY_EXACT_GATE = "reducer_preserves_load_pair_site_fault_boundary_and_mismatch_class"
 MEMORY_ALLOWED_IGNORED_TESTS = {
     "replay_saved_case_from_environment",
     "reduce_saved_case_from_environment",
@@ -50,6 +52,7 @@ SELF_TEST_NAMES = (
     "test_partial_run_cannot_be_reported_as_local_only",
     "test_unselected_suites_must_remain_not_run",
     "test_required_memory_test_must_be_present_and_non_ignored",
+    "test_s3_34h_exact_gate_requires_exact_identity_and_argv",
     "test_allowed_environment_replay_tests_do_not_hide_unexpected_ignored_tests",
     "test_self_test_output_validator_rejects_zero_match_and_all_skipped",
     "test_stage1_child_fingerprint_and_both_builds_are_pinned",
@@ -170,6 +173,7 @@ LOCAL_STEPS = (
     "harness_self_tests",
     "stage1_dispatch",
     "memory_corpus",
+    "memory_s3_34h_exact_gate",
     *(step for step, _, _, _ in RUST_TEST_GATES),
 )
 UNSELECTED_SUITES = ("physical_x86", "mac_mini", "performance", "owner_backed", "stage2")
@@ -267,6 +271,7 @@ PROCESS_SOURCE_PATHS = (
     "tests/cpu/stage3_harness.py",
 )
 LOCAL_RUST_TEST_SOURCES = (
+    "crates/od-host/tests/memory_corpus.rs",
     "crates/od-host/src/lib.rs",
     "crates/od-jit/src/dispatch.rs",
     "tests/cpu/stage3_harness.py",
@@ -657,6 +662,47 @@ def validate_exact_rust_test_output(output: str, identity: str) -> dict[str, str
     if len(rows) != 1 or rows[0][0] != identity or rows[0][1] != "ok":
         raise HarnessError(f"exact Rust test output did not contain one passing identity: {identity}")
     return {identity: "ok"}
+
+
+def validate_memory_exact_gate_evidence(step: dict, run_root: Path | None = None) -> None:
+    expected_argv = [
+        "cargo", "test", "--offline", "-p", "od-host", "--test", "memory_corpus",
+        MEMORY_EXACT_GATE, "--", "--exact", "--test-threads=1",
+    ]
+    if (
+        step.get("name") != "memory_s3_34h_exact_gate"
+        or step.get("argv") != expected_argv
+        or step.get("returncode") != 0
+        or step.get("failure") is not None
+        or step.get("test_identity") != MEMORY_EXACT_GATE
+    ):
+        raise HarnessError("S3-34h exact memory gate invocation is missing or forged")
+    try:
+        outcomes = validate_exact_rust_test_output(step.get("output_tail", ""), MEMORY_EXACT_GATE)
+    except HarnessError as error:
+        raise HarnessError(f"S3-34h exact memory gate lacks passing output: {error}") from error
+    if step.get("test_outcomes") != outcomes:
+        raise HarnessError("S3-34h exact memory gate outcome is forged")
+    log_rel = step.get("log")
+    output_digest = step.get("output_sha256")
+    if not isinstance(log_rel, str) or not isinstance(output_digest, str):
+        raise HarnessError("S3-34h exact memory gate log evidence is missing")
+    log_lexical = ROOT / log_rel
+    log_path = log_lexical.resolve()
+    if ROOT not in log_path.parents:
+        raise HarnessError("S3-34h exact memory gate log escaped repository root")
+    if run_root is not None and (
+        log_lexical != run_root / "logs" / "memory_s3_34h_exact_gate.log"
+        or log_path != log_lexical
+    ):
+        raise HarnessError("S3-34h exact memory gate log path differs")
+    try:
+        raw = log_path.read_bytes()
+        output = raw.decode("utf-8", errors="replace")
+    except OSError as error:
+        raise HarnessError("S3-34h exact memory gate log is missing") from error
+    if sha256_bytes(raw) != output_digest or step.get("output_tail") != output[-4000:]:
+        raise HarnessError("S3-34h exact memory gate log binding differs")
 
 
 def validate_self_test_output(output: str) -> dict[str, str]:
@@ -1552,8 +1598,15 @@ def input_manifest() -> dict:
             "source": memory_path.relative_to(ROOT).as_posix(),
             "source_sha256": sha256_file(memory_path),
             "required_tests": sorted(MEMORY_REQUIRED_TESTS),
-            "expected_unique_inputs": 2400,
+            "expected_unique_inputs": 3600,
             "replays_per_input": 2,
+            "exact_gate": {
+                "test_identity": MEMORY_EXACT_GATE,
+                "argv": [
+                    "cargo", "test", "--offline", "-p", "od-host", "--test",
+                    "memory_corpus", MEMORY_EXACT_GATE, "--", "--exact", "--test-threads=1",
+                ],
+            },
         },
         "lifecycle": {
             "source": host_path.relative_to(ROOT).as_posix(),
@@ -1613,6 +1666,24 @@ def validate_input_manifest_file(path: Path, expected_digest: str) -> dict:
         raise HarnessError(f"input manifest is missing or malformed: {error}") from error
     if not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION:
         raise HarnessError("input manifest has an unsupported schema")
+    memory = value.get("memory_corpus")
+    expected_memory_gate = {
+        "test_identity": MEMORY_EXACT_GATE,
+        "argv": [
+            "cargo", "test", "--offline", "-p", "od-host", "--test",
+            "memory_corpus", MEMORY_EXACT_GATE, "--", "--exact", "--test-threads=1",
+        ],
+    }
+    if (
+        not isinstance(memory, dict)
+        or memory.get("source") != "crates/od-host/tests/memory_corpus.rs"
+        or memory.get("source_sha256") != sha256_file(ROOT / "crates/od-host/tests/memory_corpus.rs")
+        or memory.get("required_tests") != sorted(MEMORY_REQUIRED_TESTS)
+        or memory.get("expected_unique_inputs") != 3600
+        or memory.get("replays_per_input") != REPEATS
+        or memory.get("exact_gate") != expected_memory_gate
+    ):
+        raise HarnessError("memory corpus manifest does not pin the S3-34h exact gate")
     validate_rust_test_manifest(value.get("local_rust_tests"))
     process = value.get("vmhost_process")
     if not isinstance(process, dict) or process.get("automatic_retry") is not False:
@@ -1817,7 +1888,17 @@ def validate_final_summary(summary: dict, input_manifest_path: Path) -> None:
         validate_unselected_suites(suites, (PROCESS_SUITE_NAME,))
         statuses = {name: steps.get(name, {}).get("status") for name in LOCAL_STEPS}
         validate_required_steps(statuses)
+        validate_memory_exact_gate_evidence(steps["memory_s3_34h_exact_gate"], run_root)
         validate_required_rust_test_evidence(steps, run_root)
+        memory_suite = suites.get("memory_corpus", {})
+        if (
+            memory_suite.get("status") != "passed"
+            or memory_suite.get("unique_inputs") != 3600
+            or memory_suite.get("replays_per_input") != REPEATS
+            or memory_suite.get("test_outcomes") != steps.get("memory_corpus", {}).get("test_outcomes")
+            or memory_suite.get("s3_34h_exact_gate") != steps["memory_s3_34h_exact_gate"]
+        ):
+            raise HarnessError("memory corpus suite summary omits or forges S3-34h evidence")
         lifecycle_steps = [
             step for step, suite, _, _ in RUST_TEST_GATES if suite == "local_lifecycle"
         ]
@@ -1952,6 +2033,14 @@ def main(argv: list[str] | None = None) -> int:
                 ],
                 7200,
             ),
+            (
+                "memory_s3_34h_exact_gate",
+                [
+                    "cargo", "test", "--offline", "-p", "od-host", "--test",
+                    "memory_corpus", MEMORY_EXACT_GATE, "--", "--exact", "--test-threads=1",
+                ],
+                1800,
+            ),
         ]
         for name, command, timeout in commands:
             step = run_step(name, command, run_dir, timeout, fingerprint)
@@ -1990,9 +2079,23 @@ def main(argv: list[str] | None = None) -> int:
                     corpus_output, MEMORY_REQUIRED_TESTS, MEMORY_ALLOWED_IGNORED_TESTS
                 )
                 summary["steps"][name]["test_outcomes"] = outcomes
-                summary["steps"][name]["unique_inputs"] = 2400
+                summary["steps"][name]["unique_inputs"] = 3600
                 summary["steps"][name]["replays_per_input"] = 2
                 summary["steps"][name]["allowed_ignored"] = sorted(MEMORY_ALLOWED_IGNORED_TESTS)
+                replace_json(summary_path, summary)
+            if name == "memory_s3_34h_exact_gate":
+                try:
+                    outcomes = validate_exact_rust_test_output(
+                        step["output_tail"], MEMORY_EXACT_GATE
+                    )
+                except HarnessError as error:
+                    step["status"] = "failed"
+                    step["failure"] = str(error)
+                    summary["steps"][name] = step
+                    replace_json(summary_path, summary)
+                    raise
+                summary["steps"][name]["test_identity"] = MEMORY_EXACT_GATE
+                summary["steps"][name]["test_outcomes"] = outcomes
                 replace_json(summary_path, summary)
 
         rust_test_steps: dict[str, list[dict]] = {
@@ -2036,9 +2139,10 @@ def main(argv: list[str] | None = None) -> int:
         }
         summary["suites"]["memory_corpus"] = {
             "status": "passed",
-            "unique_inputs": 2400,
+            "unique_inputs": 3600,
             "replays_per_input": 2,
             "test_outcomes": summary["steps"]["memory_corpus"]["test_outcomes"],
+            "s3_34h_exact_gate": summary["steps"]["memory_s3_34h_exact_gate"],
         }
         summary["source"]["fingerprint_end"] = source_fingerprint()
         validate_fingerprint(fingerprint, summary["source"]["fingerprint_end"])

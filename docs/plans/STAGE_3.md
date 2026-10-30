@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-20h/S3-20i/S3-20j/S3-20k/S3-20l/S3-20m/S3-20n/S3-20o/S3-20p/S3-20q/S3-20r/S3-20s/S3-20t/S3-20u/S3-20v/S3-20w/S3-20x/S3-20y/S3-20z/S3-20aa/S3-20ab/S3-20ac/S3-20ad/S3-20ae/S3-20af/S3-20ag/S3-20ah/S3-20ai/S3-20aj/S3-20ak/S3-20al/S3-20am/S3-20an/S3-20ao/S3-20ap/S3-20aq/S3-20ar/S3-20as/S3-20at/S3-20au/S3-20av/S3-20aw/S3-20ax/S3-20ay/S3-20az/S3-20ba/S3-20bb/S3-20bc/S3-20bd/S3-20be/S3-20bf/S3-20bg/S3-20bh/S3-20bi/S3-20bj/S3-20bk/S3-20bl/S3-20bm/S3-20bn/S3-20bo/S3-20bp/S3-20bq/S3-20br/S3-20bs/S3-20bt/S3-20bu/S3-20bv/S3-20bw/S3-20bx/S3-20ca/S3-20cb/S3-20cc/S3-20cd/S3-20ce/S3-20cf/S3-20cg/S3-20ch/S3-20ci/S3-20cj/S3-20ck/S3-20cl/S3-20cm/S3-26a/S3-26b/S3-26c/S3-26d/S3-26e/S3-27a/S3-27b/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-24b/S3-25a/S3-25b/S3-27c/S3-34f реализованы как bounded partial slices; S3-20cm реализован как bounded optional slice, не gate этапа. S3-27d ограничен partial slice для прямых singleton V2 load/store и не закрывает S3-27. Общие memory lowering и S3-19/S3-20/S3-22/S3-23/S3-24/S3-25/S3-26/S3-27 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-20h/S3-20i/S3-20j/S3-20k/S3-20l/S3-20m/S3-20n/S3-20o/S3-20p/S3-20q/S3-20r/S3-20s/S3-20t/S3-20u/S3-20v/S3-20w/S3-20x/S3-20y/S3-20z/S3-20aa/S3-20ab/S3-20ac/S3-20ad/S3-20ae/S3-20af/S3-20ag/S3-20ah/S3-20ai/S3-20aj/S3-20ak/S3-20al/S3-20am/S3-20an/S3-20ao/S3-20ap/S3-20aq/S3-20ar/S3-20as/S3-20at/S3-20au/S3-20av/S3-20aw/S3-20ax/S3-20ay/S3-20az/S3-20ba/S3-20bb/S3-20bc/S3-20bd/S3-20be/S3-20bf/S3-20bg/S3-20bh/S3-20bi/S3-20bj/S3-20bk/S3-20bl/S3-20bm/S3-20bn/S3-20bo/S3-20bp/S3-20bq/S3-20br/S3-20bs/S3-20bt/S3-20bu/S3-20bv/S3-20bw/S3-20bx/S3-20ca/S3-20cb/S3-20cc/S3-20cd/S3-20ce/S3-20cf/S3-20cg/S3-20ch/S3-20ci/S3-20cj/S3-20ck/S3-20cl/S3-20cm/S3-26a/S3-26b/S3-26c/S3-26d/S3-26e/S3-27a/S3-27b/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-24b/S3-25a/S3-25b/S3-27c/S3-34f/S3-34h реализованы как bounded partial slices; S3-20cm реализован как bounded optional slice, не gate этапа. S3-27d ограничен partial slice для прямых singleton V2 load/store и не закрывает S3-27. Общие memory lowering и S3-19/S3-20/S3-22/S3-23/S3-24/S3-25/S3-26/S3-27 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -2427,6 +2427,33 @@ test identity, точные argv, нулевой exit status и единстве
 regressions остаются отдельными от unit-level harness. Mini, performance,
 physical x86, Stage 2 и owner-backed suites остаются `not_run`; полный S3-34,
 S3-28, S3-29, S3-38 и Stage 3 не закрываются этим аудитом.
+
+#### S3-34h. Добавить принятый exact LoadThenLoad в memory corpus
+
+В bounded `od-host` corpus добавлен ровно уже принятый двухоперационный код
+`48 8B 03; 48 8B 0B`. Три фиксированных seed дают 3,600 уникальных полных
+успешных входов (400 на последовательность и seed), каждый сравнивается
+native/interpreter дважды. Для нового профиля обе инструкции читают один и тот
+же qword по RBX; трасса callback сохраняет операцию и адрес, чтобы сравнение
+обнаруживало пропуск второго чтения и неверный адрес даже при совпадающих GPR.
+Генератор покрывает выровненные и невыровненные смещения, оба края fixture RAM,
+адреса 0 и 120 и промежуточные границы.
+
+Version-1 envelope сохраняет прежний profile/version и прежние варианты. В уже
+имеющемся `fault.site_index` принимаются site 0 и 1; operation, fault class,
+linear address, sequence, source bytes, исходный CPU/RAM и layout проверяются
+совместно. Отсутствующее поле `memory_accesses` в старых результатах по-прежнему
+декодируется как пустая трасса. Site fault, budget, STOP и continuation
+проверяются отдельно; continuation продолжает с committed snapshot и не
+повторяет первое чтение. Reducer self-check фиксирует LTL, site-1 fault,
+boundary address 120 и `gpr[10]` mismatch class на каждом кандидате.
+
+Harness включает count 3,600, список обязательных Rust identities и отдельный
+fail-closed Cargo gate
+`reducer_preserves_load_pair_site_fault_boundary_and_mismatch_class` с точной
+командой и результатом. Это bounded локальная проверка S3-34h, не закрывающая
+весь S3-34 или Stage 3. Mini, Stage 2, owner-backed и performance проверки сюда
+не входят. См. [S3-34h report](../reports/STAGE_3_S3-34h_2026-10-30.md).
 
 ### S3-35. Измерить холодное исполнение
 

@@ -24,6 +24,11 @@ const SEEDS: [u64; 3] = [
     0x5343_3441_0000_0002,
     0x5343_3441_0000_0003,
 ];
+const SEQUENCES: [Sequence; 3] = [
+    Sequence::StoreThenLoad,
+    Sequence::LoadThenStore,
+    Sequence::LoadThenLoad,
+];
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 static JIT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -32,6 +37,7 @@ static JIT_TEST_LOCK: Mutex<()> = Mutex::new(());
 enum Sequence {
     StoreThenLoad,
     LoadThenStore,
+    LoadThenLoad,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -141,6 +147,8 @@ struct ObservationRecord {
     rip: u64,
     ram_hex: String,
     callbacks: Vec<String>,
+    #[serde(default)]
+    memory_accesses: Vec<String>,
     status: String,
     remaining_budget: u64,
     retired: u64,
@@ -193,6 +201,17 @@ impl Sequence {
         match self {
             Self::StoreThenLoad => [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b],
             Self::LoadThenStore => [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02],
+            Self::LoadThenLoad => [0x48, 0x8b, 0x03, 0x48, 0x8b, 0x0b],
+        }
+    }
+
+    fn site_operation(self, site_index: u8) -> MemoryAccess {
+        match (self, site_index) {
+            (Self::StoreThenLoad, 0) | (Self::LoadThenStore, 1) => MemoryAccess::Write,
+            (Self::StoreThenLoad, 1) | (Self::LoadThenStore, 0) | (Self::LoadThenLoad, 0 | 1) => {
+                MemoryAccess::Read
+            }
+            _ => unreachable!("validated memory site index"),
         }
     }
 }
@@ -212,6 +231,7 @@ struct Observation {
     state: LongModeState,
     ram: [u8; RAM_LEN],
     callbacks: Vec<&'static str>,
+    memory_accesses: Vec<String>,
     status: String,
     remaining_budget: u64,
     retired: u64,
@@ -222,8 +242,9 @@ struct Ram {
     code: [u8; 6],
     bytes: [u8; RAM_LEN],
     callbacks: Vec<&'static str>,
-    fail_read: Option<MemoryError>,
-    fail_write: Option<MemoryError>,
+    memory_accesses: Vec<String>,
+    fail_read: Option<(usize, MemoryError)>,
+    fail_write: Option<(usize, MemoryError)>,
 }
 
 impl GuestMemory for Ram {
@@ -245,9 +266,19 @@ impl GuestMemory for Ram {
         _: AccessContext,
         destination: &mut [u8],
     ) -> Result<(), MemoryError> {
+        let read_site = self
+            .callbacks
+            .iter()
+            .filter(|call| **call == "read")
+            .count();
         self.callbacks.push("read");
-        if let Some(error) = self.fail_read.take() {
-            return Err(error);
+        self.memory_accesses.push(format!("read@{address:#x}"));
+        if self
+            .fail_read
+            .as_ref()
+            .is_some_and(|(site, _)| *site == read_site)
+        {
+            return Err(self.fail_read.take().unwrap().1);
         }
         let start = usize::try_from(address).map_err(|_| MemoryError::Unmapped {
             address,
@@ -265,9 +296,19 @@ impl GuestMemory for Ram {
     }
 
     fn write(&mut self, address: u64, _: AccessContext, source: &[u8]) -> Result<(), MemoryError> {
+        let write_site = self
+            .callbacks
+            .iter()
+            .filter(|call| **call == "write")
+            .count();
         self.callbacks.push("write");
-        if let Some(error) = self.fail_write.take() {
-            return Err(error);
+        self.memory_accesses.push(format!("write@{address:#x}"));
+        if self
+            .fail_write
+            .as_ref()
+            .is_some_and(|(site, _)| *site == write_site)
+        {
+            return Err(self.fail_write.take().unwrap().1);
         }
         let start = usize::try_from(address).map_err(|_| MemoryError::Unmapped {
             address,
@@ -347,7 +388,11 @@ fn generated_input(seed: u64, index: usize, forced_sequence: Option<Sequence>) -
         chunk.copy_from_slice(&bytes[..chunk.len()]);
     }
 
-    let first_address = 16 + (rng.next() % 88);
+    let mut first_address = 16 + (rng.next() % 88);
+    if sequence == Sequence::LoadThenLoad {
+        // Exercise the full fixture boundary plus unaligned qword addresses.
+        first_address = [0, 1, 7, 111, 112, 120][index % 6];
+    }
     let mode = index % 3;
     let second_address = match mode {
         0 => first_address,
@@ -375,9 +420,8 @@ fn generated_input(seed: u64, index: usize, forced_sequence: Option<Sequence>) -
     for value in &mut gpr {
         *value = rng.next();
     }
-    // Both code sequences use RBX for the first address. The load-then-store
-    // sequence uses RDX for the second address; the other sequence accesses the
-    // same RBX range twice by definition of the admitted artifact.
+    // All sequences use RBX for the first address. LoadThenStore alone uses RDX
+    // for its second address; LoadThenLoad reads the same RBX range twice.
     gpr[3] = first_address;
     gpr[2] = if sequence == Sequence::LoadThenStore {
         second_address
@@ -452,7 +496,7 @@ impl CaseEnvelope {
             .map_err(|e| format!("invalid RAM snapshot: {e}"))?;
         let first_address = self.initial_cpu.gpr[3];
         let second_address = match self.sequence {
-            Sequence::StoreThenLoad => first_address,
+            Sequence::StoreThenLoad | Sequence::LoadThenLoad => first_address,
             Sequence::LoadThenStore => self.initial_cpu.gpr[2],
         };
         if self.first_address != first_address || self.second_address != second_address {
@@ -470,6 +514,7 @@ impl CaseEnvelope {
             self.protocol.budget,
             &self.protocol,
             first_address,
+            second_address,
         )?;
         Ok(CorpusInput {
             sequence: self.sequence,
@@ -487,6 +532,7 @@ fn validate_protocol(
     budget: u64,
     protocol: &ReplayProtocol,
     first_address: u64,
+    second_address: u64,
 ) -> Result<(), String> {
     if !(1..=2).contains(&budget) {
         return Err(format!("unsupported instruction budget {budget}"));
@@ -498,27 +544,29 @@ fn validate_protocol(
         return Err(format!("unsupported stop-RIP {stop_rip:#x}"));
     }
     if let Some(fault) = &protocol.fault {
-        if fault.site_index != 0 {
-            return Err("fault injection is supported only at memory site 0".into());
+        if fault.site_index > 1 {
+            return Err("fault injection site index must be 0 or 1".into());
         }
-        let expected_operation = match sequence {
-            Sequence::StoreThenLoad => MemoryAccess::Write,
-            Sequence::LoadThenStore => MemoryAccess::Read,
-        };
+        let expected_operation = sequence.site_operation(fault.site_index);
         if fault.operation != expected_operation {
-            return Err("fault trigger operation does not match memory site 0".into());
+            return Err("fault trigger operation does not match the selected memory site".into());
         }
         if protocol.stop_requested || protocol.stop_rip.is_some() || protocol.continuation.is_some()
         {
             return Err("fault injection cannot be combined with STOP or continuation".into());
         }
+        let site_address = if fault.site_index == 0 {
+            first_address
+        } else {
+            second_address
+        };
         if let InjectedFailure::Architectural {
             linear_address: Some(address),
             ..
         } = fault.failure
-            && address != first_address
+            && address != site_address
         {
-            return Err("architectural fault address does not match site 0".into());
+            return Err("architectural fault address does not match the selected site".into());
         }
     }
     if let Some(continuation) = &protocol.continuation {
@@ -612,6 +660,7 @@ impl Observation {
                 .iter()
                 .map(|call| (*call).to_owned())
                 .collect(),
+            memory_accesses: self.memory_accesses.clone(),
             status: self.status.clone(),
             remaining_budget: self.remaining_budget,
             retired: self.retired,
@@ -633,8 +682,22 @@ fn initial_ram(input: &CorpusInput) -> Ram {
         code: input.sequence.bytes(),
         bytes: input.ram,
         callbacks: Vec::new(),
+        memory_accesses: Vec::new(),
         fail_read: None,
         fail_write: None,
+    }
+}
+
+fn inject_fault(ram: &mut Ram, sequence: Sequence, site_index: u8, error: MemoryError) {
+    let operation = sequence.site_operation(site_index);
+    let ordinal = if site_index == 1 && sequence.site_operation(0) == operation {
+        1
+    } else {
+        0
+    };
+    match operation {
+        MemoryAccess::Read => ram.fail_read = Some((ordinal, error)),
+        MemoryAccess::Write => ram.fail_write = Some((ordinal, error)),
     }
 }
 
@@ -649,6 +712,7 @@ fn outcome(
         state,
         ram: ram.bytes,
         callbacks: ram.callbacks,
+        memory_accesses: ram.memory_accesses,
         status,
         remaining_budget,
         retired,
@@ -661,17 +725,13 @@ fn native_run(
     budget: u64,
     stop_rip: Option<u64>,
     stop: &AtomicU8,
-    fault: Option<MemoryError>,
+    fault: Option<(u8, MemoryError)>,
 ) -> Observation {
     let mut state = initial_state(input, ENTRY_RIP);
     let mut ram = initial_ram(input);
     match fault {
-        Some(MemoryError::Architectural(_)) | Some(MemoryError::Backend(_)) => {
-            if input.sequence == Sequence::StoreThenLoad {
-                ram.fail_write = fault;
-            } else {
-                ram.fail_read = fault;
-            }
+        Some((site_index, error @ (MemoryError::Architectural(_) | MemoryError::Backend(_)))) => {
+            inject_fault(&mut ram, input.sequence, site_index, error);
         }
         Some(_) => panic!("unexpected fault injection"),
         None => {}
@@ -708,6 +768,7 @@ fn native_continue(code: &PublishedCode, input: &CorpusInput, prior: &Observatio
     let mut ram = initial_ram(input);
     ram.bytes = prior.ram;
     ram.callbacks.clone_from(&prior.callbacks);
+    ram.memory_accesses.clone_from(&prior.memory_accesses);
     let stop = AtomicU8::new(0);
     // SAFETY: the continuation uses the same private synchronous fixture RAM
     // contract, carrying forward the committed snapshot from the first entry.
@@ -737,17 +798,13 @@ fn interpreter_run(
     budget: u64,
     stop_rip: Option<u64>,
     stop_requested: bool,
-    fault: Option<MemoryError>,
+    fault: Option<(u8, MemoryError)>,
 ) -> Observation {
     let mut state = initial_state(input, ENTRY_RIP);
     let mut ram = initial_ram(input);
     match fault {
-        Some(MemoryError::Architectural(_)) | Some(MemoryError::Backend(_)) => {
-            if input.sequence == Sequence::StoreThenLoad {
-                ram.fail_write = fault;
-            } else {
-                ram.fail_read = fault;
-            }
+        Some((site_index, error @ (MemoryError::Architectural(_) | MemoryError::Backend(_)))) => {
+            inject_fault(&mut ram, input.sequence, site_index, error);
         }
         Some(_) => panic!("unexpected fault injection"),
         None => {}
@@ -786,6 +843,7 @@ fn interpreter_continue(input: &CorpusInput, prior: &Observation) -> Observation
     let mut ram = initial_ram(input);
     ram.bytes = prior.ram;
     ram.callbacks.clone_from(&prior.callbacks);
+    ram.memory_accesses.clone_from(&prior.memory_accesses);
     let status = match od_isa::execute::step(&mut state, &mut ram, AccessContext::default()) {
         Ok(od_isa::execute::StepOutcome::Advanced | od_isa::execute::StepOutcome::Branched) => {
             "Complete".to_owned()
@@ -830,6 +888,9 @@ fn mismatch_classes(native: &Observation, interp: &Observation) -> Vec<String> {
     }
     if native.callbacks != interp.callbacks {
         classes.push("callbacks".into());
+    }
+    if native.memory_accesses != interp.memory_accesses {
+        classes.push("memory_accesses".into());
     }
     if native.status != interp.status {
         classes.push("exit".into());
@@ -993,6 +1054,7 @@ fn sample_report(
         state: initial_state(&input, ENTRY_RIP),
         ram: input.ram,
         callbacks: Vec::new(),
+        memory_accesses: Vec::new(),
         status: "SavedInput".into(),
         remaining_budget: envelope.protocol.budget,
         retired: 0,
@@ -1100,6 +1162,9 @@ fn record_mismatch_classes(
     if native.callbacks != interpreter.callbacks {
         classes.push("callbacks".into());
     }
+    if native.memory_accesses != interpreter.memory_accesses {
+        classes.push("memory_accesses".into());
+    }
     if native.status != interpreter.status {
         classes.push("exit".into());
     }
@@ -1158,7 +1223,7 @@ fn execute_replay_envelope(
     let fault = protocol
         .fault
         .as_ref()
-        .map(|fault| fault.failure.into_memory_error());
+        .map(|fault| (fault.site_index, fault.failure.into_memory_error()));
     let stop = AtomicU8::new(u8::from(protocol.stop_requested));
     let first_native = native_run(
         &published,
@@ -1393,6 +1458,41 @@ fn reducer_native_run(envelope: &CaseEnvelope) -> Result<ReducerRun, String> {
     })
 }
 
+fn reducer_load_pair_site_test_run(envelope: &CaseEnvelope) -> Result<ReducerRun, String> {
+    if envelope.sequence != Sequence::LoadThenLoad
+        || envelope
+            .protocol
+            .fault
+            .as_ref()
+            .is_none_or(|fault| fault.site_index != 1 || fault.operation != MemoryAccess::Read)
+        || envelope.first_address != envelope.second_address
+        || ![0, 1, 7, 111, 112, 120].contains(&envelope.first_address)
+    {
+        return Err("reducer candidate lost LoadThenLoad site/boundary constraints".into());
+    }
+    let input = envelope.validate()?;
+    let base = Observation {
+        state: initial_state(&input, ENTRY_RIP + 3),
+        ram: input.ram,
+        callbacks: vec!["read", "read"],
+        memory_accesses: vec![
+            format!("read@{:#x}", input.first_address),
+            format!("read@{:#x}", input.first_address),
+        ],
+        status: "GuestFault(ArchitecturalFault { vector: 14 })".into(),
+        remaining_budget: 1,
+        retired: 1,
+    };
+    let mut native = base.clone();
+    native.state.gpr[10] ^= 1;
+    let classes = actual_mismatch_classes(&[native.clone()], &[base.clone()]);
+    Ok(ReducerRun {
+        native_results: vec![native.to_record()],
+        interpreter_results: vec![base.to_record()],
+        mismatch_classes_by_phase: vec![classes],
+    })
+}
+
 fn reduce_report_text(
     source: &str,
     attempt_limit: usize,
@@ -1586,9 +1686,10 @@ fn fixed_seed_memory_corpus_matches_interpreter_twice_per_input() {
     let _guard = JIT_TEST_LOCK.lock().unwrap();
     let mut unique = HashSet::new();
     let mut address_relations = [0usize; 3];
+    let mut load_then_load_boundaries = [0usize; 6];
     // Publication is process-exclusive. Compile and execute each sequence in
     // separate scopes below, retaining only its immutable IR artifact.
-    let blocks: Vec<_> = [Sequence::StoreThenLoad, Sequence::LoadThenStore]
+    let blocks: Vec<_> = SEQUENCES
         .into_iter()
         .map(|sequence| {
             let source = sequence.bytes();
@@ -1600,7 +1701,7 @@ fn fixed_seed_memory_corpus_matches_interpreter_twice_per_input() {
         })
         .collect();
     let mut total = 0;
-    for ((sequence, block), seed) in [Sequence::StoreThenLoad, Sequence::LoadThenStore]
+    for ((sequence, block), seed) in SEQUENCES
         .into_iter()
         .zip(blocks.iter())
         .flat_map(|pair| SEEDS.into_iter().map(move |seed| (pair, seed)))
@@ -1620,6 +1721,14 @@ fn fixed_seed_memory_corpus_matches_interpreter_twice_per_input() {
                 };
                 address_relations[relation] += 1;
             }
+            if sequence == Sequence::LoadThenLoad {
+                let boundary = [0, 1, 7, 111, 112, 120]
+                    .iter()
+                    .position(|address| input.first_address == *address)
+                    .expect("LoadThenLoad generator must cover each accepted boundary");
+                load_then_load_boundaries[boundary] += 1;
+                assert_eq!(input.first_address, input.second_address);
+            }
             assert!(
                 unique.insert(input.clone()),
                 "duplicate corpus input: seed={seed:#x} case={case_index}"
@@ -1635,21 +1744,37 @@ fn fixed_seed_memory_corpus_matches_interpreter_twice_per_input() {
                 assert_eq!(native.retired, 2, "seed={seed:#x} case={case_id}");
                 assert_eq!(native.callbacks.len(), 2, "seed={seed:#x} case={case_id}");
                 assert_eq!(native.callbacks, expected_order(input.sequence));
+                assert_eq!(native.memory_accesses, expected_accesses(&input));
             }
         }
         drop(published);
     }
-    assert_eq!(total, 2400);
+    assert_eq!(total, 3600);
     assert_eq!(unique.len(), total);
     assert!(address_relations.iter().all(|count| *count > 0));
+    assert!(load_then_load_boundaries.iter().all(|count| *count > 0));
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn expected_order(sequence: Sequence) -> Vec<&'static str> {
     match sequence {
         Sequence::StoreThenLoad => vec!["write", "read"],
         Sequence::LoadThenStore => vec!["read", "write"],
+        Sequence::LoadThenLoad => vec!["read", "read"],
     }
+}
+
+fn expected_accesses(input: &CorpusInput) -> Vec<String> {
+    let addresses = match input.sequence {
+        Sequence::StoreThenLoad | Sequence::LoadThenLoad => {
+            [input.first_address, input.first_address]
+        }
+        Sequence::LoadThenStore => [input.first_address, input.second_address],
+    };
+    expected_order(input.sequence)
+        .into_iter()
+        .zip(addresses)
+        .map(|(operation, address)| format!("{operation}@{address:#x}"))
+        .collect()
 }
 
 #[test]
@@ -1657,14 +1782,9 @@ fn expected_order(sequence: Sequence) -> Vec<&'static str> {
 fn named_fault_stop_budget_and_continuation_cases_are_separate() {
     let _guard = JIT_TEST_LOCK.lock().unwrap();
     let seed = 0x5343_3441_ffff_0001;
-    for sequence in [Sequence::StoreThenLoad, Sequence::LoadThenStore] {
+    for sequence in SEQUENCES {
         let case_id = sequence as usize;
         let input = generated_input(seed, case_id, Some(sequence));
-        let fault = MemoryError::Architectural(ArchitecturalFault {
-            vector: 14,
-            error_code: Some(2),
-            linear_address: Some(input.first_address),
-        });
         let source = sequence.bytes();
         let block = od_jit::memory_load_v2::compile_ir_memory_two_site_block_v2(
             od_jit::block::CodeView::new(ENTRY_RIP, &source).unwrap(),
@@ -1674,37 +1794,62 @@ fn named_fault_stop_budget_and_continuation_cases_are_separate() {
         let published = PublishedCode::publish_ir_memory_two_site_v2(&block).unwrap();
         let make_envelope = |protocol| CaseEnvelope::from_input(&input, seed, case_id, protocol);
 
-        let stop = AtomicU8::new(0);
-        let native_fault = native_run(&published, &input, 2, None, &stop, Some(fault.clone()));
-        let interp_fault = interpreter_run(&input, 2, None, false, Some(fault.clone()));
-        let fault_envelope = make_envelope(ReplayProtocol {
-            budget: 2,
-            stop_requested: false,
-            stop_rip: None,
-            fault: Some(FaultInjection {
-                site_index: 0,
-                operation: match sequence {
-                    Sequence::StoreThenLoad => MemoryAccess::Write,
-                    Sequence::LoadThenStore => MemoryAccess::Read,
-                },
-                failure: InjectedFailure::Architectural {
-                    vector: 14,
-                    error_code: Some(2),
-                    linear_address: Some(input.first_address),
-                },
-            }),
-            continuation: None,
-        });
-        assert_matches_named("fault", &fault_envelope, &native_fault, &interp_fault);
-        assert_named_condition(
-            "fault",
-            &fault_envelope,
-            &native_fault,
-            &interp_fault,
-            native_fault.status.contains("GuestFault")
-                && interp_fault.status.contains("GuestFault"),
-            "expected an architectural guest fault",
-        );
+        for site_index in [0, 1] {
+            let fault_address = if site_index == 0 {
+                input.first_address
+            } else {
+                input.second_address
+            };
+            let fault = MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(2),
+                linear_address: Some(fault_address),
+            });
+            let stop = AtomicU8::new(0);
+            let native_fault = native_run(
+                &published,
+                &input,
+                2,
+                None,
+                &stop,
+                Some((site_index, fault.clone())),
+            );
+            let interp_fault = interpreter_run(&input, 2, None, false, Some((site_index, fault)));
+            let fault_envelope = make_envelope(ReplayProtocol {
+                budget: 2,
+                stop_requested: false,
+                stop_rip: None,
+                fault: Some(FaultInjection {
+                    site_index,
+                    operation: sequence.site_operation(site_index),
+                    failure: InjectedFailure::Architectural {
+                        vector: 14,
+                        error_code: Some(2),
+                        linear_address: Some(fault_address),
+                    },
+                }),
+                continuation: None,
+            });
+            assert_matches_named("fault", &fault_envelope, &native_fault, &interp_fault);
+            let expected_calls = expected_order(sequence)
+                .into_iter()
+                .take(usize::from(site_index) + 1)
+                .collect::<Vec<_>>();
+            assert_named_condition(
+                "fault",
+                &fault_envelope,
+                &native_fault,
+                &interp_fault,
+                native_fault.status.contains("GuestFault")
+                    && interp_fault.status.contains("GuestFault")
+                    && native_fault.callbacks == expected_calls
+                    && native_fault.memory_accesses
+                        == expected_accesses(&input)[..usize::from(site_index) + 1]
+                    && native_fault.retired == u64::from(site_index)
+                    && native_fault.state.rip == ENTRY_RIP + u64::from(site_index) * 3,
+                "expected a precise architectural guest fault at the selected site",
+            );
+        }
 
         let requested = AtomicU8::new(1);
         let native_stop = native_run(&published, &input, 2, None, &requested, None);
@@ -1785,7 +1930,9 @@ fn named_fault_stop_budget_and_continuation_cases_are_separate() {
             native_continuation.status == "Complete"
                 && interp_continuation.status == "Complete"
                 && native_continuation.retired == 1
-                && interp_continuation.retired == 1,
+                && interp_continuation.retired == 1
+                && native_continuation.callbacks == expected_order(sequence)
+                && native_continuation.memory_accesses == expected_accesses(&input),
             "expected continuation to retire the second instruction",
         );
         drop(published);
@@ -1798,7 +1945,8 @@ fn comparator_rejects_corruption_and_serializes_named_diagnostics() {
     let base = Observation {
         state: initial_state(&input, ENTRY_RIP + 6),
         ram: input.ram,
-        callbacks: vec!["write", "read"],
+        callbacks: expected_order(input.sequence),
+        memory_accesses: expected_accesses(&input),
         status: "Complete".into(),
         remaining_budget: 0,
         retired: 2,
@@ -1833,6 +1981,38 @@ fn comparator_rejects_corruption_and_serializes_named_diagnostics() {
         "missing fault"
     );
 
+    let load_then_load = generated_input(SEEDS[0], 2, Some(Sequence::LoadThenLoad));
+    let read_pair = Observation {
+        state: initial_state(&load_then_load, ENTRY_RIP + 6),
+        ram: load_then_load.ram,
+        callbacks: vec!["read", "read"],
+        memory_accesses: vec![
+            format!("read@{:#x}", load_then_load.first_address),
+            format!("read@{:#x}", load_then_load.first_address),
+        ],
+        status: "Complete".into(),
+        remaining_budget: 0,
+        retired: 2,
+    };
+    let mut missing_second_read = read_pair.clone();
+    missing_second_read.callbacks.pop();
+    assert_eq!(missing_second_read.state.gpr, read_pair.state.gpr);
+    assert_eq!(
+        mismatch_classes(&read_pair, &missing_second_read),
+        ["callbacks"]
+    );
+    assert!(
+        compare_observations(&read_pair, &missing_second_read).is_err(),
+        "dropping the second read callback must fail even when final GPRs match"
+    );
+    let mut wrong_read_address = read_pair.clone();
+    wrong_read_address.memory_accesses[1] = format!("read@{:#x}", load_then_load.first_address + 1);
+    assert_eq!(
+        mismatch_classes(&read_pair, &wrong_read_address),
+        ["memory_accesses"]
+    );
+    assert!(compare_observations(&read_pair, &wrong_read_address).is_err());
+
     let seed = 0x5343_3441_ffff_0001;
     let case_id = 1;
     let input = generated_input(seed, case_id, Some(Sequence::LoadThenStore));
@@ -1840,6 +2020,7 @@ fn comparator_rejects_corruption_and_serializes_named_diagnostics() {
         state: initial_state(&input, ENTRY_RIP + 3),
         ram: input.ram,
         callbacks: vec!["read"],
+        memory_accesses: vec![format!("read@{:#x}", input.first_address)],
         status: "BudgetExhausted".into(),
         remaining_budget: 0,
         retired: 1,
@@ -1945,6 +2126,7 @@ fn phase_moving_test_probe(envelope: &CaseEnvelope) -> Result<ReducerRun, String
             state: initial_state(&input, ENTRY_RIP + 3),
             ram: input.ram,
             callbacks: Vec::new(),
+            memory_accesses: Vec::new(),
             status: "Complete".into(),
             remaining_budget: 0,
             retired: 1,
@@ -1964,7 +2146,7 @@ fn phase_moving_test_probe(envelope: &CaseEnvelope) -> Result<ReducerRun, String
 #[test]
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn bounded_reducer_is_deterministic_preserves_class_and_saves_report() {
-    for sequence in [Sequence::StoreThenLoad, Sequence::LoadThenStore] {
+    for sequence in SEQUENCES {
         let original_text = reducer_fixture_report(sequence, 0xfeed_beef_0102_0304);
         let original = decode_replay_report(&original_text).unwrap();
         let first = reduce_report_text_with_test_corruption(&original_text, 12, true).unwrap();
@@ -2054,6 +2236,74 @@ fn bounded_reducer_is_deterministic_preserves_class_and_saves_report() {
         assert_eq!(saved, first);
         std::fs::remove_dir_all(directory).unwrap();
     }
+}
+
+#[test]
+fn reducer_preserves_load_pair_site_fault_boundary_and_mismatch_class() {
+    let seed = 0x5343_3441_ffff_0036;
+    let mut input = generated_input(seed, 5, Some(Sequence::LoadThenLoad));
+    assert_eq!(input.first_address, 120);
+    input.gpr[10] = 0xfeed_beef;
+    let envelope = CaseEnvelope::from_input(
+        &input,
+        seed,
+        5,
+        ReplayProtocol {
+            budget: 2,
+            stop_requested: false,
+            stop_rip: None,
+            fault: Some(FaultInjection {
+                site_index: 1,
+                operation: MemoryAccess::Read,
+                failure: InjectedFailure::Architectural {
+                    vector: 14,
+                    error_code: Some(2),
+                    linear_address: Some(120),
+                },
+            }),
+            continuation: None,
+        },
+    );
+    let run = reducer_load_pair_site_test_run(&envelope).unwrap();
+    assert_eq!(
+        run.mismatch_classes_by_phase,
+        [vec![String::from("gpr[10]")]]
+    );
+    let report = ReplayReport {
+        report_version: REPORT_VERSION,
+        case: "test_only_load_pair_site_mismatch".into(),
+        case_envelope: envelope.clone(),
+        environment: EnvironmentInfo::current(),
+        backend_availability: BackendAvailability {
+            native: true,
+            interpreter: true,
+        },
+        reason: "synthetic reducer structure self-check".into(),
+        native_results: run.native_results,
+        interpreter_results: run.interpreter_results,
+        equivalent: false,
+        mismatch_classes: vec!["gpr[10]".into()],
+        reproduced_mismatch: None,
+    };
+    let reduced = reduce_report_text_with_probe(
+        &serialize_report(&report),
+        24,
+        true,
+        reducer_load_pair_site_test_run,
+    )
+    .unwrap();
+    assert_eq!(reduced.reduced_envelope.sequence, Sequence::LoadThenLoad);
+    assert_eq!(
+        reduced.reduced_envelope.source_bytes_hex,
+        envelope.source_bytes_hex
+    );
+    assert_eq!(reduced.reduced_envelope.first_address, 120);
+    assert_eq!(reduced.reduced_envelope.second_address, 120);
+    assert_eq!(reduced.reduced_envelope.protocol, envelope.protocol);
+    assert_eq!(
+        reduced.reduced_mismatch_classes_by_phase,
+        [vec![String::from("gpr[10]")]]
+    );
 }
 
 #[test]
@@ -2256,7 +2506,7 @@ fn mismatch_report_preserves_empty_first_and_mismatching_continuation_phases() {
 
 #[test]
 fn replay_envelope_round_trips_and_rejects_malformed_reports() {
-    for sequence in [Sequence::StoreThenLoad, Sequence::LoadThenStore] {
+    for sequence in SEQUENCES {
         let input = generated_input(0x5343_3441_ffff_1000, sequence as usize, Some(sequence));
         let envelope = CaseEnvelope::from_input(
             &input,
@@ -2275,6 +2525,16 @@ fn replay_envelope_round_trips_and_rejects_malformed_reports() {
         assert_eq!(decoded.case_envelope, envelope);
         assert_eq!(decoded.environment.architecture, std::env::consts::ARCH);
         assert!(!decoded.environment.build_revision.is_empty());
+        let mut legacy_value: serde_json::Value = serde_json::from_str(&original).unwrap();
+        for result in legacy_value["native_results"].as_array_mut().unwrap() {
+            result.as_object_mut().unwrap().remove("memory_accesses");
+        }
+        for result in legacy_value["interpreter_results"].as_array_mut().unwrap() {
+            result.as_object_mut().unwrap().remove("memory_accesses");
+        }
+        let legacy = decode_replay_report(&legacy_value.to_string()).unwrap();
+        assert!(legacy.native_results[0].memory_accesses.is_empty());
+        assert!(legacy.interpreter_results[0].memory_accesses.is_empty());
 
         let mutations: [(&str, Box<dyn Fn(&mut serde_json::Value)>); 11] = [
             (
@@ -2345,12 +2605,48 @@ fn replay_envelope_round_trips_and_rejects_malformed_reports() {
 
         let mut bad_trigger: serde_json::Value = serde_json::from_str(&original).unwrap();
         bad_trigger["case_envelope"]["protocol"]["fault"] = serde_json::json!({
-            "site_index": 1,
+            "site_index": 2,
             "operation": "read",
             "failure": {"kind": "architectural", "vector": 14, "error_code": 2, "linear_address": input.first_address}
         });
         let error = decode_replay_report(&bad_trigger.to_string()).unwrap_err();
-        assert!(error.contains("fault injection is supported only"));
+        assert!(error.contains("fault injection site index must be 0 or 1"));
+
+        let load_then_load =
+            generated_input(0x5343_3441_ffff_1000, 2, Some(Sequence::LoadThenLoad));
+        let site_one = CaseEnvelope::from_input(
+            &load_then_load,
+            0x5343_3441_ffff_1000,
+            2,
+            ReplayProtocol {
+                budget: 2,
+                stop_requested: false,
+                stop_rip: None,
+                fault: Some(FaultInjection {
+                    site_index: 1,
+                    operation: MemoryAccess::Read,
+                    failure: InjectedFailure::Architectural {
+                        vector: 14,
+                        error_code: Some(2),
+                        linear_address: Some(load_then_load.first_address),
+                    },
+                }),
+                continuation: None,
+            },
+        );
+        let encoded = serialize_report(&sample_report(
+            site_one.clone(),
+            BackendAvailability {
+                native: true,
+                interpreter: true,
+            },
+        ));
+        let decoded = decode_replay_report(&encoded).unwrap();
+        assert_eq!(decoded.case_envelope, site_one);
+        assert_eq!(
+            decoded.case_envelope.sequence.bytes(),
+            [0x48, 0x8b, 0x03, 0x48, 0x8b, 0x0b]
+        );
 
         let mut inconsistent: serde_json::Value = serde_json::from_str(&original).unwrap();
         inconsistent["native_results"][0]["gpr"][0] = serde_json::json!(input.gpr[0] ^ 1);
@@ -2373,16 +2669,13 @@ fn replay_envelope_round_trips_and_rejects_malformed_reports() {
 
 #[test]
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn replay_success_fault_stop_budget_and_continuation_for_both_sequences() {
+fn replay_success_fault_stop_budget_and_continuation_for_all_sequences() {
     let seed = 0x5343_3441_ffff_2000;
     let mut saved_path = None;
-    for sequence in [Sequence::StoreThenLoad, Sequence::LoadThenStore] {
+    for sequence in SEQUENCES {
         let case_id = sequence as usize;
         let input = generated_input(seed, case_id, Some(sequence));
-        let fault_access = match sequence {
-            Sequence::StoreThenLoad => MemoryAccess::Write,
-            Sequence::LoadThenStore => MemoryAccess::Read,
-        };
+        let fault_access = sequence.site_operation(0);
         let scenarios = [
             (
                 "success",
@@ -2409,10 +2702,7 @@ fn replay_success_fault_stop_budget_and_continuation_for_both_sequences() {
                     continuation: None,
                 },
                 "GuestFault",
-                match sequence {
-                    Sequence::StoreThenLoad => vec!["write"],
-                    Sequence::LoadThenStore => vec!["read"],
-                },
+                expected_order(sequence)[..1].to_vec(),
                 0,
             ),
             (
@@ -2438,10 +2728,7 @@ fn replay_success_fault_stop_budget_and_continuation_for_both_sequences() {
                     continuation: None,
                 },
                 "StopAddress",
-                match sequence {
-                    Sequence::StoreThenLoad => vec!["write"],
-                    Sequence::LoadThenStore => vec!["read"],
-                },
+                expected_order(sequence)[..1].to_vec(),
                 1,
             ),
             (
@@ -2454,10 +2741,7 @@ fn replay_success_fault_stop_budget_and_continuation_for_both_sequences() {
                     continuation: None,
                 },
                 "BudgetExhausted",
-                match sequence {
-                    Sequence::StoreThenLoad => vec!["write"],
-                    Sequence::LoadThenStore => vec!["read"],
-                },
+                expected_order(sequence)[..1].to_vec(),
                 1,
             ),
             (
@@ -2518,16 +2802,17 @@ fn replay_success_fault_stop_budget_and_continuation_for_both_sequences() {
                     .collect::<Vec<_>>()
             );
             assert_eq!(final_interpreter.callbacks, final_native.callbacks);
+            assert_eq!(
+                final_native.memory_accesses,
+                expected_accesses(&input)[..expected_calls.len()]
+            );
             assert_eq!(final_native.retired, expected_retired);
             if name == "continuation" {
                 assert_eq!(replay.native_results.len(), 2);
                 assert_eq!(replay.native_results[0].status, "BudgetExhausted");
                 assert_eq!(
                     replay.native_results[0].callbacks,
-                    match sequence {
-                        Sequence::StoreThenLoad => vec!["write"],
-                        Sequence::LoadThenStore => vec!["read"],
-                    }
+                    expected_order(sequence)[..1].to_vec()
                 );
             } else {
                 assert_eq!(replay.native_results.len(), 1);
@@ -2553,6 +2838,43 @@ fn replay_success_fault_stop_budget_and_continuation_for_both_sequences() {
                 saved_path = Some(true);
             }
         }
+
+        let site_one = CaseEnvelope::from_input(
+            &input,
+            seed,
+            case_id * 10 + 9,
+            ReplayProtocol {
+                budget: 2,
+                stop_requested: false,
+                stop_rip: None,
+                fault: Some(FaultInjection {
+                    site_index: 1,
+                    operation: sequence.site_operation(1),
+                    failure: InjectedFailure::Architectural {
+                        vector: 14,
+                        error_code: Some(2),
+                        linear_address: Some(input.second_address),
+                    },
+                }),
+                continuation: None,
+            },
+        );
+        let source = serialize_report(&sample_report(
+            site_one.clone(),
+            BackendAvailability {
+                native: true,
+                interpreter: true,
+            },
+        ));
+        assert_eq!(
+            decode_replay_report(&source).unwrap().case_envelope,
+            site_one
+        );
+        let replay = replay_report_text(&source).unwrap();
+        assert_eq!(replay.native_results, replay.interpreter_results);
+        assert!(replay.native_results[0].status.starts_with("GuestFault"));
+        assert_eq!(replay.native_results[0].callbacks, expected_order(sequence));
+        assert_eq!(replay.native_results[0].retired, 1);
     }
     assert_eq!(saved_path, Some(true));
 }
@@ -2561,7 +2883,7 @@ fn replay_success_fault_stop_budget_and_continuation_for_both_sequences() {
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn saved_mismatch_report_replays_and_preserves_original_classes() {
     let seed = 0x5343_3441_ffff_0034;
-    for sequence in [Sequence::StoreThenLoad, Sequence::LoadThenStore] {
+    for sequence in SEQUENCES {
         let case_id = sequence as usize;
         let input = generated_input(seed, case_id, Some(sequence));
         let envelope =
@@ -2569,7 +2891,8 @@ fn saved_mismatch_report_replays_and_preserves_original_classes() {
         let native = Observation {
             state: initial_state(&input, ENTRY_RIP + 6),
             ram: input.ram.clone(),
-            callbacks: vec!["write", "read"],
+            callbacks: expected_order(sequence),
+            memory_accesses: expected_accesses(&input),
             status: "Complete".into(),
             remaining_budget: 0,
             retired: 2,
