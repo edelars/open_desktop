@@ -76,3 +76,11 @@ recovery, foreign-handle rejection and mapping-owner lifetime. Native tests
 passed in the local macOS ARM64 Cargo test run. These tests do not constitute a separate
 Hardened Runtime/allow-jit signed arena smoke. Slot count remains provisional;
 no performance claim is made.
+
+S3-38a changes only the existing V0 C ABI consumer: `od_fragment_execute`
+routes immutable S0-09 fragments through `run_multi_cached_controlled` and
+`PublishedArenaBackend`. The backend and its cache are created on the calling
+thread and dropped before return; they are not stored on the C handle or shared
+with Swift workers. This is a bounded register-only integration, not persistent
+cache ownership, memory execution through the ABI, or full VM lifecycle. See
+the [S3-38a report](../../docs/reports/STAGE_3_S3-38a_2026-10-29.md).

@@ -255,6 +255,7 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-36 | Измерить прогретое исполнение | S3-35 |
 | [ ] | S3-37 | Cache churn и ресурсы | S3-25, S3-34 |
 | [ ] | S3-38 | Интеграция VMHost и ABI | S3-28, S3-34 |
+| [partial] | S3-38a | Register-only S0-09 V0 C ABI through run-local eager block dispatcher | Immutable fragment, per-call arena/cache, C ABI lifecycle and local VMHost process regressions; full cache/request ownership and all S3-38 gates remain open |
 | [ ] | S3-39 | Повторить macOS/ARM smoke на M1 Pro | S3-38 |
 | [ ] | S3-40 | Зафиксировать решения по данным | S3-35–S3-39 |
 | [ ] | S3-41 | Документация и приёмка этапа | Все обязательные задачи |
@@ -2400,6 +2401,33 @@ Mac mini/physical x86, performance, Stage 2 и owner-backed suites остают�
 4. Повторить существующие control lifecycle/fault/process regressions и новый busy-JIT STOP. Host crash остаётся аварией helper, не гостевым исключением.
 
 **Готово:** реальный VMHost исполняет принятый JIT slice и корректно завершает/очищает его. Это не означает готовность GUI или release distribution.
+
+#### S3-38a. Register-only S0-09 integration through the existing V0 ABI
+
+The current `od_fragment_execute` C ABI routes immutable, create-time validated
+S0-09 fragments through `run_multi_cached_controlled` with the eager block
+dispatcher. The full fragment is admitted before execution, and each synchronous
+call owns a bounded arena/cache on its execution thread. The cache and published
+mapping are dropped before the ABI call returns; no `!Send`/`!Sync` arena is
+stored in the C handle or shared with Swift workers. V0 state/status layouts,
+four GPRs, byte-offset RIP, raw RFLAGS and STOP lifecycle remain the external
+contract. Invalid RIP remains `INVALID_STATE` before STOP/zero-budget dispatch.
+
+At `RIP == code_end`, pre-run STOP returns `STOP_REQUESTED` and is cleared once,
+following the documented V0 contract. The legacy fragment JIT returned
+`CODE_END` first at this boundary; this slice records that precedence difference
+and does not claim full legacy behavioral equivalence there. The immutable loop
+fixture checks legacy/interpreter equivalence and resident-block hits; C ABI
+tests cover repeat calls, independent handles, STOP, destroy, invalid-RIP status
+precedence, and output preservation. Signed local VMHost control-race, process
+isolation, and app-bundle regressions pass on the current macOS ARM64 host. The
+generated-fault process smoke timed out once in three attempts and passed twice
+on retry; its cause is unlocalized and is tracked in ISSUE-027.
+
+This is partial S3-38 only. It does not establish persistent cache reuse across
+requests, a whole VM session, general memory execution through the C ABI, full
+owner/MMU integration, Mini support, or performance benefit. See the
+[S3-38a report](../reports/STAGE_3_S3-38a_2026-10-29.md).
 
 ### S3-39. Повторить ARM64 smoke на M1 Pro
 

@@ -3027,6 +3027,157 @@ pub fn execute_x86_fragment_with_stop(
     CompiledFragment::compile(code)?.execute_with_stop(state, budget, stop_requested)
 }
 
+#[derive(Debug)]
+enum FragmentDispatchError {
+    InvalidEntry,
+    UnexpectedExit,
+    Arena(PublishedArenaError),
+    Dispatch(od_jit::dispatch::DispatchError<PublishedArenaError>),
+}
+
+fn fragment_dispatch_status(error: &FragmentDispatchError) -> u32 {
+    let arena_error = match error {
+        FragmentDispatchError::Arena(error) => Some(error),
+        FragmentDispatchError::Dispatch(
+            od_jit::dispatch::DispatchError::CachePublish(error)
+            | od_jit::dispatch::DispatchError::CacheExecutor(error),
+        ) => Some(error),
+        _ => None,
+    };
+    match arena_error {
+        Some(PublishedArenaError::Mapping(ExecutableMemoryError::UnsupportedPlatform)) => {
+            STATUS_UNSUPPORTED_HOST
+        }
+        Some(PublishedArenaError::Mapping(ExecutableMemoryError::AllocationFailed)) => {
+            STATUS_ALLOCATION_FAILED
+        }
+        Some(PublishedArenaError::Mapping(ExecutableMemoryError::MappingAlreadyLive))
+        | Some(PublishedArenaError::MappingAlreadyLive) => STATUS_BUSY,
+        _ => STATUS_INVALID_STATE,
+    }
+}
+
+fn execute_fragment_dispatch_with_stop(
+    code: &[u8],
+    state: &od_isa::CpuState,
+    budget: u64,
+    stop_requested: &AtomicU8,
+) -> Result<
+    (
+        od_isa::ExecutionResult,
+        od_jit::dispatch::MultiEntryCacheCounters,
+    ),
+    FragmentDispatchError,
+> {
+    use od_jit::dispatch::{
+        DispatchControl, DispatchExit, MultiEntryBlockCache, run_multi_cached_controlled,
+    };
+    use od_jit::translation::{
+        AddressSpaceId, BackingId, BackingVersion, CodeDependencySpan, CodeIdentity,
+        ExecutionContextId, ExecutionContextSnapshot, MappingId, MappingVersion,
+    };
+    use std::num::NonZeroU64;
+
+    let decoded = od_isa::decode(code).map_err(|_| FragmentDispatchError::InvalidEntry)?;
+    let code_view =
+        od_jit::block::CodeView::new(0, code).map_err(|_| FragmentDispatchError::InvalidEntry)?;
+    let admission =
+        od_jit::block::AdmittedInstructionBoundaries::from_fixture_decode(code_view, &decoded)
+            .map_err(|_| FragmentDispatchError::InvalidEntry)?;
+
+    // Match the V0 status precedence: the legacy path created its executable
+    // mapping before the generated entry rejected an invalid RIP. A live
+    // process mapping therefore remains STATUS_BUSY even for such an input.
+    let mut backend = PublishedArenaBackend::new(MAX_PUBLISHED_ARENA_BLOCKS)
+        .map_err(FragmentDispatchError::Arena)?;
+
+    // The v0 ABI RIP is a byte offset into this immutable fragment. Keep the
+    // legacy invalid-entry status even when STOP or a zero budget is pending.
+    let code_end = u64::try_from(code.len()).map_err(|_| FragmentDispatchError::InvalidEntry)?;
+    let entry_rip = u64::try_from(state.rip).map_err(|_| FragmentDispatchError::InvalidEntry)?;
+    if entry_rip != code_end
+        && !decoded
+            .iter()
+            .any(|instruction| u64::try_from(instruction.offset).ok() == Some(entry_rip))
+    {
+        return Err(FragmentDispatchError::InvalidEntry);
+    }
+
+    let execution_context = ExecutionContextSnapshot::s0_09_fixture(
+        ExecutionContextId::from_u64(1).expect("constant execution context id is nonzero"),
+    );
+    let dependencies = if code.is_empty() {
+        Vec::new()
+    } else {
+        let identity = CodeIdentity {
+            address_space: AddressSpaceId::new(NonZeroU64::new(1).unwrap()),
+            mapping: MappingId::new(NonZeroU64::new(1).unwrap()),
+            mapping_version: MappingVersion::new(NonZeroU64::new(1).unwrap()),
+            backing: BackingId::new(NonZeroU64::new(1).unwrap()),
+            backing_version: BackingVersion::new(NonZeroU64::new(1).unwrap()),
+            executable: true,
+        };
+        vec![CodeDependencySpan {
+            start_rip: 0,
+            end_rip: code_end,
+            identity,
+        }]
+    };
+
+    // The cache is deliberately local to one synchronous ABI invocation and
+    // uses the thread-local arena above; never store either in FragmentInstance
+    // or share it with Swift workers.
+    let mut cache = MultiEntryBlockCache::new(
+        od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_BLOCKS,
+        od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+        od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+    )
+    .map_err(|_| FragmentDispatchError::InvalidEntry)?;
+    let mut long_state = od_isa::LongModeState::default();
+    long_state.gpr[..4].copy_from_slice(&state.gpr);
+    long_state.rip = entry_rip;
+    long_state.rflags = state.rflags;
+
+    let dispatch = run_multi_cached_controlled(
+        code_view,
+        &admission,
+        execution_context,
+        &dependencies,
+        &mut long_state,
+        budget,
+        DispatchControl {
+            stop_rip: None,
+            stop_requested,
+            event_requested: None,
+        },
+        &mut cache,
+        &mut backend,
+    )
+    .map_err(FragmentDispatchError::Dispatch)?;
+
+    let reason = match dispatch.exit {
+        DispatchExit::CodeEnd => od_isa::ExitReason::ReachedCodeEnd,
+        DispatchExit::BudgetExhausted => od_isa::ExitReason::InstructionBudgetExhausted,
+        DispatchExit::Runtime(od_jit::runtime::RuntimeExitTag::StopRequested) => {
+            od_isa::ExitReason::StopRequested
+        }
+        DispatchExit::EventPending | DispatchExit::Runtime(_) => {
+            return Err(FragmentDispatchError::UnexpectedExit);
+        }
+    };
+    let result = od_isa::ExecutionResult {
+        state: od_isa::CpuState {
+            gpr: long_state.gpr[..4].try_into().expect("four GPRs"),
+            rip: usize::try_from(long_state.rip)
+                .map_err(|_| FragmentDispatchError::InvalidEntry)?,
+            rflags: long_state.rflags,
+        },
+        reason,
+        instructions_executed: dispatch.retired_instructions,
+    };
+    Ok((result, cache.counters()))
+}
+
 pub const ABI_VERSION_V0: u32 = 0x0000_0001;
 pub const STATUS_OK: u32 = 0;
 pub const STATUS_INVALID_ARGUMENT: u32 = 1;
@@ -3147,14 +3298,14 @@ pub unsafe extern "C" fn od_fragment_execute(
             return STATUS_INVALID_ARGUMENT;
         }
     };
-    let mut cpu_state = od_isa::CpuState {
+    let cpu_state = od_isa::CpuState {
         gpr: input.gpr,
         rip,
         rflags: input.rflags,
     };
-    let execution = execute_x86_fragment_with_stop(
+    let execution = execute_fragment_dispatch_with_stop(
         &instance.code,
-        &mut cpu_state,
+        &cpu_state,
         budget,
         &instance.stop_requested,
     );
@@ -3170,24 +3321,9 @@ pub unsafe extern "C" fn od_fragment_execute(
     instance.running.store(false, Ordering::Release);
     drop(finish_guard);
 
-    let result = match execution {
+    let (result, _) = match execution {
         Ok(result) => result,
-        Err(FragmentExecutionError::Memory(ExecutableMemoryError::UnsupportedPlatform)) => {
-            return STATUS_UNSUPPORTED_HOST;
-        }
-        Err(FragmentExecutionError::Memory(ExecutableMemoryError::AllocationFailed)) => {
-            return STATUS_ALLOCATION_FAILED;
-        }
-        Err(FragmentExecutionError::Memory(ExecutableMemoryError::MappingAlreadyLive)) => {
-            return STATUS_BUSY;
-        }
-        Err(FragmentExecutionError::Memory(ExecutableMemoryError::InvalidBlockArtifact)) => {
-            return STATUS_INVALID_ARGUMENT;
-        }
-        Err(FragmentExecutionError::Jit(od_jit::JitError::Decode(_))) => {
-            return STATUS_INVALID_CODE;
-        }
-        Err(FragmentExecutionError::Jit(_)) => return STATUS_INVALID_STATE,
+        Err(error) => return fragment_dispatch_status(&error),
     };
     let reason = match result.reason {
         od_isa::ExitReason::ReachedCodeEnd => 0,
@@ -39362,6 +39498,119 @@ mod tests {
     }
 
     #[test]
+    fn c_abi_register_dispatch_matches_interpreter_and_reuses_loop_block() {
+        let _guard = jit_test_lock();
+        let code = [0x48, 0x2B, 0xC1, 0x75, 0xFB]; // SUB RAX, RCX; JNZ back.
+        let initial = od_isa::CpuState {
+            gpr: [3, 1, 0xCAFE, 0xBEEF],
+            rip: 0,
+            rflags: 0xA5A5_F0F0_5A5A_0A02,
+        };
+        let mut expected_state = initial.clone();
+        let expected = od_isa::interpret(&code, &mut expected_state, 32).unwrap();
+        let mut legacy_state = initial.clone();
+        let stop = AtomicU8::new(0);
+        let legacy = execute_x86_fragment_with_stop(&code, &mut legacy_state, 32, &stop).unwrap();
+
+        let (actual, counters) =
+            execute_fragment_dispatch_with_stop(&code, &initial, 32, &stop).unwrap();
+
+        assert_eq!(actual, expected);
+        assert_eq!(actual, legacy);
+        assert_eq!(actual.instructions_executed, 6);
+        assert!(counters.successful_compiles >= 1);
+        assert!(counters.hits >= 2, "loop should reuse its resident block");
+        assert_eq!(counters.resident_entries_high_water, 1);
+    }
+
+    #[test]
+    fn c_abi_pre_stop_at_code_end_honors_v0_stop_contract_once() {
+        let _guard = jit_test_lock();
+        use std::ffi::c_void;
+
+        let code = [0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0];
+        let mut raw_handle: *mut c_void = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { od_fragment_create(code.as_ptr(), code.len(), &mut raw_handle) },
+            STATUS_OK
+        );
+
+        let initial = OdCpuStateV0::default();
+        let mut result = OdExecutionResultV0::default();
+        assert_eq!(
+            unsafe { od_fragment_execute(raw_handle, &initial, 1, &mut result) },
+            STATUS_OK
+        );
+        assert_eq!(result.reason, 0);
+        assert_eq!(result.state.rip, code.len() as u64);
+        assert_eq!(result.instructions_executed, 1);
+
+        assert_eq!(unsafe { od_fragment_request_stop(raw_handle) }, STATUS_OK);
+        let stopped = result.state;
+        assert_eq!(
+            unsafe { od_fragment_execute(raw_handle, &stopped, 1, &mut result) },
+            STATUS_OK
+        );
+        assert_eq!(result.reason, 2);
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.state, stopped);
+
+        assert_eq!(
+            unsafe { od_fragment_execute(raw_handle, &stopped, 1, &mut result) },
+            STATUS_OK
+        );
+        assert_eq!(result.reason, 0, "STOP is cleared after one run");
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(unsafe { od_fragment_destroy(raw_handle) }, STATUS_OK);
+    }
+
+    #[test]
+    fn c_abi_repeated_and_interleaved_handles_keep_state_independent() {
+        let _guard = jit_test_lock();
+        use std::ffi::c_void;
+
+        let first_code = [0x48, 0xB8, 0x11, 0, 0, 0, 0, 0, 0, 0];
+        let second_code = [0x48, 0xB9, 0x22, 0, 0, 0, 0, 0, 0, 0];
+        let mut first: *mut c_void = std::ptr::null_mut();
+        let mut second: *mut c_void = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { od_fragment_create(first_code.as_ptr(), first_code.len(), &mut first) },
+            STATUS_OK
+        );
+        assert_eq!(
+            unsafe { od_fragment_create(second_code.as_ptr(), second_code.len(), &mut second) },
+            STATUS_OK
+        );
+
+        let initial = OdCpuStateV0 {
+            gpr: [7, 8, 9, 10],
+            rip: 0,
+            rflags: 0xA5A5_F0F0_5A5A_0A02,
+        };
+        let mut first_result = OdExecutionResultV0::default();
+        let mut second_result = OdExecutionResultV0::default();
+        for _ in 0..2 {
+            assert_eq!(
+                unsafe { od_fragment_execute(first, &initial, 1, &mut first_result) },
+                STATUS_OK
+            );
+            assert_eq!(
+                unsafe { od_fragment_execute(second, &initial, 1, &mut second_result) },
+                STATUS_OK
+            );
+            assert_eq!(first_result.state.gpr, [0x11, 8, 9, 10]);
+            assert_eq!(second_result.state.gpr, [7, 0x22, 9, 10]);
+            assert_eq!(first_result.state.rip, first_code.len() as u64);
+            assert_eq!(second_result.state.rip, second_code.len() as u64);
+            assert_eq!(first_result.instructions_executed, 1);
+            assert_eq!(second_result.instructions_executed, 1);
+        }
+
+        assert_eq!(unsafe { od_fragment_destroy(first) }, STATUS_OK);
+        assert_eq!(unsafe { od_fragment_destroy(second) }, STATUS_OK);
+    }
+
+    #[test]
     fn publication_rejects_second_live_mapping_and_reuses_slot_after_drop() {
         let _guard = jit_test_lock();
         let first = PublishedCode::publish(&[0xC0, 0x03, 0x5F, 0xD6]).unwrap(); // ret
@@ -39390,13 +39639,39 @@ mod tests {
 
         let mapping = PublishedCode::publish(&[0xC0, 0x03, 0x5F, 0xD6]).unwrap();
         let initial = OdCpuStateV0::default();
-        let mut result = OdExecutionResultV0::default();
+        let invalid = OdCpuStateV0 { rip: 1, ..initial };
+        let sentinel = OdExecutionResultV0 {
+            state: OdCpuStateV0 {
+                gpr: [0xAA, 0xBB, 0xCC, 0xDD],
+                rip: 0x1234,
+                rflags: 0x5678,
+            },
+            reason: 0xAABB_CCDD,
+            reserved: 0x1122_3344,
+            instructions_executed: 0xDEAD_BEEF,
+        };
+        let mut result = sentinel;
         assert_eq!(
             unsafe { od_fragment_execute(raw_handle, &initial, 1, &mut result) },
             STATUS_BUSY
         );
+        assert_eq!(result, sentinel, "BUSY must preserve the output buffer");
+        assert_eq!(
+            unsafe { od_fragment_execute(raw_handle, &invalid, 1, &mut result) },
+            STATUS_BUSY,
+            "a live MAP_JIT lease precedes invalid-entry reporting"
+        );
+        assert_eq!(result, sentinel, "BUSY must preserve the output buffer");
 
         drop(mapping);
+        assert_eq!(
+            unsafe { od_fragment_execute(raw_handle, &invalid, 1, &mut result) },
+            STATUS_INVALID_STATE
+        );
+        assert_eq!(
+            result, sentinel,
+            "invalid RIP must preserve the output buffer"
+        );
         assert_eq!(
             unsafe { od_fragment_execute(raw_handle, &initial, 1, &mut result) },
             STATUS_OK
