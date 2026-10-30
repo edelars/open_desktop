@@ -6869,3 +6869,26 @@ Memory forms and physical acceptance are not claimed. See the [plan]
 (../../../../docs/plans/STAGE_2.md#s2-37ay--canonical-long64-divss-xmm-register-pairs),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ay--canonical-long64-divss-xmm-register-pairs),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ay--divss-register-pair-interpreter-profile).
+
+### S2-37az ADDPD register-pair profile
+
+`s2_37az_addpd_xmm0_xmm1.case.json` is a handwritten canonical Long64
+`66 0F 58 /r` literal. Lane 0 adds 2^-53 to 1.0 and rounds to even with PE;
+lane 1 adds negative zero to 1.0 exactly. The schema-v2 profile admits all
+256 XMM pairs, requires OM=UM=1, rejects DAZ/reserved MXCSR bits, and accepts
+RC, FTZ, IM/DM/ZM/PM and sticky flags. An independent raw-u64 integer oracle
+checks NaN selection/quieting, IE/DE pre-event aggregation, addition rounding,
+overflow midpoint versus directed overflow, WPR tininess and FTZ without host
+FP or production arithmetic helpers. Runtime coverage includes all pairs and
+aliases, large exponent gaps with masked/unmasked DE, old sticky flags,
+NaN/DE suppression, cross-lane IE/DE suppression of post-flags,
+gates/fetch/CPL0–3/no callbacks, malformed inputs and JIT/native denial. The
+handwritten literal itself contains only the halfway and signed-zero vectors;
+the remaining cases are generated in the oracle and runner matrix.
+
+Sources: Intel SDM Rev. 093 Vol. 2A ADDPD pp. 3-16–3-18 and legacy SSE rows in
+Table 2-27. The p. 3-18 Type 2/Table 2-19 reference applies to VEX forms, not
+legacy ADDPD. No memory alignment or physical-acceptance claim is made. See the
+[plan](../../../../docs/plans/STAGE_2.md#s2-37az--canonical-long64-addpd-xmm-register-pairs),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37az--canonical-long64-addpd-xmm-register-pairs),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37az--addpd-register-pair-interpreter-profile).

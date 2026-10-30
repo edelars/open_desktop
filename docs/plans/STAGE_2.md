@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последнее локальное подзадание S2-37ay добавляет canonical DIVSS XMM register-pair interpreter profile после DIVSD: SSE-gated scalar binary32 division с WPR tininess, MXCSR exception ordering и сохранением destination.high96. Профиль требует OM=UM=1; memory forms и physical acceptance остаются открытыми. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последнее локальное подзадание S2-37az добавляет canonical ADDPD XMM register-pair interpreter profile: SSE2-gated packed binary64 addition с MXCSR exception ordering и whole-XMM atomicity. Профиль требует OM=UM=1; memory forms и physical acceptance остаются открытыми. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -526,6 +526,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37aw | Strict schema-v2 canonical Long64 DIVPS XMM register pairs; four-lane Binary32 raw divide, WPR tininess/FTZ, cross-lane IE/ZE/DE before computation, atomic IE/DE/ZE/OE/UE/PE; OM=UM=1; JIT/native closed | Focused oracle, decoder, gates and 256-pair runner matrix passed; DIVPD/MUL/SUB regressions, full od-testkit, workspace/layout/format/diff checks passed; independent Sol-high review clean; physical acceptance remains open |
 | [x] | S2-37ax | Strict schema-v2 canonical Long64 DIVSD XMM register pairs; scalar Binary64 raw divide, only low64 write with high64 preserved; independent rational oracle, strict F2 profile, OM=UM=1, atomic IE/DE/ZE/OE/UE/PE; JIT/native closed | Focused 256-pair/gate/encoding and scalar runner matrix passed; 1/3 RC, WPR/FTZ boundaries, PM atomicity, high-qword canaries, cross-profile rejection and OSXMMEXCPT fallback checked; DIVPD/DIVPS/MUL/SUB regressions and full od-testkit passed; workspace check, layout, format and diff checks passed; independent review clean after profile-separation fix |
 | [x] | S2-37ay | Strict schema-v2 canonical Long64 DIVSS XMM register pairs; scalar Binary32 raw divide, low32 write/high96 preserved; independent raw-u32 oracle, strict F3 SSE profile, OM=UM=1, atomic IE/DE/ZE/OE/UE/PE; JIT/native closed | 256-pair, RC/WPR/FTZ, NaN and pre/post event matrix, malformed/tampered/backend denial; direct runtime fetch/gates/CPL coverage; DIV/MUL/SUB regressions passed; independent review clean; physical acceptance remains open |
+| [x] | S2-37az | Strict schema-v2 canonical Long64 ADDPD XMM register pairs; two Binary64 add lanes from operand snapshots; independent raw-integer oracle; OM=UM=1; atomic IE/DE/OE/UE/PE; interpreter-only | Focused decoder/schema/runtime and 256-pair fixture matrix; physical acceptance remains open |
 | [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j/k/l: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j/k/l; independent review |
 | [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
@@ -6781,7 +6782,7 @@ inventory.
 
 | Form | Legacy opcode | Feature | Source / result width | Vol. 2 start page | Existing S2-37 slice |
 |---|---|---|---|---:|---|
-| ADDPD | `66 0F 58 /r` | SSE2 | XMM, m128; 2×f64 | 3-16 | missing |
+| ADDPD | `66 0F 58 /r` | SSE2 | XMM, m128; 2×f64 | 3-16 | S2-37az, bounded register-only |
 | ADDPS | `NP 0F 58 /r` | SSE | XMM, m128; 4×f32 | 3-19 | missing |
 | ADDSD | `F2 0F 58 /r` | SSE2 | XMM, m64; low f64 | 3-22 | missing |
 | ADDSS | `F3 0F 58 /r` | SSE | XMM, m32; low f32 | 3-24 | missing |
@@ -14033,3 +14034,61 @@ physical acceptance and parent S2-37/S2-38 remain open. See [CPU contract]
 (../specs/CPU_CONTRACT.md#s2-37ay--canonical-long64-divss-xmm-register-pairs),
 [report](../reports/STAGE_2_REPORT.md#s2-37ay--divss-register-pair-interpreter-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ay-bounded-masked-range-divss-register-pair-profile).
+
+#### S2-37az — canonical Long64 ADDPD XMM register pairs
+
+Implement strict schema-v2 interpreter-only profile
+`s2-long-addpd-registers-v1` for canonical Long64 legacy `66 0F 58 /r`,
+ModR/M.mod=3, covering all 256 XMM pairs. Low forms are four bytes; extended
+indices require exactly one REX `41`, `44` or `45` after 66, for five bytes.
+Reject memory, F2/F3, reordered/repeated/redundant prefixes, REX.W/X/40,
+trailing bytes, VEX and EVEX. Fetch the complete instruction before SSE2/EM/
+OSFXSR #UD then TS #NM at CPL0–3; issue no data callbacks. Keep JIT/native/C
+ABI/fragment/generic paths closed.
+
+Require MXCSR.OM=1 and UM=1 in schema and runtime. Reject DAZ/reserved MXCSR
+bits; accept RC, FTZ, IM/DM/ZM/PM and old sticky flags. Snapshot both XMM
+operands and compute two old-destination plus source binary64 lanes. NaNs
+select the first original operand, quiet a selected SNaN, and raise IE for any
+SNaN; NaNs suppress same-lane DE. Opposite-sign infinities raise IE and return
+the masked indefinite `fff8000000000000`; other infinity results retain their
+sign. Any subnormal finite operand raises DE, including infinity plus
+subnormal. Aggregate IE/DE before arithmetic; an unmasked pre-event commits
+all generated pre-flags and suppresses every post flag and the full destination
+write. Otherwise use `Binary64::add_raw_result` with MXCSR.RC. Exact
+cancellation is -0 only under round-down; same-sign zeros retain their sign.
+Masked overflow records OE|PE; directed overflow to maxfinite may record PE
+only when rounding the overflow-boundary midpoint does not itself exceed the
+exponent range. A larger exact result such as maxfinite+maxfinite records
+OE|PE even when directed rounding returns maxfinite. Determine tininess after
+precision rounding. A finite same-format binary64 sum is an integer multiple
+of minsub, so an unflushed subnormal result is exact and raises no UE/PE. FTZ
+flushes only tiny nonzero results to signed zero with UE|PE. Aggregate post
+flags; unmasked PM commits status but preserves XMM/RIP/retirement. Old sticky
+flags alone never fault.
+
+Use an independent raw-u64 integer oracle. Its finite path adds exact signed
+integer magnitudes and rounds once; special-value classification remains
+independent from production helpers. Cover all pairs and aliases; NaN payloads
+and SNaNs; opposite infinities; infinity plus subnormal; positive and negative
+halfway rounding; exact and FTZ tiny sums; signed-zero rules; large exponent
+gaps; masked and directed overflow; lane permutations; sticky flags; cross-lane
+IE/DE suppression of other-lane OE/PE/FTZ-UE; fetch/gate/CPL/STOP/budget/no-
+callback behavior; malformed/tampered fixtures; and backend denial. The
+handwritten literal fixture covers `1 + 2^-53` and `1 + (-0)`. The oracle and
+runner matrices additionally cover exact tiny
+`0010000000000001 + 8010000000000000` (minsub without flags, FTZ zero with
+UE|PE), overflow midpoint `7fefffffffffffff + 7c90000000000000` (RN/RU
+infinity with OE|PE; RD/RZ maxfinite with PE only), and maxfinite+maxfinite
+(OE|PE in every rounding mode, including directed maxfinite responses).
+
+Sources: Intel SDM Rev. 093 Vol. 2A ADDPD pp. 3-16–3-18 and legacy SSE rows in
+Table 2-27; generic SSE2/CR0/CR4 gates and SIMD exceptions; Vol. 1
+§§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel
+Floating-Point Reference Sheet v2.13. The p. 3-18 Type 2/Table 2-19 reference
+is for VEX forms, not legacy ADDPD. No memory alignment claim is made. Memory
+forms, physical acceptance, other modes, complete unmasked OE/UE behavior and
+parent S2-37/S2-38 remain open. See the [CPU
+contract](../specs/CPU_CONTRACT.md#s2-37az--canonical-long64-addpd-xmm-register-pairs),
+[report](../reports/STAGE_2_REPORT.md#s2-37az--addpd-register-pair-interpreter-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37az-addpd-register-pair-profile).

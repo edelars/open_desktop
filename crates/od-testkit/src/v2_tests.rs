@@ -302,6 +302,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 sqrtpd_controls: input.fixture.sqrtpd_controls,
                 subpd_controls: input.fixture.subpd_controls,
                 mulpd_controls: input.fixture.mulpd_controls,
+                addpd_controls: input.fixture.addpd_controls,
                 divpd_controls: input.fixture.divpd_controls,
                 divsd_controls: input.fixture.divsd_controls,
                 divps_controls: input.fixture.divps_controls,
@@ -9704,4 +9705,110 @@ fn divss_independent_scalar_oracle_covers_rounding_events_and_scalar_bounds() {
         (infinity_over_subnormal.2, infinity_over_subnormal.3),
         (true, false)
     );
+}
+
+#[test]
+fn addpd_oracle_covers_rounding_tiny_overflow_and_special_events() {
+    let nearest = independent_addpd(
+        [0x3ff0_0000_0000_0000, 0],
+        [0x3ca0_0000_0000_0000, 0],
+        0x1f80,
+    );
+    assert_eq!(nearest.0[0], 0x3ff0_0000_0000_0000);
+    assert!(nearest.5);
+    let upward = independent_addpd(
+        [0x3ff0_0000_0000_0000, 0],
+        [0x3ca0_0000_0000_0000, 0],
+        0x5f80,
+    );
+    assert_eq!(upward.0[0], 0x3ff0_0000_0000_0001);
+    assert!(upward.5);
+    let negative_halfway = independent_addpd(
+        [0x3ff0_0000_0000_0000, 0],
+        [0xbc90_0000_0000_0000, 0],
+        0x3f80,
+    );
+    assert_eq!(negative_halfway.0[0], 0x3fef_ffff_ffff_ffff);
+    assert!(negative_halfway.5);
+
+    let opposite_zeros_nearest = independent_addpd([0, 0], [1 << 63, 0], 0x1f80);
+    assert_eq!(opposite_zeros_nearest.0[0], 0);
+    let opposite_zeros_down = independent_addpd([0, 0], [1 << 63, 0], 0x3f80);
+    assert_eq!(opposite_zeros_down.0[0], 1 << 63);
+    let negative_zeros = independent_addpd([1 << 63, 0], [1 << 63, 0], 0x1f80);
+    assert_eq!(negative_zeros.0[0], 1 << 63);
+
+    let exact_tiny = independent_addpd(
+        [0x0010_0000_0000_0001, 0],
+        [0x8010_0000_0000_0000, 0],
+        0x1f80,
+    );
+    assert_eq!(exact_tiny.0[0], 1);
+    assert!(!exact_tiny.3 && !exact_tiny.4 && !exact_tiny.5);
+    let flushed_tiny = independent_addpd(
+        [0x0010_0000_0000_0001, 0],
+        [0x8010_0000_0000_0000, 0],
+        0x9f80,
+    );
+    assert_eq!(flushed_tiny.0[0], 0);
+    assert!(flushed_tiny.4 && flushed_tiny.5);
+
+    let large_gap_nearest = independent_addpd([0x3ff0_0000_0000_0000, 0], [1, 0], 0x1f80);
+    assert_eq!(large_gap_nearest.0[0], 0x3ff0_0000_0000_0000);
+    assert!(!large_gap_nearest.1 && large_gap_nearest.2 && large_gap_nearest.5);
+    let large_gap_up = independent_addpd([0x3ff0_0000_0000_0000, 0], [1, 0], 0x5f80);
+    assert_eq!(large_gap_up.0[0], 0x3ff0_0000_0000_0001);
+    assert!(large_gap_up.2 && large_gap_up.5);
+
+    let overflow = independent_addpd(
+        [0x7fef_ffff_ffff_ffff, 0],
+        [0x7c90_0000_0000_0000, 0],
+        0x1f80,
+    );
+    assert_eq!(overflow.0[0], 0x7ff0_0000_0000_0000);
+    assert!(overflow.3 && overflow.5);
+    let toward_zero = independent_addpd(
+        [0x7fef_ffff_ffff_ffff, 0],
+        [0x7c90_0000_0000_0000, 0],
+        0x7f80,
+    );
+    assert_eq!(toward_zero.0[0], 0x7fef_ffff_ffff_ffff);
+    assert!(!toward_zero.3 && toward_zero.5);
+
+    // The directed midpoint rounds to maxfinite without overflow, while a
+    // much larger exact sum overflows even when the response is maxfinite.
+    for (rc, expected) in [
+        (0x1f80, 0x7ff0_0000_0000_0000),
+        (0x3f80, 0x7fef_ffff_ffff_ffff),
+        (0x5f80, 0x7ff0_0000_0000_0000),
+        (0x7f80, 0x7fef_ffff_ffff_ffff),
+    ] {
+        let directed_overflow =
+            independent_addpd([0x7fef_ffff_ffff_ffff, 0], [0x7fef_ffff_ffff_ffff, 0], rc);
+        assert_eq!(directed_overflow.0[0], expected);
+        assert!(directed_overflow.3 && directed_overflow.5);
+    }
+
+    let snan = independent_addpd(
+        [0x7ff0_0000_0000_0001, 0x7ff0_0000_0000_0000],
+        [0x7ff8_0000_0000_0042, 0xfff0_0000_0000_0000],
+        0x1f80,
+    );
+    assert_eq!(snan.0[0], 0x7ff8_0000_0000_0001);
+    assert_eq!(snan.0[1], 0xfff8_0000_0000_0000);
+    assert!(snan.1);
+
+    let qnan_wins = independent_addpd(
+        [0x7ff8_0000_0000_0042, 0],
+        [0x7ff0_0000_0000_0001, 0],
+        0x1f80,
+    );
+    assert_eq!(qnan_wins.0[0], 0x7ff8_0000_0000_0042);
+    assert!(qnan_wins.1);
+    let nan_suppresses_de = independent_addpd([0x7ff8_0000_0000_0042, 0], [1, 0], 0x1f80);
+    assert!(!nan_suppresses_de.1 && !nan_suppresses_de.2);
+
+    let infinity_subnormal = independent_addpd([0x7ff0_0000_0000_0000, 0], [1, 0], 0x1f80);
+    assert_eq!(infinity_subnormal.0[0], 0x7ff0_0000_0000_0000);
+    assert!(!infinity_subnormal.1 && infinity_subnormal.2);
 }

@@ -4,20 +4,21 @@ use std::io::{self, Write};
 use std::process::{Command, ExitCode};
 
 use od_isa::execute::{
-    Cvttpd2dqControls, Cvttps2dqControls, Cvttss2siRegistersControls, DivpdControls, DivpsControls,
-    DivsdControls, DivssControls, MulpdControls, MulpsControls, MulsdControls, MulssControls,
-    SqrtpdControls, SqrtpsControls, SqrtsdControls, SqrtssControls, SubpdControls, SubpsControls,
-    SubsdControls, SubssControls, run_with_cvtpd2dq_register_controls,
-    run_with_cvttpd2dq_register_controls, run_with_cvttps2dq_register_controls,
-    run_with_cvttsd2si_registers_controls, run_with_cvttss2si_registers_controls,
-    run_with_divpd_register_controls, run_with_divps_register_controls,
-    run_with_divsd_register_controls, run_with_divss_register_controls,
-    run_with_mulpd_register_controls, run_with_mulps_register_controls,
-    run_with_mulsd_register_controls, run_with_mulss_register_controls,
-    run_with_sqrtpd_register_controls, run_with_sqrtps_register_controls,
-    run_with_sqrtsd_register_controls, run_with_sqrtss_register_controls,
-    run_with_subpd_register_controls, run_with_subps_register_controls,
-    run_with_subsd_register_controls, run_with_subss_register_controls,
+    AddpdControls, Cvttpd2dqControls, Cvttps2dqControls, Cvttss2siRegistersControls, DivpdControls,
+    DivpsControls, DivsdControls, DivssControls, MulpdControls, MulpsControls, MulsdControls,
+    MulssControls, SqrtpdControls, SqrtpsControls, SqrtsdControls, SqrtssControls, SubpdControls,
+    SubpsControls, SubsdControls, SubssControls, run_with_addpd_register_controls,
+    run_with_cvtpd2dq_register_controls, run_with_cvttpd2dq_register_controls,
+    run_with_cvttps2dq_register_controls, run_with_cvttsd2si_registers_controls,
+    run_with_cvttss2si_registers_controls, run_with_divpd_register_controls,
+    run_with_divps_register_controls, run_with_divsd_register_controls,
+    run_with_divss_register_controls, run_with_mulpd_register_controls,
+    run_with_mulps_register_controls, run_with_mulsd_register_controls,
+    run_with_mulss_register_controls, run_with_sqrtpd_register_controls,
+    run_with_sqrtps_register_controls, run_with_sqrtsd_register_controls,
+    run_with_sqrtss_register_controls, run_with_subpd_register_controls,
+    run_with_subps_register_controls, run_with_subsd_register_controls,
+    run_with_subss_register_controls,
 };
 use od_isa::{CpuState, ExecutionResult, interpret};
 use od_testkit::case::{Fixture, LoadedFixture};
@@ -539,6 +540,7 @@ fn expected_native_xorpd_oracle(
                 sqrtpd_controls: None,
                 subpd_controls: None,
                 mulpd_controls: None,
+                addpd_controls: None,
                 divpd_controls: None,
                 divsd_controls: None,
                 divps_controls: None,
@@ -1773,6 +1775,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongAddpdRegistersV1 {
+        let controls = loaded
+            .fixture
+            .addpd_controls
+            .expect("validated ADDPD controls");
+        run_with_addpd_register_controls(
+            &mut state,
+            memory,
+            config,
+            AddpdControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongDivpdRegistersV1 {
         let controls = loaded
             .fixture
@@ -2313,6 +2333,7 @@ fn execute_fixture_v2(
                 sqrtpd_controls: loaded.fixture.sqrtpd_controls,
                 subpd_controls: loaded.fixture.subpd_controls,
                 mulpd_controls: loaded.fixture.mulpd_controls,
+                addpd_controls: loaded.fixture.addpd_controls,
                 divpd_controls: loaded.fixture.divpd_controls,
                 divsd_controls: loaded.fixture.divsd_controls,
                 divps_controls: loaded.fixture.divps_controls,
@@ -3510,6 +3531,7 @@ mod tests {
                     sqrtpd_controls: input.fixture.sqrtpd_controls,
                     subpd_controls: input.fixture.subpd_controls,
                     mulpd_controls: input.fixture.mulpd_controls,
+                    addpd_controls: input.fixture.addpd_controls,
                     divpd_controls: input.fixture.divpd_controls,
                     divsd_controls: input.fixture.divsd_controls,
                     divps_controls: input.fixture.divps_controls,

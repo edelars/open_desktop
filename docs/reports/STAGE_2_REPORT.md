@@ -18904,3 +18904,43 @@ closure of parent S2-37/S2-38. See the [CPU contract]
 (../specs/CPU_CONTRACT.md#s2-37ay--canonical-long64-divss-xmm-register-pairs),
 [plan](../plans/STAGE_2.md#s2-37ay--canonical-long64-divss-xmm-register-pairs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ay-bounded-masked-range-divss-register-pair-profile).
+
+## S2-37az — ADDPD register-pair interpreter profile (2026-10-30)
+
+Implemented strict schema-v2 `s2-long-addpd-registers-v1` for canonical
+Long64 legacy `66 0F 58 /r`, ModR/M.mod=3, across all 256 XMM register pairs.
+The packed binary64 path snapshots both XMM inputs and computes each lane from
+the old destination plus source. It gates SSE2 after full instruction fetch,
+then checks TS, admits CPL0–3 without data callbacks, and commits the full XMM
+destination atomically. Prefix aliases, memory forms, trailing bytes, VEX and
+EVEX are rejected. JIT/native/C ABI/fragment/generic execution remains closed.
+
+The runtime uses `Binary64::add_raw_result` for finite lanes and classifies
+special operands independently before arithmetic. Packed IE/DE pre-events are
+aggregated before post-events; an unmasked pre-event suppresses all new
+post-events and the destination write. Tests cover all RC modes, NaN choice
+and quieting (including QNaN/SNaN priority), opposite infinities, infinity
+plus subnormal DE, NaN suppression of same-lane DE, cross-lane suppression,
+PM atomicity, signed zero, exact tiny sums, FTZ, the overflow midpoint versus
+larger directed overflow, large exponent gaps, DM masking, old stickies and
+OSXMMEXCPT fallback. For finite binary64 sums, an exact subnormal is a multiple
+of the minimum subnormal: with FTZ clear it raises neither UE nor PE; FTZ
+flushes a nonzero tiny result to signed zero with UE|PE.
+
+Validation passed: `cargo test -p od-isa --offline addpd_` (2 tests), the
+focused ADDPD runner matrix (all 256 pairs and aliases plus special values,
+atomicity, masking and backend denial), and `cargo test -p od-testkit --offline`
+(439 tests). Runner regressions passed for DIVPD, DIVPS, DIVSD, DIVSS (1 each),
+MUL (11), and SUB (35). Independent Sol-high review found and verified the
+overflow/OE correction, removal of the duplicate arm, and independent-oracle
+deduplication; no findings remain. Final `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `python3
+tools/check_layout.py`, `git diff --check`, and `graphify update .` passed.
+Independent Sol-high review is pending.
+
+Source: Intel SDM Rev. 093 Vol. 2A ADDPD pp. 3-16–3-18. The explicit Type 2 /
+Table 2-19 reference on p. 3-18 concerns VEX-encoded forms; legacy SSE gate
+claims use the legacy rows in Table 2-27. This profile makes no memory
+alignment claim. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37az--canonical-long64-addpd-xmm-register-pairs),
+[plan](../plans/STAGE_2.md#s2-37az--canonical-long64-addpd-xmm-register-pairs), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37az-addpd-register-pair-profile).

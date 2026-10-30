@@ -1541,7 +1541,9 @@ fn run(bytes: &[u8], engine: &str, exit: i32) -> (LoadedFixture, RunResult) {
         String::from_utf8_lossy(&output.stderr)
     );
     let result = RunResult::from_json(&output.stdout).unwrap();
-    result.validate_for(&loaded).unwrap();
+    result
+        .validate_for(&loaded)
+        .unwrap_or_else(|error| panic!("{}: {error:?}", loaded.fixture.case_id));
     (loaded, result)
 }
 
@@ -26642,6 +26644,371 @@ fn mulss_register_profile_covers_pairs_boundaries_and_event_order() {
         value.state.sse.as_mut().unwrap().xmm[0].replace_range(0..8, "00000000");
     }
     assert!(tampered.validate_for(&loaded).is_err());
+}
+
+#[test]
+fn addpd_register_pairs_special_values_atomicity_and_backend_denial() {
+    use od_testkit::v2::{AddpdControlSnapshot, Profile};
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_37az_addpd_xmm0_xmm1.case.json");
+    let bytes = fs::read(path).unwrap();
+    let (input, result) = run(&bytes, "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let mut tampered = result.clone();
+    if let Observation::Available { value: snapshot } = &mut tampered.snapshot {
+        snapshot.state.sse.as_mut().unwrap().xmm[0] = "0000000000000040000000000000f03f".into();
+    }
+    assert!(od_testkit::v2::compare(&input, &result, &tampered).is_err());
+    let Observation::Available { value: snapshot } = &result.snapshot else {
+        panic!("snapshot available")
+    };
+    let sse = snapshot.state.sse.as_ref().unwrap();
+    assert_eq!(sse.xmm[0], "000000000000f03f000000000000f03f");
+    assert_eq!(sse.mxcsr.get(), 0x1fa0);
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(&bytes, backend, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+    }
+
+    let mut fixture = input.fixture.clone();
+    fixture.profile = Profile::LongAddpdRegistersV1;
+    fixture.addpd_controls = Some(AddpdControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: true,
+    });
+    let base_rip = fixture.initial_state.rip.get();
+    let write_lane = |case: &mut Fixture, xmm: usize, lane: usize, raw: u64| {
+        let encoded = raw
+            .to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        case.initial_state.sse.as_mut().unwrap().xmm[xmm]
+            .replace_range(lane * 16..lane * 16 + 16, &encoded);
+    };
+    let read_lane = |xmm: &str, lane: usize| {
+        u64::from_le_bytes(
+            (0..8)
+                .map(|i| {
+                    u8::from_str_radix(&xmm[lane * 16 + i * 2..lane * 16 + i * 2 + 2], 16).unwrap()
+                })
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        )
+    };
+    for (right, rc, expected) in [
+        (0x3ca0_0000_0000_0000, 0x1f80, 0x3ff0_0000_0000_0000),
+        (0x3ca0_0000_0000_0000, 0x3f80, 0x3ff0_0000_0000_0000),
+        (0x3ca0_0000_0000_0000, 0x5f80, 0x3ff0_0000_0000_0001),
+        (0x3ca0_0000_0000_0000, 0x7f80, 0x3ff0_0000_0000_0000),
+        (0xbc90_0000_0000_0000, 0x3f80, 0x3fef_ffff_ffff_ffff),
+    ] {
+        let mut halfway = fixture.clone();
+        halfway.case_id = format!("s2_37az_halfway_{rc:04x}");
+        halfway.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(rc);
+        write_lane(&mut halfway, 0, 0, 0x3ff0_0000_0000_0000);
+        write_lane(&mut halfway, 1, 0, right);
+        let (loaded, output) = run(&halfway.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&loaded, &output, &output).unwrap();
+        let Observation::Available { value: actual } = output.snapshot else {
+            panic!("snapshot")
+        };
+        assert_eq!(
+            read_lane(&actual.state.sse.as_ref().unwrap().xmm[0], 0),
+            expected
+        );
+        assert_eq!(
+            actual.state.sse.unwrap().mxcsr.get() & 0x3b,
+            0x20,
+            "RC={rc:#x}"
+        );
+    }
+
+    let mut nan = fixture.clone();
+    nan.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+    write_lane(&mut nan, 0, 0, 0x7ff0_0000_0000_0001);
+    write_lane(&mut nan, 1, 0, 0x7ff8_0000_0000_0042);
+    let (loaded, output) = run(&nan.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&loaded, &output, &output).unwrap();
+    let Observation::Available { value: actual } = output.snapshot else {
+        panic!("snapshot")
+    };
+    assert_eq!(
+        read_lane(&actual.state.sse.as_ref().unwrap().xmm[0], 0),
+        0x7ff8_0000_0000_0001
+    );
+    assert_eq!(actual.state.sse.unwrap().mxcsr.get() & 0x3b, 1);
+
+    // The destination's quiet NaN wins even when the source is signaling,
+    // while the SNaN still contributes IE. A quiet NaN suppresses same-lane
+    // DE from a subnormal source.
+    let mut qnan_snan = fixture.clone();
+    qnan_snan.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+    write_lane(&mut qnan_snan, 0, 0, 0x7ff8_0000_0000_0042);
+    write_lane(&mut qnan_snan, 1, 0, 0x7ff0_0000_0000_0001);
+    let (loaded, output) = run(&qnan_snan.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&loaded, &output, &output).unwrap();
+    let Observation::Available { value: actual } = output.snapshot else {
+        panic!("snapshot")
+    };
+    assert_eq!(
+        read_lane(&actual.state.sse.as_ref().unwrap().xmm[0], 0),
+        0x7ff8_0000_0000_0042
+    );
+    assert_eq!(actual.state.sse.unwrap().mxcsr.get() & 0x3b, 1);
+
+    let mut nan_subnormal = fixture.clone();
+    nan_subnormal.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+    write_lane(&mut nan_subnormal, 0, 0, 0x7ff8_0000_0000_0042);
+    write_lane(&mut nan_subnormal, 1, 0, 1);
+    let (loaded, output) = run(&nan_subnormal.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&loaded, &output, &output).unwrap();
+    let Observation::Available { value: actual } = output.snapshot else {
+        panic!("snapshot")
+    };
+    assert_eq!(actual.state.sse.unwrap().mxcsr.get() & 0x3b, 0);
+
+    // 1 + minsub is inexact without changing the nearest result. RU advances
+    // to the next value; the subnormal input independently adds DE.
+    for (rc, expected) in [
+        (0x1f80, 0x3ff0_0000_0000_0000),
+        (0x5f80, 0x3ff0_0000_0000_0001),
+    ] {
+        let mut gap = fixture.clone();
+        gap.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(rc);
+        write_lane(&mut gap, 0, 0, 0x3ff0_0000_0000_0000);
+        write_lane(&mut gap, 1, 0, 1);
+        let (loaded, output) = run(&gap.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&loaded, &output, &output).unwrap();
+        let Observation::Available { value: actual } = output.snapshot else {
+            panic!("snapshot")
+        };
+        assert_eq!(
+            read_lane(&actual.state.sse.as_ref().unwrap().xmm[0], 0),
+            expected
+        );
+        assert_eq!(actual.state.sse.unwrap().mxcsr.get() & 0x3b, 0x22);
+    }
+
+    let mut unmasked_de = fixture.clone();
+    unmasked_de.expected_exit = ExpectedExit::Exception;
+    unmasked_de.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1e80);
+    write_lane(&mut unmasked_de, 0, 0, 0x3ff0_0000_0000_0000);
+    write_lane(&mut unmasked_de, 1, 0, 1);
+    let old_xmm = unmasked_de.initial_state.sse.as_ref().unwrap().xmm[0].clone();
+    unmasked_de.addpd_controls.as_mut().unwrap().cr4_osxmmexcpt = false;
+    let (loaded, output) = run(&unmasked_de.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&loaded, &output, &output).unwrap();
+    let Observation::Available { value: actual } = output.snapshot else {
+        panic!("snapshot")
+    };
+    let sse = actual.state.sse.unwrap();
+    assert_eq!(sse.xmm[0], old_xmm);
+    assert_eq!(sse.mxcsr.get() & 0x3b, 2);
+    let Observation::Available {
+        value: Some(exception),
+    } = actual.exception
+    else {
+        panic!("expected #UD fallback")
+    };
+    assert_eq!(exception.vector, 6);
+
+    // A pre-existing sticky IE does not fault by itself even when IM is clear.
+    let mut old_sticky = fixture.clone();
+    old_sticky.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f01);
+    write_lane(&mut old_sticky, 0, 0, 0x3ff0_0000_0000_0000);
+    write_lane(&mut old_sticky, 1, 0, 0x4000_0000_0000_0000);
+    let (loaded, output) = run(&old_sticky.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&loaded, &output, &output).unwrap();
+    let Observation::Available { value: actual } = output.snapshot else {
+        panic!("snapshot")
+    };
+    assert_eq!(
+        read_lane(&actual.state.sse.as_ref().unwrap().xmm[0], 0),
+        0x4008_0000_0000_0000
+    );
+    assert_eq!(actual.state.sse.unwrap().mxcsr.get() & 0x3b, 1);
+
+    let set_encoding = |case: &mut Fixture, destination: u8, source: u8| {
+        let mut code = vec![0x66];
+        if destination >= 8 || source >= 8 {
+            code.push(0x40 | ((destination >> 1) & 4) | (source >> 3));
+        }
+        code.extend([0x0f, 0x58, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+        case.memory[0].initial_bytes_hex = code.iter().map(|byte| format!("{byte:02x}")).collect();
+        case.memory[0].length = code.len() as u32;
+        case.memory[0].comparison_mask_hex = "ff".repeat(code.len());
+        case.stop_rip = Some(HexU64(base_rip + code.len() as u64));
+        case.expected_exit = ExpectedExit::StopAddress;
+    };
+    for destination in 0u8..16 {
+        for source in 0u8..16 {
+            let mut case = fixture.clone();
+            set_encoding(&mut case, destination, source);
+            case.case_id = format!("s2_37az_pair_{destination}_{source}");
+            case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+            write_lane(
+                &mut case,
+                usize::from(destination),
+                0,
+                0x4008_0000_0000_0000,
+            );
+            write_lane(&mut case, usize::from(source), 0, 0x3ff0_0000_0000_0000);
+            write_lane(
+                &mut case,
+                usize::from(destination),
+                1,
+                0x4014_0000_0000_0000,
+            );
+            write_lane(&mut case, usize::from(source), 1, 0x4000_0000_0000_0000);
+            let (loaded, output) = run(&case.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&loaded, &output, &output).unwrap();
+            let Observation::Available { value: actual } = output.snapshot else {
+                panic!("snapshot")
+            };
+            let expected = if destination == source {
+                "00000000000000400000000000001040"
+            } else {
+                "00000000000010400000000000001c40"
+            };
+            assert_eq!(
+                actual.state.sse.unwrap().xmm[usize::from(destination)],
+                expected
+            );
+        }
+    }
+
+    let mut tiny = fixture.clone();
+    tiny.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+    write_lane(&mut tiny, 0, 0, 0x0010_0000_0000_0001);
+    write_lane(&mut tiny, 1, 0, 0x8010_0000_0000_0000);
+    let (loaded, output) = run(&tiny.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&loaded, &output, &output).unwrap();
+    let Observation::Available { value: actual } = output.snapshot else {
+        panic!("snapshot")
+    };
+    assert_eq!(
+        actual.state.sse.as_ref().unwrap().xmm[0],
+        "0100000000000000000000000000f03f"
+    );
+    assert_eq!(actual.state.sse.unwrap().mxcsr.get() & 0x3b, 0);
+    tiny.case_id.push_str("_ftz");
+    tiny.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x9f80);
+    let (loaded, output) = run(&tiny.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&loaded, &output, &output).unwrap();
+    let Observation::Available { value: actual } = output.snapshot else {
+        panic!("snapshot")
+    };
+    assert_eq!(
+        actual.state.sse.as_ref().unwrap().xmm[0],
+        "0000000000000000000000000000f03f"
+    );
+    assert_eq!(actual.state.sse.unwrap().mxcsr.get() & 0x3b, 0x30);
+
+    for (rc, expected, flags) in [
+        (0x1f80, 0x7ff0_0000_0000_0000, 0x28),
+        (0x5f80, 0x7ff0_0000_0000_0000, 0x28),
+        (0x3f80, 0x7fef_ffff_ffff_ffff, 0x20),
+        (0x7f80, 0x7fef_ffff_ffff_ffff, 0x20),
+    ] {
+        let mut overflow = fixture.clone();
+        overflow.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(rc);
+        write_lane(&mut overflow, 0, 0, 0x7fef_ffff_ffff_ffff);
+        write_lane(&mut overflow, 1, 0, 0x7c90_0000_0000_0000);
+        let (loaded, output) = run(&overflow.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&loaded, &output, &output).unwrap();
+        let Observation::Available { value: actual } = output.snapshot else {
+            panic!("snapshot")
+        };
+        assert_eq!(
+            read_lane(&actual.state.sse.as_ref().unwrap().xmm[0], 0),
+            expected
+        );
+        assert_eq!(actual.state.sse.unwrap().mxcsr.get() & 0x3b, flags);
+    }
+
+    // Once the exact result is beyond the binary64 exponent range, a
+    // directed finite response still raises OE|PE. This differs from the
+    // overflow midpoint above, where directed rounding returns maxfinite
+    // without the overflow event.
+    for (rc, expected) in [
+        (0x1f80, 0x7ff0_0000_0000_0000),
+        (0x3f80, 0x7fef_ffff_ffff_ffff),
+        (0x5f80, 0x7ff0_0000_0000_0000),
+        (0x7f80, 0x7fef_ffff_ffff_ffff),
+    ] {
+        let mut overflow = fixture.clone();
+        overflow.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(rc);
+        write_lane(&mut overflow, 0, 0, 0x7fef_ffff_ffff_ffff);
+        write_lane(&mut overflow, 1, 0, 0x7fef_ffff_ffff_ffff);
+        let (loaded, output) = run(&overflow.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&loaded, &output, &output).unwrap();
+        let Observation::Available { value: actual } = output.snapshot else {
+            panic!("snapshot")
+        };
+        assert_eq!(
+            read_lane(&actual.state.sse.as_ref().unwrap().xmm[0], 0),
+            expected
+        );
+        assert_eq!(actual.state.sse.unwrap().mxcsr.get() & 0x3b, 0x28);
+    }
+
+    // IE and DE are aggregated before post flags: an unmasked SNaN in lane 0
+    // suppresses lane 1's overflow and leaves the entire XMM destination intact.
+    let mut pre = fixture.clone();
+    pre.expected_exit = ExpectedExit::Exception;
+    pre.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f00); // IM=0, OM=UM=1
+    write_lane(&mut pre, 0, 0, 0x7ff0_0000_0000_0001);
+    write_lane(&mut pre, 1, 0, 0x7ff8_0000_0000_0042);
+    write_lane(&mut pre, 0, 1, 0x7fef_ffff_ffff_ffff);
+    write_lane(&mut pre, 1, 1, 0x7c90_0000_0000_0000);
+    let before = pre.initial_state.sse.as_ref().unwrap().xmm[0].clone();
+    let (loaded, output) = run(&pre.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&loaded, &output, &output).unwrap();
+    let Observation::Available { value: actual } = output.snapshot else {
+        panic!("snapshot")
+    };
+    let sse = actual.state.sse.unwrap();
+    assert_eq!(sse.xmm[0], before);
+    assert_eq!(sse.mxcsr.get() & 0x3b, 1);
+
+    // Opposite infinities in lane 0 raise IE; a subnormal pair in lane 1
+    // raises DE. These aggregate pre-events suppress lane 1's FTZ UE|PE.
+    let mut ie_de = fixture.clone();
+    ie_de.expected_exit = ExpectedExit::Exception;
+    ie_de.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x9e00); // IM=DM=0, FTZ=1, OM=UM=1
+    write_lane(&mut ie_de, 0, 0, 0x7ff0_0000_0000_0000);
+    write_lane(&mut ie_de, 1, 0, 0xfff0_0000_0000_0000);
+    write_lane(&mut ie_de, 0, 1, 1);
+    write_lane(&mut ie_de, 1, 1, 1);
+    let old_xmm = ie_de.initial_state.sse.as_ref().unwrap().xmm[0].clone();
+    let (loaded, output) = run(&ie_de.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&loaded, &output, &output).unwrap();
+    let Observation::Available { value: actual } = output.snapshot else {
+        panic!("snapshot")
+    };
+    let sse = actual.state.sse.unwrap();
+    assert_eq!(sse.xmm[0], old_xmm);
+    assert_eq!(sse.mxcsr.get() & 0x3b, 3);
+
+    let mut malformed_case = input.fixture.clone();
+    malformed_case.profile = Profile::LongAddpdRegistersV1;
+    malformed_case.addpd_controls = Some(AddpdControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: true,
+    });
+    malformed_case.memory[0].initial_bytes_hex = "f2660f58c1".into();
+    malformed_case.memory[0].length = 5;
+    malformed_case.memory[0].comparison_mask_hex = "ff".repeat(5);
+    malformed_case.stop_rip = Some(HexU64(base_rip + 5));
+    assert!(malformed_case.to_json().is_err());
 }
 
 #[test]
