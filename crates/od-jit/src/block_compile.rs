@@ -8,7 +8,7 @@ use crate::block::{
     CodeView, DecodeBoundary, S0_09NopAddRaxImm8Admission, S0_09NopAdmission,
     S0_09NopCmpRaxImm8Admission, S0_09NopDecRaxAdmission, S0_09NopIncRaxAdmission,
     S0_09NopLeaRaxRbxAdmission, S0_09NopNegRaxAdmission, S0_09NopNotRaxAdmission,
-    S0_09NopSubRaxImm8Admission,
+    S0_09NopSubRaxImm8Admission, S0_09NopXchgRaxRbxAdmission,
 };
 use crate::block_emitter::{
     BlockEmitterError, EmittedCheckedLoadBlockV2, EmittedCheckedStoreBlockV2, EmittedRuntimeBlock,
@@ -698,6 +698,81 @@ fn compile_native_lea_rax_rbx_inner(
     )
     .map_err(BlockCompileError::Build)?;
     let lowered = match lowering::lower_for_native_lea_rax_rbx(&built, admission)
+        .map_err(BlockCompileError::Lowering)?
+    {
+        LoweringOutcome::Program(lowered) => lowered,
+        LoweringOutcome::NoNativePrefix {
+            rip,
+            reason,
+            deferred_error,
+        } => {
+            return Ok(BlockCompileOutcome::NoNativePrefix {
+                rip,
+                reason,
+                deferred_error,
+            });
+        }
+    };
+    if let BuildOutcome::Block(block) = &built {
+        for instruction in &block.instructions {
+            for rip in [instruction.guest_rip, instruction.next_rip] {
+                if !admission.contains(rip) {
+                    return Err(BlockCompileError::DispatchBlockBoundaryNotAdmitted { rip });
+                }
+            }
+        }
+    }
+    compile_lowered(code.code_end(), lowered, strategy)
+}
+
+/// Compile exact bare `XCHG RAX,RBX` as a separate opt-in uncached path.
+pub fn compile_block_for_native_xchg_rax_rbx(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopXchgRaxRbxAdmission,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    compile_native_xchg_rax_rbx_inner(
+        code,
+        entry_rip,
+        admission,
+        crate::block_emitter::FlagMaterializationStrategy::Eager,
+    )
+}
+
+/// Compile the demand-flags candidate for exact bare `XCHG RAX,RBX`.
+pub fn compile_block_for_native_xchg_rax_rbx_demand_flags_candidate(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopXchgRaxRbxAdmission,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    compile_native_xchg_rax_rbx_inner(
+        code,
+        entry_rip,
+        admission,
+        crate::block_emitter::FlagMaterializationStrategy::DemandDrivenCandidate,
+    )
+}
+
+fn compile_native_xchg_rax_rbx_inner(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopXchgRaxRbxAdmission,
+    strategy: crate::block_emitter::FlagMaterializationStrategy,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    if !admission.matches_code(code) {
+        return Err(BlockCompileError::NopAdmissionDoesNotMatchCode);
+    }
+    if !admission.contains(entry_rip) {
+        return Err(BlockCompileError::NopEntryNotAdmitted { entry_rip });
+    }
+    let built = block::build_block_for_native_xchg_rax_rbx(
+        code,
+        entry_rip,
+        AccessContext::default(),
+        BlockLimits::default(),
+    )
+    .map_err(BlockCompileError::Build)?;
+    let lowered = match lowering::lower_for_native_xchg_rax_rbx(&built, admission)
         .map_err(BlockCompileError::Lowering)?
     {
         LoweringOutcome::Program(lowered) => lowered,
@@ -1689,6 +1764,53 @@ mod tests {
                     range.guest_rip == crate::statepoints::GuestRipSource::Fixed(instruction_rip)
                 }));
             }
+        }
+    }
+
+    #[test]
+    fn native_xchg_rax_rbx_compiles_with_atomic_pending_statepoints() {
+        let code = [
+            0x48, 0x3b, 0xca, // CMP RCX,RDX; candidate flags pending
+            0x48, 0x87, 0xd8, // XCHG RAX,RBX
+            0x74, 0x00, // JZ to code end, consuming the prior flags
+        ];
+        let view = CodeView::new(0xB600, &code).unwrap();
+        let admission = S0_09NopXchgRaxRbxAdmission::from_code(view).unwrap();
+        for candidate in [false, true] {
+            let outcome = if candidate {
+                compile_block_for_native_xchg_rax_rbx_demand_flags_candidate(
+                    view, 0xB600, &admission,
+                )
+            } else {
+                compile_block_for_native_xchg_rax_rbx(view, 0xB600, &admission)
+            }
+            .unwrap();
+            let BlockCompileOutcome::Compiled(compiled) = outcome else {
+                panic!("native XCHG/JZ should compile: {outcome:?}");
+            };
+            assert_eq!(compiled.code_end(), 0xB608);
+            assert_eq!(compiled.emitted().pc_map().instruction_count(), 3);
+            let xchg_ranges: Vec<_> = compiled
+                .emitted()
+                .pc_map()
+                .ranges()
+                .iter()
+                .filter(|range| {
+                    range.guest_rip == crate::statepoints::GuestRipSource::Fixed(0xB603)
+                        && range.phase == crate::statepoints::StatePhase::PendingEffects
+                })
+                .collect();
+            assert_eq!(xchg_ranges.len(), if candidate { 8 } else { 4 });
+            let expected_snapshot = if candidate {
+                crate::statepoints::SnapshotAdmissibility::InadmissiblePendingFlags
+            } else {
+                crate::statepoints::SnapshotAdmissibility::ReplayCurrentInstruction
+            };
+            assert!(
+                xchg_ranges
+                    .iter()
+                    .all(|range| range.snapshot == expected_snapshot)
+            );
         }
     }
 

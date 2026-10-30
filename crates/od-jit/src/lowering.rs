@@ -16,7 +16,7 @@ use crate::block::{
     DecodeBoundary, DecodedInstruction, S0_09NopAddRaxImm8Admission, S0_09NopAdmission,
     S0_09NopCmpRaxImm8Admission, S0_09NopDecRaxAdmission, S0_09NopIncRaxAdmission,
     S0_09NopLeaRaxRbxAdmission, S0_09NopNegRaxAdmission, S0_09NopNotRaxAdmission,
-    S0_09NopSubRaxImm8Admission,
+    S0_09NopSubRaxImm8Admission, S0_09NopXchgRaxRbxAdmission,
 };
 use crate::ir::{
     self, BranchCondition, ExitKind, FlagEffect, GuestGpr, GuestInstruction, IntWidth, IntegerKind,
@@ -219,6 +219,29 @@ pub(crate) fn lower_for_native_lea_rax_rbx(
         None,
         None,
         Some(admission),
+        None,
+    )
+}
+
+pub(crate) fn lower_for_native_xchg_rax_rbx(
+    outcome: &BuildOutcome,
+    admission: &S0_09NopXchgRaxRbxAdmission,
+) -> Result<LoweringOutcome, LoweringError> {
+    lower_with_admission_and_lea(
+        outcome,
+        Some(admission.boundaries()),
+        None,
+        None,
+        None,
+        false,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(admission),
     )
 }
 
@@ -310,6 +333,7 @@ fn lower_with_admission(
         native_cmp_rax_imm8_admission,
         native_sub_rax_imm8_admission,
         None,
+        None,
     )
 }
 
@@ -327,6 +351,7 @@ fn lower_with_admission_and_lea(
     native_cmp_rax_imm8_admission: Option<&S0_09NopCmpRaxImm8Admission>,
     native_sub_rax_imm8_admission: Option<&S0_09NopSubRaxImm8Admission>,
     native_lea_rax_rbx_admission: Option<&S0_09NopLeaRaxRbxAdmission>,
+    native_xchg_rax_rbx_admission: Option<&S0_09NopXchgRaxRbxAdmission>,
 ) -> Result<LoweringOutcome, LoweringError> {
     let block = match outcome {
         BuildOutcome::NoBlock(no_block) => {
@@ -440,6 +465,11 @@ fn lower_with_admission_and_lea(
                     && matches!(decoded.operation, DecodedOperation::Nop)
                     || admission.admits_lea_rax_rbx(*guest_rip)
                         && block::is_exact_lea_rax_rbx(*decoded, &[0x48, 0x8d, 0x03])
+            }) || native_xchg_rax_rbx_admission.is_some_and(|admission| {
+                admission.admits_nop(*guest_rip)
+                    && matches!(decoded.operation, DecodedOperation::Nop)
+                    || admission.admits_xchg_rax_rbx(*guest_rip)
+                        && block::is_exact_xchg_rax_rbx(*decoded, &[0x48, 0x87, 0xd8])
             }) || native_add_rax_imm8_admission.is_some_and(|admission| {
                 admission.admits_nop(*guest_rip)
                     && matches!(decoded.operation, DecodedOperation::Nop)
@@ -541,6 +571,8 @@ fn lower_with_admission_and_lea(
             .is_some_and(|proof| proof.admits_not_rax(instruction.guest_rip));
         let admitted_native_lea = native_lea_rax_rbx_admission
             .is_some_and(|proof| proof.admits_lea_rax_rbx(instruction.guest_rip));
+        let admitted_native_xchg = native_xchg_rax_rbx_admission
+            .is_some_and(|proof| proof.admits_xchg_rax_rbx(instruction.guest_rip));
         let admitted_native_add_rax_imm8 = native_add_rax_imm8_admission
             .is_some_and(|proof| proof.admits_add_rax_imm8(instruction.guest_rip));
         let admitted_native_cmp_rax_imm8 = native_cmp_rax_imm8_admission
@@ -552,6 +584,7 @@ fn lower_with_admission_and_lea(
             && !admitted_native_neg
             && !admitted_native_not
             && !admitted_native_lea
+            && !admitted_native_xchg
             && !admitted_native_add_rax_imm8
             && !admitted_native_cmp_rax_imm8
             && !admitted_native_sub_rax_imm8
@@ -577,6 +610,8 @@ fn lower_with_admission_and_lea(
             lower_exact_not_rax(instruction, index, &mut next_temp, &mut operations)?;
         } else if admitted_native_lea {
             lower_exact_lea_rax_rbx(instruction, index, &mut next_temp, &mut operations)?;
+        } else if admitted_native_xchg {
+            lower_exact_xchg_rax_rbx(instruction, index, &mut next_temp, &mut operations)?;
         } else if admitted_native_add_rax_imm8 {
             let admitted_value = native_add_rax_imm8_admission
                 .and_then(|proof| proof.add_rax_imm8_value(instruction.guest_rip))
@@ -1042,6 +1077,47 @@ fn lower_exact_lea_rax_rbx(
     operations.push(Operation::WriteGpr {
         register: crate::ir::GuestGpr(0),
         src: rbx,
+        width: IntWidth::W64,
+    });
+    operations.push(Operation::CommitInstruction { index });
+    Ok(())
+}
+
+fn lower_exact_xchg_rax_rbx(
+    instruction: &DecodedInstruction,
+    index: usize,
+    next_temp: &mut u32,
+    operations: &mut Vec<Operation>,
+) -> Result<(), LoweringError> {
+    let invalid = || LoweringError::InvalidDecodedForm {
+        guest_rip: instruction.guest_rip,
+    };
+    if !matches!(instruction.decoded.operation, DecodedOperation::Xchg { .. })
+        || !block::is_exact_xchg_rax_rbx(instruction.decoded, &[0x48, 0x87, 0xd8])
+    {
+        return Err(invalid());
+    }
+    operations.push(Operation::BeginInstruction { index });
+    let old_rax = allocate_temp(next_temp);
+    operations.push(Operation::ReadGpr {
+        dst: old_rax,
+        register: crate::ir::GuestGpr(0),
+        width: IntWidth::W64,
+    });
+    let old_rbx = allocate_temp(next_temp);
+    operations.push(Operation::ReadGpr {
+        dst: old_rbx,
+        register: crate::ir::GuestGpr(3),
+        width: IntWidth::W64,
+    });
+    operations.push(Operation::WriteGpr {
+        register: crate::ir::GuestGpr(0),
+        src: old_rbx,
+        width: IntWidth::W64,
+    });
+    operations.push(Operation::WriteGpr {
+        register: crate::ir::GuestGpr(3),
+        src: old_rax,
         width: IntWidth::W64,
     });
     operations.push(Operation::CommitInstruction { index });
@@ -1677,6 +1753,67 @@ mod tests {
                 Operation::BeginInstruction { index: 1 },
             ]
         ));
+        assert!(!lowered.program.operations.iter().any(|operation| matches!(
+            operation,
+            Operation::CheckedLoad { .. }
+                | Operation::CheckedStore { .. }
+                | Operation::Integer { .. }
+        )));
+        assert_eq!(ir::verify(&lowered.program), Ok(()));
+    }
+
+    #[test]
+    fn native_xchg_rax_rbx_reads_both_prestate_values_before_writes() {
+        let code = CodeView::new(BASE, &[0x48, 0x87, 0xd8, 0x74, 0x00]).unwrap();
+        let admission = S0_09NopXchgRaxRbxAdmission::from_code(code).unwrap();
+        let built = block::build_block_for_native_xchg_rax_rbx(
+            code,
+            BASE,
+            AccessContext::default(),
+            BlockLimits::default(),
+        )
+        .unwrap();
+        let lowered = match lower_for_native_xchg_rax_rbx(&built, &admission).unwrap() {
+            LoweringOutcome::Program(program) => program,
+            other => panic!("expected XCHG native prefix, got {other:?}"),
+        };
+        assert!(matches!(
+            &lowered.program.operations[..7],
+            [
+                Operation::BeginInstruction { index: 0 },
+                Operation::ReadGpr {
+                    dst: TempId(0),
+                    register: GuestGpr(0),
+                    width: IntWidth::W64
+                },
+                Operation::ReadGpr {
+                    dst: TempId(1),
+                    register: GuestGpr(3),
+                    width: IntWidth::W64
+                },
+                Operation::WriteGpr {
+                    register: GuestGpr(0),
+                    src: TempId(1),
+                    width: IntWidth::W64
+                },
+                Operation::WriteGpr {
+                    register: GuestGpr(3),
+                    src: TempId(0),
+                    width: IntWidth::W64
+                },
+                Operation::CommitInstruction { index: 0 },
+                Operation::BeginInstruction { index: 1 },
+            ]
+        ));
+        assert_eq!(
+            lowered
+                .program
+                .operations
+                .iter()
+                .filter(|operation| matches!(operation, Operation::CommitInstruction { index: 0 }))
+                .count(),
+            1
+        );
         assert!(!lowered.program.operations.iter().any(|operation| matches!(
             operation,
             Operation::CheckedLoad { .. }

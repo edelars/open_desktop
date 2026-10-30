@@ -258,6 +258,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-34f | Exact local acceptance gates for bounded S3-28/29/38 slices | S3-34e, S3-28a/b, S3-29a–e, S3-38a; full suite gates remain open |
 | [partial] | S3-34i | Exact local gates for native arithmetic slices | S3-34e, S3-33a–d; full S3-34 gates remain open |
 | [partial] | S3-34j | Add exact local gates for S3-33e CMP imm8 | S3-34i, S3-33e; full S3-34 gates remain open |
+| [partial] | S3-34k | Exact local gates for S3-33i XCHG RAX,RBX | S3-34j, S3-33i; full S3-34 gates remain open |
 | [partial] | S3-35 | Измерить холодное исполнение | S3-01, S3-34 |
 | [ ] | S3-36 | Измерить прогретое исполнение | S3-35 |
 | [ ] | S3-37 | Cache churn и ресурсы | S3-25, S3-34 |
@@ -2459,6 +2460,26 @@ harness gates закрепляют admission, compiler и host test identities. 
 performance отложены до конца Stage 3; S3-33 и этап остаются открытыми. См.
 [S3-33h report](../reports/STAGE_3_S3-33h_2026-10-30.md).
 
+#### S3-33i. Exact native qword XCHG RAX,RBX
+
+Добавлен отдельный uncached opt-in profile ровно для bare `48 87 D8`.
+Admission связывает точные source bytes с decoded W64 RAX/RBX и отклоняет
+эквивалентные кодировки, остальные регистры/ширины, self-exchange, memory,
+префиксы, truncation и branch внутрь инструкции. Lowering сначала читает оба
+старых значения, затем выполняет две перестановочные записи и один commit.
+Emitter допускает dual-write только для этого полного упорядоченного IR-shape;
+между записями нет canonical snapshot, retirement остаётся одной инструкцией.
+Flags и pending-writer state сохраняются без helper; никаких утверждений о
+memory atomicity нет. Eager и candidate compile/dispatch раздельны и uncached.
+Host parity покрывает полное состояние, крайние/alternating значения, двойной
+обмен, CMP → XCHG → JZ → последующий SUB на swapped values и STOP/budget. Native и
+interpreter evidence относится только к локальной точной кодировке. S2-10
+подтверждает XCHG semantics, но его reviewed physical fixture не подтверждает
+именно `48 87 D8`. Четыре точных local gates закрепляют admission, emitter,
+compiler и host parity. Mini и performance остаются отложены до конца этапа;
+S3-33 и Stage 3 открыты. См.
+[S3-33i report](../reports/STAGE_3_S3-33i_2026-10-30.md).
+
 ## 9. Проверка, производительность и интеграция
 
 ### S3-34. Собрать corpus и проверить сам harness
@@ -2651,6 +2672,18 @@ identity/argv, zero or duplicate matches, ignored/failed/timed-out tests, and
 forged pass evidence continue to apply. The follow-up run and its limits are
 recorded in the [S3-34j report](../reports/STAGE_3_S3-34j_2026-10-30.md); this
 bounded slice does not close S3-34 or Stage 3.
+
+#### S3-34k. Exact local gates for S3-33i XCHG RAX,RBX
+
+Add four mandatory exact Cargo gates for exact bare XCHG RAX,RBX: admission,
+dual-write emitter validation, eager/candidate compiler/statepoint coverage,
+and host full-state/interpreter parity. Pin all four identities once in the
+manifest, planned steps, and final local summary. Self-checks retain every
+existing gate and reject an omitted XCHG gate, wrong identity/package/argv,
+zero or duplicate matches, ignored/failed/timed-out results, and forged pass
+evidence. The report records the full local suite after the sources freeze and
+the independent review. Mini, performance, Stage 2, and owner-backed checks
+remain outside this slice.
 
 ### S3-35. Измерить холодное исполнение
 

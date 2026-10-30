@@ -2073,7 +2073,9 @@ fn validate_runtime_shape(
             Operation::WriteGpr { width, .. } => {
                 require_w64(*width, index)?;
                 write_count += 1;
-                if write_count > 1 {
+                let xchg_write = active
+                    .is_some_and(|guest_index| is_exact_xchg_rax_rbx_record(program, guest_index));
+                if write_count > 1 && (!xchg_write || write_count > 2) {
                     return Err(BlockEmitterError::UnsupportedShape {
                         instruction_index: active.unwrap_or(0),
                     });
@@ -2097,6 +2099,11 @@ fn validate_runtime_shape(
                         instruction_index: guest_index,
                     });
                 }
+                if write_count == 2 && !is_exact_xchg_rax_rbx_record(program, guest_index) {
+                    return Err(BlockEmitterError::UnsupportedShape {
+                        instruction_index: guest_index,
+                    });
+                }
                 active = None;
             }
             Operation::Branch { .. }
@@ -2105,6 +2112,55 @@ fn validate_runtime_shape(
         }
     }
     Ok(())
+}
+
+fn is_exact_xchg_rax_rbx_record(program: &Program, guest_index: usize) -> bool {
+    let Some(begin) = program.operations.iter().position(
+        |operation| matches!(operation, Operation::BeginInstruction { index } if *index == guest_index),
+    ) else {
+        return false;
+    };
+    let Some(relative_commit) = program.operations[begin + 1..].iter().position(
+        |operation| matches!(operation, Operation::CommitInstruction { index } if *index == guest_index),
+    ) else {
+        return false;
+    };
+    let end = begin + 1 + relative_commit;
+    let record = &program.operations[begin..=end];
+    let [
+        Operation::BeginInstruction { index },
+        Operation::ReadGpr {
+            dst: old_rax,
+            register: GuestGpr(0),
+            width: IntWidth::W64,
+        },
+        Operation::ReadGpr {
+            dst: old_rbx,
+            register: GuestGpr(3),
+            width: IntWidth::W64,
+        },
+        Operation::WriteGpr {
+            register: GuestGpr(0),
+            src: write_rax,
+            width: IntWidth::W64,
+        },
+        Operation::WriteGpr {
+            register: GuestGpr(3),
+            src: write_rbx,
+            width: IntWidth::W64,
+        },
+        Operation::CommitInstruction {
+            index: commit_index,
+        },
+    ] = record
+    else {
+        return false;
+    };
+    index == commit_index
+        && *index == guest_index
+        && old_rax != old_rbx
+        && write_rax == old_rbx
+        && write_rbx == old_rax
 }
 
 fn emit_prologue(encoder: &mut Encoder, pair_count: usize) -> Result<(), BlockEmitterError> {
@@ -2842,6 +2898,128 @@ mod tests {
                 },
             ],
         }
+    }
+
+    fn xchg_rax_rbx_program() -> Program {
+        Program {
+            guest_instructions: vec![GuestInstruction {
+                guest_rip: 0x1100,
+                next_rip: 0x1103,
+            }],
+            code_end: 0x1103,
+            operations: vec![
+                Operation::BeginInstruction { index: 0 },
+                Operation::ReadGpr {
+                    dst: TempId(0),
+                    register: GuestGpr(0),
+                    width: IntWidth::W64,
+                },
+                Operation::ReadGpr {
+                    dst: TempId(1),
+                    register: GuestGpr(3),
+                    width: IntWidth::W64,
+                },
+                Operation::WriteGpr {
+                    register: GuestGpr(0),
+                    src: TempId(1),
+                    width: IntWidth::W64,
+                },
+                Operation::WriteGpr {
+                    register: GuestGpr(3),
+                    src: TempId(0),
+                    width: IntWidth::W64,
+                },
+                Operation::CommitInstruction { index: 0 },
+                Operation::Exit {
+                    kind: ExitKind::BlockComplete,
+                    target_rip: 0x1103,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn dual_write_runtime_shape_is_limited_to_atomic_rax_rbx_exchange() {
+        let program = xchg_rax_rbx_program();
+        ir::verify(&program).unwrap();
+        validate_runtime_shape(&program, 6).unwrap();
+        let allocation = Allocation::build(
+            &program,
+            AllocatorConfig {
+                register_homes: 2,
+                reserved_prefix_bytes: MIN_RUNTIME_PREFIX_BYTES,
+            },
+            &[],
+        )
+        .unwrap();
+        assert_ne!(
+            allocation.location(TempId(0)).unwrap(),
+            allocation.location(TempId(1)).unwrap(),
+            "both pre-exchange values must keep distinct homes through their later writes"
+        );
+        let emitted = emit_runtime_block(&program, &allocation).unwrap();
+        assert_eq!(
+            emitted
+                .code()
+                .words()
+                .iter()
+                .filter(|word| **word == 0xD63F_0200)
+                .count(),
+            0,
+            "register exchange must not call a helper"
+        );
+        assert!(emitted.pc_map().ranges().iter().any(|range| {
+            range.phase == StatePhase::CommitInProgress
+                && range.snapshot == SnapshotAdmissibility::InadmissibleDuringCommit
+        }));
+        assert!(emitted.pc_map().ranges().iter().all(|range| {
+            range.phase != StatePhase::PendingEffects
+                || range.snapshot != SnapshotAdmissibility::CanonicalBoundary
+        }));
+
+        let terminal_index = program.operations.len() - 1;
+        let mut wrong_mapping = program.clone();
+        let Operation::WriteGpr { src, .. } = &mut wrong_mapping.operations[3] else {
+            unreachable!();
+        };
+        *src = TempId(0);
+        assert!(validate_runtime_shape(&wrong_mapping, terminal_index).is_err());
+
+        let mut write_before_second_read = program.clone();
+        write_before_second_read.operations.swap(2, 3);
+        assert!(validate_runtime_shape(&write_before_second_read, terminal_index).is_err());
+
+        let mut duplicate_destination = program.clone();
+        let Operation::WriteGpr { register, .. } = &mut duplicate_destination.operations[4] else {
+            unreachable!();
+        };
+        *register = GuestGpr(0);
+        assert!(validate_runtime_shape(&duplicate_destination, terminal_index).is_err());
+
+        let mut third_write = program.clone();
+        third_write.operations.insert(
+            5,
+            Operation::WriteGpr {
+                register: GuestGpr(2),
+                src: TempId(0),
+                width: IntWidth::W64,
+            },
+        );
+        assert!(validate_runtime_shape(&third_write, terminal_index + 1).is_err());
+
+        let mut mixed_arithmetic = program;
+        mixed_arithmetic.operations.insert(
+            3,
+            Operation::Integer {
+                kind: IntegerKind::Add,
+                lhs: TempId(0),
+                rhs: TempId(1),
+                result: Some(TempId(2)),
+                width: IntWidth::W64,
+                flags: FlagEffect::Arithmetic,
+            },
+        );
+        assert!(validate_runtime_shape(&mixed_arithmetic, terminal_index + 1).is_err());
     }
 
     #[test]

@@ -21,7 +21,9 @@ use crate::block_compile::{
     compile_block_for_native_lea_rax_rbx_demand_flags_candidate, compile_block_for_native_neg_rax,
     compile_block_for_native_neg_rax_demand_flags_candidate, compile_block_for_native_not_rax,
     compile_block_for_native_not_rax_demand_flags_candidate, compile_block_for_native_sub_rax_imm8,
-    compile_block_for_native_sub_rax_imm8_demand_flags_candidate, compile_block_for_nop_fallback,
+    compile_block_for_native_sub_rax_imm8_demand_flags_candidate,
+    compile_block_for_native_xchg_rax_rbx,
+    compile_block_for_native_xchg_rax_rbx_demand_flags_candidate, compile_block_for_nop_fallback,
     compile_block_for_nop_fallback_demand_flags_candidate, compile_block_for_nop_inc_rax_fallback,
     compile_block_for_nop_inc_rax_fallback_demand_flags_candidate, compile_prepared_dispatch_block,
 };
@@ -104,6 +106,7 @@ pub use crate::block::S0_09NopLeaRaxRbxAdmission as LeaRaxRbxInterpreterFallback
 pub use crate::block::S0_09NopNegRaxAdmission as NegRaxInterpreterFallbackAdmission;
 pub use crate::block::S0_09NopNotRaxAdmission as NotRaxInterpreterFallbackAdmission;
 pub use crate::block::S0_09NopSubRaxImm8Admission as SubRaxImm8InterpreterFallbackAdmission;
+pub use crate::block::S0_09NopXchgRaxRbxAdmission as XchgRaxRbxInterpreterFallbackAdmission;
 
 /// One cooperative control context is shared for the full dispatch invocation.
 /// STOP fields are forwarded to generated guards; an event request is sampled
@@ -1778,6 +1781,46 @@ pub fn run_with_native_lea_rax_rbx_demand_flags_candidate<E: ControlledBlockExec
     )
 }
 
+/// Opt-in uncached dispatcher for exact native `XCHG RAX,RBX`.
+pub fn run_with_native_xchg_rax_rbx<E: ControlledBlockExecutor>(
+    code: CodeView<'_>,
+    admission: &XchgRaxRbxInterpreterFallbackAdmission,
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    executor: &mut E,
+) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
+    run_with_nop_fallback_strategy(
+        code,
+        FallbackAdmission::NopXchgRaxRbx(admission),
+        state,
+        total_budget,
+        control,
+        executor,
+        NopFallbackCompilation::NativeXchgRaxRbx,
+    )
+}
+
+/// Demand-flags candidate for exact native `XCHG RAX,RBX`; flags are preserved.
+pub fn run_with_native_xchg_rax_rbx_demand_flags_candidate<E: ControlledBlockExecutor>(
+    code: CodeView<'_>,
+    admission: &XchgRaxRbxInterpreterFallbackAdmission,
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    executor: &mut E,
+) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
+    run_with_nop_fallback_strategy(
+        code,
+        FallbackAdmission::NopXchgRaxRbx(admission),
+        state,
+        total_budget,
+        control,
+        executor,
+        NopFallbackCompilation::NativeXchgRaxRbxDemandFlagsCandidate,
+    )
+}
+
 /// Opt-in uncached dispatcher for exact native `ADD RAX, sign-extended imm8`.
 pub fn run_with_native_add_rax_imm8<E: ControlledBlockExecutor>(
     code: CodeView<'_>,
@@ -1912,6 +1955,8 @@ enum NopFallbackCompilation {
     NativeNotRaxDemandFlagsCandidate,
     NativeLeaRaxRbx,
     NativeLeaRaxRbxDemandFlagsCandidate,
+    NativeXchgRaxRbx,
+    NativeXchgRaxRbxDemandFlagsCandidate,
     NativeAddRaxImm8,
     NativeAddRaxImm8DemandFlagsCandidate,
     NativeCmpRaxImm8,
@@ -1928,6 +1973,7 @@ enum FallbackAdmission<'a> {
     NopNegRax(&'a NegRaxInterpreterFallbackAdmission),
     NopNotRax(&'a NotRaxInterpreterFallbackAdmission),
     NopLeaRaxRbx(&'a LeaRaxRbxInterpreterFallbackAdmission),
+    NopXchgRaxRbx(&'a XchgRaxRbxInterpreterFallbackAdmission),
     NopAddRaxImm8(&'a AddRaxImm8InterpreterFallbackAdmission),
     NopCmpRaxImm8(&'a CmpRaxImm8InterpreterFallbackAdmission),
     NopSubRaxImm8(&'a SubRaxImm8InterpreterFallbackAdmission),
@@ -1942,6 +1988,7 @@ impl FallbackAdmission<'_> {
             Self::NopNegRax(admission) => admission.matches_code(code),
             Self::NopNotRax(admission) => admission.matches_code(code),
             Self::NopLeaRaxRbx(admission) => admission.matches_code(code),
+            Self::NopXchgRaxRbx(admission) => admission.matches_code(code),
             Self::NopAddRaxImm8(admission) => admission.matches_code(code),
             Self::NopCmpRaxImm8(admission) => admission.matches_code(code),
             Self::NopSubRaxImm8(admission) => admission.matches_code(code),
@@ -1955,6 +2002,7 @@ impl FallbackAdmission<'_> {
             Self::NopNegRax(admission) => admission.contains(rip),
             Self::NopNotRax(admission) => admission.contains(rip),
             Self::NopLeaRaxRbx(admission) => admission.contains(rip),
+            Self::NopXchgRaxRbx(admission) => admission.contains(rip),
             Self::NopAddRaxImm8(admission) => admission.contains(rip),
             Self::NopCmpRaxImm8(admission) => admission.contains(rip),
             Self::NopSubRaxImm8(admission) => admission.contains(rip),
@@ -1968,6 +2016,7 @@ impl FallbackAdmission<'_> {
             Self::NopNegRax(admission) => admission.admits_nop(rip),
             Self::NopNotRax(admission) => admission.admits_nop(rip),
             Self::NopLeaRaxRbx(admission) => admission.admits_nop(rip),
+            Self::NopXchgRaxRbx(admission) => admission.admits_nop(rip),
             Self::NopAddRaxImm8(admission) => admission.admits_nop(rip),
             Self::NopCmpRaxImm8(admission) => admission.admits_nop(rip),
             Self::NopSubRaxImm8(admission) => admission.admits_nop(rip),
@@ -1980,6 +2029,7 @@ impl FallbackAdmission<'_> {
             | Self::NopNegRax(_)
             | Self::NopNotRax(_)
             | Self::NopLeaRaxRbx(_)
+            | Self::NopXchgRaxRbx(_)
             | Self::NopAddRaxImm8(_)
             | Self::NopCmpRaxImm8(_) => false,
             Self::NopSubRaxImm8(_) => false,
@@ -1993,6 +2043,7 @@ impl FallbackAdmission<'_> {
             | Self::NopNegRax(_)
             | Self::NopNotRax(_)
             | Self::NopLeaRaxRbx(_)
+            | Self::NopXchgRaxRbx(_)
             | Self::NopAddRaxImm8(_)
             | Self::NopCmpRaxImm8(_) => false,
             Self::NopSubRaxImm8(_) => false,
@@ -2014,6 +2065,12 @@ impl FallbackAdmission<'_> {
     fn admits_lea_rax_rbx(self, rip: u64) -> bool {
         match self {
             Self::NopLeaRaxRbx(admission) => admission.admits_lea_rax_rbx(rip),
+            _ => false,
+        }
+    }
+    fn admits_xchg_rax_rbx(self, rip: u64) -> bool {
+        match self {
+            Self::NopXchgRaxRbx(admission) => admission.admits_xchg_rax_rbx(rip),
             _ => false,
         }
     }
@@ -2169,6 +2226,24 @@ fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
                 ),
                 (FallbackAdmission::NopLeaRaxRbx(_), _) => {
                     unreachable!("native LEA RAX,RBX requires its dedicated compiler")
+                }
+                (FallbackAdmission::NopXchgRaxRbx(_), NopFallbackCompilation::Eager)
+                | (
+                    FallbackAdmission::NopXchgRaxRbx(_),
+                    NopFallbackCompilation::DemandFlagsCandidate,
+                ) => unreachable!("XCHG admission is native-only"),
+                (
+                    FallbackAdmission::NopXchgRaxRbx(admission),
+                    NopFallbackCompilation::NativeXchgRaxRbx,
+                ) => compile_block_for_native_xchg_rax_rbx(code, state.rip, admission),
+                (
+                    FallbackAdmission::NopXchgRaxRbx(admission),
+                    NopFallbackCompilation::NativeXchgRaxRbxDemandFlagsCandidate,
+                ) => compile_block_for_native_xchg_rax_rbx_demand_flags_candidate(
+                    code, state.rip, admission,
+                ),
+                (FallbackAdmission::NopXchgRaxRbx(_), _) => {
+                    unreachable!("native XCHG RAX,RBX requires its dedicated compiler")
                 }
                 (FallbackAdmission::NopAddRaxImm8(_), NopFallbackCompilation::Eager)
                 | (
@@ -2342,6 +2417,7 @@ fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
                     || admission.admits_neg_rax(rip)
                     || admission.admits_not_rax(rip)
                     || admission.admits_lea_rax_rbx(rip)
+                    || admission.admits_xchg_rax_rbx(rip)
                     || admission.admits_add_rax_imm8(rip)
                     || admission.admits_cmp_rax_imm8(rip)
                     || admission.admits_sub_rax_imm8(rip))

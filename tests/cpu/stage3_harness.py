@@ -250,6 +250,22 @@ ADDITIONAL_TEST_GATES = (
         "s3_33h_native_lea_rax_rbx_host", "local_acceptance", "od-host",
         "tests::native_lea_rax_rbx_copies_unmapped_addresses_without_data_access",
     ),
+    (
+        "s3_33i_native_xchg_rax_rbx_admission", "local_acceptance", "od-jit",
+        "block::tests::xchg_rax_rbx_admission_is_exact_and_separate_from_other_profiles",
+    ),
+    (
+        "s3_33i_native_xchg_rax_rbx_emitter", "local_acceptance", "od-jit",
+        "block_emitter::tests::dual_write_runtime_shape_is_limited_to_atomic_rax_rbx_exchange",
+    ),
+    (
+        "s3_33i_native_xchg_rax_rbx_compiler", "local_acceptance", "od-jit",
+        "block_compile::tests::native_xchg_rax_rbx_compiles_with_atomic_pending_statepoints",
+    ),
+    (
+        "s3_33i_native_xchg_rax_rbx_host", "local_acceptance", "od-host",
+        "tests::native_xchg_rax_rbx_matches_interpreter_and_preserves_flags",
+    ),
 )
 RUST_TEST_GATES = (
     *(

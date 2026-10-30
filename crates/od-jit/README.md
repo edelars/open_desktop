@@ -249,6 +249,21 @@ demand-flags candidate compile/dispatch APIs remain uncached and opt-in. Mini
 and performance checks remain deferred until the end of Stage 3. See
 [S3-33h report](../../docs/reports/STAGE_3_S3-33h_2026-10-30.md).
 
+S3-33i adds a separate uncached opt-in profile for the exact bare bytes
+`48 87 D8` (`XCHG RAX,RBX`). Admission checks both the decoded W64 register
+pair and all three source bytes; equivalent ModRM/short-register forms, self
+exchange, other registers or widths, memory operands, LOCK/other prefixes,
+truncation, and branch targets inside the instruction are rejected. Lowering
+reads both old values before writing either destination, then writes
+`RAX <- old RBX` and `RBX <- old RAX` under one commit. The emitter admits only
+this exact ordered dual-write IR shape and keeps intermediate PC-map snapshots
+replay-only or inadmissible, so the guest cannot observe a half exchange. No
+flags/helper effect is introduced; full RFLAGS/definedness and pending writer
+descriptor/operands are preserved. Eager and demand-flags candidate APIs remain
+separate and uncached. This proves register exchange only; it makes no memory
+atomicity claim. Mini and performance checks remain deferred until Stage 3
+ends. See [S3-33i report](../../docs/reports/STAGE_3_S3-33i_2026-10-30.md).
+
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).
 Проверки корректности и измерений по задачам этапа — в

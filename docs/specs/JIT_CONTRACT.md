@@ -1531,6 +1531,24 @@ retirement accounting remains shared with native execution. Mini and
 performance checks remain deferred until Stage 3 ends. See the
 [S3-33h report](../reports/STAGE_3_S3-33h_2026-10-30.md).
 
+### S3-33i: opt-in exact native XCHG RAX,RBX
+
+Separate `compile_block_for_native_xchg_rax_rbx*` and
+`dispatch::run_with_native_xchg_rax_rbx*` entry points use an uncached profile
+for exact bare bytes `48 87 D8` only. Admission also requires the decoded W64
+register exchange RAX/RBX; reject equivalent `48 87 C3`/`48 93`, self-exchange,
+other register pairs or widths, memory forms, LOCK/other prefixes, truncation,
+and branches into the instruction. Lowering reads old RAX and RBX before either
+write, writes RAX from old RBX and RBX from old RAX, then commits once. The
+runtime emitter permits two writes only for this exact ordered IR window, with
+two distinct temporaries and no mixed operation or third write. Intermediate
+statepoints must replay the XCHG or be inadmissible; no canonical snapshot may
+publish one exchanged register. XCHG has no flags/helper effect and preserves
+full flags/definedness and pending-writer descriptor/operands. This is register
+semantics only and makes no memory-atomicity claim. Eager and demand-flags
+candidate APIs are separate and uncached. Mini and performance remain deferred
+until Stage 3 ends. See [S3-33i report](../reports/STAGE_3_S3-33i_2026-10-30.md).
+
 ### S3-29d: uncached arithmetic-to-checked-load handoff
 
 The bounded host fixture composes existing eager and demand-flags native

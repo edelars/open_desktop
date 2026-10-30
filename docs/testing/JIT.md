@@ -177,6 +177,32 @@ and terminal execution. Mini and performance checks remain
 deferred until the end of Stage 3. See the
 [S3-33h report](../reports/STAGE_3_S3-33h_2026-10-30.md).
 
+## S3-33i: exact native XCHG RAX,RBX
+
+Run the admission, emitter, compiler, and host parity gates from
+`python3 tests/cpu/stage3_harness.py --suite local`. Admit only bare `48 87 D8`
+with decoded W64 RAX/RBX operands. Reject `48 87 C3`, `48 93`, self-exchange,
+other registers/widths, memory, LOCK and other prefixes, truncation, and branch
+targets inside the instruction. The lowering and emitter checks require both
+old register reads before either write, exact swapped destinations, one commit,
+two distinct live temporaries, and rejection of wrong mapping, read-after-write,
+duplicate/third destinations, and mixed operations. PC-map ranges during
+staging writes must be replay-only or inadmissible, never canonical; the guest
+retires the exchange once.
+
+Host differential cases compare full state and retirement for equal/unequal
+register pairs, zero, `u64::MAX`, signed extrema and alternating patterns,
+including all other GPRs, full flags/definedness, two exchanges restoring the
+initial state, and eager/candidate execution. Pending CMP → XCHG → JZ followed
+by a SUB checks that prior flags still select the branch and later arithmetic
+uses swapped registers. Include terminal execution, STOP/budget boundaries and
+admitted interpreter fallback. The native/interpreter evidence is local and
+specific to these exact bytes; the S2-10 reviewed physical fixture confirms
+XCHG semantics but does not establish exact physical bytes `48 87 D8`. This
+register operation makes no memory-atomicity claim. Mini/performance checks
+remain deferred until the end of Stage 3. See the
+[S3-33i report](../reports/STAGE_3_S3-33i_2026-10-30.md).
+
 ## Срез A: один register-only блок
 
 1. Использовать только точные S0-09 формы из JIT contract и fixtures с
@@ -445,6 +471,16 @@ gates extend the S3-34i set to 22 exact gate identities across S3-33a–h; the
 local run and any unselected suites are documented in the
 [S3-34j report](../reports/STAGE_3_S3-34j_2026-10-30.md). This does not close
 S3-34 or Stage 3.
+
+### S3-34k exact gates for S3-33i XCHG RAX,RBX
+
+Four mandatory exact acceptance gates pin XCHG admission, dual-write emitter
+validation, compiler/statepoint behavior, and host parity. The manifest,
+planned steps, and final local summary contain each identity exactly once;
+self-checks pin the crate and test identity, reject a missing gate and forged
+or incomplete passing evidence, and retain the prior 22 exact gates for S3-33a–h.
+The resulting set has 26 gates across S3-33a–i. See the
+[S3-33i report](../reports/STAGE_3_S3-33i_2026-10-30.md).
 
 Каждая новая строка support matrix получает literal positive/negative cases,
 точный сравниваемый state и внешний prerequisite. В отчёте сохранять git

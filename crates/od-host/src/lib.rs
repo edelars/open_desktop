@@ -71089,4 +71089,302 @@ mod tests {
             assert_eq!(state.rip, BASE + 8);
         }
     }
+
+    #[test]
+    fn native_xchg_rax_rbx_matches_interpreter_and_preserves_flags() {
+        let _guard = jit_test_lock();
+        use od_isa::memory::{AccessKind, GuestMemory};
+
+        struct CodeOnly<'a> {
+            base: u64,
+            bytes: &'a [u8],
+        }
+        impl GuestMemory for CodeOnly<'_> {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                address
+                    .checked_sub(self.base)
+                    .and_then(|offset| self.bytes.get(offset as usize))
+                    .copied()
+                    .ok_or(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Fetch,
+                    })
+            }
+            fn read(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: &[u8],
+            ) -> Result<(), MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+
+        fn interpret_all(code: &[u8], base: u64, state: &mut od_isa::LongModeState) {
+            let mut memory = CodeOnly { base, bytes: code };
+            let mut steps = 0;
+            while state.rip < base + code.len() as u64 && steps < 8 {
+                assert!(matches!(
+                    od_isa::execute::step(state, &mut memory, AccessContext::default()).unwrap(),
+                    od_isa::execute::StepOutcome::Advanced | od_isa::execute::StepOutcome::Branched
+                ));
+                steps += 1;
+            }
+            assert!(steps < 8, "interpreter did not reach code end");
+        }
+
+        let base = 0xC100;
+        let stop = AtomicU8::new(0);
+        let control = od_jit::dispatch::DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let flag_patterns = [0x202, 0x202 | 0x8d5, 0x202 | 0x155 | (1 << 10) | (1 << 21)];
+        let pairs = [
+            (0, 0),
+            (0, u64::MAX),
+            (u64::MAX, 0),
+            (i64::MIN as u64, i64::MAX as u64),
+            (0x5555_aaaa_5555_aaaa, 0xaaaa_5555_aaaa_5555),
+            (0xdead_beef_cafe_babe, 0x0123_4567_89ab_cdef),
+        ];
+
+        for (rax, rbx) in pairs {
+            for flags in flag_patterns {
+                let code = [0x48, 0x87, 0xd8];
+                let view = CodeView::new(base, &code).unwrap();
+                let admission =
+                    od_jit::dispatch::XchgRaxRbxInterpreterFallbackAdmission::from_code(view)
+                        .unwrap();
+                let mut initial = od_isa::LongModeState::default();
+                initial.rip = base;
+                initial.rflags = flags;
+                for (register, value) in initial.gpr.iter_mut().enumerate() {
+                    *value = 0xfeed_0000_0000_0000 | register as u64;
+                }
+                initial.gpr[0] = rax;
+                initial.gpr[3] = rbx;
+                let mut expected = initial.clone();
+                interpret_all(&code, base, &mut expected);
+                assert_eq!(expected.gpr[0], rbx);
+                assert_eq!(expected.gpr[3], rax);
+                assert_eq!(expected.rflags, initial.rflags);
+                for candidate in [false, true] {
+                    let mut actual = initial.clone();
+                    let outcome = if candidate {
+                        od_jit::dispatch::run_with_native_xchg_rax_rbx_demand_flags_candidate(
+                            view,
+                            &admission,
+                            &mut actual,
+                            1,
+                            control,
+                            &mut PublishedBlockExecutor,
+                        )
+                    } else {
+                        od_jit::dispatch::run_with_native_xchg_rax_rbx(
+                            view,
+                            &admission,
+                            &mut actual,
+                            1,
+                            control,
+                            &mut PublishedBlockExecutor,
+                        )
+                    }
+                    .unwrap();
+                    assert_eq!(actual, expected);
+                    assert_eq!(outcome.retired_native, 1);
+                    assert_eq!(outcome.retired_interpreter, 0);
+                }
+            }
+        }
+
+        // The intervening exchange must leave CMP's pending flags intact for
+        // JZ; on the non-equal path SUB distinguishes the swapped registers.
+        let pending = [
+            0x48, 0x3b, 0xca, // CMP RCX,RDX
+            0x48, 0x87, 0xd8, // XCHG RAX,RBX
+            0x74, 0x03, // JZ past ADD
+            0x48, 0x2b, 0xc3, // SUB RAX,RBX
+        ];
+        let view = CodeView::new(base, &pending).unwrap();
+        let admission =
+            od_jit::dispatch::XchgRaxRbxInterpreterFallbackAdmission::from_code(view).unwrap();
+        for (rcx, rdx) in [(9, 9), (9, 10)] {
+            let mut initial = od_isa::LongModeState::default();
+            initial.rip = base;
+            initial.rflags = 0x202 | 0x8d5 | (1 << 10) | (1 << 21);
+            initial.gpr[0] = 0x1111;
+            initial.gpr[1] = rcx;
+            initial.gpr[2] = rdx;
+            initial.gpr[3] = 0x2222;
+            let mut expected = initial.clone();
+            interpret_all(&pending, base, &mut expected);
+            for candidate in [false, true] {
+                let mut actual = initial.clone();
+                let outcome = if candidate {
+                    od_jit::dispatch::run_with_native_xchg_rax_rbx_demand_flags_candidate(
+                        view,
+                        &admission,
+                        &mut actual,
+                        4,
+                        control,
+                        &mut PublishedBlockExecutor,
+                    )
+                } else {
+                    od_jit::dispatch::run_with_native_xchg_rax_rbx(
+                        view,
+                        &admission,
+                        &mut actual,
+                        4,
+                        control,
+                        &mut PublishedBlockExecutor,
+                    )
+                }
+                .unwrap();
+                assert_eq!(actual, expected);
+                assert_eq!(outcome.retired_native, if rcx == rdx { 3 } else { 4 });
+            }
+        }
+
+        let stopped = AtomicU8::new(1);
+        let stop_control = od_jit::dispatch::DispatchControl {
+            stop_rip: None,
+            stop_requested: &stopped,
+            event_requested: None,
+        };
+        let terminal = [0x48, 0x87, 0xd8];
+        let terminal_view = CodeView::new(base, &terminal).unwrap();
+        let terminal_admission =
+            od_jit::dispatch::XchgRaxRbxInterpreterFallbackAdmission::from_code(terminal_view)
+                .unwrap();
+        let mut before = od_isa::LongModeState::default();
+        before.rip = base;
+        before.gpr[0] = 11;
+        before.gpr[3] = 22;
+        let mut unchanged = before.clone();
+        let zero_budget = od_jit::dispatch::run_with_native_xchg_rax_rbx(
+            terminal_view,
+            &terminal_admission,
+            &mut unchanged,
+            0,
+            control,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        assert_eq!(unchanged, before);
+        assert_eq!(zero_budget.retired_native, 0);
+        let stopped_result = od_jit::dispatch::run_with_native_xchg_rax_rbx(
+            terminal_view,
+            &terminal_admission,
+            &mut unchanged,
+            1,
+            stop_control,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        assert_eq!(unchanged, before);
+        assert_eq!(stopped_result.retired_native, 0);
+
+        let fallback = [0x48, 0x87, 0xd8, 0x90];
+        let fallback_view = CodeView::new(base, &fallback).unwrap();
+        let fallback_admission =
+            od_jit::dispatch::XchgRaxRbxInterpreterFallbackAdmission::from_code(fallback_view)
+                .unwrap();
+        let mut fallback_initial = before.clone();
+        fallback_initial.rip = base;
+        let mut fallback_expected = fallback_initial.clone();
+        interpret_all(&fallback, base, &mut fallback_expected);
+        let mut fallback_actual = fallback_initial;
+        let fallback_result = od_jit::dispatch::run_with_native_xchg_rax_rbx(
+            fallback_view,
+            &fallback_admission,
+            &mut fallback_actual,
+            2,
+            control,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        assert_eq!(fallback_actual, fallback_expected);
+        assert_eq!(fallback_result.retired_native, 1);
+        assert_eq!(fallback_result.retired_interpreter, 1);
+
+        let double = [0x48, 0x87, 0xd8, 0x48, 0x87, 0xd8];
+        let view = CodeView::new(base, &double).unwrap();
+        let admission =
+            od_jit::dispatch::XchgRaxRbxInterpreterFallbackAdmission::from_code(view).unwrap();
+        let mut initial = od_isa::LongModeState::default();
+        initial.rip = base;
+        initial.rflags = 0x202 | 0x8d5 | (1 << 10) | (1 << 21);
+        initial.gpr[0] = 0x1234_5678_9abc_def0;
+        initial.gpr[3] = 0xfedc_ba98_7654_3210;
+        let mut actual = initial.clone();
+        let outcome = od_jit::dispatch::run_with_native_xchg_rax_rbx(
+            view,
+            &admission,
+            &mut actual,
+            2,
+            control,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        let mut expected = initial;
+        expected.rip = base + double.len() as u64;
+        assert_eq!(actual, expected);
+        assert_eq!(outcome.retired_native, 2);
+    }
 }
