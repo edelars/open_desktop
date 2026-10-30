@@ -25314,6 +25314,308 @@ fn cvttsd2si_register_profile_truncates_raw_binary64_across_512_forms() {
 }
 
 #[test]
+fn mulsd_register_profile_covers_pairs_scalar_boundaries_and_atomic_exceptions() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_37at_mulsd_xmm0_xmm1.case.json");
+    let bytes = fs::read(path).unwrap();
+    let (base, _) = run(&bytes, "interpreter", 0);
+    let encode = |raw: u64| {
+        raw.to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let decode_low = |raw: &str| {
+        u64::from_le_bytes(
+            (0..16)
+                .step_by(2)
+                .map(|offset| u8::from_str_radix(&raw[offset..offset + 2], 16).unwrap())
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        )
+    };
+    let set_low = |fixture: &mut od_testkit::v2::Fixture, index: usize, raw: u64| {
+        fixture.initial_state.sse.as_mut().unwrap().xmm[index].replace_range(0..16, &encode(raw));
+    };
+    let execute = |fixture: od_testkit::v2::Fixture| {
+        let raw = serde_json::to_vec(&fixture).unwrap();
+        let (loaded, result) = run(&raw, "interpreter", 0);
+        od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+        result
+    };
+
+    // Exhaust every XMM pair including aliases. Upper halves contain poisoned
+    // values and must remain exactly the original destination bytes.
+    for destination in 0u8..16 {
+        for source in 0u8..16 {
+            let mut fixture = base.fixture.clone();
+            let rex = 0x40 | ((destination >> 1) & 4) | (source >> 3);
+            let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+            let mut encoding = vec![0xf2];
+            if destination >= 8 || source >= 8 {
+                encoding.push(rex);
+            }
+            encoding.extend([0x0f, 0x59, modrm]);
+            let code = &mut fixture.memory[0];
+            code.initial_bytes_hex = encoding.iter().map(|b| format!("{b:02x}")).collect();
+            code.comparison_mask_hex = "ff".repeat(encoding.len());
+            code.length = encoding.len() as u32;
+            fixture.stop_rip = Some(HexU64(
+                fixture.initial_state.rip.get() + encoding.len() as u64,
+            ));
+            for register in 0..16 {
+                let low = 0x3ff0_0000_0000_0000u64 + register as u64;
+                set_low(&mut fixture, register, low);
+                fixture.initial_state.sse.as_mut().unwrap().xmm[register]
+                    .replace_range(16..32, &encode(0x7ff0_0000_0000_0001));
+            }
+            fixture.case_id = format!("s2_37at_pair_d{destination}_s{source}");
+            let before_high = fixture.initial_state.sse.as_ref().unwrap().xmm
+                [usize::from(destination)][16..]
+                .to_owned();
+            let result = execute(fixture);
+            let output = snapshot(&result).state.sse.as_ref().unwrap();
+            assert_eq!(output.xmm[usize::from(destination)][16..], before_high);
+        }
+    }
+
+    // WPR tininess midpoint and adjacent case distinguish precision-rounded
+    // tininess from exact-product or final-encoding classification.
+    for (lhs, rhs, expected, status, flushed) in [
+        (
+            0x0010_0000_0000_0000,
+            0x3fef_ffff_ffff_ffff,
+            [
+                0x0010_0000_0000_0000,
+                0x000f_ffff_ffff_ffff,
+                0x0010_0000_0000_0000,
+                0x000f_ffff_ffff_ffff,
+            ],
+            [0x30, 0x30, 0x30, 0x30],
+            [0, 0, 0, 0],
+        ),
+        (
+            0x0010_0000_0000_0001,
+            0x3fef_ffff_ffff_fffe,
+            [
+                0x0010_0000_0000_0000,
+                0x000f_ffff_ffff_ffff,
+                0x0010_0000_0000_0000,
+                0x000f_ffff_ffff_ffff,
+            ],
+            [0x20, 0x30, 0x20, 0x30],
+            [0x0010_0000_0000_0000, 0, 0x0010_0000_0000_0000, 0],
+        ),
+    ] {
+        for rc in 0u32..4 {
+            for ftz in [false, true] {
+                let mut fixture = base.fixture.clone();
+                set_low(&mut fixture, 0, lhs);
+                set_low(&mut fixture, 1, rhs);
+                fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(u64::from(
+                    0x1f80 | (rc << 13) | if ftz { 1 << 15 } else { 0 },
+                ));
+                fixture.case_id = format!("s2_37at_wpr_{lhs:016x}_rc{rc}_ftz{ftz}");
+                let result = execute(fixture);
+                let sse = snapshot(&result).state.sse.as_ref().unwrap();
+                let want = if ftz {
+                    flushed[rc as usize]
+                } else {
+                    expected[rc as usize]
+                };
+                assert_eq!(
+                    decode_low(&sse.xmm[0]),
+                    want,
+                    "lhs={lhs:#x} rc={rc} ftz={ftz}"
+                );
+                assert_eq!(sse.mxcsr.get() & 0x30, status[rc as usize]);
+            }
+        }
+    }
+
+    // Production halfway vector distinguishes all four MXCSR rounding modes.
+    for (rc, expected) in [
+        (0u32, 0x3ff8_0000_0000_0002),
+        (1, 0x3ff8_0000_0000_0001),
+        (2, 0x3ff8_0000_0000_0002),
+        (3, 0x3ff8_0000_0000_0001),
+    ] {
+        let mut fixture = base.fixture.clone();
+        set_low(&mut fixture, 0, 0x3ff0_0000_0000_0001);
+        set_low(&mut fixture, 1, 0x3ff8_0000_0000_0000);
+        fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(u64::from(0x1f80 | (rc << 13)));
+        fixture.case_id = format!("s2_37at_halfway_rc{rc}");
+        let result = execute(fixture);
+        let sse = snapshot(&result).state.sse.as_ref().unwrap();
+        assert_eq!(decode_low(&sse.xmm[0]), expected, "rc={rc}");
+        assert_eq!(sse.mxcsr.get() & 0x3f, 0x20);
+    }
+
+    // Overflow direction follows RC and result sign while masked overflow
+    // consistently commits OE|PE in this bounded OM=UM=1 profile.
+    for (sign, expected) in [
+        (
+            0u64,
+            [
+                0x7ff0_0000_0000_0000,
+                0x7fef_ffff_ffff_ffff,
+                0x7ff0_0000_0000_0000,
+                0x7fef_ffff_ffff_ffff,
+            ],
+        ),
+        (
+            1u64 << 63,
+            [
+                0xfff0_0000_0000_0000,
+                0xfff0_0000_0000_0000,
+                0xffef_ffff_ffff_ffff,
+                0xffef_ffff_ffff_ffff,
+            ],
+        ),
+    ] {
+        for rc in 0u32..4 {
+            let mut fixture = base.fixture.clone();
+            set_low(&mut fixture, 0, sign | 0x7fef_ffff_ffff_ffff);
+            set_low(&mut fixture, 1, 0x4000_0000_0000_0000);
+            fixture.initial_state.sse.as_mut().unwrap().mxcsr =
+                HexU64(u64::from(0x1f80 | (rc << 13)));
+            fixture.case_id = format!("s2_37at_overflow_sign{sign:x}_rc{rc}");
+            let result = execute(fixture);
+            let sse = snapshot(&result).state.sse.as_ref().unwrap();
+            assert_eq!(
+                decode_low(&sse.xmm[0]),
+                expected[rc as usize],
+                "sign={sign:#x} rc={rc}"
+            );
+            assert_eq!(sse.mxcsr.get() & 0x3f, 0x28);
+        }
+    }
+
+    let mut no_osxmmexcpt = base.fixture.clone();
+    set_low(&mut no_osxmmexcpt, 0, 0x3ff0_0000_0000_0001);
+    set_low(&mut no_osxmmexcpt, 1, 0x3ff8_0000_0000_0000);
+    no_osxmmexcpt.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x0f80);
+    no_osxmmexcpt
+        .mulsd_controls
+        .as_mut()
+        .unwrap()
+        .cr4_osxmmexcpt = false;
+    no_osxmmexcpt.expected_exit = od_testkit::v2::ExpectedExit::Exception;
+    no_osxmmexcpt.case_id = "s2_37at_unmasked_pm_simd_ud".into();
+    let result = execute(no_osxmmexcpt);
+    assert!(matches!(
+        snapshot(&result).exception,
+        Observation::Available { value: Some(ref exception) } if exception.vector == 6
+    ));
+
+    let (loaded, mut tampered) = run(&bytes, "interpreter", 0);
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(16..18, "00");
+    }
+    assert!(tampered.validate_for(&loaded).is_err());
+
+    // Pre-existing sticky flags do not cause a fault when their masks are clear.
+    let mut sticky = base.fixture.clone();
+    sticky.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f01);
+    sticky.case_id = "s2_37at_old_sticky_masked".into();
+    let result = execute(sticky);
+    assert_eq!(
+        snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+        1
+    );
+
+    // NaN source ordering, signaling quieting, invalid product, and denormal
+    // exception priority are checked by the independent scalar oracle.
+    for (lhs, rhs, expected_exit, mxcsr, flags) in [
+        (
+            0x7ff8_0000_0000_0123,
+            0x7ff0_0000_0000_0456,
+            "stop_address",
+            0x1f80,
+            1,
+        ),
+        (
+            0x3ff0_0000_0000_0000,
+            0x7ff0_0000_0000_0456,
+            "stop_address",
+            0x1f80,
+            1,
+        ),
+        (0, 0x7ff0_0000_0000_0000, "stop_address", 0x1f80, 1),
+        (
+            0x7ff0_0000_0000_0000,
+            0x0000_0000_0000_0001,
+            "stop_address",
+            0x1f80,
+            2,
+        ),
+        (0, 0x0000_0000_0000_0001, "stop_address", 0x1f80, 2),
+        (
+            0x7ff8_0000_0000_0000,
+            0x0000_0000_0000_0001,
+            "stop_address",
+            0x1f80,
+            0,
+        ),
+        (
+            0x7ff8_0000_0000_0000,
+            0x7ff0_0000_0000_0001,
+            "stop_address",
+            0x1f80,
+            1,
+        ),
+        (
+            0x7ff0_0000_0000_0001,
+            0x4000_0000_0000_0000,
+            "exception",
+            0x1f00,
+            1,
+        ),
+        (
+            0x0000_0000_0000_0001,
+            0x4000_0000_0000_0000,
+            "exception",
+            0x1e80,
+            2,
+        ),
+        (
+            0x0000_0000_0000_0001,
+            0x3fe0_0000_0000_0000,
+            "exception",
+            0x1e80,
+            2,
+        ),
+        (
+            0x3ff0_0000_0000_0001,
+            0x3ff8_0000_0000_0000,
+            "exception",
+            0x0f80,
+            0x20,
+        ),
+    ] {
+        let mut fixture = base.fixture.clone();
+        set_low(&mut fixture, 0, lhs);
+        set_low(&mut fixture, 1, rhs);
+        fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        fixture.expected_exit = if expected_exit == "exception" {
+            od_testkit::v2::ExpectedExit::Exception
+        } else {
+            od_testkit::v2::ExpectedExit::StopAddress
+        };
+        fixture.case_id = format!("s2_37at_special_{lhs:016x}_{rhs:016x}_{mxcsr:x}");
+        let result = execute(fixture);
+        let sse = snapshot(&result).state.sse.as_ref().unwrap();
+        assert_eq!(sse.mxcsr.get() & 0x3f, flags);
+    }
+
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(&bytes, backend, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+    }
+}
+
+#[test]
 fn mulpd_literal_pair_rounding_and_backend_denial() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/x86/stage2/s2_37ar_mulpd_xmm0_xmm1.case.json");

@@ -18657,3 +18657,44 @@ unmasked overflow/underflow behavior and parent S2-37/S2-38 remain open. See
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37as--bounded-masked-range-long64-mulps-xmm-register-pairs),
 [plan](../plans/STAGE_2.md#s2-37as--bounded-masked-range-long64-mulps-xmm-register-pairs), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37as-bounded-masked-range-mulps-register-pair-profile).
+
+## S2-37at — MULSD register-pair interpreter profile
+
+Implemented strict schema-v2 interpreter-only profile `s2-long-mulsd-registers-v1`
+for canonical Long64 `F2 0F 59 /r`, all 256 XMM register pairs. Runtime snapshots
+both XMM inputs, multiplies only the low64 values with the production raw
+binary64 helper, preserves destination.high64 and ignores source.high64. The
+independent schema oracle uses its own raw-u64 integer implementation through a
+scalar lane wrapper; it does not use host FP, production arithmetic helpers, or
+a synthetic second packed lane. Tininess and FTZ use
+`tiny_after_precision_rounding` (the precision-rounded unbounded exponent), not
+the exact product or final encoded exponent. Schema/runtime enforce OM=UM=1,
+DAZ=0 and reserved-bit rejection; all RC settings, FTZ, IM/DM/PM and prior
+sticky flags are accepted. Pre-event and post-PM faults preserve the full XMM,
+RIP and retirement count, while committing the required status flags.
+
+Focused tests cover all decoder forms and aliases, strict malformed encodings,
+all 256 XMM pairs, high-half poison/preservation, both min-normal WPR boundaries
+across every RC×FTZ setting, production halfway rounding, signed overflow
+across all RC modes, NaN/SNaN selection and quieting, zero×infinity,
+zero/infinity×subnormal DE, QNaN DE suppression, old sticky flags, unmasked IE,
+DE and PM, #XM/#UD delivery, full fetch, gates at CPL0–3, no data callbacks and
+JIT/native denial. The literal fixture checks exact low64 multiplication and
+upper-half preservation.
+
+Checks passed:
+
+- `cargo test -p od-isa mulsd --offline -- --nocapture` — 3 passed
+- `cargo test -p od-runner --test fixture_v2 mul --offline` — 10 passed, covering MULSD, MULPD and MULPS
+- `cargo test -p od-runner --test fixture_v2 sub --offline` — 35 passed, including SUBPD/SUBPS/SUBSD/SUBSS
+- `cargo test -p od-testkit --offline` — 434 passed
+- `cargo fmt --all -- --check`
+- `cargo check --workspace --all-targets --offline`
+- `git diff --check`
+- `graphify update .`
+
+Independent gpt-6.1-sol/high review found no remaining findings after fixing pre-event oracle priority, sticky-mask and high-half poison vectors, and source/link metadata; the reviewer did not rerun local commands. Physical acceptance, memory operands, other
+modes and complete unmasked OE/UE delivery remain open; parent S2-37/S2-38 are
+not closed. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37at--bounded-masked-range-long64-mulsd-xmm-register-pairs),
+[plan](../plans/STAGE_2.md#s2-37at--bounded-masked-range-long64-mulsd-xmm-register-pairs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37at-bounded-masked-range-mulsd-register-pair-profile).

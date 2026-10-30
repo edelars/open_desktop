@@ -979,6 +979,11 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only canonical F2 MULSD register pair; scalar binary64 multiply.
+    MulsdRegister {
+        destination: u8,
+        source: u8,
+    },
     /// Local-only canonical no-prefix MULPS register pair.
     MulpsRegister {
         destination: u8,
@@ -3410,6 +3415,19 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         .rex
                         .is_some_and(|rex| matches!(rex, 0x41 | 0x44 | 0x45))
                     && prefix_bytes[1] == prefixes.rex.unwrap());
+        let mulsd_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x59
+            && prefixes.group1 == Some(0xf2)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 1 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && prefix_bytes[0] == 0xf2
+                    && prefixes
+                        .rex
+                        .is_some_and(|rex| matches!(rex, 0x41 | 0x44 | 0x45))
+                    && prefix_bytes[1] == prefixes.rex.unwrap());
         let mulps_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x59
             && prefixes.group1.is_none()
@@ -3778,6 +3796,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
         if opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x59
             && !mulpd_register
+            && !mulsd_register
             && !mulps_register
         {
             return Err(self.unsupported(opcode));
@@ -3946,6 +3965,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !subpd_register
                 && !subps_register
                 && !subsd_register
+                && !mulsd_register
                 && !subss_register
                 && !cvttps2dq_register
                 && !cvtss2sd_register
@@ -4212,6 +4232,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
                 let rex = prefixes.rex.unwrap_or(0x40);
                 Operation::MulpdRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x59) if mulsd_register => {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                let rex = prefixes.rex.unwrap_or(0x40);
+                Operation::MulsdRegister {
                     destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                     source: (modrm & 7) | ((rex & 1) << 3),
                 }
@@ -10775,6 +10806,46 @@ mod tests {
                 source: 1
             }
         ));
+    }
+
+    #[test]
+    fn mulsd_register_decodes_all_xmm_pairs_and_rejects_other_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 1) & 4) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut code = vec![0xf2];
+                if destination >= 8 || source >= 8 {
+                    code.push(rex);
+                }
+                code.extend([0x0f, 0x59, modrm]);
+                let mut memory = Memory::new(&code);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::MulsdRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, code.len() as u8);
+            }
+        }
+        for bytes in [
+            &[0xf2, 0x40, 0x0f, 0x59, 0xc1][..],
+            &[0xf2, 0x42, 0x0f, 0x59, 0xc1][..],
+            &[0xf2, 0x48, 0x0f, 0x59, 0xc1][..],
+            &[0x40, 0xf2, 0x0f, 0x59, 0xc1][..],
+            &[0xf2, 0xf2, 0x0f, 0x59, 0xc1][..],
+            &[0x66, 0xf2, 0x0f, 0x59, 0xc1][..],
+            &[0xf2, 0x0f, 0x59][..],
+            &[0xf2, 0x0f, 0x59, 0x01][..],
+            &[0xc5, 0xfb, 0x59, 0xc1][..],
+            &[0x62, 0xf1, 0xff, 0x08, 0x59, 0xc1][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
     }
 
     #[test]
