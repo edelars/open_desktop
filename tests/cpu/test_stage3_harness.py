@@ -2,12 +2,64 @@
 """Unit tests for Stage 3 harness evidence validation; no child suites run."""
 
 import hashlib
+import importlib.util
+import os
+import signal
+import subprocess
 import shutil
+import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import stage3_harness as harness
+
+
+def temporary_run_root():
+    parent = harness.ROOT / "work" / "stage3-harness"
+    parent.mkdir(parents=True, exist_ok=True)
+    temporary = tempfile.TemporaryDirectory(dir=parent)
+    run_root = Path(temporary.name)
+    (run_root / "logs").mkdir()
+    return temporary, run_root
+
+
+def valid_process_step(run_root: Path, name: str = "process_sw_vers"):
+    argv = harness.vmhost_process_commands(run_root)[name]
+    stdout = "Darwin host evidence\n"
+    stderr = ""
+    combined = stdout
+    log_paths = {
+        "log": run_root / "logs" / f"{name}.log",
+        "stdout_log": run_root / "logs" / f"{name}.stdout.log",
+        "stderr_log": run_root / "logs" / f"{name}.stderr.log",
+    }
+    log_paths["log"].write_text(combined)
+    log_paths["stdout_log"].write_text(stdout)
+    log_paths["stderr_log"].write_text(stderr)
+    return {
+        "name": name,
+        "suite": harness.PROCESS_SUITE_NAME,
+        "argv": argv,
+        "command": harness.shlex.join(argv),
+        "status": "passed",
+        "failure": None,
+        "returncode": 0,
+        "expected_returncode": 0,
+        "timeout_seconds": harness.PROCESS_STEP_TIMEOUTS[name],
+        "duration_seconds": 0.01,
+        "source_fingerprint_after": "a" * 64,
+        "process_group_cleanup": "empty",
+        "log": log_paths["log"].relative_to(harness.ROOT).as_posix(),
+        "stdout_log": log_paths["stdout_log"].relative_to(harness.ROOT).as_posix(),
+        "stderr_log": log_paths["stderr_log"].relative_to(harness.ROOT).as_posix(),
+        "output_tail": combined,
+        "output_sha256": harness.sha256_bytes(combined.encode()),
+        "stdout_sha256": harness.sha256_bytes(stdout.encode()),
+        "stderr_sha256": harness.sha256_bytes(stderr.encode()),
+    }
 
 
 def passing_rust_gate_steps(log_dir: Path):
@@ -42,7 +94,21 @@ def passing_final_summary(run_id: str, log_dir: Path):
     suites = {name: {"status": "not_run"} for name in harness.UNSELECTED_SUITES}
     suites["local_lifecycle"] = {"status": "passed", "tests": lifecycle}
     suites["local_acceptance"] = {"status": "passed", "tests": acceptance}
-    return {"run_id": run_id, "steps": steps, "suites": suites}
+    suites["stage1_dispatch"] = {"status": "local_only"}
+    suites["memory_corpus"] = {"status": "passed"}
+    suites[harness.PROCESS_SUITE_NAME] = {"status": "not_run"}
+    for name in harness.PROCESS_SUITE_STEPS:
+        steps[name] = {"status": "not_run"}
+    fingerprint = harness.source_fingerprint()
+    return {
+        "run_id": run_id,
+        "status": "local_only",
+        "result_scope": "local_only",
+        "suite_selection": "local",
+        "source": {"fingerprint_start": fingerprint, "fingerprint_end": fingerprint},
+        "steps": steps,
+        "suites": suites,
+    }
 
 
 def replace_step_log_output(step, output: str):
@@ -292,12 +358,17 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             output = f"test {identity} ... ok\n"
             external_log.write_text(output)
             summary = passing_final_summary(run_id, logs_dir)
+            manifest_path = Path(external) / "input_manifest.json"
+            manifest_raw = harness.write_json_create(
+                manifest_path, harness.input_manifest()
+            )
+            summary["input_manifest_sha256"] = harness.sha256_bytes(manifest_raw)
             expected_log = logs_dir / f"{step_name}.log"
             expected_log.unlink()
             expected_log.symlink_to(external_log)
             try:
                 with self.assertRaisesRegex(harness.HarnessError, "log path differs"):
-                    harness.validate_final_summary(summary, Path("unused-input-manifest.json"))
+                    harness.validate_final_summary(summary, manifest_path)
 
                 expected_log.unlink()
                 expected_log.write_text(output)
@@ -305,10 +376,260 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                     harness.ROOT
                 ).as_posix()
                 with self.assertRaisesRegex(harness.HarnessError, "log path differs"):
-                    harness.validate_final_summary(summary, Path("unused-input-manifest.json"))
+                    harness.validate_final_summary(summary, manifest_path)
             finally:
                 expected_log.unlink(missing_ok=True)
                 shutil.rmtree(run_dir)
+
+    def test_vmhost_process_step_rejects_missing_step(self):
+        temporary, run_root = temporary_run_root()
+        try:
+            with self.assertRaisesRegex(harness.HarnessError, "missing, forged, or failed"):
+                harness.validate_process_step_evidence(
+                    {}, "process_sw_vers", run_root, "a" * 64
+                )
+        finally:
+            temporary.cleanup()
+
+    def test_vmhost_process_step_rejects_malformed_log_evidence(self):
+        temporary, run_root = temporary_run_root()
+        try:
+            step = valid_process_step(run_root)
+            step["stdout_sha256"] = "0" * 64
+            with self.assertRaisesRegex(harness.HarnessError, "log digest or stream"):
+                harness.validate_process_step_evidence(
+                    step, "process_sw_vers", run_root, "a" * 64
+                )
+        finally:
+            temporary.cleanup()
+
+    def test_vmhost_process_step_rejects_timeout(self):
+        temporary, run_root = temporary_run_root()
+        try:
+            step = valid_process_step(run_root)
+            step.update(status="failed", failure="timeout", returncode=-15)
+            with self.assertRaisesRegex(harness.HarnessError, "missing, forged, or failed"):
+                harness.validate_process_step_evidence(
+                    step, "process_sw_vers", run_root, "a" * 64
+                )
+        finally:
+            temporary.cleanup()
+
+    def test_vmhost_process_step_rejects_forged_passed(self):
+        temporary, run_root = temporary_run_root()
+        try:
+            step = valid_process_step(run_root)
+            step["returncode"] = 1
+            with self.assertRaisesRegex(harness.HarnessError, "missing, forged, or failed"):
+                harness.validate_process_step_evidence(
+                    step, "process_sw_vers", run_root, "a" * 64
+                )
+        finally:
+            temporary.cleanup()
+
+    def test_vmhost_process_timeout_kills_child_group(self):
+        temporary, run_root = temporary_run_root()
+        try:
+            child = (
+                "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                "print('child-before-cleanup', flush=True); time.sleep(30)"
+            )
+            parent = (
+                "import subprocess,sys,time; print('parent-before-cleanup', flush=True); "
+                "subprocess.Popen([sys.executable, '-c', sys.argv[1]]); "
+                "time.sleep(30)"
+            )
+            with mock.patch.object(harness, "source_fingerprint", return_value="a" * 64):
+                step = harness.run_process_step(
+                    "process_group_timeout",
+                    [sys.executable, "-c", parent, child],
+                    run_root,
+                    0.2,
+                    "a" * 64,
+                )
+            self.assertEqual(step["failure"], "timeout")
+            self.assertEqual(step["status"], "failed")
+            stdout_evidence = step["timeout_diagnostics"]["stdout"]
+            diagnostic_path = harness.ROOT / stdout_evidence["path"]
+            self.assertIn("parent-before-cleanup", diagnostic_path.read_text())
+            self.assertIn("child-before-cleanup", diagnostic_path.read_text())
+            self.assertFalse(harness.process_group_exists(step["process_group_id"]))
+        finally:
+            temporary.cleanup()
+
+    def test_vmhost_process_child_log_binding_matches_command(self):
+        temporary, run_root = temporary_run_root()
+        try:
+            for step_name in ("process_control_race", "process_isolation"):
+                argv = harness.vmhost_process_commands(run_root)[step_name]
+                diagnostics_arg = argv.index("--diagnostics-dir") + 1
+                expected_dir = run_root / "logs" / f"{step_name}_children"
+                self.assertEqual(Path(argv[diagnostics_arg]), expected_dir)
+                expected_dir.mkdir()
+                (expected_dir / "child.stdout.log").write_text("stdout\n")
+                (expected_dir / "child.stderr.log").write_text("stderr\n")
+                self.assertEqual(len(harness.child_log_evidence(run_root, step_name)), 2)
+                shutil.rmtree(expected_dir)
+        finally:
+            temporary.cleanup()
+
+    def test_vmhost_codesign_commands_use_resolved_tool_path(self):
+        temporary, run_root = temporary_run_root()
+        try:
+            resolved_tool = "/toolchain/selected/codesign"
+            commands = harness.vmhost_process_commands(run_root, resolved_tool)
+            signing_steps = {
+                name for name in harness.PROCESS_SUITE_STEPS
+                if name.startswith("process_sign_")
+                or name.startswith("process_verify_")
+                or "_signature" in name
+                or "_entitlements" in name
+                or name == "process_bundle_verify"
+            }
+            for name in signing_steps:
+                with self.subTest(step=name):
+                    self.assertEqual(commands[name][0], resolved_tool)
+            self.assertEqual(commands["process_app_bundle"][-1], resolved_tool)
+            manifest_commands = harness.vmhost_process_command_manifest()
+            manifest_bundle = next(
+                command["argv"] for command in manifest_commands
+                if command["step"] == "process_app_bundle"
+            )
+            self.assertEqual(manifest_bundle[-1], "${CODESIGN_PATH}")
+        finally:
+            temporary.cleanup()
+
+    def test_vmhost_process_manifest_covers_every_gate_once(self):
+        temporary, run_root = temporary_run_root()
+        try:
+            commands = harness.vmhost_process_commands(run_root, "/toolchain/codesign")
+            manifest_commands = harness.vmhost_process_command_manifest()
+            manifest_names = [command["step"] for command in manifest_commands]
+            self.assertEqual(len(harness.PROCESS_SUITE_STEPS), len(set(harness.PROCESS_SUITE_STEPS)))
+            self.assertEqual(set(commands), set(harness.PROCESS_SUITE_STEPS))
+            self.assertEqual(set(harness.PROCESS_STEP_TIMEOUTS), set(harness.PROCESS_SUITE_STEPS))
+            self.assertEqual(len(manifest_names), len(set(manifest_names)))
+            self.assertEqual(set(manifest_names), set(harness.PROCESS_SUITE_STEPS))
+        finally:
+            temporary.cleanup()
+
+    def test_generated_fault_smoke_cleans_child_group_on_success_and_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            smoke_path = harness.ROOT / "tests/system/vmhost_generated_fault_smoke.py"
+            spec = importlib.util.spec_from_file_location("vmhost_generated_fault_smoke", smoke_path)
+            self.assertIsNotNone(spec)
+            smoke = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(smoke)
+            for scenario, launcher_returncode, launcher_stderr in (
+                ("success", 1, "VMHost terminated by SIGSEGV\\n"),
+                ("failure", 0, "unexpected launcher success\\n"),
+            ):
+                with self.subTest(scenario=scenario):
+                    diagnostics = root / f"{scenario}-diagnostics"
+                    diagnostics.mkdir()
+                    launcher = root / f"{scenario}-launcher"
+                    helper = root / f"{scenario}-helper"
+                    launcher.touch()
+                    helper.touch()
+                    group_alive = [True]
+                    monotonic_tick = [0.0]
+                    observed_signals = []
+                    process_group_id = 987654321
+
+                    class FakeProcess:
+                        pid = process_group_id
+                        returncode = launcher_returncode
+
+                        def __init__(self, _argv, **kwargs):
+                            kwargs["stderr"].write(launcher_stderr)
+
+                        def communicate(self, timeout):
+                            return None, None
+
+                        def wait(self):
+                            return self.returncode
+
+                    def fake_killpg(pid, sig):
+                        self.assertEqual(pid, process_group_id)
+                        observed_signals.append(sig)
+                        if sig == 0:
+                            if group_alive[0]:
+                                return
+                            raise ProcessLookupError
+                        if sig == signal.SIGKILL:
+                            group_alive[0] = False
+
+                    def fake_monotonic():
+                        monotonic_tick[0] += 0.5
+                        return monotonic_tick[0]
+
+                    with (
+                        mock.patch.object(smoke.sys, "argv", [
+                            str(smoke_path), str(launcher), str(helper),
+                            "--diagnostics-dir", str(diagnostics),
+                        ]),
+                        mock.patch.object(smoke.subprocess, "Popen", FakeProcess),
+                        mock.patch.object(smoke.os, "killpg", side_effect=fake_killpg),
+                        mock.patch.object(smoke.time, "monotonic", side_effect=fake_monotonic),
+                        mock.patch.object(smoke.time, "sleep"),
+                    ):
+                        if scenario == "success":
+                            self.assertEqual(smoke.main(), 0)
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, "did not report"):
+                                smoke.main()
+
+                    self.assertIn(signal.SIGTERM, observed_signals)
+                    self.assertIn(signal.SIGKILL, observed_signals)
+                    self.assertFalse(group_alive[0])
+                    self.assertIn(
+                        "VMHost terminated by SIGSEGV" if scenario == "success" else "unexpected",
+                        (diagnostics / "launcher.stderr.log").read_text(),
+                    )
+
+    def test_app_bundle_smoke_preserves_and_executes_five_argument_bundle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            launcher = root / "launcher"
+            launcher.write_text("#!/bin/sh\nprintf '%s\\n' \"$0\" > \"$EXECUTED_PATH\"\n")
+            launcher.chmod(0o755)
+            vmhost = root / "vmhost"
+            vmhost.write_text("stub helper\n")
+            entitlements = root / "entitlements.plist"
+            entitlements.write_text("<plist/>\n")
+            fake_codesign = root / "codesign"
+            fake_codesign.write_text("#!/bin/sh\nexit 0\n")
+            fake_codesign.chmod(0o755)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_plutil = fake_bin / "plutil"
+            fake_plutil.write_text("#!/bin/sh\nexit 0\n")
+            fake_plutil.chmod(0o755)
+            preserved = root / "preserved.app"
+            executed_path = root / "executed-path.txt"
+            script = harness.ROOT / "tests/system/vmhost_app_bundle_smoke.sh"
+            environment = os.environ.copy()
+            environment["EXECUTED_PATH"] = str(executed_path)
+            environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
+            result = subprocess.run(
+                [
+                    "sh", str(script), str(launcher), str(vmhost), str(entitlements),
+                    str(preserved), str(fake_codesign),
+                ],
+                cwd=harness.ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            expected_executable = preserved / "Contents/MacOS/OpenDesktopLauncher"
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(preserved.is_dir())
+            self.assertEqual(Path(executed_path.read_text().strip()), expected_executable)
+            self.assertIn(f"vmhost_app_bundle_path={preserved}", result.stdout)
+            self.assertIn("vmhost_app_bundle_status=passed", result.stdout)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

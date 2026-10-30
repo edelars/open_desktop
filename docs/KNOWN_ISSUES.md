@@ -34,10 +34,10 @@
 
 - **Дата обнаружения:** 2026-10-29.
 - **Компонент:** `tests/system/vmhost_generated_fault_smoke.py` и test-only VMHost fault helper.
-- **Статус:** открыта; причина единичного timeout не установлена.
-- **Суть и последствия:** один smoke запуск превысил свой 5-секундный deadline, после чего helper сообщил `control frame write failed`. Два немедленных повтора прошли и подтвердили ожидаемый `VMHost terminated by SIGSEGV`; поэтому подтверждённого продуктового дефекта пока нет. Ложный timeout может сделать локальный process gate неповторяемым.
-- **Основание:** наблюдение при S3-38a на локальном macOS ARM64 host. Fault helper выполняет отдельный сгенерированный ARM64 stub и вызывает `od_host_abi_version`, но не вызывает `od_fragment_execute`; сбой не локализован к новому C ABI block-dispatch path. См. [S3-38a report](reports/STAGE_3_S3-38a_2026-10-29.md).
-- **Следующий шаг:** при повторении сохранить launcher/helper process status, child stderr и timing до закрытия control socket; сравнить с повтором того же бинарного helper без changes к ABI execution. Не трактовать единичный неповторившийся timeout как исправленный defect или как регрессию нового dispatcher.
+- **Статус:** открыта; причина повторяющихся timeout не установлена.
+- **Суть и последствия:** smoke иногда превышает свой 5-секундный deadline; в одном из прежних запусков helper затем сообщил `control frame write failed`. Два немедленных повтора в S3-38a прошли. В S3-38b один process-suite run подтвердил ожидаемый `VMHost terminated by SIGSEGV`, а последующий report-inclusive run снова достиг внутреннего timeout. Это наблюдаемая неповторяемость локального process gate, но подтверждённого продуктового дефекта пока нет.
+- **Основание:** наблюдения на локальном macOS ARM64 host. Fault helper выполняет отдельный сгенерированный ARM64 stub и вызывает `od_host_abi_version`, но не вызывает `od_fragment_execute`; причина не локализована к новому C ABI block-dispatch path. В report-inclusive run `stage3-20261030-023436-6452c1b474` статус был `generated_fault_inner_timeout` после 13.961 s; сохранённые launcher stdout/stderr пусты, outer process-group cleanup завершился без оставшихся детей. Успешный run `stage3-20261030-022418-2f31426694` — отдельная сборка с другим fault-helper hash. Ранний run `stage3-20261030-021650-2286bde631` завершился harness `KeyError` до fault gate. См. [S3-38a report](reports/STAGE_3_S3-38a_2026-10-29.md) и [S3-38b report](reports/STAGE_3_S3-38b_2026-10-30.md).
+- **Следующий шаг:** сравнить сохранённые process status, stdout/stderr, timing и binary hashes для successful/timeout запусков; если проблема повторится, добавить точечные timing/diagnostic markers вокруг control-socket и child-exit handling без увеличения deadline и без retry-to-pass. Не трактовать успешный отдельный run как исправление timeout или регрессию нового dispatcher.
 
 ### ISSUE-024 — checked memory lowering ограничен узкими V2 MOV slices
 

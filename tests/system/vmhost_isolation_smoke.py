@@ -2,16 +2,20 @@
 """Exercise independent VMHost processes and survivor execution on macOS."""
 
 import argparse
+import itertools
 import signal
 import socket
 import struct
 import subprocess
 import sys
+from pathlib import Path
 
 
 MAGIC = b"ODCP"
 VERSION = 0
 MAX_PAYLOAD = 8192
+DIAGNOSTICS_DIR = None
+_CHILD_LOG_SEQUENCE = itertools.count(1)
 
 
 def send_frame(channel, kind, request_id, payload=b""):
@@ -39,13 +43,34 @@ def read_frame(channel):
 
 
 def start_vmhost(executable):
+    stdout = stderr = subprocess.DEVNULL
+    opened_logs = []
+    if DIAGNOSTICS_DIR is not None:
+        sequence = next(_CHILD_LOG_SEQUENCE)
+        try:
+            stdout = (DIAGNOSTICS_DIR / f"vmhost-{sequence:03d}.stdout.log").open("xb")
+            opened_logs.append(stdout)
+            stderr = (DIAGNOSTICS_DIR / f"vmhost-{sequence:03d}.stderr.log").open("xb")
+            opened_logs.append(stderr)
+        except Exception:
+            for output in opened_logs:
+                output.close()
+            raise
     parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
-    process = subprocess.Popen(
-        [executable, "--socket-fd", str(child.fileno())],
-        pass_fds=(child.fileno(),),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        process = subprocess.Popen(
+            [executable, "--socket-fd", str(child.fileno())],
+            pass_fds=(child.fileno(),),
+            stdout=stdout,
+            stderr=stderr,
+        )
+    except Exception:
+        parent.close()
+        child.close()
+        raise
+    finally:
+        for output in opened_logs:
+            output.close()
     child.close()
     parent.settimeout(5)
     return process, parent
@@ -62,7 +87,13 @@ def request_run(channel, request_id, code, budget, rax):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("vmhost", help="path to the signed od-vmhost-smoke executable")
+    parser.add_argument("--diagnostics-dir", type=Path)
     args = parser.parse_args()
+    global DIAGNOSTICS_DIR
+    if args.diagnostics_dir is not None:
+        if args.diagnostics_dir.is_symlink() or not args.diagnostics_dir.is_dir():
+            raise RuntimeError("diagnostics directory must be an existing non-symlink directory")
+        DIAGNOSTICS_DIR = args.diagnostics_dir.resolve()
 
     processes = []
     channels = []

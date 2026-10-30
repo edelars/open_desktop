@@ -9,6 +9,7 @@ import json
 import os
 import platform
 import re
+import signal
 import shlex
 import subprocess
 import sys
@@ -60,6 +61,16 @@ SELF_TEST_NAMES = (
     "test_final_summary_rejects_missing_invalid_and_traversal_run_id",
     "test_final_summary_rejects_run_directory_and_logs_symlinks",
     "test_final_summary_rejects_step_log_symlink_and_external_log_path",
+    "test_vmhost_process_step_rejects_missing_step",
+    "test_vmhost_process_step_rejects_malformed_log_evidence",
+    "test_vmhost_process_step_rejects_timeout",
+    "test_vmhost_process_step_rejects_forged_passed",
+    "test_vmhost_process_child_log_binding_matches_command",
+    "test_vmhost_codesign_commands_use_resolved_tool_path",
+    "test_vmhost_process_manifest_covers_every_gate_once",
+    "test_generated_fault_smoke_cleans_child_group_on_success_and_failure",
+    "test_app_bundle_smoke_preserves_and_executes_five_argument_bundle",
+    "test_vmhost_process_timeout_kills_child_group",
 )
 SELF_TEST_IDENTITIES = {
     f"__main__.Stage3HarnessValidationTests.{name}" for name in SELF_TEST_NAMES
@@ -141,6 +152,99 @@ LOCAL_STEPS = (
     *(step for step, _, _, _ in RUST_TEST_GATES),
 )
 UNSELECTED_SUITES = ("physical_x86", "mac_mini", "performance", "owner_backed", "stage2")
+LOCAL_SUITE_NAMES = (
+    "local_lifecycle", "local_acceptance", "stage1_dispatch", "memory_corpus",
+)
+PROCESS_SUITE_STEPS = (
+    "process_sw_vers",
+    "process_uname",
+    "process_rustc_version",
+    "process_cargo_version",
+    "process_swift_version",
+    "process_xcode_version",
+    "process_codesign_path",
+    "process_build_od_host",
+    "process_compile_vmhost",
+    "process_sign_vmhost",
+    "process_verify_vmhost",
+    "process_vmhost_signature",
+    "process_vmhost_entitlements",
+    "process_compile_launcher",
+    "process_sign_launcher",
+    "process_verify_launcher",
+    "process_launcher_signature",
+    "process_launcher_entitlements",
+    "process_compile_fault_helper",
+    "process_sign_fault_helper",
+    "process_verify_fault_helper",
+    "process_fault_helper_signature",
+    "process_fault_helper_entitlements",
+    "process_control_race",
+    "process_isolation",
+    "process_app_bundle",
+    "process_bundle_verify",
+    "process_bundle_signature",
+    "process_bundle_vmhost_signature",
+    "process_bundle_vmhost_entitlements",
+    "process_bundle_launcher_signature",
+    "process_bundle_launcher_entitlements",
+    "process_generated_fault",
+)
+PROCESS_SUITE_NAME = "vmhost_process"
+ALL_SUITES = (*LOCAL_SUITE_NAMES, PROCESS_SUITE_NAME, *UNSELECTED_SUITES)
+ALL_STEPS = (*LOCAL_STEPS, *PROCESS_SUITE_STEPS)
+PROCESS_STEP_TIMEOUTS = {
+    "process_sw_vers": 30,
+    "process_uname": 30,
+    "process_rustc_version": 30,
+    "process_cargo_version": 30,
+    "process_swift_version": 60,
+    "process_xcode_version": 60,
+    "process_codesign_path": 30,
+    "process_build_od_host": 1800,
+    "process_compile_vmhost": 900,
+    "process_sign_vmhost": 120,
+    "process_verify_vmhost": 120,
+    "process_vmhost_signature": 120,
+    "process_vmhost_entitlements": 120,
+    "process_compile_launcher": 900,
+    "process_sign_launcher": 120,
+    "process_verify_launcher": 120,
+    "process_launcher_signature": 120,
+    "process_launcher_entitlements": 120,
+    "process_compile_fault_helper": 900,
+    "process_sign_fault_helper": 120,
+    "process_verify_fault_helper": 120,
+    "process_fault_helper_signature": 120,
+    "process_fault_helper_entitlements": 120,
+    "process_control_race": 900,
+    "process_isolation": 120,
+    "process_generated_fault": 30,
+    "process_app_bundle": 180,
+    "process_bundle_verify": 120,
+    "process_bundle_signature": 120,
+    "process_bundle_vmhost_signature": 120,
+    "process_bundle_vmhost_entitlements": 120,
+    "process_bundle_launcher_signature": 120,
+    "process_bundle_launcher_entitlements": 120,
+}
+PROCESS_SOURCE_PATHS = (
+    "Cargo.lock",
+    "Cargo.toml",
+    "crates/od-host/Cargo.toml",
+    "crates/od-host/src/lib.rs",
+    "include/open_desktop/host_abi.h",
+    "apps/vmhost/Sources/ControlFrame.swift",
+    "apps/vmhost/Sources/main.swift",
+    "apps/macos/Sources/launcher.swift",
+    "apps/vmhost/Configuration/vmhost-smoke.entitlements",
+    "tests/system/vmhost_control_race_smoke.py",
+    "tests/system/vmhost_isolation_smoke.py",
+    "tests/system/vmhost_generated_fault_smoke.py",
+    "tests/system/vmhost_generated_fault_helper.swift",
+    "tests/system/vmhost_app_bundle_smoke.sh",
+    "tests/cpu/stage3_harness.py",
+)
 LOCAL_RUST_TEST_SOURCES = (
     "crates/od-host/src/lib.rs",
     "crates/od-jit/src/dispatch.rs",
@@ -232,6 +336,159 @@ def rust_test_argv(package: str, identity: str) -> list[str]:
     return [
         "cargo", "test", "--offline", "-p", package, "--lib", identity,
         "--", "--exact", "--test-threads=1",
+    ]
+
+
+def vmhost_process_paths(run_root: Path) -> dict[str, Path]:
+    artifacts = run_root / "artifacts"
+    build_target = run_root / "build-target"
+    return {
+        "artifacts": artifacts,
+        "build_target": build_target,
+        "swift_modules": run_root / "swift-module-cache",
+        "od_host_library": build_target / "release" / "libod_host.a",
+        "vmhost": artifacts / "od-vmhost-smoke",
+        "launcher": artifacts / "open-desktop-launcher-smoke",
+        "fault_helper": artifacts / "od-vmhost-generated-fault-smoke",
+        "app_bundle": artifacts / "OpenDesktop-Stage0-Smoke.app",
+        "entitlements": ROOT / "apps/vmhost/Configuration/vmhost-smoke.entitlements",
+    }
+
+
+def vmhost_process_commands(
+    run_root: Path, codesign_path: str = "${CODESIGN_PATH}"
+) -> dict[str, list[str]]:
+    paths = vmhost_process_paths(run_root)
+    frameworks = [
+        "-framework", "Security",
+        "-framework", "SystemConfiguration",
+        "-framework", "CoreFoundation",
+        "-framework", "CoreServices",
+        "-framework", "Foundation",
+    ]
+    swift_common = [
+        "xcrun", "swiftc", "-module-cache-path", str(paths["swift_modules"]),
+        "-parse-as-library", "-O", "-import-objc-header",
+        "include/open_desktop/host_abi.h", "apps/vmhost/Sources/ControlFrame.swift",
+    ]
+    link_args = ["-ldl", "-lpthread", "-lm", *frameworks]
+    return {
+        "process_sw_vers": ["sw_vers"],
+        "process_uname": ["uname", "-a"],
+        "process_rustc_version": ["rustc", "-vV"],
+        "process_cargo_version": ["cargo", "--version"],
+        "process_swift_version": ["xcrun", "swiftc", "--version"],
+        "process_xcode_version": ["xcodebuild", "-version"],
+        "process_codesign_path": ["xcrun", "--find", "codesign"],
+        "process_build_od_host": [
+            "cargo", "build", "--release", "-p", "od-host", "--offline",
+            "--target-dir", str(paths["build_target"]),
+        ],
+        "process_compile_vmhost": [
+            *swift_common, "apps/vmhost/Sources/main.swift",
+            str(paths["od_host_library"]), *link_args, "-o", str(paths["vmhost"]),
+        ],
+        "process_sign_vmhost": [
+            codesign_path, "--force", "--sign", "-", "--options", "runtime",
+            "--entitlements", str(paths["entitlements"]), str(paths["vmhost"]),
+        ],
+        "process_verify_vmhost": [
+            codesign_path, "--verify", "--strict", "--verbose=2", str(paths["vmhost"]),
+        ],
+        "process_vmhost_signature": [
+            codesign_path, "-d", "--verbose=4", str(paths["vmhost"]),
+        ],
+        "process_vmhost_entitlements": [
+            codesign_path, "-d", "--entitlements", ":-", str(paths["vmhost"]),
+        ],
+        "process_compile_launcher": [
+            *swift_common, "apps/macos/Sources/launcher.swift",
+            str(paths["od_host_library"]), *link_args, "-o", str(paths["launcher"]),
+        ],
+        "process_sign_launcher": [
+            codesign_path, "--force", "--sign", "-", "--options", "runtime",
+            str(paths["launcher"]),
+        ],
+        "process_verify_launcher": [
+            codesign_path, "--verify", "--strict", "--verbose=2", str(paths["launcher"]),
+        ],
+        "process_launcher_signature": [
+            codesign_path, "-d", "--verbose=4", str(paths["launcher"]),
+        ],
+        "process_launcher_entitlements": [
+            codesign_path, "-d", "--entitlements", ":-", str(paths["launcher"]),
+        ],
+        "process_compile_fault_helper": [
+            *swift_common, "tests/system/vmhost_generated_fault_helper.swift",
+            str(paths["od_host_library"]), *link_args, "-o", str(paths["fault_helper"]),
+        ],
+        "process_sign_fault_helper": [
+            codesign_path, "--force", "--sign", "-", "--options", "runtime",
+            "--entitlements", str(paths["entitlements"]), str(paths["fault_helper"]),
+        ],
+        "process_verify_fault_helper": [
+            codesign_path, "--verify", "--strict", "--verbose=2", str(paths["fault_helper"]),
+        ],
+        "process_fault_helper_signature": [
+            codesign_path, "-d", "--verbose=4", str(paths["fault_helper"]),
+        ],
+        "process_fault_helper_entitlements": [
+            codesign_path, "-d", "--entitlements", ":-", str(paths["fault_helper"]),
+        ],
+        "process_control_race": [
+            sys.executable, "tests/system/vmhost_control_race_smoke.py",
+            str(paths["launcher"]), str(paths["vmhost"]), "--diagnostics-dir",
+            str(run_root / "logs" / "process_control_race_children"),
+        ],
+        "process_isolation": [
+            sys.executable, "tests/system/vmhost_isolation_smoke.py",
+            str(paths["vmhost"]), "--diagnostics-dir",
+            str(run_root / "logs" / "process_isolation_children"),
+        ],
+        "process_generated_fault": [
+            sys.executable, "tests/system/vmhost_generated_fault_smoke.py",
+            str(paths["launcher"]), str(paths["fault_helper"]), "--diagnostics-dir",
+            str(run_root / "logs" / "process_generated_fault_children"),
+        ],
+        "process_app_bundle": [
+            "sh", "tests/system/vmhost_app_bundle_smoke.sh",
+            str(paths["launcher"]), str(paths["vmhost"]), str(paths["entitlements"]),
+            str(paths["app_bundle"]), codesign_path,
+        ],
+        "process_bundle_verify": [
+            codesign_path, "--verify", "--strict", "--deep", "--verbose=2",
+            str(paths["app_bundle"]),
+        ],
+        "process_bundle_signature": [
+            codesign_path, "-d", "--verbose=4", str(paths["app_bundle"]),
+        ],
+        "process_bundle_vmhost_signature": [
+            codesign_path, "-d", "--verbose=4",
+            str(paths["app_bundle"] / "Contents/MacOS/od-vmhost-smoke"),
+        ],
+        "process_bundle_vmhost_entitlements": [
+            codesign_path, "-d", "--entitlements", ":-",
+            str(paths["app_bundle"] / "Contents/MacOS/od-vmhost-smoke"),
+        ],
+        "process_bundle_launcher_signature": [
+            codesign_path, "-d", "--verbose=4",
+            str(paths["app_bundle"] / "Contents/MacOS/OpenDesktopLauncher"),
+        ],
+        "process_bundle_launcher_entitlements": [
+            codesign_path, "-d", "--entitlements", ":-",
+            str(paths["app_bundle"] / "Contents/MacOS/OpenDesktopLauncher"),
+        ],
+    }
+
+
+def vmhost_process_command_manifest() -> list[dict[str, object]]:
+    run_placeholder = ROOT / "work" / "stage3-harness" / "<RUN_ID>"
+    return [
+        {"step": name, "argv": [
+            value.replace(str(run_placeholder), "${RUN_ROOT}")
+            for value in argv
+        ]}
+        for name, argv in vmhost_process_commands(run_placeholder).items()
     ]
 
 
@@ -347,9 +604,11 @@ def validate_rust_test_manifest(value: object) -> None:
             raise HarnessError(f"input manifest source pin differs for {relative}")
 
 
-def validate_unselected_suites(suites: dict[str, dict]) -> None:
+def validate_unselected_suites(
+    suites: dict[str, dict], names: tuple[str, ...] = UNSELECTED_SUITES
+) -> None:
     invalid = [
-        name for name in UNSELECTED_SUITES
+        name for name in names
         if suites.get(name, {}).get("status") != "not_run"
     ]
     if invalid:
@@ -752,6 +1011,457 @@ def run_step(
     }
 
 
+def run_process_step(
+    name: str,
+    argv: list[str],
+    run_dir: Path,
+    timeout_seconds: int,
+    fingerprint: str,
+) -> dict:
+    """Run a VMHost process-suite command in its own killable process group."""
+    started = time.monotonic()
+    log_path = run_dir / "logs" / f"{name}.log"
+    stdout_log = run_dir / "logs" / f"{name}.stdout.log"
+    stderr_log = run_dir / "logs" / f"{name}.stderr.log"
+    if any(path.exists() for path in (log_path, stdout_log, stderr_log)):
+        raise HarnessError(f"refusing to overwrite existing process log: {name}")
+    stdout = ""
+    stderr = ""
+    returncode: int | None = None
+    failure: str | None = None
+    process: subprocess.Popen | None = None
+    group_cleanup = "empty"
+    timeout_diagnostics: dict[str, object] | None = None
+    try:
+        process = subprocess.Popen(
+            argv,
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = process.communicate(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as timeout_error:
+            failure = "timeout"
+            group_cleanup = "timed_out_and_killed"
+            partial_stdout = decode_output(timeout_error.output)
+            partial_stderr = decode_output(timeout_error.stderr)
+            timeout_diagnostics = {}
+            for stream_name, contents in (
+                ("stdout", partial_stdout), ("stderr", partial_stderr)
+            ):
+                diagnostic_path = (
+                    run_dir / "logs" /
+                    f"{name}.timeout-before-cleanup.{stream_name}.log"
+                )
+                with diagnostic_path.open("x", encoding="utf-8") as output:
+                    output.write(contents)
+                timeout_diagnostics[stream_name] = {
+                    "path": diagnostic_path.relative_to(ROOT).as_posix(),
+                    "sha256": sha256_bytes(contents.encode("utf-8")),
+                    "size_bytes": len(contents.encode("utf-8")),
+                }
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                stdout, stderr = process.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                stdout, stderr = process.communicate()
+        returncode = process.returncode
+        if failure is None and returncode != 0:
+            failure = f"signal_{-returncode}" if returncode < 0 else f"exit_{returncode}"
+        if process_group_exists(process.pid):
+            group_cleanup = (
+                "timed_out_group_terminated" if failure == "timeout"
+                else "orphaned_group_terminated"
+            )
+            failure = failure or "orphaned_process_group"
+            terminate_process_group(process.pid)
+            if process_group_exists(process.pid):
+                group_cleanup = (
+                    "timed_out_group_remained" if failure == "timeout"
+                    else "orphaned_group_remained"
+                )
+                if failure != "timeout":
+                    failure = "process_group_cleanup_failed"
+    except OSError as error:
+        stderr = f"{type(error).__name__}: {error}\n"
+        failure = "spawn_error"
+
+    combined = stdout
+    if stderr:
+        combined += "\n--- stderr ---\n" + stderr
+    with log_path.open("x", encoding="utf-8") as output:
+        output.write(combined)
+    with stdout_log.open("x", encoding="utf-8") as output:
+        output.write(stdout)
+    with stderr_log.open("x", encoding="utf-8") as output:
+        output.write(stderr)
+    output_sha256 = sha256_bytes(combined.encode("utf-8"))
+    try:
+        end_fingerprint = source_fingerprint()
+        if fingerprint != end_fingerprint:
+            failure = "source_fingerprint_changed: source files changed during the command"
+    except HarnessError as error:
+        end_fingerprint = None
+        failure = f"source_fingerprint_changed: {error}"
+
+    result = {
+        "name": name,
+        "argv": argv,
+        "command": shlex.join(argv),
+        "status": "passed" if failure is None else "failed",
+        "failure": failure,
+        "returncode": returncode,
+        "timeout_seconds": timeout_seconds,
+        "duration_seconds": round(time.monotonic() - started, 3),
+        "source_fingerprint_after": end_fingerprint,
+        "log": log_path.relative_to(ROOT).as_posix(),
+        "stdout_log": stdout_log.relative_to(ROOT).as_posix(),
+        "stderr_log": stderr_log.relative_to(ROOT).as_posix(),
+        "output_tail": combined[-4000:],
+        "output_sha256": output_sha256,
+        "stdout_sha256": sha256_bytes(stdout.encode("utf-8")),
+        "stderr_sha256": sha256_bytes(stderr.encode("utf-8")),
+        "process_group_cleanup": group_cleanup,
+        "process_group_id": process.pid if process is not None else None,
+    }
+    if timeout_diagnostics is not None:
+        result["timeout_diagnostics"] = timeout_diagnostics
+    return result
+
+
+def process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def terminate_process_group(process_group_id: int) -> None:
+    try:
+        os.killpg(process_group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        if not process_group_exists(process_group_id):
+            return
+        time.sleep(0.05)
+    try:
+        os.killpg(process_group_id, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and process_group_exists(process_group_id):
+        time.sleep(0.05)
+
+
+def child_log_evidence(run_root: Path, step_name: str) -> list[dict[str, object]]:
+    diagnostics_dir = run_root / "logs" / f"{step_name}_children"
+    if diagnostics_dir.is_symlink() or not diagnostics_dir.is_dir():
+        raise HarnessError(f"missing process child diagnostics directory: {step_name}")
+    entries = []
+    for path in sorted(diagnostics_dir.iterdir()):
+        if path.is_symlink() or not path.is_file() or path.suffix != ".log":
+            raise HarnessError(f"unexpected child diagnostics entry: {path}")
+        entries.append({
+            "path": path.relative_to(ROOT).as_posix(),
+            "sha256": sha256_file(path),
+            "size_bytes": path.stat().st_size,
+        })
+    if not entries or len(entries) % 2 != 0:
+        raise HarnessError(f"process child diagnostics are incomplete: {step_name}")
+    return entries
+
+
+def require_process_marker(step: dict, marker: str, step_name: str) -> None:
+    output = step.get("output_tail")
+    if not isinstance(output, str) or marker not in output:
+        raise HarnessError(f"process step omitted its success marker: {step_name}")
+
+
+def process_artifact_record(path: Path) -> dict[str, object]:
+    resolved = path.resolve()
+    if ROOT not in resolved.parents or path.is_symlink() or not path.is_file():
+        raise HarnessError(f"required signed process artifact is missing or escaped: {path}")
+    return {
+        "path": path.relative_to(ROOT).as_posix(),
+        "sha256": sha256_file(path),
+        "size_bytes": path.stat().st_size,
+    }
+
+
+def process_tree_record(path: Path) -> dict[str, object]:
+    resolved = path.resolve()
+    if ROOT not in resolved.parents or path.is_symlink() or not path.is_dir():
+        raise HarnessError(f"required process bundle is missing or escaped: {path}")
+    digest = hashlib.sha256()
+    files = []
+    for item in sorted(path.rglob("*")):
+        if item.is_symlink():
+            raise HarnessError(f"process bundle contains a symlink: {item}")
+        if not item.is_file():
+            continue
+        relative = item.relative_to(path).as_posix()
+        payload = item.read_bytes()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+        files.append({
+            "path": item.relative_to(ROOT).as_posix(),
+            "sha256": sha256_bytes(payload),
+            "size_bytes": len(payload),
+        })
+    if not files:
+        raise HarnessError(f"process bundle is empty: {path}")
+    return {
+        "path": path.relative_to(ROOT).as_posix(),
+        "tree_sha256": digest.hexdigest(),
+        "file_count": len(files),
+        "files": files,
+    }
+
+
+def process_signature_output(step: dict, *, requires_jit: bool, step_name: str) -> None:
+    output = step.get("output_tail")
+    if not isinstance(output, str) or not output:
+        raise HarnessError(f"codesign did not return signature evidence: {step_name}")
+    if "runtime" not in output.lower():
+        raise HarnessError(f"signed process artifact lacks Hardened Runtime evidence: {step_name}")
+    has_allow_jit = "com.apple.security.cs.allow-jit" in output
+    if requires_jit and (not has_allow_jit or re.search(r"<true\s*/>", output) is None):
+        raise HarnessError(f"signed process artifact lacks allow-jit entitlement: {step_name}")
+    if not requires_jit and has_allow_jit:
+        raise HarnessError(f"launcher unexpectedly has the allow-jit entitlement: {step_name}")
+
+
+def process_entitlements_output(step: dict, *, requires_jit: bool, step_name: str) -> None:
+    output = step.get("output_tail")
+    if not isinstance(output, str):
+        raise HarnessError(f"codesign entitlement output is missing: {step_name}")
+    has_allow_jit = "com.apple.security.cs.allow-jit" in output
+    if requires_jit and (not has_allow_jit or re.search(r"<true\s*/>", output) is None):
+        raise HarnessError(f"signed helper lacks allow-jit entitlement: {step_name}")
+    if not requires_jit and has_allow_jit:
+        raise HarnessError(f"launcher unexpectedly has allow-jit entitlement: {step_name}")
+
+
+def collect_vmhost_process_artifacts(run_root: Path) -> dict[str, object]:
+    paths = vmhost_process_paths(run_root)
+    artifacts = {
+        "od_host_library": process_artifact_record(paths["od_host_library"]),
+        "vmhost": process_artifact_record(paths["vmhost"]),
+        "launcher": process_artifact_record(paths["launcher"]),
+        "fault_helper": process_artifact_record(paths["fault_helper"]),
+        "entitlements_source": process_artifact_record(paths["entitlements"]),
+    }
+    if paths["app_bundle"].exists():
+        bundle = process_tree_record(paths["app_bundle"])
+        artifacts["app_bundle"] = bundle
+        artifacts["bundle_vmhost"] = process_artifact_record(
+            paths["app_bundle"] / "Contents/MacOS/od-vmhost-smoke"
+        )
+        artifacts["bundle_launcher"] = process_artifact_record(
+            paths["app_bundle"] / "Contents/MacOS/OpenDesktopLauncher"
+        )
+    return artifacts
+
+
+def process_binary_inputs(artifacts: dict[str, object], *names: str) -> dict[str, str]:
+    result = {}
+    for name in names:
+        record = artifacts.get(name)
+        if not isinstance(record, dict) or not isinstance(record.get("sha256"), str):
+            raise HarnessError(f"missing process binary evidence: {name}")
+        result[name] = record["sha256"]
+    return result
+
+
+def run_vmhost_process_suite(
+    summary: dict, run_root: Path, fingerprint: str
+) -> None:
+    host_target, _ = rust_host()
+    require_local_arm64_backend(host_target)
+    paths = vmhost_process_paths(run_root)
+    paths["artifacts"].mkdir(parents=True, exist_ok=False)
+    paths["swift_modules"].mkdir(parents=True, exist_ok=False)
+    codesign_path = "${CODESIGN_PATH}"
+    artifacts: dict[str, object] = {}
+    toolchain_outputs = {}
+
+    for step_name in PROCESS_SUITE_STEPS:
+        argv = vmhost_process_commands(run_root, codesign_path)[step_name]
+        if step_name == "process_control_race":
+            (run_root / "logs" / "process_control_race_children").mkdir()
+        elif step_name == "process_isolation":
+            (run_root / "logs" / "process_isolation_children").mkdir()
+        elif step_name == "process_generated_fault":
+            (run_root / "logs" / "process_generated_fault_children").mkdir()
+
+        step = run_process_step(
+            step_name,
+            argv,
+            run_root,
+            PROCESS_STEP_TIMEOUTS[step_name],
+            fingerprint,
+        )
+        step["suite"] = PROCESS_SUITE_NAME
+        step["expected_returncode"] = 0
+        if (
+            step_name == "process_generated_fault"
+            and "generated_fault_timeout_diagnostics=" in step.get("output_tail", "")
+        ):
+            step["runner_failure"] = step.get("failure")
+            step["failure"] = "generated_fault_inner_timeout"
+        if step_name in {"process_sw_vers", "process_uname", "process_rustc_version",
+                         "process_cargo_version", "process_swift_version",
+                         "process_xcode_version", "process_codesign_path"}:
+            toolchain_outputs[step_name] = step["output_tail"]
+            if step_name == "process_codesign_path" and step["status"] == "passed":
+                tool_path_text = step["output_tail"].strip()
+                tool_path = Path(tool_path_text)
+                if not tool_path.is_absolute() or tool_path.is_symlink() or not tool_path.is_file():
+                    step["status"] = "failed"
+                    step["failure"] = "xcrun codesign path is invalid"
+                else:
+                    toolchain_outputs["codesign_binary"] = {
+                        "path": str(tool_path),
+                        "sha256": sha256_file(tool_path),
+                        "size_bytes": tool_path.stat().st_size,
+                    }
+                    codesign_path = str(tool_path)
+
+        if step_name in {
+            "process_control_race", "process_isolation", "process_generated_fault"
+        }:
+            try:
+                step["child_diagnostics"] = child_log_evidence(run_root, step_name)
+            except HarnessError as error:
+                step["child_diagnostics_failure"] = str(error)
+
+        try:
+            if step["status"] != "passed":
+                raise HarnessError(
+                    f"process command failed before semantic validation: {step.get('failure')}"
+                )
+            if step_name in {"process_control_race", "process_isolation",
+                             "process_generated_fault", "process_app_bundle"}:
+                if step_name == "process_control_race":
+                    artifacts = collect_vmhost_process_artifacts(run_root)
+                    step["binary_inputs"] = process_binary_inputs(
+                        artifacts, "launcher", "vmhost"
+                    )
+                    require_process_marker(step, "VMHost control smoke passed:", step_name)
+                elif step_name == "process_isolation":
+                    step["binary_inputs"] = process_binary_inputs(artifacts, "vmhost")
+                    require_process_marker(step, "VMHost isolation smoke passed:", step_name)
+                elif step_name == "process_app_bundle":
+                    bundle_path_marker = f"vmhost_app_bundle_path={paths['app_bundle']}"
+                    require_process_marker(step, bundle_path_marker, step_name)
+                    require_process_marker(step, "vmhost_app_bundle_status=passed", step_name)
+                    artifacts = collect_vmhost_process_artifacts(run_root)
+                    step["binary_inputs"] = process_binary_inputs(
+                        artifacts, "bundle_launcher", "bundle_vmhost"
+                    )
+                else:
+                    step["binary_inputs"] = process_binary_inputs(
+                        artifacts, "launcher", "fault_helper"
+                    )
+                    observation = generated_fault_observation(step)
+                    step["process_observation"] = observation
+            elif step_name in {
+                "process_vmhost_signature", "process_fault_helper_signature",
+                "process_bundle_signature", "process_bundle_vmhost_signature",
+                "process_bundle_launcher_signature",
+            }:
+                process_signature_output(step, requires_jit=False, step_name=step_name)
+            elif step_name in {
+                "process_vmhost_entitlements", "process_fault_helper_entitlements",
+                "process_bundle_vmhost_entitlements",
+            }:
+                process_entitlements_output(step, requires_jit=True, step_name=step_name)
+            elif step_name in {
+                "process_launcher_entitlements", "process_bundle_launcher_entitlements",
+            }:
+                process_entitlements_output(step, requires_jit=False, step_name=step_name)
+            elif step_name in {"process_sw_vers", "process_uname", "process_rustc_version",
+                               "process_cargo_version", "process_swift_version",
+                               "process_xcode_version", "process_codesign_path"}:
+                if not step.get("output_tail"):
+                    raise HarnessError(f"empty toolchain evidence: {step_name}")
+            if step["status"] != "passed":
+                raise HarnessError(f"process step failed: {step_name}: {step.get('failure')}")
+        except HarnessError as error:
+            if step["status"] == "passed":
+                step["status"] = "failed"
+                step["failure"] = str(error)
+            else:
+                step["evidence_validation_failure"] = str(error)
+
+        summary["steps"][step_name] = step
+        if artifacts:
+            summary["process_artifacts"] = artifacts
+        if toolchain_outputs:
+            summary["process_toolchain"] = toolchain_outputs
+        replace_json(run_root / "summary.json", summary)
+        if step["status"] != "passed":
+            raise HarnessError(f"required VMHost process step failed: {step_name}")
+
+    artifacts = collect_vmhost_process_artifacts(run_root)
+    summary["process_artifacts"] = artifacts
+    summary["suites"][PROCESS_SUITE_NAME] = {
+        "status": "passed",
+        "steps": list(PROCESS_SUITE_STEPS),
+        "artifacts": artifacts,
+    }
+
+
+def generated_fault_observation(step: dict) -> dict:
+    output = step.get("output_tail")
+    prefix = "generated_fault_observation="
+    rows = [line[len(prefix):] for line in output.splitlines() if line.startswith(prefix)] \
+        if isinstance(output, str) else []
+    if len(rows) != 1:
+        raise HarnessError("generated fault smoke did not preserve exactly one launcher observation")
+    try:
+        observation = json.loads(rows[0])
+    except json.JSONDecodeError as error:
+        raise HarnessError(f"generated fault launcher observation is malformed: {error}") from error
+    if (
+        not isinstance(observation, dict)
+        or observation.get("launcher_returncode") != 1
+        or observation.get("expected_reason") != "VMHost terminated by SIGSEGV"
+        or not isinstance(observation.get("launcher_stdout"), str)
+        or "VMHost terminated by SIGSEGV" not in observation.get("launcher_stderr", "")
+    ):
+        raise HarnessError("generated fault smoke did not prove the expected launcher SIGSEGV report")
+    return observation
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        if not process_group_exists(process_group_id):
+            return
+        time.sleep(0.05)
+    try:
+        os.killpg(process_group_id, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+
+
 def rust_host() -> tuple[str, str]:
     try:
         process = subprocess.run(
@@ -807,7 +1517,7 @@ def input_manifest() -> dict:
     host_path = ROOT / "crates/od-host/src/lib.rs"
     return {
         "schema_version": SCHEMA_VERSION,
-        "stage": "S3-34e-local-correctness",
+        "stage": "S3-34g-vmhost-process",
         "stage1_dispatch": {
             "source_fingerprint": stage1_oracle.source_fingerprint(ROOT),
             "command_profile": [
@@ -836,6 +1546,40 @@ def input_manifest() -> dict:
                 for name in LOCAL_RUST_TEST_SOURCES
             ],
         },
+        "vmhost_process": {
+            "host_requirement": {
+                "system": "darwin",
+                "machine": "arm64",
+                "rust_target_prefix": "aarch64-apple-darwin",
+            },
+            "build_profile": {
+                "cargo": ["build", "--release", "-p", "od-host", "--offline"],
+                "cargo_target_dir": "${RUN_ROOT}/build-target",
+                "swift": ["xcrun", "swiftc", "-parse-as-library", "-O"],
+                "swift_module_cache": "${RUN_ROOT}/swift-module-cache",
+                "signing": [
+                    "${CODESIGN_PATH}", "--force", "--sign", "-", "--options", "runtime"
+                ],
+                "entitlements": {
+                    "path": "apps/vmhost/Configuration/vmhost-smoke.entitlements",
+                    "sha256": sha256_file(
+                        ROOT / "apps/vmhost/Configuration/vmhost-smoke.entitlements"
+                    ),
+                },
+                "commands": vmhost_process_command_manifest(),
+            },
+            "inputs": [
+                {"path": name, "sha256": sha256_file(ROOT / name)}
+                for name in PROCESS_SOURCE_PATHS
+            ],
+            "success_markers": {
+                "control_race": "VMHost control smoke passed:",
+                "isolation": "VMHost isolation smoke passed:",
+                "generated_fault": "VMHost terminated by SIGSEGV",
+                "app_bundle": "vmhost_app_bundle_status=passed",
+            },
+            "automatic_retry": False,
+        },
     }
 
 
@@ -849,37 +1593,238 @@ def validate_input_manifest_file(path: Path, expected_digest: str) -> dict:
     if not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION:
         raise HarnessError("input manifest has an unsupported schema")
     validate_rust_test_manifest(value.get("local_rust_tests"))
+    process = value.get("vmhost_process")
+    if not isinstance(process, dict) or process.get("automatic_retry") is not False:
+        raise HarnessError("VMHost process manifest is missing or permits automatic retry")
+    if process.get("host_requirement") != {
+        "system": "darwin", "machine": "arm64",
+        "rust_target_prefix": "aarch64-apple-darwin",
+    }:
+        raise HarnessError("VMHost process host requirement differs")
+    if process.get("build_profile", {}).get("commands") != vmhost_process_command_manifest():
+        raise HarnessError("VMHost process command manifest differs from the exact run profile")
+    inputs = process.get("inputs")
+    expected_inputs = [
+        {"path": name, "sha256": sha256_file(ROOT / name)}
+        for name in PROCESS_SOURCE_PATHS
+    ]
+    if inputs != expected_inputs:
+        raise HarnessError("VMHost process source inputs differ from the pinned manifest")
     return value
+
+
+def validate_process_step_evidence(
+    step: dict,
+    step_name: str,
+    run_root: Path,
+    fingerprint: str,
+    codesign_path: str = "${CODESIGN_PATH}",
+) -> None:
+    expected_argv = vmhost_process_commands(run_root, codesign_path).get(step_name)
+    if expected_argv is None:
+        raise HarnessError(f"unknown VMHost process step: {step_name}")
+    if (
+        step.get("name") != step_name
+        or step.get("suite") != PROCESS_SUITE_NAME
+        or step.get("argv") != expected_argv
+        or step.get("command") != shlex.join(expected_argv)
+        or step.get("status") != "passed"
+        or step.get("returncode") != 0
+        or step.get("expected_returncode") != 0
+        or step.get("failure") is not None
+        or step.get("timeout_seconds") != PROCESS_STEP_TIMEOUTS[step_name]
+        or step.get("process_group_cleanup") != "empty"
+        or step.get("source_fingerprint_after") != fingerprint
+    ):
+        raise HarnessError(f"VMHost process step evidence is missing, forged, or failed: {step_name}")
+    duration = step.get("duration_seconds")
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or duration < 0:
+        raise HarnessError(f"VMHost process step has invalid duration: {step_name}")
+
+    logs = {
+        "log": f"{step_name}.log",
+        "stdout_log": f"{step_name}.stdout.log",
+        "stderr_log": f"{step_name}.stderr.log",
+    }
+    contents: dict[str, bytes] = {}
+    for field, basename in logs.items():
+        expected_path = run_root / "logs" / basename
+        relative = expected_path.relative_to(ROOT).as_posix()
+        if step.get(field) != relative or expected_path.is_symlink() or not expected_path.is_file():
+            raise HarnessError(f"VMHost process log path is invalid: {step_name}/{field}")
+        contents[field] = expected_path.read_bytes()
+    stdout = contents["stdout_log"].decode("utf-8", errors="replace")
+    stderr = contents["stderr_log"].decode("utf-8", errors="replace")
+    combined = stdout + ("\n--- stderr ---\n" + stderr if stderr else "")
+    if (
+        sha256_bytes(contents["log"]) != step.get("output_sha256")
+        or sha256_bytes(contents["stdout_log"]) != step.get("stdout_sha256")
+        or sha256_bytes(contents["stderr_log"]) != step.get("stderr_sha256")
+        or contents["log"].decode("utf-8", errors="replace") != combined
+        or step.get("output_tail") != combined[-4000:]
+    ):
+        raise HarnessError(f"VMHost process log digest or stream evidence differs: {step_name}")
+
+
+def validate_process_child_logs(step: dict, step_name: str, run_root: Path) -> None:
+    observed = child_log_evidence(run_root, step_name)
+    if step.get("child_diagnostics") != observed:
+        raise HarnessError(f"VMHost child diagnostics differ from saved files: {step_name}")
+    if step_name == "process_isolation" and len(observed) != 4:
+        raise HarnessError("VMHost isolation did not preserve both child stdout/stderr pairs")
+
+
+def validate_vmhost_process_summary(summary: dict, manifest: dict, run_root: Path) -> None:
+    if summary.get("status") != "vmhost_process_only" or summary.get("result_scope") != "vmhost_process_only":
+        raise HarnessError("VMHost process suite must remain separate from local acceptance")
+    suites = summary.get("suites", {})
+    expected_local_status = {name: {"status": "not_run"} for name in LOCAL_SUITE_NAMES}
+    for name, expected in expected_local_status.items():
+        if suites.get(name) != expected:
+            raise HarnessError(f"local acceptance suite must remain not_run during process suite: {name}")
+    validate_unselected_suites(suites)
+
+    steps = summary.get("steps", {})
+    codesign_step = steps.get("process_codesign_path", {})
+    codesign_path = codesign_step.get("output_tail", "").strip()
+    if not Path(codesign_path).is_absolute():
+        raise HarnessError("VMHost process codesign tool path is missing or not absolute")
+    for name in LOCAL_STEPS:
+        if steps.get(name, {}).get("status") != "not_run":
+            raise HarnessError(f"local step ran during process-only suite: {name}")
+    for name in PROCESS_SUITE_STEPS:
+        step = steps.get(name)
+        if not isinstance(step, dict):
+            raise HarnessError(f"VMHost process step is missing: {name}")
+        validate_process_step_evidence(
+            step, name, run_root, summary["source"]["fingerprint_start"], codesign_path
+        )
+
+    process_suite = suites.get(PROCESS_SUITE_NAME)
+    if not isinstance(process_suite, dict) or process_suite.get("status") != "passed" \
+            or process_suite.get("steps") != list(PROCESS_SUITE_STEPS):
+        raise HarnessError("VMHost process suite membership is missing or forged")
+
+    expected_artifacts = collect_vmhost_process_artifacts(run_root)
+    if summary.get("process_artifacts") != expected_artifacts \
+            or process_suite.get("artifacts") != expected_artifacts:
+        raise HarnessError("VMHost process artifact hashes differ from the current run outputs")
+    if set(expected_artifacts) != {
+        "od_host_library", "vmhost", "launcher", "fault_helper", "entitlements_source",
+        "app_bundle", "bundle_vmhost", "bundle_launcher",
+    }:
+        raise HarnessError("VMHost process artifact set is incomplete")
+
+    for name in ("process_vmhost_signature", "process_launcher_signature",
+                 "process_fault_helper_signature", "process_bundle_signature",
+                 "process_bundle_vmhost_signature", "process_bundle_launcher_signature"):
+        process_signature_output(
+            steps[name], requires_jit=False, step_name=name
+        )
+    for name in ("process_vmhost_entitlements", "process_fault_helper_entitlements",
+                 "process_bundle_vmhost_entitlements"):
+        process_entitlements_output(
+            steps[name], requires_jit=True, step_name=name
+        )
+    for name in ("process_launcher_entitlements", "process_bundle_launcher_entitlements"):
+        process_entitlements_output(
+            steps[name], requires_jit=False, step_name=name
+        )
+
+    for name in (
+        "process_control_race", "process_isolation", "process_generated_fault"
+    ):
+        validate_process_child_logs(steps[name], name, run_root)
+    if len(steps["process_generated_fault"]["child_diagnostics"]) != 2:
+        raise HarnessError("generated-fault launcher stdout/stderr diagnostics are incomplete")
+    require_process_marker(steps["process_control_race"], "VMHost control smoke passed:", "process_control_race")
+    require_process_marker(steps["process_isolation"], "VMHost isolation smoke passed:", "process_isolation")
+    generated = generated_fault_observation(steps["process_generated_fault"])
+    if steps["process_generated_fault"].get("process_observation") != generated:
+        raise HarnessError("generated-fault process observation does not match captured output")
+    bundle_path = vmhost_process_paths(run_root)["app_bundle"]
+    require_process_marker(
+        steps["process_app_bundle"], f"vmhost_app_bundle_path={bundle_path}", "process_app_bundle"
+    )
+    require_process_marker(steps["process_app_bundle"], "vmhost_app_bundle_status=passed", "process_app_bundle")
+
+    expected_binary_inputs = {
+        "process_control_race": process_binary_inputs(expected_artifacts, "launcher", "vmhost"),
+        "process_isolation": process_binary_inputs(expected_artifacts, "vmhost"),
+        "process_generated_fault": process_binary_inputs(expected_artifacts, "launcher", "fault_helper"),
+        "process_app_bundle": process_binary_inputs(expected_artifacts, "bundle_launcher", "bundle_vmhost"),
+    }
+    for name, expected in expected_binary_inputs.items():
+        if steps[name].get("binary_inputs") != expected:
+            raise HarnessError(f"VMHost process binary binding differs: {name}")
+
+    toolchain = summary.get("process_toolchain")
+    expected_toolchain_steps = (
+        "process_sw_vers", "process_uname", "process_rustc_version",
+        "process_cargo_version", "process_swift_version", "process_xcode_version",
+        "process_codesign_path",
+    )
+    expected_toolchain = {
+        name: steps[name]["output_tail"] for name in expected_toolchain_steps
+    }
+    codesign_path = Path(steps["process_codesign_path"]["output_tail"].strip())
+    if not codesign_path.is_absolute() or codesign_path.is_symlink() or not codesign_path.is_file():
+        raise HarnessError("VMHost process codesign tool path is invalid")
+    expected_toolchain["codesign_binary"] = {
+        "path": str(codesign_path),
+        "sha256": sha256_file(codesign_path),
+        "size_bytes": codesign_path.stat().st_size,
+    }
+    if not isinstance(toolchain, dict) or toolchain != expected_toolchain:
+        raise HarnessError("VMHost process toolchain evidence is missing or forged")
+    process_manifest = manifest.get("vmhost_process")
+    if not isinstance(process_manifest, dict) or process_manifest.get("automatic_retry") is not False:
+        raise HarnessError("VMHost process manifest does not preserve the no-retry policy")
 
 
 def validate_final_summary(summary: dict, input_manifest_path: Path) -> None:
     run_root = validate_run_id(summary.get("run_id"))
-    validate_unselected_suites(summary.get("suites", {}))
-    statuses = {name: summary.get("steps", {}).get(name, {}).get("status") for name in LOCAL_STEPS}
-    validate_required_steps(statuses)
-    steps = summary.get("steps", {})
-    validate_required_rust_test_evidence(steps, run_root)
-    lifecycle_steps = [step for step, suite, _, _ in RUST_TEST_GATES if suite == "local_lifecycle"]
-    acceptance_steps = [step for step, suite, _, _ in RUST_TEST_GATES if suite == "local_acceptance"]
-    suites = summary.get("suites", {})
-    if (
-        suites.get("local_lifecycle") != {"status": "passed", "tests": lifecycle_steps}
-        or suites.get("local_acceptance") != {"status": "passed", "tests": acceptance_steps}
-    ):
-        raise HarnessError("required local Rust test suite membership is incomplete or forged")
     digest = summary.get("input_manifest_sha256")
     if not isinstance(digest, str):
         raise HarnessError("input manifest digest is missing from summary")
-    validate_input_manifest_file(input_manifest_path, digest)
-    if summary.get("status") != "local_only":
-        raise HarnessError("successful Stage 3 local harness result must be local_only")
+    manifest = validate_input_manifest_file(input_manifest_path, digest)
+    selection = summary.get("suite_selection")
+    suites = summary.get("suites", {})
+    steps = summary.get("steps", {})
+    if selection == "local":
+        validate_unselected_suites(suites)
+        validate_unselected_suites(suites, (PROCESS_SUITE_NAME,))
+        statuses = {name: steps.get(name, {}).get("status") for name in LOCAL_STEPS}
+        validate_required_steps(statuses)
+        validate_required_rust_test_evidence(steps, run_root)
+        lifecycle_steps = [
+            step for step, suite, _, _ in RUST_TEST_GATES if suite == "local_lifecycle"
+        ]
+        acceptance_steps = [
+            step for step, suite, _, _ in RUST_TEST_GATES if suite == "local_acceptance"
+        ]
+        if (
+            suites.get("local_lifecycle") != {"status": "passed", "tests": lifecycle_steps}
+            or suites.get("local_acceptance") != {"status": "passed", "tests": acceptance_steps}
+            or summary.get("status") != "local_only"
+            or summary.get("result_scope") != "local_only"
+        ):
+            raise HarnessError("required local suite membership or scope is incomplete or forged")
+        if any(steps.get(name, {}).get("status") != "not_run" for name in PROCESS_SUITE_STEPS):
+            raise HarnessError("VMHost process steps must remain not_run in the local suite")
+        if suites.get(PROCESS_SUITE_NAME) != {"status": "not_run"}:
+            raise HarnessError("VMHost process suite must remain not_run in the local suite")
+    elif selection == "vmhost-process":
+        validate_vmhost_process_summary(summary, manifest, run_root)
+    else:
+        raise HarnessError("Stage 3 suite selection is missing or unsupported")
     source = summary.get("source", {})
     validate_fingerprint(source.get("fingerprint_start", ""), source.get("fingerprint_end", ""))
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--suite", choices=("local",), default="local")
+    parser.add_argument("--suite", choices=("local", "vmhost-process"), default="local")
     args = parser.parse_args(argv)
 
     run_id = new_run_id()
@@ -897,7 +1842,7 @@ def main(argv: list[str] | None = None) -> int:
         "run_id": run_id,
         "status": "running",
         "suite_selection": args.suite,
-        "result_scope": "local_only",
+        "result_scope": "local_only" if args.suite == "local" else "vmhost_process_only",
         "source": {
             "revision": None,
             "fingerprint_start": None,
@@ -915,8 +1860,8 @@ def main(argv: list[str] | None = None) -> int:
             "rustc": None,
             "cargo": None,
         },
-        "suites": {name: {"status": "not_run"} for name in UNSELECTED_SUITES},
-        "steps": {name: {"status": "not_run"} for name in LOCAL_STEPS},
+        "suites": {name: {"status": "not_run"} for name in ALL_SUITES},
+        "steps": {name: {"status": "not_run"} for name in ALL_STEPS},
         "children": {},
         "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
@@ -947,6 +1892,21 @@ def main(argv: list[str] | None = None) -> int:
         replace_json(summary_path, summary)
 
         require_local_arm64_backend(host_target)
+
+        if args.suite == "vmhost-process":
+            run_vmhost_process_suite(summary, run_dir, fingerprint)
+            summary["source"]["fingerprint_end"] = source_fingerprint()
+            validate_fingerprint(fingerprint, summary["source"]["fingerprint_end"])
+            summary["status"] = "vmhost_process_only"
+            validate_final_summary(summary, manifest_path)
+            summary["finished_utc"] = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+            )
+            replace_json(summary_path, summary)
+            print(f"stage3_harness_status={summary['status']}")
+            print(f"input_manifest_sha256={summary['input_manifest_sha256']}")
+            print(f"summary_path={summary_path.relative_to(ROOT)}")
+            return 0
 
         commands = [
             (

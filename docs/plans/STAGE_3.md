@@ -2475,6 +2475,38 @@ requests, a whole VM session, general memory execution through the C ABI, full
 owner/MMU integration, Mini support, or performance benefit. See the
 [S3-38a report](../reports/STAGE_3_S3-38a_2026-10-29.md).
 
+#### S3-38b. Reproducible local VMHost process suite
+
+The Stage 3 harness has a separate `--suite vmhost-process` gate for the signed
+local VMHost process scenarios. It builds `od-host` into a run-scoped Cargo
+target, compiles launcher/VMHost/fault-helper into that run's artifacts folder,
+records the resolved codesign tool and its hash, and captures per-step
+commands, stdout/stderr, exit status, duration, and hashes. The control-race,
+isolation, app-bundle, and generated-fault scenarios run exactly once per suite
+invocation. Timeout evidence preserves captured diagnostics before process-group
+cleanup; the harness does not retry a failed process gate. The preserved app
+bundle is the copy actually executed and hashed. VMHost and fault helper retain
+the required JIT entitlement; launcher entitlement evidence excludes it.
+
+The 2026-10-30 process-only run passed all 33 gates on macOS ARM64. Its summary
+and manifest are local ignored evidence under
+`work/stage3-harness/stage3-20261030-022418-2f31426694/`. A subsequent
+report-inclusive run passed the first 32 gates, then failed once at
+`process_generated_fault` with `generated_fault_inner_timeout`; its launcher
+stdout/stderr files are empty and process-group cleanup left no child. These
+separate run records are preserved under `work/stage3-harness/`. An earlier
+attempt is also preserved as failed because the harness lacked timeout entries
+for its bundle gates; it stopped before generated-fault execution. The mapping
+was fixed and covered by a one-to-one gate-map self-test. The passing observation
+followed by a timeout leaves ISSUE-027 open and intermittent. `local_acceptance`,
+Stage 1, memory corpus, physical x86, Mini, performance, owner-backed and Stage 2
+remain separate and `not_run` in process-only evidence. See the
+[S3-38b report](../reports/STAGE_3_S3-38b_2026-10-30.md).
+
+This bounded process suite does not establish persistent cache reuse across
+requests, a whole VM session, general memory execution through the C ABI,
+owner/MMU integration, Mini support, or performance benefit.
+
 ### S3-39. Повторить ARM64 smoke на M1 Pro
 
 1. Зафиксировать реально доступные OS/toolchain, способ сборки/передачи собственного artifact и выбранную ad-hoc/Hardened Runtime конфигурацию.
