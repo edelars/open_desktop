@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последнее локальное подзадание S2-37n добавляет exact Long64 CVTSI2SD XMM0,EAX schema-v2 interpreter-only profile; это не закрывает общий S2-37, CPUID admission или physical acceptance. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последнее локальное подзадание S2-37q добавляет canonical Long64 CVTSI2SD register-space schema-v2 interpreter-only profile; это не закрывает общий S2-37, CPUID admission или physical acceptance. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -6618,6 +6618,34 @@ hardware substage.
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37o--exact-long64-cvtsi2sd-xmm0rax),
 [stage report](../reports/STAGE_2_REPORT.md#s2-37o--exact-long64-cvtsi2sd-xmm0rax),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37o-local-cvtsi2sd-r64).
+
+#### S2-37q — canonical Long64 CVTSI2SD register operands
+
+The interpreter-only schema-v2 sibling profile `s2-long-cvtsi2sd-registers-v1`
+accepts 2 widths × 16 XMM destinations × 16 GPR sources, ModR/M.mod=3 only.
+Its independent schema parser derives width, indices, and instruction length
+from the complete byte stream. Canonical r32 uses `F2 0F 2A /r` for low
+registers and `F2 41/44/45 0F 2A /r` for extended operands; r64 uses
+`F2 48/49/4C/4D 0F 2A /r`. Redundant REX, X, incorrect W, noncanonical
+prefixes, memory, trailing bytes, VEX, and EVEX are profile refusals, not
+generalized #UD claims. S2-37n/o fixed profiles retain their restrictions.
+
+r32 reads only the selected GPR low32 as signed i32, converts exactly, and
+preserves the full GPR. r64 reads the selected signed i64 and reuses S2-37o
+MXCSR rounding, sticky PE and unmasked delivery rules. Both widths update only
+the selected XMM low64 and preserve its high64, all other XMMs and machine
+state. RSP is an ordinary GPR source; the instruction performs no stack or
+data-memory access. Existing SSE2, CR0.EM/TS, CR4.OSFXSR/OSXMMEXCPT gates and
+MXCSR mask `0x0000ffbf` remain in force. Fixtures require one executable
+mapping, budget 1, checked stop `entry+length`, and exact result/control echoes.
+The schema oracle derives expected integer-to-binary64 results independently.
+
+The schema-driven runner covers all 512 forms with distinct register sentinels,
+including result and preservation checks. Memory forms m32/m64, other modes or
+prefixes, generic CPUID admission, and physical acceptance remain open. All
+hardware checks stay in the combined final substage. Sources: Intel SDM Rev.093
+Vol.2A CVTSI2SD pp.3-236–3-237, Type 3 Table 2-20 p.2-28, Vol.1 §§11.5.2.6,
+11.5.3, REX §2.2.1.2/Table 2-4 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
 
 #### S2-38a — consumed masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD status subset
 

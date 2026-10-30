@@ -11635,6 +11635,43 @@ See the [plan](../plans/STAGE_2.md#s2-37o--exact-long64-cvtsi2sd-xmm0rax),
 [report](../reports/STAGE_2_REPORT.md#s2-37o--exact-long64-cvtsi2sd-xmm0rax),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37o-local-cvtsi2sd-r64).
 
+## S2-37q — canonical Long64 CVTSI2SD register operand space
+
+The interpreter-only schema-v2 sibling profile `s2-long-cvtsi2sd-registers-v1`
+admits 512 forms: r32/r64 × XMM0–15 destination × GPR0–15 source, with
+ModR/M.mod=3. Canonical r32 prefixes are `F2` for both low indices and `F2`
+plus exactly REX `41` (B), `44` (R), or `45` (RB) when needed. Canonical r64
+uses `F2` plus exactly `48` (W), `49` (WB), `4C` (WR), or `4D` (WRB).
+Redundant `40`, X, incorrect W, unnecessary REX, repeated/reordered/other
+prefixes, memory, trailing bytes, VEX and EVEX are profile refusals. These
+refusals do not assert architectural #UD for excluded encodings. S2-37n and
+S2-37o fixed profiles remain limited to their original exact forms.
+
+Schema validation independently parses the full instruction bytes to derive
+width, destination, source and length; it requires one executable mapping,
+budget one, checked `entry+length`, stop at that address, exact input/result
+and controls echoes, and supported MXCSR mask `0x0000ffbf`. r32 reads only
+the selected low32 as signed i32, sign extends and converts exactly; r64 reads
+the full selected signed i64 and uses MXCSR.RC. Only the selected XMM low64 is
+written; its high64, other XMMs, all GPRs and remaining state are preserved.
+RSP is an ordinary source and no stack or data-memory access occurs.
+
+SSE2, CR0.EM/TS, CR4.OSFXSR and OSXMMEXCPT gates follow S2-37n/o. r64 follows
+S2-37o Precision semantics: new PE is sticky, unmasked inexact conversion
+suppresses result and retirement before #XM or SIMD-generated #UD, while exact
+conversion is unaffected by old PE. The schema oracle independently computes
+signed integer conversion; it does not call `Binary64::from_i64`. Tests iterate
+all 512 forms and retain JIT/native/CPUID denial. Only canonical register forms
+are covered; memory m32/m64, other modes/prefixes, and physical acceptance stay
+open. Hardware runs remain in the combined final substage.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CVTSI2SD` pp. 3-236–3-237, Type 3
+Table 2-20 p. 2-28; Vol. 1 §§11.5.2.6 and 11.5.3; REX §2.2.1.2/Table 2-4
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+See the [plan](../plans/STAGE_2.md#s2-37q--canonical-long64-cvtsi2sd-register-operands),
+[report](../reports/STAGE_2_REPORT.md#s2-37q--canonical-long64-cvtsi2sd-register-operand-space),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37q-canonical-cvtsi2sd-register-space).
+
 ## S2-38b — точечные SSE2 prerequisite gates для XORPD
 
 Schema-v2 profile `s2-long-xorpd-prerequisites-v1` принимает ровно одну

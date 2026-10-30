@@ -1003,15 +1003,16 @@ fn execute_fixture_v2(
         XorpdPrerequisiteState, run, run_with_cli_profile, run_with_cr0_profile,
         run_with_cvtdq2pd_controls, run_with_cvtdq2pd_register_controls,
         run_with_cvtsi2sd_r32_controls, run_with_cvtsi2sd_r64_controls,
-        run_with_efer_rdmsr_profile, run_with_fxrstor64_cr0_controls,
-        run_with_fxsave64_cr0_controls, run_with_halt_profile, run_with_kernel_gs_base_profile,
-        run_with_maxpd_unmasked_controls, run_with_maxps_unmasked_controls,
-        run_with_maxsd_unmasked_controls, run_with_maxss_unmasked_controls,
-        run_with_minpd_unmasked_controls, run_with_minps_unmasked_controls,
-        run_with_minsd_unmasked_controls, run_with_minss_invalid_controls,
-        run_with_minss_unmasked_denormal_controls, run_with_msr_profile, run_with_rdtsc_source,
-        run_with_rep_continuation, run_with_sep_profile, run_with_sti_profile,
-        run_with_swapgs_profile, run_with_xorpd_prerequisites,
+        run_with_cvtsi2sd_registers_controls, run_with_efer_rdmsr_profile,
+        run_with_fxrstor64_cr0_controls, run_with_fxsave64_cr0_controls, run_with_halt_profile,
+        run_with_kernel_gs_base_profile, run_with_maxpd_unmasked_controls,
+        run_with_maxps_unmasked_controls, run_with_maxsd_unmasked_controls,
+        run_with_maxss_unmasked_controls, run_with_minpd_unmasked_controls,
+        run_with_minps_unmasked_controls, run_with_minsd_unmasked_controls,
+        run_with_minss_invalid_controls, run_with_minss_unmasked_denormal_controls,
+        run_with_msr_profile, run_with_rdtsc_source, run_with_rep_continuation,
+        run_with_sep_profile, run_with_sti_profile, run_with_swapgs_profile,
+        run_with_xorpd_prerequisites,
     };
     use od_testkit::v2;
     use std::time::{Duration, Instant};
@@ -1545,6 +1546,24 @@ fn execute_fixture_v2(
             memory,
             config,
             Cvtsi2sdR64Controls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
+    } else if loaded.fixture.profile == v2::Profile::LongCvtsi2sdRegistersV1 {
+        let controls = loaded
+            .fixture
+            .cvtsi2sd_r32_controls
+            .expect("validated CVTSI2SD register profile has explicit controls");
+        run_with_cvtsi2sd_registers_controls(
+            &mut state,
+            memory,
+            config,
+            od_isa::execute::Cvtsi2sdRegistersControls {
                 sse2_available: controls.sse2_available,
                 cr0_em: controls.cr0_em,
                 cr0_ts: controls.cr0_ts,

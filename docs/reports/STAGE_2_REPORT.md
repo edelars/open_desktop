@@ -17496,3 +17496,35 @@ Table 2-15 and §2.5.3 Table 2-20 p. 2-28; Vol. 1 §11.5.2.6 p. 11-16 and
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37o--exact-long64-cvtsi2sd-xmm0rax),
 [plan](../plans/STAGE_2.md#s2-37o--exact-long64-cvtsi2sd-xmm0rax), and
 [fixtures](../../tests/fixtures/x86/stage2/README.md#s2-37o-local-cvtsi2sd-r64).
+
+## S2-37q — canonical Long64 CVTSI2SD register operand space
+
+Implemented schema-v2 profile `s2-long-cvtsi2sd-registers-v1` for canonical
+Long64 r32/r64 register forms across XMM0–15 × GPR0–15 (512 forms). The schema
+parser derives width, indices, and length from the complete stream, enforces
+canonical REX and ModR/M.mod=3, and checks a single executable mapping, budget
+one, checked stop address, and exact control/result echoes. The interpreter
+uses the selected source and destination register banks; r32 reads only low32
+and converts signed i32 exactly, while r64 uses the established MXCSR rounding
+and Precision behavior. All unrelated state is preserved. JIT/native remain
+denied, and S2-37n/o fixed forms remain separately restricted.
+
+The runner test iterates all 512 encodings with independent schema-result
+validation, distinct GPR/XMM sentinels, r32 cases sharing low32 values across
+different GPR high halves, and RSP as an ordinary r64 source. It checks all
+four RC modes × PM × OSXMMEXCPT × old PE, canonical refusal inputs, result and
+control tampering, JIT/native denial, and unchanged S2-37n/o fixture refusals.
+The decoder has a separate 512-form selector/width test. Focused checks passed:
+`cargo test -p od-isa cvtsi2sd --offline`,
+`cargo test -p od-testkit cvtsi2sd --offline`,
+`cargo test -p od-runner cvtsi2sd --offline`,
+`cargo fmt --all -- --check`, and
+`cargo check --workspace --all-targets --offline`. No hardware execution was
+performed; memory m32/m64, other modes/prefixes, generic CPUID admission, and
+physical acceptance remain open.
+Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SD pp. 3-236–3-237, Type 3
+Table 2-20 p. 2-28; Vol. 1 §§11.5.2.6 and 11.5.3; REX §2.2.1.2/Table 2-4
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37q--canonical-long64-cvtsi2sd-register-operand-space),
+[plan](../plans/STAGE_2.md#s2-37q--canonical-long64-cvtsi2sd-register-operands), and
+[fixtures](../../tests/fixtures/x86/stage2/README.md#s2-37q-canonical-cvtsi2sd-register-space).

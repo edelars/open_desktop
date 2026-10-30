@@ -3150,8 +3150,11 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && prefixes.segment.is_none()
             && !prefixes.operand_override
             && !prefixes.address_override
-            && prefix_count == 1
-            && prefixes.rex.is_none();
+            && (prefix_count == 1 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && matches!(prefixes.rex, Some(0x41 | 0x44 | 0x45))
+                    && prefix_bytes[0] == 0xf2
+                    && prefix_bytes[1] == prefixes.rex.unwrap());
         let cvtsi2sd_r64_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x2a
             && prefixes.group1 == Some(0xf2)
@@ -3159,9 +3162,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && !prefixes.operand_override
             && !prefixes.address_override
             && prefix_count == 2
-            && prefixes.rex == Some(0x48)
+            && matches!(prefixes.rex, Some(0x48 | 0x49 | 0x4c | 0x4d))
             && prefix_bytes[0] == 0xf2
-            && prefix_bytes[1] == 0x48;
+            && prefix_bytes[1] == prefixes.rex.unwrap();
         let maxss_register_masked = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x5f
             && prefixes.group1 == Some(0xf3)
@@ -3501,22 +3504,22 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Escape0f, 0x2a) if cvtsi2sd_r32_register => {
                 let modrm = self.byte()?;
-                if modrm != 0xc0 {
+                if modrm >> 6 != 3 {
                     return Err(self.unsupported(opcode));
                 }
                 Operation::Cvtsi2sdR32Register {
-                    destination: 0,
-                    source: 0,
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
                 }
             }
             (OpcodeMap::Escape0f, 0x2a) if cvtsi2sd_r64_register => {
                 let modrm = self.byte()?;
-                if modrm != 0xc0 {
+                if modrm >> 6 != 3 {
                     return Err(self.unsupported(opcode));
                 }
                 Operation::Cvtsi2sdR64Register {
-                    destination: 0,
-                    source: 0,
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
                 }
             }
             (OpcodeMap::Escape0f, 0x5f) if maxsd_register_masked => {
@@ -18344,6 +18347,53 @@ mod tests {
             &[0xc5, 0xf9, 0x63, 0xc1],
             &[0xc4, 0xe1, 0x79, 0x63, 0xc1],
             &[0x62, 0xf1, 0x7d, 0x08, 0x63, 0xc1],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn cvtsi2sd_decodes_canonical_register_space_and_rejects_other_forms() {
+        for wide in [false, true] {
+            for destination in 0..16u8 {
+                for source in 0..16u8 {
+                    let mut bytes = vec![0xf2];
+                    let rex = if wide {
+                        Some(0x48 | ((destination >> 3) << 2) | (source >> 3))
+                    } else if destination >= 8 || source >= 8 {
+                        Some(0x40 | ((destination >> 3) << 2) | (source >> 3))
+                    } else {
+                        None
+                    };
+                    if let Some(rex) = rex {
+                        bytes.push(rex);
+                    }
+                    bytes.extend([0x0f, 0x2a, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+                    let decoded = Memory::new(&bytes)
+                        .decode()
+                        .unwrap_or_else(|error| panic!("{bytes:02x?}: {error:?}"));
+                    assert_eq!(decoded.length, bytes.len() as u8);
+                    let expected = if wide {
+                        Operation::Cvtsi2sdR64Register {
+                            destination,
+                            source,
+                        }
+                    } else {
+                        Operation::Cvtsi2sdR32Register {
+                            destination,
+                            source,
+                        }
+                    };
+                    assert_eq!(decoded.operation, expected, "{bytes:02x?}");
+                }
+            }
+        }
+        for bytes in [
+            &[0xf2, 0x40, 0x0f, 0x2a, 0xc0][..],
+            &[0xf2, 0x42, 0x0f, 0x2a, 0xc0],
+            &[0xf2, 0xf2, 0x0f, 0x2a, 0xc0],
+            &[0x48, 0xf2, 0x0f, 0x2a, 0xc0],
+            &[0xf2, 0x0f, 0x2a, 0x00],
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }

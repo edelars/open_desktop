@@ -6311,3 +6311,18 @@ and control tampering, and deny JIT/native backends. Other encodings are local
 profile refusals, not architectural #UD claims. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37o--exact-long64-cvtsi2sd-xmm0rax)
 and [plan](../../../../docs/plans/STAGE_2.md#s2-37o--exact-long64-cvtsi2sd-xmm0rax).
+
+### S2-37q canonical CVTSI2SD register space
+
+The schema-v2 profile `s2-long-cvtsi2sd-registers-v1` admits canonical
+Long64 `CVTSI2SD` r32/r64 register forms across all 16 XMM destinations and 16
+GPR sources (512 forms). The runner test constructs each byte stream from its
+selectors and validates the resulting state against the independent schema
+oracle. r32 reads signed low32; r64 follows the existing MXCSR.RC and sticky PE
+rules. Destination XMM high64 and all other GPR/XMM state are preserved, and
+RSP is treated as an ordinary source without stack access. The profile refuses
+noncanonical REX/prefixes, memory, trailing bytes, VEX and EVEX. The S2-37n/o
+fixed profiles keep their prior restrictions. JIT/native and physical
+acceptance remain closed; m32/m64 memory forms and broader CPU support remain
+open. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37q--canonical-long64-cvtsi2sd-register-operand-space)
+and [plan](../../../../docs/plans/STAGE_2.md#s2-37q--canonical-long64-cvtsi2sd-register-operands).

@@ -255,6 +255,8 @@ pub enum Profile {
     LongCvtsi2sdR32ExactV1,
     #[serde(rename = "s2-long-cvtsi2sd-r64-exact-v1")]
     LongCvtsi2sdR64ExactV1,
+    #[serde(rename = "s2-long-cvtsi2sd-registers-v1")]
+    LongCvtsi2sdRegistersV1,
     #[serde(rename = "s2-long-native-xorpd-xmm0-xmm1-v1")]
     LongNativeXorpdXmm0Xmm1V1,
     #[serde(rename = "s2-long-andpd-reg-v1")]
@@ -1250,6 +1252,7 @@ impl IntegerState {
                     | Profile::LongCvtdq2pdRegistersV1
                     | Profile::LongCvtsi2sdR32ExactV1
                     | Profile::LongCvtsi2sdR64ExactV1
+                    | Profile::LongCvtsi2sdRegistersV1
                     | Profile::LongNativeXorpdXmm0Xmm1V1
                     | Profile::LongAndpdRegV1
                     | Profile::LongOrpdRegV1
@@ -1436,6 +1439,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2pdRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
+                | Profile::LongCvtsi2sdRegistersV1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
                 | Profile::LongAndnpdRegV1
@@ -1573,6 +1577,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2pdRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
+                | Profile::LongCvtsi2sdRegistersV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -1892,6 +1897,7 @@ impl IntegerState {
             | Profile::LongCvtdq2pdRegistersV1
             | Profile::LongCvtsi2sdR32ExactV1
             | Profile::LongCvtsi2sdR64ExactV1
+            | Profile::LongCvtsi2sdRegistersV1
             | Profile::LongNativeXorpdXmm0Xmm1V1
             | Profile::LongAndpdRegV1
             | Profile::LongOrpdRegV1
@@ -2041,6 +2047,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2pdRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
+                | Profile::LongCvtsi2sdRegistersV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -2196,6 +2203,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2pdRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
+                | Profile::LongCvtsi2sdRegistersV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -2360,6 +2368,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2pdRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
+                | Profile::LongCvtsi2sdRegistersV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -2531,6 +2540,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2pdRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
+                | Profile::LongCvtsi2sdRegistersV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -3332,6 +3342,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2pdRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
+                | Profile::LongCvtsi2sdRegistersV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -3460,6 +3471,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2pdRegistersV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
+                | Profile::LongCvtsi2sdRegistersV1
                 | Profile::LongNativeXorpdXmm0Xmm1V1
                 | Profile::LongAndpdRegV1
                 | Profile::LongOrpdRegV1
@@ -5358,7 +5370,9 @@ impl Fixture {
                     "CVTSI2SD requires supported MXCSR bits only",
                 ));
             }
-        } else if self.cvtsi2sd_r32_controls.is_some() {
+        } else if self.cvtsi2sd_r32_controls.is_some()
+            && self.profile != Profile::LongCvtsi2sdRegistersV1
+        {
             return Err(invalid(
                 "cvtsi2sd_r32_controls",
                 "only valid for CVTSI2SD r32 profile",
@@ -5407,11 +5421,76 @@ impl Fixture {
                     "CVTSI2SD r64 requires supported MXCSR bits only",
                 ));
             }
-        } else if self.cvtsi2sd_r64_controls.is_some() {
+        } else if self.cvtsi2sd_r64_controls.is_some()
+            && self.profile != Profile::LongCvtsi2sdRegistersV1
+        {
             return Err(invalid(
                 "cvtsi2sd_r64_controls",
                 "only valid for the CVTSI2SD r64 profile",
             ));
+        }
+        if self.profile == Profile::LongCvtsi2sdRegistersV1 {
+            let r32 = self.cvtsi2sd_r32_controls.ok_or_else(|| {
+                invalid(
+                    "cvtsi2sd_r32_controls",
+                    "required by CVTSI2SD register-space profile",
+                )
+            })?;
+            let r64 = self.cvtsi2sd_r64_controls.ok_or_else(|| {
+                invalid(
+                    "cvtsi2sd_r64_controls",
+                    "required by CVTSI2SD register-space profile",
+                )
+            })?;
+            if r32 != r64 {
+                return Err(invalid(
+                    "cvtsi2sd_controls",
+                    "r32/r64 control echoes must match",
+                ));
+            }
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| {
+                    invalid("memory.code", "required by CVTSI2SD register-space profile")
+                })?;
+            let bytes = decode_bytes(&code.initial_bytes_hex)?;
+            let (_, _, _, length) = cvtsi2sd_register_encoding(&code.initial_bytes_hex)
+                .ok_or_else(|| {
+                    invalid("memory.code", "outside canonical CVTSI2SD register space")
+                })?;
+            let start = self.initial_state.rip.get();
+            if code.guest_address.get() != start
+                || code.length != length
+                || !code.permissions.execute
+                || self.memory.len() != 1
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(u64::from(length))
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+                || bytes.len() != length as usize
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "CVTSI2SD register-space fixtures require one canonical executable form, budget 1, and stop RIP entry+length",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| invalid("state.sse", "required"))?
+                .mxcsr
+                .get();
+            if mxcsr & !0x0000_ffbf != 0 {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "CVTSI2SD requires supported MXCSR bits only",
+                ));
+            }
         }
         if self.profile == Profile::LongMaxssUnmaskedDenormalV1 {
             let _ = self.maxss_unmasked_controls.ok_or_else(|| {
@@ -5741,6 +5820,9 @@ impl Fixture {
                 Profile::LongCvtdq2pdRegistersV1 => cvtdq2pd_register_length(&code_bytes),
                 Profile::LongCvtsi2sdR32ExactV1 => cvtsi2sd_r32_register_length(&code_bytes),
                 Profile::LongCvtsi2sdR64ExactV1 => cvtsi2sd_r64_register_length(&code_bytes),
+                Profile::LongCvtsi2sdRegistersV1 => {
+                    cvtsi2sd_register_encoding(&code_bytes).map(|(_, _, _, length)| length)
+                }
                 Profile::LongMinsdMaskedRegV1 => minsd_register_masked_length(&code_bytes),
                 Profile::LongMaxsdMaskedRegV1 => maxsd_register_masked_length(&code_bytes),
                 Profile::LongMinpdMaskedRegV1 => minpd_register_masked_length(&code_bytes),
@@ -8014,27 +8096,37 @@ impl RunResult {
                 "only valid for the CVTDQ2PD profile",
             ));
         }
-        if self.profile == Profile::LongCvtsi2sdR32ExactV1 {
+        if matches!(
+            self.profile,
+            Profile::LongCvtsi2sdR32ExactV1 | Profile::LongCvtsi2sdRegistersV1
+        ) {
             if snapshot.cvtsi2sd_r32_controls.is_none() {
                 return Err(invalid(
                     "snapshot.cvtsi2sd_r32_controls",
                     "required by the CVTSI2SD r32 profile",
                 ));
             }
-        } else if snapshot.cvtsi2sd_r32_controls.is_some() {
+        } else if snapshot.cvtsi2sd_r32_controls.is_some()
+            && self.profile != Profile::LongCvtsi2sdRegistersV1
+        {
             return Err(invalid(
                 "snapshot.cvtsi2sd_r32_controls",
                 "only valid for the CVTSI2SD r32 profile",
             ));
         }
-        if self.profile == Profile::LongCvtsi2sdR64ExactV1 {
+        if matches!(
+            self.profile,
+            Profile::LongCvtsi2sdR64ExactV1 | Profile::LongCvtsi2sdRegistersV1
+        ) {
             if snapshot.cvtsi2sd_r64_controls.is_none() {
                 return Err(invalid(
                     "snapshot.cvtsi2sd_r64_controls",
                     "required by the CVTSI2SD r64 profile",
                 ));
             }
-        } else if snapshot.cvtsi2sd_r64_controls.is_some() {
+        } else if snapshot.cvtsi2sd_r64_controls.is_some()
+            && self.profile != Profile::LongCvtsi2sdRegistersV1
+        {
             return Err(invalid(
                 "snapshot.cvtsi2sd_r64_controls",
                 "only valid for the CVTSI2SD r64 profile",
@@ -8286,9 +8378,12 @@ impl RunResult {
                 loaded.fixture.cvtsi2sd_r32_controls,
                 value.cvtsi2sd_r32_controls,
             ) {
-                (Profile::LongCvtsi2sdR32ExactV1, Some(input), Some(output)) if input == output => {
-                }
-                (Profile::LongCvtsi2sdR32ExactV1, _, _) => {
+                (
+                    Profile::LongCvtsi2sdR32ExactV1 | Profile::LongCvtsi2sdRegistersV1,
+                    Some(input),
+                    Some(output),
+                ) if input == output => {}
+                (Profile::LongCvtsi2sdR32ExactV1 | Profile::LongCvtsi2sdRegistersV1, _, _) => {
                     return Err(FormatError::CaseMismatch("cvtsi2sd_r32_controls"));
                 }
                 (_, None, None) => {}
@@ -8296,15 +8391,20 @@ impl RunResult {
             }
             if loaded.fixture.profile == Profile::LongCvtsi2sdR32ExactV1 {
                 validate_cvtsi2sd_r32_result(loaded, self, value)?;
+            } else if loaded.fixture.profile == Profile::LongCvtsi2sdRegistersV1 {
+                validate_cvtsi2sd_registers_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
                 loaded.fixture.cvtsi2sd_r64_controls,
                 value.cvtsi2sd_r64_controls,
             ) {
-                (Profile::LongCvtsi2sdR64ExactV1, Some(input), Some(output)) if input == output => {
-                }
-                (Profile::LongCvtsi2sdR64ExactV1, _, _) => {
+                (
+                    Profile::LongCvtsi2sdR64ExactV1 | Profile::LongCvtsi2sdRegistersV1,
+                    Some(input),
+                    Some(output),
+                ) if input == output => {}
+                (Profile::LongCvtsi2sdR64ExactV1 | Profile::LongCvtsi2sdRegistersV1, _, _) => {
                     return Err(FormatError::CaseMismatch("cvtsi2sd_r64_controls"));
                 }
                 (_, None, None) => {}
@@ -10208,6 +10308,140 @@ fn validate_cvtsi2sd_r64_result(
             && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
         (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
         _ => return Err(FormatError::CaseMismatch("CVTSI2SD r64 outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_cvtsi2sd_registers_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    let (wide, destination, source, length) =
+        cvtsi2sd_register_encoding(&code.initial_bytes_hex)
+            .ok_or(FormatError::CaseMismatch("CVTSI2SD encoding"))?;
+    let controls = fixture
+        .cvtsi2sd_r32_controls
+        .ok_or(FormatError::CaseMismatch("cvtsi2sd_r32_controls"))?;
+    if Some(controls) != fixture.cvtsi2sd_r64_controls {
+        return Err(FormatError::CaseMismatch("cvtsi2sd control echo"));
+    }
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let mxcsr = initial_sse.mxcsr.get() as u32;
+    let (bits, inexact) = if wide {
+        independent_i64_to_binary64(
+            fixture.initial_state.gpr[usize::from(source)].get() as i64,
+            (mxcsr >> 13) & 3,
+        )
+    } else {
+        (
+            independent_i32_to_binary64_bits(
+                fixture.initial_state.gpr[usize::from(source)].get() as u32 as i32
+            ),
+            false,
+        )
+    };
+    let prerequisite = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let unmasked_precision = wide && prerequisite.is_none() && inexact && mxcsr & (1 << 12) == 0;
+    let post_fault = if unmasked_precision {
+        Some(if controls.cr4_osxmmexcpt { 19 } else { 6 })
+    } else {
+        None
+    };
+    let fault = prerequisite.or(post_fault);
+    if !matches!(
+        (fault.is_some(), fixture.expected_exit),
+        (true, ExpectedExit::Exception) | (false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch(
+            "CVTSI2SD register-space expected exit",
+        ));
+    }
+    let mut expected_state = fixture.initial_state.clone();
+    if prerequisite.is_none() {
+        let sse = expected_state
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        if wide {
+            sse.mxcsr = HexU64(u64::from(mxcsr | (u32::from(inexact) << 5)));
+        }
+        if post_fault.is_none() {
+            let mut xmm = decode_bytes(&sse.xmm[usize::from(destination)])?;
+            xmm[..8].copy_from_slice(&bits.to_le_bytes());
+            sse.xmm[usize::from(destination)] = crate::memory::encode_bytes(&xmm);
+            expected_state.rip = HexU64(
+                fixture
+                    .initial_state
+                    .rip
+                    .get()
+                    .checked_add(u64::from(length))
+                    .ok_or(FormatError::CaseMismatch("CVTSI2SD RIP overflow"))?,
+            );
+        }
+    }
+    let expected_memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected_state
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != expected_memory
+    {
+        return Err(FormatError::CaseMismatch(
+            "CVTSI2SD register-space output state",
+        ));
+    }
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(u64::from(fault.is_none())),
+        })
+    {
+        return Err(FormatError::CaseMismatch(
+            "CVTSI2SD register-space retirement count",
+        ));
+    }
+    match (fault, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == Observation::Unavailable {
+                    reason: "exception has no architectural error code".into(),
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => {
+            return Err(FormatError::CaseMismatch(
+                "CVTSI2SD register-space outcome/exception",
+            ));
+        }
     }
     Ok(())
 }
@@ -12120,6 +12354,45 @@ fn cvtsi2sd_r32_register_length(code_bytes: &str) -> Option<u32> {
 
 fn cvtsi2sd_r64_register_length(code_bytes: &str) -> Option<u32> {
     code_bytes.eq_ignore_ascii_case("f2480f2ac0").then_some(5)
+}
+
+/// Independently parse the complete canonical Long64 CVTSI2SD register encoding.
+fn cvtsi2sd_register_encoding(code_bytes: &str) -> Option<(bool, u8, u8, u32)> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (rex, modrm) = match bytes.as_slice() {
+        [0xf2, 0x0f, 0x2a, modrm] => (0u8, *modrm),
+        [0xf2, rex, 0x0f, 0x2a, modrm] => (*rex, *modrm),
+        _ => return None,
+    };
+    if modrm >> 6 != 3 {
+        return None;
+    }
+    let wide = rex & 8 != 0;
+    let destination = ((modrm >> 3) & 7) | (((rex >> 2) & 1) << 3);
+    let source = (modrm & 7) | ((rex & 1) << 3);
+    let expected_rex = match (wide, destination >= 8, source >= 8) {
+        (false, false, false) => None,
+        (false, true, false) => Some(0x44),
+        (false, false, true) => Some(0x41),
+        (false, true, true) => Some(0x45),
+        (true, false, false) => Some(0x48),
+        (true, true, false) => Some(0x4c),
+        (true, false, true) => Some(0x49),
+        (true, true, true) => Some(0x4d),
+    };
+    if (bytes.len() == 4 && expected_rex.is_none())
+        || (bytes.len() == 5 && expected_rex == Some(rex))
+    {
+        Some((wide, destination, source, bytes.len() as u32))
+    } else {
+        None
+    }
 }
 
 fn punpckhqdq_register_length(code_bytes: &str) -> Option<u32> {

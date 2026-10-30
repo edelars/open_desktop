@@ -17981,6 +17981,204 @@ fn cvtsi2sd_r32_exact_literals_use_eax_bits_preserve_state_and_deny_other_backen
 }
 
 #[test]
+fn cvtsi2sd_canonical_register_space_executes_all_512_forms() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let template_path = root.join("s2_37n_cvtsi2sd_r32_zero.case.json");
+    let mut fixture = Fixture::from_json(&fs::read(template_path).unwrap())
+        .unwrap()
+        .fixture;
+    fixture.profile = od_testkit::v2::Profile::LongCvtsi2sdRegistersV1;
+    let controls = fixture.cvtsi2sd_r32_controls.unwrap();
+    fixture.cvtsi2sd_r64_controls = Some(controls);
+    fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+    let mut denial_source = None;
+    let mut representative = None;
+    for wide in [false, true] {
+        for destination in 0u8..16 {
+            for source in 0u8..16 {
+                let needs_rex = destination >= 8 || source >= 8;
+                let rex = if wide {
+                    Some(0x48 | (u8::from(destination >= 8) << 2) | u8::from(source >= 8))
+                } else if needs_rex {
+                    Some(0x40 | (u8::from(destination >= 8) << 2) | u8::from(source >= 8))
+                } else {
+                    None
+                };
+                let mut bytes = vec![0xf2];
+                if let Some(rex) = rex {
+                    bytes.push(rex);
+                }
+                bytes.extend([0x0f, 0x2a, 0xc0 | ((destination & 7) << 3) | (source & 7)]);
+                fixture.memory[0].initial_bytes_hex =
+                    bytes.iter().map(|b| format!("{b:02x}")).collect();
+                fixture.memory[0].length = bytes.len() as u32;
+                fixture.memory[0].comparison_mask_hex = "ff".repeat(bytes.len());
+                let instruction_length = bytes.len() as u64;
+                let entry = fixture.initial_state.rip.get();
+                fixture.stop_rip = Some(HexU64(entry + bytes.len() as u64));
+                fixture.initial_state.gpr = std::array::from_fn(|index| {
+                    let distinct_high = 0xa5a5_0000_0000_0000u64 ^ ((index as u64) << 48);
+                    let low = if wide {
+                        0x0020_0000_0000_0001u64 + index as u64
+                    } else {
+                        0x8000_0001u64
+                    };
+                    HexU64(distinct_high | (low & 0x0000_ffff_ffff_ffff))
+                });
+                let sse = fixture.initial_state.sse.as_mut().unwrap();
+                sse.xmm = std::array::from_fn(|index| {
+                    let seed = (index as u8).wrapping_mul(13).wrapping_add(7);
+                    (0..16)
+                        .map(|lane| format!("{:02x}", seed.wrapping_add(lane as u8)))
+                        .collect()
+                });
+                fixture.expected_exit = ExpectedExit::StopAddress;
+                let bytes = fixture.to_json().unwrap();
+                let (input, result) = run(&bytes, "interpreter", 0);
+                assert_eq!(
+                    input.fixture.memory[0].initial_bytes_hex,
+                    fixture.memory[0].initial_bytes_hex
+                );
+                assert_eq!(
+                    od_testkit::v2::compare(&input, &result, &result).unwrap(),
+                    Vec::<String>::new()
+                );
+                let Observation::Available { ref value } = result.snapshot else {
+                    panic!("snapshot unavailable")
+                };
+                assert_eq!(
+                    value.state.gpr, fixture.initial_state.gpr,
+                    "all GPRs preserved"
+                );
+                assert_eq!(value.state.rip.get(), entry + instruction_length);
+                let initial = fixture.initial_state.sse.as_ref().unwrap();
+                for index in 0..16 {
+                    if index != usize::from(destination) {
+                        assert_eq!(
+                            value.state.sse.as_ref().unwrap().xmm[index],
+                            initial.xmm[index]
+                        );
+                    } else {
+                        assert_eq!(
+                            &value.state.sse.as_ref().unwrap().xmm[index][16..],
+                            &initial.xmm[index][16..]
+                        );
+                    }
+                }
+                denial_source.get_or_insert(bytes);
+                representative.get_or_insert((input, result));
+            }
+        }
+    }
+    let source = denial_source.unwrap();
+    let (_, jit) = run(&source, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    let (_, native) = run(&source, "native", 4);
+    assert!(matches!(native.outcome, Outcome::Unsupported { .. }));
+
+    // R64: exercise all rounding, precision-mask, OSXMMEXCPT, and old-PE inputs
+    // on an RSP source and an extended XMM destination.
+    let mut matrix = fixture.clone();
+    let matrix_bytes = [0xf2, 0x4c, 0x0f, 0x2a, 0xfc];
+    matrix.memory[0].initial_bytes_hex = matrix_bytes.iter().map(|b| format!("{b:02x}")).collect();
+    matrix.memory[0].length = 5;
+    matrix.memory[0].comparison_mask_hex = "ff".repeat(5);
+    matrix.stop_rip = Some(HexU64(matrix.initial_state.rip.get() + 5));
+    matrix.initial_state.gpr[4] = HexU64(0x0020_0000_0000_0001);
+    for rc in 0..4u32 {
+        for pm in [false, true] {
+            for osxmmexcpt in [false, true] {
+                for old_pe in [false, true] {
+                    let controls = od_testkit::v2::Cvtsi2sdR32ControlSnapshot {
+                        sse2_available: true,
+                        cr0_em: false,
+                        cr0_ts: false,
+                        cr4_osfxsr: true,
+                        cr4_osxmmexcpt: osxmmexcpt,
+                    };
+                    matrix.cvtsi2sd_r32_controls = Some(controls);
+                    matrix.cvtsi2sd_r64_controls = Some(controls);
+                    let mxcsr = (0x1f80u64 & !(1 << 12))
+                        | (u64::from(rc) << 13)
+                        | (if pm { 1 << 12 } else { 0 })
+                        | (u64::from(old_pe) << 5);
+                    matrix.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+                    matrix.expected_exit = if pm {
+                        ExpectedExit::StopAddress
+                    } else {
+                        ExpectedExit::Exception
+                    };
+                    let (input, result) = run(&matrix.to_json().unwrap(), "interpreter", 0);
+                    od_testkit::v2::compare(&input, &result, &result).unwrap();
+                    assert_eq!(matches!(result.outcome, Outcome::Exception {}), !pm);
+                }
+            }
+        }
+    }
+
+    let mut noncanonical = fixture.clone();
+    for bad in [
+        vec![0xf2, 0x40, 0x0f, 0x2a, 0xc0],       // redundant REX
+        vec![0xf2, 0x42, 0x0f, 0x2a, 0xc0],       // REX.X
+        vec![0xf2, 0xf2, 0x0f, 0x2a, 0xc0],       // repeated prefix
+        vec![0x48, 0xf2, 0x0f, 0x2a, 0xc0],       // reordered prefix
+        vec![0xf2, 0x0f, 0x2a, 0x00],             // memory
+        vec![0xf2, 0x0f, 0x2a, 0xc0, 0x90],       // trailing byte
+        vec![0xc5, 0xfb, 0x2a, 0xc0],             // VEX
+        vec![0x62, 0xf1, 0xff, 0x08, 0x2a, 0xc0], // EVEX
+    ] {
+        noncanonical.memory[0].initial_bytes_hex = bad.iter().map(|b| format!("{b:02x}")).collect();
+        noncanonical.memory[0].length = bad.len() as u32;
+        noncanonical.memory[0].comparison_mask_hex = "ff".repeat(bad.len());
+        noncanonical.stop_rip = Some(HexU64(
+            noncanonical.initial_state.rip.get() + bad.len() as u64,
+        ));
+        assert!(noncanonical.validate().is_err(), "accepted {bad:02x?}");
+    }
+    let (input, result) = representative.unwrap();
+    let mut bad_result = result.clone();
+    let Observation::Available { value } = &mut bad_result.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.state.sse.as_mut().unwrap().xmm[15].replace_range(..2, "ff");
+    assert!(od_testkit::v2::compare(&input, &result, &bad_result).is_err());
+    let mut changed_selector = input.fixture.clone();
+    let selector_bytes =
+        od_testkit::v2::decode_bytes(&changed_selector.memory[0].initial_bytes_hex).unwrap();
+    let last = changed_selector.memory[0].length as usize - 1;
+    let changed_modrm = selector_bytes[last] ^ 1;
+    changed_selector.memory[0]
+        .initial_bytes_hex
+        .replace_range(last * 2..last * 2 + 2, &format!("{changed_modrm:02x}"));
+    let changed_selector = Fixture::from_json(&changed_selector.to_json().unwrap()).unwrap();
+    assert!(od_testkit::v2::compare(&changed_selector, &result, &result).is_err());
+    let mut bad_controls = result.clone();
+    let Observation::Available { value } = &mut bad_controls.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.cvtsi2sd_r64_controls.as_mut().unwrap().cr4_osfxsr = false;
+    assert!(od_testkit::v2::compare(&input, &result, &bad_controls).is_err());
+
+    let old_r32 =
+        Fixture::from_json(&fs::read(root.join("s2_37n_cvtsi2sd_r32_zero.case.json")).unwrap())
+            .unwrap()
+            .fixture;
+    let mut old_r32_extended = old_r32;
+    old_r32_extended.memory[0].initial_bytes_hex = "f2440f2ac0".into();
+    old_r32_extended.memory[0].length = 5;
+    old_r32_extended.memory[0].comparison_mask_hex = "ff".repeat(5);
+    old_r32_extended.stop_rip = Some(HexU64(old_r32_extended.initial_state.rip.get() + 5));
+    assert!(old_r32_extended.validate().is_err());
+    let mut old_r64 =
+        Fixture::from_json(&fs::read(root.join("s2_37o_cvtsi2sd_r64_zero.case.json")).unwrap())
+            .unwrap()
+            .fixture;
+    old_r64.memory[0].initial_bytes_hex = "f2490f2ac0".into();
+    assert!(old_r64.validate().is_err());
+}
+
+#[test]
 fn cvtsi2sd_r64_exact_literals_validate_precision_exits_and_deny_other_backends() {
     let root =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
