@@ -39304,6 +39304,99 @@ mod tests {
                 assert_eq!(eager, expected);
                 assert_eq!(eager_result, result);
 
+                let mut native_eager = initial.clone();
+                let mut native_eager_executor = PublishedBlockExecutor;
+                let native_eager_result = od_jit::dispatch::run_with_native_inc_rax(
+                    scenario_view,
+                    &scenario_admission,
+                    &mut native_eager,
+                    6,
+                    control,
+                    &mut native_eager_executor,
+                )
+                .unwrap();
+                assert_eq!(
+                    native_eager, expected,
+                    "native eager value {value:#x}, CF {carry}"
+                );
+                assert_eq!(native_eager_result.retired_native, 6);
+                assert_eq!(native_eager_result.retired_interpreter, 0);
+
+                let mut native_candidate = initial.clone();
+                let mut native_witness = CandidateWitness {
+                    executor: PublishedBlockExecutor,
+                    pending_seen: false,
+                    entries: Vec::new(),
+                };
+                let native_candidate_result =
+                    od_jit::dispatch::run_with_native_inc_rax_demand_flags_candidate(
+                        scenario_view,
+                        &scenario_admission,
+                        &mut native_candidate,
+                        6,
+                        control,
+                        &mut native_witness,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    native_candidate, expected,
+                    "native candidate value {value:#x}, CF {carry}"
+                );
+                assert_eq!(native_candidate_result.retired_native, 6);
+                assert_eq!(native_candidate_result.retired_interpreter, 0);
+                assert!(
+                    native_witness.pending_seen,
+                    "INC must materialize the pending CMP"
+                );
+
+                for budget in 0..=6 {
+                    let mut bounded = initial.clone();
+                    let bounded_result =
+                        od_jit::dispatch::run_with_native_inc_rax_demand_flags_candidate(
+                            scenario_view,
+                            &scenario_admission,
+                            &mut bounded,
+                            budget,
+                            control,
+                            &mut PublishedBlockExecutor,
+                        )
+                        .unwrap();
+                    let mut interpreted = initial.clone();
+                    let retired = interpret(&scenario, base, &mut interpreted, budget, None);
+                    assert_eq!(
+                        bounded, interpreted,
+                        "native budget {budget}, input {value:#x}"
+                    );
+                    assert_eq!(
+                        bounded_result.retired_native + bounded_result.retired_interpreter,
+                        retired
+                    );
+                    assert_eq!(bounded_result.retired_interpreter, 0);
+                }
+
+                let stop_at_inc = od_jit::dispatch::DispatchControl {
+                    stop_rip: Some(inc_rip),
+                    stop_requested: &stop,
+                    event_requested: None,
+                };
+                let mut stopped = initial.clone();
+                let stopped_result =
+                    od_jit::dispatch::run_with_native_inc_rax_demand_flags_candidate(
+                        scenario_view,
+                        &scenario_admission,
+                        &mut stopped,
+                        6,
+                        stop_at_inc,
+                        &mut PublishedBlockExecutor,
+                    )
+                    .unwrap();
+                let mut expected_stopped = initial.clone();
+                interpret(&scenario, base, &mut expected_stopped, 2, None);
+                assert_eq!(stopped, expected_stopped);
+                assert_eq!(stopped.rip, inc_rip);
+                assert_eq!(stopped_result.retired_native, 2);
+                assert_eq!(stopped_result.retired_interpreter, 0);
+
                 // Stop at INC after native CMP/MOV; resume must execute INC only once.
                 let stop_at_inc = od_jit::dispatch::DispatchControl {
                     stop_rip: Some(inc_rip),

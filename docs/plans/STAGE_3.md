@@ -2324,6 +2324,19 @@ physical-x86 checks remain deferred to the end of Stage 3. See the
 
 **Готово:** выбранный JIT subset шире только за счёт реально проверенных форм; весь interpreter ISA не является обязательным native lowering этапа 3.
 
+#### S3-33a. Exact native qword INC RAX
+
+Добавлен отдельный uncached opt-in путь lowering только точного bare `48 FF C0`
+через существующий `S0_09NopIncRaxAdmission`. Он представляет INC как W64 Add
+с `FlagEffect::WriteMask`, сохраняет CF и обновляет PF/AF/ZF/SF/OF. Eager и
+demand-flags candidate материализуют перед INC ожидающий полный writer; candidate
+не вводит новый pending descriptor или helper ABI. Существующий S3-29c
+interpreter bridge остаётся baseline. Native host parity, branch-consumer,
+retirement, budget, STOP, PC-map и negative-form checks документируются в
+[S3-33a report](../reports/STAGE_3_S3-33a_2026-10-30.md). Это один узкий
+correctness slice; S3-33 и Stage 3 остаются открытыми, performance/Mini
+проверки отложены до конца этапа.
+
 ## 9. Проверка, производительность и интеграция
 
 ### S3-34. Собрать corpus и проверить сам harness

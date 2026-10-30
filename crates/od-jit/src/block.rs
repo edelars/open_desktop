@@ -15,6 +15,7 @@ pub const MAX_BLOCK_BYTES: usize = 256;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BlockBuildProfile {
     S0_09,
+    S0_09NativeIncRax,
     CheckedQwordLoad,
     CheckedQwordStore,
     CheckedQwordMemoryPair,
@@ -562,6 +563,24 @@ pub fn build_block(
     limits: BlockLimits,
 ) -> Result<BuildOutcome, BuildError> {
     build_block_with_profile(code, entry_rip, context, limits, BlockBuildProfile::S0_09)
+}
+
+/// Build an opt-in S0-09 block that may include only the exact admitted
+/// `48 FF C0` native INC RAX form. Callers must also provide the matching
+/// full-code admission witness before using this profile.
+pub(crate) fn build_block_for_native_inc_rax(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    context: AccessContext,
+    limits: BlockLimits,
+) -> Result<BuildOutcome, BuildError> {
+    build_block_with_profile(
+        code,
+        entry_rip,
+        context,
+        limits,
+        BlockBuildProfile::S0_09NativeIncRax,
+    )
 }
 
 /// Build one exact checked-qword-load candidate. This profile is opt-in and
@@ -1177,6 +1196,8 @@ fn build_block_with_profile(
                         decoded.length,
                         0x8b,
                     ))
+        } else if profile == BlockBuildProfile::S0_09NativeIncRax {
+            is_s0_09_form(decoded) || is_exact_inc_rax(decoded, &code.bytes[guest_offset..])
         } else {
             is_s0_09_form(decoded)
         };
@@ -1254,7 +1275,7 @@ fn build_block_with_profile(
         let complete_bounded_profile = match profile {
             BlockBuildProfile::CheckedQwordMemoryPair => instructions.len() == 2,
             BlockBuildProfile::CheckedQwordLoad | BlockBuildProfile::CheckedQwordStore => true,
-            BlockBuildProfile::S0_09 => false,
+            BlockBuildProfile::S0_09 | BlockBuildProfile::S0_09NativeIncRax => false,
         };
         if complete_bounded_profile {
             return Ok(finish(

@@ -47,7 +47,7 @@ pub enum LoweringError {
 
 /// Lower one bounded block-builder result and verify every emitted Program.
 pub fn lower(outcome: &BuildOutcome) -> Result<LoweringOutcome, LoweringError> {
-    lower_with_admission(outcome, None, None, None)
+    lower_with_admission(outcome, None, None, None, false)
 }
 
 /// Lower a block for a future dispatcher using complete fixture-v1 decode
@@ -58,7 +58,7 @@ pub(crate) fn lower_for_dispatch(
     outcome: &BuildOutcome,
     admission: &AdmittedInstructionBoundaries,
 ) -> Result<LoweringOutcome, LoweringError> {
-    lower_with_admission(outcome, Some(admission), None, None)
+    lower_with_admission(outcome, Some(admission), None, None, false)
 }
 
 /// Lower a bounded block for the separately admitted S0-09-plus-bare-NOP
@@ -67,14 +67,39 @@ pub(crate) fn lower_for_nop_fallback(
     outcome: &BuildOutcome,
     admission: &S0_09NopAdmission,
 ) -> Result<LoweringOutcome, LoweringError> {
-    lower_with_admission(outcome, Some(admission.boundaries()), Some(admission), None)
+    lower_with_admission(
+        outcome,
+        Some(admission.boundaries()),
+        Some(admission),
+        None,
+        false,
+    )
 }
 
 pub(crate) fn lower_for_nop_inc_rax_fallback(
     outcome: &BuildOutcome,
     admission: &S0_09NopIncRaxAdmission,
 ) -> Result<LoweringOutcome, LoweringError> {
-    lower_with_admission(outcome, Some(admission.boundaries()), None, Some(admission))
+    lower_with_admission(
+        outcome,
+        Some(admission.boundaries()),
+        None,
+        Some(admission),
+        false,
+    )
+}
+
+pub(crate) fn lower_for_native_inc_rax(
+    outcome: &BuildOutcome,
+    admission: &S0_09NopIncRaxAdmission,
+) -> Result<LoweringOutcome, LoweringError> {
+    lower_with_admission(
+        outcome,
+        Some(admission.boundaries()),
+        None,
+        Some(admission),
+        true,
+    )
 }
 
 fn lower_with_admission(
@@ -82,6 +107,7 @@ fn lower_with_admission(
     admission: Option<&AdmittedInstructionBoundaries>,
     nop_admission: Option<&S0_09NopAdmission>,
     nop_inc_rax_admission: Option<&S0_09NopIncRaxAdmission>,
+    native_inc_rax: bool,
 ) -> Result<LoweringOutcome, LoweringError> {
     let block = match outcome {
         BuildOutcome::NoBlock(no_block) => {
@@ -234,7 +260,11 @@ fn lower_with_admission(
     let mut operations = Vec::new();
     let mut next_temp = 0u32;
     for (index, instruction) in instructions.iter().enumerate() {
-        if !block::is_s0_09_form(instruction.decoded)
+        let admitted_native_inc = native_inc_rax
+            && nop_inc_rax_admission
+                .is_some_and(|proof| proof.admits_inc_rax(instruction.guest_rip));
+        if !admitted_native_inc
+            && !block::is_s0_09_form(instruction.decoded)
             && !block::is_checked_qword_load_form(instruction.decoded)
             && !block::is_checked_qword_store_form(instruction.decoded)
         {
@@ -246,7 +276,11 @@ fn lower_with_admission(
             guest_rip: instruction.guest_rip,
             next_rip: instruction.next_rip,
         });
-        lower_instruction(instruction, index, &mut next_temp, &mut operations)?;
+        if admitted_native_inc {
+            lower_exact_inc_rax(instruction, index, &mut next_temp, &mut operations)?;
+        } else {
+            lower_instruction(instruction, index, &mut next_temp, &mut operations)?;
+        }
     }
 
     match terminal {
@@ -442,6 +476,56 @@ fn deferred_error(reason: &BlockStopReason) -> Option<DecodeBoundary> {
         BlockStopReason::DecodeBoundary(boundary) => Some(boundary.clone()),
         _ => None,
     }
+}
+
+fn lower_exact_inc_rax(
+    instruction: &DecodedInstruction,
+    index: usize,
+    next_temp: &mut u32,
+    operations: &mut Vec<Operation>,
+) -> Result<(), LoweringError> {
+    let invalid = || LoweringError::InvalidDecodedForm {
+        guest_rip: instruction.guest_rip,
+    };
+    if !matches!(instruction.decoded.operation,
+        DecodedOperation::Arithmetic {
+            kind: ArithmeticKind::Inc,
+            dst: Operand::Register(destination),
+            src: Operand::Immediate(1),
+        } if destination.register() == od_isa::Register::Rax
+            && destination.size() == od_isa::OperandSize::Qword)
+    {
+        return Err(invalid());
+    }
+    operations.push(Operation::BeginInstruction { index });
+    let lhs = allocate_temp(next_temp);
+    let rhs = allocate_temp(next_temp);
+    let result = allocate_temp(next_temp);
+    operations.push(Operation::ReadGpr {
+        dst: lhs,
+        register: crate::ir::GuestGpr(0),
+        width: IntWidth::W64,
+    });
+    operations.push(Operation::Constant {
+        dst: rhs,
+        width: IntWidth::W64,
+        value: 1,
+    });
+    operations.push(Operation::Integer {
+        kind: IntegerKind::Add,
+        lhs,
+        rhs,
+        result: Some(result),
+        width: IntWidth::W64,
+        flags: FlagEffect::WriteMask(crate::ir::INC_RAX_FLAGS_MASK),
+    });
+    operations.push(Operation::WriteGpr {
+        register: crate::ir::GuestGpr(0),
+        src: result,
+        width: IntWidth::W64,
+    });
+    operations.push(Operation::CommitInstruction { index });
+    Ok(())
 }
 
 fn lower_instruction(

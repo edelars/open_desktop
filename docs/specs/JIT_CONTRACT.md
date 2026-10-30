@@ -1377,7 +1377,7 @@ boundary. The candidate materializes canonical RFLAGS before returning
 `NeedInterpreter`; the dispatcher then drops the completed native mapping and
 uses `od_isa::execute::step` with an immutable three-byte fetch window. The
 bridge retires exactly one instruction and requires RIP to advance by three.
-INC itself is never lowered natively. Its existing interpreter semantics
+In this bridge path, INC itself is not lowered natively. Its existing interpreter semantics
 preserve CF and compute OF/SF/ZF/AF/PF; the next native Jcc/suffix block begins
 from the resulting state. Event requests are sampled before the synchronous
 INC step and remain pending on yield; there is no deterministic callback point
@@ -1392,6 +1392,26 @@ flags cover zero, signed qword extrema, `u64::MAX`, nibble and parity edges;
 the candidate PC-map witness requires pending flags before handoff. S3-29
 remains open pending remaining correctness gates, final strategy comparison,
 and deferred Mini/performance work.
+
+### S3-33a: opt-in exact native INC RAX
+
+The separately named uncached `compile_block_for_native_inc_rax*` and
+`dispatch::run_with_native_inc_rax*` paths reuse
+`S0_09NopIncRaxAdmission`. They may lower only the admitted exact bare
+`48 FF C0`: W64 integer Add with constant one and a `WriteMask` for PF/AF/ZF/SF/OF.
+The staged RFLAGS merge preserves CF and every bit outside that mask. A pending
+full arithmetic writer in the demand-flags candidate is materialized before
+INC; its live allocator homes are preserved across the helper call. INC itself
+does not become a pending writer. Other registers, DEC, memory operands, and
+prefixed encodings remain outside this native opt-in path. Existing S3-29c
+interpreter-bridge APIs remain unchanged and continue to serve as the baseline.
+
+Host coverage compares complete state, flags and retirement with the interpreter
+for CF 0/1, arithmetic edges, and following native JZ/JNZ consumers. It also
+covers candidate budget and STOP-RIP boundaries and a pending full writer before
+INC. This is bounded correctness evidence only; it changes no shared cache or
+default policy and makes no performance claim. Mini/performance remain deferred
+until Stage 3 ends. See [S3-33a report](../reports/STAGE_3_S3-33a_2026-10-30.md).
 
 ### S3-29d: uncached arithmetic-to-checked-load handoff
 

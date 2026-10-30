@@ -393,6 +393,82 @@ pub fn compile_block_for_nop_inc_rax_fallback_demand_flags_candidate(
     )
 }
 
+/// Compile an exact INC RAX native candidate. This API is opt-in and uncached;
+/// the established interpreter-bridge path remains available independently.
+pub fn compile_block_for_native_inc_rax(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopIncRaxAdmission,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    compile_native_inc_rax_inner(
+        code,
+        entry_rip,
+        admission,
+        crate::block_emitter::FlagMaterializationStrategy::Eager,
+    )
+}
+
+/// Compile an uncached demand-flags candidate for the exact INC RAX path.
+pub fn compile_block_for_native_inc_rax_demand_flags_candidate(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopIncRaxAdmission,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    compile_native_inc_rax_inner(
+        code,
+        entry_rip,
+        admission,
+        crate::block_emitter::FlagMaterializationStrategy::DemandDrivenCandidate,
+    )
+}
+
+fn compile_native_inc_rax_inner(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &S0_09NopIncRaxAdmission,
+    strategy: crate::block_emitter::FlagMaterializationStrategy,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    if !admission.matches_code(code) {
+        return Err(BlockCompileError::NopAdmissionDoesNotMatchCode);
+    }
+    if !admission.contains(entry_rip) {
+        return Err(BlockCompileError::NopEntryNotAdmitted { entry_rip });
+    }
+    let built = block::build_block_for_native_inc_rax(
+        code,
+        entry_rip,
+        AccessContext::default(),
+        BlockLimits::default(),
+    )
+    .map_err(BlockCompileError::Build)?;
+    let lowered = match lowering::lower_for_native_inc_rax(&built, admission)
+        .map_err(BlockCompileError::Lowering)?
+    {
+        LoweringOutcome::Program(lowered) => lowered,
+        LoweringOutcome::NoNativePrefix {
+            rip,
+            reason,
+            deferred_error,
+        } => {
+            return Ok(BlockCompileOutcome::NoNativePrefix {
+                rip,
+                reason,
+                deferred_error,
+            });
+        }
+    };
+    if let BuildOutcome::Block(block) = &built {
+        for instruction in &block.instructions {
+            for rip in [instruction.guest_rip, instruction.next_rip] {
+                if !admission.contains(rip) {
+                    return Err(BlockCompileError::DispatchBlockBoundaryNotAdmitted { rip });
+                }
+            }
+        }
+    }
+    compile_lowered(code.code_end(), lowered, strategy)
+}
+
 fn compile_block_inner(
     code: CodeView<'_>,
     entry_rip: u64,
@@ -660,6 +736,54 @@ mod tests {
                         && range.snapshot == SnapshotAdmissibility::CanonicalBoundary
                 })
         );
+    }
+
+    #[test]
+    fn native_inc_rax_is_opt_in_and_compiles_following_branch_consumers() {
+        let code = [
+            0x48, 0xff, 0xc0, // INC RAX
+            0x74, 0x00, // JZ to code end, consuming INC's ZF
+        ];
+        let view = CodeView::new(0xB000, &code).unwrap();
+        let admission = S0_09NopIncRaxAdmission::from_code(view).unwrap();
+        let bridge = compile_block_for_nop_inc_rax_fallback(view, 0xB000, &admission).unwrap();
+        assert!(matches!(
+            bridge,
+            BlockCompileOutcome::NoNativePrefix {
+                reason: BlockStopReason::UnsupportedDecoded {
+                    guest_rip: 0xB000,
+                    ..
+                },
+                ..
+            }
+        ));
+
+        for candidate in [false, true] {
+            let outcome = if candidate {
+                compile_block_for_native_inc_rax_demand_flags_candidate(view, 0xB000, &admission)
+            } else {
+                compile_block_for_native_inc_rax(view, 0xB000, &admission)
+            }
+            .unwrap();
+            let BlockCompileOutcome::Compiled(compiled) = outcome else {
+                panic!("native INC/JZ should compile");
+            };
+            assert_eq!(compiled.code_end(), 0xB005);
+            let ranges = compiled.emitted().pc_map().ranges();
+            assert!(
+                ranges
+                    .iter()
+                    .any(|range| range.guest_rip
+                        == crate::statepoints::GuestRipSource::Fixed(0xB000))
+            );
+            assert!(
+                ranges
+                    .iter()
+                    .any(|range| range.guest_rip
+                        == crate::statepoints::GuestRipSource::Fixed(0xB003))
+            );
+            assert!(compiled.emitted().safe_entry_provenance());
+        }
     }
 
     #[test]

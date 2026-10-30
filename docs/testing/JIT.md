@@ -78,6 +78,12 @@ The host test runs `CMP→MOV RAX,imm64→INC RAX→JZ→MOV/JNZ→suffix` throu
 
 Mini and performance checks remain deferred to the end of Stage 3. This is uncached local correctness evidence; it does not select a default or extend the ISA beyond exact INC RAX fallback.
 
+## S3-33a: exact native INC RAX
+
+Run the compiler regression `cargo test -p od-jit native_inc_rax_is_opt_in_and_compiles_following_branch_consumers --offline` and the focused host regression above. The additional `compile_block_for_native_inc_rax*` and `dispatch::run_with_native_inc_rax*` APIs reuse the same full-code exact admission, but lower bare `48 FF C0` as W64 Add+1 with a partial `WriteMask`. The demand-flags candidate must materialize a pending full writer and preserve its live allocator homes before the INC helper call. It then merges PF/AF/ZF/SF/OF while preserving CF.
+
+The host regression checks eager and candidate full-state parity for CF=0/1 and the arithmetic edge values, followed by native JZ/JNZ consumers. The native path must retire all selected instructions natively; candidate budget boundaries and STOP-RIP at the pre-INC boundary must match interpreter state without replay. The compiler test also proves that the existing bridge still returns `NoNativePrefix` at INC and that both native strategies include the branch in their PC map. Prefixes, DEC and other registers remain negative admission cases from S3-29c. Do not run Mini or performance checks until the final Stage 3 gate.
+
 ## Срез A: один register-only блок
 
 1. Использовать только точные S0-09 формы из JIT contract и fixtures с

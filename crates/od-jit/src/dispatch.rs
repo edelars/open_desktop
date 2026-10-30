@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use crate::block::{AdmittedInstructionBoundaries, CodeMemory, CodeView};
 use crate::block_compile::{
     BlockCompileError, BlockCompileOutcome, build_dispatch_block, compile_block_for_dispatch,
+    compile_block_for_native_inc_rax, compile_block_for_native_inc_rax_demand_flags_candidate,
     compile_block_for_nop_fallback, compile_block_for_nop_fallback_demand_flags_candidate,
     compile_block_for_nop_inc_rax_fallback,
     compile_block_for_nop_inc_rax_fallback_demand_flags_candidate, compile_prepared_dispatch_block,
@@ -1559,10 +1560,54 @@ pub fn run_with_nop_inc_rax_fallback_demand_flags_candidate<E: ControlledBlockEx
     )
 }
 
+/// Opt-in uncached native INC RAX dispatcher. The admission remains exact and
+/// the existing interpreter-bridge API is unchanged.
+pub fn run_with_native_inc_rax<E: ControlledBlockExecutor>(
+    code: CodeView<'_>,
+    admission: &IncRaxInterpreterFallbackAdmission,
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    executor: &mut E,
+) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
+    run_with_nop_fallback_strategy(
+        code,
+        FallbackAdmission::NopIncRax(admission),
+        state,
+        total_budget,
+        control,
+        executor,
+        NopFallbackCompilation::NativeIncRax,
+    )
+}
+
+/// Uncached demand-flags candidate for the native INC RAX path. Any pending
+/// full writer is materialized before INC; its partial write is then eager.
+pub fn run_with_native_inc_rax_demand_flags_candidate<E: ControlledBlockExecutor>(
+    code: CodeView<'_>,
+    admission: &IncRaxInterpreterFallbackAdmission,
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    executor: &mut E,
+) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
+    run_with_nop_fallback_strategy(
+        code,
+        FallbackAdmission::NopIncRax(admission),
+        state,
+        total_budget,
+        control,
+        executor,
+        NopFallbackCompilation::NativeIncRaxDemandFlagsCandidate,
+    )
+}
+
 #[derive(Clone, Copy)]
 enum NopFallbackCompilation {
     Eager,
     DemandFlagsCandidate,
+    NativeIncRax,
+    NativeIncRaxDemandFlagsCandidate,
 }
 
 #[derive(Clone, Copy)]
@@ -1657,6 +1702,20 @@ fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
             ) => compile_block_for_nop_inc_rax_fallback_demand_flags_candidate(
                 code, state.rip, admission,
             ),
+            (FallbackAdmission::NopIncRax(admission), NopFallbackCompilation::NativeIncRax) => {
+                compile_block_for_native_inc_rax(code, state.rip, admission)
+            }
+            (
+                FallbackAdmission::NopIncRax(admission),
+                NopFallbackCompilation::NativeIncRaxDemandFlagsCandidate,
+            ) => {
+                compile_block_for_native_inc_rax_demand_flags_candidate(code, state.rip, admission)
+            }
+            (FallbackAdmission::Nop(_), NopFallbackCompilation::NativeIncRax)
+            | (
+                FallbackAdmission::Nop(_),
+                NopFallbackCompilation::NativeIncRaxDemandFlagsCandidate,
+            ) => unreachable!("native INC RAX requires its dedicated admission"),
         }
         .map_err(DispatchError::Compile)?;
         let block = match compiled {

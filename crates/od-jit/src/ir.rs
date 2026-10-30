@@ -45,6 +45,9 @@ pub enum FlagEffect {
     WriteMask(u64),
 }
 
+/// RFLAGS updated by qword `INC`, which leaves CF unchanged.
+pub(crate) const INC_RAX_FLAGS_MASK: u64 = (1 << 2) | (1 << 4) | (1 << 6) | (1 << 7) | (1 << 11);
+
 /// A guest instruction boundary supplied by the block builder.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GuestInstruction {

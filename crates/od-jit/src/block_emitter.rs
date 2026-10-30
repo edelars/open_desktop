@@ -1513,16 +1513,63 @@ fn emit_runtime_block_inner(
                 flags,
             } => {
                 require_w64(*width, operation_index)?;
-                if *flags != FlagEffect::Arithmetic {
+                let partial_inc = *flags == FlagEffect::WriteMask(crate::ir::INC_RAX_FLAGS_MASK)
+                    && *kind == IntegerKind::Add
+                    && result.is_some();
+                if *flags != FlagEffect::Arithmetic && !partial_inc {
                     return Err(BlockEmitterError::UnsupportedFlagEffect {
                         operation: operation_index,
                         effect: *flags,
                     });
                 }
                 let (rip, index) = active_guest(program, active_instruction)?;
+                if partial_inc
+                    && flag_strategy == FlagMaterializationStrategy::DemandDrivenCandidate
+                {
+                    if let Some(descriptor) = pending_flags {
+                        let boundary = HelperBoundaryPosition::BeforeOperation(operation_index);
+                        allocation.helper_boundary(boundary).map_err(|_| {
+                            BlockEmitterError::MissingHelperBoundary {
+                                operation: operation_index,
+                            }
+                        })?;
+                        let save_start = code_offset(&encoder)?;
+                        allocation.emit_save_before_helper(&mut encoder, boundary)?;
+                        push_range(
+                            &mut ranges,
+                            save_start,
+                            code_offset(&encoder)?,
+                            rip,
+                            Some(to_u32(index)?),
+                            StatePhase::PendingEffects,
+                            SnapshotAdmissibility::InadmissiblePendingFlags,
+                        );
+                        emit_materialize_pending_flags(
+                            &mut encoder,
+                            &mut ranges,
+                            &mut helper_failures,
+                            helper,
+                            descriptor,
+                            rip,
+                            to_u32(index)?,
+                        )?;
+                        let restore_start = code_offset(&encoder)?;
+                        allocation.emit_restore_after_helper(&mut encoder, boundary)?;
+                        push_range(
+                            &mut ranges,
+                            restore_start,
+                            code_offset(&encoder)?,
+                            rip,
+                            Some(to_u32(index)?),
+                            StatePhase::AfterHelper,
+                            SnapshotAdmissibility::ReplayCurrentInstruction,
+                        );
+                        pending_flags = None;
+                    }
+                }
                 let pending_start = code_offset(&encoder)?;
                 let mut integer_effect_start = pending_start;
-                if flag_strategy == FlagMaterializationStrategy::Eager {
+                if flag_strategy == FlagMaterializationStrategy::Eager || partial_inc {
                     let boundary = HelperBoundaryPosition::BeforeOperation(operation_index);
                     allocation.helper_boundary(boundary).map_err(|_| {
                         BlockEmitterError::MissingHelperBoundary {
@@ -1575,7 +1622,11 @@ fn emit_runtime_block_inner(
                     );
                     encoder.bind(success)?;
                     allocation.emit_restore_after_helper(&mut encoder, boundary)?;
-                    emit_store_helper_flags(&mut encoder)?;
+                    if partial_inc {
+                        emit_merge_helper_flags(&mut encoder, crate::ir::INC_RAX_FLAGS_MASK)?;
+                    } else {
+                        emit_store_helper_flags(&mut encoder)?;
+                    }
                     helper_failures.push(ReturnStub {
                         label: failure,
                         raw_tag: RAW_HELPER_CONTRACT_FAILURE_V1,
@@ -1598,7 +1649,7 @@ fn emit_runtime_block_inner(
                         FRAME_PENDING_FLAGS_RHS,
                     )?;
                 }
-                if flag_strategy == FlagMaterializationStrategy::Eager {
+                if flag_strategy == FlagMaterializationStrategy::Eager || partial_inc {
                     allocation.emit_load_scratch(&mut encoder, *lhs, xreg(13)?)?;
                     allocation.emit_load_scratch(&mut encoder, *rhs, xreg(14)?)?;
                 }
@@ -1641,7 +1692,9 @@ fn emit_runtime_block_inner(
                     integer_phase,
                     integer_snapshot,
                 );
-                if flag_strategy == FlagMaterializationStrategy::DemandDrivenCandidate {
+                if flag_strategy == FlagMaterializationStrategy::DemandDrivenCandidate
+                    && !partial_inc
+                {
                     pending_flags = Some(PendingFlagsDescriptor::w64(*kind));
                 }
             }
@@ -1957,13 +2010,20 @@ fn validate_runtime_shape(
                 integer_kind = None;
             }
             Operation::Integer {
-                kind, width, flags, ..
+                kind,
+                result,
+                width,
+                flags,
+                ..
             } => {
                 let guest_index = active.ok_or(BlockEmitterError::UnsupportedShape {
                     instruction_index: 0,
                 })?;
                 require_w64(*width, index)?;
-                if *flags != FlagEffect::Arithmetic {
+                let partial_inc = *flags == FlagEffect::WriteMask(crate::ir::INC_RAX_FLAGS_MASK)
+                    && *kind == IntegerKind::Add
+                    && result.is_some();
+                if *flags != FlagEffect::Arithmetic && !partial_inc {
                     return Err(BlockEmitterError::UnsupportedFlagEffect {
                         operation: index,
                         effect: *flags,
@@ -2284,6 +2344,30 @@ fn emit_store_helper_flags(encoder: &mut Encoder) -> Result<(), BlockEmitterErro
         FRAME_HELPER_FLAGS_OUTPUT,
     )?;
     emit_saved_pointer_load(encoder, FRAME_STAGING_FLAGS_POINTER, xreg(16)?)?;
+    encoder.str_x(XRegOrZero::Reg(xreg(13)?), AddressBase::Reg(xreg(16)?), 0)?;
+    Ok(())
+}
+
+fn emit_merge_helper_flags(encoder: &mut Encoder, mask: u64) -> Result<(), BlockEmitterError> {
+    // INC preserves CF (and every other bit outside its architectural write
+    // mask), so merge the helper's ADD flags with the staged prior RFLAGS.
+    encoder.ldr_x(
+        XRegOrZero::Reg(xreg(13)?),
+        AddressBase::Sp,
+        FRAME_HELPER_FLAGS_OUTPUT,
+    )?;
+    encoder.movz_x(xreg(17)?, mask as u16, 0)?;
+    encoder.and_x(xreg(15)?, xreg(13)?, XRegOrZero::Reg(xreg(17)?));
+    emit_saved_pointer_load(encoder, FRAME_STAGING_FLAGS_POINTER, xreg(16)?)?;
+    encoder.ldr_x(XRegOrZero::Reg(xreg(13)?), AddressBase::Reg(xreg(16)?), 0)?;
+    let preserved_mask = !mask;
+    encoder.movz_x(xreg(14)?, preserved_mask as u16, 0)?;
+    encoder.movk_x(xreg(14)?, (preserved_mask >> 16) as u16, 1)?;
+    encoder.movk_x(xreg(14)?, (preserved_mask >> 32) as u16, 2)?;
+    encoder.movk_x(xreg(14)?, (preserved_mask >> 48) as u16, 3)?;
+    encoder.and_x(xreg(13)?, xreg(13)?, XRegOrZero::Reg(xreg(14)?));
+    // The masked operands have disjoint set bits, so addition is bitwise OR.
+    encoder.add_x(xreg(13)?, xreg(13)?, XRegOrZero::Reg(xreg(15)?));
     encoder.str_x(XRegOrZero::Reg(xreg(13)?), AddressBase::Reg(xreg(16)?), 0)?;
     Ok(())
 }

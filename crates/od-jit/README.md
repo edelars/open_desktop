@@ -164,6 +164,19 @@ arithmetic/NOP/native continuation, budgets, exact stop/resume boundaries,
 event handoff and mapping release. This path remains opt-in and unselected;
 performance comparison and Mini checks are deferred until Stage 3 ends.
 
+S3-33a adds separate uncached opt-in `compile_block_for_native_inc_rax*` and
+`dispatch::run_with_native_inc_rax*` paths for exact admitted bare `48 FF C0`.
+Lowering uses W64 Add+1 and an existing IR `WriteMask`; runtime merges only
+PF/AF/ZF/SF/OF, preserving CF. A pending full writer in the demand-flags
+candidate is materialized before INC, with its live allocator homes preserved
+across the helper call. INC then materializes its partial flags eagerly, so no
+new pending descriptor/helper ABI is needed. The S3-29c interpreter-bridge path,
+eager default and shared cache remain unchanged. Host correctness covers both
+CF inputs, arithmetic edges, native branch consumers, retirement, candidate
+budget and STOP-RIP handling. This slice remains exact-form only and makes no
+performance claim; Mini and measurements remain deferred to the end of Stage 3.
+See [S3-33a report](../../docs/reports/STAGE_3_S3-33a_2026-10-30.md).
+
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).
 Проверки корректности и измерений по задачам этапа — в
