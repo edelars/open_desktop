@@ -8,14 +8,14 @@
 
 use od_isa::RegisterView;
 use od_isa::long_decode::{
-    ArithmeticKind, ConditionCode, Instruction, Operand, Operation as DecodedOperation,
+    ArithmeticKind, ConditionCode, Instruction, LogicKind, Operand, Operation as DecodedOperation,
 };
 
 use crate::block::{
     self, AdmittedInstructionBoundaries, BlockStopReason, BranchTargetResolution, BuildOutcome,
     DecodeBoundary, DecodedInstruction, S0_09NopAddRaxImm8Admission, S0_09NopAdmission,
     S0_09NopCmpRaxImm8Admission, S0_09NopDecRaxAdmission, S0_09NopIncRaxAdmission,
-    S0_09NopNegRaxAdmission, S0_09NopSubRaxImm8Admission,
+    S0_09NopNegRaxAdmission, S0_09NopNotRaxAdmission, S0_09NopSubRaxImm8Admission,
 };
 use crate::ir::{
     self, BranchCondition, ExitKind, FlagEffect, GuestGpr, GuestInstruction, IntWidth, IntegerKind,
@@ -50,7 +50,7 @@ pub enum LoweringError {
 /// Lower one bounded block-builder result and verify every emitted Program.
 pub fn lower(outcome: &BuildOutcome) -> Result<LoweringOutcome, LoweringError> {
     lower_with_admission(
-        outcome, None, None, None, None, false, false, None, None, None, None,
+        outcome, None, None, None, None, false, false, None, None, None, None, None,
     )
 }
 
@@ -70,6 +70,7 @@ pub(crate) fn lower_for_dispatch(
         None,
         false,
         false,
+        None,
         None,
         None,
         None,
@@ -95,6 +96,7 @@ pub(crate) fn lower_for_nop_fallback(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -110,6 +112,7 @@ pub(crate) fn lower_for_nop_inc_rax_fallback(
         None,
         false,
         false,
+        None,
         None,
         None,
         None,
@@ -133,6 +136,7 @@ pub(crate) fn lower_for_native_inc_rax(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -148,6 +152,7 @@ pub(crate) fn lower_for_native_dec_rax(
         Some(admission),
         false,
         true,
+        None,
         None,
         None,
         None,
@@ -171,6 +176,27 @@ pub(crate) fn lower_for_native_neg_rax(
         None,
         None,
         None,
+        None,
+    )
+}
+
+pub(crate) fn lower_for_native_not_rax(
+    outcome: &BuildOutcome,
+    admission: &S0_09NopNotRaxAdmission,
+) -> Result<LoweringOutcome, LoweringError> {
+    lower_with_admission(
+        outcome,
+        Some(admission.boundaries()),
+        None,
+        None,
+        None,
+        false,
+        false,
+        None,
+        Some(admission),
+        None,
+        None,
+        None,
     )
 }
 
@@ -186,6 +212,7 @@ pub(crate) fn lower_for_native_add_rax_imm8(
         None,
         false,
         false,
+        None,
         None,
         Some(admission),
         None,
@@ -205,6 +232,7 @@ pub(crate) fn lower_for_native_cmp_rax_imm8(
         None,
         false,
         false,
+        None,
         None,
         None,
         Some(admission),
@@ -227,6 +255,7 @@ pub(crate) fn lower_for_native_sub_rax_imm8(
         None,
         None,
         None,
+        None,
         Some(admission),
     )
 }
@@ -240,6 +269,7 @@ fn lower_with_admission(
     native_inc_rax: bool,
     native_dec_rax: bool,
     native_neg_rax_admission: Option<&S0_09NopNegRaxAdmission>,
+    native_not_rax_admission: Option<&S0_09NopNotRaxAdmission>,
     native_add_rax_imm8_admission: Option<&S0_09NopAddRaxImm8Admission>,
     native_cmp_rax_imm8_admission: Option<&S0_09NopCmpRaxImm8Admission>,
     native_sub_rax_imm8_admission: Option<&S0_09NopSubRaxImm8Admission>,
@@ -346,6 +376,11 @@ fn lower_with_admission(
                     && matches!(decoded.operation, DecodedOperation::Nop)
                     || admission.admits_neg_rax(*guest_rip)
                         && block::is_exact_neg_rax(*decoded, &[0x48, 0xf7, 0xd8])
+            }) || native_not_rax_admission.is_some_and(|admission| {
+                admission.admits_nop(*guest_rip)
+                    && matches!(decoded.operation, DecodedOperation::Nop)
+                    || admission.admits_not_rax(*guest_rip)
+                        && block::is_exact_not_rax(*decoded, &[0x48, 0xf7, 0xd0])
             }) || native_add_rax_imm8_admission.is_some_and(|admission| {
                 admission.admits_nop(*guest_rip)
                     && matches!(decoded.operation, DecodedOperation::Nop)
@@ -443,6 +478,8 @@ fn lower_with_admission(
                 .is_some_and(|proof| proof.admits_dec_rax(instruction.guest_rip));
         let admitted_native_neg = native_neg_rax_admission
             .is_some_and(|proof| proof.admits_neg_rax(instruction.guest_rip));
+        let admitted_native_not = native_not_rax_admission
+            .is_some_and(|proof| proof.admits_not_rax(instruction.guest_rip));
         let admitted_native_add_rax_imm8 = native_add_rax_imm8_admission
             .is_some_and(|proof| proof.admits_add_rax_imm8(instruction.guest_rip));
         let admitted_native_cmp_rax_imm8 = native_cmp_rax_imm8_admission
@@ -452,6 +489,7 @@ fn lower_with_admission(
         if !admitted_native_inc
             && !admitted_native_dec
             && !admitted_native_neg
+            && !admitted_native_not
             && !admitted_native_add_rax_imm8
             && !admitted_native_cmp_rax_imm8
             && !admitted_native_sub_rax_imm8
@@ -473,6 +511,8 @@ fn lower_with_admission(
             lower_exact_dec_rax(instruction, index, &mut next_temp, &mut operations)?;
         } else if admitted_native_neg {
             lower_exact_neg_rax(instruction, index, &mut next_temp, &mut operations)?;
+        } else if admitted_native_not {
+            lower_exact_not_rax(instruction, index, &mut next_temp, &mut operations)?;
         } else if admitted_native_add_rax_imm8 {
             let admitted_value = native_add_rax_imm8_admission
                 .and_then(|proof| proof.add_rax_imm8_value(instruction.guest_rip))
@@ -853,6 +893,57 @@ fn lower_exact_neg_rax(
         result: Some(result),
         width: IntWidth::W64,
         flags: FlagEffect::Arithmetic,
+    });
+    operations.push(Operation::WriteGpr {
+        register: crate::ir::GuestGpr(0),
+        src: result,
+        width: IntWidth::W64,
+    });
+    operations.push(Operation::CommitInstruction { index });
+    Ok(())
+}
+
+fn lower_exact_not_rax(
+    instruction: &DecodedInstruction,
+    index: usize,
+    next_temp: &mut u32,
+    operations: &mut Vec<Operation>,
+) -> Result<(), LoweringError> {
+    let invalid = || LoweringError::InvalidDecodedForm {
+        guest_rip: instruction.guest_rip,
+    };
+    if !matches!(instruction.decoded.operation,
+        DecodedOperation::Logic {
+            kind: LogicKind::Not,
+            dst: Operand::Register(destination),
+            src: Operand::Immediate(0),
+        } if destination.register() == od_isa::Register::Rax
+            && destination.size() == od_isa::OperandSize::Qword)
+        || !block::is_exact_not_rax(instruction.decoded, &[0x48, 0xf7, 0xd0])
+    {
+        return Err(invalid());
+    }
+    operations.push(Operation::BeginInstruction { index });
+    let all_ones = allocate_temp(next_temp);
+    let rax = allocate_temp(next_temp);
+    let result = allocate_temp(next_temp);
+    operations.push(Operation::Constant {
+        dst: all_ones,
+        width: IntWidth::W64,
+        value: u64::MAX,
+    });
+    operations.push(Operation::ReadGpr {
+        dst: rax,
+        register: crate::ir::GuestGpr(0),
+        width: IntWidth::W64,
+    });
+    operations.push(Operation::Integer {
+        kind: IntegerKind::Subtract,
+        lhs: all_ones,
+        rhs: rax,
+        result: Some(result),
+        width: IntWidth::W64,
+        flags: FlagEffect::Preserve,
     });
     operations.push(Operation::WriteGpr {
         register: crate::ir::GuestGpr(0),
@@ -1397,6 +1488,55 @@ mod tests {
                     result: Some(TempId(2)),
                     width: IntWidth::W64,
                     flags: FlagEffect::Arithmetic
+                },
+                Operation::WriteGpr {
+                    register: GuestGpr(0),
+                    src: TempId(2),
+                    width: IntWidth::W64
+                },
+                Operation::CommitInstruction { index: 0 },
+                Operation::BeginInstruction { index: 1 },
+            ]
+        ));
+        assert_eq!(ir::verify(&lowered.program), Ok(()));
+    }
+
+    #[test]
+    fn native_not_rax_lowers_to_all_ones_minus_rax_while_preserving_flags() {
+        let code = CodeView::new(BASE, &[0x48, 0xf7, 0xd0, 0x74, 0x00]).unwrap();
+        let admission = S0_09NopNotRaxAdmission::from_code(code).unwrap();
+        let built = block::build_block_for_native_not_rax(
+            code,
+            BASE,
+            AccessContext::default(),
+            BlockLimits::default(),
+        )
+        .unwrap();
+        let lowered = match lower_for_native_not_rax(&built, &admission).unwrap() {
+            LoweringOutcome::Program(program) => program,
+            other => panic!("expected NOT native prefix, got {other:?}"),
+        };
+        assert!(matches!(
+            &lowered.program.operations[..7],
+            [
+                Operation::BeginInstruction { index: 0 },
+                Operation::Constant {
+                    dst: TempId(0),
+                    width: IntWidth::W64,
+                    value: u64::MAX
+                },
+                Operation::ReadGpr {
+                    dst: TempId(1),
+                    register: GuestGpr(0),
+                    width: IntWidth::W64
+                },
+                Operation::Integer {
+                    kind: IntegerKind::Subtract,
+                    lhs: TempId(0),
+                    rhs: TempId(1),
+                    result: Some(TempId(2)),
+                    width: IntWidth::W64,
+                    flags: FlagEffect::Preserve
                 },
                 Operation::WriteGpr {
                     register: GuestGpr(0),

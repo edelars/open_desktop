@@ -1514,7 +1514,10 @@ fn emit_runtime_block_inner(
             } => {
                 require_w64(*width, operation_index)?;
                 let partial_inc_dec = is_partial_inc_dec(*flags, *kind, result.is_some());
-                if *flags != FlagEffect::Arithmetic && !partial_inc_dec {
+                let flag_preserving_subtract =
+                    is_flag_preserving_subtract(*flags, *kind, result.is_some());
+                if *flags != FlagEffect::Arithmetic && !partial_inc_dec && !flag_preserving_subtract
+                {
                     return Err(BlockEmitterError::UnsupportedFlagEffect {
                         operation: operation_index,
                         effect: *flags,
@@ -1567,7 +1570,17 @@ fn emit_runtime_block_inner(
                 }
                 let pending_start = code_offset(&encoder)?;
                 let mut integer_effect_start = pending_start;
-                if flag_strategy == FlagMaterializationStrategy::Eager || partial_inc_dec {
+                if flag_preserving_subtract {
+                    allocation.emit_load_scratch(&mut encoder, *lhs, xreg(13)?)?;
+                    allocation.emit_load_scratch(&mut encoder, *rhs, xreg(14)?)?;
+                    encoder.sub_x(xreg(15)?, xreg(13)?, XRegOrZero::Reg(xreg(14)?));
+                    let Some(dst) = result else {
+                        return Err(BlockEmitterError::UnsupportedShape {
+                            instruction_index: index,
+                        });
+                    };
+                    allocation.emit_store_scratch(&mut encoder, *dst, xreg(15)?)?;
+                } else if flag_strategy == FlagMaterializationStrategy::Eager || partial_inc_dec {
                     let boundary = HelperBoundaryPosition::BeforeOperation(operation_index);
                     allocation.helper_boundary(boundary).map_err(|_| {
                         BlockEmitterError::MissingHelperBoundary {
@@ -1651,36 +1664,43 @@ fn emit_runtime_block_inner(
                     allocation.emit_load_scratch(&mut encoder, *lhs, xreg(13)?)?;
                     allocation.emit_load_scratch(&mut encoder, *rhs, xreg(14)?)?;
                 }
-                match (kind, result) {
-                    (IntegerKind::Add, Some(dst)) => {
-                        encoder.add_x(xreg(15)?, xreg(13)?, XRegOrZero::Reg(xreg(14)?));
-                        allocation.emit_store_scratch(&mut encoder, *dst, xreg(15)?)?;
-                    }
-                    (IntegerKind::Subtract, Some(dst)) => {
-                        encoder.sub_x(xreg(15)?, xreg(13)?, XRegOrZero::Reg(xreg(14)?));
-                        allocation.emit_store_scratch(&mut encoder, *dst, xreg(15)?)?;
-                    }
-                    (IntegerKind::Compare, None) => {
-                        encoder.sub_x(xreg(15)?, xreg(13)?, XRegOrZero::Reg(xreg(14)?));
-                    }
-                    _ => {
-                        return Err(BlockEmitterError::UnsupportedShape {
-                            instruction_index: index,
-                        });
+                if !flag_preserving_subtract {
+                    match (kind, result) {
+                        (IntegerKind::Add, Some(dst)) => {
+                            encoder.add_x(xreg(15)?, xreg(13)?, XRegOrZero::Reg(xreg(14)?));
+                            allocation.emit_store_scratch(&mut encoder, *dst, xreg(15)?)?;
+                        }
+                        (IntegerKind::Subtract, Some(dst)) => {
+                            encoder.sub_x(xreg(15)?, xreg(13)?, XRegOrZero::Reg(xreg(14)?));
+                            allocation.emit_store_scratch(&mut encoder, *dst, xreg(15)?)?;
+                        }
+                        (IntegerKind::Compare, None) => {
+                            encoder.sub_x(xreg(15)?, xreg(13)?, XRegOrZero::Reg(xreg(14)?));
+                        }
+                        _ => {
+                            return Err(BlockEmitterError::UnsupportedShape {
+                                instruction_index: index,
+                            });
+                        }
                     }
                 }
                 let integer_snapshot =
                     if flag_strategy == FlagMaterializationStrategy::DemandDrivenCandidate {
-                        SnapshotAdmissibility::InadmissiblePendingFlags
+                        if !flag_preserving_subtract || pending_flags.is_some() {
+                            SnapshotAdmissibility::InadmissiblePendingFlags
+                        } else {
+                            SnapshotAdmissibility::ReplayCurrentInstruction
+                        }
                     } else {
                         SnapshotAdmissibility::ReplayCurrentInstruction
                     };
-                let integer_phase =
-                    if flag_strategy == FlagMaterializationStrategy::DemandDrivenCandidate {
-                        StatePhase::PendingEffects
-                    } else {
-                        StatePhase::AfterHelper
-                    };
+                let integer_phase = if flag_preserving_subtract {
+                    StatePhase::PendingEffects
+                } else if flag_strategy == FlagMaterializationStrategy::DemandDrivenCandidate {
+                    StatePhase::PendingEffects
+                } else {
+                    StatePhase::AfterHelper
+                };
                 push_range(
                     &mut ranges,
                     integer_effect_start,
@@ -1692,6 +1712,7 @@ fn emit_runtime_block_inner(
                 );
                 if flag_strategy == FlagMaterializationStrategy::DemandDrivenCandidate
                     && !partial_inc_dec
+                    && !flag_preserving_subtract
                 {
                     pending_flags = Some(PendingFlagsDescriptor::w64(*kind));
                 }
@@ -2019,7 +2040,10 @@ fn validate_runtime_shape(
                 })?;
                 require_w64(*width, index)?;
                 let partial_inc_dec = is_partial_inc_dec(*flags, *kind, result.is_some());
-                if *flags != FlagEffect::Arithmetic && !partial_inc_dec {
+                let flag_preserving_subtract =
+                    is_flag_preserving_subtract(*flags, *kind, result.is_some());
+                if *flags != FlagEffect::Arithmetic && !partial_inc_dec && !flag_preserving_subtract
+                {
                     return Err(BlockEmitterError::UnsupportedFlagEffect {
                         operation: index,
                         effect: *flags,
@@ -2372,6 +2396,10 @@ fn is_partial_inc_dec(flags: FlagEffect, kind: IntegerKind, has_result: bool) ->
     flags == FlagEffect::WriteMask(crate::ir::INC_DEC_RAX_FLAGS_MASK)
         && matches!(kind, IntegerKind::Add | IntegerKind::Subtract)
         && has_result
+}
+
+fn is_flag_preserving_subtract(flags: FlagEffect, kind: IntegerKind, has_result: bool) -> bool {
+    flags == FlagEffect::Preserve && kind == IntegerKind::Subtract && has_result
 }
 
 fn emit_materialize_pending_flags(
@@ -2870,5 +2898,71 @@ mod tests {
                 actual: MIN_RUNTIME_PREFIX_BYTES,
             })
         );
+    }
+
+    #[test]
+    fn preserving_integer_support_is_limited_to_w64_subtract_with_result() {
+        let bytes = [0x48, 0xf7, 0xd0];
+        let view = crate::block::CodeView::new(0x4200, &bytes).unwrap();
+        let admission = crate::block::S0_09NopNotRaxAdmission::from_code(view).unwrap();
+        let built = crate::block::build_block_for_native_not_rax(
+            view,
+            0x4200,
+            od_isa::memory::AccessContext::default(),
+            crate::block::BlockLimits::default(),
+        )
+        .unwrap();
+        let lowered = match crate::lowering::lower_for_native_not_rax(&built, &admission).unwrap() {
+            crate::lowering::LoweringOutcome::Program(lowered) => lowered,
+            other => panic!("expected NOT block, got {other:?}"),
+        };
+        for register_homes in [0, 1, 2, 4] {
+            let allocation = Allocation::build(
+                &lowered.program,
+                AllocatorConfig {
+                    register_homes,
+                    reserved_prefix_bytes: MIN_RUNTIME_PREFIX_BYTES,
+                },
+                &[],
+            )
+            .unwrap();
+            let emitted = emit_runtime_block(&lowered.program, &allocation).unwrap();
+            assert_eq!(
+                emitted
+                    .code()
+                    .words()
+                    .iter()
+                    .filter(|word| **word == 0xD63F_0200)
+                    .count(),
+                0,
+                "NOT must not call a helper with {register_homes} register homes"
+            );
+        }
+        let mut invalid = lowered.program;
+        let integer = invalid
+            .operations
+            .iter_mut()
+            .find(|operation| matches!(operation, Operation::Integer { .. }))
+            .unwrap();
+        let Operation::Integer { kind, .. } = integer else {
+            unreachable!();
+        };
+        *kind = IntegerKind::Add;
+        let allocation = Allocation::build(
+            &invalid,
+            AllocatorConfig {
+                register_homes: 2,
+                reserved_prefix_bytes: MIN_RUNTIME_PREFIX_BYTES,
+            },
+            &[],
+        )
+        .unwrap();
+        assert!(matches!(
+            emit_runtime_block(&invalid, &allocation),
+            Err(BlockEmitterError::UnsupportedFlagEffect {
+                effect: FlagEffect::Preserve,
+                ..
+            })
+        ));
     }
 }

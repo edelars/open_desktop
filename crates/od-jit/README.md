@@ -229,6 +229,15 @@ profiles remain operation-specific. This is partial correctness evidence only;
 Mini and performance checks remain deferred until the end of Stage 3. See
 [S3-33f report](../../docs/reports/STAGE_3_S3-33f_2026-10-30.md).
 
+S3-33g adds a separate uncached opt-in `S0_09NopNotRaxAdmission` and
+eager/demand-flags compile and dispatch APIs for exact bare `48 F7 D0`
+(`NOT RAX`). Lowering uses W64 `u64::MAX - RAX` with `FlagEffect::Preserve`.
+The runtime emitter accepts only this narrow W64 subtract form with a result;
+NOT itself uses no flags helper and leaves full RFLAGS and any prior pending
+writer descriptor/operands untouched. Mini and performance checks remain
+deferred until the end of Stage 3. See
+[S3-33g report](../../docs/reports/STAGE_3_S3-33g_2026-10-30.md).
+
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).
 Проверки корректности и измерений по задачам этапа — в

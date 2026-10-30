@@ -131,6 +131,29 @@ branch into the immediate; prior arithmetic admissions reject this profile.
 Mini and performance checks remain deferred until the end of Stage 3. See the
 [S3-33f report](../reports/STAGE_3_S3-33f_2026-10-30.md).
 
+## S3-33g: exact native NOT RAX
+
+Run the exact NOT RAX admission, emitter-shape, compiler, and host gates from
+`python3 tests/cpu/stage3_harness.py --suite local`. The admission gate must
+accept only bare `48 F7 D0`, reject nearby NOT/NEG/register/memory/width/prefix
+forms, truncation, and a branch into the encoding, and remain separate from
+the NEG profile. Eager and candidate compilation must use the exact profile.
+The emitter gate limits `FlagEffect::Preserve` support to W64 Subtract with a
+result; the NOT compiler gate confirms that NOT itself has no helper call and
+is not mapped as `AfterHelper`.
+
+Host comparisons cover complete CPU state and retirement, full RFLAGS and
+definedness, input values `0`, `u64::MAX`, signed extremes and alternating
+bits, NOT twice, NOT without a pending writer, and a new writer after NOT.
+Pending ADD/CMP → NOT → JZ/JNZ cases use branch outcomes that distinguish the
+old writer's flags from flags incorrectly produced by NOT. Also check an old
+pending ADD/CMP writers through NOT, a pending writer through two NOTs,
+candidate statepoints, all non-RAX GPRs, STOP/budget boundaries, end-of-code,
+branch exits, and actual RIP. The compiler gate counts emitted `BLR` helper
+calls and requires none for NOT.
+Mini and performance checks remain deferred until the end of Stage 3. See the
+[S3-33g report](../reports/STAGE_3_S3-33g_2026-10-30.md).
+
 ## Срез A: один register-only блок
 
 1. Использовать только точные S0-09 формы из JIT contract и fixtures с

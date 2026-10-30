@@ -2416,6 +2416,28 @@ budgets и STOP до SUB, после SUB и перед writer. Exact local harne
 [S3-33f report](../reports/STAGE_3_S3-33f_2026-10-30.md). Mini и performance
 проверки отложены до конца Stage 3; S3-33 и этап остаются открытыми.
 
+#### S3-33g. Exact native qword NOT RAX
+
+Добавлен отдельный uncached opt-in profile только для bare `48 F7 D0`
+(`NOT RAX`). Admission сверяет всю форму и границы инструкции; NEG, другой
+регистр, R8, память, ширина, дополнительные префиксы, truncation и branch
+внутрь инструкции не допускаются. Lowering выражает NOT как `u64::MAX - RAX`
+с `FlagEffect::Preserve`, затем записывает RAX и коммитит один раз. Runtime
+emitter принимает только W64 `Subtract + Preserve + result`; это не расширяет
+поддержку произвольных flag-preserving операций. NOT не вызывает flags helper,
+не изменяет RFLAGS/definedness и не меняет существующий pending-flags descriptor
+или его сохранённые операнды. Eager и candidate compile/dispatch APIs остаются
+отдельными opt-in путями.
+
+Покрыты точная admission, значения 0/MAX/signed extremes/alternating bits,
+полное состояние CPU и флаги, повторный NOT, pending ADD/CMP → NOT → JZ/JNZ,
+двойной NOT до branch, новый writer после NOT, STOP/budget/end-of-code/branch и
+отсутствие helper-call/AfterHelper map для NOT. Mini и performance проверки
+отложены до конца Stage 3. Результат, точные проверки, независимое ревью и
+локальное harness evidence фиксируются в
+[S3-33g report](../reports/STAGE_3_S3-33g_2026-10-30.md); S3-33 и Stage 3
+остаются открытыми.
+
 ## 9. Проверка, производительность и интеграция
 
 ### S3-34. Собрать corpus и проверить сам harness
@@ -2579,9 +2601,9 @@ fail-closed Cargo gate
 
 #### S3-34i. Exact local gates for native arithmetic slices
 
-The local harness requires twelve exact Cargo gates for the committed S3-33a–d
-native INC RAX, DEC RAX, NEG RAX, and ADD RAX imm8 slices, plus the bounded
-S3-33f SUB RAX imm8 slice. Each gate pins its
+The local harness requires sixteen exact Cargo gates for the committed
+S3-33a–d native INC RAX, DEC RAX, NEG RAX, and ADD RAX imm8 slices, plus the
+bounded S3-33f SUB RAX imm8 and S3-33g NOT RAX slices. Each gate pins its
 crate, full test identity, exact arguments, one executed passing test line, and
 the relevant source files in the input manifest. Harness self-checks reject
 missing gates, wrong package/identity/arguments, zero matches, ignored/failed/

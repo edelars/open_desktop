@@ -210,6 +210,22 @@ ADDITIONAL_TEST_GATES = (
         "s3_33f_native_sub_rax_imm8_admission", "local_acceptance", "od-jit",
         "block::tests::sub_rax_imm8_admission_covers_signed_byte_range_and_rejects_neighbors",
     ),
+    (
+        "s3_33g_native_not_rax_admission", "local_acceptance", "od-jit",
+        "block::tests::not_rax_admission_is_exact_and_separate_from_neg_profile",
+    ),
+    (
+        "s3_33g_native_not_rax_emitter", "local_acceptance", "od-jit",
+        "block_emitter::tests::preserving_integer_support_is_limited_to_w64_subtract_with_result",
+    ),
+    (
+        "s3_33g_native_not_rax_compiler", "local_acceptance", "od-jit",
+        "block_compile::tests::native_not_rax_is_opt_in_and_emits_no_flag_helper_for_not",
+    ),
+    (
+        "s3_33g_native_not_rax_host", "local_acceptance", "od-host",
+        "tests::native_not_rax_preserves_full_flags_and_pending_writer_state",
+    ),
 )
 RUST_TEST_GATES = (
     *(
@@ -323,6 +339,7 @@ LOCAL_RUST_TEST_SOURCES = (
     "crates/od-host/tests/memory_corpus.rs",
     "crates/od-host/src/lib.rs",
     "crates/od-jit/src/block.rs",
+    "crates/od-jit/src/block_emitter.rs",
     "crates/od-jit/src/block_compile.rs",
     "crates/od-jit/src/dispatch.rs",
     "tests/cpu/stage3_harness.py",

@@ -1494,6 +1494,24 @@ and CMP admissions remain separate. The path is opt-in and uncached; Mini and
 performance checks remain deferred until the Stage 3 gate. See
 [S3-33f report](../reports/STAGE_3_S3-33f_2026-10-30.md).
 
+### S3-33g: opt-in exact native NOT RAX
+
+The separate `compile_block_for_native_not_rax*` and
+`dispatch::run_with_native_not_rax*` APIs use `S0_09NopNotRaxAdmission` for
+bare `48 F7 D0` only. Other group selectors, registers, memory operands,
+widths, prefixes, truncated instructions, and branch targets inside the
+encoding are rejected. Lowering computes `u64::MAX - RAX` as W64
+`Subtract + FlagEffect::Preserve + result=Some`, writes RAX, and commits once.
+Runtime emitter acceptance for this preserve operation is limited to this
+shape. It performs no flags-helper call or flags staging and leaves full
+RFLAGS, flag definedness, live allocator homes, and any prior pending-flags
+descriptor and saved operands intact. Its PC-map range does not claim
+`AfterHelper`. Full-state comparisons cover pending ADD/CMP followed by NOT and
+JZ/JNZ, repeated NOT, STOP/budget boundaries, and a successor flags writer.
+This is an opt-in uncached correctness slice; Mini and performance checks are
+deferred until Stage 3 ends. See the
+[S3-33g report](../reports/STAGE_3_S3-33g_2026-10-30.md).
+
 ### S3-29d: uncached arithmetic-to-checked-load handoff
 
 The bounded host fixture composes existing eager and demand-flags native
