@@ -238,6 +238,17 @@ writer descriptor/operands untouched. Mini and performance checks remain
 deferred until the end of Stage 3. See
 [S3-33g report](../../docs/reports/STAGE_3_S3-33g_2026-10-30.md).
 
+S3-33h adds a separate uncached opt-in profile for exact bare `48 8D 03`
+(`LEA RAX,[RBX]`). Admission checks both decoder shape and the exact three
+source bytes; equivalent SIB/displacement encodings, other registers, address
+widths, prefixes, truncation, and branch targets inside the instruction are
+rejected. Lowering is only `ReadGpr(RBX,W64)` → `WriteGpr(RAX,W64)` → one
+commit. LEA has no memory/data helper, arithmetic or flags effect, and keeps
+any pending-flags descriptor and saved operands intact. Separate eager and
+demand-flags candidate compile/dispatch APIs remain uncached and opt-in. Mini
+and performance checks remain deferred until the end of Stage 3. See
+[S3-33h report](../../docs/reports/STAGE_3_S3-33h_2026-10-30.md).
+
 Первое подмножество нового JIT, сравниваемое состояние, неподдержанные формы и
 источники платформы описаны в [контракте JIT](../../docs/specs/JIT_CONTRACT.md).
 Проверки корректности и измерений по задачам этапа — в

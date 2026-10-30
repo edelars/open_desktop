@@ -41880,6 +41880,540 @@ mod tests {
     }
 
     #[test]
+    fn native_lea_rax_rbx_copies_unmapped_addresses_without_data_access() {
+        let _guard = jit_test_lock();
+        use od_isa::memory::{AccessKind, GuestMemory};
+        use od_jit::statepoints::{SnapshotAdmissibility, StatePhase};
+
+        struct CodeOnly<'a> {
+            base: u64,
+            bytes: &'a [u8],
+            data_accesses: usize,
+        }
+        impl GuestMemory for CodeOnly<'_> {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                address
+                    .checked_sub(self.base)
+                    .and_then(|offset| self.bytes.get(offset as usize))
+                    .copied()
+                    .ok_or(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Fetch,
+                    })
+            }
+            fn read(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                self.data_accesses += 1;
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: &[u8],
+            ) -> Result<(), MemoryError> {
+                self.data_accesses += 1;
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                self.data_accesses += 1;
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                self.data_accesses += 1;
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                self.data_accesses += 1;
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+
+        fn interpret_one(code: &[u8], base: u64, state: &mut od_isa::LongModeState) -> usize {
+            let mut memory = CodeOnly {
+                base,
+                bytes: code,
+                data_accesses: 0,
+            };
+            assert!(matches!(
+                od_isa::execute::step(state, &mut memory, AccessContext::default()).unwrap(),
+                od_isa::execute::StepOutcome::Advanced | od_isa::execute::StepOutcome::Branched
+            ));
+            memory.data_accesses
+        }
+
+        fn interpret_to_end(code: &[u8], base: u64, state: &mut od_isa::LongModeState) -> usize {
+            let mut memory = CodeOnly {
+                base,
+                bytes: code,
+                data_accesses: 0,
+            };
+            let mut steps = 0;
+            while state.rip < base + code.len() as u64 && steps < 8 {
+                assert!(matches!(
+                    od_isa::execute::step(state, &mut memory, AccessContext::default()).unwrap(),
+                    od_isa::execute::StepOutcome::Advanced | od_isa::execute::StepOutcome::Branched
+                ));
+                steps += 1;
+            }
+            assert!(steps < 8, "interpreter did not reach code end");
+            memory.data_accesses
+        }
+
+        fn interpret_steps(
+            code: &[u8],
+            base: u64,
+            state: &mut od_isa::LongModeState,
+            count: usize,
+        ) -> usize {
+            let mut memory = CodeOnly {
+                base,
+                bytes: code,
+                data_accesses: 0,
+            };
+            for _ in 0..count {
+                assert!(matches!(
+                    od_isa::execute::step(state, &mut memory, AccessContext::default()).unwrap(),
+                    od_isa::execute::StepOutcome::Advanced | od_isa::execute::StepOutcome::Branched
+                ));
+            }
+            memory.data_accesses
+        }
+
+        struct LeaPendingWitness {
+            executor: PublishedBlockExecutor,
+            lea_rip: u64,
+            saw_pending_lea: bool,
+        }
+        impl od_jit::dispatch::ControlledBlockExecutor for LeaPendingWitness {
+            type Error = PublishedBlockExecutionError;
+            fn execute_one_block_controlled(
+                &mut self,
+                block: &od_jit::block_compile::CompiledBlock,
+                state: &mut od_isa::LongModeState,
+                budget: u64,
+                control: od_jit::dispatch::DispatchControl<'_>,
+            ) -> Result<od_jit::dispatch::BlockExecutionReport, Self::Error> {
+                self.saw_pending_lea |= block.emitted().pc_map().ranges().iter().any(|range| {
+                    range.guest_rip == od_jit::statepoints::GuestRipSource::Fixed(self.lea_rip)
+                        && range.phase == StatePhase::PendingEffects
+                        && range.snapshot == SnapshotAdmissibility::InadmissiblePendingFlags
+                });
+                od_jit::dispatch::ControlledBlockExecutor::execute_one_block_controlled(
+                    &mut self.executor,
+                    block,
+                    state,
+                    budget,
+                    control,
+                )
+            }
+        }
+
+        let base = 0xB500;
+        let stop = AtomicU8::new(0);
+        let control = od_jit::dispatch::DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let arithmetic_mask = 0x8d5;
+        let terminal = [0x48, 0x8d, 0x03];
+        let terminal_view = CodeView::new(base, &terminal).unwrap();
+        let terminal_admission =
+            od_jit::dispatch::LeaRaxRbxInterpreterFallbackAdmission::from_code(terminal_view)
+                .unwrap();
+        for rbx in [
+            0,
+            1,
+            u64::MAX,
+            i64::MIN as u64,
+            i64::MAX as u64,
+            0x0000_8000_0000_0000,
+            0xffff_8000_0000_0000,
+            0xdead_beef_cafe_babe,
+        ] {
+            for flags in [0, arithmetic_mask, 0x155, 0x888] {
+                let mut initial = od_isa::LongModeState::default();
+                initial.rip = base;
+                initial.rflags = 0x202 | flags | (1 << 10) | (1 << 21);
+                for (register, value) in initial.gpr.iter_mut().enumerate() {
+                    *value = 0xfeed_0000_0000_0000 | register as u64;
+                }
+                initial.gpr[0] = 0x1234_5678_9abc_def0;
+                initial.gpr[3] = rbx;
+
+                let mut expected = initial.clone();
+                assert_eq!(interpret_one(&terminal, base, &mut expected), 0);
+                assert_eq!(expected.gpr[0], rbx);
+                assert_eq!(expected.rflags, initial.rflags);
+
+                for candidate in [false, true] {
+                    let mut actual = initial.clone();
+                    let outcome = if candidate {
+                        od_jit::dispatch::run_with_native_lea_rax_rbx_demand_flags_candidate(
+                            terminal_view,
+                            &terminal_admission,
+                            &mut actual,
+                            1,
+                            control,
+                            &mut PublishedBlockExecutor,
+                        )
+                    } else {
+                        od_jit::dispatch::run_with_native_lea_rax_rbx(
+                            terminal_view,
+                            &terminal_admission,
+                            &mut actual,
+                            1,
+                            control,
+                            &mut PublishedBlockExecutor,
+                        )
+                    }
+                    .unwrap();
+                    assert_eq!(actual, expected);
+                    assert_eq!(outcome.retired_native, 1);
+                    assert_eq!(outcome.retired_interpreter, 0);
+                }
+            }
+        }
+
+        // An ADD with ZF=1 and a CMP with ZF=0 each leave flags pending in the
+        // candidate. LEA changes RAX to RBX but must preserve those old flags
+        // for the distinct taken JZ/JNZ branch, without any data access.
+        let branch_cases: [(&[u8], u8, u64, u64); 2] = [
+            (&[0x48, 0x03, 0xc0, 0x48, 0x8d, 0x03], 0x74, 0, 1),
+            (&[0x48, 0x3b, 0xc3, 0x48, 0x8d, 0x03], 0x75, 1, 0),
+        ];
+        for (prefix, branch, rax, rbx) in branch_cases {
+            let mut bytes = prefix.to_vec();
+            bytes.extend_from_slice(&[branch, 0x0a]);
+            bytes.extend_from_slice(&[0x48, 0xba]); // MOV RDX, imm64, skipped on taken edge
+            bytes.extend_from_slice(&0x1122_3344_5566_7788_u64.to_le_bytes());
+            let view = CodeView::new(base + 0x20, &bytes).unwrap();
+            let admission =
+                od_jit::dispatch::LeaRaxRbxInterpreterFallbackAdmission::from_code(view).unwrap();
+            let mut initial = od_isa::LongModeState::default();
+            initial.rip = base + 0x20;
+            initial.rflags = 0x202 | arithmetic_mask | (1 << 10) | (1 << 21);
+            for (register, value) in initial.gpr.iter_mut().enumerate() {
+                *value = 0xbeef_0000_0000_0000 | register as u64;
+            }
+            initial.gpr[0] = rax;
+            initial.gpr[3] = rbx;
+            let mut expected = initial.clone();
+            let data_accesses = interpret_to_end(&bytes, initial.rip, &mut expected);
+            assert_eq!(data_accesses, 0);
+            assert_eq!(expected.gpr[0], rbx);
+            assert_eq!(expected.gpr[2], initial.gpr[2]);
+            assert_eq!(expected.rip, initial.rip + bytes.len() as u64);
+
+            for candidate in [false, true] {
+                let mut actual = initial.clone();
+                let mut executor = LeaPendingWitness {
+                    executor: PublishedBlockExecutor,
+                    lea_rip: initial.rip + 3,
+                    saw_pending_lea: false,
+                };
+                let result = if candidate {
+                    od_jit::dispatch::run_with_native_lea_rax_rbx_demand_flags_candidate(
+                        view,
+                        &admission,
+                        &mut actual,
+                        4,
+                        control,
+                        &mut executor,
+                    )
+                } else {
+                    od_jit::dispatch::run_with_native_lea_rax_rbx(
+                        view,
+                        &admission,
+                        &mut actual,
+                        4,
+                        control,
+                        &mut executor,
+                    )
+                }
+                .unwrap();
+                assert_eq!(actual, expected);
+                assert_eq!(result.retired_interpreter, 0);
+                assert_eq!(result.retired_native, 3);
+                if candidate {
+                    assert!(executor.saw_pending_lea);
+                }
+            }
+        }
+
+        // Exercise the dedicated interpreter fallback between native LEA and
+        // a native branch consumer. The branch outcome distinguishes the
+        // pending predecessor flags from flags incorrectly written by LEA.
+        let fallback_branch_cases: [(&[u8], u8, u64, u64); 2] = [
+            (&[0x48, 0x03, 0xc0, 0x48, 0x8d, 0x03, 0x90], 0x74, 0, 1),
+            (&[0x48, 0x3b, 0xc3, 0x48, 0x8d, 0x03, 0x90], 0x75, 1, 0),
+        ];
+        for (prefix, branch, rax, rbx) in fallback_branch_cases {
+            let mut bytes = prefix.to_vec();
+            bytes.extend_from_slice(&[branch, 0x0a]);
+            bytes.extend_from_slice(&[0x48, 0xba]); // MOV RDX, imm64, skipped on taken edge
+            bytes.extend_from_slice(&0x1122_3344_5566_7788_u64.to_le_bytes());
+            let view = CodeView::new(base + 0x90, &bytes).unwrap();
+            let admission =
+                od_jit::dispatch::LeaRaxRbxInterpreterFallbackAdmission::from_code(view).unwrap();
+            let mut initial = od_isa::LongModeState::default();
+            initial.rip = base + 0x90;
+            initial.rflags = 0x202 | arithmetic_mask | (1 << 10) | (1 << 21);
+            for (register, value) in initial.gpr.iter_mut().enumerate() {
+                *value = 0xcafe_0000_0000_0000 | register as u64;
+            }
+            initial.gpr[0] = rax;
+            initial.gpr[3] = rbx;
+            let mut expected = initial.clone();
+            assert_eq!(interpret_to_end(&bytes, initial.rip, &mut expected), 0);
+            assert_eq!(expected.rip, initial.rip + bytes.len() as u64);
+            assert_eq!(expected.gpr[0], rbx);
+            assert_eq!(expected.gpr[2], initial.gpr[2]);
+
+            for candidate in [false, true] {
+                let mut actual = initial.clone();
+                let result = if candidate {
+                    od_jit::dispatch::run_with_native_lea_rax_rbx_demand_flags_candidate(
+                        view,
+                        &admission,
+                        &mut actual,
+                        4,
+                        control,
+                        &mut PublishedBlockExecutor,
+                    )
+                } else {
+                    od_jit::dispatch::run_with_native_lea_rax_rbx(
+                        view,
+                        &admission,
+                        &mut actual,
+                        4,
+                        control,
+                        &mut PublishedBlockExecutor,
+                    )
+                }
+                .unwrap();
+                assert_eq!(actual, expected);
+                assert_eq!(result.retired_native, 3); // writer, LEA, branch
+                assert_eq!(result.retired_interpreter, 1); // NOP fallback
+                assert_eq!(result.remaining_budget, 0);
+            }
+        }
+
+        // Stop before the fallback NOP and exhaust budget immediately before
+        // and after it; native and interpreted retirement must stay exact.
+        let fallback_code = [0x48, 0x03, 0xc0, 0x48, 0x8d, 0x03, 0x90, 0x74, 0x00];
+        let fallback_base = base + 0xc0;
+        let fallback_view = CodeView::new(fallback_base, &fallback_code).unwrap();
+        let fallback_admission =
+            od_jit::dispatch::LeaRaxRbxInterpreterFallbackAdmission::from_code(fallback_view)
+                .unwrap();
+        let mut initial = od_isa::LongModeState::default();
+        initial.rip = fallback_base;
+        initial.rflags = 0x202 | arithmetic_mask;
+        initial.gpr[0] = 0;
+        initial.gpr[3] = 1;
+        for (budget, stop_rip, steps, expected_exit, expected_native, expected_interpreter) in [
+            (
+                2,
+                None,
+                2,
+                od_jit::dispatch::DispatchExit::BudgetExhausted,
+                2,
+                0,
+            ),
+            (
+                4,
+                Some(fallback_base + 6),
+                2,
+                od_jit::dispatch::DispatchExit::Runtime(
+                    od_jit::runtime::RuntimeExitTag::StopAddress,
+                ),
+                2,
+                0,
+            ),
+            (
+                3,
+                None,
+                3,
+                od_jit::dispatch::DispatchExit::BudgetExhausted,
+                2,
+                1,
+            ),
+        ] {
+            let mut expected = initial.clone();
+            assert_eq!(
+                interpret_steps(&fallback_code, fallback_base, &mut expected, steps),
+                0
+            );
+            let mut actual = initial.clone();
+            let stop = AtomicU8::new(0);
+            let fallback_control = od_jit::dispatch::DispatchControl {
+                stop_rip,
+                stop_requested: &stop,
+                event_requested: None,
+            };
+            let result = od_jit::dispatch::run_with_native_lea_rax_rbx_demand_flags_candidate(
+                fallback_view,
+                &fallback_admission,
+                &mut actual,
+                budget,
+                fallback_control,
+                &mut PublishedBlockExecutor,
+            )
+            .unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(result.retired_native, expected_native);
+            assert_eq!(result.retired_interpreter, expected_interpreter);
+        }
+
+        // Consecutive LEAs and a following arithmetic writer retain normal
+        // instruction order while flags remain unchanged until that writer.
+        for (bytes, expected_retired) in [
+            (vec![0x48, 0x8d, 0x03, 0x48, 0x8d, 0x03], 2),
+            (vec![0x48, 0x8d, 0x03, 0x48, 0x03, 0xc0, 0x74, 0x00], 3),
+        ] {
+            let view = CodeView::new(base + 0x40, &bytes).unwrap();
+            let admission =
+                od_jit::dispatch::LeaRaxRbxInterpreterFallbackAdmission::from_code(view).unwrap();
+            let mut initial = od_isa::LongModeState::default();
+            initial.rip = base + 0x40;
+            initial.rflags = 0x202 | arithmetic_mask | (1 << 10) | (1 << 21);
+            initial.gpr[0] = 0;
+            initial.gpr[3] = 1;
+            let mut expected = initial.clone();
+            let data_accesses = interpret_to_end(&bytes, initial.rip, &mut expected);
+            assert_eq!(data_accesses, 0);
+            for candidate in [false, true] {
+                let mut actual = initial.clone();
+                let result = if candidate {
+                    od_jit::dispatch::run_with_native_lea_rax_rbx_demand_flags_candidate(
+                        view,
+                        &admission,
+                        &mut actual,
+                        4,
+                        control,
+                        &mut PublishedBlockExecutor,
+                    )
+                } else {
+                    od_jit::dispatch::run_with_native_lea_rax_rbx(
+                        view,
+                        &admission,
+                        &mut actual,
+                        4,
+                        control,
+                        &mut PublishedBlockExecutor,
+                    )
+                }
+                .unwrap();
+                assert_eq!(actual, expected);
+                assert_eq!(result.retired_interpreter, 0);
+                assert_eq!(result.retired_native, expected_retired);
+            }
+        }
+
+        // The prior writer may retire before a stop/budget boundary at LEA;
+        // a stop at the instruction after LEA includes its committed result.
+        let bounded_code = [0x48, 0x03, 0xc0, 0x48, 0x8d, 0x03];
+        let bounded_base = base + 0x60;
+        let bounded_view = CodeView::new(bounded_base, &bounded_code).unwrap();
+        let bounded_admission =
+            od_jit::dispatch::LeaRaxRbxInterpreterFallbackAdmission::from_code(bounded_view)
+                .unwrap();
+        let mut initial = od_isa::LongModeState::default();
+        initial.rip = bounded_base;
+        initial.rflags = 0x202 | arithmetic_mask;
+        initial.gpr[0] = 0;
+        initial.gpr[3] = 1;
+        for (budget, stop_rip, steps, expected_exit) in [
+            (1, None, 1, od_jit::dispatch::DispatchExit::BudgetExhausted),
+            (
+                4,
+                Some(bounded_base + 3),
+                1,
+                od_jit::dispatch::DispatchExit::Runtime(
+                    od_jit::runtime::RuntimeExitTag::StopAddress,
+                ),
+            ),
+            (
+                4,
+                Some(bounded_base + 6),
+                2,
+                od_jit::dispatch::DispatchExit::Runtime(
+                    od_jit::runtime::RuntimeExitTag::StopAddress,
+                ),
+            ),
+        ] {
+            let mut expected = initial.clone();
+            assert_eq!(
+                interpret_steps(&bounded_code, bounded_base, &mut expected, steps),
+                0
+            );
+            let mut actual = initial.clone();
+            let stop = AtomicU8::new(0);
+            let result = od_jit::dispatch::run_with_native_lea_rax_rbx_demand_flags_candidate(
+                bounded_view,
+                &bounded_admission,
+                &mut actual,
+                budget,
+                od_jit::dispatch::DispatchControl {
+                    stop_rip,
+                    stop_requested: &stop,
+                    event_requested: None,
+                },
+                &mut PublishedBlockExecutor,
+            )
+            .unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(result.retired_native, steps as u64);
+            assert_eq!(result.retired_interpreter, 0);
+            assert_eq!(result.exit, expected_exit);
+        }
+    }
+
+    #[test]
     fn native_fallback_nop_preserves_preceding_arithmetic_flags() {
         let _guard = jit_test_lock();
         let base_rip = 0x7BC0;

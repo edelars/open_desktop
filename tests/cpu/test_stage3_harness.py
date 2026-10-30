@@ -320,6 +320,9 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             "s3_33g_native_not_rax_emitter",
             "s3_33g_native_not_rax_compiler",
             "s3_33g_native_not_rax_host",
+            "s3_33h_native_lea_rax_rbx_admission",
+            "s3_33h_native_lea_rax_rbx_compiler",
+            "s3_33h_native_lea_rax_rbx_host",
         ]
         gates = [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_33")]
         manifest_gates = [

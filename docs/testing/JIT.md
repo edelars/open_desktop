@@ -154,6 +154,29 @@ calls and requires none for NOT.
 Mini and performance checks remain deferred until the end of Stage 3. See the
 [S3-33g report](../reports/STAGE_3_S3-33g_2026-10-30.md).
 
+## S3-33h: exact native LEA RAX,[RBX]
+
+Run the exact admission, compiler, and host gates from
+`python3 tests/cpu/stage3_harness.py --suite local`. Admission accepts only
+bare `48 8D 03` with decoded W64 RAX destination and 64-bit `[RBX]` address;
+it rejects other registers, SIB/disp alternatives, RIP-relative, address32,
+prefix/truncated forms, branch into the instruction, and remains separate
+from existing profiles. The IR test requires a single GPR read, GPR write,
+and commit without memory, flags, or arithmetic operations. The compiler gate
+checks eager/candidate entry points, PC map, and absence of data helper calls.
+
+Host differential coverage compares complete state and retirement for RBX
+zero, small values, signed extrema, unmapped and noncanonical values, with
+all other GPRs as canaries and full flags/definedness preserved. A rejecting
+interpreter memory probe proves no data callback occurs. Pending ADD/CMP → LEA
+→ JZ/JNZ cases have distinguishable branch outcomes and candidate statepoint
+evidence. LEA → NOP interpreter fallback → JZ/JNZ checks pending flags across
+the fallback, native/interpreter retirement accounting, and STOP/budget
+boundaries around it. Also cover consecutive LEAs, a successor flags writer,
+and terminal execution. Mini and performance checks remain
+deferred until the end of Stage 3. See the
+[S3-33h report](../reports/STAGE_3_S3-33h_2026-10-30.md).
+
 ## Срез A: один register-only блок
 
 1. Использовать только точные S0-09 формы из JIT contract и fixtures с

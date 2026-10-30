@@ -226,6 +226,18 @@ ADDITIONAL_TEST_GATES = (
         "s3_33g_native_not_rax_host", "local_acceptance", "od-host",
         "tests::native_not_rax_preserves_full_flags_and_pending_writer_state",
     ),
+    (
+        "s3_33h_native_lea_rax_rbx_admission", "local_acceptance", "od-jit",
+        "block::tests::lea_rax_rbx_admission_is_exact_and_separate_from_other_profiles",
+    ),
+    (
+        "s3_33h_native_lea_rax_rbx_compiler", "local_acceptance", "od-jit",
+        "block_compile::tests::native_lea_rax_rbx_compiles_eager_and_candidate_without_memory_helper",
+    ),
+    (
+        "s3_33h_native_lea_rax_rbx_host", "local_acceptance", "od-host",
+        "tests::native_lea_rax_rbx_copies_unmapped_addresses_without_data_access",
+    ),
 )
 RUST_TEST_GATES = (
     *(

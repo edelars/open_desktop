@@ -2438,6 +2438,26 @@ emitter принимает только W64 `Subtract + Preserve + result`; эт
 [S3-33g report](../reports/STAGE_3_S3-33g_2026-10-30.md); S3-33 и Stage 3
 остаются открытыми.
 
+#### S3-33h. Exact native qword LEA RAX,[RBX]
+
+Добавлен отдельный uncached opt-in profile только для bare `48 8D 03`
+(`LEA RAX,[RBX]`). Admission одновременно сверяет точные bytes и decoded
+shape: destination RAX W64, address size 64, base RBX, без index/displacement
+и RIP-relative addressing; альтернативные эквивалентные кодировки, другие
+регистры/widths/prefixes, truncation и branch внутрь инструкции отвергаются.
+Lowering — только `ReadGpr(RBX,W64)` → `WriteGpr(RAX,W64)` → один commit.
+Путь не обращается к данным памяти и не создаёт arithmetic/flags effects;
+полные flags, definedness и pending-writer descriptor/operands сохраняются.
+Eager и demand-flags candidate остаются отдельными opt-in API.
+
+Host parity включает unmapped/noncanonical адресные значения, полный state,
+данные памяти через rejecting probe, pending ADD/CMP → LEA → JZ/JNZ с
+различимыми ветвями, LEA → NOP interpreter fallback → branch, последовательные
+LEA, successor writer, PC-map, budget/STOP и terminal случаи. Три exact local
+harness gates закрепляют admission, compiler и host test identities. Mini и
+performance отложены до конца Stage 3; S3-33 и этап остаются открытыми. См.
+[S3-33h report](../reports/STAGE_3_S3-33h_2026-10-30.md).
+
 ## 9. Проверка, производительность и интеграция
 
 ### S3-34. Собрать corpus и проверить сам harness
@@ -2601,9 +2621,10 @@ fail-closed Cargo gate
 
 #### S3-34i. Exact local gates for native arithmetic slices
 
-The local harness requires sixteen exact Cargo gates for the committed
+The local harness requires nineteen exact Cargo gates for the committed
 S3-33a–d native INC RAX, DEC RAX, NEG RAX, and ADD RAX imm8 slices, plus the
-bounded S3-33f SUB RAX imm8 and S3-33g NOT RAX slices. Each gate pins its
+bounded S3-33f SUB RAX imm8 and S3-33g NOT RAX slices, and the S3-33h LEA
+RAX,[RBX] slice. Each gate pins its
 crate, full test identity, exact arguments, one executed passing test line, and
 the relevant source files in the input manifest. Harness self-checks reject
 missing gates, wrong package/identity/arguments, zero matches, ignored/failed/

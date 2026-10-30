@@ -15,7 +15,8 @@ use crate::block::{
     self, AdmittedInstructionBoundaries, BlockStopReason, BranchTargetResolution, BuildOutcome,
     DecodeBoundary, DecodedInstruction, S0_09NopAddRaxImm8Admission, S0_09NopAdmission,
     S0_09NopCmpRaxImm8Admission, S0_09NopDecRaxAdmission, S0_09NopIncRaxAdmission,
-    S0_09NopNegRaxAdmission, S0_09NopNotRaxAdmission, S0_09NopSubRaxImm8Admission,
+    S0_09NopLeaRaxRbxAdmission, S0_09NopNegRaxAdmission, S0_09NopNotRaxAdmission,
+    S0_09NopSubRaxImm8Admission,
 };
 use crate::ir::{
     self, BranchCondition, ExitKind, FlagEffect, GuestGpr, GuestInstruction, IntWidth, IntegerKind,
@@ -200,6 +201,27 @@ pub(crate) fn lower_for_native_not_rax(
     )
 }
 
+pub(crate) fn lower_for_native_lea_rax_rbx(
+    outcome: &BuildOutcome,
+    admission: &S0_09NopLeaRaxRbxAdmission,
+) -> Result<LoweringOutcome, LoweringError> {
+    lower_with_admission_and_lea(
+        outcome,
+        Some(admission.boundaries()),
+        None,
+        None,
+        None,
+        false,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(admission),
+    )
+}
+
 pub(crate) fn lower_for_native_add_rax_imm8(
     outcome: &BuildOutcome,
     admission: &S0_09NopAddRaxImm8Admission,
@@ -273,6 +295,38 @@ fn lower_with_admission(
     native_add_rax_imm8_admission: Option<&S0_09NopAddRaxImm8Admission>,
     native_cmp_rax_imm8_admission: Option<&S0_09NopCmpRaxImm8Admission>,
     native_sub_rax_imm8_admission: Option<&S0_09NopSubRaxImm8Admission>,
+) -> Result<LoweringOutcome, LoweringError> {
+    lower_with_admission_and_lea(
+        outcome,
+        admission,
+        nop_admission,
+        nop_inc_rax_admission,
+        nop_dec_rax_admission,
+        native_inc_rax,
+        native_dec_rax,
+        native_neg_rax_admission,
+        native_not_rax_admission,
+        native_add_rax_imm8_admission,
+        native_cmp_rax_imm8_admission,
+        native_sub_rax_imm8_admission,
+        None,
+    )
+}
+
+fn lower_with_admission_and_lea(
+    outcome: &BuildOutcome,
+    admission: Option<&AdmittedInstructionBoundaries>,
+    nop_admission: Option<&S0_09NopAdmission>,
+    nop_inc_rax_admission: Option<&S0_09NopIncRaxAdmission>,
+    nop_dec_rax_admission: Option<&S0_09NopDecRaxAdmission>,
+    native_inc_rax: bool,
+    native_dec_rax: bool,
+    native_neg_rax_admission: Option<&S0_09NopNegRaxAdmission>,
+    native_not_rax_admission: Option<&S0_09NopNotRaxAdmission>,
+    native_add_rax_imm8_admission: Option<&S0_09NopAddRaxImm8Admission>,
+    native_cmp_rax_imm8_admission: Option<&S0_09NopCmpRaxImm8Admission>,
+    native_sub_rax_imm8_admission: Option<&S0_09NopSubRaxImm8Admission>,
+    native_lea_rax_rbx_admission: Option<&S0_09NopLeaRaxRbxAdmission>,
 ) -> Result<LoweringOutcome, LoweringError> {
     let block = match outcome {
         BuildOutcome::NoBlock(no_block) => {
@@ -381,6 +435,11 @@ fn lower_with_admission(
                     && matches!(decoded.operation, DecodedOperation::Nop)
                     || admission.admits_not_rax(*guest_rip)
                         && block::is_exact_not_rax(*decoded, &[0x48, 0xf7, 0xd0])
+            }) || native_lea_rax_rbx_admission.is_some_and(|admission| {
+                admission.admits_nop(*guest_rip)
+                    && matches!(decoded.operation, DecodedOperation::Nop)
+                    || admission.admits_lea_rax_rbx(*guest_rip)
+                        && block::is_exact_lea_rax_rbx(*decoded, &[0x48, 0x8d, 0x03])
             }) || native_add_rax_imm8_admission.is_some_and(|admission| {
                 admission.admits_nop(*guest_rip)
                     && matches!(decoded.operation, DecodedOperation::Nop)
@@ -480,6 +539,8 @@ fn lower_with_admission(
             .is_some_and(|proof| proof.admits_neg_rax(instruction.guest_rip));
         let admitted_native_not = native_not_rax_admission
             .is_some_and(|proof| proof.admits_not_rax(instruction.guest_rip));
+        let admitted_native_lea = native_lea_rax_rbx_admission
+            .is_some_and(|proof| proof.admits_lea_rax_rbx(instruction.guest_rip));
         let admitted_native_add_rax_imm8 = native_add_rax_imm8_admission
             .is_some_and(|proof| proof.admits_add_rax_imm8(instruction.guest_rip));
         let admitted_native_cmp_rax_imm8 = native_cmp_rax_imm8_admission
@@ -490,6 +551,7 @@ fn lower_with_admission(
             && !admitted_native_dec
             && !admitted_native_neg
             && !admitted_native_not
+            && !admitted_native_lea
             && !admitted_native_add_rax_imm8
             && !admitted_native_cmp_rax_imm8
             && !admitted_native_sub_rax_imm8
@@ -513,6 +575,8 @@ fn lower_with_admission(
             lower_exact_neg_rax(instruction, index, &mut next_temp, &mut operations)?;
         } else if admitted_native_not {
             lower_exact_not_rax(instruction, index, &mut next_temp, &mut operations)?;
+        } else if admitted_native_lea {
+            lower_exact_lea_rax_rbx(instruction, index, &mut next_temp, &mut operations)?;
         } else if admitted_native_add_rax_imm8 {
             let admitted_value = native_add_rax_imm8_admission
                 .and_then(|proof| proof.add_rax_imm8_value(instruction.guest_rip))
@@ -948,6 +1012,36 @@ fn lower_exact_not_rax(
     operations.push(Operation::WriteGpr {
         register: crate::ir::GuestGpr(0),
         src: result,
+        width: IntWidth::W64,
+    });
+    operations.push(Operation::CommitInstruction { index });
+    Ok(())
+}
+
+fn lower_exact_lea_rax_rbx(
+    instruction: &DecodedInstruction,
+    index: usize,
+    next_temp: &mut u32,
+    operations: &mut Vec<Operation>,
+) -> Result<(), LoweringError> {
+    let invalid = || LoweringError::InvalidDecodedForm {
+        guest_rip: instruction.guest_rip,
+    };
+    if !matches!(instruction.decoded.operation, DecodedOperation::Lea { .. })
+        || !block::is_exact_lea_rax_rbx(instruction.decoded, &[0x48, 0x8d, 0x03])
+    {
+        return Err(invalid());
+    }
+    operations.push(Operation::BeginInstruction { index });
+    let rbx = allocate_temp(next_temp);
+    operations.push(Operation::ReadGpr {
+        dst: rbx,
+        register: crate::ir::GuestGpr(3),
+        width: IntWidth::W64,
+    });
+    operations.push(Operation::WriteGpr {
+        register: crate::ir::GuestGpr(0),
+        src: rbx,
         width: IntWidth::W64,
     });
     operations.push(Operation::CommitInstruction { index });
@@ -1547,6 +1641,48 @@ mod tests {
                 Operation::BeginInstruction { index: 1 },
             ]
         ));
+        assert_eq!(ir::verify(&lowered.program), Ok(()));
+    }
+
+    #[test]
+    fn native_lea_rax_rbx_lowers_to_gpr_copy_without_memory_or_flags_operations() {
+        let code = CodeView::new(BASE, &[0x48, 0x8d, 0x03, 0x74, 0x00]).unwrap();
+        let admission = S0_09NopLeaRaxRbxAdmission::from_code(code).unwrap();
+        let built = block::build_block_for_native_lea_rax_rbx(
+            code,
+            BASE,
+            AccessContext::default(),
+            BlockLimits::default(),
+        )
+        .unwrap();
+        let lowered = match lower_for_native_lea_rax_rbx(&built, &admission).unwrap() {
+            LoweringOutcome::Program(program) => program,
+            other => panic!("expected LEA native prefix, got {other:?}"),
+        };
+        assert!(matches!(
+            &lowered.program.operations[..5],
+            [
+                Operation::BeginInstruction { index: 0 },
+                Operation::ReadGpr {
+                    dst: TempId(0),
+                    register: GuestGpr(3),
+                    width: IntWidth::W64
+                },
+                Operation::WriteGpr {
+                    register: GuestGpr(0),
+                    src: TempId(0),
+                    width: IntWidth::W64
+                },
+                Operation::CommitInstruction { index: 0 },
+                Operation::BeginInstruction { index: 1 },
+            ]
+        ));
+        assert!(!lowered.program.operations.iter().any(|operation| matches!(
+            operation,
+            Operation::CheckedLoad { .. }
+                | Operation::CheckedStore { .. }
+                | Operation::Integer { .. }
+        )));
         assert_eq!(ir::verify(&lowered.program), Ok(()));
     }
 

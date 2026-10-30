@@ -1512,6 +1512,25 @@ This is an opt-in uncached correctness slice; Mini and performance checks are
 deferred until Stage 3 ends. See the
 [S3-33g report](../reports/STAGE_3_S3-33g_2026-10-30.md).
 
+### S3-33h: opt-in exact native LEA RAX,[RBX]
+
+Separate `compile_block_for_native_lea_rax_rbx*` and
+`dispatch::run_with_native_lea_rax_rbx*` entry points use an uncached profile
+for bare `48 8D 03` only. Admission requires exact three-byte source identity
+and decoded W64 destination RAX, 64-bit address size, base RBX, no index,
+scale 1, and zero displacement. Alternate encodings with SIB or displacement,
+other registers, RIP-relative forms, address32, prefixes, truncation, and a
+branch into the instruction are rejected. Lowering contains only
+`Begin`, `ReadGpr(RBX,W64)`, `WriteGpr(RAX,W64)`, and one `Commit`. No checked
+load, data-memory access, canonicality check, helper, arithmetic, or flags
+operation is involved. Full RFLAGS/definedness and any pending-flags descriptor
+and saved operands are preserved. Eager and demand-flags candidate entry points
+are separate and opt-in. An admitted NOP boundary may use the existing bounded
+interpreter fallback; it fetches only the exact LEA's three source bytes and
+retirement accounting remains shared with native execution. Mini and
+performance checks remain deferred until Stage 3 ends. See the
+[S3-33h report](../reports/STAGE_3_S3-33h_2026-10-30.md).
+
 ### S3-29d: uncached arithmetic-to-checked-load handoff
 
 The bounded host fixture composes existing eager and demand-flags native
