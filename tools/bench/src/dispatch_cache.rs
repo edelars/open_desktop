@@ -4,6 +4,12 @@
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+#[cfg(target_os = "macos")]
+use std::{
+    io::Read,
+    process::{Command, Stdio},
+    thread,
+};
 
 use od_host::{PublishedArenaBackend, PublishedArenaBlock, PublishedBlockExecutor};
 use od_isa::LongModeState;
@@ -452,10 +458,96 @@ struct CacheChurnReport {
     resident_logical_metadata_bytes_high_water: usize,
     arena_unoccupied_slots_at_resident_high_water: usize,
     arena_reserved_bytes: usize,
-    process_rss_bytes: Option<u64>,
+    process_rss_before_runtime_creation: ProcessRssSnapshot,
+    process_rss_after_sweeps_before_runtime_drop: ProcessRssSnapshot,
+    process_rss_after_runtime_drop: ProcessRssSnapshot,
     teardown_or_independent_instance_lifecycle_measured: bool,
     sweeps: Vec<ChurnSweepReport>,
     total_elapsed_ns: u128,
+}
+
+#[derive(Serialize)]
+struct ProcessRssSnapshot {
+    rss_bytes: Option<u64>,
+    method: &'static str,
+    unavailable_reason: Option<String>,
+}
+
+/// Captures a process-wide RSS snapshot outside all timed dispatch intervals.
+/// Cache attribution is not possible from this metric.
+fn process_rss_snapshot() -> ProcessRssSnapshot {
+    #[cfg(target_os = "macos")]
+    {
+        const TIMEOUT: Duration = Duration::from_secs(1);
+        const METHOD: &str = "macOS /bin/ps -o rss= -p <pid>; KiB converted to bytes";
+        let child = Command::new("/bin/ps")
+            .args(["-o", "rss=", "-p"])
+            .arg(std::process::id().to_string())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("failed to start ps: {error}"));
+        let result = child.and_then(|mut child| {
+            let started = Instant::now();
+            let status = loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break Ok(status),
+                    Ok(None) if started.elapsed() < TIMEOUT => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Ok(None) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break Err("ps timed out after 1 second".to_owned());
+                    }
+                    Err(error) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break Err(format!("failed waiting for ps: {error}"));
+                    }
+                }
+            }?;
+            if !status.success() {
+                return Err(format!("ps exited with status {status}"));
+            }
+            let mut stdout = String::new();
+            child
+                .stdout
+                .take()
+                .ok_or_else(|| "ps stdout was unavailable".to_owned())?
+                .read_to_string(&mut stdout)
+                .map_err(|error| format!("failed to read ps output: {error}"))?;
+            let rss_bytes = stdout
+                .trim()
+                .parse::<u64>()
+                .ok()
+                .and_then(|kib| kib.checked_mul(1024))
+                .ok_or_else(|| "ps returned an invalid RSS value".to_owned())?;
+            Ok(rss_bytes)
+        });
+        match result {
+            Ok(rss_bytes) => ProcessRssSnapshot {
+                rss_bytes: Some(rss_bytes),
+                method: METHOD,
+                unavailable_reason: None,
+            },
+            Err(reason) => ProcessRssSnapshot {
+                rss_bytes: None,
+                method: METHOD,
+                unavailable_reason: Some(reason),
+            },
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        ProcessRssSnapshot {
+            rss_bytes: None,
+            method: "unsupported target; process RSS is not sampled",
+            unavailable_reason: Some(
+                "cache-churn RSS sampling is implemented for macOS only".into(),
+            ),
+        }
+    }
 }
 
 pub fn run(
@@ -965,6 +1057,7 @@ pub fn run_cache_churn(
         cold_each_sweep: false,
         selected_case_ids: cases.iter().map(|case| case.id.clone()).collect(),
     };
+    let process_rss_before_runtime_creation = process_rss_snapshot();
     let mut engine = Variant::new(VariantName::MultiFifo16)?;
     if !engine.counters().cache_lookup_metrics_available {
         return Err(err("FIFO cache counters are unavailable"));
@@ -1040,8 +1133,12 @@ pub fn run_cache_churn(
         ));
     }
 
+    let process_rss_after_sweeps_before_runtime_drop = process_rss_snapshot();
+    drop(engine);
+    let process_rss_after_runtime_drop = process_rss_snapshot();
+
     let report = CacheChurnReport {
-        schema: 1,
+        schema: 2,
         process_run,
         case_list_sha256: od_testkit::sha256_hex(&list),
         trace_sha256: od_testkit::sha256_hex(&trace_raw),
@@ -1063,7 +1160,9 @@ pub fn run_cache_churn(
         resident_logical_metadata_bytes_high_water,
         arena_unoccupied_slots_at_resident_high_water,
         arena_reserved_bytes,
-        process_rss_bytes: None,
+        process_rss_before_runtime_creation,
+        process_rss_after_sweeps_before_runtime_drop,
+        process_rss_after_runtime_drop,
         teardown_or_independent_instance_lifecycle_measured: false,
         sweeps,
         total_elapsed_ns: started.elapsed().as_nanos(),

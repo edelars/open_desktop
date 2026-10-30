@@ -330,15 +330,29 @@ eviction/recompile invariants are observed.
 
 The timing excludes fixture admission, per-case state cloning/reset and
 correctness validation, runtime initialization/teardown, and process launch.
-Process RSS and teardown/independent-instance lifecycle are not measured. This
+S3-37a's recorded runs did not measure process RSS or
+teardown/independent-instance lifecycle. This
 fixed corpus repetition is bounded capacity-churn evidence only; it is not a
 long leak-free stress result and does not cover SMC invalidation or broader
 workloads. Three release runs each completed all 128 sweeps with identical
 totals: 168,960 misses/compiles/publications, 168,944 evictions, and 256 hits.
 Resident high-water was 16 entries, 21,640 code bytes, and 50,124 logical
 metadata bytes. This is bounded capacity-churn evidence, not a long leak-free
-stress result. Process RSS and teardown remain unmeasured. See the
+stress result. See the
 [S3-37a report](../reports/STAGE_3_S3-37a_2026-10-30.md).
+
+### S3-37b: process-wide RSS snapshots
+
+The `cache-churn` report schema 2 records process RSS before FIFO runtime
+creation (after corpus preparation), after the fixed sweeps and before runtime
+drop, and after an explicit drop of the runtime/cache/arena. On macOS the
+current process is sampled with `/bin/ps -o rss= -p <pid>`; the reported value
+is the parsed KiB count converted to bytes. Sampling runs outside the timed
+dispatch intervals. On other targets, or when sampling fails, RSS is `null`
+and the report includes a reason. Each value is process-wide: fixtures, the
+runner, and all other live allocations contribute, so these samples do not
+attribute bytes to the cache or establish leak-free lifecycle behavior. No
+S3-37b release measurements have been recorded yet.
 
 Recorded trace дополняется ограниченными synthetic-сценариями:
 1/8/64/512/4096 keys и observed unique count, hot loops на 1/8 keys, reverse
