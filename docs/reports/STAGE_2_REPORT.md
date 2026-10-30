@@ -17627,3 +17627,37 @@ Sources: Intel SDM Rev. 093 Vol. 2A CVTDQ2PS pp. 3-211–3-213; §2.5.2/Table
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37s--canonical-long64-cvtdq2ps-xmm-register-pairs),
 [plan](../plans/STAGE_2.md#s2-37s--canonical-long64-cvtdq2ps-xmm-register-pairs), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37s-canonical-cvtdq2ps-register-pairs).
+
+## S2-37t — canonical Long64 CVTSS2SD XMM register pairs
+
+Implemented schema-v2 interpreter profile `s2-long-cvtss2sd-registers-v1` for
+all 256 Long64 destination/source register pairs, including self-aliases. The
+independent parser derives pair/length and restricts execution to canonical
+`F3 0F 5A /r` or `F3 41/44/45 0F 5A /r`, ModR/M.mod=3, one executable mapping,
+budget one, and checked stop RIP. Other prefixes, memory, trailing bytes, VEX
+and EVEX are local refusals. Existing profiles remain separate.
+
+The interpreter snapshots the source, widens only low binary32 into destination
+low64, preserves destination high64, and ignores source high96. It raises only
+new IE for SNaN or DE for subnormal, ORs those sticky bits, and suppresses the
+whole destination/RIP/retirement on an unmasked new event after committing
+status. OSXMMEXCPT chooses #XM versus SIMD-generated #UD. SSE2/EM/OSFXSR #UD
+and TS #NM gates follow complete fetch at CPL0–3; DAZ and unsupported MXCSR
+bits refuse. The independent schema oracle derives bits directly from raw
+binary32 fields, including every subnormal leading-bit position and QNaN/SNaN
+mapping. JIT/native remain denied.
+
+Runner test `cvtss2sd_register_pairs_raw_classes_and_exception_matrix` passed:
+256 register pairs; signed zeros/infinities, normal limits, QNaN/SNaN payloads,
+all 23 subnormal leading-bit positions, ignored high96 patterns, and IE/DE mask ×
+OSXMMEXCPT × old sticky cases. The focused executor prerequisite/fetch/sticky/fault
+test and canonical decoder test passed. `cargo test -p od-testkit --offline` passed
+412 tests; `cargo fmt --all -- --check` and `cargo check --workspace --all-targets
+--offline` passed. `graphify update .` completed. Independent code review is
+pending. This local profile leaves memory operands, other forms/modes, full
+S2-34/38, Stage 4, JIT/native/physical acceptance open.
+
+Sources: Intel SDM Rev. 093 Vol. 1 Table D-11, Table 11-1, §§11.5.2.2,
+11.5.3.1–3 (https://cdrdv2.intel.com/v1/dl/getContent/671436); Vol. 2A
+CVTSS2SD pp. 3-240–3-241, Tables 2-15 and 2-20
+(https://cdrdv2.intel.com/v1/dl/getContent/671199). See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37t--canonical-long64-cvtss2sd-xmm-register-pairs), [plan](../plans/STAGE_2.md#s2-37t--canonical-long64-cvtss2sd-xmm-register-pairs), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37t-canonical-cvtss2sd-register-pairs).

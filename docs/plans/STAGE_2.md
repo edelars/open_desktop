@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последнее локальное подзадание S2-37s добавляет canonical Long64 CVTDQ2PS register-space schema-v2 interpreter-only profile with packed Precision semantics; это не закрывает общий S2-37, CPUID admission или physical acceptance. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последние локальные подзадания S2-37s/t добавляют canonical Long64 CVTDQ2PS/CVTSS2SD register-space schema-v2 interpreter-only profiles; это не закрывает общий S2-37, CPUID admission или physical acceptance. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -497,6 +497,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37k | Local-only Long64 legacy register MINPD profile `s2-long-minpd-reg-masked-v1`; aggregates masked IE/DE sticky status across two lanes; JIT/native closed | S2-36z, S2-38a; independent review |
 | [x] | S2-37l | Local-only Long64 legacy register MAXPD profile `s2-long-maxpd-reg-masked-v1`; aggregates masked IE/DE sticky status across two lanes; JIT/native closed | S2-36z, S2-37j/k, bounded S2-38a; independent review |
 | [x] | S2-37s | Local-only canonical Long64 CVTDQ2PS register-space profile; aggregates four-lane Precision and suppresses the full destination on unmasked PE; JIT/native closed | S2-36 rounding, S2-38 PE policy; independent review |
+| [ ] | S2-37t | Local-only canonical Long64 CVTSS2SD XMM register-pair profile; raw binary32 widening with sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-38 IE/DE policy; independent review pending |
 | [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j/k/l: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j/k/l; independent review |
 | [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
@@ -12873,3 +12874,35 @@ Table 2-19 p. 2-27; Vol. 1 §§11.5.3.1–3; REX §2.2.1.2/Table 2-4
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37s--canonical-long64-cvtdq2ps-xmm-register-pairs),
 [report](../reports/STAGE_2_REPORT.md#s2-37s--canonical-long64-cvtdq2ps-xmm-register-pairs), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37s-canonical-cvtdq2ps-register-pairs).
+
+#### S2-37t — canonical Long64 CVTSS2SD XMM register pairs
+
+Implement schema-v2 interpreter profile `s2-long-cvtss2sd-registers-v1` for
+all 256 Long64 XMM destination/source pairs. Accept only `F3 0F 5A /r` for low
+registers and canonical `F3 41`, `F3 44`, or `F3 45` before the opcode when an
+extended source and/or destination is used. Require ModR/M.mod=3, one
+executable mapping, budget one, and checked `entry+length` stop RIP. Other
+prefixes (including redundant REX 40, W/X, extra/reordered prefixes), memory,
+trailing bytes, VEX and EVEX are profile refusals. Older profiles remain
+unchanged.
+
+Snapshot source XMM before any destination write. Widen only low binary32 to
+binary64, preserve destination high64, and ignore source high96. Exact zero,
+normal and infinity conversions add no flags; QNaN preserves sign/payload,
+SNaN quiets and raises new IE, and binary32 subnormal widens exactly and raises
+new DE. OR new IE/DE into existing sticky status. An unmasked new event commits
+that status before #XM when OSXMMEXCPT=1 or SIMD-generated #UD otherwise, while
+suppressing destination, RIP advance and retirement. Existing IE/DE alone do
+not fault. DAZ and reserved MXCSR bits refuse the local profile; RC and FTZ do
+not affect conversion. Full fetch precedes SSE2/EM/OSFXSR #UD, TS #NM, and the
+post-fetch type-3 gate; no data memory callbacks occur.
+
+Coverage includes all register pairs/self aliases, binary32 classes and each
+of the 23 subnormal leading-bit positions, ignored source high96 and preserved
+destination high64, IE/DE × masks × OSXMMEXCPT × old sticky, JIT/native denial,
+and malformed forms. Prerequisite/CPL/fetch/no-callback and result-tampering
+checks are in the focused ISA and runner tests. JIT/native/C/fragment admission,
+generic CPUID, memory operands, other modes, full S2-34/38, Stage 4, and physical
+acceptance remain open. Source basis: Intel SDM Rev. 093 Vol. 1 Table D-11,
+Table 11-1, §§11.5.2.2, 11.5.3.1–3 and Vol. 2A CVTSS2SD pp. 3-240–3-241,
+Tables 2-15 and 2-20.

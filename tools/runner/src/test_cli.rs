@@ -513,6 +513,7 @@ fn expected_native_xorpd_oracle(
                 maxpd_unmasked_controls: None,
                 cvtdq2pd_controls: None,
                 cvtdq2ps_controls: None,
+                cvtss2sd_controls: None,
                 cvtsi2sd_r32_controls: None,
                 cvtsi2sd_r64_controls: None,
                 cvtsi2ss_controls: None,
@@ -999,14 +1000,15 @@ fn execute_fixture_v2(
 ) -> od_testkit::v2::RunResult {
     use od_isa::execute::{
         Cr0Profile, Cr4Profile, Cvtdq2pdControls, Cvtdq2psControls, Cvtsi2sdR32Controls,
-        Cvtsi2sdR64Controls, Cvtsi2ssRegistersControls, Fxrstor64Cr0Controls, Fxsave64Cr0Controls,
-        MaxpdUnmaskedControls, MaxpsUnmaskedControls, MaxsdUnmaskedControls, MaxssUnmaskedControls,
-        MinpdUnmaskedControls, MinpsUnmaskedControls, MinsdUnmaskedControls, MinssInvalidControls,
-        RdtscControls, RunConfig, RunExit, XorpdPrerequisiteState, run, run_with_cli_profile,
-        run_with_cr0_profile, run_with_cvtdq2pd_controls, run_with_cvtdq2pd_register_controls,
-        run_with_cvtdq2ps_register_controls, run_with_cvtsi2sd_r32_controls,
-        run_with_cvtsi2sd_r64_controls, run_with_cvtsi2sd_registers_controls,
-        run_with_cvtsi2ss_registers_controls, run_with_efer_rdmsr_profile,
+        Cvtsi2sdR64Controls, Cvtsi2ssRegistersControls, Cvtss2sdControls, Fxrstor64Cr0Controls,
+        Fxsave64Cr0Controls, MaxpdUnmaskedControls, MaxpsUnmaskedControls, MaxsdUnmaskedControls,
+        MaxssUnmaskedControls, MinpdUnmaskedControls, MinpsUnmaskedControls, MinsdUnmaskedControls,
+        MinssInvalidControls, RdtscControls, RunConfig, RunExit, XorpdPrerequisiteState, run,
+        run_with_cli_profile, run_with_cr0_profile, run_with_cvtdq2pd_controls,
+        run_with_cvtdq2pd_register_controls, run_with_cvtdq2ps_register_controls,
+        run_with_cvtsi2sd_r32_controls, run_with_cvtsi2sd_r64_controls,
+        run_with_cvtsi2sd_registers_controls, run_with_cvtsi2ss_registers_controls,
+        run_with_cvtss2sd_register_controls, run_with_efer_rdmsr_profile,
         run_with_fxrstor64_cr0_controls, run_with_fxsave64_cr0_controls, run_with_halt_profile,
         run_with_kernel_gs_base_profile, run_with_maxpd_unmasked_controls,
         run_with_maxps_unmasked_controls, run_with_maxsd_unmasked_controls,
@@ -1539,6 +1541,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongCvtss2sdRegistersV1 {
+        let controls = loaded
+            .fixture
+            .cvtss2sd_controls
+            .expect("validated CVTSS2SD controls");
+        run_with_cvtss2sd_register_controls(
+            &mut state,
+            memory,
+            config,
+            Cvtss2sdControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongCvtsi2sdR32ExactV1 {
         let controls = loaded
             .fixture
@@ -1673,6 +1693,7 @@ fn execute_fixture_v2(
                 maxpd_unmasked_controls: loaded.fixture.maxpd_unmasked_controls,
                 cvtdq2pd_controls: loaded.fixture.cvtdq2pd_controls,
                 cvtdq2ps_controls: loaded.fixture.cvtdq2ps_controls,
+                cvtss2sd_controls: loaded.fixture.cvtss2sd_controls,
                 cvtsi2sd_r32_controls: loaded.fixture.cvtsi2sd_r32_controls,
                 cvtsi2sd_r64_controls: loaded.fixture.cvtsi2sd_r64_controls,
                 cvtsi2ss_controls: loaded.fixture.cvtsi2ss_controls,
@@ -2840,6 +2861,7 @@ mod tests {
                     maxpd_unmasked_controls: input.fixture.maxpd_unmasked_controls,
                     cvtdq2pd_controls: input.fixture.cvtdq2pd_controls,
                     cvtdq2ps_controls: input.fixture.cvtdq2ps_controls,
+                    cvtss2sd_controls: input.fixture.cvtss2sd_controls,
                     cvtsi2sd_r32_controls: input.fixture.cvtsi2sd_r32_controls,
                     cvtsi2sd_r64_controls: input.fixture.cvtsi2sd_r64_controls,
                     cvtsi2ss_controls: input.fixture.cvtsi2ss_controls,

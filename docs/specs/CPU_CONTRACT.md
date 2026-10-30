@@ -12544,3 +12544,52 @@ Vol. 2A CVTDQ2PS pp. 3-211–3-213; §2.5.2 and Table 2-19 p. 2-27; Vol. 1
 [plan](../plans/STAGE_2.md#s2-37s--canonical-long64-cvtdq2ps-xmm-register-pairs),
 [report](../reports/STAGE_2_REPORT.md#s2-37s--canonical-long64-cvtdq2ps-xmm-register-pairs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37s-canonical-cvtdq2ps-register-pairs).
+
+## S2-37t — canonical Long64 CVTSS2SD XMM register pairs
+
+The interpreter-only schema-v2 profile `s2-long-cvtss2sd-registers-v1` accepts
+all 256 canonical Long64 XMM destination/source pairs. Low-register forms are
+`F3 0F 5A /r`, length 4. Extended source and/or destination use exactly
+`F3 41`, `F3 44`, or `F3 45` before `0F 5A /r`, length 5. ModR/M.mod must be 3.
+The independent schema parser derives the complete register pair and length,
+and requires one executable code mapping, budget one, and checked stop RIP
+`entry+length`. Redundant REX 40, W/X REX, memory, other/additional/reordered
+prefixes, trailing bytes, VEX and EVEX are profile refusals. Older profiles are
+unchanged.
+
+After complete fetch, SSE2 absence, CR0.EM, or CR4.OSFXSR produces #UD; CR0.TS
+then produces #NM. These gates apply at CPL0–3. The profile echoes SSE2, EM, TS,
+OSFXSR and OSXMMEXCPT. MXCSR is limited to `0x0000ffbf`, with DAZ=0; FTZ and RC
+do not change the conversion.
+
+The interpreter snapshots source XMM before writing, reads only its low 32 bits,
+and preserves destination high64 and every unrelated architectural field. Raw
+binary32 zero, normal and infinity widen exactly without flags. QNaN sign and
+payload map into binary64 without IE. SNaN maps to a quiet binary64 NaN and
+raises new IE. A binary32 subnormal widens exactly to normal binary64 and raises
+new DE. Only the low binary64 destination is replaced. New IE/DE are ORed into
+old sticky status. If a new IE/DE event is unmasked by IM/DM, the corresponding
+sticky bit is committed first; OSXMMEXCPT selects #XM or SIMD-generated #UD,
+and destination, RIP advance and retirement are suppressed. Masked completion
+commits destination/status; old sticky IE/DE alone never fault. No PE/OE/UE/ZE
+is generated and no data-memory callback occurs.
+
+The independent schema oracle inspects binary32 sign/exponent/fraction bits and
+constructs binary64 bits directly, including all 23 subnormal leading-bit
+positions and NaN payload shifts/quieting. It does not call the production
+widening helper or host floating point. Runner coverage includes all 256 pairs
+and 16 aliases, ignored high96 patterns, destination high64 preservation,
+zero/normal/infinity boundaries, signed QNaN/SNaN payloads, all subnormal
+leading-bit positions, IE/DE mask and OSXMMEXCPT cases with old sticky bits,
+prerequisite/CPL/fetch/no-callback, malformed inputs, tampering, and JIT/native
+denial. JIT/native/C/fragment/generic CPUID admission and physical execution
+remain closed. m32/memory, other encodings/modes, full S2-34/38, Stage 4 and
+physical acceptance remain open.
+
+Sources: Intel SDM Rev. 093 Vol. 1 Table D-11, Table 11-1, §§11.5.2.2,
+11.5.3.1–3 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436));
+Vol. 2A CVTSS2SD pp. 3-240–3-241, Tables 2-15 and 2-20
+([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)). See the
+[stage plan](../plans/STAGE_2.md#s2-37t--canonical-long64-cvtss2sd-xmm-register-pairs),
+[report](../reports/STAGE_2_REPORT.md#s2-37t--canonical-long64-cvtss2sd-xmm-register-pairs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37t-canonical-cvtss2sd-register-pairs).

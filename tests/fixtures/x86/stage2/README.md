@@ -6366,3 +6366,15 @@ and parent S2-37/S2-38 requirements remain open. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37s--canonical-long64-cvtdq2ps-xmm-register-pairs),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37s--canonical-long64-cvtdq2ps-xmm-register-pairs), and
 [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37s--canonical-long64-cvtdq2ps-xmm-register-pairs).
+
+### S2-37t canonical CVTSS2SD register pairs
+
+`s2_37t_cvtss2sd_asymmetric_register_pair.case.json` is the handwritten
+schema-v2 `s2-long-cvtss2sd-registers-v1` anchor. It uses canonical
+`F3 0F 5A C1`, with low32 source SNaN and high96 hostile patterns. The runner
+covers all 256 register pairs, self-aliases, signed zero/normal/infinity edges,
+QNaN/SNaN payloads, all 23 subnormal leading-bit positions, high96 ignore,
+destination high64 preservation, and IE/DE exception controls. JIT and native
+requests remain unsupported. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37t--canonical-long64-cvtss2sd-xmm-register-pairs),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37t--canonical-long64-cvtss2sd-xmm-register-pairs), and
+[stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37t--canonical-long64-cvtss2sd-xmm-register-pairs).
