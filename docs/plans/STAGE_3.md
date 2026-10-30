@@ -2264,11 +2264,14 @@ See the [S3-29e report](../reports/STAGE_3_S3-29e_2026-10-29.md).
 #### S3-29f: single-block eager/demand-flags measurement path
 
 Added `od-bench flags-compare` for a fixed seven-case subset of accepted S0-09
-register-only programs: replaced flag writers, an instruction-budget exit
-between writers, aliased ADD operands, and JZ/JNZ taken and untaken outcomes.
-Both compilers must produce the complete single guest block. Before timing,
-the harness compares full `LongModeState`, exit continuation, remaining
-budget, and retired instructions with the interpreter. It then measures
+register-only forms (`48 03 C0`, `48 03 C3`, `48 3B C3`, short JZ/JNZ):
+replaced flag writers, an instruction-budget exit between writers, aliased ADD
+operands, and JZ/JNZ taken and untaken outcomes. Both compilers must produce
+the complete single guest block. The harness compiles and interpreter-checks
+all seven cases, then validates the full eager/candidate profile against the
+interpreter before it times any case. It compares full `LongModeState`, exit
+continuation, remaining budget, and retired instructions with the interpreter.
+It then measures
 repeated execution of already published eager and uncached candidate blocks;
 state reset, compilation, publication and outcome checks stay outside timed
 calls. Pair order alternates, work counts match, each accepted series has 20

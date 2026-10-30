@@ -29,6 +29,10 @@ const CALIBRATION_EXECUTIONS: u64 = 10_000;
 const MAX_EXECUTIONS_PER_SAMPLE: u64 = 10_000_000;
 const MAX_SAMPLE_RESTARTS: usize = 8;
 const MAX_CODE_BYTES_PER_CASE: usize = 4 * 1024;
+const BENCH_SOURCE: &[u8] = include_bytes!("flags_compare.rs");
+const JIT_SOURCE: &[u8] = include_bytes!("../../../crates/od-jit/src/block_compile.rs");
+const HOST_EXECUTION_SOURCE: &[u8] = include_bytes!("../../../crates/od-host/src/lib.rs");
+const INTERPRETER_SOURCE: &[u8] = include_bytes!("../../../crates/od-isa/src/execute.rs");
 
 #[derive(Debug)]
 struct BenchError(String);
@@ -68,6 +72,7 @@ pub struct FlagsCompareReport {
     schema: u32,
     profile_id: &'static str,
     profile_sha256: String,
+    source_fingerprints: Vec<SourceFingerprint>,
     process_run: u8,
     measure_host: HostMetadata,
     timed_scope: &'static str,
@@ -76,8 +81,15 @@ pub struct FlagsCompareReport {
     minimum_sample_ns: u128,
     mapping_policy: &'static str,
     comparison_limit: &'static str,
+    preflight_policy: &'static str,
     cases: Vec<CaseReport>,
     total_elapsed_ns: u128,
+}
+
+#[derive(Serialize)]
+struct SourceFingerprint {
+    path: &'static str,
+    sha256: String,
 }
 
 #[derive(Serialize)]
@@ -203,17 +215,30 @@ fn run_native(process_run: u8) -> Result<FlagsCompareReport, BenchError> {
     let started = Instant::now();
     let cases = fixed_profile();
     let profile_sha256 = profile_hash(&cases);
-    let mut output = Vec::with_capacity(cases.len());
+    let mut prepared = Vec::with_capacity(cases.len());
     for case in cases {
         if started.elapsed() > MAX_RUN_TIME {
             return Err(err("30 minute run limit exceeded"));
         }
-        output.push(measure_case(&case, started)?);
+        prepared.push(prepare_case(case)?);
+    }
+    // Correctness preflight is global: no calibration or timed sample begins
+    // until every eager and candidate artifact passed against the interpreter.
+    for case in &prepared {
+        validate_prepared_case(case)?;
+    }
+    let mut output = Vec::with_capacity(prepared.len());
+    for case in &prepared {
+        if started.elapsed() > MAX_RUN_TIME {
+            return Err(err("30 minute run limit exceeded"));
+        }
+        output.push(measure_prepared_case(case, started)?);
     }
     Ok(FlagsCompareReport {
         schema: 1,
         profile_id: PROFILE_ID,
         profile_sha256,
+        source_fingerprints: source_fingerprints(),
         process_run,
         measure_host: HostMetadata::current(),
         timed_scope: "summed repeated PublishedCode::execute_block call durations for one published eager or uncached candidate block, including the host safe wrapper, runtime state materialization/snapshot, and arithmetic-flags helper work; guest state reset before each individually timed call",
@@ -222,17 +247,47 @@ fn run_native(process_run: u8) -> Result<FlagsCompareReport, BenchError> {
         minimum_sample_ns: MIN_SAMPLE.as_nanos(),
         mapping_policy: "one MAP_JIT PublishedCode owner at a time; each sample publishes one already compiled artifact, executes it repeatedly, then drops it before the paired variant is published",
         comparison_limit: "single-block flag-strategy comparison only; no dispatcher lookup, shared-cache path, interpreter fallback, checked-memory helper, guest-memory workload, physical x86, or Mini coverage",
+        preflight_policy: "compile and interpreter-check all cases, then execute and validate every eager/candidate artifact before any calibration or timed sample; publish one MAP_JIT mapping at a time and drop it before publishing the next",
         cases: output,
         total_elapsed_ns: started.elapsed().as_nanos(),
     })
 }
 
+fn source_fingerprints() -> Vec<SourceFingerprint> {
+    [
+        ("tools/bench/src/flags_compare.rs", BENCH_SOURCE),
+        ("crates/od-jit/src/block_compile.rs", JIT_SOURCE),
+        ("crates/od-host/src/lib.rs", HOST_EXECUTION_SOURCE),
+        ("crates/od-isa/src/execute.rs", INTERPRETER_SOURCE),
+    ]
+    .into_iter()
+    .map(|(path, bytes)| SourceFingerprint {
+        path,
+        sha256: od_testkit::sha256_hex(bytes),
+    })
+    .collect()
+}
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn measure_case(case: &CaseSpec, run_started: Instant) -> Result<CaseReport, BenchError> {
+struct PreparedCase {
+    case: CaseSpec,
+    eager: CompiledVariant,
+    candidate: CompiledVariant,
+    eager_code_bytes: Vec<u8>,
+    candidate_code_bytes: Vec<u8>,
+    interpreter_state: LongModeState,
+    interpreter_exit: RunExit,
+    interpreter_retired: u64,
+    interpreter_remaining: u64,
+    expected: ExecutionObservation,
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn prepare_case(case: CaseSpec) -> Result<PreparedCase, BenchError> {
     let code_view = CodeView::new(BASE_RIP, &case.bytes)
         .map_err(|error| err(format!("{} code view failed: {error:?}", case.id)))?;
-    let (eager, eager_code_bytes) = compile_variant(case, false, code_view)?;
-    let (candidate, candidate_code_bytes) = compile_variant(case, true, code_view)?;
+    let (eager, eager_code_bytes) = compile_variant(&case, false, code_view)?;
+    let (candidate, candidate_code_bytes) = compile_variant(&case, true, code_view)?;
     if eager.artifact.code_end() != BASE_RIP + case.bytes.len() as u64
         || candidate.artifact.code_end() != BASE_RIP + case.bytes.len() as u64
         || eager.artifact.emitted().pc_map().instruction_count() != case.instruction_count
@@ -251,7 +306,7 @@ fn measure_case(case: &CaseSpec, run_started: Instant) -> Result<CaseReport, Ben
 
     let code_end = BASE_RIP + case.bytes.len() as u64;
     let (interpreter_state, interpreter_exit, interpreter_retired, interpreter_remaining) =
-        execute_interpreter(case, code_end)?;
+        execute_interpreter(&case, code_end)?;
     let expected_retired = match case.expected_exit {
         ExpectedNativeExit::BlockComplete => u64::from(case.instruction_count),
         ExpectedNativeExit::BudgetExhausted => case.instruction_budget,
@@ -286,7 +341,6 @@ fn measure_case(case: &CaseSpec, run_started: Instant) -> Result<CaseReport, Ben
         }
         _ => {}
     }
-
     let expected = ExecutionObservation {
         exit: match case.expected_exit {
             ExpectedNativeExit::BlockComplete => RuntimeExitTag::BlockComplete,
@@ -296,11 +350,50 @@ fn measure_case(case: &CaseSpec, run_started: Instant) -> Result<CaseReport, Ben
         retired: interpreter_retired,
         remaining_budget: interpreter_remaining,
     };
-    validate_variant(case, &eager.artifact, code_end, &expected)?;
-    validate_variant(case, &candidate.artifact, code_end, &expected)?;
 
+    Ok(PreparedCase {
+        case,
+        eager,
+        candidate,
+        eager_code_bytes,
+        candidate_code_bytes,
+        interpreter_state,
+        interpreter_exit,
+        interpreter_retired,
+        interpreter_remaining,
+        expected,
+    })
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn validate_prepared_case(prepared: &PreparedCase) -> Result<(), BenchError> {
+    let code_end = BASE_RIP + prepared.case.bytes.len() as u64;
+    validate_variant(
+        &prepared.case,
+        &prepared.eager.artifact,
+        code_end,
+        &prepared.expected,
+    )?;
+    validate_variant(
+        &prepared.case,
+        &prepared.candidate.artifact,
+        code_end,
+        &prepared.expected,
+    )
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn measure_prepared_case(
+    prepared: &PreparedCase,
+    run_started: Instant,
+) -> Result<CaseReport, BenchError> {
+    let case = &prepared.case;
+    let eager = &prepared.eager;
+    let candidate = &prepared.candidate;
+    let code_end = BASE_RIP + case.bytes.len() as u64;
+    let expected = &prepared.expected;
     let (mut calibration, mut executions) =
-        calibrate(case, &eager, &candidate, code_end, run_started)?;
+        calibrate(case, eager, candidate, code_end, run_started)?;
     let mut restarts = 0;
     let (eager_samples, candidate_samples) = loop {
         let mut eager_samples = Vec::with_capacity(SAMPLE_PAIRS);
@@ -375,17 +468,17 @@ fn measure_case(case: &CaseSpec, run_started: Instant) -> Result<CaseReport, Ben
         expected_guest_instruction_count: case.instruction_count,
         expected_native_exit: case.expected_exit,
         expected_branch_taken: case.expected_branch_taken,
-        interpreter_exit: format!("{interpreter_exit:?}"),
-        interpreter_state: StateSnapshot::from(&interpreter_state),
-        interpreter_retired,
-        interpreter_remaining_budget: interpreter_remaining,
+        interpreter_exit: format!("{:?}", prepared.interpreter_exit),
+        interpreter_state: StateSnapshot::from(&prepared.interpreter_state),
+        interpreter_retired: prepared.interpreter_retired,
+        interpreter_remaining_budget: prepared.interpreter_remaining,
         compile: CompileReport {
             eager_elapsed_ns: eager.compile_elapsed_ns,
             candidate_elapsed_ns: candidate.compile_elapsed_ns,
-            eager_code_bytes: eager_code_bytes.len(),
-            candidate_code_bytes: candidate_code_bytes.len(),
-            eager_code_sha256: od_testkit::sha256_hex(&eager_code_bytes),
-            candidate_code_sha256: od_testkit::sha256_hex(&candidate_code_bytes),
+            eager_code_bytes: prepared.eager_code_bytes.len(),
+            candidate_code_bytes: prepared.candidate_code_bytes.len(),
+            eager_code_sha256: od_testkit::sha256_hex(&prepared.eager_code_bytes),
+            candidate_code_sha256: od_testkit::sha256_hex(&prepared.candidate_code_bytes),
             published_block_guest_instruction_count: case.instruction_count,
             published_block_code_end: eager.artifact.code_end(),
         },
@@ -645,10 +738,8 @@ fn scale_executions(current: u64, target_ns: u128, observed_ns: u128) -> Result<
 
 fn fixed_profile() -> Vec<CaseSpec> {
     let mut overwritten = LongModeState::default();
-    overwritten.gpr[0] = 3;
-    overwritten.gpr[3] = 9;
-    overwritten.gpr[1] = 7;
-    overwritten.gpr[2] = 7;
+    overwritten.gpr[0] = 1;
+    overwritten.gpr[3] = u64::MAX;
 
     let mut live_at_budget = LongModeState::default();
     live_at_budget.gpr[0] = u64::MAX;
@@ -669,8 +760,8 @@ fn fixed_profile() -> Vec<CaseSpec> {
 
     vec![
         CaseSpec {
-            id: "overwritten-add-sub-live-jz",
-            bytes: vec![0x48, 0x01, 0xd8, 0x48, 0x29, 0xd1, 0x74, 0xf8],
+            id: "overwritten-add-cmp-live-jnz",
+            bytes: vec![0x48, 0x03, 0xc3, 0x48, 0x3b, 0xc3, 0x75, 0xf8],
             initial: overwritten,
             instruction_budget: 3,
             instruction_count: 3,
@@ -678,8 +769,8 @@ fn fixed_profile() -> Vec<CaseSpec> {
             expected_branch_taken: Some(true),
         },
         CaseSpec {
-            id: "budget-exit-between-add-and-sub",
-            bytes: vec![0x48, 0x01, 0xd8, 0x48, 0x29, 0xd1, 0x74, 0xf8],
+            id: "budget-exit-between-add-and-cmp",
+            bytes: vec![0x48, 0x03, 0xc3, 0x48, 0x3b, 0xc3, 0x75, 0xf8],
             initial: live_at_budget,
             instruction_budget: 1,
             instruction_count: 3,
@@ -688,7 +779,7 @@ fn fixed_profile() -> Vec<CaseSpec> {
         },
         CaseSpec {
             id: "alias-add-live-jz",
-            bytes: vec![0x48, 0x01, 0xc0, 0x74, 0xfb],
+            bytes: vec![0x48, 0x03, 0xc0, 0x74, 0xfb],
             initial: alias,
             instruction_budget: 2,
             instruction_count: 2,
@@ -697,7 +788,7 @@ fn fixed_profile() -> Vec<CaseSpec> {
         },
         CaseSpec {
             id: "cmp-live-jz-taken",
-            bytes: vec![0x48, 0x39, 0xd8, 0x74, 0xfb],
+            bytes: vec![0x48, 0x3b, 0xc3, 0x74, 0xfb],
             initial: jz_taken.clone(),
             instruction_budget: 2,
             instruction_count: 2,
@@ -706,7 +797,7 @@ fn fixed_profile() -> Vec<CaseSpec> {
         },
         CaseSpec {
             id: "cmp-live-jnz-taken",
-            bytes: vec![0x48, 0x39, 0xd8, 0x75, 0xfb],
+            bytes: vec![0x48, 0x3b, 0xc3, 0x75, 0xfb],
             initial: jnz_taken.clone(),
             instruction_budget: 2,
             instruction_count: 2,
@@ -715,7 +806,7 @@ fn fixed_profile() -> Vec<CaseSpec> {
         },
         CaseSpec {
             id: "cmp-live-jz-not-taken",
-            bytes: vec![0x48, 0x39, 0xd8, 0x74, 0xfb],
+            bytes: vec![0x48, 0x3b, 0xc3, 0x74, 0xfb],
             initial: jnz_taken,
             instruction_budget: 2,
             instruction_count: 2,
@@ -724,7 +815,7 @@ fn fixed_profile() -> Vec<CaseSpec> {
         },
         CaseSpec {
             id: "cmp-live-jnz-not-taken",
-            bytes: vec![0x48, 0x39, 0xd8, 0x75, 0xfb],
+            bytes: vec![0x48, 0x3b, 0xc3, 0x75, 0xfb],
             initial: jz_taken,
             instruction_budget: 2,
             instruction_count: 2,

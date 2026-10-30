@@ -8,16 +8,19 @@
 
 `od-bench flags-compare` is an opt-in Apple Silicon macOS release measurement
 with a fixed seven-case profile of already accepted S0-09 W64 register-only
-forms. Cases cover replaced flag writers before JZ, a budget exit between
+forms. Cases cover replaced flag writers observed by JNZ, a budget exit between
 writers, aliased ADD operands, and both taken and not-taken JZ/JNZ outcomes.
-The report binds case bytes and initial states to a deterministic profile
-SHA-256; callers cannot select arbitrary programs.
+The exact instruction forms are `48 03 C0`, `48 03 C3`, and `48 3B C3` with
+short JZ/JNZ. The report binds case bytes and initial states to a deterministic
+profile SHA-256 and embeds source fingerprints for the harness, compiler, host
+execution and interpreter; callers cannot select arbitrary programs.
 
-Before timing, the harness requires each compiler to produce one complete
-block, verifies guest instruction count and code end, then compares eager and
-uncached candidate execution with the interpreter for complete
+Before timing any case, the harness compiles and interpreter-checks all seven
+cases, then compares eager and uncached candidate execution with the
+interpreter for complete
 `LongModeState`, branch continuation, exit accounting, retirement, and
-remaining budget. Each pair uses the same number of executions and alternates
+remaining budget. Therefore a late-case preflight failure cannot leave a
+partial timed series. Each pair uses the same number of executions and alternates
 variant order. The 20 pairs are calibrated to at least 200 ms of summed
 `execute_block` call durations per variant. State reset, compilation, code
 validation, publication, post-sample comparison, and mapping drop are outside
@@ -33,6 +36,12 @@ cargo run --release -p od-bench --offline -- flags-compare \
   --process-run 1 \
   --output work/tmp/stage3/s3-29f/flags-compare-1.json
 ```
+
+The earlier rejected preflight used ADD/SUB encodings outside this fixed
+subset. It produced no timing or output artifact and is recorded in the S3-29f
+method report as a rejected attempt, not a benchmark result. Its exact command,
+source revision, and profile hash were not preserved; successful run JSON does
+not synthesize this historical record.
 
 Timed calls include the `execute_block` safe wrapper, runtime state
 materialization/snapshot, and arithmetic-flags helper work. This path does not

@@ -719,16 +719,24 @@ Run `cargo test -p od-host --lib s3_29e_bounded_arithmetic_load_coordinator --of
 ### S3-29f single-block eager/demand-flags measurement path
 
 `od-bench flags-compare` uses a fixed seven-case profile of accepted S0-09
-W64 programs: replaced arithmetic writers, a budget exit between writers,
-aliased ADD inputs, and taken/not-taken JZ and JNZ. Both compilers must emit
-the complete single block; before timing the harness compares complete CPU
-state, branch continuation, exit accounting, retirement and remaining budget
-with the interpreter. The measured interval sums repeated calls to one
+W64 forms (`48 03 C0`, `48 03 C3`, `48 3B C3`, short JZ/JNZ): replaced
+arithmetic writers, a budget exit between writers, aliased ADD inputs, and
+taken/not-taken JZ and JNZ. Both compilers must emit the complete single
+block. The command compiles and interpreter-checks all cases, then validates
+both eager and candidate execution for the entire profile before timing any
+case. It compares complete CPU state, branch continuation, exit accounting,
+retirement and remaining budget with the interpreter. The report fingerprints
+benchmark, JIT, host execution and interpreter source files, as well as guest
+and emitted code. The measured interval sums repeated calls to one
 published artifact after state reset; compilation, publication, reset and
 validation remain separate. Variant order alternates across 20 pairs, each
 with at least 200 ms per variant. One MAP_JIT mapping is live at a time and is
-dropped before the paired variant is published. No measurement has been run
-yet. Timed calls include the `execute_block` safe wrapper, state
+dropped before the paired variant is published. An earlier preflight attempt
+used unsupported ADD/SUB forms and produced no timing or output artifact.
+That rejected attempt is historical method-report evidence only; its exact
+command, revision and profile hash were not preserved, and new run JSON does
+not claim it as a per-run event.
+Timed calls include the `execute_block` safe wrapper, state
 materialization/snapshot and arithmetic-flags helper work. It does not measure
 dispatcher/cache lookup, interpreter fallback, checked-memory helpers or
 guest-memory workloads, and does not select the production default. Mini and
