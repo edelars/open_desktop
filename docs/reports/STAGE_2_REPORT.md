@@ -17879,7 +17879,9 @@ Unsupported for CMPSD, and the native profile classifier keeps the profile
 denied. Parent S2-37/S2-38 remain open; physical acceptance is deferred to the
 final combined stage.
 
-Independent Sol-medium review is pending.
+Independent Sol-medium review found no production semantic defects. It
+identified a misplaced generic-denial test; the author corrected it and
+targeted re-review confirmed the fix.
 
 Checks run:
 
