@@ -92,7 +92,7 @@ def passing_final_summary(run_id: str, log_dir: Path):
     artifact_dir = run_root / "artifacts" / "native-register-v1"
     artifact_dir.mkdir(parents=True, exist_ok=True)
     for name, _, _, _ in harness.RUST_TEST_GATES:
-        if name.startswith("s3_34n_native_register_v1_"):
+        if name.startswith(("s3_34n_native_register_v1_", "s3_34o_native_register_v1_")):
             steps[name]["artifact_directory"] = artifact_dir.relative_to(harness.ROOT).as_posix()
     corpus_summary = {
         "profile": "NativeRegisterV1",
@@ -360,6 +360,8 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             "s3_34n_native_register_v1_corpus",
             "s3_34n_native_register_v1_replay",
             "s3_34n_native_register_v1_selfcheck",
+            "s3_34o_native_register_v1_reducer",
+            "s3_34o_native_register_v1_reducer_selfcheck",
         )
         for missing_step in (harness.RUST_TEST_GATES[-1][0], *mandatory_steps):
             manifest = {
@@ -576,13 +578,13 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ),
         ]
         gates = [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_34n_")]
-        self.assertEqual(len(harness.RUST_TEST_GATES), 72)
+        self.assertEqual(len(harness.RUST_TEST_GATES), 74)
         self.assertEqual(sum(name.startswith("s3_33") for name, _, _, _ in harness.RUST_TEST_GATES), 42)
         self.assertEqual([(name, package, identity) for name, _, package, identity in gates], expected)
         self.assertIn("crates/od-host/src/tests/native_register_v1_corpus.rs", harness.LOCAL_RUST_TEST_SOURCES)
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(manifest), 72)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 72)
+        self.assertEqual(len(manifest), 74)
+        self.assertEqual(len({gate["step"] for gate in manifest}), 74)
         native_identities = {
             gate["identity"] for gate in manifest if gate["step"].startswith("s3_33")
         }
@@ -612,7 +614,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             steps = {
                 name: {"status": "passed", "artifact_directory": artifact_rel}
                 for name, _, _, _ in harness.RUST_TEST_GATES
-                if name.startswith("s3_34n_native_register_v1_")
+                if name.startswith(("s3_34n_native_register_v1_", "s3_34o_native_register_v1_"))
             }
             with self.assertRaisesRegex(harness.HarnessError, "summary evidence is missing"):
                 harness.validate_native_register_v1_artifacts(steps, run_dir)
@@ -679,6 +681,71 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         finally:
             shutil.rmtree(harness_run, ignore_errors=True)
 
+    def test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks(self):
+        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+            run_dir = Path(temporary)
+            reducer_dir = (
+                run_dir
+                / "artifacts"
+                / "native-register-v1"
+                / "native-register-v1-reducer"
+            )
+            required_files = [
+                "reduction-report.json",
+                "source-saved-case.json",
+                "local-fault-injection-selfcheck/reduction-report.json",
+                "local-fault-injection-selfcheck/source-saved-case.json",
+                "local-fault-injection-selfcheck/reduced-saved-case.json",
+                "local-fault-injection-selfcheck/reduced-input-digest.txt",
+                "local-fault-injection-selfcheck/limit/reduction-report.json",
+                "local-fault-injection-selfcheck/limit/reduced-saved-case.json",
+                "local-fault-injection-selfcheck/limit/reduced-input-digest.txt",
+            ]
+            for relative in required_files:
+                path = reducer_dir / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("captured reducer artifact\n")
+            artifact_relative = (
+                run_dir / "artifacts" / "native-register-v1"
+            ).relative_to(harness.ROOT).as_posix()
+            evidence = harness.native_register_v1_reducer_artifact_inventory(run_dir)
+            names = (
+                "s3_34o_native_register_v1_reducer",
+                "s3_34o_native_register_v1_reducer_selfcheck",
+            )
+            steps = {
+                name: {
+                    "status": "passed",
+                    "artifact_directory": artifact_relative,
+                    "reducer_artifacts": evidence,
+                }
+                for name in names
+            }
+            harness.validate_native_register_v1_reducer_inventory(steps, run_dir)
+
+            report = reducer_dir / "reduction-report.json"
+            report.write_text("tampered backend observations\n")
+            with self.assertRaisesRegex(harness.HarnessError, "digest/path binding"):
+                harness.validate_native_register_v1_reducer_inventory(steps, run_dir)
+
+            report.write_text("captured reducer artifact\n")
+            steps[names[0]]["reducer_artifacts"][0]["path"] = "wrong/path"
+            with self.assertRaisesRegex(harness.HarnessError, "digest/path binding"):
+                harness.validate_native_register_v1_reducer_inventory(steps, run_dir)
+
+            steps[names[0]]["reducer_artifacts"] = evidence
+            missing = reducer_dir / required_files[4]
+            missing.unlink()
+            with self.assertRaisesRegex(harness.HarnessError, "inventory is incomplete"):
+                harness.native_register_v1_reducer_artifact_inventory(run_dir)
+
+            outside = run_dir / "outside-artifact.txt"
+            outside.write_text("outside\n")
+            missing.symlink_to(outside)
+            with self.assertRaisesRegex(harness.HarnessError, "cannot be a symlink"):
+                harness.native_register_v1_reducer_artifact_inventory(run_dir)
+
+
     def test_rust_gate_summary_rejects_an_omitted_mandatory_gate(self):
         with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
             mandatory_steps = (
@@ -709,6 +776,8 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 "s3_34n_native_register_v1_corpus",
                 "s3_34n_native_register_v1_replay",
                 "s3_34n_native_register_v1_selfcheck",
+                "s3_34o_native_register_v1_reducer",
+                "s3_34o_native_register_v1_reducer_selfcheck",
             )
             for missing_step in (harness.ADDITIONAL_TEST_GATES[0][0], *mandatory_steps):
                 steps = passing_rust_gate_steps(Path(temporary))

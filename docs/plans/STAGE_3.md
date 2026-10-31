@@ -2836,6 +2836,56 @@ evidence; Mini, physical x86, performance, Stage 2, and owner/MMU remain
 `not_run` or outside scope. See the [S3-34n report](../reports/STAGE_3_S3-34n_2026-10-30.md)
 for coverage counts, artifact hashes, exact gates, and review status.
 
+#### S3-34o. Bounded value-only reducer for saved NativeRegisterV1 mismatches
+
+The standalone reducer takes the path to an existing v1 `SavedCase`, validates
+its profile/admission/digest and replays the original before attempting any
+candidate. The original must reproduce the exact nonempty saved signature as a
+stable semantic mismatch across both repeats of interpreter, eager, and
+demand-candidate execution. Errors, missing observations, instability, and
+non-semantic signatures reject the source or candidate. Every candidate is
+re-digested, re-admitted and rerun twice through all three backends; acceptance
+requires exact whole-signature preservation and a strict decrease in the
+explicit metric (popcount of initial GPRs, mutable arithmetic flags/DF, and
+allowed instruction immediate/displacement values).
+
+Only initial GPR, arithmetic flags/DF (`0x0cd5`, retaining all other and
+mandatory RFLAGS bits), and existing immediate/displacement value bytes are
+candidate fields. Instruction boundaries are decoded before locating eligible
+fields. Branch displacement bytes and targets, opcodes/order/lengths, base and
+entry RIP, auxiliary state, STOP controls and budget are immutable. No
+instruction is deleted and no relocation is performed: this is value
+reduction, not instruction minimization. Candidate ordering and exact-byte
+deduplication are deterministic; evaluation stops at 256 candidates. Reaching
+the cap reports `evaluation_limit` and does not claim global minimality. No
+reduced envelope is emitted unless the original mismatch reproduces and at
+least one strictly simpler candidate preserves its exact signature.
+
+Artifacts are written create-only under the harness run directory: the
+unchanged source envelope, report with source and candidate backend observations
+for every repeat, exact signatures, attempt counts, before/after metric, stop
+reason and source/reduced replay commands; a reduced envelope and digest exist
+only after an accepted candidate. The positive self-check deliberately injects
+a local observation mismatch to exercise reducer mechanics; it is explicitly
+labelled as self-check data and is not replay or JIT defect evidence. Two exact
+local gates are added, taking the committed Rust gate inventory from 72 to 74
+while retaining all 42 S3-33 identities and the 3 S3-34n gates. Mini remains
+deferred until the end of Stage 3; physical x86, Stage 2, owner/MMU and
+performance are outside this slice. This bounded value reducer neither proves
+global minimality nor completes S3-34 or Stage 3.
+
+Focused checks and full local harness evidence are recorded in the
+[S3-34o report](../reports/STAGE_3_S3-34o_2026-10-30.md).
+Implemented and reviewed 2026-10-31. The frozen local harness run
+`stage3-20261031-004600-2e6dd54a75` passed all 78 local steps with matching
+source fingerprints; the exact Rust-gate inventory is 74. The result remains a
+bounded local slice only, with Mini deferred to the end of Stage 3 and physical
+x86, performance, Stage 2 and owner-backed checks `not_run`.
+После зафиксированного прогона изменились только этот план и S3-34o отчёт;
+Rust- и harness-исходники не менялись. Записанный fingerprint относится к
+проверенному до этих документальных правок срезу исходников, а не к финальному
+состоянию документации.
+
 ### S3-35. Измерить холодное исполнение
 
 #### S3-35a: first full-corpus interpreter/FIFO comparison path

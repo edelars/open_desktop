@@ -60,6 +60,7 @@ SELF_TEST_NAMES = (
     "test_rust_test_manifest_rejects_a_missing_mandatory_gate",
     "test_s3_33_native_gates_are_pinned_once_in_manifest_steps_and_summary",
     "test_s3_34n_native_register_corpus_gates_are_pinned_once",
+    "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
     "test_rust_gate_summary_rejects_an_omitted_mandatory_gate",
     "test_rust_gate_summary_rejects_forged_passed_evidence",
     "test_rust_gate_rejects_zero_match_ignored_and_failed_runs",
@@ -343,6 +344,14 @@ ADDITIONAL_TEST_GATES = (
         "s3_34n_native_register_v1_selfcheck", "local_acceptance", "od-host",
         "tests::native_register_v1_corpus::comparator_and_envelope_fail_closed",
     ),
+    (
+        "s3_34o_native_register_v1_reducer", "local_acceptance", "od-host",
+        "tests::native_register_v1_corpus::reduce_saved_native_register_v1_case",
+    ),
+    (
+        "s3_34o_native_register_v1_reducer_selfcheck", "local_acceptance", "od-host",
+        "tests::native_register_v1_corpus::native_register_v1_reducer_rejects_unstable_and_structural_changes",
+    ),
 )
 RUST_TEST_GATES = (
     *(
@@ -551,6 +560,50 @@ def rust_test_argv(package: str, identity: str) -> list[str]:
     ]
 
 
+def native_register_v1_reducer_artifact_inventory(run_dir: Path) -> list[dict[str, str]]:
+    reducer_dir = run_dir / "artifacts" / "native-register-v1" / "native-register-v1-reducer"
+    if not reducer_dir.is_dir() or reducer_dir.is_symlink():
+        raise HarnessError("S3-34o reducer artifact directory is missing or symlinked")
+    entries = []
+    for path in sorted(reducer_dir.rglob("*")):
+        if path.is_symlink():
+            raise HarnessError(f"S3-34o reducer artifact cannot be a symlink: {path}")
+        if path.is_file():
+            entries.append({
+                "path": path.relative_to(ROOT).as_posix(),
+                "sha256": sha256_file(path),
+            })
+    required = {
+        "reduction-report.json",
+        "source-saved-case.json",
+        "local-fault-injection-selfcheck/reduction-report.json",
+        "local-fault-injection-selfcheck/source-saved-case.json",
+        "local-fault-injection-selfcheck/reduced-saved-case.json",
+        "local-fault-injection-selfcheck/reduced-input-digest.txt",
+        "local-fault-injection-selfcheck/limit/reduction-report.json",
+        "local-fault-injection-selfcheck/limit/reduced-saved-case.json",
+        "local-fault-injection-selfcheck/limit/reduced-input-digest.txt",
+    }
+    observed = {
+        Path(entry["path"]).relative_to(reducer_dir.relative_to(ROOT)).as_posix()
+        for entry in entries
+    }
+    if not required.issubset(observed):
+        raise HarnessError("S3-34o reducer artifact inventory is incomplete")
+    return entries
+
+
+def validate_native_register_v1_reducer_inventory(steps: dict, run_dir: Path) -> None:
+    expected = native_register_v1_reducer_artifact_inventory(run_dir)
+    for name in (
+        "s3_34o_native_register_v1_reducer",
+        "s3_34o_native_register_v1_reducer_selfcheck",
+    ):
+        step = steps.get(name)
+        if not isinstance(step, dict) or step.get("reducer_artifacts") != expected:
+            raise HarnessError(f"S3-34o reducer artifact digest/path binding differs: {name}")
+
+
 def attach_native_register_v1_evidence(step: dict, run_dir: Path, step_name: str) -> None:
     expected_dir = run_dir / "artifacts" / "native-register-v1"
     expected_relative = expected_dir.relative_to(ROOT).as_posix()
@@ -559,6 +612,9 @@ def attach_native_register_v1_evidence(step: dict, run_dir: Path, step_name: str
         for path in (run_dir, run_dir / "artifacts", expected_dir)
     ):
         raise HarnessError("S3-34n artifact directory is missing or differs from this run")
+    if step_name.startswith("s3_34o_native_register_v1_"):
+        step["reducer_artifacts"] = native_register_v1_reducer_artifact_inventory(run_dir)
+        return
     if step_name != "s3_34n_native_register_v1_corpus":
         return
     summary_path = expected_dir / "native-register-v1-summary.json"
@@ -627,6 +683,8 @@ def validate_native_register_v1_artifacts(steps: dict, run_dir: Path) -> None:
         "s3_34n_native_register_v1_corpus",
         "s3_34n_native_register_v1_replay",
         "s3_34n_native_register_v1_selfcheck",
+        "s3_34o_native_register_v1_reducer",
+        "s3_34o_native_register_v1_reducer_selfcheck",
     )
     expected_dir = run_dir / "artifacts" / "native-register-v1"
     expected_relative = expected_dir.relative_to(ROOT).as_posix()
@@ -655,6 +713,94 @@ def validate_native_register_v1_artifacts(steps: dict, run_dir: Path) -> None:
         raise HarnessError(f"S3-34n corpus summary cannot be reread: {error}") from error
     if evidence.get("summary") != stored_summary:
         raise HarnessError("S3-34n corpus counts/digest differ from the saved summary")
+    validate_native_register_v1_reducer_inventory(steps, run_dir)
+    reducer_dir = expected_dir / "native-register-v1-reducer"
+    report_path = reducer_dir / "reduction-report.json"
+    source_path = reducer_dir / "source-saved-case.json"
+    if any(path.is_symlink() for path in (reducer_dir, report_path, source_path)):
+        raise HarnessError("S3-34o reducer artifacts cannot be symlinks")
+    try:
+        reducer_report = json.loads(report_path.read_text())
+        reducer_source = json.loads(source_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise HarnessError(f"S3-34o reducer artifact is missing or malformed: {error}") from error
+    def complete_repeats(value: object) -> bool:
+        if not isinstance(value, dict) or value.get("errors") != []:
+            return False
+        return all(
+            isinstance(value.get(backend), list)
+            and len(value[backend]) == 2
+            and all(isinstance(item, dict) for item in value[backend])
+            for backend in ("interpreter", "eager_native", "demand_candidate")
+        )
+
+    if (
+        not isinstance(reducer_report, dict)
+        or reducer_report.get("kind") != "native-register-v1-value-reduction"
+        or reducer_report.get("source_digest") != reducer_source.get("input", {}).get("input_digest")
+        or not complete_repeats(reducer_report.get("source_backend_runs"))
+        or reducer_report.get("source_signature") != []
+        or reducer_report.get("source_replay_signature") != []
+        or "saved_case_round_trip_and_replay" not in reducer_report.get("source_replay_command", "")
+        or reducer_report.get("metric_definition")
+        != "popcount(initial GPRs, initial RFLAGS & 0x0cd5, and eligible encoded immediate/displacement values)"
+        or not isinstance(reducer_report.get("attempts"), list)
+        or reducer_report.get("evaluated_count") != 0
+        or reducer_report.get("accepted_count") != 0
+        or reducer_report.get("stop_reason") != "not_reproduced"
+        or reducer_report.get("reduced_digest") is not None
+        or (reducer_dir / "reduced-saved-case.json").exists()
+    ):
+        raise HarnessError("S3-34o reducer did not fail closed for the non-mismatch corpus sample")
+    injected_dir = reducer_dir / "local-fault-injection-selfcheck"
+    injected_report_path = injected_dir / "reduction-report.json"
+    injected_case_path = injected_dir / "reduced-saved-case.json"
+    digest_path = injected_dir / "reduced-input-digest.txt"
+    try:
+        injected_report = json.loads(injected_report_path.read_text())
+        injected_case = json.loads(injected_case_path.read_text())
+        injected_digest = digest_path.read_text().strip()
+    except (OSError, json.JSONDecodeError) as error:
+        raise HarnessError(f"S3-34o local fault-injection selfcheck artifacts missing: {error}") from error
+    if (
+        injected_report.get("kind") != "LOCAL-FAULT-INJECTION SELF-CHECK ONLY; NOT REPLAY EVIDENCE"
+        or injected_report.get("accepted_count", 0) <= 0
+        or not isinstance(injected_report.get("evaluated_count"), int)
+        or injected_report["evaluated_count"] > 256
+        or injected_report.get("accepted_count", 0) + injected_report.get("rejected_count", 0)
+        != injected_report.get("evaluated_count")
+        or injected_report.get("source_signature") != injected_report.get("reduced_signature")
+        or injected_report.get("metric_after", 0) >= injected_report.get("metric_before", 0)
+        or injected_report.get("reduced_digest") != injected_digest
+        or injected_report.get("metric_definition")
+        != "popcount(initial GPRs, initial RFLAGS & 0x0cd5, and eligible encoded immediate/displacement values)"
+        or "saved_case_round_trip_and_replay" not in injected_report.get("source_replay_command", "")
+        or "saved_case_round_trip_and_replay" not in injected_report.get("reduced_replay_command", "")
+        or injected_case.get("input", {}).get("input_digest") != injected_digest
+        or injected_case.get("failure_signature") != injected_report.get("source_signature")
+        or not complete_repeats(injected_report.get("source_backend_runs"))
+        or not complete_repeats(injected_report.get("reduced_backend_runs"))
+    ):
+        raise HarnessError("S3-34o local fault-injection reducer evidence differs")
+    limit_report_path = injected_dir / "limit" / "reduction-report.json"
+    limit_case_path = injected_dir / "limit" / "reduced-saved-case.json"
+    limit_digest_path = injected_dir / "limit" / "reduced-input-digest.txt"
+    if any(path.is_symlink() for path in (limit_report_path, limit_case_path, limit_digest_path)):
+        raise HarnessError("S3-34o limit selfcheck artifacts cannot be symlinks")
+    try:
+        limit_report = json.loads(limit_report_path.read_text())
+        limit_case = json.loads(limit_case_path.read_text())
+        limit_digest = limit_digest_path.read_text().strip()
+    except (OSError, json.JSONDecodeError) as error:
+        raise HarnessError(f"S3-34o limit selfcheck artifacts missing: {error}") from error
+    if (
+        limit_report.get("kind") != "LOCAL-FAULT-INJECTION LIMIT SELF-CHECK ONLY"
+        or limit_report.get("stop_reason") != "evaluation_limit"
+        or limit_report.get("evaluated_count") != 1
+        or limit_report.get("reduced_digest") != limit_digest
+        or limit_case.get("input", {}).get("input_digest") != limit_digest
+    ):
+        raise HarnessError("S3-34o evaluation-limit behavior differs")
 
 
 def vmhost_process_paths(run_root: Path) -> dict[str, Path]:
@@ -1321,10 +1467,15 @@ def run_step(
             "s3_34n_native_register_v1_corpus",
             "s3_34n_native_register_v1_replay",
             "s3_34n_native_register_v1_selfcheck",
+            "s3_34o_native_register_v1_reducer",
+            "s3_34o_native_register_v1_reducer_selfcheck",
         }:
             artifact_directory = run_dir / "artifacts" / "native-register-v1"
             environment["OD_JIT_NATIVE_REGISTER_V1_CORPUS_DIR"] = str(artifact_directory)
             environment["OD_JIT_NATIVE_REGISTER_V1_REPLAY_CASE"] = str(
+                artifact_directory / "native-register-v1-saved-case.json"
+            )
+            environment["OD_JIT_NATIVE_REGISTER_V1_REDUCE_CASE"] = str(
                 artifact_directory / "native-register-v1-saved-case.json"
             )
         process = subprocess.run(
@@ -2194,11 +2345,11 @@ def validate_final_summary(summary: dict, input_manifest_path: Path) -> None:
     if selection == "local":
         validate_unselected_suites(suites)
         validate_unselected_suites(suites, (PROCESS_SUITE_NAME,))
-        validate_native_register_v1_artifacts(steps, run_root)
         statuses = {name: steps.get(name, {}).get("status") for name in LOCAL_STEPS}
         validate_required_steps(statuses)
         validate_memory_exact_gate_evidence(steps["memory_s3_34h_exact_gate"], run_root)
         validate_required_rust_test_evidence(steps, run_root)
+        validate_native_register_v1_artifacts(steps, run_root)
         memory_suite = suites.get("memory_corpus", {})
         if (
             memory_suite.get("status") != "passed"
@@ -2423,7 +2574,7 @@ def main(argv: list[str] | None = None) -> int:
                         step["output_tail"], exact_test_name
                     )
                     step["test_outcomes"] = outcomes
-                    if step_name.startswith("s3_34n_native_register_v1_"):
+                    if step_name.startswith(("s3_34n_native_register_v1_", "s3_34o_native_register_v1_")):
                         attach_native_register_v1_evidence(step, run_dir, step_name)
                 except HarnessError as error:
                     step["status"] = "failed"

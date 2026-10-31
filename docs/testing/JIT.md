@@ -636,6 +636,35 @@ This is bounded local ARM64 correctness evidence only; Mini, physical x86,
 performance, Stage 2, and owner/MMU remain unrun/out of scope. See the
 [S3-34n report](../reports/STAGE_3_S3-34n_2026-10-30.md).
 
+### S3-34o bounded saved-case value reduction
+
+The exact reducer gate takes `OD_JIT_NATIVE_REGISTER_V1_REDUCE_CASE`, a path to
+an existing v1 `SavedCase`. It replays the original first. Reduction starts
+only when the exact nonempty saved signature reproduces as a stable semantic
+mismatch across both repeats of interpreter, eager, and demand-candidate
+backends. Every candidate is admitted and digest-checked again, then run twice
+through all three backends. Accept only the exact whole-signature match and a
+strictly lower popcount metric over initial GPR, arithmetic flags/DF, and
+existing immediate/displacement values.
+
+The reducer cannot remove or reorder instructions, alter opcodes or lengths,
+change branch bytes/targets, guest base/entry RIP, auxiliary state, STOP, or
+budget. Branch displacement is immutable code structure; no relocation occurs.
+This is value reduction, not instruction minimization. Candidate order is
+deterministic and exact-input deduplicated, with a 256 evaluation cap. A cap
+stop is recorded as `evaluation_limit` and is not a minimality claim. The
+original envelope is create-only/preserved; reduced envelope and digest are
+written only when the source reproduces and a strict reduction preserves the
+signature. Run artifacts include all repeated backend observations and replay
+commands for both source and reduced cases. The positive mechanical self-check
+uses explicitly labeled local fault injection in observations; it is not
+ordinary replay data or evidence of a JIT bug. Two exact gates add to the
+existing 72 Rust gates (74 total), preserving the 42 S3-33 identity set and all
+three S3-34n gates. Mini remains deferred until Stage 3 ends. This slice makes
+no physical x86, Stage 2, owner/MMU, performance, global-minimality, or full
+S3-34/Stage 3 completion claim. See the
+[S3-34o report](../reports/STAGE_3_S3-34o_2026-10-30.md).
+
 Каждая новая строка support matrix получает literal positive/negative cases,
 точный сравниваемый state и внешний prerequisite. В отчёте сохранять git
 revision, build fingerprint, host/OS/toolchain, fixtures/corpus fingerprint,
