@@ -64,6 +64,7 @@ SELF_TEST_NAMES = (
     "test_s3_34q_retained_hit_reducer_gate_is_pinned_once",
     "test_s3_34r_cross_thread_idle_handle_gate_is_pinned_once_and_fail_closed",
     "test_s3_34s_memory_event_gates_are_pinned_once_and_fail_closed",
+    "test_s3_34t_register_event_gates_are_pinned_once_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
     "test_rust_gate_summary_rejects_an_omitted_mandatory_gate",
@@ -168,6 +169,26 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_28_stop_priority_after_publication", "local_acceptance", "od-jit",
         "dispatch::tests::cached_publication_boundary_rechecks_stop_priority_before_event",
+    ),
+    (
+        "s3_34t_register_event_cache_miss_hit_request", "local_acceptance", "od-jit",
+        "dispatch::tests::event_pending_after_native_cache_miss_and_hit_preserves_request_until_cleared",
+    ),
+    (
+        "s3_34t_register_event_publication_prevents_entry", "local_acceptance", "od-jit",
+        "dispatch::tests::event_set_during_publication_prevents_native_entry",
+    ),
+    (
+        "s3_34t_register_event_multi_cache_capacity", "local_acceptance", "od-jit",
+        "dispatch::tests::event_pending_on_multi_cache_hit_and_miss_obeys_capacity",
+    ),
+    (
+        "s3_34t_register_event_jcc_resume_without_replay", "local_acceptance", "od-jit",
+        "dispatch::tests::event_after_jcc_yields_before_nop_and_resumes_without_replaying_prefix",
+    ),
+    (
+        "s3_34t_register_event_control_priority", "local_acceptance", "od-jit",
+        "dispatch::tests::event_request_obeys_stop_code_end_budget_and_error_priority",
     ),
     (
         "abi_create_execute_stop_destroy", "local_acceptance", "od-host",
