@@ -229,3 +229,11 @@ locks instruction bytes, gate controls, budget, stop RIP and a no-pending-x87
 precondition. MXCSR is preserved without instruction-specific restrictions;
 native/JIT remain denied. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bm--bounded-long64-cvtpi2pd-xmm0mm1-register-profile)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bm-cvtpi2pd-xmm0mm1-register-profile).
+
+S2-37bn adds `s2-long-cvtpi2ps-register-masked-v1` for exact `0F 2A C1`.
+Its independent integer oracle reads physical MM1 from raw x87 slot 1 and
+checks binary32 rounding, sticky PE, the TOP/tag transition and preservation
+of all other SSE/x87 state. Validation requires PM=1 and no pending x87 state;
+the separate controls use the SSE availability bit. See the [CPU
+contract](../../docs/specs/CPU_CONTRACT.md#s2-37bn--bounded-long64-cvtpi2ps-xmm0mm1-register-profile)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bn-cvtpi2ps-xmm0mm1-register-profile).

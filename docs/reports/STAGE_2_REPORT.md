@@ -19269,3 +19269,45 @@ Normative sources: Intel SDM Rev. 093 Vol. 2A CVTPI2PD p. 3-223; Vol. 3B
 plan](../plans/STAGE_2.md#s2-37bm--bounded-long64-cvtpi2pd-xmm0mm1-register-profile),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37bm--bounded-long64-cvtpi2pd-xmm0mm1-register-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bm-cvtpi2pd-xmm0mm1-register-profile).
+
+## S2-37bn — CVTPI2PS XMM0,MM1 register profile
+
+Implemented exact schema-v2 `0F 2A C1` with separate SSE control snapshot and
+strict Long64 profile admission. The interpreter reads two signed i32 lanes
+from physical x87 slot 1/MM1 independent of TOP/tags, rounds them to binary32
+under MXCSR.RC, writes only XMM0.low64, preserves XMM0.high64, ORs sticky PE
+for valid inexact lanes, and transitions TOP=0/tag_word=0 while preserving all
+x87 payloads/exponents and other environment state. MXCSR prior flags and
+controls are preserved; PM must be set. Full three-byte fetch precedes SSE
+(CPUID bit 25)/EM/OSFXSR #UD and then TS #NM in this bounded local order; it is
+not a universal SDM exception-priority claim. CPL0–3 are accepted. Pending
+x87 state (`FSW & 0x80ff != 0`) is rejected at admission, without a #MF claim.
+No data callback occurs; JIT/native/C ABI remain closed.
+
+The independent testkit oracle converts raw i32 lanes to binary32 using
+integer arithmetic only, without host floating point or production helpers.
+The literal fixture distinguishes physical MM1 from logical ST(1), uses TOP=3
+and a nontrivial tag word, and selects MXCSR `0x000000000000df80` (round-up
+and FTZ). Its runner matrix exercises 512 combinations across TOP 0–7, four
+representative tag words, all four RC modes, and signed/extreme/2^24-boundary
+lane pairs; it also checks exact-lane preservation of incoming sticky IE/PE,
+PM-only admission with IM clear, PM=0 and pending-x87 rejection, foreign-field
+rejection through validation and JSON loading, malformed encodings, output
+tampering and JIT/native refusal.
+
+Verification passed: `cargo test -p od-isa cvtpi2ps --offline` (3 tests);
+focused runner matrix `cargo test -p od-runner
+cvtpi2ps_xmm0_mm1_register_profile --offline` (1 test); full `cargo test -p
+od-testkit --offline` (444 tests); full `cargo test -p od-runner --offline`
+(112 unit + 443 fixture tests); native local-only classification test (1);
+`cargo check --workspace --all-targets --offline`; `cargo fmt --all -- --check`;
+`git diff --check`; and `python3 tools/check_layout.py` (48 required
+directories, 6 crate scaffolds, 14 instruction scopes). The Linux-only native
+fixture-denial execution test was cfg-disabled on this macOS host; no physical
+x86 acceptance was performed. Graphify update completed: 10,104 nodes, 21,365 edges and 314 communities. Existing extractor warnings remain for `include/open_desktop/host_abi.h` (syntax parse) and 13 files with no symbols; community labels need `graphify label` refresh.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTPI2PS p. 3-224; Vol. 3B
+§25.25.3 Table 25-5 p. 25-23; Vol. 3A §15.2 Table 15-2. See the [Stage 2
+plan](../plans/STAGE_2.md#s2-37bn--bounded-long64-cvtpi2ps-xmm0mm1-register-profile),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37bn--bounded-long64-cvtpi2ps-xmm0mm1-register-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bn-cvtpi2ps-xmm0mm1-register-profile).

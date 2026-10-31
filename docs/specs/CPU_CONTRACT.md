@@ -14158,3 +14158,36 @@ Normative source: Intel SDM Rev. 093 Vol. 2A CVTPI2PD p. 3-223; Vol. 3B
 plan](../plans/STAGE_2.md#s2-37bm--bounded-long64-cvtpi2pd-xmm0mm1-register-profile),
 [report](../reports/STAGE_2_REPORT.md#s2-37bm--cvtpi2pd-xmm0mm1-register-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bm-cvtpi2pd-xmm0mm1-register-profile).
+
+## S2-37bn — bounded Long64 CVTPI2PS XMM0,MM1 register profile
+
+The schema-v2 interpreter profile accepts only `0F 2A C1`, one instruction,
+and stop RIP at entry+3. Full three-byte fetch precedes #UD for unavailable
+SSE (CPUID bit 25), CR0.EM or CR4.OSFXSR, then #NM for CR0.TS. This ordering is
+a bounded local policy, not a universal SDM priority claim. CPL0–3 are
+accepted. The profile uses a separate SSE control snapshot.
+
+Admission requires SSE and raw x87 state, MXCSR bits within `0xffbf` and
+Precision mask PM=1. It also requires `FSW & 0x80ff == 0`; pending x87 state is
+rejected and delivery of #MF is not modeled. Convert the two signed i32 lanes
+from physical x87 slot 1/MM1, independently of TOP and tag values, to
+binary32 under MXCSR.RC. Write only XMM0.low64, preserve XMM0.high64, aggregate
+PE for valid inexact lanes, and preserve all MXCSR control and prior status
+bits. On success set TOP=0 and tag_word=0 while preserving every x87 payload,
+exponent and unrelated environment field. No data callback occurs. No IE, DE
+or underflow behavior is modeled in this bounded profile. JIT/native/C ABI and
+broader forms remain unavailable.
+
+The independent oracle uses raw integer arithmetic, without host floating
+point or production conversion helpers. The literal fixture and matrix cover
+signed values around 2^24 and i32 bounds, all four RC modes, TOP 0–7,
+representative tag words, physical MM1 versus logical ST(1), sticky PE,
+state preservation, gates, malformed encodings, strict PM/pending-x87
+validation, output tampering and backend denial. No physical x86 acceptance
+was performed.
+
+Normative source: Intel SDM Rev. 093 Vol. 2A CVTPI2PS p. 3-224; Vol. 3B
+§25.25.3 Table 25-5 p. 25-23; Vol. 3A §15.2 Table 15-2. See the [Stage 2
+plan](../plans/STAGE_2.md#s2-37bn--bounded-long64-cvtpi2ps-xmm0mm1-register-profile),
+[report](../reports/STAGE_2_REPORT.md#s2-37bn--cvtpi2ps-xmm0mm1-register-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bn-cvtpi2ps-xmm0mm1-register-profile).

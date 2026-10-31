@@ -7044,3 +7044,20 @@ encodings, pending-x87 refusal and backend denial. No physical x86 acceptance
 is claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bm--bounded-long64-cvtpi2pd-xmm0mm1-register-profile),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37bm--bounded-long64-cvtpi2pd-xmm0mm1-register-profile),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bm--cvtpi2pd-xmm0mm1-register-profile).
+
+### S2-37bn CVTPI2PS XMM0,MM1 register profile
+
+`s2_37bn_cvtpi2ps_xmm0_mm1_register.case.json` is the literal schema-v2 anchor
+for exact `0F 2A C1`. Physical x87 slot 1/MM1 holds signed i32 extrema while
+TOP=3 and tags are nontrivial; logical ST(1) points elsewhere. MXCSR uses
+`0x000000000000df80` (round-up and FTZ) to exercise rounding and preservation.
+The expected state rounds both lanes under RC, writes XMM0.low64 while
+preserving high64, aggregates sticky PE for valid inexact lanes, clears TOP and
+sets all tags valid, and preserves all x87 payloads/exponents and MXCSR except
+PE. The independent integer oracle and runner matrix cover RC, signed and
+2^24 boundaries, TOP 0–7, representative tag words, gates, malformed
+encodings, PM/pending-x87 rejection, output tampering and backend denial. No
+physical x86 acceptance is claimed. See the [CPU
+contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bn--bounded-long64-cvtpi2ps-xmm0mm1-register-profile),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37bn--bounded-long64-cvtpi2ps-xmm0mm1-register-profile),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bn--cvtpi2ps-xmm0mm1-register-profile).

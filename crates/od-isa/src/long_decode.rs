@@ -1084,6 +1084,8 @@ pub enum Operation {
     Cvtpi2pdXmm0Mm1,
     /// Local-only legacy `0F 2A 00` memory-source CVTPI2PS form.
     Cvtpi2psMemoryRax,
+    /// Local-only legacy `0F 2A C1` register-source CVTPI2PS form.
+    Cvtpi2psXmm0Mm1,
     /// Local-only legacy `0F 2C C1` XMM1 binary32-to-MM0 truncating form.
     Cvttps2piMm0Xmm1,
     /// Local-only legacy `66 0F 2C C1` XMM1 binary64-to-MM0 truncating form.
@@ -4437,13 +4439,11 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 0xc1 => Operation::Cvtpi2pdXmm0Mm1,
                 _ => return Err(self.unsupported(opcode)),
             },
-            (OpcodeMap::Escape0f, 0x2a) if cvtpi2ps_memory_rax => {
-                let modrm = self.byte()?;
-                if modrm != 0x00 {
-                    return Err(self.unsupported(opcode));
-                }
-                Operation::Cvtpi2psMemoryRax
-            }
+            (OpcodeMap::Escape0f, 0x2a) if cvtpi2ps_memory_rax => match self.byte()? {
+                0x00 => Operation::Cvtpi2psMemoryRax,
+                0xc1 => Operation::Cvtpi2psXmm0Mm1,
+                _ => return Err(self.unsupported(opcode)),
+            },
             (OpcodeMap::Escape0f, 0x2c) if cvttps2pi_mm0_xmm1 => {
                 if self.byte()? != 0xc1 {
                     return Err(self.unsupported(opcode));
@@ -21350,6 +21350,37 @@ mod tests {
                 "{bytes:02x?}"
             );
         }
+    }
+
+    #[test]
+    fn cvtpi2ps_register_source_accepts_only_xmm0_mm1() {
+        let instruction = Memory::new(&[0x0f, 0x2a, 0xc1])
+            .decode()
+            .expect("canonical CVTPI2PS XMM0,MM1 encoding");
+        assert_eq!(instruction.operation, Operation::Cvtpi2psXmm0Mm1);
+        assert_eq!(instruction.length, 3);
+        for bytes in [
+            &[0x0f, 0x2a, 0xc0][..],
+            &[0x0f, 0x2a, 0xc2],
+            &[0x0f, 0x2a, 0x01],
+            &[0xf2, 0x0f, 0x2a, 0xc1],
+            &[0x40, 0x0f, 0x2a, 0xc1],
+            &[0xc5, 0xf8, 0x2a, 0xc1],
+            &[0x62, 0xf1, 0x7c, 0x08, 0x2a, 0xc1],
+        ] {
+            assert!(
+                Memory::new(bytes)
+                    .decode()
+                    .map_or(true, |instruction| instruction.operation
+                        != Operation::Cvtpi2psXmm0Mm1),
+                "{bytes:02x?}"
+            );
+        }
+        let operand_override = Memory::new(&[0x66, 0x0f, 0x2a, 0xc1]).decode();
+        assert!(
+            operand_override
+                .is_ok_and(|instruction| { instruction.operation != Operation::Cvtpi2psXmm0Mm1 })
+        );
     }
 
     #[test]

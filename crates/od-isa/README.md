@@ -610,3 +610,10 @@ It reads signed i32 lanes from physical x87 slot 1/MM1 independent of TOP,
 writes exact binary64 XMM0, clears TOP and sets all tags valid while preserving
 x87 payloads and MXCSR. Pending x87 states are refused. JIT/native and broader
 forms remain closed; the memory-source profile stays separate.
+
+S2-37bn adds exact `0F 2A C1` CVTPI2PS XMM0,MM1 with an SSE (not SSE2) gate.
+The interpreter converts physical x87 slot 1 signed i32 lanes to binary32
+under MXCSR.RC, writes XMM0.low64, ORs sticky PE for inexact lanes, and
+transitions TOP/tags while preserving all x87 payloads and XMM0.high64.
+Pending x87 state is refused; JIT/native and broader forms remain closed. See
+the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bn--bounded-long64-cvtpi2ps-xmm0mm1-register-profile).

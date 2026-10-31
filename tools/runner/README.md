@@ -164,3 +164,10 @@ literal fixture uses physical MM1 even with TOP=3, while the interpreter
 transitions TOP/tags and preserves MXCSR and x87 payloads. The runner validates
 the independent raw-integer oracle, varied MXCSR, gate cases, strict encoding
 and backend denial. Physical x86 acceptance remains separate.
+
+S2-37bn adds exact register-source `CVTPI2PS XMM0,MM1` (`0F 2A C1`) as a
+schema-v2 interpreter-only profile. Its runner matrix exercises all RC modes,
+physical MM1 selection across TOP/tag values, sticky PE and x87/XMM
+preservation, SSE gates, strict validation, and native/JIT refusal. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bn--bounded-long64-cvtpi2ps-xmm0mm1-register-profile)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bn-cvtpi2ps-xmm0mm1-register-profile).
