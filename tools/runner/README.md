@@ -158,3 +158,9 @@ The runner checks RC-independent truncation, independently aggregated sticky
 IE/PE, MM0 slot/TOP/tag state, SSE2 gates, strict profile validation and
 interpreter-only admission. Physical x86 acceptance remains separate. See the
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bl-cvttpd2pi-mm0xmm1-masked-register-profile).
+
+S2-37bm adds exact register-source `CVTPI2PD XMM0,MM1` (`66 0F 2A C1`). Its
+literal fixture uses physical MM1 even with TOP=3, while the interpreter
+transitions TOP/tags and preserves MXCSR and x87 payloads. The runner validates
+the independent raw-integer oracle, varied MXCSR, gate cases, strict encoding
+and backend denial. Physical x86 acceptance remains separate.

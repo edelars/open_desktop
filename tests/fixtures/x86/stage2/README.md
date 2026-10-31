@@ -7029,3 +7029,18 @@ JIT/native denial. Pending x87 states are refused; #MF delivery and physical
 x86 acceptance are not claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bl--bounded-long64-cvttpd2pi-mm0xmm1-masked-register-profile),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37bl--bounded-long64-cvttpd2pi-mm0xmm1-masked-register-profile),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bl--cvttpd2pi-mm0xmm1-masked-register-profile).
+
+### S2-37bm CVTPI2PD XMM0,MM1 register profile
+
+`s2_37bm_cvtpi2pd_xmm0_mm1_register.case.json` is the literal schema-v2 anchor
+for exact `66 0F 2A C1`. With TOP=3, physical x87 slot 1/MM1 contains signed
+i32 extrema while logical ST(1) points at a different slot; the fixture also
+sets MXCSR to `0x000000000000df80` (round-up with FTZ) to demonstrate these controls do not gate or change exact conversion.
+The expected state writes XMM0, clears TOP, marks every tag valid, preserves
+all x87 payloads and exponent words, preserves MXCSR and other XMM registers,
+and makes no memory access. Its independent oracle and runner matrix cover all
+TOP values, representative tag words, varied valid MXCSR, gates, malformed
+encodings, pending-x87 refusal and backend denial. No physical x86 acceptance
+is claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bm--bounded-long64-cvtpi2pd-xmm0mm1-register-profile),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37bm--bounded-long64-cvtpi2pd-xmm0mm1-register-profile),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bm--cvtpi2pd-xmm0mm1-register-profile).

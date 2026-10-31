@@ -220,3 +220,12 @@ MXCSR.RC, and validates sticky IE/PE plus physical MM0 state. The fixture
 validator locks bytes, budget, stop RIP, MXCSR and x87 preconditions; native
 and JIT admission remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bl--bounded-long64-cvttpd2pi-mm0xmm1-masked-register-profile)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bl-cvttpd2pi-mm0xmm1-masked-register-profile).
+
+S2-37bm adds `s2-long-cvtpi2pd-register-masked-v1` for exact
+`66 0F 2A C1`. Its independent oracle reads physical MM1 from raw x87 slot 1,
+converts signed i32 lanes to binary64 using integer operations, and checks XMM0
+plus the TOP/tag transition and full unrelated-state preservation. Validation
+locks instruction bytes, gate controls, budget, stop RIP and a no-pending-x87
+precondition. MXCSR is preserved without instruction-specific restrictions;
+native/JIT remain denied. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bm--bounded-long64-cvtpi2pd-xmm0mm1-register-profile)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bm-cvtpi2pd-xmm0mm1-register-profile).

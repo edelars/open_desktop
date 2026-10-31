@@ -14126,3 +14126,35 @@ Vol. 3B §25.25.3 Table 25-4 p. 25-22; Vol. 3A §7.9 Table 7-2. See the
 [Stage 2 plan](../plans/STAGE_2.md#s2-37bl--bounded-long64-cvttpd2pi-mm0xmm1-masked-register-profile),
 [report](../reports/STAGE_2_REPORT.md#s2-37bl--cvttpd2pi-mm0xmm1-masked-register-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bl-cvttpd2pi-mm0xmm1-masked-register-profile).
+
+## S2-37bm — bounded Long64 CVTPI2PD XMM0,MM1 register profile
+
+Schema-v2 profile `s2-long-cvtpi2pd-register-masked-v1` admits exactly
+`66 0F 2A C1`, Long64, one instruction, budget=1 and stop RIP=entry+4. Other
+ModR/M values, memory operands, prefixes/REX, trailing bytes, VEX/EVEX and
+other modes are refused. Fetch all four bytes before the profile #UD gate for
+SSE2 unavailable, CR0.EM or CR4.OSFXSR; then #NM for CR0.TS. This bounded
+#UD-before-#NM order is local policy and does not claim universal SDM priority.
+CPL0–3 are accepted. No data memory callback occurs.
+
+The profile requires SSE and raw x87 snapshots and admits only
+`FSW & 0x80ff == 0`; pending x87 state is rejected, and #MF delivery is not
+claimed. CVTPI2PD reads the two signed i32 values from the low 64 bits of
+physical x87 slot 1/MM1 regardless of TOP or tag class. It converts each lane
+exactly to binary64 and writes all 128 bits of XMM0. It clears TOP and sets the
+x87 tag word to all-valid while preserving all x87 register payloads, including
+physical slot 1's exponent word, plus the control word, pointers, opcode and
+non-TOP status bits. It preserves MXCSR and all other XMM registers. No
+instruction-specific MXCSR restriction or SIMD FP exception is applied. This
+register-source form observes shared x87/MMX state; the S2-37bf memory-source
+form does not. JIT/native/C ABI/fragment/generic execution remains denied; the
+native x86 runner refuses this profile because it does not capture x87 state.
+
+The independent schema oracle uses raw x87 bytes and integer conversion logic,
+not production helpers or host FP. Physical x86 acceptance has not been run.
+
+Normative source: Intel SDM Rev. 093 Vol. 2A CVTPI2PD p. 3-223; Vol. 3B
+§25.25.3 Table 25-6 p. 25-24; Vol. 3A §15.2 Table 15-2. See the [Stage 2
+plan](../plans/STAGE_2.md#s2-37bm--bounded-long64-cvtpi2pd-xmm0mm1-register-profile),
+[report](../reports/STAGE_2_REPORT.md#s2-37bm--cvtpi2pd-xmm0mm1-register-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bm-cvtpi2pd-xmm0mm1-register-profile).

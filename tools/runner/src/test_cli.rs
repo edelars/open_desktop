@@ -13,19 +13,19 @@ use od_isa::execute::{
     run_with_addsd_register_controls, run_with_addss_register_controls,
     run_with_cvtpd2dq_register_controls, run_with_cvtpd2pi_mm0_xmm1_controls,
     run_with_cvtpd2ps_register_controls, run_with_cvtpi2pd_memory_controls,
-    run_with_cvtpi2ps_memory_controls, run_with_cvtps2pi_mm0_xmm1_controls,
-    run_with_cvtsd2ss_register_controls, run_with_cvttpd2dq_register_controls,
-    run_with_cvttpd2pi_mm0_xmm1_controls, run_with_cvttps2dq_register_controls,
-    run_with_cvttps2pi_mm0_xmm1_controls, run_with_cvttsd2si_registers_controls,
-    run_with_cvttss2si_registers_controls, run_with_divpd_register_controls,
-    run_with_divps_register_controls, run_with_divsd_register_controls,
-    run_with_divss_register_controls, run_with_mulpd_register_controls,
-    run_with_mulps_register_controls, run_with_mulsd_register_controls,
-    run_with_mulss_register_controls, run_with_sqrtpd_register_controls,
-    run_with_sqrtps_register_controls, run_with_sqrtsd_register_controls,
-    run_with_sqrtss_register_controls, run_with_subpd_register_controls,
-    run_with_subps_register_controls, run_with_subsd_register_controls,
-    run_with_subss_register_controls,
+    run_with_cvtpi2pd_xmm0_mm1_controls, run_with_cvtpi2ps_memory_controls,
+    run_with_cvtps2pi_mm0_xmm1_controls, run_with_cvtsd2ss_register_controls,
+    run_with_cvttpd2dq_register_controls, run_with_cvttpd2pi_mm0_xmm1_controls,
+    run_with_cvttps2dq_register_controls, run_with_cvttps2pi_mm0_xmm1_controls,
+    run_with_cvttsd2si_registers_controls, run_with_cvttss2si_registers_controls,
+    run_with_divpd_register_controls, run_with_divps_register_controls,
+    run_with_divsd_register_controls, run_with_divss_register_controls,
+    run_with_mulpd_register_controls, run_with_mulps_register_controls,
+    run_with_mulsd_register_controls, run_with_mulss_register_controls,
+    run_with_sqrtpd_register_controls, run_with_sqrtps_register_controls,
+    run_with_sqrtsd_register_controls, run_with_sqrtss_register_controls,
+    run_with_subpd_register_controls, run_with_subps_register_controls,
+    run_with_subsd_register_controls, run_with_subss_register_controls,
 };
 use od_isa::{CpuState, ExecutionResult, interpret};
 use od_testkit::case::{Fixture, LoadedFixture};
@@ -565,6 +565,7 @@ fn expected_native_xorpd_oracle(
                 cvtss2sd_controls: None,
                 cvtsd2ss_controls: None,
                 cvtpi2pd_memory_controls: None,
+                cvtpi2pd_register_controls: None,
                 cvtpi2ps_memory_controls: None,
                 cvtps2pi_register_controls: None,
                 cvtpd2pi_register_controls: None,
@@ -2241,6 +2242,23 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongCvtpi2pdRegisterMaskedV1 {
+        let controls = loaded
+            .fixture
+            .cvtpi2pd_register_controls
+            .expect("validated CVTPI2PD register controls");
+        run_with_cvtpi2pd_xmm0_mm1_controls(
+            &mut state,
+            memory,
+            config,
+            Cvtpi2pdControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongCvtpi2psMemoryRaxV1 {
         let controls = loaded
             .fixture
@@ -2548,6 +2566,7 @@ fn execute_fixture_v2(
                 cvtss2sd_controls: loaded.fixture.cvtss2sd_controls,
                 cvtsd2ss_controls: loaded.fixture.cvtsd2ss_controls,
                 cvtpi2pd_memory_controls: loaded.fixture.cvtpi2pd_memory_controls,
+                cvtpi2pd_register_controls: loaded.fixture.cvtpi2pd_register_controls,
                 cvtpi2ps_memory_controls: loaded.fixture.cvtpi2ps_memory_controls,
                 cvtps2pi_register_controls: loaded.fixture.cvtps2pi_register_controls,
                 cvtpd2pi_register_controls: loaded.fixture.cvtpd2pi_register_controls,
@@ -3756,6 +3775,7 @@ mod tests {
                     cvtss2sd_controls: input.fixture.cvtss2sd_controls,
                     cvtsd2ss_controls: input.fixture.cvtsd2ss_controls,
                     cvtpi2pd_memory_controls: input.fixture.cvtpi2pd_memory_controls,
+                    cvtpi2pd_register_controls: input.fixture.cvtpi2pd_register_controls,
                     cvtpi2ps_memory_controls: input.fixture.cvtpi2ps_memory_controls,
                     cvtps2pi_register_controls: input.fixture.cvtps2pi_register_controls,
                     cvtpd2pi_register_controls: input.fixture.cvtpd2pi_register_controls,

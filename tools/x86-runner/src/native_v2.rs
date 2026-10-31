@@ -6930,6 +6930,21 @@ mod tests {
     }
 
     #[test]
+    fn cvtpi2pd_register_fixture_is_denied_before_native_execution() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_37bm_cvtpi2pd_xmm0_mm1_register.case.json"
+        ))
+        .unwrap();
+        assert!(crate::native_fp::native_profile_local_only(
+            loaded.fixture.profile
+        ));
+        assert!(
+            matches!(execute(&loaded).outcome, Outcome::Unsupported { ref reason }
+            if reason == "this profile is local-only; native state does not observe every profile field")
+        );
+    }
+
+    #[test]
     fn comiss_ucomiss_register_fixture_is_denied_before_native_execution() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/x86/stage2/s2_37v_comiss_ucomiss_baseline.case.json");

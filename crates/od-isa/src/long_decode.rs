@@ -1080,6 +1080,8 @@ pub enum Operation {
     },
     /// Local-only legacy `66 0F 2A 00` memory-source CVTPI2PD form.
     Cvtpi2pdMemoryRax,
+    /// Local-only legacy `66 0F 2A C1` register-source CVTPI2PD form.
+    Cvtpi2pdXmm0Mm1,
     /// Local-only legacy `0F 2A 00` memory-source CVTPI2PS form.
     Cvtpi2psMemoryRax,
     /// Local-only legacy `0F 2C C1` XMM1 binary32-to-MM0 truncating form.
@@ -4430,13 +4432,11 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     source: (modrm & 7) | ((rex & 1) << 3),
                 }
             }
-            (OpcodeMap::Escape0f, 0x2a) if cvtpi2pd_memory_rax => {
-                let modrm = self.byte()?;
-                if modrm != 0x00 {
-                    return Err(self.unsupported(opcode));
-                }
-                Operation::Cvtpi2pdMemoryRax
-            }
+            (OpcodeMap::Escape0f, 0x2a) if cvtpi2pd_memory_rax => match self.byte()? {
+                0x00 => Operation::Cvtpi2pdMemoryRax,
+                0xc1 => Operation::Cvtpi2pdXmm0Mm1,
+                _ => return Err(self.unsupported(opcode)),
+            },
             (OpcodeMap::Escape0f, 0x2a) if cvtpi2ps_memory_rax => {
                 let modrm = self.byte()?;
                 if modrm != 0x00 {
@@ -21298,6 +21298,28 @@ mod tests {
         ] {
             let mut memory = Memory::new(bytes);
             assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn cvtpi2pd_register_source_accepts_only_xmm0_mm1() {
+        let mut memory = Memory::new(&[0x66, 0x0f, 0x2a, 0xc1]);
+        let instruction = memory.decode().unwrap();
+        assert_eq!(instruction.operation, Operation::Cvtpi2pdXmm0Mm1);
+        assert_eq!(instruction.length, 4);
+        for bytes in [
+            &[0x66, 0x0f, 0x2a, 0xc0][..],
+            &[0x66, 0x0f, 0x2a, 0xc2],
+            &[0x66, 0x0f, 0x2a, 0x01],
+            &[0x66, 0x66, 0x0f, 0x2a, 0xc1],
+            &[0xf2, 0x66, 0x0f, 0x2a, 0xc1],
+            &[0x66, 0xf2, 0x0f, 0x2a, 0xc1],
+            &[0x48, 0x66, 0x0f, 0x2a, 0xc1],
+            &[0x66, 0x48, 0x0f, 0x2a, 0xc1],
+            &[0xc5, 0xfd, 0x2a, 0xc1],
+            &[0x62, 0xf1, 0x7d, 0x08, 0x2a, 0xc1],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }
     }
 

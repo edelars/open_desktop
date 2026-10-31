@@ -604,3 +604,9 @@ slot-0/TOP/tag transition. SSE2/CR0/CR4 gates and the no-pending-x87
 precondition are explicit; JIT/native and wider forms remain closed. See the
 [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bl--bounded-long64-cvttpd2pi-mm0xmm1-masked-register-profile)
 and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-37bl--cvttpd2pi-mm0xmm1-masked-register-profile).
+
+S2-37bm adds exact Long64 register-source `66 0F 2A C1` CVTPI2PD XMM0,MM1.
+It reads signed i32 lanes from physical x87 slot 1/MM1 independent of TOP,
+writes exact binary64 XMM0, clears TOP and sets all tags valid while preserving
+x87 payloads and MXCSR. Pending x87 states are refused. JIT/native and broader
+forms remain closed; the memory-source profile stays separate.

@@ -19230,3 +19230,42 @@ p. 366); Vol. 3B §25.25.3 Table 25-4 p. 25-22; Vol. 3A §7.9 Table 7-2.
 See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bl--bounded-long64-cvttpd2pi-mm0xmm1-masked-register-profile),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37bl--bounded-long64-cvttpd2pi-mm0xmm1-masked-register-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bl-cvttpd2pi-mm0xmm1-masked-register-profile).
+
+## S2-37bm — CVTPI2PD XMM0,MM1 register profile
+
+Implemented exact schema-v2 `66 0F 2A C1` with separate admission from the
+existing memory-source profile. The interpreter reads signed i32 lanes from
+physical x87 slot 1/MM1 regardless of TOP/tags, writes exact binary64 lanes to
+XMM0, clears TOP and sets all tags valid, while preserving all x87 payloads
+(including exponent bits), non-TOP status, control/pointers/opcode, MXCSR and
+other XMM registers. No SIMD FP exceptions or instruction-specific MXCSR gate
+are modeled. Pending x87 state is refused; #MF delivery is outside this slice.
+Full four-byte fetch precedes SSE2/EM/OSFXSR #UD and then TS #NM in this
+bounded local ordering. CPL0–3 are accepted; no data callback occurs.
+
+The independent schema oracle converts raw signed i32 values to binary64 by
+integer operations without production conversion helpers or host FP. Literal
+fixture and runner matrix cover distinct physical MM1 vs logical ST(1) values,
+TOP 0–7, representative tag words, MXCSR values including `0x0000df80`
+(FTZ with round-up) and `0x0000000000000000` (all masks/stickies clear), gates,
+exact preservation, malformed encodings, pending-x87 refusal, and JIT/native denial. The native x86 runner explicitly refuses this
+x87-bearing profile. No physical x86 run is claimed.
+
+Verification passed: `cargo test --offline -p od-isa cvtpi2pd` independently run by the reviewer (6 passed, covering both decoder tests, register fetch/gate/CPL, and three memory-profile regressions); focused ISA fetch/gate/CPL test (1); focused runner matrix
+including tamper rejection and MXCSR preservation (1); full `cargo test --offline
+-p od-testkit` (444 tests); full `cargo test --offline -p od-runner` (112 unit +
+442 fixture tests); native local-only classification test (1);
+`cargo check --workspace --all-targets --offline`; `cargo fmt --all -- --check`;
+`git diff --check`; `python3 tools/check_layout.py` (48 required directories, 6
+crate scaffolds, 14 instruction scopes); and relative Markdown target checks (8
+documentation files). Graphify update completed: 10,088 nodes, 21,326 edges, 274
+communities; the known parse warning remains for `include/open_desktop/host_abi.h`
+and 13 code files yielded no symbols. The Linux-only native-v2 denial test was
+not run on this macOS host; native profile classification remains closed and
+physical x86 acceptance was not performed.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTPI2PD p. 3-223; Vol. 3B
+§25.25.3 Table 25-6 p. 25-24; Vol. 3A §15.2 Table 15-2. See the [Stage 2
+plan](../plans/STAGE_2.md#s2-37bm--bounded-long64-cvtpi2pd-xmm0mm1-register-profile),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37bm--bounded-long64-cvtpi2pd-xmm0mm1-register-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bm-cvtpi2pd-xmm0mm1-register-profile).

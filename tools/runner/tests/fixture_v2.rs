@@ -61,6 +61,9 @@ const CVTPD2PI_MM0_XMM1: &[u8] =
 const CVTTPD2PI_MM0_XMM1: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37bl_cvttpd2pi_mm0_xmm1_masked.case.json"
 );
+const CVTPI2PD_XMM0_MM1: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37bm_cvtpi2pd_xmm0_mm1_register.case.json"
+);
 const FS_BASE_WRMSR_FS_LOAD: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_26f_fs_base_wrmsr_fs_load.case.json");
 const FS_BASE_RDMSR: &[u8] =
@@ -23388,6 +23391,129 @@ fn cvttpd2pi_mm0_xmm1_masked_profile_truncates_binary64_and_transitions_mmx_stat
     };
     snapshot.state.x87.as_mut().unwrap().registers[0] = "00000000000000000000".into();
     assert!(od_testkit::v2::compare(&input, &result, &tampered).is_err());
+}
+
+#[test]
+fn cvtpi2pd_xmm0_mm1_register_profile_reads_physical_slot_one_and_preserves_mxcsr() {
+    use od_testkit::v2::{ExpectedExit, Profile};
+
+    let fixture = Fixture::from_json(CVTPI2PD_XMM0_MM1).unwrap().fixture;
+    assert_eq!(fixture.profile, Profile::LongCvtpi2pdRegisterMaskedV1);
+    let (input, baseline) = run(CVTPI2PD_XMM0_MM1, "interpreter", 0);
+    let mut tampered = baseline.clone();
+    let Observation::Available {
+        value: tampered_snapshot,
+    } = &mut tampered.snapshot
+    else {
+        panic!("snapshot");
+    };
+    tampered_snapshot.state.x87.as_mut().unwrap().registers[1] = "00000000000000000000".into();
+    assert!(od_testkit::v2::compare(&input, &baseline, &tampered).is_err());
+
+    for (lane0, lane1) in [
+        (i32::MIN, i32::MAX),
+        (-16_777_217, 16_777_217),
+        (-1, 1),
+        (0, -0),
+    ] {
+        for top in 0..8u64 {
+            for tags in [0x0000, 0x5555, 0xaaaa, 0xffff] {
+                for mxcsr in [
+                    0x0000_1f80,
+                    0x0000_5f80,
+                    0x0000_df80,
+                    0x0000_0000,
+                    0x0000_3fa1,
+                    0x0000_7f81,
+                ] {
+                    let mut case = fixture.clone();
+                    case.case_id =
+                        format!("s2_37bm_{lane0:08x}_{lane1:08x}_t{top}_g{tags:04x}_m{mxcsr:08x}");
+                    case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+                    case.initial_state.x87.as_mut().unwrap().status_word = HexU64(top << 11);
+                    case.initial_state.x87.as_mut().unwrap().tag_word = HexU64(tags);
+                    let mut source = Vec::from(lane0.to_le_bytes());
+                    source.extend_from_slice(&lane1.to_le_bytes());
+                    source.extend_from_slice(&[0xbe, 0xef]);
+                    case.initial_state.x87.as_mut().unwrap().registers[1] =
+                        source.iter().map(|byte| format!("{byte:02x}")).collect();
+                    let source_x87 = case.initial_state.x87.as_ref().unwrap().registers.clone();
+                    let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                    od_testkit::v2::compare(&input, &result, &result).unwrap();
+                    let observed = snapshot(&result);
+                    let x87 = observed.state.x87.as_ref().unwrap();
+                    assert_eq!(x87.registers, source_x87, "TOP={top}, tags={tags:04x}");
+                    assert!(x87.registers[1].ends_with("beef"));
+                    assert_eq!(x87.status_word.get() & !(7 << 11), 0);
+                    assert_eq!(x87.tag_word, HexU64(0));
+                    assert_eq!(observed.state.sse.as_ref().unwrap().mxcsr, HexU64(mxcsr));
+                    assert_eq!(
+                        observed.state.sse.as_ref().unwrap().xmm[1],
+                        case.initial_state.sse.as_ref().unwrap().xmm[1]
+                    );
+                    assert_eq!(
+                        result.instructions_executed,
+                        Observation::Available { value: HexU64(1) }
+                    );
+                }
+            }
+        }
+    }
+
+    for (sse2_available, cr0_em, cr4_osfxsr, cr0_ts, vector) in [
+        (false, false, true, true, 6),
+        (true, true, true, true, 6),
+        (true, false, false, true, 6),
+        (true, false, true, true, 7),
+    ] {
+        let mut case = fixture.clone();
+        let controls = case.cvtpi2pd_register_controls.as_mut().unwrap();
+        controls.sse2_available = sse2_available;
+        controls.cr0_em = cr0_em;
+        controls.cr4_osfxsr = cr4_osfxsr;
+        controls.cr0_ts = cr0_ts;
+        case.expected_exit = ExpectedExit::Exception;
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let Observation::Available {
+            value: Some(exception),
+        } = &snapshot(&result).exception
+        else {
+            panic!("exception");
+        };
+        assert_eq!(exception.vector, vector);
+    }
+
+    for code in [
+        "660f2a00",
+        "660f2ac0",
+        "660f2ac2",
+        "660f2a01",
+        "66660f2ac1",
+        "f2660f2ac1",
+        "66480f2ac1",
+        "660f2ac190",
+        "c5fd2ac1",
+        "62f17d082ac1",
+    ] {
+        let mut invalid = fixture.clone();
+        invalid.memory[0].initial_bytes_hex = code.into();
+        invalid.memory[0].length = (code.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(code.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (code.len() / 2) as u64,
+        ));
+        assert!(invalid.validate().is_err(), "accepted {code}");
+    }
+    let mut pending = fixture.clone();
+    pending.initial_state.x87.as_mut().unwrap().status_word = HexU64(1);
+    assert!(pending.validate().is_err(), "accepted pending x87 state");
+    for backend in ["jit", "native"] {
+        assert!(matches!(
+            run(CVTPI2PD_XMM0_MM1, backend, 4).1.outcome,
+            Outcome::Unsupported { .. }
+        ));
+    }
 }
 
 #[test]

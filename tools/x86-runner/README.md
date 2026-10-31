@@ -18,3 +18,7 @@ S2-35.10 PADDSB remains a local interpreter-only XMM register profile. Its liter
 The S2-37bl `CVTTPD2PI MM0,XMM1` profile is explicitly local-only. Native
 execution is refused because the native trace does not observe the complete
 x87/MMX state required by this fixture.
+
+The S2-37bm `CVTPI2PD XMM0,MM1` profile is explicitly local-only and is refused
+before native execution because the trace does not capture the x87/MMX source
+state or the complete resulting x87 state.
