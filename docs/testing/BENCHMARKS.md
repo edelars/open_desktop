@@ -56,6 +56,67 @@ larger. This bounded result does not prove a general slowdown or support a
 default choice. Source/profile fingerprints, raw samples, code sizes and
 process details are in the [S3-29f report](../reports/STAGE_3_S3-29f_2026-10-30.md).
 
+## S3-29g: cached NativeRegisterV1 dispatcher comparison
+
+`od-bench cached-flags-compare` is a fixed-profile Apple Silicon macOS
+release measurement of the complete cached NativeRegisterV1 dispatcher. It
+calls the existing eager and opt-in demand-flags-candidate cached entrypoints
+with the same `SingleEntryBlockCache` policy and `PublishedBlockExecutor`.
+The workload is versioned and embedded in the benchmark: ADD→CMP writer
+replacement with JNZ outcomes, SUB→INC partial-writer preservation with JNZ
+and a bare-NOP fallthrough, CMP→LEA flag preservation with JZ outcomes, and a
+bounded SUB/JNZ back-edge loop. Instructions use the exact admitted
+NativeRegisterV1 forms; no caller-supplied code is admitted.
+
+Every case is admitted and compared with the interpreter before any sample.
+The comparison checks the full `LongModeState`, exit, total retirement and
+remaining budget. A direct compile probe records emitted code sizes and hashes;
+the demand-flags candidate must expose its pending-flags PC-map witness. The
+timed call uses the actual cached dispatcher, including lookup, cold compile
+and publication, branch redispatch, native execution, and bare-NOP
+interpreter fallback. State reset, CodeView creation, prewarm, cache creation,
+result validation, and mapping drop are outside each timed interval.
+
+Cold samples create a fresh empty single-entry cache for each guest call and
+require exactly one miss, compile, and publication. The bounded loop may then
+record hits after that first cold miss. Resident samples first execute the
+same case to populate the cache; measured calls must record at least one hit
+per call and zero miss, compile, publication, or replacement deltas. The
+resident cache and its MAP_JIT mapping are dropped before the other strategy
+is published. A multi-block/capacity-churning sequence is never described as
+resident or warm.
+
+Each case/mode has 20 paired eager/candidate samples with alternating order,
+identical input and call counts, and summed dispatch duration of at least
+200 ms per variant. Calibration raises a common call count when needed; a
+short sample causes the whole paired series to restart at that common count.
+Run three sequential release processes on the same host:
+
+First run the explicit release preflight. It checks all admissions, compiler
+probes, full interpreter parity, cache miss/compile/publication and resident
+execution counters for both strategies, and writes `timing_started: false`.
+Only after this artifact is valid should the timed runs start:
+
+```sh
+cargo run --release -p od-bench --offline -- cached-flags-compare \
+  --preflight-only \
+  --output work/tmp/stage3/s3-29g/preflight.json
+
+cargo run --release -p od-bench --offline -- cached-flags-compare \
+  --process-run 1 \
+  --output work/tmp/stage3/s3-29g/cached-flags-compare-1.json
+```
+
+The report preserves raw samples, paired ratios, cache counters, native and
+interpreter retirements, block count, resident code/metadata bytes, fixed
+profile and source hashes, host/toolchain data, timer boundaries and mapping
+policy. Results apply only to this fixed register fixture profile and current
+host; they do not select a global default or establish memory-helper, physical
+x86, Mini, or full Stage 3 performance behavior.
+Three M3 Max release runs completed after preflight. The
+[S3-29g report](../reports/STAGE_3_S3-29g_2026-10-31.md) records the bounded
+result and links the raw preflight and process artifacts.
+
 ## Подготовка прогона
 
 Перед измерением закрепить:

@@ -25,6 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut trace_path = None::<PathBuf>;
     let mut output = None::<PathBuf>;
     let mut process_run = 1u8;
+    let mut preflight_only = false;
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--case-list" => {
@@ -46,6 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .ok_or("--process-run requires an integer")?
                     .parse()?;
             }
+            "--preflight-only" => preflight_only = true,
             "--help" | "-h" => {
                 print_usage();
                 return Ok(());
@@ -221,10 +223,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("flags-compare requires native Apple Silicon macOS execution".into());
             }
         }
+        "cached-flags-compare" => {
+            let output = output.ok_or("cached-flags-compare requires --output PATH")?;
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                let value = if preflight_only {
+                    serde_json::to_value(od_bench::cached_flags_compare::preflight()?)?
+                } else {
+                    serde_json::to_value(od_bench::cached_flags_compare::run(process_run)?)?
+                };
+                od_bench::dispatch_cache::write_atomic(&output, &value)?;
+            }
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                let _ = (output, process_run, preflight_only);
+                return Err(
+                    "cached-flags-compare requires native Apple Silicon macOS execution".into(),
+                );
+            }
+        }
         _ => {
             print_usage();
             return Err(
-                "expected record, measure, synthetic, dispatch-cache, cold-first-run, warm-first-run, warm-branch-helper, cache-churn, or flags-compare".into(),
+                "expected record, measure, synthetic, dispatch-cache, cold-first-run, warm-first-run, warm-branch-helper, cache-churn, flags-compare, or cached-flags-compare".into(),
             );
         }
     }
@@ -251,6 +272,7 @@ fn print_usage() {
   od-bench warm-branch-helper --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench cache-churn --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench flags-compare --process-run 1..3 --output report.json\n\
+  od-bench cached-flags-compare [--preflight-only] --process-run 1..3 --output report.json\n\
          `record` requires macOS ARM64. `measure` rebuilds all keys before timing."
     );
 }

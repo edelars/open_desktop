@@ -250,6 +250,7 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-28a | Cooperative event yield на границах register dispatcher | S3-15, S3-16, S3-27 |
 | [ ] | S3-28b | Cooperative event yield на bounded checked-memory dispatcher | S3-15, S3-20, S3-28a |
 | [ ] | S3-29 | Flags по потребности и сравнение стратегий | S3-01, S3-27, S3-28 |
+| [x] | S3-29g | Cached NativeRegisterV1 eager/candidate full-dispatch comparison | S3-29f, S3-38b/c |
 | [ ] | S3-30 | Выбор allocator по измерениям | S3-01, S3-29 |
 | [ ] | S3-31 | Прямые связи блоков, если оправданы | S3-25, S3-28, S3-30 |
 | [ ] | S3-32 | Локальные IR-преобразования, если оправданы | S3-03, S3-27, S3-30 |
@@ -2293,6 +2294,35 @@ does not include dispatcher/shared-cache lookup, interpreter fallback,
 checked-memory helpers, or guest-memory workloads. S3-29 remains open. Mini and
 physical-x86 checks remain deferred to the end of Stage 3. See the
 [S3-29f report](../reports/STAGE_3_S3-29f_2026-10-30.md).
+
+#### S3-29g: cached NativeRegisterV1 eager/candidate dispatch comparison
+
+Add the fixed-profile `od-bench cached-flags-compare` measurement through the
+existing eager and demand-flags-candidate cached NativeRegisterV1 entrypoints.
+Before timing, compare every workload's full CPU state, exit, retirement and
+remaining budget against the interpreter. Measure empty-cache first dispatch
+separately from resident execution; call the latter resident only when prewarm
+and per-sample counters prove hits with no new miss, compile, publication or
+replacement. Use the same one-entry cache and publication policy, alternate
+20 paired sample order with identical work, calibrate summed samples to at
+least 200 ms, and complete three release-process runs on the same current
+host. Drop each published mapping before the paired strategy is published.
+Record code size, fallback/native retirement, raw timings, counters, profile
+and source hashes, host/toolchain and timer boundaries. The fixed profile is
+limited to NativeRegisterV1 flag-writer replacement, partial/preserving
+writers, both Jcc outcomes, bounded back-edge dispatch and bare-NOP fallback.
+Run the explicit release `--preflight-only` gate first; it checks exact
+NativeRegisterV1 admission, compiler probes, and both strategies against the
+interpreter before any timed samples.
+This evidence does not select a global default or cover memory helpers,
+physical x86, Mini, or the complete Stage 3 performance gate. See
+[`BENCHMARKS.md`](../testing/BENCHMARKS.md#s3-29g-cached-nativeregisterv1-dispatcher-comparison)
+and the [S3-29g report](../reports/STAGE_3_S3-29g_2026-10-31.md). Three M3
+Max release runs completed after interpreter/cache preflight. Cold per-case
+paired median ratios ranged 1.0354–1.1682; resident ratios ranged 0.9993–1.0090.
+Candidate code was 28.2–57.5% larger. This is narrow profile evidence only;
+S3-29 remains open for broader strategy selection and the Stage 3 performance
+gate.
 
 ### S3-30. Выбрать register allocator
 

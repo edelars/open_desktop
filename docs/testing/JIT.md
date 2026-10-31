@@ -1145,6 +1145,21 @@ guest-memory workloads, and does not select the production default. Mini and
 physical-x86 checks remain deferred until the end of Stage 3. See the
 [S3-29f report](../reports/STAGE_3_S3-29f_2026-10-30.md).
 
+### S3-29g cached NativeRegisterV1 dispatcher comparison
+
+`od-bench cached-flags-compare` exercises the full cached dispatcher for a
+fixed seven-case register profile, with an explicit interpreter/cache
+preflight before timing. Three sequential M3 Max release runs found cold
+candidate/eager median ratios of 1.0354–1.1682 and resident ratios of
+0.9993–1.0090. Candidate code was 28.2–57.5% larger for the four emitted
+shapes. This does not select a global default or cover memory helpers, Mini,
+physical x86, or the complete Stage 3 performance gate. See the
+[S3-29g report](../reports/STAGE_3_S3-29g_2026-10-31.md) and its raw
+[preflight](../reports/data/stage3/s3-29g/preflight.json),
+[process 1](../reports/data/stage3/s3-29g/cached-flags-compare-1.json),
+[process 2](../reports/data/stage3/s3-29g/cached-flags-compare-2.json), and
+[process 3](../reports/data/stage3/s3-29g/cached-flags-compare-3.json).
+
 ### S3-35a cold first full-corpus benchmark path
 
 `od-bench cold-first-run` compares interpreter execution and the default
