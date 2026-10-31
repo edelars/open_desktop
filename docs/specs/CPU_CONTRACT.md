@@ -14191,3 +14191,42 @@ Normative source: Intel SDM Rev. 093 Vol. 2A CVTPI2PS p. 3-224; Vol. 3B
 plan](../plans/STAGE_2.md#s2-37bn--bounded-long64-cvtpi2ps-xmm0mm1-register-profile),
 [report](../reports/STAGE_2_REPORT.md#s2-37bn--cvtpi2ps-xmm0mm1-register-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bn-cvtpi2ps-xmm0mm1-register-profile).
+
+## S2-37bo — bounded Long64 CVTTPS2PI MM0,[RAX] memory profile
+
+The schema-v2 interpreter profile admits exactly `0F 2C 00`, Long64, one
+instruction, budget=1 and stop RIP=entry+3. Fetch the complete three-byte
+instruction before profile #UD for unavailable SSE (CPUID bit 25), CR0.EM or
+CR4.OSFXSR, then #NM for CR0.TS. This #UD-before-#NM ordering is a bounded
+local policy, not a universal SDM priority claim. CPL0–3 are accepted.
+
+Read exactly eight bytes from RAX. The complete span must be canonical48;
+AC=0 is required, while unaligned m64 access is accepted. Require MXCSR within
+supported mask `0xffbf` with IM=PM=1 and `FSW & 0x80ff == 0`. Pending x87
+exceptions are refused at admission; #MF delivery is not claimed. Truncate
+both raw binary32 lanes toward zero, independent of MXCSR.RC. Masked invalid
+lanes produce `0x80000000` and sticky IE; valid inexact lanes set sticky PE.
+Preserve incoming sticky/control bits and do not raise DE. No CPU state is
+mutated until the one data read succeeds; a read callback error leaves state
+unchanged. On success write the pair to physical x87 slot 0/MM0, set exponent
+bits 79:64 to `ffff`, set TOP=0 and all tags valid, and preserve the remaining
+x87 state. JIT/native/C ABI and broader dispatch remain closed.
+
+The independent schema oracle uses raw f32 bits and integer arithmetic only,
+without production conversion helpers or host floating point. The literal
+fixture and runner matrix cover RC independence, invalid/inexact lanes from
+clear flags, all four incoming IE/PE histories on exact lanes, unaligned access,
+TOP/tag variations, malformed/tampered fixtures and backend denial. Direct ISA
+execution tests cover noncanonical starts, canonical-end crossing, address
+overflow, AC=1, pending x87 and IM=0/PM=0 refusals; these pre-read refusals
+leave CPU state unchanged and perform no data read. The runner covers the
+highest valid canonical span. Direct ISA tests also cover a successful
+unaligned read, complete fetch ahead of gates, and one attempted read whose
+injected failure leaves CPU state unchanged. No physical x86 acceptance was
+performed.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTTPS2PI p. 3-252; Vol. 3B
+§25.25.3 Table 25-5 p. 25-23; Vol. 3A §15.2 Table 15-2. See the [Stage 2
+plan](../plans/STAGE_2.md#s2-37bo--bounded-long64-cvttps2pi-mm0rax-memory-profile),
+[report](../reports/STAGE_2_REPORT.md#s2-37bo--cvttps2pi-mm0rax-memory-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bo-cvttps2pi-mm0rax-memory-profile).

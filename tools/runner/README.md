@@ -171,3 +171,11 @@ physical MM1 selection across TOP/tag values, sticky PE and x87/XMM
 preservation, SSE gates, strict validation, and native/JIT refusal. See the
 [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bn--bounded-long64-cvtpi2ps-xmm0mm1-register-profile)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bn-cvtpi2ps-xmm0mm1-register-profile).
+
+S2-37bo adds the literal `CVTTPS2PI MM0,[RAX]` fixture. The runner verifies
+RC-independent truncation, sticky IE/PE aggregation, exact-lane sticky
+preservation, one unaligned canonical 8-byte read, MM0 state transition, strict
+gates/admission and interpreter-only execution. Direct ISA tests verify that
+invalid spans, AC/pending-x87/MXCSR refusals and a failed data read leave CPU
+state unchanged without a data read on pre-read refusals. Physical x86
+acceptance is separate.

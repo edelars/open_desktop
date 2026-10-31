@@ -22,3 +22,7 @@ x87/MMX state required by this fixture.
 The S2-37bm `CVTPI2PD XMM0,MM1` profile is explicitly local-only and is refused
 before native execution because the trace does not capture the x87/MMX source
 state or the complete resulting x87 state.
+
+The S2-37bo `CVTTPS2PI MM0,[RAX]` profile remains local-only: native execution
+is refused because the tracer does not capture the complete resulting x87/MMX
+state.

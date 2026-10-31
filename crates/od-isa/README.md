@@ -617,3 +617,11 @@ under MXCSR.RC, writes XMM0.low64, ORs sticky PE for inexact lanes, and
 transitions TOP/tags while preserving all x87 payloads and XMM0.high64.
 Pending x87 state is refused; JIT/native and broader forms remain closed. See
 the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bn--bounded-long64-cvtpi2ps-xmm0mm1-register-profile).
+
+S2-37bo adds exact Long64 `0F 2C 00` CVTTPS2PI MM0,[RAX] as a bounded
+interpreter profile. It reads one canonical 8-byte source span with AC=0,
+truncates binary32 lanes independent of MXCSR.RC, aggregates sticky IE/PE, and
+performs the physical MM0/TOP/tag transition only after a successful read.
+Pending x87 states and unsupported encodings are refused; JIT/native remain
+closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bo--bounded-long64-cvttps2pi-mm0rax-memory-profile)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bo-cvttps2pi-mm0rax-memory-profile).

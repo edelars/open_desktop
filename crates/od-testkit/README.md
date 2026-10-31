@@ -237,3 +237,11 @@ of all other SSE/x87 state. Validation requires PM=1 and no pending x87 state;
 the separate controls use the SSE availability bit. See the [CPU
 contract](../../docs/specs/CPU_CONTRACT.md#s2-37bn--bounded-long64-cvtpi2ps-xmm0mm1-register-profile)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bn-cvtpi2ps-xmm0mm1-register-profile).
+
+S2-37bo adds `s2-long-cvttps2pi-memory-rax-v1` for exact `0F 2C 00`. The
+independent integer oracle converts raw binary32 lanes without host FP or
+production helpers and checks sticky IE/PE plus the MM0/TOP/tag transition.
+Strict validation covers SSE gates, supported MXCSR with IM/PM set, no pending
+x87 state, AC=0 and a canonical eight-byte RAX span. See the [CPU
+contract](../../docs/specs/CPU_CONTRACT.md#s2-37bo--bounded-long64-cvttps2pi-mm0rax-memory-profile)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bo-cvttps2pi-mm0rax-memory-profile).

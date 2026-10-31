@@ -19311,3 +19311,53 @@ Normative sources: Intel SDM Rev. 093 Vol. 2A CVTPI2PS p. 3-224; Vol. 3B
 plan](../plans/STAGE_2.md#s2-37bn--bounded-long64-cvtpi2ps-xmm0mm1-register-profile),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37bn--bounded-long64-cvtpi2ps-xmm0mm1-register-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bn-cvtpi2ps-xmm0mm1-register-profile).
+
+## S2-37bo — CVTTPS2PI MM0,[RAX] memory profile
+
+Implemented exact schema-v2 Long64 interpreter profile `0F 2C 00`, with full
+three-byte fetch, SSE bit-25/EM/OSFXSR #UD gate followed by TS #NM in the
+bounded local order, CPL0–3 support, and one canonical eight-byte RAX source
+read. AC must be clear; unaligned m64 is accepted. Supported MXCSR `0xffbf`
+with IM=PM=1 and `FSW & 0x80ff == 0` are strict admission conditions. Pending
+x87 #MF delivery is not implemented. Raw binary32 lanes truncate toward zero
+independent of RC; masked invalid lanes set sticky IE and return integer
+indefinite, valid inexact lanes set sticky PE, and incoming flags/controls are
+preserved. The successful transition writes physical MM0 and exponent `ffff`,
+sets TOP=0/all tags valid, and preserves remaining x87 state. A failed read
+callback causes no CPU commit. Native/JIT/C ABI remain closed.
+
+The testkit oracle consumes raw bits and uses integer logic only, without host
+FP or production conversion helpers. The literal fixture and runner coverage
+include all RC values, mixed invalid/inexact lanes from clear flags, exact-lane
+preservation of incoming IE/PE histories, TOP/tag variation, an unaligned
+source, feature/control gates, malformed input, result tampering and backend
+denial. Direct ISA runtime tests cover noncanonical start, canonical-end
+crossing, address overflow, AC=1, pending x87 and IM=0/PM=0 pre-read refusals;
+these assert no data read and no CPU-state change. The runner covers the highest
+valid canonical span. Direct ISA tests cover full-fetch behavior, a successful
+unaligned canonical read, and one attempted read whose injected failure leaves
+CPU state unchanged. The literal fixture is
+`s2_37bo_cvttps2pi_mm0_memory_rax.case.json`. Physical x86 acceptance was not
+performed.
+
+Verification passed: focused `cargo test -p od-isa cvttps2pi_mm0_memory_rax
+--offline` (2 tests) and `cargo test -p od-runner
+cvttps2pi_mm0_memory_rax_truncates_memory_lanes_and_transitions_mmx_state
+--offline` (1 matrix test); full `cargo test -p od-testkit --offline`
+(444 tests); full `cargo test -p od-runner --offline` (112 unit + 444 fixture
+tests); `cargo check --workspace --all-targets --offline`;
+`cargo fmt --all -- --check`; `python3 tools/check_layout.py` (48 required
+directories, 6 crate scaffolds, 14 instruction scopes); `git diff --check`;
+and nine S2-37bo documentation target/section checks. After the coverage review
+changes, the focused ISA test passed again (2 tests) and the focused runner
+matrix passed again (1 test; test count unchanged). `graphify update .`
+completed with 10,120 nodes, 21,404 edges and 278 communities; existing parser
+warnings remain for `include/open_desktop/host_abi.h` and 13 files without
+symbols. The Linux-only native fixture-denial test was not executable on this
+macOS host. Native local-only classification changes are compile-checked; no
+native runtime test or physical x86 acceptance was performed. Normative sources:
+Intel SDM Rev. 093 Vol. 2A CVTTPS2PI
+p. 3-252; Vol. 3B §25.25.3 Table 25-5 p. 25-23; Vol. 3A §15.2 Table 15-2.
+See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bo--bounded-long64-cvttps2pi-mm0rax-memory-profile),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37bo--bounded-long64-cvttps2pi-mm0rax-memory-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bo-cvttps2pi-mm0rax-memory-profile).

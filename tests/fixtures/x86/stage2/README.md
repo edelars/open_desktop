@@ -7061,3 +7061,21 @@ physical x86 acceptance is claimed. See the [CPU
 contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bn--bounded-long64-cvtpi2ps-xmm0mm1-register-profile),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37bn--bounded-long64-cvtpi2ps-xmm0mm1-register-profile),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bn--cvtpi2ps-xmm0mm1-register-profile).
+
+### S2-37bo CVTTPS2PI MM0,[RAX] memory profile
+
+`s2_37bo_cvttps2pi_mm0_memory_rax.case.json` is the literal schema-v2 anchor
+for exact `0F 2C 00`. It reads one unaligned 8-byte span from canonical RAX
+with AC=0. The lanes exercise valid inexact conversion and masked invalid
+conversion from clear incoming sticky flags; expected state aggregates PE/IE
+and stores the pair in physical x87 slot 0 with exponent word `ffff`, TOP=0
+and all-valid tags. The independent raw-bit oracle and runner matrix cover RC
+independence, explicit IE|PE generation, exact-lane preservation of incoming
+IE/PE histories, gates, strict encoding and backend denial. Direct ISA runtime
+tests cover noncanonical and overflow pre-read refusals, AC/pending-x87/IM/PM
+refusals with zero reads and unchanged CPU state, full-fetch ordering, a
+successful unaligned canonical read, and one attempted read whose injected
+failure leaves CPU state unchanged. The runner covers the highest valid
+canonical span. Physical x86 acceptance is not claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bo--bounded-long64-cvttps2pi-mm0rax-memory-profile),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37bo--bounded-long64-cvttps2pi-mm0rax-memory-profile),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bo--cvttps2pi-mm0rax-memory-profile).
