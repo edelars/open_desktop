@@ -6938,3 +6938,27 @@ legacy ADDSD. No memory alignment or physical-acceptance claim is made. See the
 [plan](../../../../docs/plans/STAGE_2.md#s2-37bb--canonical-long64-addsd-xmm-register-pairs),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bb--canonical-long64-addsd-xmm-register-pairs),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bb--addsd-register-pair-interpreter-profile).
+
+### S2-37bc ADDSS register-pair profile
+
+`s2_37bc_addss_xmm0_xmm1.case.json` is a handwritten canonical Long64
+`F3 0F 58 /r` literal. Low32 adds 2^-24 to 1.0 and rounds to even with PE;
+destination.high96 contains SNaN/integer canaries and remains unchanged, while
+source.high96 contains poison ignored by scalar execution. The strict schema-v2
+profile admits all 256 XMM pairs, requires OM=UM=1, rejects DAZ/reserved MXCSR
+bits, and accepts RC, FTZ, IM/DM/ZM/PM and old stickies. Its independent raw-u32
+scalar wrapper checks positive and negative halfway vectors, exact and FTZ tiny
+sums, directed overflow midpoint and larger overflow, large-gap DE|PE, NaN
+selection/quieting, opposite infinities, and infinity plus subnormal without
+host FP or production helpers. Runtime checks cover all pairs and aliases,
+low32-only writes, pre/post event atomicity, full-fetch gate ordering, CPL0–3,
+no data callbacks, malformed encodings, tampering, and JIT/native denial.
+
+Sources: Intel SDM Rev. 093 Vol. 2A ADDSS pp. 3-24–3-25 and legacy SSE rows on
+p. 2-28. The p. 3-25 Type 3/Table 2-20 reference concerns VEX forms, not
+legacy ADDSS. The apparent “double precision result” and “64-bit memory” text
+errors are not used; the opcode row and low32 Operation semantics define the
+profile. No memory alignment or physical-acceptance claim is made. See the
+[plan](../../../../docs/plans/STAGE_2.md#s2-37bc--canonical-long64-addss-xmm-register-pairs),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bc--canonical-long64-addss-xmm-register-pairs),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bc--addss-register-pair-interpreter-profile).

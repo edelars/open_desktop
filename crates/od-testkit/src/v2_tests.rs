@@ -304,6 +304,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 mulpd_controls: input.fixture.mulpd_controls,
                 addpd_controls: input.fixture.addpd_controls,
                 addsd_controls: input.fixture.addsd_controls,
+                addss_controls: input.fixture.addss_controls,
                 addps_controls: input.fixture.addps_controls,
                 divpd_controls: input.fixture.divpd_controls,
                 divsd_controls: input.fixture.divsd_controls,
@@ -10090,4 +10091,74 @@ fn addps_profile_admits_all_pairs_and_rejects_alias_encodings() {
         invalid_mxcsr.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
         assert!(invalid_mxcsr.validate().is_err(), "MXCSR={mxcsr:#x}");
     }
+}
+
+#[test]
+fn addss_profile_oracle_and_encoding_cover_scalar_boundaries() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_37bc_addss_xmm0_xmm1.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongAddssRegistersV1);
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "f30f58c1");
+    fixture.validate().unwrap();
+
+    for destination in 0..16u8 {
+        for source in 0..16u8 {
+            let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+            let mut code = vec![0xf3];
+            if destination >= 8 || source >= 8 {
+                code.push(0x40 | ((destination >> 1) & 4) | (source >> 3));
+            }
+            code.extend([0x0f, 0x58, modrm]);
+            let text = code
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            assert_eq!(
+                addss_register_encoding(&text),
+                Some((destination, source, code.len() as u32)),
+                "{destination},{source} {text}"
+            );
+        }
+    }
+    for bytes in [
+        "660f58c1",     // ADDPD encoding
+        "f20f58c1",     // ADDSD encoding
+        "f3400f58c1",   // redundant REX
+        "f3420f58c1",   // REX.X
+        "f3480f58c1",   // REX.W
+        "40f30f58c1",   // reordered REX
+        "f3660f58c1",   // repeated mandatory prefix
+        "f30f5801",     // memory ModR/M
+        "f30f58c190",   // trailing byte
+        "c5fa58c1",     // VEX
+        "62f17e0858c1", // EVEX
+    ] {
+        assert_eq!(addss_register_encoding(bytes), None, "{bytes}");
+    }
+    for (rc, expected) in [
+        (0, 0x3f80_0000),
+        (1, 0x3f80_0000),
+        (2, 0x3f80_0001),
+        (3, 0x3f80_0000),
+    ] {
+        let (value, ie, de, oe, ue, pe) =
+            independent_addss(0x3f80_0000, 0x3380_0000, 0x1f80 | (rc << 13));
+        assert_eq!(value, expected);
+        assert!(!ie && !de && !oe && !ue && pe);
+    }
+    let exact_tiny = independent_addss(0x0080_0001, 0x8080_0000, 0x1f80);
+    assert_eq!(exact_tiny, (1, false, false, false, false, false));
+    let ftz_tiny = independent_addss(0x0080_0001, 0x8080_0000, 0x9f80);
+    assert_eq!(ftz_tiny, (0, false, false, false, true, true));
+    let midpoint = independent_addss(0x7f7f_ffff, 0x7300_0000, 0x3f80);
+    assert_eq!(midpoint, (0x7f7f_ffff, false, false, false, false, true));
+    let large_gap = independent_addss(0x3f80_0000, 1, 0x5f80);
+    assert_eq!(large_gap, (0x3f80_0001, false, true, false, false, true));
+    let nan = independent_addss(0x7f80_0001, 0x7fc0_1234, 0x1f80);
+    assert_eq!(nan.0, 0x7fc0_0001);
+    assert!(nan.1);
+    assert!(!nan.2 && !nan.3 && !nan.4 && !nan.5);
 }

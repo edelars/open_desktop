@@ -40,6 +40,8 @@ const CMPPS_REGISTER_PAIRS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37aa_cmpps_registers.case.json");
 const ADDSD_REGISTER_PAIR: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37bb_addsd_xmm0_xmm1.case.json");
+const ADDSS_REGISTER_PAIR: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_37bc_addss_xmm0_xmm1.case.json");
 const FS_BASE_WRMSR_FS_LOAD: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_26f_fs_base_wrmsr_fs_load.case.json");
 const FS_BASE_RDMSR: &[u8] =
@@ -27059,6 +27061,63 @@ fn addsd_literal_fixture_executes_scalar_result_and_denies_other_backends() {
         cr4_osxmmexcpt: true,
     });
     malformed.memory[0].initial_bytes_hex = "f2400f58c1".into();
+    malformed.memory[0].length = 5;
+    malformed.stop_rip = Some(HexU64(malformed.initial_state.rip.get() + 5));
+    assert!(malformed.to_json().is_err(), "redundant REX alias accepted");
+
+    let mut tampered = result.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(16..32, "0000000000000000");
+    }
+    assert!(od_testkit::v2::compare(&input, &result, &tampered).is_err());
+}
+
+#[test]
+fn addss_literal_fixture_executes_scalar_result_and_denies_other_backends() {
+    use od_testkit::v2::{AddssControlSnapshot, Profile};
+    let (input, result) = run(ADDSS_REGISTER_PAIR, "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let Observation::Available { value: snapshot } = &result.snapshot else {
+        panic!("snapshot available")
+    };
+    let sse = snapshot.state.sse.as_ref().unwrap();
+    assert_eq!(sse.xmm[0], "0000803f0100c07f010000000000f07f");
+    assert_eq!(sse.mxcsr.get(), 0x1fa0);
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(ADDSS_REGISTER_PAIR, backend, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+    }
+    let mut unmasked_de = input.fixture.clone();
+    unmasked_de.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1e80);
+    unmasked_de.initial_state.sse.as_mut().unwrap().xmm[1].replace_range(0..8, "01000000");
+    unmasked_de.expected_exit = ExpectedExit::Exception;
+    let (de_loaded, de_result) = run(&unmasked_de.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&de_loaded, &de_result, &de_result).unwrap();
+    let Observation::Available { value: de_snapshot } = de_result.snapshot else {
+        panic!("snapshot available")
+    };
+    let de_sse = de_snapshot.state.sse.unwrap();
+    assert_eq!(de_sse.mxcsr.get(), 0x1e82);
+    assert_eq!(
+        de_sse.xmm[0],
+        input.fixture.initial_state.sse.as_ref().unwrap().xmm[0]
+    );
+    assert_eq!(de_snapshot.state.rip, input.fixture.initial_state.rip);
+    assert_eq!(
+        de_result.instructions_executed,
+        Observation::Available { value: HexU64(0) }
+    );
+
+    let mut malformed = input.fixture.clone();
+    malformed.profile = Profile::LongAddssRegistersV1;
+    malformed.addss_controls = Some(AddssControlSnapshot {
+        sse_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: true,
+    });
+    malformed.memory[0].initial_bytes_hex = "f3400f58c1".into();
     malformed.memory[0].length = 5;
     malformed.stop_rip = Some(HexU64(malformed.initial_state.rip.get() + 5));
     assert!(malformed.to_json().is_err(), "redundant REX alias accepted");

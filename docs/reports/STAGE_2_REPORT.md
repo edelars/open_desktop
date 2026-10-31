@@ -19027,3 +19027,65 @@ p. 2-28. The p. 3-23 Type 3/Table 2-20 reference concerns VEX forms. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37bb--canonical-long64-addsd-xmm-register-pairs),
 [plan](../plans/STAGE_2.md#s2-37bb--canonical-long64-addsd-xmm-register-pairs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bb-addsd-register-pair-profile).
+
+<a id="s2-37bc--addss-register-pair-interpreter-profile"></a>
+
+## S2-37bc — ADDSS register-pair interpreter profile (2026-10-30)
+
+Implemented strict schema-v2 `s2-long-addss-registers-v1` for canonical
+Long64 legacy `F3 0F 58 /r`, ModR/M.mod=3, across all 256 XMM pairs. Low forms
+are four bytes; extended forms use one adjacent REX `41`, `44` or `45` after F3
+for five bytes. Memory, 66/F2, reordered/repeated/redundant prefixes, REX.W/X/
+40, trailing bytes, VEX and EVEX are rejected. The profile is interpreter-only;
+ADDSS requires SSE, not SSE2. Full fetch precedes SSE/EM/OSFXSR #UD then TS #NM
+at CPL0–3, with no data callbacks.
+
+Execution snapshots both XMM operands, computes only `old_destination.low32 +
+source.low32`, preserves destination.high96, and ignores source.high96. The
+production scalar path uses `Binary32::add_raw_result`. It checks original
+operands first: first NaN wins, selected SNaN is quieted, any SNaN raises IE,
+QNaN alone does not, and NaNs suppress DE. Opposite-sign infinities raise IE
+and return `ffc00000`; infinity plus subnormal raises DE. Unmasked IE/DE commits
+only pre-event status and suppresses post flags and destination/RIP retirement.
+The profile requires MXCSR.OM=1 and UM=1, rejects DAZ/reserved bits, and accepts
+RC, FTZ, IM/DM/ZM/PM and prior sticky status. Same-sign zeros retain sign;
+exact cancellation is -0 only for round-down. The positive overflow-boundary
+midpoint uses OE|PE for RN/RU and PE-only for RD/RZ; maxfinite+maxfinite reports OE|PE in all
+rounding modes. The WPR exponent after p=24 rounding determines tininess. Exact
+same-format tiny sums with FTZ clear raise no UE/PE; FTZ flushes nonzero tiny
+results to signed zero with UE|PE. Unmasked PM commits status but preserves
+XMM/RIP/retirement.
+
+The independent testkit oracle is a scalar raw-u32 wrapper over its independent
+ADDPS lane implementation, with no host floating-point or production helper.
+The handwritten fixture covers `1 + 2^-24`, high96 preservation, and ignored
+source-high canaries. Runtime tests cover every pair and aliases, positive and
+negative halfway ties, all RC values, directed overflow, exact/FTZ tiny results,
+large-gap DE|PE, NaN order/quieting, opposite infinities, infinity plus
+subnormal, IE/DE and PM atomicity, invalid MXCSR, full-fetch/gate ordering,
+CPL0–3, instruction budget, no callbacks, malformed encodings, fixture
+tampering, and JIT/native denial.
+
+Validation passed: four ADDSS-specific od-isa tests; the ADDSS testkit oracle
+and schema test; full `cargo test -p od-isa --offline --quiet` (1,574 tests);
+full `cargo test -p od-testkit --offline --quiet` (443 tests); and full
+`cargo test -p od-runner --offline --test fixture_v2` (433 tests, including
+ADDPD/ADDPS and DIV/MUL/SUB regressions). Focused runner execution confirmed
+literal scalar output, DE-only atomicity, backend denial, malformed REX
+rejection, and snapshot tamper detection. `cargo check --workspace --all-targets
+--offline`, `cargo fmt --all -- --check`, `python3 tools/check_layout.py`,
+`git diff --check`, and `graphify update .` also passed.
+Independent `gpt-6.1-sol` review found no remaining code findings; one old
+ADDPS negative vector was removed because its F3 form is now valid ADDSS. No
+physical x86 execution was performed, memory operands and other modes remain
+outside this profile, and S2-37/S2-38 remain open.
+
+Sources: Intel SDM Rev. 093 Vol. 2A ADDSS pp. 3-24–3-25 and legacy SSE rows on
+p. 2-28; generic SSE/CR0/CR4 gates and SIMD exception handling; Vol. 1
+§§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel
+Floating-Point Reference Sheet v2.13. The p. 3-25 Type 3/Table 2-20 note
+references VEX forms, not legacy ADDSS. The description's apparent copy/paste
+errors are not repeated; this profile follows the opcode row and low32
+Operation semantics. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bc--canonical-long64-addss-xmm-register-pairs),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37bc--canonical-long64-addss-xmm-register-pairs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bc-addss-register-pair-profile).

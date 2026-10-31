@@ -13900,3 +13900,53 @@ Floating-Point Reference Sheet v2.13. The p. 3-23 Type 3/Table 2-20 reference
 concerns VEX forms and does not define this legacy ADDSD profile. See the
 [Stage 2 plan](../plans/STAGE_2.md#s2-37bb--canonical-long64-addsd-xmm-register-pairs)
 and [implementation report](../reports/STAGE_2_REPORT.md#s2-37bb--addsd-register-pair-interpreter-profile).
+
+## S2-37bc — canonical Long64 ADDSS XMM register pairs
+
+The schema-v2 interpreter-only profile `s2-long-addss-registers-v1` admits
+canonical Long64 legacy `F3 0F 58 /r`, ModR/M.mod=3, for all 256 XMM pairs.
+Four-byte low encodings and five-byte extended encodings with one adjacent REX
+`41`, `44` or `45` after F3 are accepted. Memory, 66/F2, reordered, repeated,
+redundant prefixes, REX.W/X/40, trailing bytes, VEX and EVEX are rejected.
+Complete fetch precedes SSE/CR0.EM/CR4.OSFXSR #UD and then CR0.TS #NM at CPL0–3;
+no data callbacks occur. ADDSS is SSE, not SSE2. JIT/native/C ABI/fragment/
+generic execution remains closed.
+
+Admission requires MXCSR.OM=1 and UM=1, rejects DAZ and reserved bits, and
+accepts RC, FTZ, IM/DM/ZM/PM and old sticky flags. Execution snapshots both XMM
+operands, adds only old destination.low32 and source.low32, preserves
+destination.high96 and ignores source.high96. NaNs select the first original
+operand; a selected SNaN is quieted and any SNaN raises IE. QNaN alone does not
+raise IE, and NaNs suppress DE. Opposite-sign infinities raise IE and return
+masked indefinite `ffc00000`; other infinity results retain their sign. Any
+subnormal input raises precompute DE, including infinity plus subnormal.
+Unmasked IE/DE commits only the newly generated pre-event status and suppresses
+post flags and the full destination write. Otherwise `Binary32::add_raw_result`
+uses MXCSR.RC. Exact cancellation is -0 only for round-down; same-sign zeros
+preserve their sign. Masked overflow is OE|PE; directed overflow to maxfinite
+at the halfway boundary may be PE-only. maxfinite+maxfinite raises OE|PE for
+every RC, including directed maxfinite results. Tininess uses the unbounded WPR
+exponent after p=24 precision rounding. Finite same-format sums are exact
+multiples of minsub, so an unflushed tiny result raises no UE/PE. FTZ flushes
+only tiny nonzero sums to signed zero with UE|PE. Post status commits before
+unmasked PM delivery; XMM/RIP/retirement remain unchanged on fault.
+
+The independent schema oracle is a scalar wrapper over the independent
+`independent_addps_lane` raw-u32 oracle, without host FP or production helpers.
+Literal and generated cases cover both signs of halfway rounding, NaN
+selection/quieting, opposite infinities, infinity plus subnormal, signed zeros,
+all RC modes, exact and FTZ tiny sums, large-gap DE|PE, midpoint and larger
+overflow, all-pair aliasing, IE/DE and PM atomicity, full-fetch gates, CPL0–3,
+no callbacks, malformed inputs, fixture tampering and backend denial. No
+physical x86 execution or memory form is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A ADDSS pp. 3-24–3-25 and legacy SSE rows on p. 2-28; generic SSE/CR0/CR4 gates and SIMD exceptions; Vol. 1
+§§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel
+Floating-Point Reference Sheet v2.13. The p. 3-25 Type 3/Table 2-20 note is
+for VEX forms, not legacy ADDSS. The ADDSS text contains apparent copy/paste
+errors “double precision result” and “64-bit memory”; this profile follows the
+opcode row and low32 Operation semantics instead. Memory forms, other modes,
+physical acceptance, complete unmasked OE/UE behavior and parent S2-37/S2-38
+remain open. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bc--canonical-long64-addss-xmm-register-pairs),
+[report](../reports/STAGE_2_REPORT.md#s2-37bc--addss-register-pair-interpreter-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bc-addss-register-pair-profile).
