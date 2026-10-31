@@ -7153,5 +7153,5 @@ pending x87 status and tag/payload canaries. The interpreter preserves MXCSR
 and all x87 state. Native/JIT/C ABI remain closed, and physical x86 acceptance
 was not run. Provenance cites Intel SDM Rev. 093 Vol. 2A CVTDQ2PD pp. 3-208–3-210,
 Vol. 3A §16.1.3 Table 16-1 p. 16-3, and Vol. 1 Table 14-21 (unaligned access
-with AC=0) plus Appendix C Table C-3 p. C-5 (no SIMD numeric exception
+with AC=0) plus Appendix C §C.4/Table C-4 p. C-5 (no SIMD numeric exception
 conditions). See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile), [plan](../../../../docs/plans/STAGE_2.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bs--cvtdq2pd-xmm0rax-m64-memory-profile).

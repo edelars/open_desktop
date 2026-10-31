@@ -19555,7 +19555,7 @@ result is implied.
 Normative sources: Intel SDM Rev. 093 Vol. 2A CVTDQ2PD pp. 3-208–3-210;
 Vol. 3A §16.1.3 Table 16-1 p. 16-3 for legacy SSE2 prerequisites; Vol. 1
 Table 14-21 for unaligned behavior within this profile's AC=0 scope and
-Appendix C Table C-3 p. C-5 for the absence of SIMD numeric exception
+Appendix C §C.4/Table C-4 p. C-5 for the absence of SIMD numeric exception
 conditions. See the
 [Stage 2 plan](../plans/STAGE_2.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile),
