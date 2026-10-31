@@ -351,6 +351,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 cvtps2dq_controls: input.fixture.cvtps2dq_controls,
                 cvttps2dq_controls: input.fixture.cvttps2dq_controls,
                 cvttps2dq_m128_controls: input.fixture.cvttps2dq_m128_controls,
+                cvtps2dq_m128_controls: input.fixture.cvtps2dq_m128_controls,
                 cvtpd2dq_controls: input.fixture.cvtpd2dq_controls,
                 cvttpd2dq_controls: input.fixture.cvttpd2dq_controls,
                 sqrtss_controls: input.fixture.sqrtss_controls,

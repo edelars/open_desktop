@@ -19633,3 +19633,64 @@ Independent review completed without remaining findings. Physical x86 acceptance
 Sources: Intel SDM Rev. 093 Vol. 2A CVTTPS2DQ pp. 3-249–3-251; Vol. 1
 §11.5.2.2 and Table 14-21; Vol. 3A §16.1.3 Table 16-1 p. 16-3 ([official
 Vol. 3A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
+
+### S2-37bv — CVTPS2DQ XMM0,[RAX] aligned m128 memory profile
+
+Implemented exact legacy `66 0F 5B 00` as a schema-v2 interpreter-only Long64
+profile. The interpreter fetches all four instruction bytes before the local
+SSE2/EM/OSFXSR #UD and TS #NM checks, admits CPL0–3, validates the canonical48
+span and 16-byte alignment, then performs one m128 data read. Misalignment is
+#GP(0) before data access for every CPL/AC value; aligned AC=0/1 is accepted.
+Read failure leaves the CPU state unchanged. No x87 gate or mutation occurs;
+arbitrary and pending x87 state are preserved.
+
+Four binary32 lanes are rounded to signed i32 using MXCSR.RC before range
+checking. Invalid NaN, infinity, or rounded out-of-range lanes produce
+`0x80000000` and sticky IE. Valid inexact lanes contribute sticky PE; an
+invalid lane does not contribute PE. Existing status flags and supported
+controls are preserved. DAZ=0 and IM=PM=1 are local profile admission rules
+under mask `0xffbf`; no unmasked SIMD delivery is modeled. The testkit oracle
+uses raw-u32 integer arithmetic only, with no host FP or production conversion
+helper. Native/JIT/C ABI remain closed and no physical x86 execution was run.
+
+Verification:
+
+- Focused ISA checks passed separately: `cvtps2dq_m128_decodes_only_exact_rax_form`
+  (1 decoder test) and `cvtps2dq_memory_m128_rounding_flags_alignment_and_atomicity`
+  (1 execution test). The execution matrix checks every RC, ties and subnormals, valid/invalid signed
+  edges, mixed IE+PE, four sticky histories, all CPL×AC alignment combinations,
+  all 15 misalignment offsets, full-fetch-before-gates, canonical-span failures,
+  read rollback, exact 16-byte read and x87 canary preservation.
+- Focused runner matrix `cvtps2dq_m128_rounds_binary32_and_fails_closed` passed
+  (1 test). It covers all RC modes, ties, signed subnormals, range edges, all 16
+  PE lane masks from clear flags, mixed IE+PE, sticky histories, prerequisite
+  gate priority, local IM/PM refusal, Ring0 aligned AC=0/1, representative
+  misalignment, malformed/foreign fields, tamper rejection, and JIT/native
+  Unsupported.
+- `cargo test -p od-isa --offline`: 1,616 passed; doc-tests 0.
+- `cargo test -p od-testkit --offline`: 445 passed; doc-tests 0.
+- `cargo test -p od-runner --offline`: 112 unit tests and 451 fixture tests
+  passed.
+- `cargo test -p od-x86-runner --offline`: 8 library tests and 4 binary tests
+  passed; doc-tests 0. The portable native local-only classification test
+  includes this profile. There is no profile-specific Linux native fixture
+  denial test for this slice; the runner native backend returns Unsupported.
+- `cargo check --workspace --all-targets --offline` and
+  `cargo fmt --all -- --check` passed.
+- `python3 tools/check_layout.py` passed (48 required directories, 6 crate
+  scaffolds, 14 instruction scopes); `git diff --check` passed.
+- Local Markdown link targets and anchors resolve for the touched plan, contract,
+  report and fixture documentation.
+- `graphify update .` completed: 10,227 nodes, 21,700 edges, 278 communities.
+  Existing extractor warnings remain for `include/open_desktop/host_abi.h` and
+  13 source/config files with no symbols; 54 non-source files were skipped.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTPS2DQ pp. 3-225–3-227; Vol. 3A
+§16.1.3 Table 16-1 p. 16-3 for legacy SSE2 gates; Vol. 1 Table 14-21 for
+aligned m128 access. The VEX-only Type 2/Table 2-19 citation does not apply.
+Independent review completed without remaining findings. An independent 12-case
+CLI smoke passed for NaN/SNaN/±infinity, signed ties, and directed signed
+subnormal rounding with full MXCSR equality checks. Physical x86 acceptance was
+not run.
+
+See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bv--bounded-long64-cvtps2dq-xmm0rax-aligned-m128-memory-profile), [CPU contract](../specs/CPU_CONTRACT.md#s2-37bv--bounded-long64-cvtps2dq-xmm0rax-aligned-m128-profile), and [literal fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bv-cvtps2dq-xmm0rax-aligned-m128-rounding-profile).

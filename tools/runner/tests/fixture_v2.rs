@@ -31696,3 +31696,292 @@ fn divss_register_pairs_scalar_events_and_interpreter_only() {
         assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
     }
 }
+
+#[test]
+fn cvtps2dq_m128_rounds_binary32_and_fails_closed() {
+    use od_testkit::v2::{ExpectedExit, Fixture, Profile};
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "../../tests/fixtures/x86/stage2/s2_37bv_cvtps2dq_m128_rounding_boundaries.case.json",
+    );
+    let bytes = fs::read(path).unwrap();
+    let base = Fixture::from_json(&bytes).unwrap().fixture;
+    let (literal_input, literal) = run(&bytes, "interpreter", 0);
+    assert_eq!(
+        literal_input.fixture.profile,
+        Profile::LongCvtps2dqMemoryRaxV1
+    );
+    od_testkit::v2::compare(&literal_input, &literal, &literal).unwrap();
+    let literal_state = &snapshot(&literal).state;
+    assert_eq!(literal_state.x87, literal_input.fixture.initial_state.x87);
+    assert_eq!(literal_state.sse.as_ref().unwrap().mxcsr.get() & 0x3f, 0x20);
+    assert_eq!(
+        &literal_state.sse.as_ref().unwrap().xmm[0][..32],
+        "00000000feffffff0000000002000000"
+    );
+
+    // RC applies to ties and directed rounding, with range checked after rounding.
+    let ties = [0x3f00_0000u32, 0xbf00_0000, 0x3fc0_0000, 0xbfc0_0000];
+    let expected = [
+        [0i32, 0, 2, -2],
+        [0, -1, 1, -2],
+        [1, 0, 2, -1],
+        [0, 0, 1, -1],
+    ];
+    for rc in 0..4u64 {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("s2_37bv_cvtps2dq_ties_rc{rc}");
+        fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (rc << 13));
+        fixture.memory[1].initial_bytes_hex = od_testkit::memory::encode_bytes(
+            &ties
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let source = fixture.to_json().unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let sse = snapshot(&result).state.sse.as_ref().unwrap();
+        let xmm0 = od_testkit::v2::decode_bytes(&sse.xmm[0]).unwrap();
+        let actual = (0..4)
+            .map(|lane| i32::from_le_bytes(xmm0[lane * 4..lane * 4 + 4].try_into().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected[rc as usize], "RC={rc}");
+        assert_eq!(sse.mxcsr.get() & 0x21, 0x20);
+    }
+
+    // DAZ-clear subnormals round according to RC and always raise only PE.
+    for (rc, expected_lanes) in [
+        (0u64, [0i32, 0, 0, 0]),
+        (1, [0, -1, 0, 0]),
+        (2, [1, 0, 0, 0]),
+        (3, [0, 0, 0, 0]),
+    ] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("s2_37bv_cvtps2dq_subnormal_rc{rc}");
+        fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (rc << 13));
+        let words = [1u32, 0x8000_0001, 0, 0];
+        fixture.memory[1].initial_bytes_hex = od_testkit::memory::encode_bytes(
+            &words
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let source = fixture.to_json().unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let sse = snapshot(&result).state.sse.as_ref().unwrap();
+        let xmm0 = od_testkit::v2::decode_bytes(&sse.xmm[0]).unwrap();
+        let actual = (0..4)
+            .map(|lane| i32::from_le_bytes(xmm0[lane * 4..lane * 4 + 4].try_into().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected_lanes, "RC={rc}");
+        assert_eq!(sse.mxcsr.get() & 0x21, 0x20);
+    }
+
+    // Post-rounding range edges distinguish valid extrema from invalid indefinite values.
+    for (rc, positive, negative, expected_ie) in [
+        (0u64, 0x4eff_ffffu32, 0xcf00_0000u32, false),
+        (1, 0x4eff_ffff, 0xcf00_0000, false),
+        (2, 0x4eff_ffff, 0xcf00_0000, false),
+        (3, 0x4eff_ffff, 0xcf00_0000, false),
+        (0, 0x4f00_0000, 0xcf00_0001, true),
+        (1, 0x4f00_0000, 0xcf00_0001, true),
+        (2, 0x4f00_0000, 0xcf00_0001, true),
+        (3, 0x4f00_0000, 0xcf00_0001, true),
+    ] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("s2_37bv_cvtps2dq_bounds_rc{rc}_ie{expected_ie}");
+        fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (rc << 13));
+        let words = [positive, negative, 0, 0];
+        fixture.memory[1].initial_bytes_hex = od_testkit::memory::encode_bytes(
+            &words
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let source = fixture.to_json().unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let sse = snapshot(&result).state.sse.as_ref().unwrap();
+        assert_eq!(sse.mxcsr.get() & 1 != 0, expected_ie);
+        let xmm0 = od_testkit::v2::decode_bytes(&sse.xmm[0]).unwrap();
+        assert_eq!(
+            i32::from_le_bytes(xmm0[..4].try_into().unwrap()),
+            if expected_ie { i32::MIN } else { 2_147_483_520 }
+        );
+        assert_eq!(i32::from_le_bytes(xmm0[4..8].try_into().unwrap()), i32::MIN);
+    }
+
+    // Invalid and valid-inexact lanes independently set IE and PE.
+    let mut mixed = base.clone();
+    mixed.case_id = "s2_37bv_cvtps2dq_mixed_ie_pe".into();
+    mixed.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+    let words = [0x7fc0_0001u32, 0x3fc0_0000, 0, 0];
+    mixed.memory[1].initial_bytes_hex = od_testkit::memory::encode_bytes(
+        &words
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>(),
+    );
+    let source = mixed.to_json().unwrap();
+    let (input, result) = run(&source, "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    assert_eq!(
+        snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x21,
+        0x21
+    );
+
+    // Every lane position contributes independently to PE from a clear baseline.
+    for mask in 0..16u8 {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("s2_37bv_cvtps2dq_pe_lane_mask_{mask:02x}");
+        fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+        let words = (0..4)
+            .map(|lane| {
+                if mask & (1 << lane) != 0 {
+                    0x3fc0_0000u32
+                } else {
+                    0x3f80_0000u32
+                }
+            })
+            .collect::<Vec<_>>();
+        fixture.memory[1].initial_bytes_hex = od_testkit::memory::encode_bytes(
+            &words
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let source = fixture.to_json().unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let status = snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x21;
+        assert_eq!(status, u64::from(mask != 0) << 5, "lane mask {mask:04b}");
+    }
+
+    // Zero conversion preserves pre-existing IE/PE histories.
+    for flags in [0u64, 1, 1 << 5, (1 << 5) | 1] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("s2_37bv_cvtps2dq_sticky_{flags:02x}");
+        fixture.memory[1].initial_bytes_hex = "00".repeat(16);
+        fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | flags);
+        let source = fixture.to_json().unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        assert_eq!(
+            snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x21,
+            flags
+        );
+    }
+
+    // Aligned AC=0/1 reaches the profile at Ring0; ISA tests cover all CPLs.
+    for ac in [false, true] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("s2_37bv_cvtps2dq_aligned_ring0_ac_{ac}");
+        fixture.initial_state.rflags = HexU64(2 | (u64::from(ac) << 18));
+        let source = fixture.to_json().unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+    }
+
+    for (field, value) in [
+        ("sse2_available", serde_json::Value::Bool(false)),
+        ("cr0_em", serde_json::Value::Bool(true)),
+        ("cr0_ts", serde_json::Value::Bool(true)),
+        ("cr4_osfxsr", serde_json::Value::Bool(false)),
+    ] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("s2_37bv_cvtps2dq_gate_{field}");
+        fixture.expected_exit = ExpectedExit::Exception;
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&fixture.to_json().unwrap()).unwrap();
+        json["cvtps2dq_m128_controls"][field] = value;
+        let source = serde_json::to_vec(&json).unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+    }
+
+    let mut priority = base.clone();
+    priority.case_id = "s2_37bv_cvtps2dq_pm0_sse2_priority".into();
+    priority.expected_exit = ExpectedExit::Exception;
+    priority.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x0f80);
+    priority
+        .cvtps2dq_m128_controls
+        .as_mut()
+        .unwrap()
+        .sse2_available = false;
+    let priority_bytes = priority.to_json().unwrap();
+    let (priority_input, priority_result) = run(&priority_bytes, "interpreter", 0);
+    od_testkit::v2::compare(&priority_input, &priority_result, &priority_result).unwrap();
+    let Observation::Available {
+        value: Some(priority_exception),
+    } = &snapshot(&priority_result).exception
+    else {
+        panic!("expected prerequisite #UD before PM=0 profile refusal")
+    };
+    assert_eq!(priority_exception.vector, 6);
+
+    for mxcsr in [0x1f00u64, 0x0f80] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("s2_37bv_cvtps2dq_mxcsr_{mxcsr:04x}");
+        fixture.expected_exit = ExpectedExit::Unsupported;
+        fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        let source = fixture.to_json().unwrap();
+        let (_input, result) = run(&source, "interpreter", 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    }
+
+    for offset in [1u64, 7, 15] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("s2_37bv_cvtps2dq_misaligned_{offset}");
+        fixture.expected_exit = ExpectedExit::Exception;
+        fixture.memory[1].guest_address = HexU64(0x2000 + offset);
+        fixture.initial_state.gpr[0] = HexU64(0x2000 + offset);
+        fixture.initial_state.rflags = HexU64(2 | (1 << 18));
+        let source = fixture.to_json().unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        assert_eq!(snapshot(&result).state, input.fixture.initial_state);
+    }
+
+    let mut missing_controls = base.clone();
+    missing_controls.cvtps2dq_m128_controls = None;
+    assert!(missing_controls.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&missing_controls).unwrap()).is_err());
+    let mut foreign_controls = base.clone();
+    foreign_controls.cvttps2dq_m128_controls = Some(base.cvtps2dq_m128_controls.unwrap());
+    assert!(foreign_controls.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign_controls).unwrap()).is_err());
+    let mut unsupported_daz = base.clone();
+    unsupported_daz.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1fc0);
+    assert!(unsupported_daz.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&unsupported_daz).unwrap()).is_err());
+    let mut foreign_register_controls = base.clone();
+    foreign_register_controls.cvtps2dq_controls = Some(od_testkit::v2::Cvtdq2psControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: true,
+    });
+    assert!(foreign_register_controls.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign_register_controls).unwrap()).is_err());
+    let mut wrong_encoding = base.clone();
+    wrong_encoding.memory[0].initial_bytes_hex = "660f5b01".into();
+    assert!(wrong_encoding.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&wrong_encoding).unwrap()).is_err());
+
+    for backend in ["jit", "native"] {
+        let (_, result) = run(&bytes, backend, 4);
+        assert!(
+            matches!(result.outcome, Outcome::Unsupported { .. }),
+            "{backend}"
+        );
+    }
+    let mut tampered = literal.clone();
+    let Observation::Available { value } = &mut tampered.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.state.sse.as_mut().unwrap().xmm[0] = "00".repeat(16);
+    assert!(od_testkit::v2::compare(&literal_input, &literal, &tampered).is_err());
+}

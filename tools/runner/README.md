@@ -225,3 +225,10 @@ preservation, representative alignment/gate/schema/tamper cases, and JIT/native
 denial. Direct ISA tests establish the full misalignment cross product and
 callback atomicity; runner snapshots do not expose callback counts. See the
 [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bu--bounded-long64-cvttps2dq-xmm0rax-aligned-m128-memory-profile) and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bu-cvttps2dq-xmm0rax-aligned-m128-memory-profile).
+
+S2-37bv runs the local-only schema-v2 `CVTPS2DQ XMM0,[RAX]` (`66 0F 5B 00`)
+profile. The runner covers four MXCSR rounding modes, tie/subnormal and signed
+range edges, mixed IE+PE, sticky flags, aligned AC inputs at Ring0, schema
+rejection, output tampering, and JIT/native Unsupported. Direct ISA tests own
+all-CPL alignment and data callback assertions; runner snapshots do not count
+callbacks. Physical x86 acceptance was not performed.

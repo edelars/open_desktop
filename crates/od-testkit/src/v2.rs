@@ -272,6 +272,8 @@ pub enum Profile {
     LongCvttps2dqRegistersV1,
     #[serde(rename = "s2-long-cvttps2dq-memory-rax-v1")]
     LongCvttps2dqMemoryRaxV1,
+    #[serde(rename = "s2-long-cvtps2dq-memory-rax-v1")]
+    LongCvtps2dqMemoryRaxV1,
     #[serde(rename = "s2-long-cvtpd2dq-registers-v1")]
     LongCvtpd2dqRegistersV1,
     #[serde(rename = "s2-long-cvttpd2dq-registers-v1")]
@@ -1341,6 +1343,7 @@ impl IntegerState {
                     | Profile::LongCvttpd2piMemoryRaxV1
                     | Profile::LongCvtpd2piMemoryRaxV1
                     | Profile::LongCvttps2dqMemoryRaxV1
+                    | Profile::LongCvtps2dqMemoryRaxV1
                     | Profile::LongCvtdq2pdMemoryV1
                     | Profile::LongCvtdq2psMemoryRaxV1
                     | Profile::LongCvtps2piRegisterMaskedV1,
@@ -1388,6 +1391,7 @@ impl IntegerState {
                     | Profile::LongCvtdq2psRegistersV1
                     | Profile::LongCvtdq2psMemoryRaxV1
                     | Profile::LongCvtps2dqRegistersV1
+                    | Profile::LongCvtps2dqMemoryRaxV1
                     | Profile::LongCvttps2dqRegistersV1
                     | Profile::LongCvttps2dqMemoryRaxV1
                     | Profile::LongCvtpd2dqRegistersV1
@@ -1630,6 +1634,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtdq2psMemoryRaxV1
                 | Profile::LongCvtps2dqRegistersV1
+                | Profile::LongCvtps2dqMemoryRaxV1
                 | Profile::LongCvttps2dqRegistersV1
                 | Profile::LongCvttps2dqMemoryRaxV1
                 | Profile::LongCvtpd2dqRegistersV1
@@ -1823,6 +1828,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtdq2psMemoryRaxV1
                 | Profile::LongCvtps2dqRegistersV1
+                | Profile::LongCvtps2dqMemoryRaxV1
                 | Profile::LongCvttps2dqRegistersV1
                 | Profile::LongCvttps2dqMemoryRaxV1
                 | Profile::LongCvtpd2dqRegistersV1
@@ -2198,6 +2204,7 @@ impl IntegerState {
             | Profile::LongCvtdq2psRegistersV1
             | Profile::LongCvtdq2psMemoryRaxV1
             | Profile::LongCvtps2dqRegistersV1
+            | Profile::LongCvtps2dqMemoryRaxV1
             | Profile::LongCvttps2dqRegistersV1
             | Profile::LongCvttps2dqMemoryRaxV1
             | Profile::LongCvtpd2dqRegistersV1
@@ -2397,6 +2404,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtdq2psMemoryRaxV1
                 | Profile::LongCvtps2dqRegistersV1
+                | Profile::LongCvtps2dqMemoryRaxV1
                 | Profile::LongCvttps2dqRegistersV1
                 | Profile::LongCvttps2dqMemoryRaxV1
                 | Profile::LongCvtpd2dqRegistersV1
@@ -2608,6 +2616,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtdq2psMemoryRaxV1
                 | Profile::LongCvtps2dqRegistersV1
+                | Profile::LongCvtps2dqMemoryRaxV1
                 | Profile::LongCvttps2dqRegistersV1
                 | Profile::LongCvttps2dqMemoryRaxV1
                 | Profile::LongCvtpd2dqRegistersV1
@@ -2828,6 +2837,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtdq2psMemoryRaxV1
                 | Profile::LongCvtps2dqRegistersV1
+                | Profile::LongCvtps2dqMemoryRaxV1
                 | Profile::LongCvttps2dqRegistersV1
                 | Profile::LongCvttps2dqMemoryRaxV1
                 | Profile::LongCvtpd2dqRegistersV1
@@ -3055,6 +3065,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtdq2psMemoryRaxV1
                 | Profile::LongCvtps2dqRegistersV1
+                | Profile::LongCvtps2dqMemoryRaxV1
                 | Profile::LongCvttps2dqRegistersV1
                 | Profile::LongCvttps2dqMemoryRaxV1
                 | Profile::LongCvtpd2dqRegistersV1
@@ -3477,6 +3488,7 @@ impl IntegerState {
                 | Profile::LongCvtpd2piMemoryRaxV1
                 | Profile::LongCvtdq2psMemoryRaxV1
                 | Profile::LongCvttps2dqMemoryRaxV1
+                | Profile::LongCvtps2dqMemoryRaxV1
         ) {
             1 << 18 // AC is an explicit alignment input for these m128 memory profiles.
         } else {
@@ -3732,6 +3744,7 @@ impl IntegerState {
                 | Profile::LongCvttpd2piMemoryRaxV1
                 | Profile::LongCvtpd2piMemoryRaxV1
                 | Profile::LongCvttps2dqMemoryRaxV1
+                | Profile::LongCvtps2dqMemoryRaxV1
                 | Profile::LongCvtdq2pdMemoryV1
                 | Profile::LongCvtdq2psMemoryRaxV1
                 | Profile::LongCvtps2piRegisterMaskedV1,
@@ -3940,6 +3953,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtdq2psMemoryRaxV1
                 | Profile::LongCvtps2dqRegistersV1
+                | Profile::LongCvtps2dqMemoryRaxV1
                 | Profile::LongCvttps2dqRegistersV1
                 | Profile::LongCvttps2dqMemoryRaxV1
                 | Profile::LongCvtpd2dqRegistersV1
@@ -4124,6 +4138,7 @@ impl IntegerState {
                 | Profile::LongCvtdq2psRegistersV1
                 | Profile::LongCvtdq2psMemoryRaxV1
                 | Profile::LongCvtps2dqRegistersV1
+                | Profile::LongCvtps2dqMemoryRaxV1
                 | Profile::LongCvttps2dqRegistersV1
                 | Profile::LongCvttps2dqMemoryRaxV1
                 | Profile::LongCvtpd2dqRegistersV1
@@ -4425,6 +4440,9 @@ pub struct Fixture {
     /// Immutable gates for the exact S2-37bu CVTTPS2DQ m128 profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvttps2dq_m128_controls: Option<Cvttps2dqMemoryControlSnapshot>,
+    /// Immutable gates for the exact S2-37bv CVTPS2DQ m128 profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cvtps2dq_m128_controls: Option<Cvttps2dqMemoryControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtpd2dq_controls: Option<Cvtpd2dqControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4979,6 +4997,7 @@ impl Fixture {
                     Profile::LongCvttpd2piMemoryRaxV1
                         | Profile::LongCvtpd2piMemoryRaxV1
                         | Profile::LongCvttps2dqMemoryRaxV1
+                        | Profile::LongCvtps2dqMemoryRaxV1
                 ) {
                     1 << 18
                 } else {
@@ -6649,6 +6668,90 @@ impl Fixture {
             return Err(invalid(
                 "cvttps2dq_controls",
                 "only valid for CVTTPS2DQ register-space profile",
+            ));
+        }
+        if self.profile == Profile::LongCvtps2dqMemoryRaxV1 {
+            if self.cvttps2dq_controls.is_some() {
+                return Err(invalid(
+                    "cvttps2dq_controls",
+                    "foreign CVTPS2DQ register controls are not valid for the m128 profile",
+                ));
+            }
+            if self.cvttps2dq_m128_controls.is_some() {
+                return Err(invalid(
+                    "cvttps2dq_m128_controls",
+                    "foreign CVTTPS2DQ controls are not valid for the CVTPS2DQ m128 profile",
+                ));
+            }
+            let controls = self.cvtps2dq_m128_controls.ok_or_else(|| {
+                invalid(
+                    "cvtps2dq_m128_controls",
+                    "required by the CVTPS2DQ m128 profile",
+                )
+            })?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by the CVTPS2DQ m128 profile"))?;
+            let data = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "data")
+                .ok_or_else(|| invalid("memory.data", "required by the CVTPS2DQ m128 profile"))?;
+            let start = self.initial_state.rip.get();
+            let address = self.initial_state.gpr[0].get();
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| invalid("state.sse", "required by the CVTPS2DQ m128 profile"))?
+                .mxcsr
+                .get();
+            let gate_fault = !controls.sse2_available
+                || controls.cr0_em
+                || !controls.cr4_osfxsr
+                || controls.cr0_ts;
+            let locally_unsupported =
+                mxcsr & (1 << 6) != 0 || mxcsr & ((1 << 7) | (1 << 12)) != ((1 << 7) | (1 << 12));
+            let access_fault = address
+                .checked_add(15)
+                .is_none_or(|last| !canonical48(address) || !canonical48(last))
+                || address & 15 != 0;
+            let expected_exit_valid = if gate_fault {
+                self.expected_exit == ExpectedExit::Exception
+            } else if locally_unsupported {
+                self.expected_exit == ExpectedExit::Unsupported
+            } else if access_fault {
+                self.expected_exit == ExpectedExit::Exception
+            } else {
+                matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            };
+            if cvtps2dq_memory_encoding(&code.initial_bytes_hex).is_none()
+                || code.guest_address.get() != start
+                || code.length != 4
+                || !code.permissions.execute
+                || self.memory.len() != 2
+                || data.guest_address.get() != address
+                || data.length != 16
+                || !data.permissions.read
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(4)
+                || mxcsr & !0x0000_ffbf != 0
+                || !expected_exit_valid
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "CVTPS2DQ m128 requires exact 66 0F 5B 00, one 16-byte RAX source mapping, supported MXCSR, IM/PM-gated admission, budget 1, and stop RIP entry+4",
+                ));
+            }
+        } else if self.cvtps2dq_m128_controls.is_some() {
+            return Err(invalid(
+                "cvtps2dq_m128_controls",
+                "only valid for the CVTPS2DQ m128 profile",
             ));
         }
         if self.profile == Profile::LongCvttps2dqMemoryRaxV1 {
@@ -9879,6 +9982,7 @@ impl Fixture {
                     cvttps2dq_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
                 Profile::LongCvttps2dqMemoryRaxV1 => cvttps2dq_memory_encoding(&code_bytes),
+                Profile::LongCvtps2dqMemoryRaxV1 => cvtps2dq_memory_encoding(&code_bytes),
                 Profile::LongCvtpd2dqRegistersV1 => {
                     cvtpd2dq_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
@@ -11946,6 +12050,7 @@ impl Fixture {
             cvtps2dq_controls: None,
             cvttps2dq_controls: None,
             cvttps2dq_m128_controls: None,
+            cvtps2dq_m128_controls: None,
             cvtpd2dq_controls: None,
             cvttpd2dq_controls: None,
             sqrtss_controls: None,
@@ -12100,6 +12205,9 @@ pub struct Snapshot {
     pub cvttps2dq_controls: Option<Cvttps2dqControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvttps2dq_m128_controls: Option<Cvttps2dqMemoryControlSnapshot>,
+    /// Immutable gates for the exact S2-37bv CVTPS2DQ m128 profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cvtps2dq_m128_controls: Option<Cvttps2dqMemoryControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtpd2dq_controls: Option<Cvtpd2dqControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -12491,6 +12599,19 @@ impl RunResult {
             return Err(invalid(
                 "snapshot.cvttps2dq_controls",
                 "only valid for CVTTPS2DQ profile",
+            ));
+        }
+        if self.profile == Profile::LongCvtps2dqMemoryRaxV1 {
+            if snapshot.cvtps2dq_m128_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.cvtps2dq_m128_controls",
+                    "required by the CVTPS2DQ m128 profile",
+                ));
+            }
+        } else if snapshot.cvtps2dq_m128_controls.is_some() {
+            return Err(invalid(
+                "snapshot.cvtps2dq_m128_controls",
+                "only valid for the CVTPS2DQ m128 profile",
             ));
         }
         if self.profile == Profile::LongCvttps2dqMemoryRaxV1 {
@@ -13171,6 +13292,7 @@ impl RunResult {
                 Profile::LongCvttpd2piMemoryRaxV1
                     | Profile::LongCvtpd2piMemoryRaxV1
                     | Profile::LongCvttps2dqMemoryRaxV1
+                    | Profile::LongCvtps2dqMemoryRaxV1
             ) {
                 1 << 18
             } else {
@@ -13444,6 +13566,22 @@ impl RunResult {
             }
             if loaded.fixture.profile == Profile::LongCvttps2dqRegistersV1 {
                 validate_cvttps2dq_registers_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.cvtps2dq_m128_controls,
+                value.cvtps2dq_m128_controls,
+            ) {
+                (Profile::LongCvtps2dqMemoryRaxV1, Some(input), Some(output))
+                    if input == output => {}
+                (Profile::LongCvtps2dqMemoryRaxV1, _, _) => {
+                    return Err(FormatError::CaseMismatch("cvtps2dq_m128_controls"));
+                }
+                (_, None, None) => {}
+                _ => return Err(FormatError::CaseMismatch("cvtps2dq_m128_controls")),
+            }
+            if loaded.fixture.profile == Profile::LongCvtps2dqMemoryRaxV1 {
+                validate_cvtps2dq_memory_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
@@ -16773,6 +16911,157 @@ fn validate_cvttps2dq_registers_result(
             && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
         (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
         _ => return Err(FormatError::CaseMismatch("CVTTPS2DQ outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_cvtps2dq_memory_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .cvtps2dq_m128_controls
+        .ok_or(FormatError::CaseMismatch("cvtps2dq_m128_controls"))?;
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    if cvtps2dq_memory_encoding(&code.initial_bytes_hex) != Some(4) {
+        return Err(FormatError::CaseMismatch("CVTPS2DQ m128 encoding"));
+    }
+    let data = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "data")
+        .ok_or(FormatError::CaseMismatch("memory.data"))?;
+    let source = decode_bytes(&data.initial_bytes_hex)?;
+    if source.len() != 16 {
+        return Err(FormatError::CaseMismatch("CVTPS2DQ m128 source width"));
+    }
+    let old_mxcsr = initial_sse.mxcsr.get() as u32;
+    let rc = (old_mxcsr >> 13) & 3;
+    let mut expected_destination = [0u8; 16];
+    let mut new_ie = false;
+    let mut new_pe = false;
+    for lane in 0..4 {
+        let offset = lane * 4;
+        let raw = u32::from_le_bytes(
+            source[offset..offset + 4]
+                .try_into()
+                .map_err(|_| FormatError::CaseMismatch("CVTPS2DQ m128 lane"))?,
+        );
+        let (bits, invalid, inexact) = independent_binary32_to_integer(raw, rc, false);
+        new_ie |= invalid;
+        new_pe |= !invalid && inexact;
+        expected_destination[offset..offset + 4].copy_from_slice(&(bits as u32).to_le_bytes());
+    }
+    let gate_vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let unsupported = gate_vector.is_none()
+        && (old_mxcsr & (1 << 6) != 0
+            || old_mxcsr & ((1 << 7) | (1 << 12)) != ((1 << 7) | (1 << 12)));
+    let address = fixture.initial_state.gpr[0].get();
+    let access_fault = address
+        .checked_add(15)
+        .is_none_or(|last| !canonical48(address) || !canonical48(last))
+        || address & 15 != 0;
+    let fault_vector = gate_vector.or_else(|| (!unsupported && access_fault).then_some(13));
+    if unsupported {
+        if fixture.expected_exit != ExpectedExit::Unsupported {
+            return Err(FormatError::CaseMismatch(
+                "CVTPS2DQ m128 expected unsupported",
+            ));
+        }
+    } else if !matches!(
+        (fault_vector.is_some(), fixture.expected_exit),
+        (true, ExpectedExit::Exception) | (false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("CVTPS2DQ m128 expected exit"));
+    }
+    let mut expected_state = fixture.initial_state.clone();
+    if fault_vector.is_none() && !unsupported {
+        let sse = expected_state
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        sse.mxcsr = HexU64(u64::from(
+            old_mxcsr | u32::from(new_ie) | (u32::from(new_pe) << 5),
+        ));
+        sse.xmm[0] = crate::memory::encode_bytes(&expected_destination);
+        expected_state.rip = HexU64(
+            fixture
+                .initial_state
+                .rip
+                .get()
+                .checked_add(4)
+                .ok_or(FormatError::CaseMismatch("CVTPS2DQ stop overflow"))?,
+        );
+    }
+    let expected_memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected_state {
+        return Err(FormatError::CaseMismatch("CVTPS2DQ m128 CPU state"));
+    }
+    if snapshot.rflags_defined != HexU64(INTEGER_FLAGS | (1 << 18)) {
+        return Err(FormatError::CaseMismatch(
+            "CVTPS2DQ m128 RFLAGS definedness",
+        ));
+    }
+    if snapshot.memory != expected_memory {
+        return Err(FormatError::CaseMismatch("CVTPS2DQ m128 memory"));
+    }
+    let expected_count = u64::from(fault_vector.is_none() && !unsupported);
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(expected_count),
+        })
+    {
+        return Err(FormatError::CaseMismatch("CVTPS2DQ m128 retirement count"));
+    }
+    match (
+        fault_vector,
+        unsupported,
+        &result.outcome,
+        &snapshot.exception,
+    ) {
+        (
+            Some(vector),
+            false,
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && if vector == 13 {
+                exception.error_code == (Observation::Available { value: HexU64(0) })
+            } else {
+                matches!(exception.error_code, Observation::Unavailable { .. })
+            }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, true, Outcome::Unsupported { .. }, Observation::Available { value: None }) => {}
+        (None, false, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("CVTPS2DQ m128 outcome/exception")),
     }
     Ok(())
 }
@@ -23272,6 +23561,15 @@ pub fn compare(
     if a.cvttps2dq_controls != b.cvttps2dq_controls {
         differences.push("cvttps2dq_controls".into());
     }
+    if a.cvtps2dq_m128_controls != b.cvtps2dq_m128_controls {
+        differences.push("cvtps2dq_m128_controls".into());
+    }
+    if a.cvtps2dq_m128_controls != loaded.fixture.cvtps2dq_m128_controls {
+        differences.push("left.cvtps2dq_m128_controls".into());
+    }
+    if b.cvtps2dq_m128_controls != loaded.fixture.cvtps2dq_m128_controls {
+        differences.push("right.cvtps2dq_m128_controls".into());
+    }
     if a.cvttps2dq_m128_controls != b.cvttps2dq_m128_controls {
         differences.push("cvttps2dq_m128_controls".into());
     }
@@ -23464,6 +23762,7 @@ fn rflags_differ(profile: Profile, mask: u64, left: u64, right: u64) -> bool {
         Profile::LongCvttpd2piMemoryRaxV1
             | Profile::LongCvtpd2piMemoryRaxV1
             | Profile::LongCvttps2dqMemoryRaxV1
+            | Profile::LongCvtps2dqMemoryRaxV1
     ) {
         INTEGER_FLAGS | (1 << 18)
     } else {
@@ -24731,6 +25030,10 @@ fn cvtdq2ps_memory_encoding(code_bytes: &str) -> Option<u32> {
 
 fn cvttps2dq_memory_encoding(code_bytes: &str) -> Option<u32> {
     (decode_bytes(code_bytes).ok()?.as_slice() == [0xf3, 0x0f, 0x5b, 0x00]).then_some(4)
+}
+
+fn cvtps2dq_memory_encoding(code_bytes: &str) -> Option<u32> {
+    (decode_bytes(code_bytes).ok()?.as_slice() == [0x66, 0x0f, 0x5b, 0x00]).then_some(4)
 }
 
 /// Independently parse canonical Long64 CVTPD2DQ register bytes.

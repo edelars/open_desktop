@@ -14472,3 +14472,17 @@ remain closed. Physical x86 acceptance was not run.
 Sources: Intel SDM Rev. 093 Vol. 2A CVTTPS2DQ pp. 3-249–3-251; Vol. 1
 §11.5.2.2 for subnormal handling and Table 14-21 for aligned m128 memory;
 Vol. 3A §16.1.3 Table 16-1 p. 16-3 for legacy SSE2 gates ([official Vol. 3A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)). The VEX-only Type 2/Table 2-19 entry does not describe this legacy encoding. See the [plan](../plans/STAGE_2.md#s2-37bu--bounded-long64-cvttps2dq-xmm0rax-aligned-m128-memory-profile), [report](../reports/STAGE_2_REPORT.md#s2-37bu--cvttps2dq-xmm0rax-aligned-m128-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bu-cvttps2dq-xmm0rax-aligned-m128-memory-profile).
+
+## S2-37bv — bounded Long64 CVTPS2DQ XMM0,[RAX] aligned m128 profile
+
+The schema-v2 interpreter admits exact legacy `66 0F 5B 00`, Long64, budget 1, and stop RIP=entry+4. It fetches the full instruction before the bounded SSE2 prerequisite gates. Missing SSE2 (CPUID bit 26), CR0.EM, or CR4.OSFXSR produces #UD; CR0.TS produces #NM after those checks. This priority is local profile policy, and CPL0–3 are admitted.
+
+The operand is one aligned 16-byte source span beginning at RAX. The checked canonical48 span and 16-byte alignment are validated before one data read. Misalignment faults #GP(0), without a callback, for any CPL and either AC value; aligned AC=0/1 is accepted. A failed read commits no CPU state.
+
+Each binary32 lane is rounded to signed i32 using MXCSR.RC before checking representability. A NaN, infinity, or rounded out-of-range value returns `0x80000000` and contributes IE. A valid inexact result contributes PE; an invalid lane does not also contribute PE. IE and PE are OR-combined across lanes and with prior sticky flags. DAZ=0 is required; subnormals follow RC, may set PE, and do not set DE. The local supported MXCSR mask is `0xffbf`, with IM=PM=1 as profile admission policy; no unmasked SIMD exception delivery is modeled. Other supported control/status bits are preserved. Full XMM0 is replaced after the successful read.
+
+This instruction has no x87 state effect. The bounded profile allows and preserves arbitrary or pending x87 state without a pending-exception gate. The independent testkit oracle is raw-bit integer-only and does not use host FP or production conversion helpers. Runner tests cover all RC values, positive/negative ties and subnormals, range boundaries, mixed IE+PE and sticky histories, Ring0 aligned AC=0/1, schema negatives, tampering, and JIT/native Unsupported. Direct ISA tests provide full CPL×AC alignment coverage, all 15 misalignment offsets, zero-read/unchanged-state checks, exact 16-byte read and rollback. Runner snapshots do not establish callback counts. Native execution and physical x86 acceptance were not performed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTPS2DQ pp. 3-225–3-227; Vol. 3A §16.1.3 Table 16-1 p. 16-3 for legacy SSE2 gates; Vol. 1 Table 14-21 for aligned m128 access. Type 2/Table 2-19 is VEX-only and is not used for this legacy form.
+
+См. [план среза](../plans/STAGE_2.md#s2-37bv--bounded-long64-cvtps2dq-xmm0rax-aligned-m128-memory-profile), [отчёт](../reports/STAGE_2_REPORT.md#s2-37bv--cvtps2dq-xmm0rax-aligned-m128-memory-profile) и [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bv-cvtps2dq-xmm0rax-aligned-m128-rounding-profile).

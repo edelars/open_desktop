@@ -290,3 +290,10 @@ truncation toward zero, lane-aggregated IE/PE and full XMM0 output without host
 floating point or production conversion helpers. It checks exact encoding,
 16-byte aligned source, and profile-specific gate/admission ordering. See the
 [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bu--bounded-long64-cvttps2dq-xmm0rax-aligned-m128-memory-profile), [plan](../../docs/plans/STAGE_2.md#s2-37bu--bounded-long64-cvttps2dq-xmm0rax-aligned-m128-memory-profile), and [report](../../docs/reports/STAGE_2_REPORT.md#s2-37bu--cvttps2dq-xmm0rax-aligned-m128-memory-profile).
+
+S2-37bv adds the exact schema-v2 `s2-long-cvtps2dq-memory-rax-v1` profile and
+separate `cvtps2dq_m128_controls` field. Its independent raw-binary32 integer
+oracle rounds according to MXCSR.RC before checking signed-i32 bounds, aggregates
+IE/PE, and validates atomic one-span outcomes without host floating point or
+production conversion helpers. DAZ=0 and IM=PM=1 are local admission rules under
+the supported MXCSR mask `0xffbf`; native/JIT/C ABI stay closed.

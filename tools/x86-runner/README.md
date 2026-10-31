@@ -50,3 +50,8 @@ the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bt--bounded-long64-cvtd
 The S2-37bu `CVTTPS2DQ XMM0,[RAX]` schema-v2 profile remains interpreter-only
 and is denied before native execution; this slice makes no physical x86
 acceptance claim. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bu--bounded-long64-cvttps2dq-xmm0rax-aligned-m128-memory-profile).
+
+The S2-37bv `CVTPS2DQ XMM0,[RAX]` schema-v2 profile is classified local-only;
+the portable classifier test and runner's native Unsupported path cover closure.
+No profile-specific Linux fixture-denial test or physical native execution is
+claimed for this slice.

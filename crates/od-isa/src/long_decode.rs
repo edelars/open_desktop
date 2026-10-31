@@ -1067,6 +1067,8 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only exact legacy `66 0F 5B 00` packed binary32-to-signed-i32 m128 form.
+    Cvtps2dqMemoryRax,
     /// Local-only legacy `F3 0F 5B /r` packed binary32-to-signed-i32 conversion.
     Cvttps2dqRegister {
         destination: u8,
@@ -4765,12 +4767,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Escape0f, 0x5b) if cvtps2dq_register => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if modrm == 0 && prefixes.rex.is_none() {
+                    Operation::Cvtps2dqMemoryRax
+                } else if modrm >> 6 != 3 {
                     return Err(self.unsupported(opcode));
-                }
-                Operation::Cvtps2dqRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                } else {
+                    Operation::Cvtps2dqRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x5b) if cvttps2dq_register => {
@@ -21677,7 +21682,6 @@ mod tests {
             &[0x0f, 0x5b, 0x01][..],                   // other base register
             &[0x0f, 0x5b, 0x40, 0x00][..],             // displacement
             &[0x0f, 0x5b, 0x04, 0x20][..],             // SIB
-            &[0x66, 0x0f, 0x5b, 0x00][..],             // CVTPS2DQ neighbor
             &[0x40, 0x0f, 0x5b, 0x00][..],             // unnecessary REX
             &[0xc5, 0xf8, 0x5b, 0x00][..],             // VEX
             &[0x62, 0xf1, 0x7c, 0x08, 0x5b, 0x00][..], // EVEX
@@ -21691,6 +21695,41 @@ mod tests {
             );
         }
         assert!(Memory::new(&[0x0f, 0x5b]).decode().is_err());
+    }
+
+    #[test]
+    fn cvtps2dq_m128_decodes_only_exact_rax_form() {
+        let decoded = Memory::new(&[0x66, 0x0f, 0x5b, 0x00]).decode().unwrap();
+        assert_eq!(decoded.operation, Operation::Cvtps2dqMemoryRax);
+        assert_eq!(decoded.length, 4);
+        assert_eq!(
+            Memory::new(&[0x66, 0x0f, 0x5b, 0xc1])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::Cvtps2dqRegister {
+                destination: 0,
+                source: 1
+            }
+        );
+        for bytes in [
+            &[0x66, 0x0f, 0x5b, 0x01][..],
+            &[0x66, 0x0f, 0x5b, 0x40, 0x00][..],
+            &[0x66, 0x0f, 0x5b, 0x04, 0x20][..],
+            &[0x66, 0x40, 0x0f, 0x5b, 0x00][..],
+            &[0x66, 0xf3, 0x0f, 0x5b, 0x00][..],
+            &[0xf3, 0x66, 0x0f, 0x5b, 0x00][..],
+            &[0xc5, 0xf8, 0x5b, 0x00][..],
+            &[0x62, 0xf1, 0x7c, 0x08, 0x5b, 0x00][..],
+        ] {
+            assert!(
+                Memory::new(bytes).decode().map_or(true, |instruction| {
+                    instruction.operation != Operation::Cvtps2dqMemoryRax
+                }),
+                "{bytes:02x?}"
+            );
+        }
+        assert!(Memory::new(&[0x66, 0x0f, 0x5b]).decode().is_err());
     }
 
     #[test]

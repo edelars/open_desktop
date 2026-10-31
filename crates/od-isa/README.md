@@ -665,3 +665,12 @@ S2-37bu adds the exact interpreter-only legacy `CVTTPS2DQ XMM0,[RAX]`
 raw binary32 lanes toward zero independent of MXCSR.RC, and preserves sticky
 MXCSR flags while adding masked IE/PE. Pending x87 canaries pass through
 unchanged. JIT/native/C ABI remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bu--bounded-long64-cvttps2dq-xmm0rax-aligned-m128-memory-profile) and [report](../../docs/reports/STAGE_2_REPORT.md#s2-37bu--cvttps2dq-xmm0rax-aligned-m128-memory-profile).
+
+### S2-37bv — CVTPS2DQ m128 memory profile
+
+The exact legacy `66 0F 5B 00` `CVTPS2DQ XMM0,[RAX]` encoding has a separate
+schema-v2 interpreter profile. It fetches four bytes before the local SSE2,
+EM/OSFXSR and TS checks, then reads one aligned 16-byte span. It rounds binary32
+lanes according to MXCSR.RC before range checking, aggregates masked IE/PE, and
+commits XMM0/MXCSR only after the read succeeds. No x87 state is gated or
+changed. JIT/native/C ABI remain closed; no physical x86 execution is claimed.

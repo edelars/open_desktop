@@ -7204,3 +7204,25 @@ This is local interpreter evidence only, not physical x86 acceptance.
 Provenance: Intel SDM Rev. 093 Vol. 2A CVTTPS2DQ pp. 3-249–3-251; Vol. 1
 §11.5.2.2 and Table 14-21; Vol. 3A §16.1.3 Table 16-1 p. 16-3 ([official
 Vol. 3A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
+
+### S2-37bv CVTPS2DQ XMM0,[RAX] aligned m128 rounding profile
+
+Literal input: `s2_37bv_cvtps2dq_m128_rounding_boundaries.case.json`. It uses
+exact legacy `66 0F 5B 00`, one aligned 16-byte source, and MXCSR with masked
+Invalid/Precision and DAZ clear. The raw lanes exercise ±ties, a positive
+subnormal, and an exact half-way value. The profile rounds according to RC before
+the signed-i32 range check; invalid lanes produce the indefinite integer and IE,
+valid inexact lanes contribute PE, and prior sticky status is preserved.
+
+The focused runner varies all RC values, ties and signed subnormals, representable
+and invalid range edges, mixed IE+PE, sticky histories, aligned AC at Ring0,
+representative misalignment, prerequisite/MXCSR refusal, malformed/foreign
+controls, tampering, and JIT/native Unsupported. Direct ISA tests cover the full
+CPL×AC alignment matrix, pre-read #GP behavior for all 15 offsets, single-span
+access and atomic read failure. No physical x86 acceptance was run.
+
+Provenance: Intel SDM Rev. 093 Vol. 2A CVTPS2DQ pp. 3-225–3-227; Vol. 3A
+§16.1.3 Table 16-1 p. 16-3 for legacy SSE2 gates; Vol. 1 Table 14-21 for
+aligned m128 access. The VEX-only Type 2/Table 2-19 entry is not used here.
+
+Related documentation: [Stage 2 plan](../../../../docs/plans/STAGE_2.md#s2-37bv--bounded-long64-cvtps2dq-xmm0rax-aligned-m128-memory-profile), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bv--bounded-long64-cvtps2dq-xmm0rax-aligned-m128-profile), and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bv--cvtps2dq-xmm0rax-aligned-m128-memory-profile).
