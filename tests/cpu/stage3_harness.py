@@ -126,6 +126,18 @@ ADDITIONAL_TEST_GATES = (
         "tests::cached_native_register_v1_reuses_eager_block_with_full_state_parity",
     ),
     (
+        "s3_38c_native_register_v1_strategy_key_isolation", "local_acceptance", "od-jit",
+        "dispatch::tests::native_cached_demand_candidate_strategy_key_isolated",
+    ),
+    (
+        "s3_38c_native_register_v1_candidate_lifecycle_guards", "local_acceptance", "od-jit",
+        "dispatch::tests::native_cached_demand_candidate_guards_and_lifetime",
+    ),
+    (
+        "s3_38c_native_register_v1_candidate_cold_hit_parity", "local_acceptance", "od-host",
+        "tests::cached_native_register_v1_demand_candidate_cold_hit_full_state_parity",
+    ),
+    (
         "s3_27c_active_code_v3_pc_map", "local_acceptance", "od-jit",
         "memory_load_v2::tests::active_code_v3_compiles_only_exact_three_instruction_source",
     ),

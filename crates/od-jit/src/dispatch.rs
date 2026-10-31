@@ -991,10 +991,10 @@ pub fn run_cached_controlled<B: CachedBlockBackend>(
 }
 
 /// Run the composed NativeRegisterV1 fixture through a one-entry eager cache.
-/// Its cache keys use a dedicated semantic profile and compile flavor, and the
-/// demand-flags candidate remains an uncached API. This is fixture-only: the
-/// caller supplies the immutable code view, complete dependency snapshot and
-/// frozen execution-context generation.
+/// Its cache key uses the dedicated NativeRegisterV1 semantic profile and an
+/// eager-specific compile flavor. This is fixture-only: the caller supplies
+/// the immutable code view, complete dependency snapshot and frozen
+/// execution-context generation.
 pub fn run_cached_native_register_v1_controlled<B: CachedBlockBackend>(
     code: CodeView<'_>,
     admission: &NativeRegisterV1Admission,
@@ -1005,6 +1005,66 @@ pub fn run_cached_native_register_v1_controlled<B: CachedBlockBackend>(
     control: DispatchControl<'_>,
     cache: &mut SingleEntryBlockCache<B::Published>,
     backend: &mut B,
+) -> Result<FallbackDispatchResult, DispatchError<B::Error>> {
+    run_cached_native_register_v1_strategy_controlled(
+        code,
+        admission,
+        execution_context,
+        dependencies,
+        state,
+        total_budget,
+        control,
+        cache,
+        backend,
+        NativeRegisterV1CacheStrategy::Eager,
+    )
+}
+
+/// Run the opt-in demand-flags NativeRegisterV1 candidate through the same
+/// bounded one-entry cache lifecycle as the eager path. Candidate artifacts
+/// use a distinct compile flavor, so they cannot satisfy eager lookups.
+pub fn run_cached_native_register_v1_demand_flags_candidate_controlled<B: CachedBlockBackend>(
+    code: CodeView<'_>,
+    admission: &NativeRegisterV1Admission,
+    execution_context: ExecutionContextSnapshot,
+    dependencies: &[CodeDependencySpan],
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    cache: &mut SingleEntryBlockCache<B::Published>,
+    backend: &mut B,
+) -> Result<FallbackDispatchResult, DispatchError<B::Error>> {
+    run_cached_native_register_v1_strategy_controlled(
+        code,
+        admission,
+        execution_context,
+        dependencies,
+        state,
+        total_budget,
+        control,
+        cache,
+        backend,
+        NativeRegisterV1CacheStrategy::DemandFlagsCandidate,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum NativeRegisterV1CacheStrategy {
+    Eager,
+    DemandFlagsCandidate,
+}
+
+fn run_cached_native_register_v1_strategy_controlled<B: CachedBlockBackend>(
+    code: CodeView<'_>,
+    admission: &NativeRegisterV1Admission,
+    execution_context: ExecutionContextSnapshot,
+    dependencies: &[CodeDependencySpan],
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    cache: &mut SingleEntryBlockCache<B::Published>,
+    backend: &mut B,
+    strategy: NativeRegisterV1CacheStrategy,
 ) -> Result<FallbackDispatchResult, DispatchError<B::Error>> {
     if execution_context.profile != ExecutionProfile::NATIVE_REGISTER_V1_LONG64_CANONICAL48 {
         return Err(DispatchError::ExecutionContext(
@@ -1103,7 +1163,12 @@ pub fn run_cached_native_register_v1_controlled<B: CachedBlockBackend>(
         let key = TranslationKey::for_block(
             code,
             &guest_block,
-            CompileFlavor::S3_38bNativeRegisterV1Cached,
+            match strategy {
+                NativeRegisterV1CacheStrategy::Eager => CompileFlavor::S3_38bNativeRegisterV1Cached,
+                NativeRegisterV1CacheStrategy::DemandFlagsCandidate => {
+                    CompileFlavor::S3_38cNativeRegisterV1DemandFlagsCachedCandidate
+                }
+            },
             execution_context,
             dependencies,
         )
@@ -1118,11 +1183,17 @@ pub fn run_cached_native_register_v1_controlled<B: CachedBlockBackend>(
         let cached_index = if hit_index.is_some() {
             hit_index.expect("hit index exists")
         } else {
-            let compiled = match crate::block_compile::compile_block_for_native_register_v1(
-                code, state.rip, admission,
-            )
-            .map_err(DispatchError::Compile)?
-            {
+            let compilation = match strategy {
+                NativeRegisterV1CacheStrategy::Eager => {
+                    compile_block_for_native_register_v1(code, state.rip, admission)
+                }
+                NativeRegisterV1CacheStrategy::DemandFlagsCandidate => {
+                    compile_block_for_native_register_v1_demand_flags_candidate(
+                        code, state.rip, admission,
+                    )
+                }
+            };
+            let compiled = match compilation.map_err(DispatchError::Compile)? {
                 BlockCompileOutcome::Compiled(block) => block,
                 BlockCompileOutcome::NoNativePrefix { rip, .. } => {
                     return Err(DispatchError::NoNativePrefix { rip });
@@ -3851,6 +3922,168 @@ mod tests {
 
     fn native_admission(code: CodeView<'_>) -> NativeRegisterV1Admission {
         NativeRegisterV1Admission::from_code(code).expect("fixture code is admitted")
+    }
+
+    #[test]
+    fn native_cached_demand_candidate_strategy_key_isolated() {
+        let code = [0x48, 0x83, 0xC0, 0x01];
+        let base = 0x7A40;
+        let view = CodeView::new(base, &code).unwrap();
+        let admission = native_admission(view);
+        let dependencies = dependency(view, 1);
+        let context = native_test_context_with_generation(1);
+        let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let mut backend = mock_cached_backend(tracker.clone());
+        let stop = AtomicU8::new(0);
+        let control = DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let mut state = LongModeState {
+            rip: base,
+            ..LongModeState::default()
+        };
+
+        for (candidate, expected) in [(false, 1), (true, 2), (true, 2), (false, 3)] {
+            state.rip = base;
+            if candidate {
+                run_cached_native_register_v1_demand_flags_candidate_controlled(
+                    view,
+                    &admission,
+                    context,
+                    &dependencies,
+                    &mut state,
+                    4,
+                    control,
+                    &mut cache,
+                    &mut backend,
+                )
+                .unwrap();
+                let entry = cache.entry(0).expect("candidate entry is resident");
+                assert!(
+                    entry.block.emitted().pc_map().ranges().iter().any(|range| {
+                        range.snapshot
+                            == crate::statepoints::SnapshotAdmissibility::InadmissiblePendingFlags
+                    }),
+                    "candidate compiler must retain pending-flags PC-map evidence"
+                );
+            } else {
+                run_cached_native_register_v1_controlled(
+                    view,
+                    &admission,
+                    context,
+                    &dependencies,
+                    &mut state,
+                    4,
+                    control,
+                    &mut cache,
+                    &mut backend,
+                )
+                .unwrap();
+            }
+            assert_eq!(cache.counters().successful_compiles, expected);
+            assert_eq!(cache.counters().successful_publications, expected);
+        }
+        assert_eq!((cache.counters().misses, cache.counters().hits), (3, 1));
+        assert_eq!(cache.resident_entries(), 1);
+        assert_eq!(tracker.borrow().publishes, 3);
+    }
+
+    #[test]
+    fn native_cached_demand_candidate_guards_and_lifetime() {
+        let code = [0x90, 0x48, 0x83, 0xC0, 0x01];
+        let base = 0x7A80;
+        let view = CodeView::new(base, &code).unwrap();
+        let admission = native_admission(view);
+        let dependencies = dependency(view, 1);
+        let context = native_test_context_with_generation(1);
+        let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let mut backend = mock_cached_backend(tracker.clone());
+        let stop = AtomicU8::new(0);
+        let control = DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let mut state = LongModeState {
+            rip: base,
+            ..LongModeState::default()
+        };
+        stop.store(1, Ordering::Release);
+        let stopped = run_cached_native_register_v1_demand_flags_candidate_controlled(
+            view,
+            &admission,
+            context,
+            &dependencies,
+            &mut state,
+            4,
+            control,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(
+            stopped.exit,
+            DispatchExit::Runtime(RuntimeExitTag::StopRequested)
+        );
+        assert_eq!(cache.resident_entries(), 0);
+        assert_eq!(cache.counters().misses, 0);
+        stop.store(0, Ordering::Release);
+        run_cached_native_register_v1_demand_flags_candidate_controlled(
+            view,
+            &admission,
+            context,
+            &dependencies,
+            &mut state,
+            4,
+            control,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(cache.counters().successful_compiles, 1);
+        assert_eq!(cache.counters().successful_publications, 1);
+        assert_eq!(cache.resident_entries(), 1);
+        tracker.borrow_mut().fail_execute_once = true;
+        state.rip = base;
+        assert!(matches!(
+            run_cached_native_register_v1_demand_flags_candidate_controlled(
+                view,
+                &admission,
+                context,
+                &dependencies,
+                &mut state,
+                4,
+                control,
+                &mut cache,
+                &mut backend,
+            ),
+            Err(DispatchError::CacheExecutor("execution failed"))
+        ));
+        assert_eq!(cache.resident_entries(), 0);
+        tracker.borrow_mut().fail_publish = true;
+        state.rip = base;
+        assert!(matches!(
+            run_cached_native_register_v1_demand_flags_candidate_controlled(
+                view,
+                &admission,
+                context,
+                &dependencies,
+                &mut state,
+                4,
+                control,
+                &mut cache,
+                &mut backend,
+            ),
+            Err(DispatchError::CachePublish("publish failed"))
+        ));
+        assert_eq!(cache.resident_entries(), 0);
+        cache.clear();
+        assert_eq!(cache.resident_entries(), 0);
+        assert_eq!(tracker.borrow().live, 0);
     }
 
     fn mock_cached_backend(tracker: Rc<RefCell<PublishedTracker>>) -> MockCachedBackend {

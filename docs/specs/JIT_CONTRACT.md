@@ -1677,6 +1677,17 @@ SMC, owner/MMU, Mini or speed claim. Host/unit parity, branch-loop reuse,
 invalidation, capacity, guard priority and publication lifetime are recorded in
 the [bounded runtime cache report](../reports/STAGE_3_S3-38b_NATIVE_REGISTER_CACHE_2026-10-30.md).
 
+### S3-38c runtime cache slice: demand-flags NativeRegisterV1 candidate
+
+`run_cached_native_register_v1_demand_flags_candidate_controlled` exposes the
+existing demand-flags compiler through the same one-entry fixture cache loop.
+It keeps the `NativeRegisterV1Fixture` semantic profile but uses the distinct
+`S3_38cNativeRegisterV1DemandFlagsCachedCandidate` compile flavor, preventing
+cross-hits with eager artifacts. The API remains opt-in and experimental;
+pending flag descriptors/operands are execution-local and are not cache state.
+No default dispatch choice or performance conclusion follows from this slice.
+S0-09, memory, and multi-entry admissions are unchanged. See the S3-38c report.
+
 ### S3-29d: uncached arithmetic-to-checked-load handoff
 
 The bounded host fixture composes existing eager and demand-flags native

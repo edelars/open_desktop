@@ -34852,6 +34852,122 @@ mod tests {
         cached_native_register_v1_branch_loop_and_nop_handoff_retire_exactly();
     }
 
+    #[test]
+    fn cached_native_register_v1_demand_candidate_cold_hit_full_state_parity() {
+        let _guard = jit_test_lock();
+        use od_jit::translation::{
+            AddressSpaceId, BackingId, BackingVersion, CodeDependencySpan, CodeIdentity,
+            ExecutionContextId, ExecutionContextSnapshot, MappingId, MappingVersion,
+        };
+        use std::num::NonZeroU64;
+        let base = 0x7C80;
+        let code = [0x48, 0x83, 0xC0, 0x01];
+        let view = CodeView::new(base, &code).unwrap();
+        let admission = od_jit::block::NativeRegisterV1Admission::from_code(view).unwrap();
+        let nz = |v| NonZeroU64::new(v).unwrap();
+        let deps = [CodeDependencySpan {
+            start_rip: base,
+            end_rip: view.code_end(),
+            identity: CodeIdentity {
+                address_space: AddressSpaceId::new(nz(31)),
+                mapping: MappingId::new(nz(32)),
+                mapping_version: MappingVersion::new(nz(1)),
+                backing: BackingId::new(nz(33)),
+                backing_version: BackingVersion::new(nz(1)),
+                executable: true,
+            },
+        }];
+        let context = ExecutionContextSnapshot::native_register_v1_fixture(
+            ExecutionContextId::from_u64(1).unwrap(),
+        );
+        let mut initial = od_isa::LongModeState::default();
+        initial.rip = base;
+        initial.gpr[0] = u64::MAX;
+        initial.rflags = 0xA55;
+        let stop = AtomicU8::new(0);
+        let control = od_jit::dispatch::DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let expected_view = CodeView::new(base + 0x100, &code).unwrap();
+        let expected_admission =
+            od_jit::block::NativeRegisterV1Admission::from_code(expected_view).unwrap();
+        let mut expected_input = initial.clone();
+        expected_input.rip = base + 0x100;
+        let mut expected_state = expected_input;
+        let expected = od_jit::dispatch::run_with_native_register_v1_demand_flags_candidate(
+            expected_view,
+            &expected_admission,
+            &mut expected_state,
+            4,
+            control,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        expected_state.rip = view.code_end();
+        let mut cache = od_jit::dispatch::SingleEntryBlockCache::new(
+            1,
+            od_jit::dispatch::MAX_SINGLE_ENTRY_CACHE_BYTES,
+        )
+        .unwrap();
+        let mut actual_state = initial.clone();
+        let first =
+            od_jit::dispatch::run_cached_native_register_v1_demand_flags_candidate_controlled(
+                view,
+                &admission,
+                context,
+                &deps,
+                &mut actual_state,
+                4,
+                control,
+                &mut cache,
+                &mut PublishedBlockExecutor,
+            )
+            .unwrap();
+        assert_eq!(first, expected);
+        assert_eq!(actual_state, expected_state);
+        let mut second_initial = od_isa::LongModeState::default();
+        second_initial.rip = base;
+        second_initial.gpr[0] = 0x1234;
+        second_initial.rflags = 0x203;
+        expected_state = second_initial.clone();
+        expected_state.gpr[0] = second_initial.gpr[0].wrapping_add(1);
+        expected_state.rflags = od_isa::integer_flags::updated_arithmetic_flags(
+            od_isa::integer_flags::ArithmeticFlagOperation::Add,
+            second_initial.gpr[0],
+            1,
+            second_initial.rflags,
+        );
+        expected_state.rip = view.code_end();
+        actual_state = second_initial;
+        let hit =
+            od_jit::dispatch::run_cached_native_register_v1_demand_flags_candidate_controlled(
+                view,
+                &admission,
+                context,
+                &deps,
+                &mut actual_state,
+                4,
+                control,
+                &mut cache,
+                &mut PublishedBlockExecutor,
+            )
+            .unwrap();
+        assert_eq!(hit, expected);
+        assert_eq!(actual_state, expected_state);
+        assert_eq!(
+            (
+                cache.counters().misses,
+                cache.counters().hits,
+                cache.counters().successful_compiles,
+                cache.counters().successful_publications
+            ),
+            (1, 1, 1, 1)
+        );
+        assert!(cache.resident_code_bytes() <= cache.max_bytes());
+    }
+
     fn cached_native_register_v1_branch_loop_and_nop_handoff_retire_exactly() {
         use od_jit::translation::{
             AddressSpaceId, BackingId, BackingVersion, CodeDependencySpan, CodeIdentity,

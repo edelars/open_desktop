@@ -167,6 +167,8 @@ pub enum CompileFlavor {
     S0_09FixtureDispatch,
     /// Eager composed NativeRegisterV1 cached dispatch; separate from S0-09.
     S3_38bNativeRegisterV1Cached,
+    /// Demand-flags NativeRegisterV1 cache candidate; never aliases eager code.
+    S3_38cNativeRegisterV1DemandFlagsCachedCandidate,
     S0_09NopFallback,
     /// Uncached first V2 checked `MOV r64, [mem]` compiler profile.
     S3_19bMemoryLoadV2,

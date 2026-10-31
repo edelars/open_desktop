@@ -3102,6 +3102,17 @@ This remains a fixture-level cache experiment: it does not provide SMC or
 owner/MMU invalidation, persistent VMHost/session ownership, Mini support,
 performance evidence, or Stage 2 integration.
 
+#### S3-38c. Cached demand-flags NativeRegisterV1 candidate
+
+Add a separately named opt-in candidate entrypoint over the same bounded
+single-entry cache loop. Retain the NativeRegisterV1 semantic profile while
+assigning a distinct compile flavor so candidate and eager artifacts cannot
+cross-hit. Pending flag state remains execution-local. Exact gates cover
+strategy-key isolation, candidate cache lifecycle/guards, and cold/hit full
+state parity. This is experimental correctness/reuse evidence only; eager
+remains the default and Mini/performance checks remain deferred.
+Implementation evidence: [S3-38c report](../reports/STAGE_3_S3-38c_NATIVE_REGISTER_CACHE_CANDIDATE_2026-10-30.md).
+
 ### S3-39. Повторить ARM64 smoke на M1 Pro
 
 1. Зафиксировать реально доступные OS/toolchain, способ сборки/передачи собственного artifact и выбранную ad-hoc/Hardened Runtime конфигурацию.

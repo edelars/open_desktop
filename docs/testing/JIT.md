@@ -49,6 +49,15 @@ The cache is fixture-owned and bounded to one entry. These checks do not
 exercise owner/MMU invalidation, SMC, a VMHost-wide cache lifetime, Mini,
 physical x86, Stage 2, or performance acceptance. Those suites remain separate.
 
+## S3-38c: cached demand-flags NativeRegisterV1 candidate
+
+Run the three pinned `s3_38c_native_register_v1_*` gates in
+`python3 tests/cpu/stage3_harness.py --suite local`. They pin strategy-key
+isolation, candidate lifecycle/guards, and cold/hit full-state parity. The
+candidate is opt-in and experimental; these checks establish correctness and
+cache reuse only. Eager remains the default. Mini, physical x86, Stage 2,
+owner/MMU, and performance suites are not covered by this slice.
+
 ## S3-29a: bounded demand-driven flags correctness candidate
 
 Run `cargo test -p od-jit --lib demand_flags_candidate --offline` and

@@ -578,13 +578,13 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ),
         ]
         gates = [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_34n_")]
-        self.assertEqual(len(harness.RUST_TEST_GATES), 77)
+        self.assertEqual(len(harness.RUST_TEST_GATES), 80)
         self.assertEqual(sum(name.startswith("s3_33") for name, _, _, _ in harness.RUST_TEST_GATES), 42)
         self.assertEqual([(name, package, identity) for name, _, package, identity in gates], expected)
         self.assertIn("crates/od-host/src/tests/native_register_v1_corpus.rs", harness.LOCAL_RUST_TEST_SOURCES)
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(manifest), 77)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 77)
+        self.assertEqual(len(manifest), 80)
+        self.assertEqual(len({gate["step"] for gate in manifest}), 80)
         native_identities = {
             gate["identity"] for gate in manifest if gate["step"].startswith("s3_33")
         }
@@ -692,6 +692,15 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             "s3_38b_native_register_v1_host_reuse_lifetime_parity": (
                 "od-host", "tests::cached_native_register_v1_reuses_eager_block_with_full_state_parity",
             ),
+            "s3_38c_native_register_v1_strategy_key_isolation": (
+                "od-jit", "dispatch::tests::native_cached_demand_candidate_strategy_key_isolated",
+            ),
+            "s3_38c_native_register_v1_candidate_lifecycle_guards": (
+                "od-jit", "dispatch::tests::native_cached_demand_candidate_guards_and_lifetime",
+            ),
+            "s3_38c_native_register_v1_candidate_cold_hit_parity": (
+                "od-host", "tests::cached_native_register_v1_demand_candidate_cold_hit_full_state_parity",
+            ),
         }
         gate_by_name = {gate[0]: gate for gate in harness.RUST_TEST_GATES}
         manifest_by_name = {
@@ -705,8 +714,8 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 "cargo", "test", "--offline", "-p", package, "--lib", identity,
                 "--", "--exact", "--test-threads=1",
             ])
-        self.assertEqual(len(harness.RUST_TEST_GATES), 77)
-        self.assertEqual(len(manifest_by_name), 77)
+        self.assertEqual(len(harness.RUST_TEST_GATES), 80)
+        self.assertEqual(len(manifest_by_name), 80)
 
     def test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks(self):
         with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:

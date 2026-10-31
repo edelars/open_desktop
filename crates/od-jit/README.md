@@ -387,3 +387,10 @@ generation принадлежат caller; `CodeView` пока не подклю�
 prototype готовит recorded dispatch trace и сценарии сравнения `Vec`/HashMap;
 фактический capture и timed runs ещё не выполнялись, поэтому структура не
 выбрана и ускорение не заявляется. S3-17 остаётся открытой.
+
+S3-38c adds the opt-in cached demand-flags NativeRegisterV1 candidate through
+`run_cached_native_register_v1_demand_flags_candidate_controlled`. It shares
+the bounded cache lifecycle loop with eager execution but has its own compile
+flavor, so strategy artifacts never cross-hit. It remains experimental;
+`NativeRegisterV1Fixture` is unchanged, pending flag operands are execution
+local, eager remains the default, and this slice makes no performance claim.
