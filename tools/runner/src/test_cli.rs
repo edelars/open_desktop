@@ -5,13 +5,14 @@ use std::process::{Command, ExitCode};
 
 use od_isa::execute::{
     AddpdControls, AddpsControls, AddsdControls, AddssControls, Cvtpd2psControls, Cvtpi2pdControls,
-    Cvtsd2ssControls, Cvttpd2dqControls, Cvttps2dqControls, Cvttss2siRegistersControls,
-    DivpdControls, DivpsControls, DivsdControls, DivssControls, MulpdControls, MulpsControls,
-    MulsdControls, MulssControls, SqrtpdControls, SqrtpsControls, SqrtsdControls, SqrtssControls,
-    SubpdControls, SubpsControls, SubsdControls, SubssControls, run_with_addpd_register_controls,
-    run_with_addps_register_controls, run_with_addsd_register_controls,
-    run_with_addss_register_controls, run_with_cvtpd2dq_register_controls,
-    run_with_cvtpd2ps_register_controls, run_with_cvtpi2pd_memory_controls,
+    Cvtpi2psControls, Cvtsd2ssControls, Cvttpd2dqControls, Cvttps2dqControls,
+    Cvttss2siRegistersControls, DivpdControls, DivpsControls, DivsdControls, DivssControls,
+    MulpdControls, MulpsControls, MulsdControls, MulssControls, SqrtpdControls, SqrtpsControls,
+    SqrtsdControls, SqrtssControls, SubpdControls, SubpsControls, SubsdControls, SubssControls,
+    run_with_addpd_register_controls, run_with_addps_register_controls,
+    run_with_addsd_register_controls, run_with_addss_register_controls,
+    run_with_cvtpd2dq_register_controls, run_with_cvtpd2ps_register_controls,
+    run_with_cvtpi2pd_memory_controls, run_with_cvtpi2ps_memory_controls,
     run_with_cvtsd2ss_register_controls, run_with_cvttpd2dq_register_controls,
     run_with_cvttps2dq_register_controls, run_with_cvttsd2si_registers_controls,
     run_with_cvttss2si_registers_controls, run_with_divpd_register_controls,
@@ -562,6 +563,7 @@ fn expected_native_xorpd_oracle(
                 cvtss2sd_controls: None,
                 cvtsd2ss_controls: None,
                 cvtpi2pd_memory_controls: None,
+                cvtpi2ps_memory_controls: None,
                 cvtps2pd_controls: None,
                 comiss_ucomiss_controls: None,
                 cmpss_controls: None,
@@ -2234,6 +2236,23 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongCvtpi2psMemoryRaxV1 {
+        let controls = loaded
+            .fixture
+            .cvtpi2ps_memory_controls
+            .expect("validated CVTPI2PS memory controls");
+        run_with_cvtpi2ps_memory_controls(
+            &mut state,
+            memory,
+            config,
+            Cvtpi2psControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongCvtsi2sdR32ExactV1 {
         let controls = loaded
             .fixture
@@ -2468,6 +2487,7 @@ fn execute_fixture_v2(
                 cvtss2sd_controls: loaded.fixture.cvtss2sd_controls,
                 cvtsd2ss_controls: loaded.fixture.cvtsd2ss_controls,
                 cvtpi2pd_memory_controls: loaded.fixture.cvtpi2pd_memory_controls,
+                cvtpi2ps_memory_controls: loaded.fixture.cvtpi2ps_memory_controls,
                 cvtps2pd_controls: loaded.fixture.cvtps2pd_controls,
                 comiss_ucomiss_controls: loaded.fixture.comiss_ucomiss_controls,
                 cmpss_controls: loaded.fixture.cmpss_controls,
@@ -3672,6 +3692,7 @@ mod tests {
                     cvtss2sd_controls: input.fixture.cvtss2sd_controls,
                     cvtsd2ss_controls: input.fixture.cvtsd2ss_controls,
                     cvtpi2pd_memory_controls: input.fixture.cvtpi2pd_memory_controls,
+                    cvtpi2ps_memory_controls: input.fixture.cvtpi2ps_memory_controls,
                     cvtps2pd_controls: input.fixture.cvtps2pd_controls,
                     comiss_ucomiss_controls: input.fixture.comiss_ucomiss_controls,
                     cmpss_controls: input.fixture.cmpss_controls,

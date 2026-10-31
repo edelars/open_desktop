@@ -146,3 +146,13 @@ reads one m64 from canonical RAX and writes two exact signed-i32 binary64 lanes
 to XMM0. It preserves MXCSR and x87 state, requires AC=0, and remains
 interpreter-only; other address forms, JIT/native execution and physical
 acceptance are outside the profile.
+
+The local-only S2-37bg `CVTPI2PS` profile accepts only legacy `0F 2A 00`,
+reads one m64 from canonical RAX and converts the two signed-i32 lanes to
+binary32 under MXCSR.RC. It preserves XMM0.high64, sets sticky PE when either
+lane is inexact, and on success transitions x87 TOP/tag_word to zero while
+preserving the other x87 state. It requires AC=0, PM=1 and no pending x87
+exception; other operand forms, JIT/native execution and physical acceptance
+remain outside the profile. See the [CPU contract](docs/specs/CPU_CONTRACT.md#s2-37bg--canonical-long64-cvtpi2ps-memory-only-rax),
+[Stage 2 plan](docs/plans/STAGE_2.md#s2-37bg--canonical-long64-cvtpi2ps-memory-only-rax)
+and [Stage 2 report](docs/reports/STAGE_2_REPORT.md#s2-37bg--cvtpi2ps-memory-interpreter-profile).

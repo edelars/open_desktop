@@ -12,6 +12,15 @@
 
 ## Записи
 
+### ISSUE-028 — Неподтверждённый внешний report о CVTPI2PS memory x87 transition
+
+- **Дата обнаружения:** 2026-10-31.
+- **Компонент:** `od-isa` S2-37bg, bounded Long64 `CVTPI2PS XMM0,[RAX]` profile `s2-long-cvtpi2ps-memory-rax-v1`.
+- **Статус:** открытое непроверенное сообщение о возможном расхождении; подтверждённый дефект не установлен.
+- **Суть и последствия:** Intel SDM Rev. 093 Vol. 2A p. 3-224 предписывает для `CVTPI2PS` безусловно установить x87 TOP в 0 и все теги в valid после выполнения инструкции; bounded profile следует этому требованию и при memory source. Внешний QEMU issue [#4394](https://gitlab.com/qemu-project/qemu/-/work_items/4394), открытый Simon Scherer 1 сентября 2026 года, содержит standalone C/asm reproducer и сообщает о несовпадающих TOP/FTW наблюдениях при native и QEMU execution. Автор не указал CPU или hypervisor provenance; наше независимое physical reproduction не выполнялось. Поэтому аппаратное поведение и применимость наблюдения остаются непроверенными, а подтверждённый дефект не установлен.
+- **Воспроизведение/основание:** сравнить правило Intel SDM с C/asm reproducer и заявленными native/QEMU TOP/FTW результатами в QEMU #4394. Локальные тесты проверяют spec-derived переход TOP=0/tag_word=0; они не заменяют physical CPU/hypervisor reproduction.
+- **Следующий шаг:** при физической acceptance выполнить минимальную проверку memory-source CVTPI2PS на документированном Intel CPU и сохранить CPU/microcode, hypervisor/bare-metal, режим, точные байты и исходный/итоговый TOP/tag state. До получения evidence сохранять SDM-derived локальную семантику и не заявлять аппаратное подтверждение.
+
 ### ISSUE-022 — S2-19j address-size-32 REP LODS использовал RCX вместо ECX
 
 - **Дата обнаружения:** 2026-10-27.

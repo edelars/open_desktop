@@ -1080,6 +1080,8 @@ pub enum Operation {
     },
     /// Local-only legacy `66 0F 2A 00` memory-source CVTPI2PD form.
     Cvtpi2pdMemoryRax,
+    /// Local-only legacy `0F 2A 00` memory-source CVTPI2PS form.
+    Cvtpi2psMemoryRax,
     /// Local-only legacy `0F 5A /r` packed binary32-to-binary64 XMM form.
     Cvtps2pdRegister {
         destination: u8,
@@ -3418,6 +3420,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && prefix_count == 1
             && prefix_bytes[0] == 0x66
             && prefixes.rex.is_none();
+        let cvtpi2ps_memory_rax = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x2a
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && prefix_count == 0
+            && prefixes.rex.is_none();
         let cvttpd2dq_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0xe6
             && prefixes.group1.is_none()
@@ -4051,6 +4061,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
         if opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x2a
             && !cvtpi2pd_memory_rax
+            && !cvtpi2ps_memory_rax
             && !cvtsi2sd_r32_register
             && !cvtsi2sd_r64_register
             && !cvtsi2ss_r32_register
@@ -4395,6 +4406,13 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 Operation::Cvtpi2pdMemoryRax
+            }
+            (OpcodeMap::Escape0f, 0x2a) if cvtpi2ps_memory_rax => {
+                let modrm = self.byte()?;
+                if modrm != 0x00 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::Cvtpi2psMemoryRax
             }
             (OpcodeMap::Escape0f, 0xe6) if cvttpd2dq_register => {
                 let modrm = self.byte()?;
@@ -8402,7 +8420,10 @@ mod tests {
             &[0xc4, 0xe1, 0x79, 0xfe, 0xc1][..],
             &[0x62, 0xf1, 0x7d, 0x08, 0xfe, 0xc1][..],
         ] {
-            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+            assert!(
+                Memory::new(bytes).decode().is_err(),
+                "{bytes:02x?}"
+            );
         }
     }
 
@@ -8445,7 +8466,10 @@ mod tests {
             &[0xc4, 0xe1, 0x79, 0xfa, 0xc1],
             &[0x62, 0xf1, 0x7d, 0x08, 0xfa, 0xc1],
         ] {
-            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+            assert!(
+                Memory::new(bytes).decode().is_err(),
+                "{bytes:02x?}"
+            );
         }
     }
 
@@ -21147,6 +21171,35 @@ mod tests {
         ] {
             let mut memory = Memory::new(bytes);
             assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn cvtpi2ps_accepts_only_the_exact_memory_source_rax_encoding() {
+        let mut memory = Memory::new(&[0x0f, 0x2a, 0x00]);
+        let instruction = memory.decode().unwrap();
+        assert_eq!(instruction.operation, Operation::Cvtpi2psMemoryRax);
+        assert_eq!(instruction.length, 3);
+        for bytes in [
+            &[0x0f, 0x2a, 0xc0][..],                   // MMX register source
+            &[0x0f, 0x2a, 0x01][..],                   // [RCX]
+            &[0x0f, 0x2a, 0x04, 0x00][..],             // SIB
+            &[0x0f, 0x2a, 0x40, 0x00][..],             // displacement
+            &[0x41, 0x0f, 0x2a, 0x00][..],             // REX.B
+            &[0x44, 0x0f, 0x2a, 0x00][..],             // REX.R
+            &[0x48, 0x0f, 0x2a, 0x00][..],             // REX.W
+            &[0x66, 0x0f, 0x2a, 0x00][..],             // operand override
+            &[0xf2, 0x0f, 0x2a, 0x00][..],             // mandatory prefix
+            &[0xc5, 0xf8, 0x2a, 0x00][..],             // VEX
+            &[0x62, 0xf1, 0x7c, 0x08, 0x2a, 0x00][..], // EVEX
+        ] {
+            assert!(
+                Memory::new(bytes)
+                    .decode()
+                    .map_or(true, |instruction| instruction.operation
+                        != Operation::Cvtpi2psMemoryRax),
+                "{bytes:02x?}"
+            );
         }
     }
 

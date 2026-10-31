@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последнее локальное подзадание S2-37bf добавило точный memory-only CVTPI2PD profile: только `66 0F 2A 00`, один 8-byte read по canonical RAX, точная конверсия двух signed i32 в binary64 XMM0, без изменения MXCSR/x87 и с условием AC=0. S2-37be ранее добавило canonical CVTSD2SS XMM register-pair interpreter profile с MXCSR rounding/FTZ и atomic faults. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. S2-37bc ранее добавило canonical ADDSS XMM register-pair profile для SSE-gated scalar binary32 addition с сохранением high96. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последнее локальное подзадание S2-37bg добавило bounded memory-only CVTPI2PS: только `0F 2A 00`, один 8-byte read по canonical RAX, signed-i32 → binary32 под MXCSR.RC, запись только XMM0.low64 и переход x87 TOP=0/tag_word=0; профиль требует AC=0, PM=1 и отсутствия pending x87 exceptions. S2-37bf ранее добавило точный memory-only CVTPI2PD profile: только `66 0F 2A 00`, один 8-byte read по canonical RAX, точную конверсию двух signed i32 в binary64 XMM0, без изменения MXCSR/x87 и с условием AC=0. S2-37be ранее добавило canonical CVTSD2SS XMM register-pair interpreter profile с MXCSR rounding/FTZ и atomic faults. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. S2-37bc ранее добавило canonical ADDSS XMM register-pair profile для SSE-gated scalar binary32 addition с сохранением high96. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -6801,7 +6801,7 @@ inventory.
 | CVTPD2PI | `66 0F 2D /r` | SSE2 | XMM, m128 → mm; 2×f64 → 2×i32 | 3-218 | missing |
 | CVTPD2PS | `66 0F 5A /r` | SSE2 | XMM, m128; 2×f64 → low 2×f32 | 3-219 | S2-37bd, bounded register-only |
 | CVTPI2PD | `66 0F 2A /r` | SSE2 | mm/m64 → XMM; 2×i32 → 2×f64 | 3-223 | S2-37bf, exact memory-only `[RAX]` form |
-| CVTPI2PS | `NP 0F 2A /r` | SSE | mm/m64 → XMM; 2×i32 → low 2×f32 | 3-224 | missing |
+| CVTPI2PS | `NP 0F 2A /r` | SSE | mm/m64 → XMM; 2×i32 → low 2×f32 | 3-224 | S2-37bg, exact memory-only `[RAX]` form |
 | CVTPS2DQ | `66 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-225 | S2-37af, bounded register-only |
 | CVTPS2PD | `NP 0F 5A /r` | SSE2 | m64; low 2×f32 → 2×f64 | 3-228 | S2-37u, bounded register-only |
 | CVTPS2PI | `NP 0F 2D /r` | SSE | XMM, m64 → mm; 2×f32 → 2×i32 | 3-231 | missing |
@@ -14298,6 +14298,17 @@ The scalar conversion snapshots source.low64 before writing, converts binary64 t
 The independent schema-v2 oracle uses raw integer classification and rounding, separate from the production helper and host floating point. Local tests cover all pairs and aliases, source/destination poison, all RC/tie and normal/subnormal boundaries, FTZ, overflow, QNaN/SNaN sign/payload, DE/IE/PE masks and sticky status, atomic faults, gates/fetch/CPL/no-callbacks, malformed encodings, result/schema validation and JIT/native denial. Focused unit/integration checks passed; full workspace, layout, formatting and Graphify results are recorded in the stage report.
 
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSD2SS pp. 3-234–3-235. The Type 3/Table 2-20 reference on p. 3-235 is for VEX forms and is not applied to this legacy form. Generic SSE2 gates and exception behavior use Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3, Vol. 3A Event 19/Table 7-8, and Intel Floating-Point Reference Sheet v2.13 p.2. This profile does not claim memory forms, physical acceptance, or completion of parent S2-37/S2-38.
+
+
+#### S2-37bg — canonical Long64 CVTPI2PS memory-only RAX
+
+Реализован interpreter-only schema-v2 профиль `s2-long-cvtpi2ps-memory-rax-v1` для точной формы `0F 2A 00`; budget=1, stop RIP=entry+3. Он отклоняет MMX register source, другие ModR/M/addressing forms, любой prefix/REX, VEX/EVEX и trailing bytes. Полная выборка трёх байт предшествует SSE/CR0.EM/CR4.OSFXSR #UD и затем CR0.TS #NM.
+
+При RFLAGS.AC=0 профиль требует SSE state, MXCSR в mask `0x0000ffbf` с PM=1 и x87 snapshot без pending exceptions (`FSW & 0x80ff == 0`). До чтения не допускаются состояния вне этих границ. После проверок выполняется один 8-byte read из canonical48 `[RAX..RAX+7]`; две little-endian signed i32 lane напрямую конвертируются в binary32 с MXCSR.RC. Записываются только XMM0.low64, high64 сохраняется. PE агрегируется по обеим lanes и устанавливается sticky. Успешная инструкция всегда устанавливает x87 TOP=0 и tag_word=0, сохраняя регистровые payloads, CW, указатели, opcode и остальные FSW bits. Все изменения CPU отложены до успешного read; ошибку локального read профиль возвращает без частичного commit. JIT/native/C ABI/fragment/generic dispatch не допускаются.
+
+Независимый schema oracle округляет signed i32 к binary32 целочисленными операциями. Focused проверки покрывают все четыре RC, положительные/отрицательные ties и границы 2^24, экстремумы i32, обе комбинации PE, prior sticky flags, все TOP и четыре кодировки x87 tag-классов, сохранение x87/MMX payloads и указателей, unaligned read с AC=0, pending-x87/PM=0/AC=1 отказ без data read, единственный read, rollback после read failure, gate priority, malformed bytes, backend denial и tampering. Физическая x86-приёмка остаётся открытой.
+
+Источники: Intel SDM Rev. 093 Vol. 2A CVTPI2PS p. 3-224; Vol. 3B §25.25.3 Table 25-5 p. 25-23; Vol. 1 SSE, MXCSR rounding, precision exception и x87/MMX shared state. См. [CPU contract](../specs/CPU_CONTRACT.md#s2-37bg--canonical-long64-cvtpi2ps-memory-only-rax), [отчёт](../reports/STAGE_2_REPORT.md#s2-37bg--cvtpi2ps-memory-interpreter-profile) и [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bg-cvtpi2ps-memory-rax-profile).
 
 
 #### S2-37bf — canonical Long64 CVTPI2PD memory-only RAX
