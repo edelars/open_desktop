@@ -646,3 +646,10 @@ contract](../../docs/specs/CPU_CONTRACT.md#s2-37bq--bounded-long64-cvttpd2pi-mm0
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bq-cvttpd2pi-mm0rax-aligned-m128-memory-profile).
 
 S2-37br adds exact interpreter-only Long64 `CVTPD2PI MM0,[RAX]` (`66 0F 2D 00`): one aligned canonical m128 read, MXCSR.RC rounding followed by signed-i32 range validation, masked IE/PE, and the MMX state transition. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37br--bounded-long64-cvtpd2pi-mm0rax-aligned-m128-memory-profile), [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-37br--cvtpd2pi-mm0rax-aligned-m128-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37br-cvtpd2pi-mm0rax-aligned-m128-memory-profile).
+
+S2-37bs adds exact interpreter-only legacy `CVTDQ2PD XMM0,[RAX]`
+(`F3 0F E6 00`) under a separate profile. It reads one unaligned-capable m64
+with AC=0 after canonical48 span validation, converts two signed i32 values to
+binary64, replaces all XMM0 bits, and preserves MXCSR plus every x87 field,
+including pending-state canaries. Read/gate failures do not partially update
+CPU state. JIT, native and C ABI paths remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile), [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-37bs--cvtdq2pd-xmm0rax-m64-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bs-cvtdq2pd-xmm0rax-m64-memory-profile).

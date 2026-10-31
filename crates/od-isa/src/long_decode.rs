@@ -940,6 +940,8 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only legacy `F3 0F E6 00` m64 load, enabled by its own profile.
+    Cvtdq2pdMemoryRax,
     /// Local-only legacy `F2 0F E6 /r` packed binary64-to-signed-i32 conversion.
     Cvtpd2dqRegister {
         destination: u8,
@@ -3404,6 +3406,13 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     && prefix_bytes[0] == 0xf3
                     && prefix_bytes[1] == prefixes.rex.unwrap()
                     && prefixes.rex.unwrap() & 0x0a == 0);
+        let cvtdq2pd_memory_rax = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xe6
+            && prefixes.group1 == Some(0xf3)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && prefixes.rex.is_none();
         let cvtpd2dq_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0xe6
             && prefixes.group1 == Some(0xf2)
@@ -4107,6 +4116,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
         if opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0xe6
             && !cvtdq2pd_register
+            && !cvtdq2pd_memory_rax
             && !cvtpd2dq_register
             && !cvttpd2dq_register
             && !sqrtss_register
@@ -4245,6 +4255,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !maxss_register_masked
                 && !maxsd_register_masked
                 && !cvtdq2pd_register
+                && !cvtdq2pd_memory_rax
                 && !cvtpd2dq_register
                 && !cvttpd2dq_register
                 && !sqrtss_register
@@ -4433,14 +4444,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     source: (modrm & 7) | ((rex & 1) << 3),
                 }
             }
-            (OpcodeMap::Escape0f, 0xe6) if cvtdq2pd_register => {
+            (OpcodeMap::Escape0f, 0xe6) if cvtdq2pd_register || cvtdq2pd_memory_rax => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if cvtdq2pd_memory_rax && modrm == 0x00 {
+                    Operation::Cvtdq2pdMemoryRax
+                } else if cvtdq2pd_register && modrm >> 6 == 3 {
+                    Operation::Cvtdq2pdRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
+                } else {
                     return Err(self.unsupported(opcode));
-                }
-                Operation::Cvtdq2pdRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
                 }
             }
             (OpcodeMap::Escape0f, 0xe6) if cvtpd2dq_register => {

@@ -38,3 +38,7 @@ x87/MMX state, and this slice makes no physical x86 acceptance claim.
 The schema-v2 S2-37br CVTPD2PI MM0,[RAX] profile remains local-only and is
 rejected before native execution; no physical x86 acceptance is claimed. See
 the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37br--bounded-long64-cvtpd2pi-mm0rax-aligned-m128-memory-profile).
+
+The S2-37bs `CVTDQ2PD XMM0,[RAX]` fixture remains local-only and is denied
+before native execution; this slice does not claim physical x86 acceptance.
+See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile).

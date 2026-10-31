@@ -205,3 +205,9 @@ m128 memory and MXCSR.RC rounding followed by range validation. The runner
 fixture matrix does not establish physical x86 acceptance. See the [CPU
 contract](../../docs/specs/CPU_CONTRACT.md#s2-37br--bounded-long64-cvtpd2pi-mm0rax-aligned-m128-memory-profile)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37br-cvtpd2pi-mm0rax-aligned-m128-memory-profile).
+
+S2-37bs runs the exact local-only schema-v2 `CVTDQ2PD XMM0,[RAX]`
+(`F3 0F E6 00`) profile. It reads exactly 8 bytes at RAX, converts the signed
+integer lanes exactly, replaces XMM0, and preserves MXCSR and all x87 state.
+Fixtures exercise supported MXCSR variations and pending x87 canaries; JIT and
+native requests are denied. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile), [plan](../../docs/plans/STAGE_2.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bs-cvtdq2pd-xmm0rax-m64-memory-profile).

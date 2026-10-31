@@ -19527,3 +19527,36 @@ and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37br-cvtpd2pi-m
 warning for `include/open_desktop/host_abi.h` and 13 files without symbols;
 community labels were not refreshed. The updated S2-37br cross-document
 headings are present in the plan, CPU contract, report and fixture README.
+
+## S2-37bs — CVTDQ2PD XMM0,[RAX] m64 memory profile
+
+Implemented exact legacy `F3 0F E6 00` as a schema-v2 interpreter-only
+Long64 profile. After a full four-byte fetch and the local SSE2/EM/OSFXSR/TS
+gates, it reads exactly one little-endian m64 from the canonical48 span at
+RAX. AC=0 is part of the local profile; unaligned addresses are accepted.
+Successful execution converts both signed i32 lanes exactly to binary64,
+replaces all 128 XMM0 bits, and preserves MXCSR and every x87 field, including
+pending-exception canaries. The independent oracle builds binary64 encodings
+with integer arithmetic only. JIT, native, and C ABI admission remain closed;
+physical x86 acceptance was not run.
+
+Verification passed: focused `cargo test -p od-isa cvtdq2pd_m64 --offline
+-- --nocapture` (2 passed); focused runner test
+`cvtdq2pd_m64_literals_preserve_environment_and_fail_closed` (1 passed); full
+`cargo test -p od-testkit --offline --quiet` (444 passed); full
+`cargo test -p od-runner --offline --quiet` (112 unit/bin and 448 fixture
+tests passed); full `cargo test -p od-x86-runner --offline --quiet` (8 passed).
+The focused ISA tests directly cover fetch/gates, exact one-read behavior,
+unaligned access, canonical span faults and read-failure rollback. The runner
+matrix covers seven literal fixtures, malformed/tampered input, state
+preservation, gate behavior and local-only backend denial. No physical x86
+result is implied.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTDQ2PD pp. 3-208–3-210;
+Vol. 3A §16.1.3 Table 16-1 p. 16-3 for legacy SSE2 prerequisites; Vol. 1
+Table 14-21 for unaligned behavior within this profile's AC=0 scope and
+Appendix C Table C-3 p. C-5 for the absence of SIMD numeric exception
+conditions. See the
+[Stage 2 plan](../plans/STAGE_2.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bs-cvtdq2pd-xmm0rax-m64-memory-profile).

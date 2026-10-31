@@ -184,6 +184,15 @@ pub struct Cvtdq2pdControls {
     pub cr4_osfxsr: bool,
 }
 
+/// Explicit SSE2 prerequisites for the exact S2-37bs CVTDQ2PD m64 profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Cvtdq2pdMemoryControls {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+}
+
 /// Explicit SSE2 prerequisites and Precision delivery control for CVTDQ2PS.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Cvtdq2psControls {
@@ -709,6 +718,7 @@ struct ExecutionProfiles<'a> {
     maxpd_unmasked: Option<MaxpdUnmaskedControls>,
     cvtdq2pd: Option<Cvtdq2pdControls>,
     cvtdq2pd_registers: Option<Cvtdq2pdControls>,
+    cvtdq2pd_memory: Option<Cvtdq2pdMemoryControls>,
     cvtdq2ps_registers: Option<Cvtdq2psControls>,
     cvtps2dq_registers: Option<Cvtps2dqControls>,
     cvttps2dq_registers: Option<Cvttps2dqControls>,
@@ -1555,6 +1565,7 @@ pub fn run_with_maxss_unmasked_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -1647,6 +1658,7 @@ pub fn run_with_minsd_unmasked_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -1739,6 +1751,7 @@ pub fn run_with_maxsd_unmasked_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -1831,6 +1844,7 @@ pub fn run_with_minpd_unmasked_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -1923,6 +1937,7 @@ pub fn run_with_minps_unmasked_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -2015,6 +2030,7 @@ pub fn run_with_maxps_unmasked_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -2107,6 +2123,7 @@ pub fn run_with_maxpd_unmasked_controls(
             maxpd_unmasked: Some(controls),
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -2199,6 +2216,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -2291,6 +2309,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -2383,6 +2402,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -2475,6 +2495,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -2567,6 +2588,7 @@ pub fn run_with_cvtss2si_registers_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -2659,6 +2681,7 @@ pub fn run_with_cvttss2si_registers_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -2750,6 +2773,7 @@ pub fn run_with_cvtsd2si_registers_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -2843,6 +2867,7 @@ pub fn run_with_cvttsd2si_registers_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -2935,6 +2960,7 @@ pub fn run_with_cvtdq2pd_controls(
             maxpd_unmasked: None,
             cvtdq2pd: Some(controls),
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -3027,6 +3053,99 @@ pub fn run_with_cvtdq2pd_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: Some(controls),
+            cvtdq2pd_memory: None,
+            cvtdq2ps_registers: None,
+            cvtps2dq_registers: None,
+            cvttps2dq_registers: None,
+            cvtpd2dq_registers: None,
+            cvtpd2ps_registers: None,
+            cvttpd2dq_registers: None,
+            sqrtss_registers: None,
+            sqrtsd_registers: None,
+            sqrtps_registers: None,
+            sqrtpd_registers: None,
+            subpd_registers: None,
+            mulpd_registers: None,
+            addpd_registers: None,
+            addsd_registers: None,
+            addss_registers: None,
+            addps_registers: None,
+            divpd_registers: None,
+            divsd_registers: None,
+            divps_registers: None,
+            divss_registers: None,
+            mulsd_registers: None,
+            mulss_registers: None,
+            mulps_registers: None,
+            subps_registers: None,
+            subsd_registers: None,
+            subss_registers: None,
+            cvtss2sd_registers: None,
+            cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
+            cmpss_registers: None,
+            cmpsd_registers: None,
+            cmppd_registers: None,
+            cmpps_registers: None,
+            comisd_ucomisd_registers: None,
+            cvtsi2sd_r32: None,
+            cvtsi2sd_r64: None,
+            cvtsi2sd_registers: None,
+            cvtsi2ss_registers: None,
+            cvtss2si_registers: None,
+            cvttss2si_registers: None,
+            cvtsd2si_registers: None,
+            cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
+            cvtpi2pd_memory_rax: None,
+            cvtpi2_profile: None,
+            fx_cr0: None,
+            unmasked_minss_denormal: false,
+            rdtsc: None,
+            swapgs: None,
+            cli: None,
+            sti: None,
+            halt: None,
+            cr0: None,
+            cr4: None,
+        },
+        StepRuntime {
+            rdtsc_source: None,
+            sti_sequence: None,
+            exact_hlt_only: false,
+            stop_requested: &mut stop_requested,
+        },
+    )
+}
+
+pub fn run_with_cvtdq2pd_memory_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: Cvtdq2pdMemoryControls,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_configured(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        ExecutionProfiles {
+            cpuid: None,
+            msr: None,
+            sep: None,
+            xorpd: None,
+            minss_invalid: None,
+            maxss_unmasked: None,
+            minsd_unmasked: None,
+            maxsd_unmasked: None,
+            minpd_unmasked: None,
+            minps_unmasked: None,
+            maxps_unmasked: None,
+            maxpd_unmasked: None,
+            cvtdq2pd: None,
+            cvtdq2pd_registers: None,
+            cvtdq2pd_memory: Some(controls),
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -3119,6 +3238,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: Some(controls),
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -3211,6 +3331,7 @@ pub fn run_with_cvtps2dq_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: Some(controls),
             cvttps2dq_registers: None,
@@ -3303,6 +3424,7 @@ pub fn run_with_cvttps2dq_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: Some(controls),
@@ -3395,6 +3517,7 @@ pub fn run_with_cvtpd2dq_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -3487,6 +3610,7 @@ pub fn run_with_cvtpd2ps_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -3579,6 +3703,7 @@ pub fn run_with_cvttpd2dq_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -3671,6 +3796,7 @@ pub fn run_with_cvtss2sd_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -3763,6 +3889,7 @@ pub fn run_with_cvtpi2pd_memory_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -3891,6 +4018,7 @@ fn run_with_cvtpi2ps_profile(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -4150,6 +4278,7 @@ pub fn run_with_cvtsd2ss_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -4242,6 +4371,7 @@ pub fn run_with_cvtps2pd_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -4334,6 +4464,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -4426,6 +4557,7 @@ pub fn run_with_cmpss_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -4518,6 +4650,7 @@ pub fn run_with_cmpsd_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -4610,6 +4743,7 @@ pub fn run_with_cmppd_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -4701,6 +4835,7 @@ pub fn run_with_cmpps_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -4793,6 +4928,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -4938,6 +5074,7 @@ pub fn run_with_efer_rdmsr_profile(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -5239,6 +5376,7 @@ pub fn run_with_cr0_profile(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -5332,6 +5470,7 @@ pub fn run_with_cr4_profile(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -5659,6 +5798,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -5936,6 +6076,7 @@ pub fn step_with_cr0_profile(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -6271,6 +6412,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -6363,6 +6505,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -6457,6 +6600,7 @@ pub fn run_with_sqrtss_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -6549,6 +6693,7 @@ pub fn run_with_sqrtsd_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -6641,6 +6786,7 @@ pub fn run_with_sqrtps_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -6733,6 +6879,7 @@ pub fn run_with_sqrtpd_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -6825,6 +6972,7 @@ pub fn run_with_subpd_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -6917,6 +7065,7 @@ pub fn run_with_mulpd_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -7009,6 +7158,7 @@ pub fn run_with_addpd_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -7101,6 +7251,7 @@ pub fn run_with_addsd_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -7193,6 +7344,7 @@ pub fn run_with_divpd_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -7285,6 +7437,7 @@ pub fn run_with_addss_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -7377,6 +7530,7 @@ pub fn run_with_addps_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -7469,6 +7623,7 @@ pub fn run_with_divsd_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -7561,6 +7716,7 @@ pub fn run_with_divps_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -7653,6 +7809,7 @@ pub fn run_with_divss_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -7745,6 +7902,7 @@ pub fn run_with_mulsd_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -7837,6 +7995,7 @@ pub fn run_with_mulss_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -7929,6 +8088,7 @@ pub fn run_with_mulps_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -8021,6 +8181,7 @@ pub fn run_with_subsd_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -8113,6 +8274,7 @@ pub fn run_with_subss_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -8205,6 +8367,7 @@ pub fn run_with_subps_register_controls(
             maxpd_unmasked: None,
             cvtdq2pd: None,
             cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
             cvtdq2ps_registers: None,
             cvtps2dq_registers: None,
             cvttps2dq_registers: None,
@@ -8290,6 +8453,7 @@ fn step_configured(
         maxpd_unmasked: configured_maxpd_controls,
         cvtdq2pd: configured_cvtdq2pd_controls,
         cvtdq2pd_registers: configured_cvtdq2pd_register_controls,
+        cvtdq2pd_memory: configured_cvtdq2pd_memory_controls,
         cvtdq2ps_registers: configured_cvtdq2ps_register_controls,
         cvtps2dq_registers: configured_cvtps2dq_register_controls,
         cvttps2dq_registers: configured_cvttps2dq_register_controls,
@@ -9037,6 +9201,37 @@ fn step_configured(
                         }
         );
         if !is_canonical_register_form {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        let fault_vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+            Some(6)
+        } else if controls.cr0_ts {
+            Some(7)
+        } else {
+            None
+        };
+        if let Some(vector) = fault_vector {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+    }
+    if let Some(controls) = configured_cvtdq2pd_memory_controls {
+        let admitted = instruction.operation == Operation::Cvtdq2pdMemoryRax
+            && instruction.length == 4
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0xe6
+            && instruction.prefixes.group1 == Some(0xf3)
+            && instruction.prefixes.segment.is_none()
+            && !instruction.prefixes.operand_override
+            && !instruction.prefixes.address_override
+            && instruction.prefixes.rex.is_none()
+            && state.rflags & (1 << 18) == 0;
+        if !admitted {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -11546,6 +11741,10 @@ fn step_configured(
                 && matches!(instruction.operation, Operation::Cvtdq2pdRegister { .. }))
         {
             sse.mxcsr & !0x0000_ffbf == 0
+        } else if configured_cvtdq2pd_memory_controls.is_some()
+            && instruction.operation == Operation::Cvtdq2pdMemoryRax
+        {
+            sse.mxcsr & !0x0000_ffbf == 0
         } else if configured_cvtdq2ps_register_controls.is_some()
             && matches!(instruction.operation, Operation::Cvtdq2psRegister { .. })
         {
@@ -12301,6 +12500,10 @@ fn step_configured(
             state.sse.is_some()
         }
         Operation::Cvtdq2pdRegister { .. } => false,
+        Operation::Cvtdq2pdMemoryRax if configured_cvtdq2pd_memory_controls.is_some() => {
+            state.sse.is_some()
+        }
+        Operation::Cvtdq2pdMemoryRax => false,
         Operation::Cvtdq2psRegister { .. } if configured_cvtdq2ps_register_controls.is_some() => {
             state.sse.is_some()
         }
@@ -16082,6 +16285,47 @@ fn step_configured(
                 .as_mut()
                 .expect("CVTDQ2PD local profile state was prevalidated")
                 .xmm[usize::from(destination)] = result;
+        }
+        Operation::Cvtdq2pdMemoryRax if configured_cvtdq2pd_memory_controls.is_some() => {
+            let address = state.gpr[Register::Rax as usize];
+            let Some(last) = address.checked_add(7) else {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            };
+            if !long_decode::canonical(address) || !long_decode::canonical(last) {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            let mut bytes = [0u8; 8];
+            memory.read(address, context, &mut bytes)?;
+            let mut result = [0u8; 16];
+            for lane in 0..2 {
+                let value = i32::from_le_bytes(
+                    bytes[lane * 4..lane * 4 + 4]
+                        .try_into()
+                        .expect("CVTDQ2PD m64 lane has four bytes"),
+                );
+                let converted =
+                    Binary64::from_i64(i64::from(value), RationalRoundingMode::NearestTiesEven);
+                result[lane * 8..lane * 8 + 8]
+                    .copy_from_slice(&converted.value().to_bits().to_le_bytes());
+            }
+            state
+                .sse
+                .as_mut()
+                .expect("CVTDQ2PD m64 SSE state prevalidated")
+                .xmm[0] = result;
+        }
+        Operation::Cvtdq2pdMemoryRax => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
         }
         Operation::Cvtdq2psRegister {
             destination,
@@ -124991,5 +125235,312 @@ mod swapgs_profile_tests {
             assert_eq!(x87.tag_word, 0);
             assert!(memory.accesses.is_empty());
         }
+    }
+
+    #[test]
+    fn cvtdq2pd_m64_profile_preserves_state_and_reads_once() {
+        let controls = Cvtdq2pdMemoryControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+        };
+        let cases: [(u32, i32, i32, [u64; 2]); 7] = [
+            (0x0000, 0, 1, [0, 0x3ff0_0000_0000_0000]),
+            (
+                0x1f80,
+                -1,
+                1,
+                [0xbff0_0000_0000_0000, 0x3ff0_0000_0000_0000],
+            ),
+            (
+                0x3f80,
+                i32::MIN,
+                i32::MAX,
+                [0xc1e0_0000_0000_0000, 0x41df_ffff_ffc0_0000],
+            ),
+            (
+                0x5f80,
+                16_777_217,
+                -16_777_219,
+                [0x4170_0000_1000_0000, 0xc170_0000_3000_0000],
+            ),
+            (
+                0x7f80,
+                0x7fc0_0001,
+                -0x0040_0001,
+                [0x41df_f000_0040_0000, 0xc150_0000_4000_0000],
+            ),
+            (
+                0x9fa5,
+                -123,
+                456,
+                [0xc05e_c000_0000_0000, 0x407c_8000_0000_0000],
+            ),
+            (0xffbf, -1, 0, [0xbff0_0000_0000_0000, 0]),
+        ];
+        for (mxcsr, low, high, expected) in cases {
+            let address = 0x1003;
+            let mut memory = Memory::at(&[0xf3, 0x0f, 0xe6, 0x00], 0x8a00);
+            memory.data_base = address;
+            memory.bytes = (low as u32)
+                .to_le_bytes()
+                .into_iter()
+                .chain((high as u32).to_le_bytes())
+                .collect();
+            let mut state = LongModeState::default();
+            state.rip = 0x8a00;
+            state.gpr[Register::Rax as usize] = address;
+            state.rflags = 2;
+            state.x87 = Some(X87State::fixture_seed());
+            state.x87.as_mut().unwrap().status_word = 0x80ff;
+            state.x87.as_mut().unwrap().tag_word = 0x5555;
+            let mut xmm = [[0x6d; 16]; 16];
+            xmm[0] = [0xa5; 16];
+            state.sse = Some(SseState { xmm, mxcsr });
+            let before = state.clone();
+            let result = run_with_cvtdq2pd_memory_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x8a04),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::StopAddress);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(state.rip, 0x8a04);
+            assert_eq!(state.gpr, before.gpr);
+            assert_eq!(state.rflags, before.rflags);
+            assert_eq!(state.x87, before.x87, "all x87 fields are preserved");
+            let output = state.sse.as_ref().unwrap();
+            let mut expected_bytes = [0u8; 16];
+            expected_bytes[..8].copy_from_slice(&expected[0].to_le_bytes());
+            expected_bytes[8..].copy_from_slice(&expected[1].to_le_bytes());
+            assert_eq!(output.xmm[0], expected_bytes);
+            assert_eq!(&output.xmm[1..], &before.sse.as_ref().unwrap().xmm[1..]);
+            assert_eq!(output.mxcsr, mxcsr);
+            assert_eq!(memory.accesses, vec![(AccessKind::Read, address, 8)]);
+        }
+    }
+
+    #[test]
+    fn cvtdq2pd_m64_gates_and_pre_read_failures_are_atomic() {
+        let code = [0xf3, 0x0f, 0xe6, 0x00];
+        for privilege in [
+            PrivilegeLevel::Ring0,
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            for bits in 0..16u8 {
+                let controls = Cvtdq2pdMemoryControls {
+                    sse2_available: bits & 1 != 0,
+                    cr0_em: bits & 2 != 0,
+                    cr0_ts: bits & 4 != 0,
+                    cr4_osfxsr: bits & 8 != 0,
+                };
+                let mut state = LongModeState::default();
+                state.rip = 0x8b00;
+                state.gpr[Register::Rax as usize] = 0x1000;
+                state.x87 = Some(X87State::fixture_seed());
+                state.x87.as_mut().unwrap().status_word = 0x80ff;
+                state.sse = Some(SseState {
+                    xmm: [[0x77; 16]; 16],
+                    mxcsr: 0,
+                });
+                let before = state.clone();
+                let mut memory = Memory::at(&code, 0x8b00);
+                let result = run_with_cvtdq2pd_memory_controls(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(0x8b04),
+                        context: AccessContext {
+                            privilege,
+                            ..AccessContext::default()
+                        },
+                    },
+                    controls,
+                    || false,
+                );
+                let vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr
+                {
+                    Some(6)
+                } else if controls.cr0_ts {
+                    Some(7)
+                } else {
+                    None
+                };
+                if let Some(vector) = vector {
+                    assert_eq!(
+                        result.exit,
+                        RunExit::Fault(ArchitecturalFault {
+                            vector,
+                            error_code: None,
+                            linear_address: None
+                        })
+                    );
+                    assert_eq!(result.instructions_executed, 0);
+                    assert_eq!(state, before);
+                    assert!(memory.accesses.is_empty());
+                } else {
+                    assert_eq!(result.exit, RunExit::StopAddress);
+                    assert_eq!(memory.accesses.len(), 1);
+                }
+            }
+        }
+
+        let controls = Cvtdq2pdMemoryControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+        };
+        for address in [0x0000_8000_0000_0000, u64::MAX] {
+            let mut state = LongModeState::default();
+            state.rip = 0x8c00;
+            state.gpr[Register::Rax as usize] = address;
+            state.sse = Some(SseState {
+                xmm: [[0x55; 16]; 16],
+                mxcsr: 0xffbf,
+            });
+            state.x87 = Some(X87State::fixture_seed());
+            let before = state.clone();
+            let mut memory = Memory::at(&code, 0x8c00);
+            let result = run_with_cvtdq2pd_memory_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x8c04),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None
+                })
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut state = LongModeState::default();
+        state.rip = 0x8d00;
+        state.gpr[Register::Rax as usize] = 0x1000;
+        state.rflags = 2 | (1 << 18);
+        state.sse = Some(SseState {
+            xmm: [[0x55; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let mut memory = Memory::at(&code, 0x8d00);
+        let result = run_with_cvtdq2pd_memory_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x8d04),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::Unsupported { .. }));
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+
+        let mut state = LongModeState::default();
+        state.rip = 0x8e00;
+        state.gpr[Register::Rax as usize] = 0x1000;
+        state.sse = Some(SseState {
+            xmm: [[0x55; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let mut memory = Memory::at(&code[..3], 0x8e00);
+        let result = run_with_cvtdq2pd_memory_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x8e04),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches.len(), 4);
+        assert!(memory.accesses.is_empty());
+
+        let address = 0x0000_7fff_ffff_fff8;
+        let mut memory = Memory::at(&code, 0x8f00);
+        memory.data_base = address;
+        memory.bytes = i32::MIN
+            .to_le_bytes()
+            .into_iter()
+            .chain(i32::MAX.to_le_bytes())
+            .collect();
+        let mut state = LongModeState::default();
+        state.rip = 0x8f00;
+        state.gpr[Register::Rax as usize] = address;
+        state.sse = Some(SseState {
+            xmm: [[0x55; 16]; 16],
+            mxcsr: 0xffbf,
+        });
+        let result = run_with_cvtdq2pd_memory_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x8f04),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(memory.accesses, vec![(AccessKind::Read, address, 8)]);
+
+        let mut state = LongModeState::default();
+        state.rip = 0x9000;
+        state.gpr[Register::Rax as usize] = 0x1000;
+        state.sse = Some(SseState {
+            xmm: [[0x55; 16]; 16],
+            mxcsr: 0xffbf,
+        });
+        state.x87 = Some(X87State::fixture_seed());
+        let before = state.clone();
+        let mut memory = Memory::at(&code, 0x9000);
+        memory.error = Some(MemoryError::Unmapped {
+            address: 0x1000,
+            access: AccessKind::Read,
+        });
+        let result = run_with_cvtdq2pd_memory_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x9004),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(state, before);
+        assert_eq!(memory.accesses, vec![(AccessKind::Read, 0x1000, 8)]);
     }
 }

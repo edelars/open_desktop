@@ -14347,3 +14347,42 @@ Normative sources: Intel SDM Rev. 093 Vol. 2A CVTPD2PI p. 3-218; Vol. 3B
 §25.25.3 Table 25-4 p. 25-22; Vol. 3A §15.2 Table 15-2 and Vol. 1 SSE2
 feature rules. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37br--bounded-long64-cvtpd2pi-mm0rax-aligned-m128-memory-profile)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37br-cvtpd2pi-mm0rax-aligned-m128-memory-profile).
+
+## S2-37bs — bounded Long64 CVTDQ2PD XMM0,[RAX] m64 memory profile
+
+The schema-v2 interpreter profile accepts only exact legacy `F3 0F E6 00`,
+one executable mapping, instruction budget 1 and stop RIP=entry+4. It fetches
+all four bytes before local prerequisite gates. Missing SSE2 (CPUID bit 26),
+CR0.EM or CR4.OSFXSR yields #UD; CR0.TS yields #NM after those #UD conditions.
+That precedence is bounded local policy, not a universal exception-priority
+claim. CPL0–3 are accepted. This profile does not inspect pending x87 state and
+does not apply an MMX transition.
+
+It reads exactly one little-endian 8-byte m64 from RAX after checked canonical48
+validation of the full span `[RAX..RAX+7]`. The local profile requires AC=0 and
+permits unaligned addresses. It changes no CPU state before a successful read;
+read failure preserves the state. The two signed i32 lanes are converted
+exactly to binary64, and all 128 bits of XMM0 are replaced. MXCSR must fit the
+local capability mask `0xffbf`, but every supported status/control bit is
+otherwise accepted and preserved, including all RC values and FTZ. There are no
+SIMD numeric exceptions. Every x87 field is preserved, including TOP, tags,
+register payloads, pointers/opcode and pending-exception canaries.
+
+The testkit oracle constructs results from integer bits only; it uses neither
+host floating point nor an od-isa conversion helper. Handwritten fixtures and
+runner checks cover signed boundaries, ±1/zero, values around 2^24, asymmetric
+and NaN-shaped integer lanes, varied MXCSR, pending x87 canaries, state/memory
+preservation, malformed/tampered cases, and JIT/native refusal. Direct ISA tests
+cover CPL and prerequisite gates, complete fetch, local AC rejection, unaligned
+reads, the canonical upper endpoint, noncanonical/overflow no-read faults, and
+read-failure rollback. This establishes local interpreter/profile behavior
+only; physical x86 acceptance was not run, and JIT/native/C ABI remain closed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTDQ2PD pp. 3-208–3-210; Vol. 3A
+§16.1.3 Table 16-1 p. 16-3 ([official Vol. 3A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190));
+Vol. 1 Table 14-21 for unaligned access under the profile's AC=0 condition
+and Appendix C Table C-3 p. C-5 for the absence of SIMD numeric exception
+conditions ([official Vol. 1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)). See the
+[plan](../plans/STAGE_2.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile),
+[report](../reports/STAGE_2_REPORT.md#s2-37bs--cvtdq2pd-xmm0rax-m64-memory-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bs-cvtdq2pd-xmm0rax-m64-memory-profile).

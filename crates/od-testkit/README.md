@@ -270,3 +270,10 @@ arithmetic according to MXCSR.RC, then validates signed-i32 range and IE/PE
 status. The profile has a separate `cvtpd2pi_memory_controls` field; foreign
 profile controls remain rejected. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37br--bounded-long64-cvtpd2pi-mm0rax-aligned-m128-memory-profile)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37br-cvtpd2pi-mm0rax-aligned-m128-memory-profile).
+
+S2-37bs adds the separate schema-v2 `s2-long-cvtdq2pd-memory-v1` profile for
+exact `F3 0F E6 00` `CVTDQ2PD XMM0,[RAX]`. Its independent oracle constructs
+binary64 bits using integer operations only, checks gates and the one m64
+source, and verifies complete MXCSR/x87 preservation. Literal fixtures include
+pending x87 canaries; they establish local interpreter behavior only. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile), [plan](../../docs/plans/STAGE_2.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile), and [report](../../docs/reports/STAGE_2_REPORT.md#s2-37bs--cvtdq2pd-xmm0rax-m64-memory-profile).

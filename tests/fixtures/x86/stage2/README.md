@@ -7140,3 +7140,18 @@ They also cover fetch/gates and pre-read span refusals. No physical x86
 acceptance is claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37br--bounded-long64-cvtpd2pi-mm0rax-aligned-m128-memory-profile),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37br--bounded-long64-cvtpd2pi-mm0rax-aligned-m128-memory-profile),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37br--cvtpd2pi-mm0rax-aligned-m128-memory-profile).
+
+### S2-37bs CVTDQ2PD XMM0,[RAX] m64 memory profile
+
+The seven `s2_37bs_cvtdq2pd_*.case.json` files are handwritten schema-v2
+fixtures for exact legacy `F3 0F E6 00`. They source exactly two signed i32
+values from an unaligned m64 at RAX with AC=0 and replace all of XMM0 with the
+exact binary64 results. Inputs cover zero/one, ±1, signed extrema, asymmetric
+values around 2^24, integer words that resemble binary NaNs, and a canonical-hole span fault. MXCSR spans
+all four RC values plus varied status/control histories, and fixtures include
+pending x87 status and tag/payload canaries. The interpreter preserves MXCSR
+and all x87 state. Native/JIT/C ABI remain closed, and physical x86 acceptance
+was not run. Provenance cites Intel SDM Rev. 093 Vol. 2A CVTDQ2PD pp. 3-208–3-210,
+Vol. 3A §16.1.3 Table 16-1 p. 16-3, and Vol. 1 Table 14-21 (unaligned access
+with AC=0) plus Appendix C Table C-3 p. C-5 (no SIMD numeric exception
+conditions). See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile), [plan](../../../../docs/plans/STAGE_2.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bs--cvtdq2pd-xmm0rax-m64-memory-profile).

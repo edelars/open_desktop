@@ -17938,6 +17938,140 @@ fn cvtdq2pd_exact_literals_validate_conversion_state_and_jit_denial() {
 }
 
 #[test]
+fn cvtdq2pd_m64_literals_preserve_environment_and_fail_closed() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let mut paths: Vec<_> = fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("s2_37bs_cvtdq2pd_")
+        })
+        .collect();
+    paths.sort();
+    assert_eq!(paths.len(), 7, "handwritten CVTDQ2PD m64 literals");
+    let mut denial_source = None;
+    let mut representative = None;
+    for path in paths {
+        let source = fs::read(&path).unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongCvtdq2pdMemoryV1
+        );
+        assert_eq!(
+            od_testkit::v2::compare(&input, &result, &result).unwrap(),
+            Vec::<String>::new()
+        );
+        let Observation::Available { value } = &result.snapshot else {
+            panic!("snapshot unavailable")
+        };
+        let initial = &input.fixture.initial_state;
+        let output = &value.state;
+        let initial_sse = initial.sse.as_ref().unwrap();
+        let output_sse = output.sse.as_ref().unwrap();
+        assert_eq!(output_sse.mxcsr, initial_sse.mxcsr);
+        for index in 1..16 {
+            assert_eq!(output_sse.xmm[index], initial_sse.xmm[index]);
+        }
+        assert_eq!(
+            output.x87, initial.x87,
+            "CVTDQ2PD must preserve x87 canaries"
+        );
+        assert_eq!(value.memory.len(), 2);
+        for (after, before) in value.memory.iter().zip(input.fixture.memory.iter()) {
+            assert_eq!(after.region_id, before.region_id);
+            assert_eq!(after.guest_address, before.guest_address);
+            assert_eq!(after.bytes_hex, before.initial_bytes_hex);
+        }
+        denial_source.get_or_insert(source);
+        representative.get_or_insert((input, result));
+    }
+    let source = denial_source.unwrap();
+    let (_, jit) = run(&source, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    let (_, native) = run(&source, "native", 4);
+    assert!(matches!(native.outcome, Outcome::Unsupported { .. }));
+    let (input, result) = representative.unwrap();
+    let mut tampered = result.clone();
+    let Observation::Available { value } = &mut tampered.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.state.sse.as_mut().unwrap().xmm[0] = "00".repeat(16);
+    assert!(od_testkit::v2::compare(&input, &result, &tampered).is_err());
+
+    for (field, value) in [
+        ("sse2_available", serde_json::Value::Bool(false)),
+        ("cr0_em", serde_json::Value::Bool(true)),
+        ("cr4_osfxsr", serde_json::Value::Bool(false)),
+        ("cr0_ts", serde_json::Value::Bool(true)),
+    ] {
+        let mut gate: serde_json::Value = serde_json::from_slice(&source).unwrap();
+        gate["expected_exit"] = serde_json::Value::String("exception".into());
+        gate["cvtdq2pd_memory_controls"][field] = value;
+        let (gate_input, gate_result) = run(&serde_json::to_vec(&gate).unwrap(), "interpreter", 0);
+        let Observation::Available {
+            value: gate_snapshot,
+        } = &gate_result.snapshot
+        else {
+            panic!("gate snapshot unavailable");
+        };
+        assert_eq!(
+            gate_snapshot.state, gate_input.fixture.initial_state,
+            "gate: {field}"
+        );
+        assert_eq!(
+            gate_snapshot.memory[1].bytes_hex,
+            gate_input.fixture.memory[1].initial_bytes_hex
+        );
+        assert!(
+            matches!(gate_result.outcome, Outcome::Exception {}),
+            "gate: {field}"
+        );
+        assert_eq!(
+            od_testkit::v2::compare(&gate_input, &gate_result, &gate_result).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    let mut missing_controls = input.fixture.clone();
+    missing_controls.cvtdq2pd_memory_controls = None;
+    assert!(missing_controls.validate().is_err());
+    let mut foreign_controls = input.fixture.clone();
+    foreign_controls.cvtdq2pd_controls = Some(od_testkit::v2::Cvtdq2pdControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+    });
+    assert!(foreign_controls.validate().is_err());
+    let mut daz_mxcsr = input.fixture.clone();
+    daz_mxcsr.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1fc0);
+    assert!(
+        daz_mxcsr.validate().is_err(),
+        "DAZ is outside the local capability mask"
+    );
+    let mut foreign_json: serde_json::Value = serde_json::from_slice(&source).unwrap();
+    foreign_json["cvtdq2pd_controls"] = serde_json::json!({
+        "sse2_available": true,
+        "cr0_em": false,
+        "cr0_ts": false,
+        "cr4_osfxsr": true
+    });
+    assert!(
+        od_testkit::v2::Fixture::from_json(&serde_json::to_vec(&foreign_json).unwrap()).is_err()
+    );
+    let mut wrong_encoding: serde_json::Value = serde_json::from_slice(&source).unwrap();
+    wrong_encoding["memory"][0]["initial_bytes_hex"] = serde_json::Value::String("f30fe6c1".into());
+    assert!(
+        od_testkit::v2::Fixture::from_json(&serde_json::to_vec(&wrong_encoding).unwrap()).is_err()
+    );
+}
+
+#[test]
 fn cvtsi2sd_r32_exact_literals_use_eax_bits_preserve_state_and_deny_other_backends() {
     let root =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
