@@ -5,6 +5,9 @@ use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU8;
 use std::time::{Duration, Instant};
+
+#[path = "dispatch_cache_stress.rs"]
+mod lifecycle_stress;
 #[cfg(target_os = "macos")]
 use std::{
     io::Read,
@@ -767,7 +770,7 @@ struct CacheLifecycleReport {
     total_elapsed_ns: u128,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct ProcessRssSnapshot {
     rss_bytes: Option<u64>,
     method: &'static str,
@@ -2114,6 +2117,36 @@ pub fn run_cache_lifecycle(
         total_elapsed_ns: started.elapsed().as_nanos(),
     };
     serde_json::to_value(report).map_err(|e| err(e.to_string()))
+}
+
+/// Runs a bounded calibration with the exact deterministic S3-37d epoch
+/// schedule and returns a fixed epoch count for scored stress processes.
+pub fn calibrate_cache_lifecycle_stress(
+    case_list: &Path,
+    trace_path: &Path,
+    output_path: &Path,
+) -> Result<serde_json::Value, BenchError> {
+    lifecycle_stress::calibrate(case_list, trace_path, output_path)
+}
+
+/// Runs the fixed-epoch FIFO16 lifecycle stress, persisting bounded progress
+/// checkpoints to the requested output path while the process is active.
+pub fn run_cache_lifecycle_stress(
+    case_list: &Path,
+    trace_path: &Path,
+    calibration_path: &Path,
+    process_run: u8,
+    epochs: usize,
+    output_path: &Path,
+) -> Result<serde_json::Value, BenchError> {
+    lifecycle_stress::run(
+        case_list,
+        trace_path,
+        calibration_path,
+        process_run,
+        epochs,
+        output_path,
+    )
 }
 
 fn lifecycle_case_with_program(

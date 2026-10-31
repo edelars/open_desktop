@@ -1255,3 +1255,26 @@ This is deterministic supported-API lifecycle evidence, not guest SMC or
 leak-free stress evidence; release measurements and review outcome remain in
 the S3-37c report. The controlled STOP step verifies no lookup/dispatch/cache
 clear, with explicit clear measured as a separate operation.
+
+### S3-37d sustained mixed FIFO16 lifecycle stress
+
+`od-bench cache-lifecycle-stress-calibrate` fixes a count from 512 calibration
+epochs; `cache-lifecycle-stress` then runs that same count in each scored
+process, targeting about 11 minutes and reserving one minute below the
+30-minute process cap. Calibration separates scalable epoch-body time from
+the same 128 RSS/report/write checkpoints as scored runs, and records fixed
+process costs. Its integrity digest, source/build/host fingerprint, corpus,
+schedule and timing arithmetic are checked before scoring. One overall
+deadline covers input preparation through final report persistence. Each retained-runtime epoch validates hit, unique pressure miss
+and one FIFO eviction, between-call backing invalidation, changed admitted
+code at a new backing version, and the subsequent hit. Full interpreter
+parity is checked on each dispatch. Every 128 epochs, clear must return all
+current resident usage to zero and make all 16 slots available; every 512
+epochs the sole runtime and arena are dropped and reopened before execution
+continues. The report uses bounded checkpoints and separates current occupancy
+from high-water values. RSS is process-wide auxiliary evidence only. This does
+not claim guest SMC, owner notification, fault cleanup, concurrent arenas,
+SMP, or leak-free behavior. Three sequential release processes are planned in
+a Stage2-quiet window. Implementation source review is clean; scored results
+and independent evidence review are pending. Mini stays deferred until Stage 3
+ends.

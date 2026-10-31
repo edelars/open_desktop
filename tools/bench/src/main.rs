@@ -24,6 +24,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut case_list = None::<PathBuf>;
     let mut trace_path = None::<PathBuf>;
     let mut output = None::<PathBuf>;
+    let mut calibration = None::<PathBuf>;
+    let mut epochs = None::<usize>;
     let mut process_run = 1u8;
     let mut preflight_only = false;
     while let Some(argument) = args.next() {
@@ -40,6 +42,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--output" => {
                 output = Some(args.next().ok_or("--output requires a path")?.into());
+            }
+            "--calibration" => {
+                calibration = Some(args.next().ok_or("--calibration requires a path")?.into());
+            }
+            "--epochs" => {
+                epochs = Some(args.next().ok_or("--epochs requires an integer")?.parse()?);
             }
             "--process-run" => {
                 process_run = args
@@ -245,6 +253,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("cache-lifecycle requires native Apple Silicon macOS execution".into());
             }
         }
+        "cache-lifecycle-stress-calibrate" => {
+            let case_list =
+                case_list.ok_or("cache-lifecycle-stress-calibrate requires --case-list PATH")?;
+            let trace =
+                trace_path.ok_or("cache-lifecycle-stress-calibrate requires --trace PATH")?;
+            let output = output.ok_or("cache-lifecycle-stress-calibrate requires --output PATH")?;
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                let _ = od_bench::dispatch_cache::calibrate_cache_lifecycle_stress(
+                    &case_list, &trace, &output,
+                )?;
+            }
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                let _ = (case_list, trace, output);
+                return Err("cache-lifecycle-stress-calibrate requires native Apple Silicon macOS execution".into());
+            }
+        }
+        "cache-lifecycle-stress" => {
+            let case_list = case_list.ok_or("cache-lifecycle-stress requires --case-list PATH")?;
+            let trace = trace_path.ok_or("cache-lifecycle-stress requires --trace PATH")?;
+            let calibration =
+                calibration.ok_or("cache-lifecycle-stress requires --calibration PATH")?;
+            let epochs = epochs.ok_or("cache-lifecycle-stress requires --epochs N")?;
+            let output = output.ok_or("cache-lifecycle-stress requires --output PATH")?;
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                let value = od_bench::dispatch_cache::run_cache_lifecycle_stress(
+                    &case_list,
+                    &trace,
+                    &calibration,
+                    process_run,
+                    epochs,
+                    &output,
+                )?;
+                let _ = value;
+            }
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                let _ = (case_list, trace, calibration, epochs, output, process_run);
+                return Err(
+                    "cache-lifecycle-stress requires native Apple Silicon macOS execution".into(),
+                );
+            }
+        }
         "flags-compare" => {
             let output = output.ok_or("flags-compare requires --output PATH")?;
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -280,7 +333,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {
             print_usage();
             return Err(
-                "expected record, measure, synthetic, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, cache-churn, cache-lifecycle, flags-compare, or cached-flags-compare".into(),
+                "expected record, measure, synthetic, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, or cached-flags-compare".into(),
             );
         }
     }
@@ -308,6 +361,8 @@ fn print_usage() {
   od-bench warm-branch-helper --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench cache-churn --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench cache-lifecycle --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
+  od-bench cache-lifecycle-stress-calibrate --case-list PATH --trace PATH --output calibration.json\n\
+  od-bench cache-lifecycle-stress --case-list PATH --trace PATH --calibration calibration.json --epochs N --process-run 1..3 --output report.json\n\
   od-bench flags-compare --process-run 1..3 --output report.json\n\
   od-bench cached-flags-compare [--preflight-only] --process-run 1..3 --output report.json\n\
          `record` requires macOS ARM64. `measure` rebuilds all keys before timing."

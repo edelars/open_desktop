@@ -561,6 +561,55 @@ step checks that no lookup, dispatch, or cache clear occurred; explicit clear
 is a separate step. Three clean release runs and their raw evidence are
 recorded in the [S3-37c report](../reports/STAGE_3_S3-37c_2026-10-31.md).
 
+### S3-37d: sustained deterministic mixed FIFO16 lifecycle stress
+
+`od-bench cache-lifecycle-stress-calibrate` chooses a fixed epoch count from a
+512-epoch calibration of the same sequence used by the scored command. The
+profile targets approximately 11 minutes per scored release process, caps the
+count at 35 million epochs, rejects a cap that cannot meet the target, and
+reserves one minute below the existing 30-minute process limit. Profile v4
+uses the same 512-epoch calibration sequence and validates the target-bound
+recommendation before scoring. Calibration records epoch-body time separately from
+the same 128 RSS/report/atomic-write checkpoints used by scored runs, then
+projects body, checkpoint, and fixed process costs independently. Host
+metadata is captured once; the scored process checks the overall deadline from
+before input preparation through final report persistence. Calibration binds
+the frozen corpus, source fingerprint, build/host metadata, schedule, timing
+arithmetic, and a payload integrity digest. `od-bench cache-lifecycle-stress` requires this
+calibration artifact, the exact recommended epoch count, and process run 1..=3.
+Calibration and scored runs require the frozen S3-17 case list and trace.
+
+Each epoch retains one FIFO16 runtime/cache/arena and performs a hit on the
+active entry, a unique pressure-key miss with exactly one FIFO eviction, a
+direct between-call invalidation of the active backing with exactly one entry
+removed, a compile/publication of alternate admitted bytes under the advanced
+backing version, then a repeat hit. Original and alternate bytes have distinct
+interpreter results and alternate by epoch. Every dispatched case is checked
+against its interpreter oracle for full GPR state, RIP, masked flags, exit,
+retirement and remaining budget. Every 128 epochs, the command clears and
+requires zero current resident entries/code/metadata plus all 16 arena slots,
+then refills. Every 512 epochs, it clears, drops the sole runtime and arena,
+reopens one runtime, executes after reopen with a bumped execution context, and
+refills. It never holds more than one MAP_JIT arena at once.
+
+Reports keep current occupancy separate from high-water accounting and include
+cumulative cache/dispatch counters, separate elapsed totals for pressure miss,
+version recompile dispatch, hit dispatch, invalidation, clear, teardown and
+reopen. Progress is written atomically as a bounded array of at most 128
+checkpoints; each checkpoint includes a process-wide RSS snapshot at the same
+end-of-epoch lifecycle point. Aggregate counters reconcile against exact
+schedule totals, and counter regression is an error. RSS is auxiliary and is not evidence of a
+leak-free result. The calibration and scored artifacts must be retained with
+their raw JSON. Run the three scored release processes sequentially during a
+Stage2-quiet window; an overlap with Stage 2 makes that attempt inconclusive.
+
+This profile exercises supported cache APIs only. It does not demonstrate
+production owner notification, guest-write SMC, active-code modification,
+fault cleanup, concurrent arenas, SMP, or leak-free behavior. Mini checks
+remain deferred to the end of Stage 3. S3-37d implementation source review is
+clean; measurements and independent evidence review are pending. Full S3-37
+remains open.
+
 Recorded trace дополняется ограниченными synthetic-сценариями:
 1/8/64/512/4096 keys и observed unique count, hot loops на 1/8 keys, reverse
 unique sequence, alternating hit/miss, stale mapping/backing/execute

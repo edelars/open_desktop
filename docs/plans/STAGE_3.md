@@ -3105,6 +3105,32 @@ evidence reviews were clean; see the
 defines reproduction and limitations. Full S3-37 and its long-running stress
 criteria remain open.
 
+#### S3-37d: sustained deterministic mixed lifecycle stress
+
+Add a separate versioned `od-bench cache-lifecycle-stress` profile over the
+same frozen corpus and existing FIFO16 runtime. A 512-epoch calibration fixes
+the scored epoch count at an approximately 11-minute target, with one minute
+reserved below the current 30-minute process limit. It separates epoch-body,
+checkpoint/report-write, and fixed process costs, and binds the artifact to the
+source fingerprint, host/build, corpus and validated timing arithmetic. One
+overall deadline covers preparation through final report persistence. Each epoch performs a current-key hit, a
+unique pressure miss and one FIFO eviction, between-call invalidation of the
+current backing, alternate admitted code under the advanced backing version
+with a distinct interpreter result, and a verified next-call hit. Every
+dispatch checks full interpreter-visible state, exit, budget, and retirement.
+Periodic clear must report zero current resident accounting and 16 free slots;
+periodic teardown/reopen must execute successfully with one MAP_JIT arena at a
+time. Current occupancy remains separate from high-water values, and progress
+is bounded by at most 128 aggregate checkpoints. RSS is auxiliary only.
+
+Keep three scored release processes sequential in a Stage2-quiet window. Record
+the calibration, actual elapsed time, raw JSON, and independent source/evidence
+review. Overlapped attempts are inconclusive. This supported-API resource
+stress does not claim production SMC/owner notification, faults, concurrent
+arenas, SMP, or leak-free behavior. Mini remains deferred to the end of Stage
+3; owner/MMU and Stage 2 are outside this slice. Implementation source review
+is clean; scored measurements and independent evidence review are pending.
+
 1. Выполнить длинную серию unique blocks, повторных invalidations, capacity evictions, SMC и mixed hit/miss workloads.
 2. Снимать executable bytes, metadata bytes, live/retired blocks, compile counts и доступные process memory показатели с описанием метода.
 3. Проверить освобождение после STOP/fault/destroy и несколько независимых runtime instances. Не смешивать peaks разных процессов с памятью одной VM.

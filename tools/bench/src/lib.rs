@@ -6,8 +6,12 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hint::black_box;
+use std::io::Read;
 use std::num::NonZeroU64;
-use std::process::Command;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+use std::process::{Child, Command, Stdio};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use od_isa::memory::AccessContext;
@@ -145,12 +149,14 @@ impl HostMetadata {
             repository_revision: command_text("git", &["rev-parse", "--verify", "HEAD"]),
             working_tree_dirty: None,
         };
-        if let Ok(output) = Command::new("git").args(["status", "--porcelain"]).output() {
-            if output.status.success() {
-                execution.working_tree_dirty =
-                    Some(!String::from_utf8_lossy(&output.stdout).trim().is_empty());
-            }
-        }
+        execution.working_tree_dirty =
+            match command_stdout_bounded("git", &["status", "--porcelain"]) {
+                Ok(output) => Some(!output.trim().is_empty()),
+                Err(reason) => {
+                    eprintln!("host metadata git status unavailable: {reason}");
+                    None
+                }
+            };
         Self {
             os: std::env::consts::OS.into(),
             os_version: host_os_version(),
@@ -181,14 +187,118 @@ pub struct BenchmarkRunMetadata {
 }
 
 fn command_text(program: &str, args: &[&str]) -> String {
-    Command::new(program)
+    match command_stdout_bounded(program, args) {
+        Ok(text) if !text.trim().is_empty() => text.trim().to_owned(),
+        Ok(_) => "unavailable: command returned empty output".into(),
+        Err(reason) => format!("unavailable: {reason}"),
+    }
+}
+
+fn command_stdout_bounded(program: &str, args: &[&str]) -> Result<String, String> {
+    const TIMEOUT: Duration = Duration::from_secs(2);
+    const OUTPUT_LIMIT: u64 = 1024 * 1024;
+    let started = Instant::now();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let mut command = Command::new(program);
+    command
         .args(args)
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-        .filter(|text| !text.is_empty())
-        .unwrap_or_else(|| "unavailable".into())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to spawn {program}: {error}"))?;
+    let Some(stdout) = child.stdout.take() else {
+        terminate_child_group(&mut child);
+        return Err(format!("{program} stdout pipe unavailable"));
+    };
+    let output_label = program.to_owned();
+    let reader = thread::Builder::new()
+        .name("bench-host-metadata-reader".into())
+        .spawn(move || {
+            let mut output = Vec::new();
+            let result = stdout
+                .take(OUTPUT_LIMIT + 1)
+                .read_to_end(&mut output)
+                .map_err(|error| format!("failed reading {output_label} output: {error}"))
+                .and_then(|_| {
+                    if output.len() as u64 > OUTPUT_LIMIT {
+                        Err(format!(
+                            "{output_label} output exceeds {OUTPUT_LIMIT} bytes"
+                        ))
+                    } else {
+                        Ok(String::from_utf8_lossy(&output).into_owned())
+                    }
+                });
+            let _ = sender.send(result);
+        });
+    let _reader = match reader {
+        Ok(reader) => reader,
+        Err(error) => {
+            terminate_child_group(&mut child);
+            return Err(format!("failed starting {program} output reader: {error}"));
+        }
+    };
+    let mut status = None;
+    let mut output = None;
+    loop {
+        if status.is_none() {
+            match child.try_wait() {
+                Ok(Some(exit)) => status = Some(exit),
+                Ok(None) => {}
+                Err(error) => {
+                    terminate_child_group(&mut child);
+                    return Err(format!("failed waiting for {program}: {error}"));
+                }
+            }
+        }
+        if output.is_none() {
+            match receiver.try_recv() {
+                Ok(result) => output = Some(result),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    terminate_child_group(&mut child);
+                    return Err(format!("{program} output reader disconnected"));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if status.is_some() && output.is_some() {
+            break;
+        }
+        if started.elapsed() >= TIMEOUT {
+            terminate_child_group(&mut child);
+            let _ = receiver.recv_timeout(Duration::from_millis(100));
+            return Err(format!(
+                "{program} timed out after {} ms",
+                TIMEOUT.as_millis()
+            ));
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    let exit = status.expect("checked above");
+    if !exit.success() {
+        return Err(format!("{program} exited with status {exit}"));
+    }
+    Ok(output.expect("checked above")?.trim_end().to_owned())
+}
+
+fn terminate_child_group(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        unsafe extern "C" {
+            fn kill(pid: i32, signal: i32) -> i32;
+        }
+        if let Ok(pid) = i32::try_from(child.id()) {
+            // The command has its own process group, so descendants that
+            // inherited stdout cannot keep the reader open after timeout.
+            unsafe {
+                let _ = kill(-pid, 9);
+            }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn host_os_version() -> String {
@@ -1799,6 +1909,15 @@ mod tests {
         MappingVersion,
     };
     use std::num::NonZeroU64;
+
+    #[cfg(unix)]
+    #[test]
+    fn host_metadata_timeout_covers_descendants_holding_stdout() {
+        let started = Instant::now();
+        let result = command_stdout_bounded("/bin/sh", &["-c", "(sleep 30) & exit 0"]);
+        assert!(matches!(result, Err(message) if message.contains("timed out")));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
 
     fn key(value: u8, mapping_version: u64, backing_version: u64) -> TranslationKey {
         let bytes = [0x48, 0xb8, value, 0, 0, 0, 0, 0, 0, 0];
