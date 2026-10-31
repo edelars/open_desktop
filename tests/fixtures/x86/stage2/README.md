@@ -7097,3 +7097,25 @@ no-read refusal coverage. No physical x86 acceptance is claimed. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bp--bounded-long64-cvtps2pi-mm0rax-memory-profile),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37bp--bounded-long64-cvtps2pi-mm0rax-memory-profile),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bp--cvtps2pi-mm0rax-memory-profile).
+
+### S2-37bq CVTTPD2PI MM0,[RAX] aligned m128 memory profile
+
+`s2_37bq_cvttpd2pi_mm0_memory_rax.case.json` is the literal schema-v2 fixture
+for exact `66 0F 2C 00`. It reads one aligned 16-byte source at RAX; the lanes
+are 1.5 and QNaN with MXCSR round-up and clear incoming sticky flags, so the
+expected result proves RC-independent truncation and generates PE|IE. Success
+writes physical x87 slot 0/MM0 with exponent word `ffff`, sets TOP=0/all tags
+valid, preserves remaining x87/XMM state and preserves AC=1 in RFLAGS. The
+runner matrix covers all four CPLs and AC values for aligned success and all
+15 misaligned offsets at representative CPL/AC; direct ISA tests cover those
+offsets across the full CPL×AC cross product. It also covers binary64
+boundaries, all RC modes, exact-lane sticky histories and noncanonical/
+canonical-boundary probes, strict gates, tampered output and backend refusal.
+Direct ISA tests establish overflow rejection, zero callback
+and unchanged state for pre-read refusals, exactly one 16-byte read for a valid
+source, and rollback after an injected read failure; runner execution does not
+record callback counts. Misaligned canonical-end/overflow probes also violate
+alignment, so they do not establish independent fault priority. No physical
+x86 acceptance is claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bq--bounded-long64-cvttpd2pi-mm0rax-aligned-m128-memory-profile),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37bq--bounded-long64-cvttpd2pi-mm0rax-aligned-m128-memory-profile),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bq--cvttpd2pi-mm0rax-aligned-m128-memory-profile).

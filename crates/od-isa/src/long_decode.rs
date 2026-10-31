@@ -1092,6 +1092,8 @@ pub enum Operation {
     Cvttps2piMm0MemoryRax,
     /// Local-only legacy `66 0F 2C C1` XMM1 binary64-to-MM0 truncating form.
     Cvttpd2piMm0Xmm1,
+    /// Local-only legacy `66 0F 2C 00` memory-source CVTTPD2PI form.
+    Cvttpd2piMm0MemoryRax,
     /// Local-only legacy `0F 2D C1` XMM1 binary32-to-MM0 rounded form.
     Cvtps2piMm0Xmm1,
     /// Local-only legacy `0F 2D 00` memory-source CVTPS2PI form.
@@ -3455,6 +3457,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && prefix_count == 1
             && prefix_bytes[0] == 0x66
             && prefixes.rex.is_none();
+        let cvttpd2pi_mm0_memory_rax = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x2c
+            && prefixes.operand_override
+            && prefix_count == 1
+            && prefix_bytes[0] == 0x66
+            && prefixes.rex.is_none();
         let cvtps2pi_mm0_xmm1 = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x2d
             && prefixes == Prefixes::default();
@@ -4132,6 +4140,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && !cvttps2pi_mm0_xmm1
             && !cvttps2pi_mm0_memory_rax
             && !cvttpd2pi_mm0_xmm1
+            && !cvttpd2pi_mm0_memory_rax
         {
             return Err(self.unsupported(opcode));
         }
@@ -4463,11 +4472,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     _ => return Err(self.unsupported(opcode)),
                 }
             }
-            (OpcodeMap::Escape0f, 0x2c) if cvttpd2pi_mm0_xmm1 => {
-                if self.byte()? != 0xc1 {
-                    return Err(self.unsupported(opcode));
+            (OpcodeMap::Escape0f, 0x2c) if cvttpd2pi_mm0_xmm1 || cvttpd2pi_mm0_memory_rax => {
+                match self.byte()? {
+                    0xc1 if cvttpd2pi_mm0_xmm1 => Operation::Cvttpd2piMm0Xmm1,
+                    0x00 if cvttpd2pi_mm0_memory_rax => Operation::Cvttpd2piMm0MemoryRax,
+                    _ => return Err(self.unsupported(opcode)),
                 }
-                Operation::Cvttpd2piMm0Xmm1
             }
             (OpcodeMap::Escape0f, 0x2d) if cvtps2pi_mm0_xmm1 || cvtps2pi_mm0_memory_rax => {
                 match self.byte()? {
@@ -20890,6 +20900,37 @@ mod tests {
             &[0x62, 0xf1, 0xfd, 0x08, 0x2c, 0xc1],
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn cvttpd2pi_mm0_memory_rax_decodes_only_the_exact_m128_form() {
+        let decoded = Memory::new(&[0x66, 0x0f, 0x2c, 0x00])
+            .decode()
+            .expect("canonical CVTTPD2PI MM0,[RAX] encoding");
+        assert_eq!(decoded.operation, Operation::Cvttpd2piMm0MemoryRax);
+        assert_eq!(decoded.length, 4);
+        for bytes in [
+            &[0x66, 0x0f, 0x2c, 0x01][..],
+            &[0x66, 0x0f, 0x2c, 0x40, 0x00],
+            &[0x66, 0x0f, 0x2c, 0x04, 0x00],
+            &[0x66, 0x0f, 0x2c, 0xc0],
+            &[0x0f, 0x2c, 0x00],
+            &[0x66, 0x66, 0x0f, 0x2c, 0x00],
+            &[0xf2, 0x66, 0x0f, 0x2c, 0x00],
+            &[0x66, 0xf2, 0x0f, 0x2c, 0x00],
+            &[0x48, 0x66, 0x0f, 0x2c, 0x00],
+            &[0x66, 0x48, 0x0f, 0x2c, 0x00],
+            &[0xc5, 0xf9, 0x2c, 0x00],
+            &[0x62, 0xf1, 0xfd, 0x08, 0x2c, 0x00],
+        ] {
+            assert!(
+                Memory::new(bytes)
+                    .decode()
+                    .map_or(true, |instruction| instruction.operation
+                        != Operation::Cvttpd2piMm0MemoryRax),
+                "{bytes:02x?}"
+            );
         }
     }
 

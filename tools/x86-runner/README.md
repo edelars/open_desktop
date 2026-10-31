@@ -30,3 +30,7 @@ state.
 The S2-37bp `CVTPS2PI MM0,[RAX]` profile is also local-only. Native execution
 is refused because the tracer does not capture the complete resulting x87/MMX
 state; this does not constitute physical x86 acceptance.
+
+The S2-37bq `CVTTPD2PI MM0,[RAX]` profile remains interpreter-only. Native
+execution is denied because the trace does not capture the complete resulting
+x87/MMX state, and this slice makes no physical x86 acceptance claim.

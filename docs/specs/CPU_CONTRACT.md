@@ -14267,3 +14267,45 @@ Normative sources: Intel SDM Rev. 093 Vol. 2A CVTPS2PI p. 3-231; Vol. 3B
 plan](../plans/STAGE_2.md#s2-37bp--bounded-long64-cvtps2pi-mm0rax-memory-profile),
 [report](../reports/STAGE_2_REPORT.md#s2-37bp--cvtps2pi-mm0rax-memory-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bp-cvtps2pi-mm0rax-memory-profile).
+
+## S2-37bq — bounded Long64 CVTTPD2PI MM0,[RAX] aligned m128 memory profile
+
+The schema-v2 interpreter profile admits exact `66 0F 2C 00`, Long64, one
+instruction, budget=1 and stop RIP=entry+4. Fetch the full four bytes before
+profile #UD for unavailable SSE2 (CPUID bit 26), CR0.EM or CR4.OSFXSR, then
+#NM for CR0.TS. This #UD-before-#NM order is a bounded local policy. CPL0–3
+are accepted.
+
+Read exactly one 16-byte m128 from RAX. The complete span must be canonical48
+and 16-byte aligned. Any misalignment raises #GP(0) before a memory callback,
+at any CPL and regardless of RFLAGS.AC; no #AC is generated. Aligned accesses
+are accepted with AC either clear or set. Require MXCSR supported bits within
+`0xffbf`, IM=PM=1 and `FSW & 0x80ff == 0`; pending x87 exceptions are rejected
+at profile admission, and #MF delivery is not modeled.
+
+Truncate each raw binary64 lane toward zero independent of MXCSR.RC. Masked
+invalid lanes yield `0x80000000` and set sticky IE; valid inexact lanes set
+sticky PE. Preserve previous MXCSR status/control bits and do not raise DE.
+Only after one successful source read write the pair to physical x87 slot
+0/MM0, set exponent bits 79:64 to `ffff`, set TOP=0/all tags valid and preserve
+the remaining x87 state. A failed read leaves CPU state unchanged. Native/JIT/
+C ABI execution and broader forms remain closed.
+
+The independent oracle classifies raw u64 inputs using integer logic, without
+host FP or production conversion helpers. Runner cases cover aligned success
+for CPL0–3 with AC both clear and set; all 15 misalignment offsets at
+representative CPL/AC; all MXCSR RC modes; IE|PE generation from clear flags; sticky
+history preservation on exact lanes; the value just below −2^31 that truncates
+to valid i32::MIN with PE only; and noncanonical/canonical-boundary probes.
+Direct ISA tests verify the full offset×CPL×AC matrix, zero callbacks and
+unchanged state for pre-read refusals, one exact 16-byte callback on success,
+u64 overflow rejection, full-fetch behavior, and rollback after an injected
+read error. Canonical-end and overflow probes are themselves
+misaligned and therefore do not prove an independent alignment/fault priority.
+Physical x86 acceptance was not performed.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTTPD2PI p. 3-248; Vol. 3B
+§25.25.3 Table 25-4 p. 25-22; Vol. 3A §15.2 Table 15-2 and Vol. 1 SSE2
+feature rules. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bq--bounded-long64-cvttpd2pi-mm0rax-aligned-m128-memory-profile),
+[report](../reports/STAGE_2_REPORT.md#s2-37bq--cvttpd2pi-mm0rax-aligned-m128-memory-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bq-cvttpd2pi-mm0rax-aligned-m128-memory-profile).

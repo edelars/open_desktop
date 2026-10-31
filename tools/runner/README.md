@@ -189,3 +189,13 @@ SDM operand table/Operation specify m64 and `SRC[63:0]`, followed here despite
 the contradictory 128-bit prose. Physical x86 acceptance is separate. See the
 [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bp--bounded-long64-cvtps2pi-mm0rax-memory-profile)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bp-cvtps2pi-mm0rax-memory-profile).
+
+S2-37bq adds exact `CVTTPD2PI MM0,[RAX]` (`66 0F 2C 00`). Its aligned m128
+fixture and runner matrix cover RC-independent truncation, clear-flag IE/PE
+generation, sticky preservation, the MM0/TOP/tag transition, all 15
+misalignment offsets, gate and encoding rejection, tampered output, and
+backend denial. Direct ISA tests establish the full CPL×AC misalignment matrix,
+zero callbacks on pre-read failures, one 16-byte callback on success, and
+rollback after a failed read.
+No physical x86 acceptance is claimed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bq--bounded-long64-cvttpd2pi-mm0rax-aligned-m128-memory-profile)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bq-cvttpd2pi-mm0rax-aligned-m128-memory-profile).

@@ -19409,3 +19409,58 @@ Rev. 093 Vol. 2A CVTPS2PI p. 3-231; Vol. 3B §25.25.3 Table 25-5 p. 25-23;
 Vol. 3A §15.2 Table 15-2. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bp--bounded-long64-cvtps2pi-mm0rax-memory-profile),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37bp--bounded-long64-cvtps2pi-mm0rax-memory-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bp-cvtps2pi-mm0rax-memory-profile).
+
+## S2-37bq — CVTTPD2PI MM0,[RAX] aligned m128 memory profile
+
+Implemented exact schema-v2 Long64 interpreter profile `66 0F 2C 00`, full
+four-byte fetch, budget 1 and stop RIP+4. Profile gates use SSE2 CPUID bit 26,
+CR0.EM/CR4.OSFXSR #UD followed by CR0.TS #NM as a bounded local ordering;
+CPL0–3 are accepted. The source is one aligned canonical48 m128 span at RAX.
+Misalignment raises #GP(0) before memory callbacks at any CPL regardless of
+RFLAGS.AC; aligned accesses work with AC clear or set. MXCSR admission is
+limited to mask `0xffbf` with IM=PM=1; pending x87 state is rejected under the
+strict `FSW & 0x80ff == 0` local precondition.
+
+The interpreter truncates raw binary64 lanes toward zero independently of
+MXCSR.RC. Masked invalid values yield `0x80000000` and sticky IE; valid inexact
+values add sticky PE; existing status/control bits are preserved and DE is not
+raised. After the successful 16-byte read it writes physical MM0 with exponent
+word `ffff`, sets TOP=0/all tags valid, and preserves the remaining state. A
+failed read leaves CPU state unchanged. The independent schema oracle uses raw
+u64 bits and integer arithmetic without host floating point or production
+helpers. Native/JIT/C ABI remain fail-closed.
+
+Runner coverage includes all MXCSR RC values, invalid and inexact lanes from
+clear flags, the valid-minimum `0xc1e0000000000001` boundary with PE only, exact
+sticky histories, aligned CPL×AC successes, all 15 misaligned offsets at a
+representative CPL/AC, noncanonical/canonical-boundary probes, gate controls,
+malformed encodings, PM/pending-x87/DAZ strict admission, foreign-field
+validation through `Fixture::validate` and `Fixture::from_json`, tampered
+output and backend denial. The runner’s result oracle expects #GP(0), zero
+retirement and unchanged snapshots for invalid spans; it does not report memory
+callback counts. Direct ISA tests cover the full misalignment×CPL×AC product,
+zero reads and unchanged CPU state on alignment/span/gate/profile refusals,
+fetch truncation before gate evaluation, one successful 16-byte read at both
+canonical edges, and rollback after an injected read error. Canonical-end and
+overflow probes are also misaligned and do not establish independent fault
+priority. No physical x86 acceptance was performed.
+
+Verification passed: focused `cargo test -p od-isa cvttpd2pi_mm0_memory_rax
+--offline` (2 tests), focused `cargo test -p od-runner
+cvttpd2pi_mm0_memory_rax_aligned_m128_has_exactly_one_local_interpreter_profile
+--offline` (1 test), full `cargo test -p od-testkit --offline` (444 tests), and
+full `cargo test -p od-runner --offline` (112 unit + 446 fixture tests). The
+`cargo test -p od-x86-runner --offline` also passed (8 library + 4 binary
+tests; doc-tests 0); its generic native local-only classification test passed.
+The profile-specific native fixture-denial test is Linux-only and cfg-disabled
+on this macOS host. `cargo check --workspace --all-targets --offline`,
+`cargo fmt --all -- --check`, `python3 tools/check_layout.py` (48 required
+directories, 6 crate scaffolds, 14 instruction scopes), 18 S2-37bq cross-doc
+heading links and `git diff --check` passed. `graphify update .` completed with
+10,151 nodes, 21,481 edges and 314 communities; existing parser warnings
+remain for `include/open_desktop/host_abi.h` and 13 files without symbols.
+Physical x86 acceptance remains not run. Normative sources: Intel SDM Rev. 093 Vol. 2A
+CVTTPD2PI p. 3-248; Vol. 3B §25.25.3 Table 25-4 p. 25-22; Vol. 3A §15.2
+Table 15-2 and Vol. 1 SSE2 feature rules. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bq--bounded-long64-cvttpd2pi-mm0rax-aligned-m128-memory-profile),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37bq--bounded-long64-cvttpd2pi-mm0rax-aligned-m128-memory-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bq-cvttpd2pi-mm0rax-aligned-m128-memory-profile).

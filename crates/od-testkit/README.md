@@ -253,3 +253,13 @@ predicts MM0/x87 transition plus sticky IE/PE without host FP or ISA helpers.
 Strict admission requires IM=PM=1, AC=0 and no pending x87 exception. See the
 [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bp--bounded-long64-cvtps2pi-mm0rax-memory-profile)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bp-cvtps2pi-mm0rax-memory-profile).
+
+S2-37bq adds `s2-long-cvttpd2pi-memory-rax-v1` for exact `66 0F 2C 00`.
+The independent oracle classifies two raw binary64 lanes and truncates toward
+zero without host FP or production conversion helpers. It validates sticky
+IE/PE and the physical MM0/TOP/tag transition. The profile reads exactly one
+aligned canonical m128 span, rejects misalignment with #GP regardless of CPL
+or AC, and defers state mutation until the single read succeeds. Strict
+admission checks the MXCSR subset, IM=PM=1 and no pending x87 exception. See
+the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bq--bounded-long64-cvttpd2pi-mm0rax-aligned-m128-memory-profile)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bq-cvttpd2pi-mm0rax-aligned-m128-memory-profile).

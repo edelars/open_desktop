@@ -61,6 +61,8 @@ const CVTPD2PI_MM0_XMM1: &[u8] =
 const CVTTPD2PI_MM0_XMM1: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37bl_cvttpd2pi_mm0_xmm1_masked.case.json"
 );
+const CVTTPD2PI_MM0_MEMORY_RAX: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_37bq_cvttpd2pi_mm0_memory_rax.case.json");
 const CVTPI2PD_XMM0_MM1: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37bm_cvtpi2pd_xmm0_mm1_register.case.json"
 );
@@ -23951,6 +23953,294 @@ fn cvttpd2pi_mm0_xmm1_masked_profile_truncates_binary64_and_transitions_mmx_stat
     };
     snapshot.state.x87.as_mut().unwrap().registers[0] = "00000000000000000000".into();
     assert!(od_testkit::v2::compare(&input, &result, &tampered).is_err());
+}
+
+#[test]
+fn cvttpd2pi_mm0_memory_rax_aligned_m128_has_exactly_one_local_interpreter_profile() {
+    use od_testkit::v2::{CliCpl, ExpectedExit, Profile};
+
+    let fixture = Fixture::from_json(CVTTPD2PI_MM0_MEMORY_RAX)
+        .unwrap()
+        .fixture;
+    assert_eq!(fixture.profile, Profile::LongCvttpd2piMemoryRaxV1);
+    let (input, baseline) = run(CVTTPD2PI_MM0_MEMORY_RAX, "interpreter", 0);
+    od_testkit::v2::compare(&input, &baseline, &baseline).unwrap();
+    let mut tampered = baseline.clone();
+    let Observation::Available { value: snapshot } = &mut tampered.snapshot else {
+        panic!("snapshot")
+    };
+    snapshot.state.x87.as_mut().unwrap().registers[0] = "00000000000000000000".into();
+    assert!(od_testkit::v2::compare(&input, &baseline, &tampered).is_err());
+    let mut foreign_controls = fixture.clone();
+    foreign_controls.cvttpd2pi_register_controls = Some(od_testkit::v2::Cvtpd2piControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+    });
+    assert!(foreign_controls.validate().is_err());
+    let foreign_json = serde_json::to_vec(&foreign_controls).unwrap();
+    assert!(Fixture::from_json(&foreign_json).is_err());
+
+    let values = [
+        0x0000_0000_0000_0000u64, // +0
+        0x8000_0000_0000_0000,    // -0
+        0x3ff8_0000_0000_0000,    // +1.5, PE
+        0xbff8_0000_0000_0000,    // -1.5, PE
+        0x41e0_0000_0000_0000,    // +2^31, IE
+        0xc1e0_0000_0000_0000,    // -2^31, exact valid boundary
+        0xc1e0_0000_0000_0001,    // just below -2^31; valid MIN + PE
+        0x7ff8_0000_0000_0001,    // QNaN, IE
+        0x7ff0_0000_0000_0001,    // SNaN, IE
+        0x7ff0_0000_0000_0000,    // +infinity, IE
+        0x0000_0000_0000_0001,    // subnormal -> zero + PE, no DE
+    ];
+    let exercise = |mut case: Fixture,
+                    address: u64,
+                    lane0: u64,
+                    lane1: u64,
+                    rc: u64,
+                    top: u64,
+                    tags: u64,
+                    old_sticky: u64,
+                    cpl: CliCpl,
+                    ac: bool,
+                    expected: ExpectedExit| {
+        case.case_id = format!(
+            "s2_37bq_{address:016x}_{lane0:016x}_{lane1:016x}_rc{rc}_top{top}_tags{tags:04x}_sticky{old_sticky:02x}_cpl{cpl:?}_ac{ac}"
+        )
+        .to_ascii_lowercase();
+        case.cli_cpl = Some(cpl);
+        case.initial_state.gpr[0] = HexU64(address);
+        case.initial_state.rflags = HexU64(2 | (u64::from(ac) << 18));
+        case.initial_state.sse.as_mut().unwrap().mxcsr =
+            HexU64((0x0000_1f80 & !(3 << 13)) | (rc << 13) | old_sticky);
+        case.initial_state.x87.as_mut().unwrap().status_word = HexU64((top << 11) | 0x0200);
+        case.initial_state.x87.as_mut().unwrap().tag_word = HexU64(tags);
+        case.memory[1].guest_address = HexU64(address);
+        let mut source = Vec::new();
+        source.extend_from_slice(&lane0.to_le_bytes());
+        source.extend_from_slice(&lane1.to_le_bytes());
+        case.memory[1].initial_bytes_hex =
+            source.iter().map(|byte| format!("{byte:02x}")).collect();
+        case.memory[1].comparison_mask_hex = "ff".repeat(16);
+        case.expected_exit = expected;
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        assert_eq!(result.profile, Profile::LongCvttpd2piMemoryRaxV1);
+        if expected == ExpectedExit::StopAddress {
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available { value: HexU64(1) }
+            );
+        } else {
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available { value: HexU64(0) }
+            );
+        }
+        result
+    };
+
+    // Aligned access is accepted for every CPL and AC setting. The instruction
+    // does not apply the generic #AC alignment check to its m128 operand.
+    for cpl in [CliCpl::Cpl0, CliCpl::Cpl1, CliCpl::Cpl2, CliCpl::Cpl3] {
+        for ac in [false, true] {
+            exercise(
+                fixture.clone(),
+                0x2010,
+                0x3ff8_0000_0000_0000,
+                0x7ff8_0000_0000_0001,
+                2,
+                3,
+                0xaaaa,
+                0,
+                cpl,
+                ac,
+                ExpectedExit::StopAddress,
+            );
+        }
+    }
+
+    // The runner checks each misaligned offset at one representative CPL/AC.
+    // Direct ISA tests cover the full CPL×AC cross-product, zero memory
+    // callbacks, and unchanged CPU state.
+    for offset in 1..16u64 {
+        let result = exercise(
+            fixture.clone(),
+            0x2010 + offset,
+            0x3ff8_0000_0000_0000,
+            0x7ff8_0000_0000_0001,
+            0,
+            0,
+            0x5555,
+            0,
+            CliCpl::Cpl3,
+            true,
+            ExpectedExit::Exception,
+        );
+        let Observation::Available { value: snapshot } = result.snapshot else {
+            panic!("snapshot")
+        };
+        let Observation::Available {
+            value: Some(exception),
+        } = snapshot.exception
+        else {
+            panic!("exception")
+        };
+        assert_eq!(exception.vector, 13);
+        assert_eq!(
+            exception.error_code,
+            Observation::Available { value: HexU64(0) }
+        );
+    }
+
+    // RC is ignored; invalid and inexact valid lanes independently generate
+    // IE and PE from clear status flags. Also cover RC values, raw boundaries,
+    // representative TOP/tag state, and existing sticky status preservation.
+    for rc in 0..4u64 {
+        for (lane0, lane1) in values.iter().copied().zip(values.iter().copied().rev()) {
+            exercise(
+                fixture.clone(),
+                0x2010,
+                lane0,
+                lane1,
+                rc,
+                5,
+                0xaaaa,
+                0,
+                CliCpl::Cpl0,
+                false,
+                ExpectedExit::StopAddress,
+            );
+        }
+        let mixed = exercise(
+            fixture.clone(),
+            0x2010,
+            values[4],
+            values[2],
+            rc,
+            7,
+            0xffff,
+            0,
+            CliCpl::Cpl3,
+            true,
+            ExpectedExit::StopAddress,
+        );
+        let Observation::Available { value: snapshot } = mixed.snapshot else {
+            panic!("snapshot")
+        };
+        assert_eq!(
+            snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+            (1 << 5) | 1
+        );
+    }
+    for old_sticky in [0, 1, 1 << 5, 1 | (1 << 5)] {
+        exercise(
+            fixture.clone(),
+            0x2010,
+            0,
+            0x8000_0000_0000_0000,
+            0,
+            0,
+            0x5555,
+            old_sticky,
+            CliCpl::Cpl0,
+            false,
+            ExpectedExit::StopAddress,
+        );
+    }
+    for address in [0x0000_8000_0000_0000, 0x0000_7fff_ffff_fff1] {
+        let result = exercise(
+            fixture.clone(),
+            address,
+            0,
+            0,
+            0,
+            0,
+            0xffff,
+            0,
+            CliCpl::Cpl0,
+            false,
+            ExpectedExit::Exception,
+        );
+        let Observation::Available { value: snapshot } = result.snapshot else {
+            panic!("snapshot")
+        };
+        let Observation::Available {
+            value: Some(exception),
+        } = snapshot.exception
+        else {
+            panic!("exception")
+        };
+        assert_eq!(exception.vector, 13);
+    }
+
+    for (sse2_available, cr0_em, cr4_osfxsr, cr0_ts, vector) in [
+        (false, false, true, true, 6),
+        (true, true, true, true, 6),
+        (true, false, false, true, 6),
+        (true, false, true, true, 7),
+    ] {
+        let mut case = fixture.clone();
+        let controls = case.cvttpd2pi_memory_controls.as_mut().unwrap();
+        controls.sse2_available = sse2_available;
+        controls.cr0_em = cr0_em;
+        controls.cr4_osfxsr = cr4_osfxsr;
+        controls.cr0_ts = cr0_ts;
+        case.expected_exit = ExpectedExit::Exception;
+        let result = run(&case.to_json().unwrap(), "interpreter", 0).1;
+        let Observation::Available { value: snapshot } = result.snapshot else {
+            panic!("snapshot")
+        };
+        let Observation::Available {
+            value: Some(exception),
+        } = snapshot.exception
+        else {
+            panic!("exception")
+        };
+        assert_eq!(exception.vector, vector);
+    }
+
+    for code in [
+        "0f2c00",
+        "660f2cc1",
+        "660f2c01",
+        "66660f2c00",
+        "f2660f2c00",
+        "66f20f2c00",
+        "48660f2c00",
+        "66480f2c00",
+        "660f2c0090",
+        "c5f92c00",
+        "62f1fd082c00",
+    ] {
+        let mut invalid = fixture.clone();
+        invalid.memory[0].initial_bytes_hex = code.into();
+        invalid.memory[0].length = (code.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(code.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (code.len() / 2) as u64,
+        ));
+        assert!(invalid.validate().is_err(), "accepted {code}");
+    }
+
+    let mut pending = fixture.clone();
+    pending.initial_state.x87.as_mut().unwrap().status_word = HexU64(1);
+    assert!(pending.validate().is_err(), "accepted pending x87");
+    let mut pm_unmasked = fixture.clone();
+    pm_unmasked.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x0000_efbf);
+    assert!(pm_unmasked.validate().is_err(), "accepted PM=0");
+    let mut daz_enabled = fixture.clone();
+    daz_enabled.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x0000_10c0);
+    assert!(daz_enabled.validate().is_err(), "accepted DAZ");
+
+    for backend in ["jit", "native"] {
+        assert!(matches!(
+            run(CVTTPD2PI_MM0_MEMORY_RAX, backend, 4).1.outcome,
+            Outcome::Unsupported { .. }
+        ));
+    }
 }
 
 #[test]

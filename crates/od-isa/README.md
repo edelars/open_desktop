@@ -634,3 +634,13 @@ The SDM table and Operation pseudocode specify m64/SRC[63:0], which governs
 despite the entry's conflicting 128-bit prose. Other backends remain closed.
 See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bp--bounded-long64-cvtps2pi-mm0rax-memory-profile)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bp-cvtps2pi-mm0rax-memory-profile).
+
+S2-37bq adds exact Long64 `66 0F 2C 00` CVTTPD2PI MM0,[RAX] as a bounded
+interpreter profile. It validates canonical48 and 16-byte alignment, then
+issues one m128 read before any CPU mutation. Misalignment raises #GP(0)
+independent of CPL and AC; aligned AC=0/1 both work. Conversion truncates raw
+binary64 lanes independent of RC and updates masked IE/PE. Successful reads
+write physical MM0 and transition TOP/tags; read failures roll back state.
+JIT/native and broader forms remain closed. See the [CPU
+contract](../../docs/specs/CPU_CONTRACT.md#s2-37bq--bounded-long64-cvttpd2pi-mm0rax-aligned-m128-memory-profile)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bq-cvttpd2pi-mm0rax-aligned-m128-memory-profile).
