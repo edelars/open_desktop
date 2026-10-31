@@ -2795,6 +2795,47 @@ evidence. The report records the full local suite after the sources freeze and
 the independent review. Mini, performance, Stage 2, and owner-backed checks
 remain outside this slice.
 
+#### S3-34n. Reproducible generated corpus for NativeRegisterV1
+
+Generate 1,200 unique complete inputs from three fixed seeds with 400 inputs
+per seed. Run every input twice, from reset state, through the interpreter,
+eager `NativeRegisterV1`, and the demand-flags candidate. Compare every modeled
+CPU field, exit/RIP, retirement split and remaining budget; data memory must
+remain untouched. Vary exact extra-form bytes and ordering, immediate and
+displacement values, initial GPR/flags, guest base RIP, valid branch edges,
+STOP/stop-RIP and budgets. Keep NOP fallback and baseline S0-09 forms in the
+programs, and retain pending flag compositions, both branch outcomes, bounded
+loops, STOP and budget exits.
+
+Inputs have a strict versioned replay envelope containing source bytes, guest
+base, full initial state (including explicitly defaulted auxiliary fields),
+STOP/budget controls, profile, seed/index and canonical full-input digest.
+Successful corpus execution saves a full case and its repeated backend
+observations under the run's ignored artifact directory. The replay gate loads
+the saved bytes/state and reruns both native backends. Mismatch diagnostics
+retain the original case, both observations, and a direct reproduction command.
+Comparator/envelope self-checks reject corrupted GPR, flags, RIP, exit and
+retirement; malformed, altered-digest, wrong-profile or unsupported cases;
+missing backend results; and backend errors/timeouts.
+
+Add exactly three local acceptance gates and pin their full identities in the
+manifest, source fingerprint and final summary while retaining all existing
+gate identities. Do not add ISA/runtime/JIT behavior or a general reducer.
+Report the exact seed, form coverage, counts and input digest. The full harness
+is required only after review and source freeze; Mini remains deferred until
+the end of Stage 3, while Stage 2, owner/MMU and performance are outside this
+slice.
+
+Completed 2026-10-30. The frozen local harness run
+`stage3-20261030-234229-c0299d9b8f` finished `local_only` with 76 passed and
+zero failed steps. It retained all 69 prior exact Rust gates, including all 42
+S3-33 identities, and passed the three new gates. The corpus contained 1,200
+unique inputs with canonical digest `fnv1a64:172fb17b01c502df`; the run source
+fingerprints matched before and after. The result remains bounded local
+evidence; Mini, physical x86, performance, Stage 2, and owner/MMU remain
+`not_run` or outside scope. See the [S3-34n report](../reports/STAGE_3_S3-34n_2026-10-30.md)
+for coverage counts, artifact hashes, exact gates, and review status.
+
 ### S3-35. Измерить холодное исполнение
 
 #### S3-35a: first full-corpus interpreter/FIFO comparison path

@@ -3,6 +3,7 @@
 
 import hashlib
 import importlib.util
+import json
 import os
 import signal
 import subprocess
@@ -87,6 +88,49 @@ def passing_rust_gate_steps(log_dir: Path):
 
 def passing_final_summary(run_id: str, log_dir: Path):
     steps = passing_rust_gate_steps(log_dir)
+    run_root = harness.ROOT / "work" / "stage3-harness" / run_id
+    artifact_dir = run_root / "artifacts" / "native-register-v1"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    for name, _, _, _ in harness.RUST_TEST_GATES:
+        if name.startswith("s3_34n_native_register_v1_"):
+            steps[name]["artifact_directory"] = artifact_dir.relative_to(harness.ROOT).as_posix()
+    corpus_summary = {
+        "profile": "NativeRegisterV1",
+        "version": 1,
+        "unique_inputs": 1200,
+        "seeds": [0x5333346E00000001, 0x5333346E00000002, 0x5333346E00000003],
+        "cases_per_seed": 400,
+        "repeats_per_backend": 2,
+        "full_partial_preserve_xchg_branch_anchors": 3,
+        "rip_relative_lea_after_variable_predecessor_cases": 1197,
+        "anchor_branch_taken": 1,
+        "anchor_branch_fallthrough": 2,
+        "code_end_exits": 400,
+        "budget_exits": 400,
+        "stop_address_exits": 200,
+        "stop_requested_exits": 200,
+        "fallback_instructions_retired": 100,
+        "bounded_loop_inputs": 147,
+        "zero_budget_inputs": 1,
+        "rip_predecessor_lengths": [3, 4, 7],
+        "form_counts": [1] * 13,
+        "canonical_inputs_digest": "fnv1a64:" + "1" * 16,
+    }
+    saved_case = {
+        "input": {
+            "profile": "NativeRegisterV1",
+            "version": 1,
+            "input_digest": "fnv1a64:" + "2" * 16,
+        },
+        "backend_runs": {},
+    }
+    (artifact_dir / "native-register-v1-summary.json").write_text(json.dumps(corpus_summary))
+    (artifact_dir / "native-register-v1-saved-case.json").write_text(json.dumps(saved_case))
+    harness.attach_native_register_v1_evidence(
+        steps["s3_34n_native_register_v1_corpus"],
+        run_root,
+        "s3_34n_native_register_v1_corpus",
+    )
     for name in ("harness_self_tests", "stage1_dispatch", "memory_corpus"):
         steps[name] = {"status": "passed"}
     gate_name = "memory_s3_34h_exact_gate"
@@ -313,6 +357,9 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             "s3_33m_native_lea_rax_rip_disp32_admission",
             "s3_33m_native_lea_rax_rip_disp32_compiler",
             "s3_33m_native_lea_rax_rip_disp32_host",
+            "s3_34n_native_register_v1_corpus",
+            "s3_34n_native_register_v1_replay",
+            "s3_34n_native_register_v1_selfcheck",
         )
         for missing_step in (harness.RUST_TEST_GATES[-1][0], *mandatory_steps):
             manifest = {
@@ -494,20 +541,143 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         self.assertIn("crates/od-jit/src/block.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-jit/src/block_emitter.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-jit/src/block_compile.rs", harness.LOCAL_RUST_TEST_SOURCES)
+        run_id = harness.new_run_id()
+        run_root = harness.ROOT / "work" / "stage3-harness" / run_id
+        try:
+            with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+                log_dir = Path(temporary)
+                with mock.patch.object(harness, "source_fingerprint", return_value="a" * 64):
+                    summary = passing_final_summary(run_id, log_dir)
+                acceptance_steps = summary["suites"]["local_acceptance"]["tests"]
+                self.assertEqual(
+                    [name for name in acceptance_steps if name.startswith("s3_33")],
+                    expected_steps,
+                )
+                summary_identities = [
+                    summary["steps"][name]["test_identity"] for name in expected_steps
+                ]
+                self.assertEqual(len(set(summary_identities)), len(expected_steps))
+        finally:
+            shutil.rmtree(run_root, ignore_errors=True)
 
+    def test_s3_34n_native_register_corpus_gates_are_pinned_once(self):
+        expected = [
+            (
+                "s3_34n_native_register_v1_corpus", "od-host",
+                "tests::native_register_v1_corpus::generated_corpus_runs_twice_across_all_backends",
+            ),
+            (
+                "s3_34n_native_register_v1_replay", "od-host",
+                "tests::native_register_v1_corpus::saved_case_round_trip_and_replay",
+            ),
+            (
+                "s3_34n_native_register_v1_selfcheck", "od-host",
+                "tests::native_register_v1_corpus::comparator_and_envelope_fail_closed",
+            ),
+        ]
+        gates = [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_34n_")]
+        self.assertEqual(len(harness.RUST_TEST_GATES), 72)
+        self.assertEqual(sum(name.startswith("s3_33") for name, _, _, _ in harness.RUST_TEST_GATES), 42)
+        self.assertEqual([(name, package, identity) for name, _, package, identity in gates], expected)
+        self.assertIn("crates/od-host/src/tests/native_register_v1_corpus.rs", harness.LOCAL_RUST_TEST_SOURCES)
+        manifest = harness.rust_test_gate_manifest()
+        self.assertEqual(len(manifest), 72)
+        self.assertEqual(len({gate["step"] for gate in manifest}), 72)
+        native_identities = {
+            gate["identity"] for gate in manifest if gate["step"].startswith("s3_33")
+        }
+        self.assertEqual(len(native_identities), 42)
         with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
-            log_dir = Path(temporary)
-            with mock.patch.object(harness, "source_fingerprint", return_value="a" * 64):
-                summary = passing_final_summary(harness.new_run_id(), log_dir)
-            acceptance_steps = summary["suites"]["local_acceptance"]["tests"]
-            self.assertEqual(
-                [name for name in acceptance_steps if name.startswith("s3_33")],
-                expected_steps,
+            run_dir = Path(temporary)
+            wrong_path = {
+                "artifact_directory": "work/other-run/artifacts/native-register-v1"
+            }
+            with self.assertRaisesRegex(harness.HarnessError, "artifact directory"):
+                harness.attach_native_register_v1_evidence(
+                    wrong_path, run_dir, "s3_34n_native_register_v1_corpus"
+                )
+            missing = {
+                "artifact_directory": (
+                    run_dir / "artifacts" / "native-register-v1"
+                ).relative_to(harness.ROOT).as_posix()
+            }
+            with self.assertRaisesRegex(harness.HarnessError, "evidence is missing"):
+                harness.attach_native_register_v1_evidence(
+                    missing, run_dir, "s3_34n_native_register_v1_corpus"
+                )
+            artifact_rel = (
+                run_dir / "artifacts" / "native-register-v1"
+            ).relative_to(harness.ROOT).as_posix()
+            artifact_dir = run_dir / "artifacts" / "native-register-v1"
+            steps = {
+                name: {"status": "passed", "artifact_directory": artifact_rel}
+                for name, _, _, _ in harness.RUST_TEST_GATES
+                if name.startswith("s3_34n_native_register_v1_")
+            }
+            with self.assertRaisesRegex(harness.HarnessError, "summary evidence is missing"):
+                harness.validate_native_register_v1_artifacts(steps, run_dir)
+
+            external_dir = run_dir / "external"
+            external_dir.mkdir()
+            artifacts_link = run_dir / "artifacts"
+            artifacts_link.symlink_to(external_dir, target_is_directory=True)
+            with self.assertRaisesRegex(harness.HarnessError, "artifact directory"):
+                harness.attach_native_register_v1_evidence(
+                    steps["s3_34n_native_register_v1_corpus"],
+                    run_dir,
+                    "s3_34n_native_register_v1_corpus",
+                )
+            artifacts_link.unlink()
+            artifact_dir.mkdir(parents=True)
+            outside_file = run_dir / "external-case.json"
+            outside_file.write_text("{}")
+            (artifact_dir / "native-register-v1-summary.json").symlink_to(outside_file)
+            with self.assertRaisesRegex(harness.HarnessError, "artifact file cannot be a symlink"):
+                harness.attach_native_register_v1_evidence(
+                    steps["s3_34n_native_register_v1_corpus"],
+                    run_dir,
+                    "s3_34n_native_register_v1_corpus",
+                )
+            harness_run = run_dir / "harness-run"
+            log_dir = harness_run / "logs"
+            log_dir.mkdir(parents=True)
+            replay_step, _, package, identity = next(
+                gate for gate in harness.RUST_TEST_GATES
+                if gate[0] == "s3_34n_native_register_v1_replay"
             )
-            summary_identities = [
-                summary["steps"][name]["test_identity"] for name in expected_steps
-            ]
-            self.assertEqual(len(set(summary_identities)), len(expected_steps))
+            argv = harness.rust_test_argv(package, identity)
+            fake_process = type("Process", (), {
+                "stdout": f"test {identity} ... ok\n", "stderr": "", "returncode": 0
+            })()
+            with (
+                mock.patch.object(harness.subprocess, "run", return_value=fake_process) as mocked_run,
+                mock.patch.object(harness, "source_fingerprint", return_value="a" * 64),
+                mock.patch.dict(os.environ, {"OD_JIT_NATIVE_REGISTER_V1_REPLAY_CASE": "/external/forged.json"}),
+            ):
+                step = harness.run_step(replay_step, argv, harness_run, 30, "a" * 64)
+            self.assertEqual(step["status"], "passed")
+            expected_replay = str(
+                harness_run / "artifacts" / "native-register-v1" / "native-register-v1-saved-case.json"
+            )
+            self.assertEqual(
+                mocked_run.call_args.kwargs["env"]["OD_JIT_NATIVE_REGISTER_V1_REPLAY_CASE"],
+                expected_replay,
+            )
+
+        run_id = harness.new_run_id()
+        harness_run = harness.ROOT / "work" / "stage3-harness" / run_id
+        (harness_run / "logs").mkdir(parents=True)
+        try:
+            with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+                summary = passing_final_summary(run_id, harness_run / "logs")
+                manifest_path = Path(temporary) / "input_manifest.json"
+                manifest_raw = harness.write_json_create(manifest_path, harness.input_manifest())
+                summary["input_manifest_sha256"] = harness.sha256_bytes(manifest_raw)
+                summary["steps"]["s3_34n_native_register_v1_corpus"].pop("corpus_evidence")
+                with self.assertRaisesRegex(harness.HarnessError, "summary evidence is missing"):
+                    harness.validate_final_summary(summary, manifest_path)
+        finally:
+            shutil.rmtree(harness_run, ignore_errors=True)
 
     def test_rust_gate_summary_rejects_an_omitted_mandatory_gate(self):
         with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
@@ -536,6 +706,9 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 "s3_33n_native_register_v1_admission",
                 "s3_33n_native_register_v1_compiler",
                 "s3_33n_native_register_v1_host",
+                "s3_34n_native_register_v1_corpus",
+                "s3_34n_native_register_v1_replay",
+                "s3_34n_native_register_v1_selfcheck",
             )
             for missing_step in (harness.ADDITIONAL_TEST_GATES[0][0], *mandatory_steps):
                 steps = passing_rust_gate_steps(Path(temporary))

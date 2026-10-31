@@ -59,6 +59,7 @@ SELF_TEST_NAMES = (
     "test_manual_frozen_input_and_result_bind_to_parent_manifest",
     "test_rust_test_manifest_rejects_a_missing_mandatory_gate",
     "test_s3_33_native_gates_are_pinned_once_in_manifest_steps_and_summary",
+    "test_s3_34n_native_register_corpus_gates_are_pinned_once",
     "test_rust_gate_summary_rejects_an_omitted_mandatory_gate",
     "test_rust_gate_summary_rejects_forged_passed_evidence",
     "test_rust_gate_rejects_zero_match_ignored_and_failed_runs",
@@ -330,6 +331,18 @@ ADDITIONAL_TEST_GATES = (
         "s3_33n_native_register_v1_host", "local_acceptance", "od-host",
         "tests::native_register_v1_mixed_matches_interpreter_and_bounded_ordered_pair_corpus",
     ),
+    (
+        "s3_34n_native_register_v1_corpus", "local_acceptance", "od-host",
+        "tests::native_register_v1_corpus::generated_corpus_runs_twice_across_all_backends",
+    ),
+    (
+        "s3_34n_native_register_v1_replay", "local_acceptance", "od-host",
+        "tests::native_register_v1_corpus::saved_case_round_trip_and_replay",
+    ),
+    (
+        "s3_34n_native_register_v1_selfcheck", "local_acceptance", "od-host",
+        "tests::native_register_v1_corpus::comparator_and_envelope_fail_closed",
+    ),
 )
 RUST_TEST_GATES = (
     *(
@@ -442,6 +455,7 @@ PROCESS_SOURCE_PATHS = (
 LOCAL_RUST_TEST_SOURCES = (
     "crates/od-host/tests/memory_corpus.rs",
     "crates/od-host/src/lib.rs",
+    "crates/od-host/src/tests/native_register_v1_corpus.rs",
     "crates/od-jit/src/block.rs",
     "crates/od-jit/src/block_emitter.rs",
     "crates/od-jit/src/block_compile.rs",
@@ -535,6 +549,112 @@ def rust_test_argv(package: str, identity: str) -> list[str]:
         "cargo", "test", "--offline", "-p", package, "--lib", identity,
         "--", "--exact", "--test-threads=1",
     ]
+
+
+def attach_native_register_v1_evidence(step: dict, run_dir: Path, step_name: str) -> None:
+    expected_dir = run_dir / "artifacts" / "native-register-v1"
+    expected_relative = expected_dir.relative_to(ROOT).as_posix()
+    if step.get("artifact_directory") != expected_relative or any(
+        path.is_symlink()
+        for path in (run_dir, run_dir / "artifacts", expected_dir)
+    ):
+        raise HarnessError("S3-34n artifact directory is missing or differs from this run")
+    if step_name != "s3_34n_native_register_v1_corpus":
+        return
+    summary_path = expected_dir / "native-register-v1-summary.json"
+    case_path = expected_dir / "native-register-v1-saved-case.json"
+    if summary_path.is_symlink() or case_path.is_symlink():
+        raise HarnessError("S3-34n artifact file cannot be a symlink")
+    try:
+        summary = json.loads(summary_path.read_text())
+        case = json.loads(case_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise HarnessError(f"S3-34n saved corpus evidence is missing or malformed: {error}") from error
+    if not isinstance(summary, dict) or not isinstance(case, dict):
+        raise HarnessError("S3-34n corpus artifacts must be JSON objects")
+    expected_seeds = [0x5333346E00000001, 0x5333346E00000002, 0x5333346E00000003]
+    forms = summary.get("form_counts") if isinstance(summary, dict) else None
+    case_input = case.get("input") if isinstance(case, dict) else None
+    if (
+        summary.get("profile") != "NativeRegisterV1"
+        or summary.get("version") != 1
+        or summary.get("unique_inputs") != 1200
+        or summary.get("seeds") != expected_seeds
+        or summary.get("cases_per_seed") != 400
+        or summary.get("repeats_per_backend") != 2
+        or summary.get("full_partial_preserve_xchg_branch_anchors") != 3
+        or summary.get("rip_relative_lea_after_variable_predecessor_cases") != 1197
+        or summary.get("bounded_loop_inputs") != 147
+        or not isinstance(summary.get("zero_budget_inputs"), int)
+        or summary["zero_budget_inputs"] <= 0
+        or summary.get("rip_predecessor_lengths") != [3, 4, 7]
+        or any(
+            not isinstance(summary.get(field), int) or summary[field] <= 0
+            for field in (
+                "anchor_branch_taken",
+                "anchor_branch_fallthrough",
+                "code_end_exits",
+                "budget_exits",
+                "stop_address_exits",
+                "stop_requested_exits",
+                "fallback_instructions_retired",
+            )
+        )
+        or not isinstance(forms, list)
+        or len(forms) != 13
+        or any(not isinstance(count, int) or count <= 0 for count in forms)
+        or not isinstance(summary.get("canonical_inputs_digest"), str)
+        or not summary["canonical_inputs_digest"].startswith("fnv1a64:")
+        or not isinstance(case_input, dict)
+        or case_input.get("profile") != "NativeRegisterV1"
+        or case_input.get("version") != 1
+        or not isinstance(case_input.get("input_digest"), str)
+        or not case_input["input_digest"].startswith("fnv1a64:")
+        or not isinstance(case.get("backend_runs"), dict)
+    ):
+        raise HarnessError("S3-34n corpus count, seed, form coverage or saved-case evidence differs")
+    step["corpus_evidence"] = {
+        "summary": summary,
+        "summary_path": summary_path.relative_to(ROOT).as_posix(),
+        "summary_sha256": sha256_file(summary_path),
+        "saved_case_path": case_path.relative_to(ROOT).as_posix(),
+        "saved_case_sha256": sha256_file(case_path),
+    }
+
+
+def validate_native_register_v1_artifacts(steps: dict, run_dir: Path) -> None:
+    gate_names = (
+        "s3_34n_native_register_v1_corpus",
+        "s3_34n_native_register_v1_replay",
+        "s3_34n_native_register_v1_selfcheck",
+    )
+    expected_dir = run_dir / "artifacts" / "native-register-v1"
+    expected_relative = expected_dir.relative_to(ROOT).as_posix()
+    for name in gate_names:
+        step = steps.get(name)
+        if not isinstance(step, dict) or step.get("status") != "passed" or step.get("artifact_directory") != expected_relative:
+            raise HarnessError(f"S3-34n run artifact binding is missing or forged: {name}")
+    corpus_step = steps[gate_names[0]]
+    evidence = corpus_step.get("corpus_evidence")
+    if not isinstance(evidence, dict):
+        raise HarnessError("S3-34n corpus summary evidence is missing")
+    summary_path = expected_dir / "native-register-v1-summary.json"
+    case_path = expected_dir / "native-register-v1-saved-case.json"
+    if (
+        any(path.is_symlink() for path in (run_dir, run_dir / "artifacts", expected_dir, summary_path, case_path))
+        or
+        evidence.get("summary_path") != summary_path.relative_to(ROOT).as_posix()
+        or evidence.get("saved_case_path") != case_path.relative_to(ROOT).as_posix()
+        or evidence.get("summary_sha256") != sha256_file(summary_path)
+        or evidence.get("saved_case_sha256") != sha256_file(case_path)
+    ):
+        raise HarnessError("S3-34n saved corpus artifact digest/path binding differs")
+    try:
+        stored_summary = json.loads(summary_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise HarnessError(f"S3-34n corpus summary cannot be reread: {error}") from error
+    if evidence.get("summary") != stored_summary:
+        raise HarnessError("S3-34n corpus counts/digest differ from the saved summary")
 
 
 def vmhost_process_paths(run_root: Path) -> dict[str, Path]:
@@ -1195,9 +1315,22 @@ def run_step(
     returncode: int | None = None
     failure: str | None = None
     try:
+        environment = os.environ.copy()
+        artifact_directory = None
+        if name in {
+            "s3_34n_native_register_v1_corpus",
+            "s3_34n_native_register_v1_replay",
+            "s3_34n_native_register_v1_selfcheck",
+        }:
+            artifact_directory = run_dir / "artifacts" / "native-register-v1"
+            environment["OD_JIT_NATIVE_REGISTER_V1_CORPUS_DIR"] = str(artifact_directory)
+            environment["OD_JIT_NATIVE_REGISTER_V1_REPLAY_CASE"] = str(
+                artifact_directory / "native-register-v1-saved-case.json"
+            )
         process = subprocess.run(
             argv,
             cwd=ROOT,
+            env=environment,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -1234,7 +1367,7 @@ def run_step(
         end_fingerprint = None
         failure = f"source_fingerprint_changed: {error}"
 
-    return {
+    result = {
         "name": name,
         "argv": argv,
         "command": shlex.join(argv),
@@ -1248,6 +1381,9 @@ def run_step(
         "output_tail": combined[-4000:],
         "output_sha256": output_sha256,
     }
+    if artifact_directory is not None:
+        result["artifact_directory"] = artifact_directory.relative_to(ROOT).as_posix()
+    return result
 
 
 def run_process_step(
@@ -2058,6 +2194,7 @@ def validate_final_summary(summary: dict, input_manifest_path: Path) -> None:
     if selection == "local":
         validate_unselected_suites(suites)
         validate_unselected_suites(suites, (PROCESS_SUITE_NAME,))
+        validate_native_register_v1_artifacts(steps, run_root)
         statuses = {name: steps.get(name, {}).get("status") for name in LOCAL_STEPS}
         validate_required_steps(statuses)
         validate_memory_exact_gate_evidence(steps["memory_s3_34h_exact_gate"], run_root)
@@ -2286,6 +2423,8 @@ def main(argv: list[str] | None = None) -> int:
                         step["output_tail"], exact_test_name
                     )
                     step["test_outcomes"] = outcomes
+                    if step_name.startswith("s3_34n_native_register_v1_"):
+                        attach_native_register_v1_evidence(step, run_dir, step_name)
                 except HarnessError as error:
                     step["status"] = "failed"
                     step["failure"] = str(error)

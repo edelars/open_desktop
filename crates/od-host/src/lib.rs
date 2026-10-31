@@ -72957,6 +72957,9 @@ mod tests {
         assert_eq!(stop_after_result.retired_interpreter, 0);
     }
 
+    #[path = "../tests/native_register_v1_corpus.rs"]
+    mod native_register_v1_corpus;
+
     #[test]
     fn native_register_v1_mixed_matches_interpreter_and_bounded_ordered_pair_corpus() {
         let _guard = jit_test_lock();

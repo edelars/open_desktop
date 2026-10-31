@@ -611,6 +611,31 @@ package, test identity, argv, and passing result are validated. The resulting
 set has 30 gates across S3-33a–j. See the
 [S3-33j report](../reports/STAGE_3_S3-33j_2026-10-30.md).
 
+### S3-34n reproducible NativeRegisterV1 generated corpus
+
+The `NativeRegisterV1` local corpus uses three fixed seeds and 400 unique
+complete inputs per seed (1,200 total). Each input is reset and run twice
+through interpreter, eager NativeRegisterV1 and demand-candidate backends.
+Coverage includes the 13 committed extra forms, NOP fallback, baseline S0-09
+instructions, variable-length predecessors to RIP-relative LEA, branch
+boundaries/outcomes, STOP and budget boundaries. Full state, exit/RIP,
+native-versus-interpreter retirement and remaining budget are compared, and
+data access callbacks are rejected. Canonical full-input bytes feed the
+uniqueness check and the reported corpus digest.
+
+The versioned saved-case envelope includes exact bytes, base RIP, full
+initial-state fields, controls, profile/version, seed/index/digest, observations
+from both repeats for all backends, and a reproduction command. The exact
+round-trip gate reads this saved envelope and replays both native paths. Three
+mandatory exact gates cover generated repeated execution, saved replay, and
+fail-closed comparator/envelope checks. All 69 existing local exact gates are
+retained, including the 42 S3-33 identities; the complete harness now requires
+72. A mismatch is an error and
+preserves the original input and observations in the run artifact directory.
+This is bounded local ARM64 correctness evidence only; Mini, physical x86,
+performance, Stage 2, and owner/MMU remain unrun/out of scope. See the
+[S3-34n report](../reports/STAGE_3_S3-34n_2026-10-30.md).
+
 Каждая новая строка support matrix получает literal positive/negative cases,
 точный сравниваемый state и внешний prerequisite. В отчёте сохранять git
 revision, build fingerprint, host/OS/toolchain, fixtures/corpus fingerprint,
