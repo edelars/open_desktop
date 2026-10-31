@@ -1269,8 +1269,9 @@ source/build/host fingerprint, corpus, schedule and timing arithmetic are
 checked before scoring. A scored report explicitly records whether actual
 elapsed time met 660 seconds; an under-target report is persisted with an
 error status and the command fails. One overall deadline covers input
-preparation through final report persistence. Each retained-runtime epoch validates hit, unique pressure miss
-and one FIFO eviction, between-call backing invalidation, changed admitted
+preparation through final report persistence. Each retained-runtime epoch
+validates hit, unique pressure miss and one FIFO eviction, between-call
+backing invalidation, changed admitted
 code at a new backing version, and the subsequent hit. Full interpreter
 parity is checked on each dispatch. Every 128 epochs, clear must return all
 current resident usage to zero and make all 16 slots available; every 512
@@ -1278,11 +1279,13 @@ epochs the sole runtime and arena are dropped and reopened before execution
 continues. The report uses bounded checkpoints and separates current occupancy
 from high-water values. RSS is process-wide auxiliary evidence only. This does
 not claim guest SMC, owner notification, fault cleanup, concurrent arenas,
-SMP, or leak-free behavior. Three sequential release processes are planned in
-a Stage2-quiet window. V5 calibration and run1 passed source and independent
-evidence review. Run1 completed 45,436,794 epochs with exact totals in 671.161
-seconds and `duration_target_met: true`; two of three scored processes remain.
-The earlier v4 run1 completed 29,682,315 epochs in 439.482 seconds, below
-target, and remains separate diagnostic evidence. Raw JSON, limitations and
-review status are in the [S3-37d report](../reports/STAGE_3_S3-37d_2026-10-31.md).
-Mini stays deferred until Stage 3 ends.
+SMP, or leak-free behavior. Three sequential v5 release processes completed
+in Stage2-quiet windows. Runs 1–3 completed 45,436,794 / 46,049,027 /
+46,049,027 epochs in
+671.161073750 / 679.267265042 / 688.093795250 seconds, respectively; each
+met the 660-second minimum and exact counters reconciled. Source, calibration,
+and all three scored artifacts passed independent review. V4 run1 completed
+29,682,315 epochs in 439.482 seconds, below target, and remains separate
+lifecycle/counter diagnostic evidence. Raw JSON, limitations and review status
+are in the [S3-37d report](../reports/STAGE_3_S3-37d_2026-10-31.md). Full
+S3-37 remains open. Mini stays deferred until Stage 3 ends.

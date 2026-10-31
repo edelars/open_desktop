@@ -610,14 +610,16 @@ window; an overlap with Stage 2 makes that attempt inconclusive.
 This profile exercises supported cache APIs only. It does not demonstrate
 production owner notification, guest-write SMC, active-code modification,
 fault cleanup, concurrent arenas, SMP, or leak-free behavior. Mini checks
-remain deferred to the end of Stage 3. The v4 run1 completed 29,682,315 epochs
-with exact counters in 439.482 seconds, below target; it remains a separate
-lifecycle/counter diagnostic. V5 calibration and run1 passed source and
-independent evidence review. Run1 completed 45,436,794 epochs with exact totals
-in 671.161 seconds and `duration_target_met: true`. The raw v4/v5 JSON and
-limitations are recorded in the [S3-37d report](../reports/STAGE_3_S3-37d_2026-10-31.md)
-and its [raw data](../reports/data/stage3/s3-37d/). Two of three v5 scored
-processes remain; Mini checks stay deferred and full S3-37 remains open.
+remain deferred to the end of Stage 3. Three sequential v5 scored processes
+completed with exact totals and each met the 660-second target: run1
+45,436,794 epochs / 671.161073750 seconds; run2 46,049,027 epochs /
+679.267265042 seconds; run3 46,049,027 epochs / 688.093795250 seconds. Source,
+calibration and each scored artifact passed independent review. The v4 run1
+completed 29,682,315 epochs with exact counters in 439.482 seconds, below
+target; it remains a separate lifecycle/counter diagnostic and is not combined
+with v5. Raw JSON and limitations are recorded in the
+[S3-37d report](../reports/STAGE_3_S3-37d_2026-10-31.md) and its
+[raw data](../reports/data/stage3/s3-37d/). Full S3-37 remains open.
 
 Recorded trace дополняется ограниченными synthetic-сценариями:
 1/8/64/512/4096 keys и observed unique count, hot loops на 1/8 keys, reverse

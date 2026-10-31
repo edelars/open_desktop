@@ -3128,19 +3128,18 @@ periodic teardown/reopen must execute successfully with one MAP_JIT arena at a
 time. Current occupancy remains separate from high-water values, and progress
 is bounded by at most 128 aggregate checkpoints. RSS is auxiliary only.
 
-Keep three scored release processes sequential in a Stage2-quiet window. Record
-the calibration, actual elapsed time, raw JSON, and independent source/evidence
-review. Overlapped attempts are inconclusive. V5 calibration and run1 passed
-source and independent evidence review. Run1 completed 45,436,794 epochs with
-exact counters in 671.161 seconds and met the 660-second minimum; two of three
-scored runs remain. V4 run1 completed 29,682,315 epochs and exact counters in
-439.482 seconds, below target; it remains separate lifecycle/counter
-diagnostic evidence. See the
-[S3-37d report](../reports/STAGE_3_S3-37d_2026-10-31.md) and its raw data.
-This supported-API resource stress does not claim production SMC/owner
-notification, faults, concurrent arenas, SMP, or leak-free behavior. Mini
-remains deferred to the end of Stage 3; owner/MMU and Stage 2 are outside this
-slice.
+Three sequential v5 scored processes completed in Stage2-quiet windows with
+exact counters and met the duration target: 671.161073750, 679.267265042, and
+688.093795250 seconds. Source, current-HEAD calibration, and each scored report
+passed independent review. Run1 used the earlier accepted v5 calibration; runs
+2 and 3 use calibration bound to HEAD e5c149b. V4 run1 completed 29,682,315
+epochs in 439.482 seconds, below target; it remains separate lifecycle/counter
+diagnostic evidence. Earlier overlapping attempts remain inconclusive and
+excluded. See the [S3-37d report](../reports/STAGE_3_S3-37d_2026-10-31.md)
+and its raw data. This supported-API resource stress does not claim production
+SMC/owner notification, faults, concurrent arenas, SMP, or leak-free behavior.
+Mini remains deferred to the end of Stage 3; owner/MMU and Stage 2 are outside
+this slice.
 
 1. Выполнить длинную серию unique blocks, повторных invalidations, capacity evictions, SMC и mixed hit/miss workloads.
 2. Снимать executable bytes, metadata bytes, live/retired blocks, compile counts и доступные process memory показатели с описанием метода.
