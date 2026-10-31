@@ -3098,11 +3098,12 @@ and fresh runtime reopen. Every guest dispatch checks interpreter parity. Snapsh
 read current resident code/metadata accounting and allocator available slots
 directly, keeping high-water counters separate. This path does not exercise
 production guest SMC, STOP clearing, concurrent arenas, faults, or leak-free
-stress. Review and release-run evidence are pending; see the
-stress. Three release runs and raw evidence are recorded in the
-[S3-37c report](../reports/STAGE_3_S3-37c_2026-10-31.md); independent evidence
-review is pending. The [protocol](../testing/BENCHMARKS.md#s3-37c-deterministic-fifo16-invalidation-and-runtime-lifecycle)
-defines reproduction and limitations.
+stress. Three sequential release runs passed and the independent source and
+evidence reviews were clean; see the
+[S3-37c report](../reports/STAGE_3_S3-37c_2026-10-31.md). The
+[protocol](../testing/BENCHMARKS.md#s3-37c-deterministic-fifo16-invalidation-and-runtime-lifecycle)
+defines reproduction and limitations. Full S3-37 and its long-running stress
+criteria remain open.
 
 1. Выполнить длинную серию unique blocks, повторных invalidations, capacity evictions, SMC и mixed hit/miss workloads.
 2. Снимать executable bytes, metadata bytes, live/retired blocks, compile counts и доступные process memory показатели с описанием метода.
