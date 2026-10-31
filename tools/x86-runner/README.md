@@ -46,3 +46,7 @@ See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bs--bounded-long64-
 The S2-37bt `CVTDQ2PS XMM0,[RAX]` profile remains interpreter-only and is
 refused before native execution; no physical x86 acceptance is claimed. See
 the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile).
+
+The S2-37bu `CVTTPS2DQ XMM0,[RAX]` schema-v2 profile remains interpreter-only
+and is denied before native execution; this slice makes no physical x86
+acceptance claim. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bu--bounded-long64-cvttps2dq-xmm0rax-aligned-m128-memory-profile).

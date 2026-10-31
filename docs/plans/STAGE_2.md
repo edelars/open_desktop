@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последний завершённый кодовый срез S2-37bt добавил exact legacy `CVTDQ2PS XMM0,[RAX]` (`0F 5B 00`): один aligned m128 read, RC-управляемое binary32-преобразование и masked PE. Профиль локальный schema-v2 interpreter-only; соседние формы и native/JIT/C ABI остаются закрыты. Предыдущие ограничения/профили перечислены ниже. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последний завершённый кодовый срез S2-37bu добавил exact legacy `CVTTPS2DQ XMM0,[RAX]` (`F3 0F 5B 00`): один aligned m128 read, усечение binary32→i32 к нулю независимо от RC и masked IE/PE. Профиль локальный schema-v2 interpreter-only; соседние формы и native/JIT/C ABI остаются закрыты. Предыдущие ограничения/профили перечислены ниже. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -498,6 +498,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37l | Local-only Long64 legacy register MAXPD profile `s2-long-maxpd-reg-masked-v1`; aggregates masked IE/DE sticky status across two lanes; JIT/native closed | S2-36z, S2-37j/k, bounded S2-38a; independent review |
 | [x] | S2-37s | Local-only canonical Long64 CVTDQ2PS register-space profile; aggregates four-lane Precision and suppresses the full destination on unmasked PE; JIT/native closed | S2-36 rounding, S2-38 PE policy; independent review |
 | [x] | S2-37bt | Local-only legacy Long64 CVTDQ2PS XMM0,[RAX] m128 memory profile; four-lane RC conversion, masked PE, aligned atomic read; native/JIT closed | S2-37s; approved bounded contract; independent review |
+| [x] | S2-37bu | Local-only legacy Long64 CVTTPS2DQ XMM0,[RAX] m128 memory profile; four-lane toward-zero conversion, masked IE/PE, aligned atomic read; native/JIT closed | S2-37ag; approved bounded contract; independent review |
 | [x] | S2-37t | Local-only canonical Long64 CVTSS2SD XMM register-pair profile; raw binary32 widening with sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37u | Local-only canonical Long64 CVTPS2PD XMM register-pair profile; two-lane raw widening with aggregate sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-37t, S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37v | Local-only canonical Long64 COMISS/UCOMISS XMM register-pair profile; NaN-priority IE/DE, unordered flags, unmasked atomic flag exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
@@ -6820,7 +6821,7 @@ inventory.
 | CVTTSS2SI | `F3 0F 2C /r`; `F3 REX.W 0F 2C /r` | SSE | m32 → r32 / r64 | 3-255 | S2-37ad, bounded register-only |
 | CVTTPD2DQ | `66 0F E6 /r` | SSE2 | XMM, m128; 2×f64 → low 2×i32 | 3-244 | S2-37ai, bounded register-only |
 | CVTTPD2PI | `66 0F 2C /r` | SSE2 | XMM, m128 → mm; 2×f64 → 2×i32 | 3-248 | S2-37bl, exact masked `66 0F 2C C1` register-source; S2-37bq, aligned m128 `[RAX]` memory profile |
-| CVTTPS2DQ | `F3 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-249 | S2-37ag, bounded register-only |
+| CVTTPS2DQ | `F3 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-249 | S2-37ag register; S2-37bu exact `[RAX]` memory profile |
 | CVTTPS2PI | `NP 0F 2C /r` | SSE | XMM, m64 → mm; 2×f32 → 2×i32 | 3-252 | S2-37bh, exact masked `0F 2C C1` register-source; S2-37bo, exact masked `[RAX]` memory profile |
 | CVTTSD2SI | `F2 0F 2C /r`; `F2 REX.W 0F 2C /r` | SSE2 | m64 → r32 / r64 | 3-253 | S2-37ae, bounded register-only |
 | DIVPD | `66 0F 5E /r` | SSE2 | XMM, m128; 2×f64 | 3-267 | S2-37av register-only masked-range; memory and full unmasked OE/UE missing |
@@ -14744,9 +14745,9 @@ The profile does not inspect or modify x87 state, so arbitrary and pending-x87
 canaries are accepted and preserved. Its independent oracle builds binary32
 encodings with integer arithmetic only. Literal fixtures and runner checks
 cover all RC values, all 16 inexact lane masks from clear flags, exact-lane PE
-histories, conversion boundaries/carry, aligned AC values, all 15 misalignment
-offsets at representative runner context, x87 preservation, malformed and
-tampered input, foreign controls and backend denial. Direct ISA tests cover the
+histories, conversion boundaries/carry, aligned AC=0/1 at Ring0, representative
+runner misalignment offsets, x87 preservation, malformed and tampered input,
+foreign controls and backend denial. Direct ISA tests cover the
 full 15-offset × CPL0–3 × AC0/1 rejection product with #GP(0), zero callbacks
 and unchanged CPU state, aligned accesses and one-read behavior, fetch/gates,
 pre-read span and PM refusals, and read-failure rollback. No physical x86
@@ -14762,3 +14763,39 @@ used for this legacy encoding.
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile),
 [report](../reports/STAGE_2_REPORT.md#s2-37bt--cvtdq2ps-xmm0rax-aligned-m128-memory-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bt-cvtdq2ps-xmm0rax-aligned-m128-memory-profile).
+
+#### S2-37bu — bounded Long64 CVTTPS2DQ XMM0,[RAX] aligned m128 memory profile
+
+Implement exact legacy bytes `F3 0F 5B 00`, full four-byte fetch, instruction
+budget 1, and stop RIP=entry+4. The schema-v2 interpreter profile has separate
+SSE2/EM/OSFXSR/TS controls and local #UD-before-#NM ordering after full fetch.
+CPL0–3 are admitted. It performs one checked canonical48 aligned m128 read;
+misalignment is #GP(0) before callback regardless of CPL or AC. A failed read
+must not mutate CPU state.
+
+The integer-only oracle and executor truncate raw f32 lanes toward zero,
+independent of MXCSR.RC. Invalid lanes produce the indefinite i32 pattern and
+IE; valid inexact lanes contribute PE. Sticky status and control bits are
+preserved. The exact valid `INT32_MIN` case shares output bits with the
+indefinite pattern and is distinguished by IE. DAZ-clear subnormals can set PE
+but do not set DE. The bounded local MXCSR policy requires supported mask
+`0xffbf`, IM=PM=1 and DAZ=0. No unmasked exception delivery is modeled. x87
+state is neither gated nor mutated, including pending canaries. Native/JIT/C ABI
+remain closed and no physical acceptance is claimed.
+
+Verification passed: full `cargo test -p od-isa --offline` (1,614), full testkit
+(445), runner (112 unit + 450 fixture), and x86-runner suites passed. Focused ISA
+coverage includes lane flags, all 15 misalignments × CPL0–3 × AC0/1, gates, full
+fetch and read rollback; the runner matrix covers the literal, all four RC
+values, all 16 IE/PE lane masks, sticky histories, schema, tampering, and backend
+denial. The runner checks aligned AC=0/1 at Ring0; direct ISA tests cover aligned
+AC×CPL. Workspace all-target check, rustfmt, diff check and layout check passed.
+Graphify was refreshed. Independent review completed without remaining findings.
+No profile-specific native fixture-denial test exists; the portable native
+local-only classifier and runner native-Unsupported path passed. No physical x86
+acceptance was run.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTTPS2DQ pp. 3-249–3-251; Vol. 1
+§11.5.2.2 and Table 14-21; Vol. 3A §16.1.3 Table 16-1 p. 16-3 ([official Vol.
+3A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)). Do not apply the
+VEX-only Type 2/Table 2-19 description to this legacy encoding.

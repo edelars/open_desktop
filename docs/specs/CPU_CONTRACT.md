@@ -14431,3 +14431,44 @@ alignment behavior. The VEX-only Type 2/Table 2-19 entry does not describe this
 legacy encoding. See the [plan](../plans/STAGE_2.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile),
 [report](../reports/STAGE_2_REPORT.md#s2-37bt--cvtdq2ps-xmm0rax-aligned-m128-memory-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bt-cvtdq2ps-xmm0rax-aligned-m128-memory-profile).
+
+
+## S2-37bu — bounded Long64 CVTTPS2DQ XMM0,[RAX] aligned m128 memory profile
+
+The schema-v2 interpreter profile admits exact legacy `F3 0F 5B 00`, Long64,
+instruction budget 1 and stop RIP=entry+4. It fetches all four instruction
+bytes before the bounded prerequisite checks: absent SSE2 (CPUID bit 26),
+CR0.EM or CR4.OSFXSR produces #UD, then CR0.TS produces #NM. This ordering is
+local profile policy. CPL0–3 are accepted.
+
+The source is exactly one aligned 16-byte span beginning at RAX. The complete
+span is checked for canonical48 before alignment and before the single data
+read. Misalignment produces #GP(0) without a callback, regardless of CPL or
+RFLAGS.AC; aligned AC=0 and AC=1 accesses are accepted. A failed read leaves
+the entire CPU state unchanged.
+
+Four raw binary32 lanes are converted to signed i32 by truncating toward zero,
+independent of MXCSR.RC. Invalid NaN, infinity, or out-of-range lanes produce
+`0x80000000` and sticky IE; valid inexact lanes contribute sticky PE. Lane
+flags are OR-combined with incoming status. An invalid lane does not contribute
+PE; DAZ=0 subnormals convert to zero and may contribute PE, never DE. The full
+128-bit XMM0 destination is replaced. The local supported MXCSR mask is
+`0xffbf`; this profile requires IM=PM=1 and DAZ=0. Other local MXCSR admission
+failures return Unsupported. No unmasked SIMD exception delivery is modeled.
+
+This instruction does not interact with x87 state. The executor neither gates
+on pending x87 exceptions nor mutates x87 fields; arbitrary and pending x87
+canaries are preserved. The testkit oracle works from raw binary32 bits using
+integer arithmetic only, without host floating point or production conversion
+helpers. Runner fixtures cover all RC encodings, all 16 invalid-lane masks,
+clear and preexisting IE/PE histories, exact/range/subnormal boundaries, aligned AC=0/1 cases at Ring0, representative
+misalignments, schema/tamper checks, and JIT/native denial. Runner snapshots do
+not count callbacks. Direct ISA tests cover aligned AC=0/1 × CPL0–3, all 15
+nonzero offsets × CPL0–3 × AC0/1 with #GP(0), zero reads and unchanged state,
+canonical span/overflow refusals, one 16-byte read, prerequisite gates, strict
+MXCSR/isolated DAZ refusals and atomic read failures. JIT, native and C ABI
+remain closed. Physical x86 acceptance was not run.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTTPS2DQ pp. 3-249–3-251; Vol. 1
+§11.5.2.2 for subnormal handling and Table 14-21 for aligned m128 memory;
+Vol. 3A §16.1.3 Table 16-1 p. 16-3 for legacy SSE2 gates ([official Vol. 3A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)). The VEX-only Type 2/Table 2-19 entry does not describe this legacy encoding. See the [plan](../plans/STAGE_2.md#s2-37bu--bounded-long64-cvttps2dq-xmm0rax-aligned-m128-memory-profile), [report](../reports/STAGE_2_REPORT.md#s2-37bu--cvttps2dq-xmm0rax-aligned-m128-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bu-cvttps2dq-xmm0rax-aligned-m128-memory-profile).

@@ -659,3 +659,9 @@ S2-37bt adds exact interpreter-only legacy `CVTDQ2PS XMM0,[RAX]`
 integer lanes to binary32 under MXCSR.RC, aggregates masked PE, and preserves
 prior MXCSR status plus all x87 state. The local profile requires PM=1 and
 keeps JIT/native/C ABI closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile), [plan](../../docs/plans/STAGE_2.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile), and [report](../../docs/reports/STAGE_2_REPORT.md#s2-37bt--cvtdq2ps-xmm0rax-aligned-m128-memory-profile).
+
+S2-37bu adds the exact interpreter-only legacy `CVTTPS2DQ XMM0,[RAX]`
+(`F3 0F 5B 00`) m128 form. It requires an aligned 16-byte read, truncates four
+raw binary32 lanes toward zero independent of MXCSR.RC, and preserves sticky
+MXCSR flags while adding masked IE/PE. Pending x87 canaries pass through
+unchanged. JIT/native/C ABI remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bu--bounded-long64-cvttps2dq-xmm0rax-aligned-m128-memory-profile) and [report](../../docs/reports/STAGE_2_REPORT.md#s2-37bu--cvttps2dq-xmm0rax-aligned-m128-memory-profile).

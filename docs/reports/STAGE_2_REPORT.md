@@ -19576,20 +19576,21 @@ and C ABI remain closed; no physical x86 acceptance is claimed.
 The independent testkit oracle uses integer bit construction only. Six literal
 fixtures plus the runner matrix cover all four RC values × all 16 per-lane
 inexactness masks from clear flags, exact-lane sticky histories, conversion
-boundaries/carry, aligned AC=0/1, all 15 misalignment offsets at representative
-runner context, x87 canary preservation, malformed/foreign controls, tampered
-output and backend denial. Runner snapshots do not count data callbacks.
+boundaries/carry, aligned AC=0/1 at Ring0, representative misalignment offsets,
+x87 canary preservation, malformed/foreign controls, tampered output and backend
+denial. Runner snapshots do not count data callbacks.
 Direct ISA tests cover all 15 misalignment offsets × CPL0–3 × AC=0/1 as pre-read
-#GP(0), zero callbacks and unchanged CPU state; aligned AC/CPL success, exactly
+#GP(0), zero callbacks and unchanged CPU state; aligned AC=0/1 × CPL0–3 success, exactly
 one 16-byte read, full fetch/prerequisite gates, canonical span/PM refusals and
-rollback after a failed read.
+rollback after a failed read. Direct ISA tests also cover aligned
+AC=0/1 × CPL0–3.
 
 Verification passed:
 
 - `cargo test -p od-isa --offline`: 1,612 passed.
 - `cargo test -p od-testkit --offline`: 445 passed; doc-tests 0 (rerun after adding the schema-priority regression).
 - Focused `cargo test -p od-runner --test fixture_v2 cvtdq2ps_m128_literals_cover_rounding_precision_and_fail_closed --offline -- --nocapture`: 1 passed.
-- `cargo test -p od-runner --offline`: 112 unit tests and 449 integration tests passed.
+- `cargo test -p od-runner --offline`: 112 unit tests and 450 integration tests passed.
 - `cargo test -p od-x86-runner --offline`: 8 library tests and 4 binary tests passed; doc-tests 0. The portable local-only classification test and runner native-Unsupported path passed. No profile-specific native fixture-denial test exists for this slice, and native execution was not performed.
 - `cargo check --workspace --all-targets --offline` and `cargo fmt --all -- --check` passed.
 - Post-review focused rechecks passed: `cargo test -p od-testkit cvtdq2ps_memory_pm_zero_schema_keeps_prerequisite_fault_priority --offline` (1); the focused bt runner matrix (1, including PM=0 + missing SSE2 + TS producing #UD); and `cargo test -p od-x86-runner narrow_xorpd_is_not_blocked_with_existing_sse_and_x87_profiles_denied --offline` (1 portable classification test).
@@ -19604,3 +19605,31 @@ memory alignment. The VEX-only Type 2/Table 2-19 citation is not applied to
 this legacy form. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bt-cvtdq2ps-xmm0rax-aligned-m128-memory-profile).
+
+
+### S2-37bu — CVTTPS2DQ XMM0,[RAX] aligned m128 memory profile
+
+Implemented exact legacy `F3 0F 5B 00` as a separate schema-v2 interpreter-only
+profile. It fetches four bytes, checks SSE2/EM/OSFXSR then TS under the local
+gate ordering, reads one aligned m128 atomically, truncates four raw f32 lanes
+toward zero independent of RC, and ORs masked IE/PE with incoming MXCSR status.
+The exact `INT32_MIN` bit pattern remains valid without IE; the adjacent +2^31
+value is invalid. DAZ-clear subnormal input can set PE but not DE. Arbitrary and
+pending x87 state is preserved. Native/JIT/C ABI remain closed. Physical x86
+acceptance was not run.
+
+Verification results:
+
+- `cargo test -p od-isa cvttps2dq_memory_m128_truncation_flags_alignment_and_atomicity --offline -- --nocapture` — 1 passed; this test checks all four RC values, 16 IE/PE lane masks, four sticky histories, aligned AC=0/1 × CPL0–3, all 15 misalignments × CPL0–3 × AC0/1, canonical span/overflow refusals, isolated DAZ and other MXCSR refusals, fetch-before-gates, read rollback and pending x87 preservation.
+- `cargo test -p od-isa cvttps2dq_m128_decodes_only_exact_rax_form --offline -- --nocapture` — 1 passed.
+- `cargo test -p od-isa --offline` — 1,614 passed; doc-tests 0.
+- Focused runner `cvttps2dq_m128_raw_bits_truncate_flags_alignment_and_fail_closed` — 1 passed, 449 filtered. It includes the literal, all four RC values, all 16 invalid/fractional lane masks, four sticky histories, aligned AC=0/1 at Ring0, representative misalignment and gate cases, schema/from_json negatives, tamper rejection, and JIT/native Unsupported. The isolated DAZ refusal is tested directly at ISA level because schema validation rejects unsupported MXCSR bits before profile admission.
+- `cargo test -p od-testkit --offline` — 445 passed; doc-tests 0.
+- `cargo test -p od-runner --offline` — 112 unit tests and 450 fixture tests passed.
+- `cargo test -p od-x86-runner --offline` — lib 8 passed, binary 4 passed; doc-tests 0. The portable native local-only classification includes this profile, and the runner native backend returns Unsupported. The focused portable classifier test passed; no profile-specific native fixture-denial test exists, and native execution was not performed.
+- `cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`, `git diff --check`, and `python3 tools/check_layout.py` all passed.
+
+Independent review completed without remaining findings. Physical x86 acceptance was not run. `graphify update .` rebuilt the graph with 10,212 nodes, 21,657 edges and 317 communities; known extractor warnings remain for `include/open_desktop/host_abi.h` and 13 files with no symbols.
+Sources: Intel SDM Rev. 093 Vol. 2A CVTTPS2DQ pp. 3-249–3-251; Vol. 1
+§11.5.2.2 and Table 14-21; Vol. 3A §16.1.3 Table 16-1 p. 16-3 ([official
+Vol. 3A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).

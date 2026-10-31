@@ -217,3 +217,11 @@ S2-37bt runs the local-only schema-v2 legacy `CVTDQ2PS XMM0,[RAX]`
 aligned AC values, misalignment faults, x87 preservation, schema/tamper checks
 and JIT/native denial. Direct ISA tests provide callback-count evidence; runner
 snapshots do not record callbacks. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile), [plan](../../docs/plans/STAGE_2.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile), and [report](../../docs/reports/STAGE_2_REPORT.md#s2-37bt--cvtdq2ps-xmm0rax-aligned-m128-memory-profile).
+
+S2-37bu runs the local-only schema-v2 `CVTTPS2DQ XMM0,[RAX]` (`F3 0F 5B 00`)
+profile. Literal/runner coverage checks RC-independent truncation, invalid and
+inexact lane flag aggregation, sticky status preservation, pending x87
+preservation, representative alignment/gate/schema/tamper cases, and JIT/native
+denial. Direct ISA tests establish the full misalignment cross product and
+callback atomicity; runner snapshots do not expose callback counts. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bu--bounded-long64-cvttps2dq-xmm0rax-aligned-m128-memory-profile) and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bu-cvttps2dq-xmm0rax-aligned-m128-memory-profile).

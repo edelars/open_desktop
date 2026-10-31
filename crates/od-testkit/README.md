@@ -283,3 +283,10 @@ S2-37bt adds separate schema-v2 profile `s2-long-cvtdq2ps-memory-rax-v1` and
 to round four i32 lanes to binary32, checks aggregate sticky PE, one aligned
 m128 source, and full x87 preservation. Foreign profile controls are rejected.
 See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile), [plan](../../docs/plans/STAGE_2.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile), and [report](../../docs/reports/STAGE_2_REPORT.md#s2-37bt--cvtdq2ps-xmm0rax-aligned-m128-memory-profile).
+
+S2-37bu adds a separate schema-v2 `s2-long-cvttps2dq-memory-rax-v1` profile
+and `cvttps2dq_m128_controls` field. The raw-bit integer oracle implements
+truncation toward zero, lane-aggregated IE/PE and full XMM0 output without host
+floating point or production conversion helpers. It checks exact encoding,
+16-byte aligned source, and profile-specific gate/admission ordering. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bu--bounded-long64-cvttps2dq-xmm0rax-aligned-m128-memory-profile), [plan](../../docs/plans/STAGE_2.md#s2-37bu--bounded-long64-cvttps2dq-xmm0rax-aligned-m128-memory-profile), and [report](../../docs/reports/STAGE_2_REPORT.md#s2-37bu--cvttps2dq-xmm0rax-aligned-m128-memory-profile).

@@ -18321,6 +18321,174 @@ fn cvtdq2ps_m128_literals_cover_rounding_precision_and_fail_closed() {
 }
 
 #[test]
+fn cvttps2dq_m128_raw_bits_truncate_flags_alignment_and_fail_closed() {
+    use od_testkit::v2::{ExpectedExit, Fixture, Profile};
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_37bu_cvttps2dq_m128_raw_boundaries.case.json");
+    let bytes = fs::read(path).unwrap();
+    let base = Fixture::from_json(&bytes).unwrap().fixture;
+    let (literal_input, literal) = run(&bytes, "interpreter", 0);
+    assert_eq!(
+        literal_input.fixture.profile,
+        Profile::LongCvttps2dqMemoryRaxV1
+    );
+    od_testkit::v2::compare(&literal_input, &literal, &literal).unwrap();
+    assert_eq!(
+        snapshot(&literal).state.x87,
+        literal_input.fixture.initial_state.x87
+    );
+    assert_eq!(
+        snapshot(&literal).state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+        0x21
+    );
+    assert_eq!(
+        &snapshot(&literal).state.sse.as_ref().unwrap().xmm[0][..16],
+        "0000008080ffff7f"
+    );
+
+    // All MXCSR rounding controls produce identical truncation results.
+    let mut expected_xmm = None;
+    for rc in 0..4u64 {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("s2_37bu_cvttps2dq_rc{rc}");
+        fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (rc << 13));
+        let source = fixture.to_json().unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let actual = snapshot(&result).state.sse.as_ref().unwrap().xmm[0].clone();
+        if let Some(expected) = &expected_xmm {
+            assert_eq!(&actual, expected, "RC={rc}");
+        } else {
+            expected_xmm = Some(actual);
+        }
+    }
+
+    // At Ring0, both aligned AC inputs reach the same successful profile.
+    for ac in [false, true] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("s2_37bu_cvttps2dq_aligned_ring0_ac_{ac}");
+        fixture.initial_state.rflags = HexU64(2 | (u64::from(ac) << 18));
+        let source = fixture.to_json().unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+    }
+
+    for invalid_mask in 0..16u8 {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("s2_37bu_cvttps2dq_lanes_{invalid_mask:02x}");
+        fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+        let mut lanes = Vec::new();
+        for lane in 0..4 {
+            let bits = if invalid_mask & (1 << lane) != 0 {
+                0x7fc0_0001u32
+            } else {
+                0x3fc0_0000u32
+            };
+            lanes.extend_from_slice(&bits.to_le_bytes());
+        }
+        fixture.memory[1].initial_bytes_hex = od_testkit::memory::encode_bytes(&lanes);
+        let source = fixture.to_json().unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let status = snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x21;
+        let expected = u64::from(invalid_mask != 0) | (u64::from(invalid_mask != 0xf) << 5);
+        assert_eq!(status, expected, "invalid lane mask {invalid_mask:04b}");
+    }
+
+    // Existing IE/PE status bits survive exact zero conversion.
+    for flags in [0u64, 1, 1 << 5, (1 << 5) | 1] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("s2_37bu_cvttps2dq_sticky_{flags:02x}");
+        fixture.memory[1].initial_bytes_hex = "00".repeat(16);
+        fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | flags);
+        let source = fixture.to_json().unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        assert_eq!(
+            snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x21,
+            flags
+        );
+    }
+
+    // The interpreter refuses a misaligned m128 before observing data; AC does
+    // not turn the profile's #GP into #AC.
+    for offset in [1u64, 7, 15] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("s2_37bu_cvttps2dq_misaligned_{offset}");
+        fixture.expected_exit = ExpectedExit::Exception;
+        fixture.memory[1].guest_address = HexU64(0x2000 + offset);
+        fixture.initial_state.gpr[0] = HexU64(0x2000 + offset);
+        fixture.initial_state.rflags = HexU64(2 | (1 << 18));
+        let source = fixture.to_json().unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        assert_eq!(snapshot(&result).state, input.fixture.initial_state);
+        let Observation::Available {
+            value: Some(exception),
+        } = &snapshot(&result).exception
+        else {
+            panic!("expected #GP(0)")
+        };
+        assert_eq!(exception.vector, 13);
+        assert_eq!(
+            exception.error_code,
+            Observation::Available { value: HexU64(0) }
+        );
+    }
+
+    for (field, value) in [
+        ("sse2_available", serde_json::Value::Bool(false)),
+        ("cr0_em", serde_json::Value::Bool(true)),
+        ("cr0_ts", serde_json::Value::Bool(true)),
+        ("cr4_osfxsr", serde_json::Value::Bool(false)),
+    ] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("s2_37bu_cvttps2dq_gate_{field}");
+        fixture.expected_exit = ExpectedExit::Exception;
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&fixture.to_json().unwrap()).unwrap();
+        json["cvttps2dq_m128_controls"][field] = value;
+        let source = serde_json::to_vec(&json).unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+    }
+
+    let mut foreign = base.clone();
+    foreign.cvttps2dq_controls = Some(od_testkit::v2::Cvttps2dqControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: true,
+    });
+    assert!(foreign.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
+    let mut missing_controls = base.clone();
+    missing_controls.cvttps2dq_m128_controls = None;
+    assert!(missing_controls.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&missing_controls).unwrap()).is_err());
+    let mut wrong_encoding = base.clone();
+    wrong_encoding.memory[0].initial_bytes_hex = "f30f5b01".into();
+    assert!(wrong_encoding.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&wrong_encoding).unwrap()).is_err());
+
+    for backend in ["jit", "native"] {
+        let (_, result) = run(&bytes, backend, 4);
+        assert!(
+            matches!(result.outcome, Outcome::Unsupported { .. }),
+            "{backend}"
+        );
+    }
+    let mut tampered = literal.clone();
+    let Observation::Available { value } = &mut tampered.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.state.sse.as_mut().unwrap().xmm[0] = "00".repeat(16);
+    assert!(od_testkit::v2::compare(&literal_input, &literal, &tampered).is_err());
+}
+
+#[test]
 fn cvtsi2sd_r32_exact_literals_use_eax_bits_preserve_state_and_deny_other_backends() {
     let root =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");

@@ -7182,3 +7182,25 @@ p. C-5 for SIMD exception-condition classification ([official Vol. 1 PDF](https:
 p. 16-3 for legacy SSE2 gates ([official Vol. 3A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)); Vol. 1 Table 14-21 for alignment behavior. The VEX-only Type 2/Table 2-19 entry is not used. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bt--cvtdq2ps-xmm0rax-aligned-m128-memory-profile).
+
+
+### S2-37bu CVTTPS2DQ XMM0,[RAX] aligned m128 memory profile
+
+The handwritten literal `s2_37bu_cvttps2dq_m128_raw_boundaries.case.json` uses
+exact `F3 0F 5B 00` and one aligned 16-byte source. Its lanes are exact
+`INT32_MIN`, the largest in-range positive binary32 integer, invalid `+2^31`,
+and the smallest positive subnormal. The expected output demonstrates the
+indefinite integer bit pattern can also represent valid `INT32_MIN`; IE
+distinguishes them, while the subnormal lane contributes PE. A pending x87 state
+is carried through unchanged.
+
+The runner matrix varies all MXCSR.RC values while proving truncation, tests
+invalid-lane combinations and existing IE/PE histories, aligned AC=0/1 at
+Ring0 and representative misalignment cases, strict schema controls, tampering,
+and JIT/native denial. Direct ISA tests supply full offset × CPL × AC and read-callback
+atomicity evidence; runner snapshots alone do not establish callback counts.
+This is local interpreter evidence only, not physical x86 acceptance.
+
+Provenance: Intel SDM Rev. 093 Vol. 2A CVTTPS2DQ pp. 3-249–3-251; Vol. 1
+§11.5.2.2 and Table 14-21; Vol. 3A §16.1.3 Table 16-1 p. 16-3 ([official
+Vol. 3A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
