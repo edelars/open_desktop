@@ -1082,6 +1082,8 @@ pub enum Operation {
     Cvtpi2pdMemoryRax,
     /// Local-only legacy `0F 2A 00` memory-source CVTPI2PS form.
     Cvtpi2psMemoryRax,
+    /// Local-only legacy `0F 2C C1` XMM1 binary32-to-MM0 truncating form.
+    Cvttps2piMm0Xmm1,
     /// Local-only legacy `0F 5A /r` packed binary32-to-binary64 XMM form.
     Cvtps2pdRegister {
         destination: u8,
@@ -3428,6 +3430,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && !prefixes.address_override
             && prefix_count == 0
             && prefixes.rex.is_none();
+        let cvttps2pi_mm0_xmm1 = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x2c
+            && prefixes == Prefixes::default();
         let cvttpd2dq_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0xe6
             && prefixes.group1.is_none()
@@ -4086,6 +4091,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && !cvttss2si_r64_register
             && !cvttsd2si_r32_register
             && !cvttsd2si_r64_register
+            && !cvttps2pi_mm0_xmm1
         {
             return Err(self.unsupported(opcode));
         }
@@ -4413,6 +4419,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 Operation::Cvtpi2psMemoryRax
+            }
+            (OpcodeMap::Escape0f, 0x2c) if cvttps2pi_mm0_xmm1 => {
+                if self.byte()? != 0xc1 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::Cvttps2piMm0Xmm1
             }
             (OpcodeMap::Escape0f, 0xe6) if cvttpd2dq_register => {
                 let modrm = self.byte()?;
@@ -8420,10 +8432,7 @@ mod tests {
             &[0xc4, 0xe1, 0x79, 0xfe, 0xc1][..],
             &[0x62, 0xf1, 0x7d, 0x08, 0xfe, 0xc1][..],
         ] {
-            assert!(
-                Memory::new(bytes).decode().is_err(),
-                "{bytes:02x?}"
-            );
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }
     }
 
@@ -8466,10 +8475,7 @@ mod tests {
             &[0xc4, 0xe1, 0x79, 0xfa, 0xc1],
             &[0x62, 0xf1, 0x7d, 0x08, 0xfa, 0xc1],
         ] {
-            assert!(
-                Memory::new(bytes).decode().is_err(),
-                "{bytes:02x?}"
-            );
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }
     }
 
@@ -20760,6 +20766,19 @@ mod tests {
             &[0xc5, 0xfb, 0x2d, 0xc0],
             &[0x62, 0xf1, 0xff, 0x08, 0x2d, 0xc0],
         ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn cvttps2pi_mm0_xmm1_decodes_only_the_bounded_register_form() {
+        let decoded = Memory::new(&[0x0f, 0x2c, 0xc1])
+            .decode()
+            .expect("canonical CVTTPS2PI MM0,XMM1 encoding");
+        assert_eq!(decoded.operation, Operation::Cvttps2piMm0Xmm1);
+        assert_eq!(decoded.length, 3);
+
+        for bytes in [&[0x0f, 0x2c, 0xc0], &[0x0f, 0x2c, 0x01]] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }
     }

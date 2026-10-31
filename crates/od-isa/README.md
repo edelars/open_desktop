@@ -572,3 +572,10 @@ and preserves high96. The profile implements bounded IE/DE/OE/UE/PE status, FTZ,
 SSE2 gates and atomic SIMD faults; memory/JIT/native/physical execution remain
 outside scope. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37be--canonical-long64-cvtsd2ss-xmm-register-pairs)
 and [stage report](../../docs/reports/STAGE_2_REPORT.md#s2-37be--cvtsd2ss-register-pair-interpreter-profile).
+
+S2-37bh adds a bounded Long64 `0F 2C C1` CVTTPS2PI MM0,XMM1 interpreter
+profile. It truncates two binary32 lanes independently, records masked IE/PE,
+and writes the result into physical x87 register 0 with the documented MMX tag/TOP
+transition. The profile requires supported MXCSR with IM=PM=1 and an x87 snapshot
+without pending exceptions; unrelated XMM/x87 state is preserved. Other encodings
+and JIT/native paths remain closed. See the Stage 2 plan, CPU contract and report.
