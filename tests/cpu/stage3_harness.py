@@ -61,6 +61,7 @@ SELF_TEST_NAMES = (
     "test_s3_33_native_gates_are_pinned_once_in_manifest_steps_and_summary",
     "test_s3_34n_native_register_corpus_gates_are_pinned_once",
     "test_s3_34p_cached_native_register_trace_gates_are_pinned_once",
+    "test_s3_34q_retained_hit_reducer_gate_is_pinned_once",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
     "test_rust_gate_summary_rejects_an_omitted_mandatory_gate",
@@ -389,6 +390,10 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_34p_cached_native_register_v1_failure_replay", "local_acceptance", "od-host",
         "tests::native_register_v1_corpus::cached_failure_trace_replays_saved_prefix_and_failure",
+    ),
+    (
+        "s3_34q_retained_hit_state_reducer_selfcheck", "local_acceptance", "od-host",
+        "tests::native_register_v1_corpus::retained_hit_failure_reducer_and_selfcheck",
     ),
 )
 RUST_TEST_GATES = (

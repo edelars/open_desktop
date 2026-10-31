@@ -3,11 +3,12 @@ use od_isa::memory::{AccessContext, AccessKind, GuestMemory};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 const PROFILE: &str = "NativeRegisterV1";
 const ENVELOPE_VERSION: u32 = 1;
 const CACHE_TRACE_VERSION: u32 = 1;
+const RETAINED_HIT_REDUCTION_VERSION: u32 = 1;
 const MAX_BUDGET: u64 = 16;
 const SEEDS: [u64; 3] = [
     0x5333_346e_0000_0001,
@@ -177,6 +178,68 @@ struct CacheTraceFailurePayload<'a> {
     failure_kind: &'a str,
     failure_detail: &'a str,
     reproduction_command: &'a str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetainedHitReductionArtifact {
+    version: u32,
+    profile: String,
+    source_inputs_digest: String,
+    source_failure_file_digest: String,
+    source_failure_digest: String,
+    source_failure_path: String,
+    strategy: String,
+    warmup: CacheTraceStep,
+    original_failing_input: Input,
+    reduced_failing_input: Input,
+    mismatch_signature: String,
+    original_state_metric: u32,
+    reduced_state_metric: u32,
+    original_replay_runs: u8,
+    reduced_replay_runs: u8,
+    artifact_digest: String,
+}
+
+#[derive(Serialize)]
+struct RetainedHitReductionPayload<'a> {
+    version: u32,
+    profile: &'a str,
+    source_inputs_digest: &'a str,
+    source_failure_file_digest: &'a str,
+    source_failure_digest: &'a str,
+    source_failure_path: &'a str,
+    strategy: &'a str,
+    warmup: &'a CacheTraceStep,
+    original_failing_input: &'a Input,
+    reduced_failing_input: &'a Input,
+    mismatch_signature: &'a str,
+    original_state_metric: u32,
+    reduced_state_metric: u32,
+    original_replay_runs: u8,
+    reduced_replay_runs: u8,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetainedHitReductionStatus {
+    version: u32,
+    profile: String,
+    source_failure_digest: String,
+    outcome: String,
+    evaluations: usize,
+    reduced_artifact: Option<String>,
+    status_digest: String,
+}
+
+#[derive(Serialize)]
+struct RetainedHitReductionStatusPayload<'a> {
+    version: u32,
+    profile: &'a str,
+    source_failure_digest: &'a str,
+    outcome: &'a str,
+    evaluations: usize,
+    reduced_artifact: &'a Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -848,6 +911,90 @@ fn cache_trace_failure_digest(failure: &CacheTraceFailureEnvelope) -> String {
     digest(&bytes)
 }
 
+fn retained_hit_reduction_digest(artifact: &RetainedHitReductionArtifact) -> String {
+    let bytes = serde_json::to_vec(&RetainedHitReductionPayload {
+        version: artifact.version,
+        profile: &artifact.profile,
+        source_inputs_digest: &artifact.source_inputs_digest,
+        source_failure_file_digest: &artifact.source_failure_file_digest,
+        source_failure_digest: &artifact.source_failure_digest,
+        source_failure_path: &artifact.source_failure_path,
+        strategy: &artifact.strategy,
+        warmup: &artifact.warmup,
+        original_failing_input: &artifact.original_failing_input,
+        reduced_failing_input: &artifact.reduced_failing_input,
+        mismatch_signature: &artifact.mismatch_signature,
+        original_state_metric: artifact.original_state_metric,
+        reduced_state_metric: artifact.reduced_state_metric,
+        original_replay_runs: artifact.original_replay_runs,
+        reduced_replay_runs: artifact.reduced_replay_runs,
+    })
+    .expect("retained-hit reduction serialization");
+    digest(&bytes)
+}
+
+fn retained_hit_reduction_status_digest(status: &RetainedHitReductionStatus) -> String {
+    let bytes = serde_json::to_vec(&RetainedHitReductionStatusPayload {
+        version: status.version,
+        profile: &status.profile,
+        source_failure_digest: &status.source_failure_digest,
+        outcome: &status.outcome,
+        evaluations: status.evaluations,
+        reduced_artifact: &status.reduced_artifact,
+    })
+    .expect("retained-hit reduction status serialization");
+    digest(&bytes)
+}
+
+fn retained_hit_state_metric(input: &Input) -> u32 {
+    input
+        .initial_gpr
+        .iter()
+        .map(|value| value.count_ones())
+        .sum::<u32>()
+        + (input.initial_rflags & REDUCER_FLAG_MASK).count_ones()
+}
+
+fn retained_hit_state_only(original: &Input, candidate: &Input) -> bool {
+    validate_input(candidate).is_ok()
+        && original.version == candidate.version
+        && original.profile == candidate.profile
+        && original.seed == candidate.seed
+        && original.index == candidate.index
+        && original.code == candidate.code
+        && original.guest_base_rip == candidate.guest_base_rip
+        && original.initial_rip == candidate.initial_rip
+        && original.initial_auxiliary_state == candidate.initial_auxiliary_state
+        && original.stop_rip == candidate.stop_rip
+        && original.stop_requested == candidate.stop_requested
+        && original.budget == candidate.budget
+        && original
+            .initial_gpr
+            .iter()
+            .zip(candidate.initial_gpr)
+            .all(|(before, after)| before == &after || after == 0)
+        && ((original.initial_rflags ^ candidate.initial_rflags) & !REDUCER_FLAG_MASK) == 0
+        && (candidate.initial_rflags & REDUCER_FLAG_MASK & !original.initial_rflags) == 0
+        && candidate.input_digest == digest(&canonical_input(candidate))
+}
+
+fn retained_hit_state_candidates(input: &Input) -> Vec<Input> {
+    let mut candidates = Vec::new();
+    for register in 0..input.initial_gpr.len() {
+        if input.initial_gpr[register] != 0 {
+            let mut candidate = input.clone();
+            candidate.initial_gpr[register] = 0;
+            candidates.push(finish_input(candidate));
+        }
+    }
+    if input.initial_rflags & REDUCER_FLAG_MASK != 0 {
+        let mut candidate = input.clone();
+        candidate.initial_rflags &= !REDUCER_FLAG_MASK;
+        candidates.push(finish_input(candidate));
+    }
+    candidates
+}
+
 fn replay_cache_trace_failure(
     path: &Path,
     injected_cached_observation: Option<Observation>,
@@ -1024,6 +1171,370 @@ fn replay_cache_trace_failure(
     if cache.resident_entries() != 0 {
         return Err("failure replay retained an executable handle after clear".into());
     }
+    Ok(())
+}
+
+struct RetainedHitTrial {
+    warmup: CacheTraceStep,
+    signature: Option<String>,
+    cached: Option<Observation>,
+}
+
+fn retained_hit_trial<F>(
+    input: &Input,
+    strategy: &str,
+    inject: &mut F,
+) -> Result<RetainedHitTrial, String>
+where
+    F: FnMut(&Input, Observation) -> Result<Observation, String>,
+{
+    let candidate = match strategy {
+        "eager" => false,
+        "demand_candidate" => true,
+        other => return Err(format!("unsupported retained-hit strategy {other}")),
+    };
+    let canonical = retained_hit_inputs();
+    if !retained_hit_state_only(&canonical[1], input)
+        || cache_bindings(&canonical[0]).2 != cache_bindings(input).2
+    {
+        return Err("reduced input changed retained-hit code or cache context".into());
+    }
+    let warmup_input = &canonical[0];
+    let warmup_interpreter = reference_observation(warmup_input);
+    let warmup_uncached = run_backend(warmup_input, candidate)
+        .map_err(|error| format!("warmup uncached backend error: {error}"))?;
+    compare(&warmup_interpreter, &warmup_uncached)
+        .map_err(|class| format!("warmup uncached semantic mismatch: {class}"))?;
+    let failing_interpreter = reference_observation(input);
+    let failing_uncached = run_backend(input, candidate)
+        .map_err(|error| format!("failing uncached backend error: {error}"))?;
+    compare(&failing_interpreter, &failing_uncached)
+        .map_err(|class| format!("failing uncached semantic mismatch: {class}"))?;
+
+    let mut cache = od_jit::dispatch::SingleEntryBlockCache::new(
+        1,
+        od_jit::dispatch::MAX_SINGLE_ENTRY_CACHE_BYTES,
+    )
+    .map_err(|error| format!("cannot create retained-hit trial cache: {error:?}"))?;
+    let (warmup_cached, warmup_counters) = run_cached_backend(warmup_input, candidate, &mut cache)
+        .map_err(|error| format!("warmup cached backend error: {error}"))?;
+    if retained_hit_counter_mismatch(0, &warmup_counters).is_some()
+        || compare(&warmup_interpreter, &warmup_cached).is_err()
+        || compare(&warmup_uncached, &warmup_cached).is_err()
+    {
+        cache.clear();
+        return Err(
+            "warmup failed to prove one miss, compile, publication, and semantic match".into(),
+        );
+    }
+    let (_, _, warmup_bindings) = cache_bindings(warmup_input);
+    let warmup = CacheTraceStep {
+        sequence_index: 0,
+        input: warmup_input.clone(),
+        bindings: warmup_bindings,
+        interpreter: warmup_interpreter,
+        uncached: warmup_uncached,
+        cached: warmup_cached,
+        cache: warmup_counters.clone(),
+    };
+    let before = cache_counter_snapshot(&cache);
+    if before != warmup_counters {
+        cache.clear();
+        return Err("failing input did not begin immediately after the exact warmup".into());
+    }
+    let (cached, after) = run_cached_backend(input, candidate, &mut cache)
+        .map_err(|error| format!("failing cached backend error: {error}"))?;
+    let cached = inject(input, cached)?;
+    if after.hits != before.hits + 1
+        || after.misses != before.misses
+        || after.successful_compiles != before.successful_compiles
+        || after.successful_publications != before.successful_publications
+        || retained_hit_counter_mismatch(1, &after).is_some()
+    {
+        cache.clear();
+        return Err(
+            "failing input did not prove one retained hit without compile/publication".into(),
+        );
+    }
+    let signature = if let Err(class) = compare(&failing_interpreter, &cached) {
+        Some(format!("interpreter_mismatch:{class}"))
+    } else if let Err(class) = compare(&failing_uncached, &cached) {
+        Some(format!("uncached_mismatch:{class}"))
+    } else {
+        None
+    };
+    cache.clear();
+    if cache.resident_entries() != 0 {
+        return Err("retained-hit trial kept a cache handle after clear".into());
+    }
+    Ok(RetainedHitTrial {
+        warmup,
+        signature,
+        cached: Some(cached),
+    })
+}
+
+fn semantic_retained_signature(failure: &CacheTraceFailureEnvelope) -> Result<String, String> {
+    if failure.segment_kind != "retained_hit"
+        || failure.sequence_index != 1
+        || failure.successful_prefix.len() != 1
+        || !matches!(
+            failure.failure_kind.as_str(),
+            "interpreter_mismatch" | "uncached_mismatch"
+        )
+        || !["gpr", "flags", "rip", "auxiliary_state"].contains(&failure.failure_detail.as_str())
+    {
+        return Err("only retained_hit step 1 semantic state mismatches can be reduced".into());
+    }
+    Ok(format!(
+        "{}:{}",
+        failure.failure_kind, failure.failure_detail
+    ))
+}
+
+fn run_retained_hit_reducer<F>(
+    source_path: &Path,
+    output_dir: &Path,
+    max_evaluations: usize,
+    mut inject: F,
+) -> Result<Option<RetainedHitReductionArtifact>, String>
+where
+    F: FnMut(&Input, Observation) -> Result<Observation, String>,
+{
+    if fs::symlink_metadata(source_path)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(true)
+    {
+        return Err("source failure trace is missing or a symlink".into());
+    }
+    let source_bytes = fs::read(source_path)
+        .map_err(|error| format!("cannot read source failure trace: {error}"))?;
+    let failure: CacheTraceFailureEnvelope = serde_json::from_slice(&source_bytes)
+        .map_err(|error| format!("malformed source failure trace: {error}"))?;
+    let signature = semantic_retained_signature(&failure)?;
+    let canonical = retained_hit_inputs();
+    if failure.version != CACHE_TRACE_VERSION
+        || failure.profile != PROFILE
+        || failure.source_inputs_digest != load_source_observations()?.inputs_digest
+        || failure.failing_input != canonical[1]
+        || failure.successful_prefix[0].input != canonical[0]
+        || failure.successful_prefix[0].sequence_index != 0
+        || failure.failure_digest != cache_trace_failure_digest(&failure)
+    {
+        return Err(
+            "source failure trace is not the immutable retained-hit step-1 envelope".into(),
+        );
+    }
+    let source_file_digest = digest(&source_bytes);
+    let original_a = retained_hit_trial(&failure.failing_input, &failure.strategy, &mut inject)?;
+    let original_b = retained_hit_trial(&failure.failing_input, &failure.strategy, &mut inject)?;
+    if original_a.signature.as_deref() != Some(&signature)
+        || original_b.signature.as_deref() != Some(&signature)
+        || original_a.cached != failure.cached
+        || original_b.cached != failure.cached
+        || original_a.warmup != failure.successful_prefix[0]
+        || original_b.warmup != failure.successful_prefix[0]
+    {
+        return Err("source mismatch was not stable across two exact retained-hit replays".into());
+    }
+    replay_cache_trace_failure(source_path, original_a.cached.clone())?;
+
+    let mut current = failure.failing_input.clone();
+    let mut evaluations = 0usize;
+    while evaluations < max_evaluations.min(REDUCER_MAX_EVALUATIONS) {
+        let mut accepted = None;
+        for candidate in retained_hit_state_candidates(&current) {
+            if evaluations >= max_evaluations.min(REDUCER_MAX_EVALUATIONS) {
+                break;
+            }
+            if !retained_hit_state_only(&failure.failing_input, &candidate)
+                || retained_hit_state_metric(&candidate) >= retained_hit_state_metric(&current)
+            {
+                continue;
+            }
+            evaluations += 1;
+            let first = retained_hit_trial(&candidate, &failure.strategy, &mut inject);
+            let second = retained_hit_trial(&candidate, &failure.strategy, &mut inject);
+            if let (Ok(first), Ok(second)) = (first, second) {
+                if first.signature.as_deref() == Some(&signature)
+                    && second.signature.as_deref() == Some(&signature)
+                    && first.cached == second.cached
+                    && first.warmup == failure.successful_prefix[0]
+                    && second.warmup == failure.successful_prefix[0]
+                {
+                    accepted = Some(candidate);
+                    break;
+                }
+            }
+        }
+        match accepted {
+            Some(candidate) => current = candidate,
+            None => break,
+        }
+    }
+    let hit_limit = evaluations >= max_evaluations.min(REDUCER_MAX_EVALUATIONS);
+    let artifact = if current == failure.failing_input {
+        None
+    } else {
+        let artifact_path = output_dir.join("retained-hit-reduced-input-v1.json");
+        let mut artifact = RetainedHitReductionArtifact {
+            version: RETAINED_HIT_REDUCTION_VERSION,
+            profile: PROFILE.into(),
+            source_inputs_digest: failure.source_inputs_digest.clone(),
+            source_failure_file_digest: source_file_digest,
+            source_failure_digest: failure.failure_digest.clone(),
+            source_failure_path: source_path.to_string_lossy().into_owned(),
+            strategy: failure.strategy.clone(),
+            warmup: failure.successful_prefix[0].clone(),
+            original_failing_input: failure.failing_input.clone(),
+            reduced_failing_input: current.clone(),
+            mismatch_signature: signature,
+            original_state_metric: retained_hit_state_metric(&failure.failing_input),
+            reduced_state_metric: retained_hit_state_metric(&current),
+            original_replay_runs: 2,
+            reduced_replay_runs: 2,
+            artifact_digest: String::new(),
+        };
+        artifact.artifact_digest = retained_hit_reduction_digest(&artifact);
+        replay_retained_hit_reduction_artifact(&artifact, &mut inject)?;
+        write_json_create_new(&artifact_path, &artifact)?;
+        Some(artifact)
+    };
+    let outcome = if hit_limit {
+        "evaluation_limit"
+    } else if artifact.is_some() {
+        "reduced"
+    } else {
+        "not_reproduced"
+    };
+    let mut status = RetainedHitReductionStatus {
+        version: RETAINED_HIT_REDUCTION_VERSION,
+        profile: PROFILE.into(),
+        source_failure_digest: failure.failure_digest,
+        outcome: outcome.into(),
+        evaluations,
+        reduced_artifact: artifact
+            .as_ref()
+            .map(|_| "retained-hit-reduced-input-v1.json".into()),
+        status_digest: String::new(),
+    };
+    status.status_digest = retained_hit_reduction_status_digest(&status);
+    write_json_create_new(
+        &output_dir.join("retained-hit-reducer-status-v1.json"),
+        &status,
+    )?;
+    Ok(artifact)
+}
+
+fn load_source_observations() -> Result<CorpusObservationsEnvelope, String> {
+    let path = artifact_dir().join("native-register-v1-observations.json");
+    if fs::symlink_metadata(&path)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(true)
+    {
+        return Err("source observation corpus is missing or a symlink".into());
+    }
+    let source: CorpusObservationsEnvelope = serde_json::from_slice(
+        &fs::read(&path).map_err(|error| format!("cannot read source corpus: {error}"))?,
+    )
+    .map_err(|error| format!("malformed source corpus: {error}"))?;
+    validate_corpus_observations(&source)?;
+    Ok(source)
+}
+
+fn replay_retained_hit_reduction<F>(artifact_path: &Path, inject: &mut F) -> Result<(), String>
+where
+    F: FnMut(&Input, Observation) -> Result<Observation, String>,
+{
+    if fs::symlink_metadata(artifact_path)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(true)
+    {
+        return Err("retained-hit reduction artifact is missing or a symlink".into());
+    }
+    let artifact_bytes = fs::read(artifact_path)
+        .map_err(|error| format!("cannot read retained-hit reduction artifact: {error}"))?;
+    let artifact: RetainedHitReductionArtifact = serde_json::from_slice(&artifact_bytes)
+        .map_err(|error| format!("malformed retained-hit reduction artifact: {error}"))?;
+    replay_retained_hit_reduction_artifact(&artifact, inject)
+}
+
+fn replay_retained_hit_reduction_artifact<F>(
+    artifact: &RetainedHitReductionArtifact,
+    inject: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(&Input, Observation) -> Result<Observation, String>,
+{
+    if artifact.version != RETAINED_HIT_REDUCTION_VERSION
+        || artifact.profile != PROFILE
+        || artifact.artifact_digest != retained_hit_reduction_digest(&artifact)
+        || artifact.original_replay_runs != 2
+        || artifact.reduced_replay_runs != 2
+        || artifact.original_state_metric
+            != retained_hit_state_metric(&artifact.original_failing_input)
+        || artifact.reduced_state_metric
+            != retained_hit_state_metric(&artifact.reduced_failing_input)
+        || artifact.reduced_state_metric >= artifact.original_state_metric
+        || !retained_hit_state_only(
+            &artifact.original_failing_input,
+            &artifact.reduced_failing_input,
+        )
+    {
+        return Err("retained-hit reduction schema, digest, or state-only binding differs".into());
+    }
+    let source_path = Path::new(&artifact.source_failure_path);
+    if fs::symlink_metadata(source_path)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(true)
+    {
+        return Err("bound source failure is missing or a symlink".into());
+    }
+    let source_bytes = fs::read(source_path)
+        .map_err(|error| format!("cannot read bound source failure: {error}"))?;
+    if digest(&source_bytes) != artifact.source_failure_file_digest {
+        return Err("bound source failure file digest differs".into());
+    }
+    let failure: CacheTraceFailureEnvelope = serde_json::from_slice(&source_bytes)
+        .map_err(|error| format!("malformed bound source failure: {error}"))?;
+    if failure.failure_digest != artifact.source_failure_digest
+        || failure.failure_digest != cache_trace_failure_digest(&failure)
+        || failure.source_inputs_digest != artifact.source_inputs_digest
+        || failure.strategy != artifact.strategy
+        || failure.successful_prefix.first() != Some(&artifact.warmup)
+        || failure.failing_input != artifact.original_failing_input
+        || semantic_retained_signature(&failure)? != artifact.mismatch_signature
+    {
+        return Err(
+            "reduced artifact no longer binds the exact original failure and warmup".into(),
+        );
+    }
+    let source = load_source_observations()?;
+    if source.inputs_digest != artifact.source_inputs_digest {
+        return Err("reduced artifact source corpus digest differs".into());
+    }
+    let mut original_cached = None;
+    for input in [
+        &artifact.original_failing_input,
+        &artifact.reduced_failing_input,
+    ] {
+        let first = retained_hit_trial(input, &artifact.strategy, inject)?;
+        let second = retained_hit_trial(input, &artifact.strategy, inject)?;
+        if input == &artifact.original_failing_input {
+            original_cached = first.cached.clone();
+        }
+        if first.signature.as_deref() != Some(&artifact.mismatch_signature)
+            || second.signature.as_deref() != Some(&artifact.mismatch_signature)
+            || first.cached != second.cached
+            || first.warmup != artifact.warmup
+            || second.warmup != artifact.warmup
+        {
+            return Err(
+                "reduced retained-hit replay was unstable or changed mismatch signature".into(),
+            );
+        }
+    }
+    replay_cache_trace_failure(source_path, original_cached)?;
     Ok(())
 }
 
@@ -2621,6 +3132,277 @@ fn cached_failure_trace_replays_saved_prefix_and_failure() {
             .contains("did not reproduce")
     );
     fs::remove_file(retained_path).unwrap();
+}
+
+#[test]
+fn retained_hit_failure_reducer_and_selfcheck() {
+    let _guard = jit_test_lock();
+    if let Some(path) = std::env::var_os("OD_JIT_NATIVE_REGISTER_V1_REDUCE_CACHE_FAILURE") {
+        let source_path = PathBuf::from(path);
+        let output_dir = std::env::var_os("OD_JIT_NATIVE_REGISTER_V1_REDUCER_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| artifact_dir().join("native-register-v1-retained-hit-reducer"));
+        let artifact = run_retained_hit_reducer(
+            &source_path,
+            &output_dir,
+            REDUCER_MAX_EVALUATIONS,
+            |_, actual| Ok(actual),
+        )
+        .unwrap_or_else(|error| panic!("retained-hit reducer rejected source: {error}"));
+        let _ = artifact;
+        return;
+    }
+    if let Some(path) = std::env::var_os("OD_JIT_NATIVE_REGISTER_V1_REPLAY_RETAINED_HIT_REDUCTION")
+    {
+        let mut identity = |_: &Input, actual: Observation| Ok(actual);
+        replay_retained_hit_reduction(Path::new(&path), &mut identity)
+            .unwrap_or_else(|error| panic!("saved retained-hit reduction did not replay: {error}"));
+        return;
+    }
+
+    // This labeled injection is input-dependent and exercises the reduction
+    // and replay path only; it is not evidence of a JIT defect.
+    let source_dir = std::env::temp_dir().join(format!(
+        "native-register-v1-retained-reducer-selfcheck-{}",
+        std::process::id()
+    ));
+    let source_path = source_dir.join("injected-source-failure.json");
+    let output_dir = source_dir.join("output");
+    let _ = fs::remove_dir_all(&source_dir);
+    fs::create_dir_all(&source_dir).unwrap();
+    let mut injected = |input: &Input, mut actual: Observation| {
+        if input.initial_gpr[3] != 0 {
+            actual.gpr[0] ^= 2;
+        }
+        Ok(actual)
+    };
+    let baseline = retained_hit_trial(&retained_hit_inputs()[1], "eager", &mut injected).unwrap();
+    assert_eq!(
+        baseline.signature.as_deref(),
+        Some("interpreter_mismatch:gpr")
+    );
+    let source = load_source_observations().unwrap();
+    let inputs = retained_hit_inputs();
+    let mut failure = CacheTraceFailureEnvelope {
+        version: CACHE_TRACE_VERSION,
+        profile: PROFILE.into(),
+        source_inputs_digest: source.inputs_digest,
+        segment_kind: "retained_hit".into(),
+        strategy: "eager".into(),
+        sequence_index: 1,
+        successful_prefix: vec![baseline.warmup.clone()],
+        failing_input: inputs[1].clone(),
+        interpreter: reference_observation(&inputs[1]),
+        uncached: run_backend(&inputs[1], false).unwrap(),
+        cached: baseline.cached.clone(),
+        cache_before: baseline.warmup.cache.clone(),
+        cache_after: {
+            let mut after = baseline.warmup.cache.clone();
+            after.hits += 1;
+            after
+        },
+        failure_kind: "interpreter_mismatch".into(),
+        failure_detail: "gpr".into(),
+        reproduction_command: "LOCAL INPUT-DEPENDENT SELF-CHECK ONLY".into(),
+        failure_digest: String::new(),
+    };
+    failure.failure_digest = cache_trace_failure_digest(&failure);
+    write_json_create_new(&source_path, &failure).unwrap();
+    let counter_only_path = source_dir.join("counter-only-source-failure.json");
+    let mut counter_only_failure = failure.clone();
+    counter_only_failure.failure_detail = "retirement".into();
+    let mut counter_only_observation = counter_only_failure.interpreter.clone();
+    counter_only_observation.retired_native ^= 1;
+    counter_only_failure.cached = Some(counter_only_observation);
+    counter_only_failure.failure_digest = cache_trace_failure_digest(&counter_only_failure);
+    write_json_create_new(&counter_only_path, &counter_only_failure).unwrap();
+    assert!(
+        run_retained_hit_reducer(
+            &counter_only_path,
+            &source_dir.join("counter-only"),
+            REDUCER_MAX_EVALUATIONS,
+            |_, actual| Ok(actual),
+        )
+        .unwrap_err()
+        .contains("semantic state mismatches")
+    );
+    let artifact = run_retained_hit_reducer(
+        &source_path,
+        &output_dir,
+        REDUCER_MAX_EVALUATIONS,
+        |input, actual| {
+            let mut actual = actual;
+            if input.initial_gpr[3] != 0 {
+                actual.gpr[0] ^= 2;
+            }
+            Ok(actual)
+        },
+    )
+    .unwrap()
+    .expect("input-dependent mismatch must reduce");
+    assert!(artifact.reduced_state_metric < artifact.original_state_metric);
+    assert_eq!(artifact.original_replay_runs, 2);
+    assert_eq!(artifact.reduced_replay_runs, 2);
+
+    let artifact_path = output_dir.join("retained-hit-reduced-input-v1.json");
+    let mut identity = |_: &Input, actual: Observation| Ok(actual);
+    assert!(
+        replay_retained_hit_reduction(&artifact_path, &mut identity)
+            .unwrap_err()
+            .contains("mismatch signature")
+    );
+    let mut no_hit = artifact.clone();
+    no_hit.warmup.cache.hits = 1;
+    no_hit.artifact_digest = retained_hit_reduction_digest(&no_hit);
+    let no_hit_path = output_dir.join("negative-no-hit.json");
+    write_json_create_new(&no_hit_path, &no_hit).unwrap();
+    assert!(replay_retained_hit_reduction(&no_hit_path, &mut identity).is_err());
+    let mut changed_prefix = artifact.clone();
+    changed_prefix.warmup.input.initial_gpr[0] ^= 1;
+    changed_prefix.warmup.input = finish_input(changed_prefix.warmup.input);
+    changed_prefix.artifact_digest = retained_hit_reduction_digest(&changed_prefix);
+    let prefix_path = output_dir.join("negative-prefix.json");
+    write_json_create_new(&prefix_path, &changed_prefix).unwrap();
+    assert!(replay_retained_hit_reduction(&prefix_path, &mut identity).is_err());
+    let mut changed_context = artifact.clone();
+    changed_context.reduced_failing_input.guest_base_rip += 0x1000;
+    changed_context.reduced_failing_input = finish_input(changed_context.reduced_failing_input);
+    changed_context.artifact_digest = retained_hit_reduction_digest(&changed_context);
+    let context_path = output_dir.join("negative-context.json");
+    write_json_create_new(&context_path, &changed_context).unwrap();
+    assert!(replay_retained_hit_reduction(&context_path, &mut identity).is_err());
+    let mut changed_code = artifact.clone();
+    changed_code.reduced_failing_input.code[3] ^= 1;
+    changed_code.reduced_failing_input = finish_input(changed_code.reduced_failing_input);
+    changed_code.artifact_digest = retained_hit_reduction_digest(&changed_code);
+    let code_path = output_dir.join("negative-code.json");
+    write_json_create_new(&code_path, &changed_code).unwrap();
+    assert!(replay_retained_hit_reduction(&code_path, &mut identity).is_err());
+    let mut changed_source = artifact.clone();
+    changed_source.source_inputs_digest = "fnv1a64:0000000000000000".into();
+    changed_source.artifact_digest = retained_hit_reduction_digest(&changed_source);
+    let source_change_path = output_dir.join("negative-source.json");
+    write_json_create_new(&source_change_path, &changed_source).unwrap();
+    assert!(replay_retained_hit_reduction(&source_change_path, &mut identity).is_err());
+    let mut changed_signature = artifact.clone();
+    changed_signature.mismatch_signature = "interpreter_mismatch:rip".into();
+    changed_signature.artifact_digest = retained_hit_reduction_digest(&changed_signature);
+    let signature_path = output_dir.join("negative-signature.json");
+    write_json_create_new(&signature_path, &changed_signature).unwrap();
+    assert!(replay_retained_hit_reduction(&signature_path, &mut identity).is_err());
+    let tampered_path = output_dir.join("negative-digest.json");
+    let mut tampered = artifact.clone();
+    tampered.artifact_digest = "fnv1a64:0000000000000000".into();
+    write_json_create_new(&tampered_path, &tampered).unwrap();
+    assert!(
+        replay_retained_hit_reduction(&tampered_path, &mut identity)
+            .unwrap_err()
+            .contains("digest")
+    );
+    let unstable_toggle = AtomicBool::new(false);
+    let unstable_result = run_retained_hit_reducer(
+        &source_path,
+        &source_dir.join("unstable"),
+        REDUCER_MAX_EVALUATIONS,
+        |input, mut actual| {
+            if input.initial_gpr[3] != 0 && unstable_toggle.fetch_xor(true, Ordering::Relaxed) {
+                actual.gpr[0] ^= 2;
+            }
+            Ok(actual)
+        },
+    );
+    assert!(
+        unstable_result
+            .unwrap_err()
+            .contains("stable across two exact retained-hit replays")
+    );
+    let same_class_variation = AtomicU8::new(0);
+    let canonical_failing_input = retained_hit_inputs()[1].clone();
+    let same_class_output = source_dir.join("same-class-variation");
+    let same_class_result = run_retained_hit_reducer(
+        &source_path,
+        &same_class_output,
+        REDUCER_MAX_EVALUATIONS,
+        |input, mut actual| {
+            if input == &canonical_failing_input {
+                actual.gpr[0] ^= 2;
+            } else if input.initial_gpr[3] != 0 {
+                actual.gpr[0] ^= if same_class_variation.fetch_add(1, Ordering::Relaxed) % 2 == 0 {
+                    2
+                } else {
+                    4
+                };
+            }
+            Ok(actual)
+        },
+    );
+    assert!(same_class_result.unwrap().is_none());
+    let same_class_status: RetainedHitReductionStatus = serde_json::from_slice(
+        &fs::read(same_class_output.join("retained-hit-reducer-status-v1.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(same_class_status.outcome, "not_reproduced");
+    assert!(
+        !same_class_output
+            .join("retained-hit-reduced-input-v1.json")
+            .exists()
+    );
+    let backend_error_result = run_retained_hit_reducer(
+        &source_path,
+        &source_dir.join("backend-error"),
+        REDUCER_MAX_EVALUATIONS,
+        |_, _| Err("injected backend error".into()),
+    );
+    assert!(
+        backend_error_result
+            .unwrap_err()
+            .contains("injected backend error")
+    );
+    let limited_dir = source_dir.join("limited");
+    let limited = run_retained_hit_reducer(&source_path, &limited_dir, 1, |input, mut actual| {
+        if input.initial_gpr[3] != 0 {
+            actual.gpr[0] ^= 2;
+        }
+        Ok(actual)
+    })
+    .unwrap()
+    .expect("limited reducer still persists its reproduced candidate");
+    assert_eq!(
+        limited.reduced_state_metric < limited.original_state_metric,
+        true
+    );
+    let limited_status: RetainedHitReductionStatus = serde_json::from_slice(
+        &fs::read(limited_dir.join("retained-hit-reducer-status-v1.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(limited_status.outcome, "evaluation_limit");
+    assert_eq!(limited_status.evaluations, 1);
+    assert_eq!(
+        limited_status.status_digest,
+        retained_hit_reduction_status_digest(&limited_status)
+    );
+    let not_reproduced_dir = source_dir.join("not-reproduced");
+    let canonical_failing_input = retained_hit_inputs()[1].clone();
+    let not_reproduced = run_retained_hit_reducer(
+        &source_path,
+        &not_reproduced_dir,
+        REDUCER_MAX_EVALUATIONS,
+        |input, mut actual| {
+            if input == &canonical_failing_input {
+                actual.gpr[0] ^= 2;
+            }
+            Ok(actual)
+        },
+    )
+    .unwrap();
+    assert!(not_reproduced.is_none());
+    let not_reproduced_status: RetainedHitReductionStatus = serde_json::from_slice(
+        &fs::read(not_reproduced_dir.join("retained-hit-reducer-status-v1.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(not_reproduced_status.outcome, "not_reproduced");
+    assert!(not_reproduced_status.reduced_artifact.is_none());
+    let _ = fs::remove_dir_all(source_dir);
 }
 
 fn contains_form(code: &[u8], form: usize) -> bool {
