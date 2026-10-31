@@ -1,0 +1,84 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_37ba_addps_xmm0_xmm1",
+  "profile": "s2-long-addps-registers-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten literal legacy ADDPS XMM0,XMM1. The four binary32 lanes cover positive and negative halfway rounding, an exact subnormal sum, and the overflow midpoint; input/output flags are independently checked by the schema-v2 raw-integer oracle.",
+    "specification": "Intel 64 and IA-32 Architectures Software Developer’s Manual, Rev. 093, Vol. 2A, ADDPS pp. 3-19–3-21; legacy SSE rows in Table 2-27; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19 and Table 7-8; Intel Floating-Point Reference Sheet v2.13.",
+    "specification_version": "Intel SDM revision 093; project S2-37ba."
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 3,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "0f58c1",
+      "comparison_mask_hex": "ffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100003",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000000",
+  "expected_exit": "stop_address",
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0000000000000100",
+      "0x0000000000000101",
+      "0x0000000000000102",
+      "0x0000000000000103",
+      "0x0000000000000104",
+      "0x0000000000000105",
+      "0x0000000000000106",
+      "0x0000000000000107",
+      "0x0000000000000108",
+      "0x0000000000000109",
+      "0x000000000000010a",
+      "0x000000000000010b",
+      "0x000000000000010c",
+      "0x000000000000010d",
+      "0x000000000000010e",
+      "0x000000000000010f"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000002",
+    "sse": {
+      "xmm": [
+        "0000803f000080bf01008000ffff7f7f",
+        "00008033000080b30000808000000073",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+      ],
+      "mxcsr": "0x0000000000001f80",
+      "diagnostic_mxcsr_mask": "0x000000000000ffbf"
+    }
+  },
+  "addps_controls": {
+    "sse_available": true,
+    "cr0_em": false,
+    "cr0_ts": false,
+    "cr4_osfxsr": true,
+    "cr4_osxmmexcpt": true
+  }
+}

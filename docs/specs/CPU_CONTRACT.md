@@ -13808,3 +13808,48 @@ Floating-Point Reference Sheet v2.13. The p. 3-18 Type 2/Table 2-19 reference
 is for VEX forms, not legacy ADDPD. No memory alignment claim is made. Memory
 forms, physical acceptance, other modes, complete unmasked OE/UE behavior and
 parent S2-37/S2-38 remain open.
+
+
+## S2-37ba — canonical Long64 ADDPS XMM register pairs
+
+The local schema-v2 profile `s2-long-addps-registers-v1` admits canonical
+Long64 legacy `0F 58 /r`, ModR/M.mod=3, for all 256 XMM pairs. Low forms are
+three bytes; extended indices use one REX `41`, `44` or `45` before `0F`, for
+four bytes. It rejects 66/F2/F3, memory, reordered/repeated/redundant prefixes,
+REX.W/X/40, trailing bytes, VEX and EVEX. Full fetch precedes SSE/CR0.EM/
+CR4.OSFXSR #UD and then CR0.TS #NM at CPL0–3, with no data callbacks. ADDPS is
+SSE, not SSE2. JIT/native/C ABI/fragment/generic execution remains closed.
+
+Admission requires MXCSR.OM=1 and UM=1, rejects DAZ and reserved bits, and
+accepts all RC modes, FTZ, IM/DM/ZM/PM and prior sticky flags. Execution
+snapshots both XMM inputs and adds four old-destination/source binary32 lanes.
+NaNs select the first original operand; the selected SNaN is quieted and any
+SNaN raises IE. QNaN alone does not raise IE; NaNs suppress same-lane DE.
+Opposite-sign infinities raise IE and return masked indefinite `ffc00000`; other
+infinity results keep their sign. Any subnormal input raises DE, including
+infinity plus subnormal. IE/DE aggregate before arithmetic. Unmasked new
+pre-events commit only the new IE/DE status and suppress every post flag and
+the full XMM write. Otherwise `Binary32::add_raw_result` uses MXCSR.RC. Exact
+cancellation is -0 only for round-down; same-sign zeros preserve their sign.
+Masked overflow is OE|PE; directed overflow to maxfinite may be PE-only.
+Tininess is after p=24 precision rounding using the unbounded WPR exponent.
+Finite same-format sums are multiples of minsub, so an unflushed exact
+subnormal result raises neither UE nor PE. FTZ flushes only tiny nonzero results
+to signed zero with UE|PE. Post status commits before unmasked PM delivery,
+while XMM/RIP/retirement remain unchanged. Old sticky flags alone do not fault.
+
+The independent schema oracle uses raw-u32 integer arithmetic, no host FP and
+no production arithmetic helper. The literal fixture covers positive and
+negative halfway ties, an exact subnormal, and the overflow midpoint. Independent
+vectors cover all RC modes, exact/FTZ tiny, large exponent gaps with DM masked,
+NaN order and quieting, opposite infinities, infinity plus subnormal, event
+aggregation, and sticky-flag independence. The runtime checks all 256 pairs,
+full fetch and gates, CPL0–3, no data callbacks, malformed encodings, atomic
+pre/post exits, PM, and backend denial.
+
+Sources: Intel SDM Rev. 093 Vol. 2A ADDPS pp. 3-19–3-21 and legacy SSE rows in
+Table 2-27; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/
+Table 7-8; Intel Floating-Point Reference Sheet v2.13. The p. 3-21 Type 2 /
+Table 2-19 note refers to VEX forms, not legacy ADDPS. No memory alignment
+claim is made. Memory forms, other modes, complete unmasked OE/UE behavior,
+physical acceptance and parent S2-37/S2-38 remain open.

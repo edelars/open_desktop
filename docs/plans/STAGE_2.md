@@ -527,6 +527,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37ax | Strict schema-v2 canonical Long64 DIVSD XMM register pairs; scalar Binary64 raw divide, only low64 write with high64 preserved; independent rational oracle, strict F2 profile, OM=UM=1, atomic IE/DE/ZE/OE/UE/PE; JIT/native closed | Focused 256-pair/gate/encoding and scalar runner matrix passed; 1/3 RC, WPR/FTZ boundaries, PM atomicity, high-qword canaries, cross-profile rejection and OSXMMEXCPT fallback checked; DIVPD/DIVPS/MUL/SUB regressions and full od-testkit passed; workspace check, layout, format and diff checks passed; independent review clean after profile-separation fix |
 | [x] | S2-37ay | Strict schema-v2 canonical Long64 DIVSS XMM register pairs; scalar Binary32 raw divide, low32 write/high96 preserved; independent raw-u32 oracle, strict F3 SSE profile, OM=UM=1, atomic IE/DE/ZE/OE/UE/PE; JIT/native closed | 256-pair, RC/WPR/FTZ, NaN and pre/post event matrix, malformed/tampered/backend denial; direct runtime fetch/gates/CPL coverage; DIV/MUL/SUB regressions passed; independent review clean; physical acceptance remains open |
 | [x] | S2-37az | Strict schema-v2 canonical Long64 ADDPD XMM register pairs; two Binary64 add lanes from operand snapshots; independent raw-integer oracle; OM=UM=1; atomic IE/DE/OE/UE/PE; interpreter-only | Focused decoder/schema/runtime and 256-pair fixture matrix; physical acceptance remains open |
+| [x] | S2-37ba | Strict schema-v2 canonical Long64 ADDPS XMM register pairs; four Binary32 add lanes with WPR tininess, packed IE/DE priority, and atomic IE/DE/OE/UE/PE; OM=UM=1; interpreter-only | Focused decoder/runtime/schema matrix, 256-pair fixture, FTZ=1 combined 0x3b event case, DIV/MUL/SUB regressions and full checks passed; independent review clean |
 | [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j/k/l: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j/k/l; independent review |
 | [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
@@ -6783,7 +6784,7 @@ inventory.
 | Form | Legacy opcode | Feature | Source / result width | Vol. 2 start page | Existing S2-37 slice |
 |---|---|---|---|---:|---|
 | ADDPD | `66 0F 58 /r` | SSE2 | XMM, m128; 2×f64 | 3-16 | S2-37az, bounded register-only |
-| ADDPS | `NP 0F 58 /r` | SSE | XMM, m128; 4×f32 | 3-19 | missing |
+| ADDPS | `NP 0F 58 /r` | SSE | XMM, m128; 4×f32 | 3-19 | S2-37ba, bounded register-only |
 | ADDSD | `F2 0F 58 /r` | SSE2 | XMM, m64; low f64 | 3-22 | missing |
 | ADDSS | `F3 0F 58 /r` | SSE | XMM, m32; low f32 | 3-24 | missing |
 | CMPPD | `66 0F C2 /r ib` | SSE2 | XMM, m128; 2×64-bit masks | 3-168 | S2-37z, bounded register-only |
@@ -7019,6 +7020,49 @@ physical x86 observation, or Mac mini execution is claimed. See the
 [report](../reports/STAGE_2_REPORT.md#s2-38e--exact-fp-init-fxrstor64-and-image-controlled-minss-composition),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38e-fp-init-fxrstor64-and-minss),
 and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38e-s2-long-cr0-cr4-fp-init-fxrstor64-minss-v1).
+
+### S2-37ba — canonical Long64 ADDPS XMM register pairs
+
+The local schema-v2 profile `s2-long-addps-registers-v1` admits canonical
+Long64 legacy `0F 58 /r`, ModR/M.mod=3, for all 256 XMM pairs. Low forms are
+three bytes; extended indices use one REX `41`, `44` or `45` before `0F`, for
+four bytes. It rejects 66/F2/F3, memory, reordered/repeated/redundant prefixes,
+REX.W/X/40, trailing bytes, VEX and EVEX. Complete fetch precedes SSE/CR0.EM/
+CR4.OSFXSR #UD and CR0.TS #NM at CPL0–3; no data callbacks occur. This is SSE,
+not SSE2. JIT/native/C ABI/fragment/generic execution remains closed.
+
+Admission requires MXCSR.OM=1 and UM=1, rejects DAZ and reserved bits, and
+accepts RC, FTZ, IM/DM/ZM/PM and old sticky flags. Execution snapshots both
+XMM operands and computes four old-destination/source binary32 lanes. NaNs
+select the first original operand; the selected SNaN is quieted and any SNaN
+raises IE. A QNaN does not raise IE; a NaN suppresses same-lane DE. Opposite
+infinities raise IE and produce masked indefinite `ffc00000`. Other
+infinity-plus-subnormal pairs raise DE. IE/DE aggregate across lanes; an
+unmasked new IE or DE commits those new bits and suppresses every post flag
+and the complete destination write. Otherwise `Binary32::add_raw_result` uses
+MXCSR.RC. Exact cancellation is -0 only for round-down; same-sign zeros keep
+their sign. Masked overflow raises OE|PE, while directed overflow at the
+midpoint may be PE-only. Tininess uses the unbounded WPR exponent after p=24
+precision rounding. An exact same-format subnormal sum raises neither UE nor
+PE when FTZ is clear; FTZ turns a tiny nonzero result into signed zero with
+UE|PE. Post flags commit before an unmasked PM exit, with XMM/RIP/retirement
+atomic.
+
+The independent schema oracle uses raw-u32 integer arithmetic through its
+separate finite-lane oracle, classifies original operands before negating the
+right operand, and uses no host FP or production helper. The handwritten
+literal covers positive/negative halfway rounding, exact subnormal sum, and
+overflow midpoint. Runtime and oracle coverage includes every RC/FTZ mode,
+NaNs and opposite infinities, infinity plus subnormal, large-gap DE+PE,
+pre-event suppression, PM, full-fetch/gate priority, CPL0–3, aliases, malformed
+encodings, MXCSR admission, and backend denial.
+
+Normative source: Intel SDM Rev. 093 Vol. 2A ADDPS pp. 3-19–3-21, including the
+legacy SSE rows in Table 2-27. The p. 3-21 Type 2/Table 2-19 note describes VEX
+forms, not legacy ADDPS. This profile makes no memory-alignment or physical
+acceptance claim. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37ba--canonical-long64-addps-xmm-register-pairs),
+[report](../reports/STAGE_2_REPORT.md#s2-37ba--addps-register-pair-interpreter-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ba-addps-register-pair-profile).
 
 ### S2-39. Сохранение и восстановление FP/SIMD
 

@@ -984,6 +984,11 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only canonical no-prefix ADDPS register pair.
+    AddpsRegister {
+        destination: u8,
+        source: u8,
+    },
     /// Local-only canonical mandatory-66 DIVPD register pair.
     DivpdRegister {
         destination: u8,
@@ -3432,6 +3437,16 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         .rex
                         .is_some_and(|rex| matches!(rex, 0x41 | 0x44 | 0x45))
                     && prefix_bytes[1] == prefixes.rex.unwrap());
+        let addps_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x58
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 0 && prefixes.rex.is_none()
+                || prefix_count == 1
+                    && matches!(prefixes.rex, Some(0x41 | 0x44 | 0x45))
+                    && prefix_bytes[0] == prefixes.rex.unwrap());
         let subpd_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x5c
             && prefixes.group1.is_none()
@@ -3900,7 +3915,11 @@ impl<M: GuestMemory> Fetch<'_, M> {
         {
             return Err(self.unsupported(opcode));
         }
-        if opcode.map == OpcodeMap::Escape0f && opcode.byte == 0x58 && !addpd_register {
+        if opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x58
+            && !addpd_register
+            && !addps_register
+        {
             return Err(self.unsupported(opcode));
         }
         if opcode.map == OpcodeMap::Escape0f
@@ -4357,6 +4376,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 }
                 let rex = prefixes.rex.unwrap_or(0x40);
                 Operation::AddpdRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x58) if addps_register => {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                let rex = prefixes.rex.unwrap_or(0x40);
+                Operation::AddpsRegister {
                     destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                     source: (modrm & 7) | ((rex & 1) << 3),
                 }
@@ -10983,6 +11013,48 @@ mod tests {
     }
 
     #[test]
+    fn addps_register_decodes_all_xmm_pairs_and_rejects_other_encodings() {
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let rex = 0x40 | ((destination >> 1) & 4) | (source >> 3);
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut code = Vec::new();
+                if destination >= 8 || source >= 8 {
+                    code.push(rex);
+                }
+                code.extend([0x0f, 0x58, modrm]);
+                let mut memory = Memory::new(&code);
+                let decoded = memory.decode().unwrap();
+                assert_eq!(
+                    decoded.operation,
+                    Operation::AddpsRegister {
+                        destination,
+                        source
+                    }
+                );
+                assert_eq!(decoded.length, code.len() as u8);
+            }
+        }
+        for bytes in [
+            &[0x40, 0x0f, 0x58, 0xc1][..],
+            &[0x42, 0x0f, 0x58, 0xc1][..],
+            &[0x48, 0x0f, 0x58, 0xc1][..],
+            &[0xf3, 0xf2, 0x0f, 0x58, 0xc1][..],
+            &[0x67, 0x0f, 0x58, 0xc1][..],
+            &[0x2e, 0x0f, 0x58, 0xc1][..],
+            &[0xf2, 0x0f, 0x58, 0xc1][..],
+            &[0xf3, 0x0f, 0x58, 0xc1][..],
+            &[0x0f, 0x58][..],
+            &[0x0f, 0x58, 0x01][..],
+            &[0xc5, 0x7c, 0x58, 0xc1][..],
+            &[0x62, 0xf1, 0x7c, 0x08, 0x58, 0xc1][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
     fn divpd_register_decodes_all_xmm_pairs_and_rejects_other_encodings() {
         for destination in 0..16u8 {
             for source in 0..16u8 {
@@ -11186,8 +11258,6 @@ mod tests {
             &[0x40, 0x0f, 0x59, 0xc1][..],
             &[0x42, 0x0f, 0x59, 0xc1][..],
             &[0x48, 0x0f, 0x59, 0xc1][..],
-            &[0xf2, 0x0f, 0x59, 0xc1][..],
-            &[0xf3, 0x0f, 0x59, 0xc1][..],
             &[0x0f, 0x59][..],
             &[0x0f, 0x59, 0x01][..],
             &[0xc5, 0xf8, 0x59, 0xc1][..],
@@ -11203,6 +11273,16 @@ mod tests {
                 destination: 0,
                 source: 1
             }
+        ));
+        let mut mulsd = Memory::new(&[0xf2, 0x0f, 0x59, 0xc1]);
+        assert!(matches!(
+            mulsd.decode().unwrap().operation,
+            Operation::MulsdRegister { .. }
+        ));
+        let mut mulss = Memory::new(&[0xf3, 0x0f, 0x59, 0xc1]);
+        assert!(matches!(
+            mulss.decode().unwrap().operation,
+            Operation::MulssRegister { .. }
         ));
     }
 
@@ -11394,8 +11474,12 @@ mod tests {
             subss.decode().unwrap().operation,
             Operation::SubssRegister { .. }
         ));
+        let mut subsd = Memory::new(&[0xf2, 0x0f, 0x5c, 0xc1]);
+        assert!(matches!(
+            subsd.decode().unwrap().operation,
+            Operation::SubsdRegister { .. }
+        ));
         for bytes in [
-            &[0xf2, 0x0f, 0x5c, 0xc1][..],
             &[0x40, 0x0f, 0x5c, 0xc1][..],
             &[0x48, 0x0f, 0x5c, 0xc1][..],
             &[0x66, 0xf2, 0x0f, 0x5c, 0xc1][..],

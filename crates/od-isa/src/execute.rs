@@ -304,6 +304,16 @@ pub struct AddpdControls {
     pub cr4_osxmmexcpt: bool,
 }
 
+/// Explicit SSE and SIMD exception-delivery controls for bounded ADDPS.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AddpsControls {
+    pub sse_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
 /// Explicit SSE2 and SIMD exception-delivery controls for bounded DIVPD.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DivpdControls {
@@ -623,6 +633,7 @@ struct ExecutionProfiles<'a> {
     subpd_registers: Option<SubpdControls>,
     mulpd_registers: Option<MulpdControls>,
     addpd_registers: Option<AddpdControls>,
+    addps_registers: Option<AddpsControls>,
     divpd_registers: Option<DivpdControls>,
     divsd_registers: Option<DivsdControls>,
     divps_registers: Option<DivpsControls>,
@@ -1462,6 +1473,7 @@ pub fn run_with_maxss_unmasked_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -1547,6 +1559,7 @@ pub fn run_with_minsd_unmasked_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -1632,6 +1645,7 @@ pub fn run_with_maxsd_unmasked_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -1717,6 +1731,7 @@ pub fn run_with_minpd_unmasked_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -1802,6 +1817,7 @@ pub fn run_with_minps_unmasked_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -1887,6 +1903,7 @@ pub fn run_with_maxps_unmasked_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -1972,6 +1989,7 @@ pub fn run_with_maxpd_unmasked_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -2057,6 +2075,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -2142,6 +2161,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -2227,6 +2247,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -2312,6 +2333,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -2397,6 +2419,7 @@ pub fn run_with_cvtss2si_registers_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -2482,6 +2505,7 @@ pub fn run_with_cvttss2si_registers_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -2566,6 +2590,7 @@ pub fn run_with_cvtsd2si_registers_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -2652,6 +2677,7 @@ pub fn run_with_cvttsd2si_registers_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -2737,6 +2763,7 @@ pub fn run_with_cvtdq2pd_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -2822,6 +2849,7 @@ pub fn run_with_cvtdq2pd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -2907,6 +2935,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -2992,6 +3021,7 @@ pub fn run_with_cvtps2dq_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -3077,6 +3107,7 @@ pub fn run_with_cvttps2dq_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -3162,6 +3193,7 @@ pub fn run_with_cvtpd2dq_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -3247,6 +3279,7 @@ pub fn run_with_cvttpd2dq_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -3332,6 +3365,7 @@ pub fn run_with_cvtss2sd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -3417,6 +3451,7 @@ pub fn run_with_cvtps2pd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -3502,6 +3537,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -3587,6 +3623,7 @@ pub fn run_with_cmpss_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -3672,6 +3709,7 @@ pub fn run_with_cmpsd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -3757,6 +3795,7 @@ pub fn run_with_cmppd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -3841,6 +3880,7 @@ pub fn run_with_cmpps_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -3926,6 +3966,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -4064,6 +4105,7 @@ pub fn run_with_efer_rdmsr_profile(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -4358,6 +4400,7 @@ pub fn run_with_cr0_profile(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -4444,6 +4487,7 @@ pub fn run_with_cr4_profile(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -4764,6 +4808,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -5034,6 +5079,7 @@ pub fn step_with_cr0_profile(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -5362,6 +5408,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -5447,6 +5494,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -5534,6 +5582,7 @@ pub fn run_with_sqrtss_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -5619,6 +5668,7 @@ pub fn run_with_sqrtsd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -5704,6 +5754,7 @@ pub fn run_with_sqrtps_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -5789,6 +5840,7 @@ pub fn run_with_sqrtpd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -5874,6 +5926,7 @@ pub fn run_with_subpd_register_controls(
             subpd_registers: Some(controls),
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -5959,6 +6012,7 @@ pub fn run_with_mulpd_register_controls(
             subpd_registers: None,
             mulpd_registers: Some(controls),
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -6044,6 +6098,7 @@ pub fn run_with_addpd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: Some(controls),
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -6129,7 +6184,94 @@ pub fn run_with_divpd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: Some(controls),
+            divsd_registers: None,
+            divps_registers: None,
+            divss_registers: None,
+            mulsd_registers: None,
+            mulss_registers: None,
+            mulps_registers: None,
+            subps_registers: None,
+            subsd_registers: None,
+            subss_registers: None,
+            cvtss2sd_registers: None,
+            cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
+            cmpss_registers: None,
+            cmpsd_registers: None,
+            cmppd_registers: None,
+            cmpps_registers: None,
+            comisd_ucomisd_registers: None,
+            cvtsi2sd_r32: None,
+            cvtsi2sd_r64: None,
+            cvtsi2sd_registers: None,
+            cvtsi2ss_registers: None,
+            cvtss2si_registers: None,
+            cvttss2si_registers: None,
+            cvtsd2si_registers: None,
+            cvttsd2si_registers: None,
+            fx_cr0: None,
+            unmasked_minss_denormal: false,
+            rdtsc: None,
+            swapgs: None,
+            cli: None,
+            sti: None,
+            halt: None,
+            cr0: None,
+            cr4: None,
+        },
+        StepRuntime {
+            rdtsc_source: None,
+            sti_sequence: None,
+            exact_hlt_only: false,
+            stop_requested: &mut stop_requested,
+        },
+    )
+}
+
+/// Execute one canonical Long64 register ADDPS form with explicit gates.
+pub fn run_with_addps_register_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: AddpsControls,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_configured(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        ExecutionProfiles {
+            cpuid: None,
+            msr: None,
+            sep: None,
+            xorpd: None,
+            minss_invalid: None,
+            maxss_unmasked: None,
+            minsd_unmasked: None,
+            maxsd_unmasked: None,
+            minpd_unmasked: None,
+            minps_unmasked: None,
+            maxps_unmasked: None,
+            maxpd_unmasked: None,
+            cvtdq2pd: None,
+            cvtdq2pd_registers: None,
+            cvtdq2ps_registers: None,
+            cvtps2dq_registers: None,
+            cvttps2dq_registers: None,
+            cvtpd2dq_registers: None,
+            cvttpd2dq_registers: None,
+            sqrtss_registers: None,
+            sqrtsd_registers: None,
+            sqrtps_registers: None,
+            sqrtpd_registers: None,
+            subpd_registers: None,
+            mulpd_registers: None,
+            addpd_registers: None,
+            addps_registers: Some(controls),
+            divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
             divss_registers: None,
@@ -6214,6 +6356,7 @@ pub fn run_with_divsd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: Some(controls),
             divps_registers: None,
@@ -6299,6 +6442,7 @@ pub fn run_with_divps_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: Some(controls),
@@ -6384,6 +6528,7 @@ pub fn run_with_divss_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -6469,6 +6614,7 @@ pub fn run_with_mulsd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -6554,6 +6700,7 @@ pub fn run_with_mulss_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -6639,6 +6786,7 @@ pub fn run_with_mulps_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -6724,6 +6872,7 @@ pub fn run_with_subsd_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -6809,6 +6958,7 @@ pub fn run_with_subss_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -6894,6 +7044,7 @@ pub fn run_with_subps_register_controls(
             subpd_registers: None,
             mulpd_registers: None,
             addpd_registers: None,
+            addps_registers: None,
             divpd_registers: None,
             divsd_registers: None,
             divps_registers: None,
@@ -6972,6 +7123,7 @@ fn step_configured(
         subpd_registers: configured_subpd_register_controls,
         mulpd_registers: configured_mulpd_register_controls,
         addpd_registers: configured_addpd_register_controls,
+        addps_registers: configured_addps_register_controls,
         divpd_registers: configured_divpd_register_controls,
         divsd_registers: configured_divsd_register_controls,
         divps_registers: configured_divps_register_controls,
@@ -8147,6 +8299,42 @@ fn step_configured(
             });
         }
         let fault_vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+            Some(6)
+        } else if controls.cr0_ts {
+            Some(7)
+        } else {
+            None
+        };
+        if let Some(vector) = fault_vector {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+    }
+    if let Some(controls) = configured_addps_register_controls {
+        let is_canonical_register_form = matches!(
+            instruction.operation,
+            Operation::AddpsRegister { destination, source }
+                if instruction.length == if destination >= 8 || source >= 8 { 4 } else { 3 }
+                    && instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0x58
+                    && instruction.prefixes.group1.is_none()
+                    && instruction.prefixes.segment.is_none()
+                    && !instruction.prefixes.operand_override
+                    && !instruction.prefixes.address_override
+                    && instruction.prefixes.rex.map(|rex| rex & 0x4f)
+                        == if destination >= 8 || source >= 8 {
+                            Some(0x40 | (u8::from(destination >= 8) << 2) | u8::from(source >= 8))
+                        } else { None }
+        );
+        if !is_canonical_register_form {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        let fault_vector = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
             Some(6)
         } else if controls.cr0_ts {
             Some(7)
@@ -9703,6 +9891,7 @@ fn step_configured(
             | Operation::SubpdRegister { .. }
             | Operation::MulpdRegister { .. }
             | Operation::AddpdRegister { .. }
+            | Operation::AddpsRegister { .. }
             | Operation::DivpdRegister { .. }
             | Operation::DivsdRegister { .. }
             | Operation::DivpsRegister { .. }
@@ -9759,6 +9948,8 @@ fn step_configured(
             | Operation::SqrtpdRegister { .. }
             | Operation::SubpdRegister { .. }
             | Operation::MulpdRegister { .. }
+            | Operation::AddpdRegister { .. }
+            | Operation::AddpsRegister { .. }
             | Operation::DivpdRegister { .. }
             | Operation::DivsdRegister { .. }
             | Operation::DivpsRegister { .. }
@@ -9914,6 +10105,12 @@ fn step_configured(
                 && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
         } else if configured_addpd_register_controls.is_some()
             && matches!(instruction.operation, Operation::AddpdRegister { .. })
+        {
+            sse.mxcsr & !0x0000_ffbf == 0
+                && sse.mxcsr & (1 << 6) == 0
+                && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
+        } else if configured_addps_register_controls.is_some()
+            && matches!(instruction.operation, Operation::AddpsRegister { .. })
         {
             sse.mxcsr & !0x0000_ffbf == 0
                 && sse.mxcsr & (1 << 6) == 0
@@ -10592,6 +10789,10 @@ fn step_configured(
             state.sse.is_some()
         }
         Operation::AddpdRegister { .. } => false,
+        Operation::AddpsRegister { .. } if configured_addps_register_controls.is_some() => {
+            state.sse.is_some()
+        }
+        Operation::AddpsRegister { .. } => false,
         Operation::DivpdRegister { .. } if configured_divpd_register_controls.is_some() => {
             state.sse.is_some()
         }
@@ -14849,6 +15050,105 @@ fn step_configured(
             sse.xmm[usize::from(destination)] = result;
         }
         Operation::AddpdRegister { .. } => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        Operation::AddpsRegister {
+            destination,
+            source,
+        } if configured_addps_register_controls.is_some() => {
+            let (lhs_xmm, rhs_xmm, old_mxcsr) = {
+                let sse = state.sse.as_ref().expect("ADDPS state prevalidated");
+                (
+                    sse.xmm[usize::from(destination)],
+                    sse.xmm[usize::from(source)],
+                    sse.mxcsr,
+                )
+            };
+            let lhs = std::array::from_fn::<_, 4, _>(|lane| {
+                u32::from_le_bytes(lhs_xmm[lane * 4..lane * 4 + 4].try_into().unwrap())
+            });
+            let rhs = std::array::from_fn::<_, 4, _>(|lane| {
+                u32::from_le_bytes(rhs_xmm[lane * 4..lane * 4 + 4].try_into().unwrap())
+            });
+            let mut new_ie = false;
+            let mut new_de = false;
+            for lane in 0..4 {
+                let lhs_class = Binary32::from_bits(lhs[lane]).class();
+                let rhs_class = Binary32::from_bits(rhs[lane]).class();
+                let lhs_nan =
+                    matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                let rhs_nan =
+                    matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                if lhs_nan || rhs_nan {
+                    new_ie |= lhs_class == BinaryClass::SignalingNaN
+                        || rhs_class == BinaryClass::SignalingNaN;
+                    continue;
+                }
+                let opposite_infinities = lhs_class == BinaryClass::Infinity
+                    && rhs_class == BinaryClass::Infinity
+                    && ((lhs[lane] ^ rhs[lane]) >> 31) != 0;
+                if opposite_infinities {
+                    new_ie = true;
+                    continue;
+                }
+                new_de |=
+                    lhs_class == BinaryClass::Subnormal || rhs_class == BinaryClass::Subnormal;
+            }
+            let controls = configured_addps_register_controls.expect("ADDPS profile controls");
+            let unmasked_ie = new_ie && old_mxcsr & (1 << 7) == 0;
+            let unmasked_de = new_de && old_mxcsr & (1 << 8) == 0;
+            let sse = state.sse.as_mut().expect("ADDPS state prevalidated");
+            if unmasked_ie || unmasked_de {
+                sse.mxcsr = old_mxcsr | u32::from(new_ie) | (u32::from(new_de) << 1);
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
+            let rounding = cvtss2si_rounding_mode(old_mxcsr);
+            let flush_to_zero = old_mxcsr & (1 << 15) != 0;
+            let mut result = [0u8; 16];
+            let mut new_oe = false;
+            let mut new_ue = false;
+            let mut new_pe = false;
+            for lane in 0..4 {
+                let computed = Binary32::add_raw_result(
+                    Binary32::from_bits(lhs[lane]),
+                    Binary32::from_bits(rhs[lane]),
+                    rounding,
+                );
+                let mut raw = computed.value().to_bits();
+                new_oe |= computed.overflow();
+                new_pe |= computed.inexact() || computed.overflow();
+                let tiny = computed.tiny_after_precision_rounding();
+                if flush_to_zero && tiny && raw & 0x7f80_0000 == 0 && raw & 0x007f_ffff != 0 {
+                    raw &= 1 << 31;
+                    new_ue = true;
+                    new_pe = true;
+                } else {
+                    new_ue |= tiny && computed.inexact();
+                }
+                result[lane * 4..lane * 4 + 4].copy_from_slice(&raw.to_le_bytes());
+            }
+            sse.mxcsr = old_mxcsr
+                | u32::from(new_ie)
+                | (u32::from(new_de) << 1)
+                | (u32::from(new_oe) << 3)
+                | (u32::from(new_ue) << 4)
+                | (u32::from(new_pe) << 5);
+            if new_pe && old_mxcsr & (1 << 12) == 0 {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
+            sse.xmm[usize::from(destination)] = result;
+        }
+        Operation::AddpsRegister { .. } => {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -115717,6 +116017,664 @@ mod swapgs_profile_tests {
         assert_eq!(short_state, before);
         assert_eq!(short_memory.fetches.len(), short.len() + 1);
         assert!(short_memory.accesses.is_empty());
+
+        for mxcsr in [0x1fc0, 0x0001_1f80, 0x1b80, 0x1780] {
+            let mut invalid = LongModeState::default();
+            invalid.rip = 0x27180;
+            invalid.sse = Some(SseState {
+                xmm: [[0; 16]; 16],
+                mxcsr,
+            });
+            let before = invalid.clone();
+            let mut invalid_memory = Memory::at(&code, invalid.rip);
+            assert_eq!(
+                run(&mut invalid, &mut invalid_memory).exit,
+                RunExit::Unsupported { opcode: 0x58 }
+            );
+            assert_eq!(invalid, before);
+            assert!(invalid_memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn addps_register_pairs_use_four_binary32_lanes_and_atomic_events() {
+        let controls = AddpsControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        let execute = |state: &mut LongModeState, memory: &mut Memory| {
+            run_with_addps_register_controls(
+                state,
+                memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(state.rip + 3),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            )
+        };
+        let code = [0x0f, 0x58, 0xc1];
+        let pack = |lanes: [u32; 4]| {
+            let mut bytes = [0; 16];
+            for (index, value) in lanes.into_iter().enumerate() {
+                bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            }
+            bytes
+        };
+        let unpack = |bytes: [u8; 16]| {
+            std::array::from_fn::<_, 4, _>(|index| {
+                u32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap())
+            })
+        };
+
+        let mut state = LongModeState::default();
+        state.rip = 0x2a000;
+        let mut xmm = [[0x5a; 16]; 16];
+        xmm[0] = pack([0x3f80_0000, 0xbf80_0000, 0x0080_0001, 0x7f7f_ffff]);
+        xmm[1] = pack([0x3380_0000, 0xb380_0000, 0x8080_0000, 0x7300_0000]);
+        state.sse = Some(SseState { xmm, mxcsr: 0x1f80 });
+        let mut memory = Memory::at(&code, state.rip);
+        assert_eq!(execute(&mut state, &mut memory).exit, RunExit::StopAddress);
+        assert_eq!(
+            unpack(state.sse.as_ref().unwrap().xmm[0]),
+            [0x3f80_0000, 0xbf80_0000, 1, 0x7f80_0000]
+        );
+        assert_eq!(state.sse.as_ref().unwrap().mxcsr & 0x3f, 0x28);
+
+        // A new unmasked pre-event in any lane suppresses every post flag and
+        // the whole XMM write, while committing all new IE/DE status bits.
+        let mut faulting = LongModeState::default();
+        faulting.rip = 0x2a000;
+        let mut xmm = [[0x5a; 16]; 16];
+        xmm[0] = pack([0x7f80_0001, 0x0000_0001, 0x7f7f_ffff, 0x0080_0001]);
+        xmm[1] = pack([0x3f80_0000, 0x3f80_0000, 0x7f7f_ffff, 0x8080_0000]);
+        faulting.sse = Some(SseState { xmm, mxcsr: 0x1c00 }); // IM=DM=0, PM=1
+        let old_destination = faulting.sse.as_ref().unwrap().xmm[0];
+        let mut memory = Memory::at(&code, faulting.rip);
+        assert_eq!(
+            execute(&mut faulting, &mut memory).exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 19,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(faulting.sse.as_ref().unwrap().xmm[0], old_destination);
+        assert_eq!(faulting.sse.as_ref().unwrap().mxcsr & 0x3f, 0x03);
+        assert_eq!(faulting.rip, 0x2a000);
+
+        // A masked precision event faults only after status commit.
+        let mut precision = LongModeState::default();
+        precision.rip = 0x2a000;
+        let mut xmm = [[0; 16]; 16];
+        xmm[0] = pack([0x3f80_0000, 0, 0, 0]);
+        xmm[1] = pack([0x3380_0000, 0, 0, 0]);
+        precision.sse = Some(SseState { xmm, mxcsr: 0x0f80 });
+        let old_destination = precision.sse.as_ref().unwrap().xmm[0];
+        let mut memory = Memory::at(&code, precision.rip);
+        assert_eq!(
+            execute(&mut precision, &mut memory).exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 19,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(precision.sse.as_ref().unwrap().xmm[0], old_destination);
+        assert_eq!(precision.sse.as_ref().unwrap().mxcsr & 0x3f, 0x20);
+
+        let mut fallback = LongModeState::default();
+        fallback.rip = 0x2a000;
+        let mut xmm = [[0; 16]; 16];
+        xmm[0] = pack([0x3f80_0000, 0, 0, 0]);
+        xmm[1] = pack([0x3380_0000, 0, 0, 0]);
+        fallback.sse = Some(SseState { xmm, mxcsr: 0x0f80 });
+        let before_xmm = fallback.sse.as_ref().unwrap().xmm[0];
+        let mut memory = Memory::at(&code, fallback.rip);
+        let stop_rip = fallback.rip + 3;
+        assert_eq!(
+            run_with_addps_register_controls(
+                &mut fallback,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(stop_rip),
+                    context: AccessContext::default(),
+                },
+                AddpsControls {
+                    cr4_osxmmexcpt: false,
+                    ..controls
+                },
+                || false,
+            )
+            .exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(fallback.sse.as_ref().unwrap().xmm[0], before_xmm);
+        assert_eq!(fallback.sse.as_ref().unwrap().mxcsr & 0x3f, 0x20);
+
+        for (rc, expected) in [
+            (0x0000, 0x3f80_0000),
+            (0x2000, 0x3f80_0000),
+            (0x4000, 0x3f80_0001),
+            (0x6000, 0x3f80_0000),
+        ] {
+            let mut rounded = LongModeState::default();
+            rounded.rip = 0x2a000;
+            let mut xmm = [[0; 16]; 16];
+            xmm[0] = pack([0x3f80_0000, 0, 0, 0]);
+            xmm[1] = pack([0x3380_0000, 0, 0, 0]);
+            rounded.sse = Some(SseState {
+                xmm,
+                mxcsr: 0x1f80 | rc,
+            });
+            let mut memory = Memory::at(&code, rounded.rip);
+            assert_eq!(
+                execute(&mut rounded, &mut memory).exit,
+                RunExit::StopAddress
+            );
+            assert_eq!(unpack(rounded.sse.as_ref().unwrap().xmm[0])[0], expected);
+            assert_eq!(rounded.sse.as_ref().unwrap().mxcsr & 0x3f, 0x20);
+        }
+        for (rc, expected, flags) in [
+            (0x0000, 0x7f80_0000, 0x28),
+            (0x2000, 0x7f7f_ffff, 0x20),
+            (0x4000, 0x7f80_0000, 0x28),
+            (0x6000, 0x7f7f_ffff, 0x20),
+        ] {
+            let mut overflow = LongModeState::default();
+            overflow.rip = 0x2a000;
+            let mut xmm = [[0; 16]; 16];
+            xmm[0] = pack([0x7f7f_ffff, 0, 0, 0]);
+            xmm[1] = pack([0x7300_0000, 0, 0, 0]);
+            overflow.sse = Some(SseState {
+                xmm,
+                mxcsr: 0x1f80 | rc,
+            });
+            let mut memory = Memory::at(&code, overflow.rip);
+            assert_eq!(
+                execute(&mut overflow, &mut memory).exit,
+                RunExit::StopAddress
+            );
+            assert_eq!(unpack(overflow.sse.as_ref().unwrap().xmm[0])[0], expected);
+            assert_eq!(overflow.sse.as_ref().unwrap().mxcsr & 0x3f, flags);
+        }
+        for rc in [0x0000, 0x2000, 0x4000, 0x6000] {
+            let mut overflow = LongModeState::default();
+            overflow.rip = 0x2a000;
+            let mut xmm = [[0; 16]; 16];
+            xmm[0] = pack([0x7f7f_ffff, 0, 0, 0]);
+            xmm[1] = pack([0x7f7f_ffff, 0, 0, 0]);
+            overflow.sse = Some(SseState {
+                xmm,
+                mxcsr: 0x1f80 | rc,
+            });
+            let mut memory = Memory::at(&code, overflow.rip);
+            assert_eq!(
+                execute(&mut overflow, &mut memory).exit,
+                RunExit::StopAddress
+            );
+            assert_eq!(overflow.sse.as_ref().unwrap().mxcsr & 0x3f, 0x28);
+        }
+        for (ftz, expected, flags) in [(false, 1, 0), (true, 0, 0x30)] {
+            let mut tiny = LongModeState::default();
+            tiny.rip = 0x2a000;
+            let mut xmm = [[0; 16]; 16];
+            xmm[0] = pack([0x0080_0001, 0, 0, 0]);
+            xmm[1] = pack([0x8080_0000, 0, 0, 0]);
+            tiny.sse = Some(SseState {
+                xmm,
+                mxcsr: 0x1f80 | if ftz { 1 << 15 } else { 0 },
+            });
+            let mut memory = Memory::at(&code, tiny.rip);
+            assert_eq!(execute(&mut tiny, &mut memory).exit, RunExit::StopAddress);
+            assert_eq!(unpack(tiny.sse.as_ref().unwrap().xmm[0])[0], expected);
+            assert_eq!(tiny.sse.as_ref().unwrap().mxcsr & 0x3f, flags);
+        }
+        for (rc, expected) in [(0x0000, [0, 0x8000_0000, 0, 0]), (0x2000, [0x8000_0000; 4])] {
+            let mut zeros = LongModeState::default();
+            zeros.rip = 0x2a000;
+            let mut xmm = [[0; 16]; 16];
+            xmm[0] = pack([0, 0x8000_0000, 0x3f80_0000, 0xbf80_0000]);
+            xmm[1] = pack([0x8000_0000, 0x8000_0000, 0xbf80_0000, 0x3f80_0000]);
+            zeros.sse = Some(SseState {
+                xmm,
+                mxcsr: 0x1f80 | rc,
+            });
+            let mut memory = Memory::at(&code, zeros.rip);
+            assert_eq!(execute(&mut zeros, &mut memory).exit, RunExit::StopAddress);
+            assert_eq!(unpack(zeros.sse.as_ref().unwrap().xmm[0]), expected);
+            assert_eq!(zeros.sse.as_ref().unwrap().mxcsr & 0x3f, 0);
+        }
+        let mut special = LongModeState::default();
+        special.rip = 0x2a000;
+        let mut xmm = [[0; 16]; 16];
+        xmm[0] = pack([0x7f80_0042, 0x7fc0_0042, 0x7f80_0000, 0x7f80_0000]);
+        xmm[1] = pack([0x7fc0_1234, 0x7f80_0001, 1, 0xff80_0000]);
+        let mut special_expected = xmm[0];
+        special_expected[0..4].copy_from_slice(&0x7fc0_0042u32.to_le_bytes());
+        special_expected[4..8].copy_from_slice(&0x7fc0_0042u32.to_le_bytes());
+        special_expected[8..12].copy_from_slice(&0x7f80_0000u32.to_le_bytes());
+        special_expected[12..16].copy_from_slice(&0xffc0_0000u32.to_le_bytes());
+        special.sse = Some(SseState { xmm, mxcsr: 0x1f80 });
+        let mut memory = Memory::at(&code, special.rip);
+        assert_eq!(
+            execute(&mut special, &mut memory).exit,
+            RunExit::StopAddress
+        );
+        assert_eq!(special.sse.as_ref().unwrap().xmm[0], special_expected);
+        assert_eq!(special.sse.as_ref().unwrap().mxcsr & 0x3f, 0x03);
+
+        // Exercise the required all-flags matrix twice with different lane
+        // orders so IE/DE aggregation cannot depend on where those lanes sit.
+        for order in [[0usize, 1, 2, 3], [2usize, 3, 0, 1]] {
+            let sources = [
+                (0x7f80_0001, 0x3f80_0000), // SNaN + 1 => IE
+                (0x0000_0001, 0x3f80_0000), // minsub + 1 => DE|PE
+                (0x7f7f_ffff, 0x7f7f_ffff), // maxfinite + maxfinite => OE|PE
+                (0x0080_0001, 0x8080_0000), // FTZ exact tiny => UE|PE
+            ];
+            let mut dst = [0u32; 4];
+            let mut src = [0u32; 4];
+            let mut expected = [0u32; 4];
+            for (lane, source_lane) in order.into_iter().enumerate() {
+                (dst[lane], src[lane]) = sources[source_lane];
+                expected[lane] = [0x7fc0_0001, 0x3f80_0000, 0x7f80_0000, 0x0000_0000][source_lane];
+            }
+            let mut masked = LongModeState::default();
+            masked.rip = 0x2a000;
+            let mut xmm = [[0; 16]; 16];
+            xmm[0] = pack(dst);
+            xmm[1] = pack(src);
+            masked.sse = Some(SseState { xmm, mxcsr: 0x9f80 });
+            let mut memory = Memory::at(&code, masked.rip);
+            assert_eq!(execute(&mut masked, &mut memory).exit, RunExit::StopAddress);
+            assert_eq!(unpack(masked.sse.as_ref().unwrap().xmm[0]), expected);
+            assert_eq!(masked.sse.as_ref().unwrap().mxcsr & 0x3f, 0x3b);
+        }
+
+        let matrix_sources = [
+            (0x7f80_0001, 0x3f80_0000),
+            (0x0000_0001, 0x3f80_0000),
+            (0x7f7f_ffff, 0x7f7f_ffff),
+            (0x0080_0001, 0x8080_0000),
+        ];
+        let mut matrix_dst = [0u32; 4];
+        let mut matrix_src = [0u32; 4];
+        for (lane, (lhs, rhs)) in matrix_sources.into_iter().enumerate() {
+            matrix_dst[lane] = lhs;
+            matrix_src[lane] = rhs;
+        }
+        let mut pre_fault = LongModeState::default();
+        pre_fault.rip = 0x2a000;
+        let mut xmm = [[0; 16]; 16];
+        xmm[0] = pack(matrix_dst);
+        xmm[1] = pack(matrix_src);
+        pre_fault.sse = Some(SseState {
+            xmm,
+            mxcsr: 0x9f80 & !((1 << 7) | (1 << 8)),
+        });
+        let old_destination = pre_fault.sse.as_ref().unwrap().xmm[0];
+        let mut memory = Memory::at(&code, pre_fault.rip);
+        assert_eq!(
+            execute(&mut pre_fault, &mut memory).exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 19,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(pre_fault.sse.as_ref().unwrap().mxcsr & 0x3f, 0x03);
+        assert_eq!(pre_fault.sse.as_ref().unwrap().xmm[0], old_destination);
+        assert_eq!(pre_fault.rip, 0x2a000);
+
+        let mut precision_fault = LongModeState::default();
+        precision_fault.rip = 0x2a000;
+        let mut xmm = [[0; 16]; 16];
+        xmm[0] = pack(matrix_dst);
+        xmm[1] = pack(matrix_src);
+        precision_fault.sse = Some(SseState {
+            xmm,
+            mxcsr: 0x9f80 & !(1 << 12),
+        });
+        let old_destination = precision_fault.sse.as_ref().unwrap().xmm[0];
+        let mut memory = Memory::at(&code, precision_fault.rip);
+        assert_eq!(
+            execute(&mut precision_fault, &mut memory).exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 19,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(precision_fault.sse.as_ref().unwrap().mxcsr & 0x3f, 0x3b);
+        assert_eq!(
+            precision_fault.sse.as_ref().unwrap().xmm[0],
+            old_destination
+        );
+        assert_eq!(precision_fault.rip, 0x2a000);
+
+        // The same register pair reads both inputs before writing the result.
+        let mut alias = LongModeState::default();
+        alias.rip = 0x2a000;
+        let mut xmm = [[0; 16]; 16];
+        xmm[1] = pack([0x3f80_0000, 0x4000_0000, 0x4040_0000, 0x4080_0000]);
+        alias.sse = Some(SseState { xmm, mxcsr: 0x1f80 });
+        let alias_code = [0x0f, 0x58, 0xc9];
+        let mut memory = Memory::at(&alias_code, alias.rip);
+        assert_eq!(execute(&mut alias, &mut memory).exit, RunExit::StopAddress);
+        assert_eq!(
+            unpack(alias.sse.as_ref().unwrap().xmm[1]),
+            [0x4000_0000, 0x4080_0000, 0x40c0_0000, 0x4100_0000]
+        );
+    }
+
+    #[test]
+    fn addps_full_fetch_precedes_sse_and_ts_gates_at_all_cpls() {
+        let code = [0x0f, 0x58, 0xc1];
+        let controls = AddpsControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        for cpl in 0..=3 {
+            for (controls, vector) in [
+                (
+                    AddpsControls {
+                        sse_available: false,
+                        cr0_em: false,
+                        cr0_ts: true,
+                        cr4_osfxsr: true,
+                        cr4_osxmmexcpt: true,
+                    },
+                    6,
+                ),
+                (
+                    AddpsControls {
+                        sse_available: true,
+                        cr0_em: true,
+                        cr0_ts: true,
+                        cr4_osfxsr: true,
+                        cr4_osxmmexcpt: true,
+                    },
+                    6,
+                ),
+                (
+                    AddpsControls {
+                        sse_available: true,
+                        cr0_em: false,
+                        cr0_ts: true,
+                        cr4_osfxsr: false,
+                        cr4_osxmmexcpt: true,
+                    },
+                    6,
+                ),
+                (
+                    AddpsControls {
+                        sse_available: true,
+                        cr0_em: false,
+                        cr0_ts: true,
+                        cr4_osfxsr: true,
+                        cr4_osxmmexcpt: true,
+                    },
+                    7,
+                ),
+            ] {
+                let mut state = LongModeState::default();
+                state.rip = 0x2b000;
+                state.cs_selector = Some(cpl);
+                state.sse = Some(SseState {
+                    xmm: [[0x5a; 16]; 16],
+                    mxcsr: 0x1f80,
+                });
+                let before = state.clone();
+                let mut memory = Memory::at(&code, state.rip);
+                let result = run_with_addps_register_controls(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: None,
+                        context: AccessContext::default(),
+                    },
+                    controls,
+                    || false,
+                );
+                assert_eq!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector,
+                        error_code: None,
+                        linear_address: None,
+                    })
+                );
+                assert_eq!(state, before);
+                assert!(memory.accesses.is_empty());
+            }
+        }
+
+        let short = [0x0f, 0x58];
+        let mut state = LongModeState::default();
+        state.rip = 0x2b100;
+        state.sse = Some(SseState {
+            xmm: [[0; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let mut memory = Memory::at(&short, state.rip);
+        memory.fetch_error = Some((
+            state.rip + 2,
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0),
+                linear_address: Some(state.rip + 2),
+            }),
+        ));
+        let result = run_with_addps_register_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            AddpsControls {
+                sse_available: false,
+                cr0_em: false,
+                cr0_ts: true,
+                cr4_osfxsr: false,
+                cr4_osxmmexcpt: true,
+            },
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0),
+                linear_address: Some(state.rip + 2),
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state.rip, 0x2b100);
+        assert!(memory.accesses.is_empty());
+
+        for mxcsr in [0x1fc0, 0x0001_1f80, 0x1b80, 0x1780] {
+            let mut invalid_mxcsr = LongModeState::default();
+            invalid_mxcsr.rip = 0x2b200;
+            invalid_mxcsr.sse = Some(SseState {
+                xmm: [[0; 16]; 16],
+                mxcsr, // DAZ or a reserved bit is outside this profile.
+            });
+            let before = invalid_mxcsr.clone();
+            let mut memory = Memory::at(&code, invalid_mxcsr.rip);
+            assert_eq!(
+                run_with_addps_register_controls(
+                    &mut invalid_mxcsr,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: None,
+                        context: AccessContext::default(),
+                    },
+                    controls,
+                    || false,
+                )
+                .exit,
+                RunExit::Unsupported { opcode: 0x58 }
+            );
+            assert_eq!(invalid_mxcsr, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        // Generic interpreter dispatch has no ADDPS controls and stays closed.
+        let mut generic = LongModeState::default();
+        generic.rip = 0x2b300;
+        generic.sse = Some(SseState {
+            xmm: [[0; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = generic.clone();
+        let mut memory = Memory::at(&code, generic.rip);
+        assert_eq!(
+            run(
+                &mut generic,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                || false,
+            )
+            .exit,
+            RunExit::Unsupported { opcode: 0x58 }
+        );
+        assert_eq!(generic, before);
+        assert!(memory.accesses.is_empty());
+
+        // Existing sticky IE/DE/PE bits do not retrigger when a zero sum
+        // produces no new event, even while IM and DM are clear.
+        let mut sticky = LongModeState::default();
+        sticky.rip = 0x2b400;
+        let mut xmm = [[0; 16]; 16];
+        xmm[0][..4].copy_from_slice(&0u32.to_le_bytes());
+        xmm[1][..4].copy_from_slice(&0u32.to_le_bytes());
+        sticky.sse = Some(SseState { xmm, mxcsr: 0x0e23 });
+        let mut memory = Memory::at(&code, sticky.rip);
+        assert_eq!(
+            run_with_addps_register_controls(
+                &mut sticky,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            )
+            .exit,
+            RunExit::InstructionBudgetExhausted
+        );
+        assert_eq!(sticky.sse.as_ref().unwrap().mxcsr, 0x0e23);
+        assert_eq!(sticky.rip, 0x2b403);
+    }
+
+    #[test]
+    fn addps_executes_all_xmm_pairs_from_prestate_inputs_at_all_cpls() {
+        let controls = AddpsControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        for destination in 0..16u8 {
+            for source in 0..16u8 {
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut code = Vec::new();
+                if destination >= 8 || source >= 8 {
+                    code.push(0x40 | ((destination >> 1) & 4) | (source >> 3));
+                }
+                code.extend([0x0f, 0x58, modrm]);
+                let pack = |lanes: [u32; 4]| {
+                    let mut bytes = [0; 16];
+                    for (lane, value) in lanes.into_iter().enumerate() {
+                        bytes[lane * 4..lane * 4 + 4].copy_from_slice(&value.to_le_bytes());
+                    }
+                    bytes
+                };
+                let mut state = LongModeState::default();
+                state.rip = 0x2c000;
+                state.cs_selector = Some(u16::from(destination & 3));
+                state.gpr = std::array::from_fn(|index| 0xabc0_0000 + index as u64);
+                let old_gpr = state.gpr;
+                let old_rflags = state.rflags;
+                let xmm = std::array::from_fn(|register| {
+                    let index = register as u32;
+                    pack([
+                        0x3f80_0000 + index * 2,
+                        0xbf80_0000 + index * 2,
+                        0x4000_0000 + index * 4,
+                        0x8000_0000,
+                    ])
+                });
+                let before_xmm = xmm;
+                state.sse = Some(SseState { xmm, mxcsr: 0x1f80 });
+                let expected = [
+                    0x4000_0000 + u32::from(destination) + u32::from(source),
+                    0xc000_0000 + u32::from(destination) + u32::from(source),
+                    0x4080_0000 + 2 * (u32::from(destination) + u32::from(source)),
+                    0x8000_0000,
+                ];
+                assert_eq!(
+                    state.sse.as_ref().unwrap().xmm[usize::from(destination)],
+                    before_xmm[usize::from(destination)]
+                );
+                let mut memory = Memory::at(&code, state.rip);
+                let stop_rip = state.rip + code.len() as u64;
+                let result = run_with_addps_register_controls(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(stop_rip),
+                        context: AccessContext::default(),
+                    },
+                    controls,
+                    || false,
+                );
+                assert_eq!(result.exit, RunExit::StopAddress, "{destination},{source}");
+                assert_eq!(
+                    state.sse.as_ref().unwrap().xmm[usize::from(destination)],
+                    pack(expected),
+                    "{destination},{source}"
+                );
+                assert_eq!(state.sse.as_ref().unwrap().mxcsr, 0x1f80);
+                assert_eq!(state.gpr, old_gpr);
+                assert_eq!(state.rflags, old_rflags);
+                for register in 0..16 {
+                    if register != usize::from(destination) {
+                        assert_eq!(
+                            state.sse.as_ref().unwrap().xmm[register],
+                            before_xmm[register],
+                            "{destination},{source},XMM{register}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

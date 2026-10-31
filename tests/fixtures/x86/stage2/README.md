@@ -6892,3 +6892,26 @@ legacy ADDPD. No memory alignment or physical-acceptance claim is made. See the
 [plan](../../../../docs/plans/STAGE_2.md#s2-37az--canonical-long64-addpd-xmm-register-pairs),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37az--canonical-long64-addpd-xmm-register-pairs),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37az--addpd-register-pair-interpreter-profile).
+
+
+### S2-37ba ADDPS register-pair profile
+
+`s2_37ba_addps_xmm0_xmm1.case.json` is a handwritten canonical Long64
+`0F 58 /r` literal. Its four lanes cover positive and negative halfway ties,
+an exact minsub result, and the positive overflow midpoint. The strict
+schema-v2 profile admits all 256 XMM pairs, requires OM=UM=1, rejects DAZ and
+reserved MXCSR bits, and accepts RC, FTZ, IM/DM/ZM/PM and old stickies. The
+independent raw-u32 integer oracle checks four-lane NaN selection/quieting,
+IE/DE pre-event aggregation, exact versus FTZ subnormal, directed rounding,
+overflow midpoint versus larger overflow, and large-gap DE|PE without host FP
+or production helpers. Runtime checks cover four-lane XMM atomicity, all RC and
+FTZ controls, pre-event and PM exits, full-fetch gate priority, CPL0–3, aliasing,
+malformed encodings, invalid MXCSR and backend denial.
+
+ADDPS is SSE, not SSE2. Intel SDM Rev. 093 Vol. 2A pp. 3-19–3-21 supplies the
+instruction text; the legacy SSE rows in Table 2-27 supply the encoding and
+feature classification. The p. 3-21 Type 2/Table 2-19 note refers to VEX forms.
+This local interpreter profile claims no memory alignment or physical
+acceptance behavior. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37ba--canonical-long64-addps-xmm-register-pairs),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ba--canonical-long64-addps-xmm-register-pairs),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ba--addps-register-pair-interpreter-profile).

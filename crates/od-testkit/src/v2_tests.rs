@@ -303,6 +303,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 subpd_controls: input.fixture.subpd_controls,
                 mulpd_controls: input.fixture.mulpd_controls,
                 addpd_controls: input.fixture.addpd_controls,
+                addps_controls: input.fixture.addps_controls,
                 divpd_controls: input.fixture.divpd_controls,
                 divsd_controls: input.fixture.divsd_controls,
                 divps_controls: input.fixture.divps_controls,
@@ -9811,4 +9812,197 @@ fn addpd_oracle_covers_rounding_tiny_overflow_and_special_events() {
     let infinity_subnormal = independent_addpd([0x7ff0_0000_0000_0000, 0], [1, 0], 0x1f80);
     assert_eq!(infinity_subnormal.0[0], 0x7ff0_0000_0000_0000);
     assert!(!infinity_subnormal.1 && infinity_subnormal.2);
+}
+
+#[test]
+fn addps_oracle_covers_binary32_rounding_ftz_overflow_and_special_events() {
+    let nearest = independent_addps(
+        [0x3f80_0000, 0xbf80_0000, 0x0080_0001, 0x7f7f_ffff],
+        [0x3380_0000, 0xb380_0000, 0x8080_0000, 0x7300_0000],
+        0x1f80,
+    );
+    assert_eq!(nearest.0, [0x3f80_0000, 0xbf80_0000, 1, 0x7f80_0000]);
+    assert_eq!(
+        (nearest.1, nearest.2, nearest.3, nearest.4, nearest.5),
+        (false, false, true, false, true)
+    );
+
+    let positive = [0x3f80_0000, 0, 0, 0];
+    let positive_half = [0x3380_0000, 0, 0, 0];
+    for (rc, expected) in [
+        (0x0000, 0x3f80_0000),
+        (0x2000, 0x3f80_0000),
+        (0x4000, 0x3f80_0001),
+        (0x6000, 0x3f80_0000),
+    ] {
+        let outcome = independent_addps(positive, positive_half, 0x1f80 | rc);
+        assert_eq!(outcome.0[0], expected, "RC={rc:#x}");
+        assert!(outcome.5);
+    }
+    let negative = independent_addps([0xbf80_0000, 0, 0, 0], [0xb380_0000, 0, 0, 0], 0x3f80);
+    assert_eq!(negative.0[0], 0xbf80_0001); // RD
+    for rc in [0x1f80, 0x5f80, 0x7f80] {
+        assert_eq!(
+            independent_addps([0xbf80_0000, 0, 0, 0], [0xb380_0000, 0, 0, 0], rc).0[0],
+            0xbf80_0000
+        );
+    }
+    let signed_zero_nearest = independent_addps(
+        [0, 0x8000_0000, 0x3f80_0000, 0xbf80_0000],
+        [0x8000_0000, 0x8000_0000, 0xbf80_0000, 0x3f80_0000],
+        0x1f80,
+    );
+    assert_eq!(signed_zero_nearest.0, [0, 0x8000_0000, 0, 0]);
+    let signed_zero_down = independent_addps(
+        [0, 0x8000_0000, 0x3f80_0000, 0xbf80_0000],
+        [0x8000_0000, 0x8000_0000, 0xbf80_0000, 0x3f80_0000],
+        0x3f80,
+    );
+    assert_eq!(signed_zero_down.0, [0x8000_0000; 4]);
+
+    let exact_tiny = independent_addps([0x0080_0001, 0, 0, 0], [0x8080_0000, 0, 0, 0], 0x1f80);
+    assert_eq!(exact_tiny.0[0], 1);
+    assert_eq!(
+        (exact_tiny.2, exact_tiny.4, exact_tiny.5),
+        (false, false, false)
+    );
+    let flushed_tiny = independent_addps([0x0080_0001, 0, 0, 0], [0x8080_0000, 0, 0, 0], 0x9f80);
+    assert_eq!(flushed_tiny.0[0], 0);
+    assert!(flushed_tiny.4 && flushed_tiny.5);
+
+    for (rc, expected, oe, pe) in [
+        (0x0000, 0x7f80_0000, true, true),
+        (0x2000, 0x7f7f_ffff, false, true),
+        (0x4000, 0x7f80_0000, true, true),
+        (0x6000, 0x7f7f_ffff, false, true),
+    ] {
+        let outcome =
+            independent_addps([0x7f7f_ffff, 0, 0, 0], [0x7300_0000, 0, 0, 0], 0x1f80 | rc);
+        assert_eq!(outcome.0[0], expected);
+        assert_eq!((outcome.3, outcome.5), (oe, pe));
+    }
+    for rc in [0x1f80, 0x3f80, 0x5f80, 0x7f80] {
+        let outcome = independent_addps([0x7f7f_ffff, 0, 0, 0], [0x7f7f_ffff, 0, 0, 0], rc);
+        assert!(outcome.3 && outcome.5, "RC={rc:#x}");
+    }
+
+    let large_gap = independent_addps([0x3f80_0000, 0, 0, 0], [1, 0, 0, 0], 0x1f80);
+    assert_eq!(large_gap.0[0], 0x3f80_0000);
+    assert!(large_gap.2 && large_gap.5); // DE and PE
+    let large_gap_up = independent_addps([0x3f80_0000, 0, 0, 0], [1, 0, 0, 0], 0x5f80);
+    assert_eq!(large_gap_up.0[0], 0x3f80_0001);
+
+    let nan = independent_addps([0x7f80_0042, 0, 0, 0], [0x7fc0_1234, 0, 0, 0], 0x1f80);
+    assert_eq!(nan.0[0], 0x7fc0_0042);
+    assert!(nan.1);
+    let qnan_snan = independent_addps([0x7fc0_0042, 0, 0, 0], [0x7f80_0001, 0, 0, 0], 0x1f80);
+    assert_eq!(qnan_snan.0[0], 0x7fc0_0042);
+    assert!(qnan_snan.1);
+    let opposite_inf = independent_addps([0x7f80_0000, 0, 0, 0], [0xff80_0000, 0, 0, 0], 0x1f80);
+    assert_eq!(opposite_inf.0[0], 0xffc0_0000);
+    assert!(opposite_inf.1);
+    let inf_subnormal = independent_addps([0x7f80_0000, 0, 0, 0], [1, 0, 0, 0], 0x1f80);
+    assert!(inf_subnormal.2);
+    let nan_suppresses_denormal = independent_addps([0x7fc0_0042, 0, 0, 0], [1, 0, 0, 0], 0x1f80);
+    assert!(!nan_suppresses_denormal.2);
+
+    // Cross-lane IE/DE pre-events suppress all post-events; sticky old bits do
+    // not count as new events.
+    let pre = independent_addps(
+        [0x7f80_0001, 1, 0x7f7f_ffff, 0x0080_0001],
+        [0x3f80_0000, 0x3f80_0000, 0x7f7f_ffff, 0x8080_0000],
+        0x1c00,
+    );
+    assert!(pre.1 && pre.2);
+    assert!(!pre.3 && !pre.4 && !pre.5);
+
+    let all_events = independent_addps(
+        [0x7f80_0001, 1, 0x7f7f_ffff, 0x0080_0001],
+        [0x3f80_0000, 0x3f80_0000, 0x7f7f_ffff, 0x8080_0000],
+        0x9f80,
+    );
+    assert_eq!(all_events.0, [0x7fc0_0001, 0x3f80_0000, 0x7f80_0000, 0]);
+    assert_eq!(
+        (
+            all_events.1,
+            all_events.2,
+            all_events.3,
+            all_events.4,
+            all_events.5
+        ),
+        (true, true, true, true, true)
+    );
+    let pre_matrix = independent_addps(
+        [0x7f80_0001, 1, 0x7f7f_ffff, 0x0080_0001],
+        [0x3f80_0000, 0x3f80_0000, 0x7f7f_ffff, 0x8080_0000],
+        0x9f80 & !((1 << 7) | (1 << 8)),
+    );
+    assert!(pre_matrix.1 && pre_matrix.2);
+    assert!(!pre_matrix.3 && !pre_matrix.4 && !pre_matrix.5);
+}
+
+#[test]
+fn addps_profile_admits_all_pairs_and_rejects_alias_encodings() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_37ba_addps_xmm0_xmm1.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongAddpsRegistersV1);
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "0f58c1");
+    fixture.validate().unwrap();
+
+    for destination in 0..16u8 {
+        for source in 0..16u8 {
+            let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+            let mut code = Vec::new();
+            if destination >= 8 || source >= 8 {
+                code.push(0x40 | ((destination >> 1) & 4) | (source >> 3));
+            }
+            code.extend([0x0f, 0x58, modrm]);
+            let text = code
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            assert_eq!(
+                addps_register_encoding(&text),
+                Some((destination, source, code.len() as u32)),
+                "{destination},{source} {text}"
+            );
+        }
+    }
+    for bytes in [
+        "660f58c1",     // ADDPD encoding
+        "f20f58c1",     // F2 mandatory prefix
+        "f30f58c1",     // F3 mandatory prefix
+        "420f58c1",     // REX.X
+        "480f58c1",     // REX.W
+        "400f58c1",     // redundant REX
+        "0f5801",       // memory ModR/M
+        "0f58c190",     // trailing byte
+        "c57c58c1",     // VEX
+        "62f17c0858c1", // EVEX
+    ] {
+        assert_eq!(addps_register_encoding(bytes), None, "{bytes}");
+    }
+
+    for (bytes, length, stop) in [
+        ("660f58c1", 4, 0x10_0004),
+        ("f20f58c1", 4, 0x10_0004),
+        ("f30f58c1", 4, 0x10_0004),
+        ("0f5801", 3, 0x10_0003),
+        ("0f58c190", 4, 0x10_0004),
+    ] {
+        let mut malformed = fixture.clone();
+        malformed.memory[0].initial_bytes_hex = bytes.to_owned();
+        malformed.memory[0].length = length;
+        malformed.memory[0].comparison_mask_hex = "ff".repeat(length as usize);
+        malformed.stop_rip = Some(HexU64(stop));
+        assert!(malformed.validate().is_err(), "{bytes}");
+    }
+    for mxcsr in [0x1fc0, 0x1b80, 0x1780, 0x0001_0000] {
+        let mut invalid_mxcsr = fixture.clone();
+        invalid_mxcsr.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(invalid_mxcsr.validate().is_err(), "MXCSR={mxcsr:#x}");
+    }
 }

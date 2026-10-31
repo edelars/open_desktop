@@ -18944,3 +18944,51 @@ claims use the legacy rows in Table 2-27. This profile makes no memory
 alignment claim. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37az--canonical-long64-addpd-xmm-register-pairs),
 [plan](../plans/STAGE_2.md#s2-37az--canonical-long64-addpd-xmm-register-pairs), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37az-addpd-register-pair-profile).
+
+
+## S2-37ba — ADDPS register-pair interpreter profile (2026-10-30)
+
+Implemented strict schema-v2 `s2-long-addps-registers-v1` for canonical
+Long64 legacy `0F 58 /r`, ModR/M.mod=3, across all 256 XMM register pairs.
+Three-byte low forms and four-byte extended forms use no mandatory prefix and
+one canonical REX when needed. The interpreter snapshots both XMM operands and
+computes all four old-destination/source binary32 lanes. Full fetch precedes
+SSE/CR0.EM/CR4.OSFXSR #UD then CR0.TS #NM; all CPLs work without data callbacks.
+SSE is required; SSE2 is not. Memory/prefix aliases and JIT/native/C ABI/
+fragment/generic execution are denied.
+
+The production path uses `Binary32::add_raw_result`. It classifies original
+inputs first, aggregates IE/DE across all lanes, suppresses post flags and the
+whole XMM write on an unmasked pre-event, and commits status before PM delivery.
+The profile masks overflow and underflow, while PM remains caller-selectable.
+It covers NaN selection/quieting, invalid opposite infinities, infinity plus
+subnormal DE, MXCSR rounding/FTZ, directed overflow, exact tiny results,
+large-gap DE|PE, old stickies, SSE gate ordering, and destination/source alias.
+The four-lane FTZ=1 matrix combines SNaN+1 (IE), minsub+1 (DE|PE),
+maxfinite+maxfinite (OE|PE), and `00800001+80800000` (UE|PE): with masks on,
+the aggregate status is `0x3b`. Lane permutations prove no early exit; with
+IM or DM unmasked, only the newly discovered pre-event bits `0x03` commit and
+the whole destination write is suppressed. A masked pre-event plus PM=0
+commits all flags before #XM and also leaves XMM/RIP unchanged.
+The independent schema oracle performs raw-u32 integer rounding and uses no
+host FP or production arithmetic helper.
+
+Validation passed: `cargo test -p od-isa --offline addps_` (4 tests),
+`cargo test -p od-isa --offline addpd_` (2 tests), the two ADDPS oracle/schema
+tests, and `cargo test -p od-testkit --offline` (441 tests). The literal
+fixture's interpreter run passed. ADDPD and ADDPS runtime checks both reject
+DAZ, reserved MXCSR bits, OM=0, and UM=0 without changing architectural state.
+Previously completed focused regressions passed for ADDPD, SUBPD/SUBPS/SUBSD/
+SUBSS, MULPD/MULPS/MULSD/MULSS, and DIVPD/DIVPS/DIVSD/DIVSS. The
+CVTSD2SI admission regression also passed after reverting an unrelated test
+edit. `cargo fmt --all -- --check`, `cargo check --workspace --all-targets
+--offline`, `python3 tools/check_layout.py`, `git diff --check`, and
+`graphify update .` passed. Independent Sol-high review found no remaining
+issues.
+
+Source: Intel SDM Rev. 093 Vol. 2A ADDPS pp. 3-19–3-21, with the legacy SSE
+rows in Table 2-27. The p. 3-21 Type 2/Table 2-19 note is for VEX forms, not
+legacy ADDPS. No memory alignment or physical-acceptance claim is made. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37ba--canonical-long64-addps-xmm-register-pairs),
+[plan](../plans/STAGE_2.md#s2-37ba--canonical-long64-addps-xmm-register-pairs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ba-addps-register-pair-profile).
