@@ -19464,3 +19464,66 @@ CVTTPD2PI p. 3-248; Vol. 3B §25.25.3 Table 25-4 p. 25-22; Vol. 3A §15.2
 Table 15-2 and Vol. 1 SSE2 feature rules. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bq--bounded-long64-cvttpd2pi-mm0rax-aligned-m128-memory-profile),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37bq--bounded-long64-cvttpd2pi-mm0rax-aligned-m128-memory-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bq-cvttpd2pi-mm0rax-aligned-m128-memory-profile).
+
+## S2-37br — CVTPD2PI MM0,[RAX] aligned m128 memory profile
+
+Implemented the separate schema-v2 interpreter-only Long64 profile for exact
+`66 0F 2D 00`, one instruction, budget 1 and stop RIP+4. The decoder fetches
+all four bytes before the local SSE2 gates: unavailable CPUID.SSE2 (bit 26),
+CR0.EM or CR4.OSFXSR produce #UD, then CR0.TS produces #NM. This priority is a
+bounded local policy. CPL0–3 are accepted.
+
+The source is exactly one 16-byte m128 at RAX. The full canonical48 span and
+16-byte alignment are checked before the sole read. Misalignment raises
+#GP(0) before callback at every CPL independent of RFLAGS.AC; aligned AC=0 and
+AC=1 are accepted. MXCSR is limited to `0xffbf` with IM=PM=1, and strict
+admission requires `FSW & 0x80ff == 0`; pending-x87 #MF delivery is not modeled.
+
+Each raw binary64 lane is rounded to signed i32 according to MXCSR.RC and only
+then range-checked. `0x41dfffffffffffff` is invalid for nearest/upward, but is
+valid `i32::MAX` with PE for downward/toward-zero. `0xc1e0000000000001` is
+invalid only for downward rounding; the other modes produce valid
+`i32::MIN` with PE. NaN, infinity and rounded out-of-range values produce
+`0x80000000` and IE. Valid inexact lanes set PE; lane status is OR-combined,
+existing status/control bits remain sticky, and DE is not raised. After one
+successful read, physical MM0 receives the two i32 values and exponent word
+`ffff`, TOP becomes zero and all tags valid, and all other x87 state is
+preserved. Read failure leaves CPU state unchanged.
+
+The testkit oracle uses raw u64 classification and integer arithmetic only; it
+does not use host FP or production conversion helpers. The literal fixture has
+1.5 and QNaN lanes with RC-up, demonstrating that 1.5 rounds to 2 while IE and
+PE are both recorded. Runner matrix coverage includes all four RC modes,
+post-rounding range boundaries, mixed IE+PE from clear flags, exact-lane
+sticky histories, aligned CPL×AC successes, 15 misalignment offsets at a
+representative CPL/AC, TOP/tag variations, malformed/tampered fixtures,
+foreign controls through `Fixture::validate` and `Fixture::from_json`, and JIT/
+native denial. Runner output does not report callback counts. Direct ISA tests
+cover the full misalignment×CPL×AC product with #GP(0), zero callbacks and
+unchanged state, aligned successes and one exact 16-byte callback, gate/span
+pre-read refusals, full fetch, the four-RC post-rounding boundary result and
+injected read-failure rollback. The profile remains fail-closed for JIT, native
+and C ABI; the profile-specific native denial test is cfg-disabled on this
+macOS host. No physical x86 acceptance was performed.
+
+Verification passed: focused `cargo test -p od-isa cvtpd2pi --offline` (5
+focused decoder/execution tests); focused `cargo test -p od-runner
+cvtpd2pi_mm0_memory_rax_aligned_m128_has_exactly_one_local_interpreter_profile
+--offline` (1 matrix test); full `cargo test -p od-testkit --offline` (444
+passed); full `cargo test -p od-runner --offline` (112 unit + 447 fixture
+passed); and full `cargo test -p od-x86-runner --offline` (8 library + 4
+binary tests passed, doc-tests 0). `cargo check --workspace --all-targets
+--offline`, `cargo fmt --all -- --check`, `python3 tools/check_layout.py` (48
+required directories, 6 crate scaffolds, 14 instruction scopes) and
+`git diff --check` passed. Physical x86 acceptance was not run. Normative
+sources: Intel SDM Rev. 093 Vol. 2A CVTPD2PI p. 3-218; Vol. 3B §25.25.3
+Table 25-4 p. 25-22; Vol. 3A §15.2 Table 15-2 and Vol. 1 SSE2 feature rules.
+See the [Stage 2 plan](../plans/STAGE_2.md#s2-37br--bounded-long64-cvtpd2pi-mm0rax-aligned-m128-memory-profile),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37br--bounded-long64-cvtpd2pi-mm0rax-aligned-m128-memory-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37br-cvtpd2pi-mm0rax-aligned-m128-memory-profile).
+
+`graphify update .` completed after the code changes and rebuilt the graph with
+10,167 nodes, 21,523 edges and 284 communities. The extractor retained its
+warning for `include/open_desktop/host_abi.h` and 13 files without symbols;
+community labels were not refreshed. The updated S2-37br cross-document
+headings are present in the plan, CPU contract, report and fixture README.

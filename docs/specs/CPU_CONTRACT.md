@@ -14309,3 +14309,41 @@ Normative sources: Intel SDM Rev. 093 Vol. 2A CVTTPD2PI p. 3-248; Vol. 3B
 feature rules. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bq--bounded-long64-cvttpd2pi-mm0rax-aligned-m128-memory-profile),
 [report](../reports/STAGE_2_REPORT.md#s2-37bq--cvttpd2pi-mm0rax-aligned-m128-memory-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bq-cvttpd2pi-mm0rax-aligned-m128-memory-profile).
+
+## S2-37br — bounded Long64 CVTPD2PI MM0,[RAX] aligned m128 memory profile
+
+The schema-v2 interpreter profile admits exact `66 0F 2D 00`, Long64, one
+instruction, budget 1 and stop RIP+4. Fetch the full instruction before #UD for
+unavailable SSE2 (CPUID bit 26), CR0.EM or CR4.OSFXSR, then #NM for CR0.TS; this
+#UD-before-#NM order is bounded local policy. CPL0–3 are accepted.
+
+The source is exactly one aligned 16-byte m128 at RAX. Its complete span must
+be canonical48. Misalignment causes #GP(0) before a memory callback at every
+CPL regardless of RFLAGS.AC; no #AC is modeled. Aligned accesses are accepted
+with AC clear or set. Require MXCSR bits within `0xffbf`, IM=PM=1, and
+`FSW & 0x80ff == 0`; pending x87 state is rejected by local profile admission,
+and #MF delivery is not modeled.
+
+Round each raw binary64 lane according to MXCSR.RC, then check the rounded
+integer against signed i32 bounds. Thus just-below `+2^31` (`0x41dfffffffffffff`)
+is invalid for nearest and toward-positive-infinity, but yields `i32::MAX` plus
+PE for toward-negative-infinity and toward-zero. Just-below `-2^31`
+(`0xc1e0000000000001`) is invalid only for toward-negative-infinity; the other
+modes yield valid `i32::MIN` plus PE. Exact `-2^31` remains valid. NaN,
+infinity, or rounded out-of-range values yield `0x80000000` and sticky IE;
+valid inexact lanes set sticky PE. Lane status is OR-combined; old IE/PE and
+MXCSR controls are preserved, and DE is not raised.
+
+After one successful 16-byte read, the executor writes the pair to physical
+x87 slot 0/MM0 with exponent bits 79:64=`ffff`, sets TOP=0/all tags valid, and
+preserves the remaining x87 state. A failed read leaves CPU state unchanged.
+The independent oracle uses only raw u64 classification and integer arithmetic,
+not host FP or production conversion helpers. Native/JIT/C ABI and broader
+forms remain unavailable. Runner/direct-ISA coverage and the distinction
+between runner callback evidence and direct ISA memory-count assertions are
+recorded in the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-37br--cvtpd2pi-mm0rax-aligned-m128-memory-profile).
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTPD2PI p. 3-218; Vol. 3B
+§25.25.3 Table 25-4 p. 25-22; Vol. 3A §15.2 Table 15-2 and Vol. 1 SSE2
+feature rules. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37br--bounded-long64-cvtpd2pi-mm0rax-aligned-m128-memory-profile)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37br-cvtpd2pi-mm0rax-aligned-m128-memory-profile).

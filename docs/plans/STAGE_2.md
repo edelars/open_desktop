@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последний завершённый кодовый срез S2-37bq добавил exact masked memory-source CVTTPD2PI MM0,[RAX] (`66 0F 2C 00`) после S2-37bp CVTPS2PI MM0,[RAX]; следующий candidate будет выбран отдельно. Срез bq делает один aligned 16-byte read по canonical RAX, независимо от RC усекает binary64 к signed i32, формирует masked IE/PE и записывает physical MM0 с exponent word `ffff` при переходе x87 TOP=0/tag_word=0; #GP для misalignment обязателен при любом CPL и AC. Предыдущие ограничения/профили перечислены ниже. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последний завершённый кодовый срез S2-37br добавил exact masked memory-source CVTPD2PI MM0,[RAX] (`66 0F 2D 00`) после S2-37bq CVTTPD2PI MM0,[RAX]. Срез br делает один aligned 16-byte read по canonical RAX, округляет binary64 к signed i32 по MXCSR.RC и проверяет диапазон после округления, формирует masked IE/PE и записывает physical MM0 с exponent word `ffff` при переходе x87 TOP=0/tag_word=0; #GP для misalignment обязателен при любом CPL и AC. Следующий кандидат S2-37bs — exact candidate to be selected separately. Предыдущие ограничения/профили перечислены ниже. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -6803,7 +6803,7 @@ inventory.
 | CVTDQ2PD | `F3 0F E6 /r` | SSE2 | m64 / low 2×i32 → 2×f64 | 3-208 | S2-37m exact XMM0/XMM1; S2-37p canonical 256 XMM register pairs |
 | CVTDQ2PS | `NP 0F 5B /r` | SSE2 | XMM, m128; 4×i32 → 4×f32 | 3-211 | S2-37s, bounded register-only |
 | CVTPD2DQ | `F2 0F E6 /r` | SSE2 | XMM, m128; 2×f64 → low 2×i32 | 3-214 | S2-37ah, bounded register-only |
-| CVTPD2PI | `66 0F 2D /r` | SSE2 | XMM, m128 → mm; 2×f64 → 2×i32 | 3-218 | S2-37bk, exact masked `66 0F 2D C1` register-source profile |
+| CVTPD2PI | `66 0F 2D /r` | SSE2 | XMM, m128 → mm; 2×f64 → 2×i32 | 3-218 | S2-37bk, exact masked `66 0F 2D C1` register-source profile; S2-37br, exact aligned m128 `[RAX]` memory profile with MXCSR rounding |
 | CVTPD2PS | `66 0F 5A /r` | SSE2 | XMM, m128; 2×f64 → low 2×f32 | 3-219 | S2-37bd, bounded register-only |
 | CVTPI2PD | `66 0F 2A /r` | SSE2 | mm/m64 → XMM; 2×i32 → 2×f64 | 3-223 | S2-37bf, exact memory-only `[RAX]`; S2-37bm, exact `XMM0,MM1` register source |
 | CVTPI2PS | `NP 0F 2A /r` | SSE | mm/m64 → XMM; 2×i32 → low 2×f32 | 3-224 | S2-37bg, exact memory-only `[RAX]`; S2-37bn, exact `XMM0,MM1` register source |
@@ -6899,7 +6899,7 @@ Static absence does not establish that any target-required form is unnecessary.
 S2-37bj covers exact masked Long64 `CVTPS2PI MM0,XMM1` (`0F 2D C1`), and
 S2-37bk covers exact masked Long64 `CVTPD2PI MM0,XMM1` (`66 0F 2D C1`). Other
 register and memory encodings remain missing and target-required independent
-of this kernel mapping. S2-37bl covers exact masked Long64 `CVTTPD2PI MM0,XMM1` (`66 0F 2C C1`), and S2-37bq covers aligned `CVTTPD2PI MM0,[RAX]` (`66 0F 2C 00`).
+of this kernel mapping. S2-37bl covers exact masked Long64 `CVTTPD2PI MM0,XMM1` (`66 0F 2C C1`), S2-37bq covers aligned `CVTTPD2PI MM0,[RAX]` (`66 0F 2C 00`), and S2-37br covers aligned rounded `CVTPD2PI MM0,[RAX]` (`66 0F 2D 00`).
 S2-37bm implements exact Long64 `CVTPI2PD XMM0,MM1` (`66 0F 2A C1`);
 it reads physical x87 slot 1/MM1 independent of TOP and tag class, converts two
 signed i32 lanes exactly to binary64 XMM0, transitions TOP=0/all tags valid,
@@ -6908,7 +6908,7 @@ and refuses pending x87 exceptions. S2-37bn adds exact `CVTPI2PS XMM0,MM1`
 transition. S2-37bo covers exact masked `CVTTPS2PI MM0,[RAX]` (`0F 2C 00`)
 with truncation and one canonical 8-byte source read. S2-37bp covers exact
 masked `CVTPS2PI MM0,[RAX]` (`0F 2D 00`) with MXCSR-directed rounding and one
-canonical m64 source read. S2-37bq covers exact masked Long64 `CVTTPD2PI MM0,[RAX]` (`66 0F 2C 00`) with one aligned canonical m128 read, RC-independent truncation, sticky IE/PE and #GP misalignment. Further candidates remain to be selected. Legacy exception references in SUB and UCOMIS shared SDM
+canonical m64 source read. S2-37bq covers exact masked Long64 `CVTTPD2PI MM0,[RAX]` (`66 0F 2C 00`) with one aligned canonical m128 read, RC-independent truncation, sticky IE/PE and #GP misalignment. S2-37br rounds per MXCSR.RC and checks i32 range after rounding. Further candidates remain to be selected. Legacy exception references in SUB and UCOMIS shared SDM
 entries that are explicitly labelled for VEX encodings are not evidence for
 legacy fault classes. MINSS Rev. 093 explicitly cites Type 2/Table 2-19 despite
 its scalar width. Physical acceptance remains in the combined final Mac mini
@@ -14636,3 +14636,46 @@ Normative sources: Intel SDM Rev. 093 Vol. 2A CVTTPD2PI p. 3-248; Vol. 3B
 feature rules. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37bq--bounded-long64-cvttpd2pi-mm0rax-aligned-m128-memory-profile),
 [report](../reports/STAGE_2_REPORT.md#s2-37bq--cvttpd2pi-mm0rax-aligned-m128-memory-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bq-cvttpd2pi-mm0rax-aligned-m128-memory-profile).
+
+#### S2-37br — bounded Long64 CVTPD2PI MM0,[RAX] aligned m128 memory profile
+
+**Status: implemented and verified locally.** Add separate
+schema-v2 interpreter-only profile `s2-long-cvtpd2pi-memory-rax-v1` for exact
+`66 0F 2D 00`, budget=1 and stop RIP=entry+4. Fetch all four instruction
+bytes before profile #UD for missing SSE2 (CPUID bit 26), CR0.EM or CR4.OSFXSR,
+then #NM for CR0.TS; this ordering is bounded local policy. CPL0–3 are accepted.
+
+Read exactly one 16-byte m128 from RAX after checking the entire canonical48
+span and 16-byte alignment. Misalignment raises #GP(0) before memory callbacks
+at any CPL regardless of RFLAGS.AC; it does not raise #AC. Aligned sources are
+accepted with AC clear or set. Require MXCSR bits within `0xffbf`, IM=PM=1, and
+`FSW & 0x80ff == 0`; pending x87 exceptions are rejected by strict local
+admission, and #MF delivery is not modeled.
+
+Round each binary64 lane to signed i32 according to MXCSR.RC, then test whether
+the rounded integer is representable. This ordering matters near the endpoints:
+`0x41dfffffffffffff` rounds out of range for nearest/up but remains
+`i32::MAX` for down/toward-zero; `0xc1e0000000000001` rounds out of range only
+for down, while nearest/up/toward-zero produce valid `i32::MIN`. Out-of-range,
+NaN and infinity produce `0x80000000` and sticky IE. A valid inexact rounded
+result sets sticky PE; flags aggregate across lanes, incoming status/control
+bits are preserved, and DE is not raised. After one successful read, write the
+pair to physical MM0 with exponent word `ffff`, set TOP=0/all tags valid, and
+preserve other x87 state. Read failure leaves CPU state unchanged. Native/JIT/C
+ABI and broader forms remain closed.
+
+The independent testkit oracle classifies raw u64 bits using integer operations
+only, with no host FP or production conversion helper. Literal fixture and
+runner matrix cover all RC values, both post-rounding endpoint cases, mixed
+IE+PE generation from clear flags, sticky histories, aligned CPL×AC, the 15
+misalignment offsets at representative CPL/AC, TOP/tag canaries, malformed and
+tampered inputs, and backend denial. Direct ISA tests cover all offset×CPL×AC
+misalignment cases with no read/state change, aligned success, one exact 16-byte
+read, pre-read gate/span refusals, full fetch and read-failure rollback. No
+physical x86 acceptance is claimed.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTPD2PI p. 3-218; Vol. 3B
+§25.25.3 Table 25-4 p. 25-22; Vol. 3A §15.2 Table 15-2 and Vol. 1 SSE2
+feature rules. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37br--bounded-long64-cvtpd2pi-mm0rax-aligned-m128-memory-profile),
+[report](../reports/STAGE_2_REPORT.md#s2-37br--cvtpd2pi-mm0rax-aligned-m128-memory-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37br-cvtpd2pi-mm0rax-aligned-m128-memory-profile).

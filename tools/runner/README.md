@@ -199,3 +199,9 @@ zero callbacks on pre-read failures, one 16-byte callback on success, and
 rollback after a failed read.
 No physical x86 acceptance is claimed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bq--bounded-long64-cvttpd2pi-mm0rax-aligned-m128-memory-profile)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bq-cvttpd2pi-mm0rax-aligned-m128-memory-profile).
+
+S2-37br runs the exact local-only CVTPD2PI MM0,[RAX] profile with aligned
+m128 memory and MXCSR.RC rounding followed by range validation. The runner
+fixture matrix does not establish physical x86 acceptance. See the [CPU
+contract](../../docs/specs/CPU_CONTRACT.md#s2-37br--bounded-long64-cvtpd2pi-mm0rax-aligned-m128-memory-profile)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37br-cvtpd2pi-mm0rax-aligned-m128-memory-profile).

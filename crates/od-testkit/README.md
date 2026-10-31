@@ -263,3 +263,10 @@ or AC, and defers state mutation until the single read succeeds. Strict
 admission checks the MXCSR subset, IM=PM=1 and no pending x87 exception. See
 the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bq--bounded-long64-cvttpd2pi-mm0rax-aligned-m128-memory-profile)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bq-cvttpd2pi-mm0rax-aligned-m128-memory-profile).
+
+S2-37br adds schema-v2 profile `s2-long-cvtpd2pi-memory-rax-v1` for exact
+`66 0F 2D 00`. Its independent oracle rounds raw binary64 inputs with integer
+arithmetic according to MXCSR.RC, then validates signed-i32 range and IE/PE
+status. The profile has a separate `cvtpd2pi_memory_controls` field; foreign
+profile controls remain rejected. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37br--bounded-long64-cvtpd2pi-mm0rax-aligned-m128-memory-profile)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37br-cvtpd2pi-mm0rax-aligned-m128-memory-profile).

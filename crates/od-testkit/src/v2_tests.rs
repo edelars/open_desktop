@@ -360,6 +360,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 cvtpd2pi_register_controls: input.fixture.cvtpd2pi_register_controls,
                 cvttpd2pi_register_controls: input.fixture.cvttpd2pi_register_controls,
                 cvttpd2pi_memory_controls: input.fixture.cvttpd2pi_memory_controls,
+                cvtpd2pi_memory_controls: input.fixture.cvtpd2pi_memory_controls,
                 cvtps2pd_controls: input.fixture.cvtps2pd_controls,
                 comiss_ucomiss_controls: input.fixture.comiss_ucomiss_controls,
                 cmpss_controls: input.fixture.cmpss_controls,

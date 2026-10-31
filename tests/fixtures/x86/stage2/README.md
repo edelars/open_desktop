@@ -7119,3 +7119,24 @@ alignment, so they do not establish independent fault priority. No physical
 x86 acceptance is claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bq--bounded-long64-cvttpd2pi-mm0rax-aligned-m128-memory-profile),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37bq--bounded-long64-cvttpd2pi-mm0rax-aligned-m128-memory-profile),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bq--cvttpd2pi-mm0rax-aligned-m128-memory-profile).
+
+### S2-37br CVTPD2PI MM0,[RAX] aligned m128 memory profile
+
+`s2_37br_cvtpd2pi_mm0_memory_rax.case.json` is the literal schema-v2 fixture
+for exact `66 0F 2D 00`. It uses the aligned 16-byte source lanes +1.5 and QNaN
+with MXCSR round-up, so the valid lane rounds to 2 and contributes PE while the
+invalid lane contributes `0x80000000` and IE. Incoming sticky flags are clear,
+AC is set on the aligned access, and x87 payload canaries exercise the MMX
+transition. The fixture is evidence for rounding-control use, mixed IE|PE and
+preservation; it does not claim physical x86 acceptance.
+
+The runner matrix checks each RC mode, rounded endpoint/range behavior,
+clear-flag generation and sticky preservation, aligned CPL×AC success, all 15
+misalignment offsets at representative CPL/AC, TOP/tag state, malformed and
+tampered results, and backend denial. Direct ISA tests prove the full
+misalignment×CPL×AC matrix has #GP(0), zero reads and unchanged CPU state, plus
+one exact 16-byte read on success and rollback after an injected read error.
+They also cover fetch/gates and pre-read span refusals. No physical x86
+acceptance is claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37br--bounded-long64-cvtpd2pi-mm0rax-aligned-m128-memory-profile),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37br--bounded-long64-cvtpd2pi-mm0rax-aligned-m128-memory-profile),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37br--cvtpd2pi-mm0rax-aligned-m128-memory-profile).

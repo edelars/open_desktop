@@ -34,3 +34,7 @@ state; this does not constitute physical x86 acceptance.
 The S2-37bq `CVTTPD2PI MM0,[RAX]` profile remains interpreter-only. Native
 execution is denied because the trace does not capture the complete resulting
 x87/MMX state, and this slice makes no physical x86 acceptance claim.
+
+The schema-v2 S2-37br CVTPD2PI MM0,[RAX] profile remains local-only and is
+rejected before native execution; no physical x86 acceptance is claimed. See
+the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37br--bounded-long64-cvtpd2pi-mm0rax-aligned-m128-memory-profile).
