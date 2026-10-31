@@ -14370,3 +14370,42 @@ Convert the two binary32 lanes in XMM1.low64 using MXCSR.RC with integer-only `B
 The independent testkit oracle operates on raw bits and integer rounding, without production conversion helpers or host FP. Literal fixture and runner coverage includes all RC modes, signed ties/fractions/limits, invalid values and subnormals, mixed IE/PE and old sticky flags, high64 poison, all TOP/tag inputs, MM0 selection/exponent, preservation, gates/CPL/full fetch, budget/STOP, malformed forms, backend denial and result/gate tampering. No physical-x86 claim is made.
 
 Sources: Intel SDM Rev. 093 Vol. 2A CVTPS2PI p. 3-231; Vol. 1 MXCSR rounding and x87/MMX state-transition rules. See [CPU contract](../specs/CPU_CONTRACT.md#s2-37bj--bounded-long64-cvtps2pi-mm0xmm1-masked-register-profile), [report](../reports/STAGE_2_REPORT.md#s2-37bj--cvtps2pi-mm0xmm1-masked-register-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bj-cvtps2pi-mm0xmm1-masked-register-profile).
+
+#### S2-37bk — bounded Long64 CVTPD2PI MM0,XMM1 masked register profile
+
+Implement interpreter-only schema-v2 profile `s2-long-cvtpd2pi-register-masked-v1`
+for exactly `66 0F 2D C1`, budget=1 and stop RIP=entry+4. Admit only MM0
+destination and XMM1 source. Refuse memory/other ModR/M forms, bare or extra
+prefixes, REX, trailing bytes, VEX/EVEX and other modes. Fetch the complete
+four-byte instruction before the profile's #UD gate for CPUID.SSE2=0, CR0.EM=1
+or CR4.OSFXSR=0, then #NM for CR0.TS=1. This #UD-before-#NM order is the
+bounded profile policy; the cited exception-priority table does not establish
+a universal priority among these conditions. Permit CPL0–3 and issue no data
+callbacks.
+
+Require SSE and x87 snapshots, supported MXCSR mask `0x0000ffbf`, IM=PM=1,
+and `FSW & 0x80ff == 0`. Pending x87 exceptions are refused by the profile;
+delivery of #MF is outside scope. DAZ is rejected; other supported control and
+sticky bits are admitted. Convert both binary64 lanes in XMM1 using MXCSR.RC
+and integer-only `Binary64::to_i32`; there is no ignored half of XMM1. Masked
+invalid NaN/infinity/out-of-range values return `0x80000000`; exact -2^31 is
+valid. Aggregate IE for invalid lanes and PE for valid inexact lanes, preserve
+old sticky/control bits and do not raise DE. Store both results to physical
+x87 slot 0/MM0, set bits 79:64 to `ffff`, TOP=0 and all tags valid. Preserve
+other x87 payload/state and MXCSR controls. JIT/native/C ABI/fragment/generic
+dispatch remain denied.
+
+The schema oracle operates on raw binary64 fields and integer rounding without
+production helpers or host FP. Cover all RC modes, ties/fractions/signed limits,
+QNaN/SNaN/infinity/subnormal, mixed IE/PE and old sticky status, all incoming
+TOP/tag encodings, physical MM0 selection/exponent, unrelated-state
+preservation, clear non-IM/PM exception masks, SSE2/EM/OSFXSR/TS gates, CPL,
+full-fetch priority, no data callbacks, malformed/tampered fixtures and
+backend denial. Physical acceptance remains part of the combined S2-37
+hardware substage.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTPD2PI p. 3-218; Vol. 3B §25.25.3
+Table 25-4 p. 25-22; Vol. 1 CPUID.01H:EDX[26] and MXCSR/x87-MMX state rules;
+Vol. 3A §7.9 Table 7-2 pp. 7-9–7-10. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37bk--bounded-long64-cvtpd2pi-mm0xmm1-masked-register-profile),
+[report](../reports/STAGE_2_REPORT.md#s2-37bk--cvtpd2pi-mm0xmm1-masked-register-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bk-cvtpd2pi-mm0xmm1-masked-register-profile).

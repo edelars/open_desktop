@@ -145,3 +145,10 @@ S2-35.8’s local-only register `PADDUSW` fixture checks eight unsigned word lan
 S2-35.9’s local-only register `PSUBUSW` fixture checks eight unsigned word lanes with per-lane saturation to zero. It remains interpreter-only and JIT/native denied.
 
 S2-35.10’s local-only register `PADDSB` fixture checks signed byte addition with saturation in all 16 lanes. It remains interpreter-only and JIT/native denied.
+
+S2-37bk adds the literal schema-v2 `CVTPD2PI MM0,XMM1` fixture for exact
+`66 0F 2D C1`. The runner validates the raw-bit binary64-to-i32 result,
+MXCSR sticky IE/PE, MM0 slot/TOP/tag transition, full-fetch SSE2 gates and
+profile refusals. Clear non-IM/PM masks are accepted when IM and PM remain set.
+JIT/native execution remains unsupported; physical x86 acceptance is separate.
+See the [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bk-cvtpd2pi-mm0xmm1-masked-register-profile).

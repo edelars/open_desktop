@@ -482,11 +482,27 @@ pub struct Cvtpi2psControls {
     pub cr4_osfxsr: bool,
 }
 
+/// Explicit SSE2/CR0/CR4 controls for the exact register-source CVTPD2PI profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Cvtpd2piControls {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+}
+
 #[derive(Clone, Copy)]
 enum Cvtpi2psExecutionProfile {
     MemoryRax,
     Cvttps2piMm0Xmm1,
     Cvtps2piMm0Xmm1,
+    Cvtpd2piMm0Xmm1,
+}
+
+#[derive(Clone, Copy)]
+enum Cvtpi2ExecutionControls {
+    Sse(Cvtpi2psControls),
+    Sse2(Cvtpd2piControls),
 }
 
 /// Explicit SSE2 and SIMD exception-delivery controls for CVTPS2PD.
@@ -715,7 +731,7 @@ struct ExecutionProfiles<'a> {
     cvtss2sd_registers: Option<Cvtss2sdControls>,
     cvtsd2ss_registers: Option<Cvtsd2ssControls>,
     cvtpi2pd_memory_rax: Option<Cvtpi2pdControls>,
-    cvtpi2ps_memory_rax: Option<(Cvtpi2psControls, Cvtpi2psExecutionProfile)>,
+    cvtpi2_profile: Option<(Cvtpi2ExecutionControls, Cvtpi2psExecutionProfile)>,
     cvtps2pd_registers: Option<Cvtps2pdControls>,
     comiss_ucomiss_registers: Option<ComissUcomissControls>,
     cmpss_registers: Option<CmpssControls>,
@@ -1576,7 +1592,7 @@ pub fn run_with_maxss_unmasked_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -1668,7 +1684,7 @@ pub fn run_with_minsd_unmasked_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -1760,7 +1776,7 @@ pub fn run_with_maxsd_unmasked_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -1852,7 +1868,7 @@ pub fn run_with_minpd_unmasked_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -1944,7 +1960,7 @@ pub fn run_with_minps_unmasked_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2036,7 +2052,7 @@ pub fn run_with_maxps_unmasked_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2128,7 +2144,7 @@ pub fn run_with_maxpd_unmasked_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2220,7 +2236,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2312,7 +2328,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2404,7 +2420,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2496,7 +2512,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2588,7 +2604,7 @@ pub fn run_with_cvtss2si_registers_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2680,7 +2696,7 @@ pub fn run_with_cvttss2si_registers_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2771,7 +2787,7 @@ pub fn run_with_cvtsd2si_registers_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2864,7 +2880,7 @@ pub fn run_with_cvttsd2si_registers_controls(
             cvttsd2si_registers: Some(controls),
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2956,7 +2972,7 @@ pub fn run_with_cvtdq2pd_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -3048,7 +3064,7 @@ pub fn run_with_cvtdq2pd_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -3140,7 +3156,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -3232,7 +3248,7 @@ pub fn run_with_cvtps2dq_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -3324,7 +3340,7 @@ pub fn run_with_cvttps2dq_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -3416,7 +3432,7 @@ pub fn run_with_cvtpd2dq_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -3508,7 +3524,7 @@ pub fn run_with_cvtpd2ps_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -3600,7 +3616,7 @@ pub fn run_with_cvttpd2dq_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -3692,7 +3708,7 @@ pub fn run_with_cvtss2sd_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -3769,7 +3785,7 @@ pub fn run_with_cvtpi2pd_memory_controls(
             cvtss2sd_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: Some(controls),
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
@@ -3816,7 +3832,7 @@ pub fn run_with_cvtpi2ps_memory_controls(
         state,
         memory,
         config,
-        controls,
+        Cvtpi2ExecutionControls::Sse(controls),
         Cvtpi2psExecutionProfile::MemoryRax,
         stop_requested,
     )
@@ -3826,7 +3842,7 @@ fn run_with_cvtpi2ps_profile(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     config: RunConfig,
-    controls: Cvtpi2psControls,
+    controls: Cvtpi2ExecutionControls,
     profile: Cvtpi2psExecutionProfile,
     mut stop_requested: impl FnMut() -> bool,
 ) -> RunResult {
@@ -3879,7 +3895,7 @@ fn run_with_cvtpi2ps_profile(
             cvtss2sd_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: Some((controls, profile)),
+            cvtpi2_profile: Some((controls, profile)),
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
@@ -3927,7 +3943,7 @@ pub fn run_with_cvttps2pi_mm0_xmm1_controls(
         state,
         memory,
         config,
-        controls,
+        Cvtpi2ExecutionControls::Sse(controls),
         Cvtpi2psExecutionProfile::Cvttps2piMm0Xmm1,
         stop_requested,
     )
@@ -3945,8 +3961,26 @@ pub fn run_with_cvtps2pi_mm0_xmm1_controls(
         state,
         memory,
         config,
-        controls,
+        Cvtpi2ExecutionControls::Sse(controls),
         Cvtpi2psExecutionProfile::Cvtps2piMm0Xmm1,
+        stop_requested,
+    )
+}
+
+/// Execute the exact Long64 register-source CVTPD2PI MM0,XMM1 profile.
+pub fn run_with_cvtpd2pi_mm0_xmm1_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: Cvtpd2piControls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_cvtpi2ps_profile(
+        state,
+        memory,
+        config,
+        Cvtpi2ExecutionControls::Sse2(controls),
+        Cvtpi2psExecutionProfile::Cvtpd2piMm0Xmm1,
         stop_requested,
     )
 }
@@ -4007,7 +4041,7 @@ pub fn run_with_cvtsd2ss_register_controls(
             cvtss2sd_registers: None,
             cvtsd2ss_registers: Some(controls),
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
@@ -4114,7 +4148,7 @@ pub fn run_with_cvtps2pd_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -4206,7 +4240,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -4298,7 +4332,7 @@ pub fn run_with_cmpss_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -4390,7 +4424,7 @@ pub fn run_with_cmpsd_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -4482,7 +4516,7 @@ pub fn run_with_cmppd_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -4573,7 +4607,7 @@ pub fn run_with_cmpps_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -4665,7 +4699,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: true,
             rdtsc: None,
@@ -4810,7 +4844,7 @@ pub fn run_with_efer_rdmsr_profile(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -5111,7 +5145,7 @@ pub fn run_with_cr0_profile(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -5204,7 +5238,7 @@ pub fn run_with_cr4_profile(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: profile == Cr4Profile::FpInitThenFxrstor64MinssLong64V1,
             rdtsc: None,
@@ -5531,7 +5565,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: fx_cr0_gate_controls,
             unmasked_minss_denormal,
             rdtsc: rdtsc_controls,
@@ -5808,7 +5842,7 @@ pub fn step_with_cr0_profile(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -6143,7 +6177,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: fx_cr0_gate_controls,
             unmasked_minss_denormal,
             rdtsc: rdtsc_controls,
@@ -6235,7 +6269,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -6329,7 +6363,7 @@ pub fn run_with_sqrtss_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -6421,7 +6455,7 @@ pub fn run_with_sqrtsd_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -6513,7 +6547,7 @@ pub fn run_with_sqrtps_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -6605,7 +6639,7 @@ pub fn run_with_sqrtpd_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -6697,7 +6731,7 @@ pub fn run_with_subpd_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -6789,7 +6823,7 @@ pub fn run_with_mulpd_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -6881,7 +6915,7 @@ pub fn run_with_addpd_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -6973,7 +7007,7 @@ pub fn run_with_addsd_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -7065,7 +7099,7 @@ pub fn run_with_divpd_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -7157,7 +7191,7 @@ pub fn run_with_addss_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -7249,7 +7283,7 @@ pub fn run_with_addps_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -7341,7 +7375,7 @@ pub fn run_with_divsd_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -7433,7 +7467,7 @@ pub fn run_with_divps_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -7525,7 +7559,7 @@ pub fn run_with_divss_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -7617,7 +7651,7 @@ pub fn run_with_mulsd_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -7709,7 +7743,7 @@ pub fn run_with_mulss_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -7801,7 +7835,7 @@ pub fn run_with_mulps_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -7893,7 +7927,7 @@ pub fn run_with_subsd_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -7985,7 +8019,7 @@ pub fn run_with_subss_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -8077,7 +8111,7 @@ pub fn run_with_subps_register_controls(
             cvttsd2si_registers: None,
             cvtsd2ss_registers: None,
             cvtpi2pd_memory_rax: None,
-            cvtpi2ps_memory_rax: None,
+            cvtpi2_profile: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -8162,7 +8196,7 @@ fn step_configured(
         cvttsd2si_registers: configured_cvttsd2si_register_controls,
         cvtsd2ss_registers: configured_cvtsd2ss_register_controls,
         cvtpi2pd_memory_rax: configured_cvtpi2pd_memory_controls,
-        cvtpi2ps_memory_rax: configured_cvtpi2ps_memory_controls,
+        cvtpi2_profile: configured_cvtpi2_profile,
         minps_unmasked: configured_minps_controls,
         maxps_unmasked: configured_maxps_controls,
         fx_cr0: fx_cr0_gate_controls,
@@ -9905,7 +9939,7 @@ fn step_configured(
             }));
         }
     }
-    if let Some((controls, profile)) = configured_cvtpi2ps_memory_controls {
+    if let Some((controls, profile)) = configured_cvtpi2_profile {
         let admitted = (instruction.operation == Operation::Cvtpi2psMemoryRax
             && matches!(profile, Cvtpi2psExecutionProfile::MemoryRax)
             && instruction.length == 3
@@ -9924,18 +9958,41 @@ fn step_configured(
                 && instruction.length == 3
                 && instruction.opcode.map == OpcodeMap::Escape0f
                 && instruction.opcode.byte == 0x2d
-                && instruction.prefixes == Prefixes::default());
+                && instruction.prefixes == Prefixes::default())
+            || (instruction.operation == Operation::Cvtpd2piMm0Xmm1
+                && matches!(profile, Cvtpi2psExecutionProfile::Cvtpd2piMm0Xmm1)
+                && instruction.length == 4
+                && instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x2d
+                && instruction.prefixes.group1.is_none()
+                && instruction.prefixes.segment.is_none()
+                && instruction.prefixes.operand_override
+                && !instruction.prefixes.address_override
+                && instruction.prefixes.rex.is_none());
         if !admitted {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
         }
-        let vector = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
-            Some(6)
-        } else if controls.cr0_ts {
-            Some(7)
-        } else {
-            None
+        let vector = match controls {
+            Cvtpi2ExecutionControls::Sse(controls) => {
+                if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+                    Some(6)
+                } else if controls.cr0_ts {
+                    Some(7)
+                } else {
+                    None
+                }
+            }
+            Cvtpi2ExecutionControls::Sse2(controls) => {
+                if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+                    Some(6)
+                } else if controls.cr0_ts {
+                    Some(7)
+                } else {
+                    None
+                }
+            }
         };
         if let Some(vector) = vector {
             return Ok(StepOutcome::Fault(ArchitecturalFault {
@@ -11317,15 +11374,16 @@ fn step_configured(
             && instruction.operation == Operation::Cvtpi2pdMemoryRax
         {
             sse.mxcsr & !0x0000_ffbf == 0
-        } else if configured_cvtpi2ps_memory_controls.is_some_and(|(_, profile)| {
+        } else if configured_cvtpi2_profile.is_some_and(|(_, profile)| {
             matches!(
                 profile,
                 Cvtpi2psExecutionProfile::Cvttps2piMm0Xmm1
                     | Cvtpi2psExecutionProfile::Cvtps2piMm0Xmm1
+                    | Cvtpi2psExecutionProfile::Cvtpd2piMm0Xmm1
             )
         }) && matches!(
             instruction.operation,
-            Operation::Cvttps2piMm0Xmm1 | Operation::Cvtps2piMm0Xmm1
+            Operation::Cvttps2piMm0Xmm1 | Operation::Cvtps2piMm0Xmm1 | Operation::Cvtpd2piMm0Xmm1
         ) {
             sse.mxcsr & !0x0000_ffbf == 0 && sse.mxcsr & 0x0000_1080 == 0x0000_1080
         } else if configured_cvtpd2ps_register_controls.is_some()
@@ -12042,7 +12100,7 @@ fn step_configured(
         }
         Operation::Cvtpi2pdMemoryRax => false,
         Operation::Cvtpi2psMemoryRax
-            if configured_cvtpi2ps_memory_controls.is_some_and(|(_, profile)| {
+            if configured_cvtpi2_profile.is_some_and(|(_, profile)| {
                 matches!(profile, Cvtpi2psExecutionProfile::MemoryRax)
             }) =>
         {
@@ -12050,7 +12108,7 @@ fn step_configured(
         }
         Operation::Cvtpi2psMemoryRax => false,
         Operation::Cvttps2piMm0Xmm1
-            if configured_cvtpi2ps_memory_controls.is_some_and(|(_, profile)| {
+            if configured_cvtpi2_profile.is_some_and(|(_, profile)| {
                 matches!(profile, Cvtpi2psExecutionProfile::Cvttps2piMm0Xmm1)
             }) =>
         {
@@ -12058,13 +12116,21 @@ fn step_configured(
         }
         Operation::Cvttps2piMm0Xmm1 => false,
         Operation::Cvtps2piMm0Xmm1
-            if configured_cvtpi2ps_memory_controls.is_some_and(|(_, profile)| {
+            if configured_cvtpi2_profile.is_some_and(|(_, profile)| {
                 matches!(profile, Cvtpi2psExecutionProfile::Cvtps2piMm0Xmm1)
             }) =>
         {
             state.sse.is_some() && state.x87.is_some()
         }
         Operation::Cvtps2piMm0Xmm1 => false,
+        Operation::Cvtpd2piMm0Xmm1
+            if configured_cvtpi2_profile.is_some_and(|(_, profile)| {
+                matches!(profile, Cvtpi2psExecutionProfile::Cvtpd2piMm0Xmm1)
+            }) =>
+        {
+            state.sse.is_some() && state.x87.is_some()
+        }
+        Operation::Cvtpd2piMm0Xmm1 => false,
         Operation::Cvtpd2psRegister { .. } if configured_cvtpd2ps_register_controls.is_some() => {
             state.sse.is_some()
         }
@@ -17969,7 +18035,7 @@ fn step_configured(
                 opcode: instruction.opcode.byte,
             });
         }
-        Operation::Cvtpi2psMemoryRax if configured_cvtpi2ps_memory_controls.is_some() => {
+        Operation::Cvtpi2psMemoryRax if configured_cvtpi2_profile.is_some() => {
             let (old_mxcsr, pending_x87) = {
                 let sse = state.sse.as_ref().expect("CVTPI2PS SSE state prevalidated");
                 let x87 = state.x87.as_ref().expect("CVTPI2PS x87 state prevalidated");
@@ -18016,7 +18082,7 @@ fn step_configured(
             });
         }
         Operation::Cvttps2piMm0Xmm1
-            if configured_cvtpi2ps_memory_controls.is_some_and(|(_, profile)| {
+            if configured_cvtpi2_profile.is_some_and(|(_, profile)| {
                 matches!(profile, Cvtpi2psExecutionProfile::Cvttps2piMm0Xmm1)
             }) =>
         {
@@ -18078,8 +18144,63 @@ fn step_configured(
                 opcode: instruction.opcode.byte,
             });
         }
+        Operation::Cvtpd2piMm0Xmm1
+            if configured_cvtpi2_profile.is_some_and(|(_, profile)| {
+                matches!(profile, Cvtpi2psExecutionProfile::Cvtpd2piMm0Xmm1)
+            }) =>
+        {
+            let (source_xmm, old_mxcsr) = {
+                let sse = state.sse.as_ref().expect("CVTPD2PI SSE state prevalidated");
+                (sse.xmm[1], sse.mxcsr)
+            };
+            let x87_pending = state
+                .x87
+                .as_ref()
+                .expect("CVTPD2PI x87 state prevalidated")
+                .status_word
+                & 0x80ff
+                != 0;
+            if old_mxcsr & !0x0000_ffbf != 0
+                || old_mxcsr & 0x0000_1080 != 0x0000_1080
+                || x87_pending
+            {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
+            let rounding = cvtss2si_rounding_mode(old_mxcsr);
+            let mut values = [0i32; 2];
+            let mut new_ie = false;
+            let mut new_pe = false;
+            for lane in 0..2 {
+                let offset = lane * 8;
+                let raw = u64::from_le_bytes(
+                    source_xmm[offset..offset + 8]
+                        .try_into()
+                        .expect("CVTPD2PI lane has eight bytes"),
+                );
+                let converted = Binary64::from_bits(raw).to_i32(rounding);
+                let invalid = converted.invalid_operation();
+                new_ie |= invalid;
+                new_pe |= !invalid && converted.inexact();
+                values[lane] = *converted.value();
+            }
+            let sse = state.sse.as_mut().expect("CVTPD2PI SSE state prevalidated");
+            sse.mxcsr = old_mxcsr | u32::from(new_ie) | (u32::from(new_pe) << 5);
+            let x87 = state.x87.as_mut().expect("CVTPD2PI x87 state prevalidated");
+            x87.registers[0][..4].copy_from_slice(&values[0].to_le_bytes());
+            x87.registers[0][4..8].copy_from_slice(&values[1].to_le_bytes());
+            x87.registers[0][8..10].copy_from_slice(&0xffffu16.to_le_bytes());
+            x87.status_word &= !(7 << 11);
+            x87.tag_word = 0;
+        }
+        Operation::Cvtpd2piMm0Xmm1 => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
         Operation::Cvtps2piMm0Xmm1
-            if configured_cvtpi2ps_memory_controls.is_some_and(|(_, profile)| {
+            if configured_cvtpi2_profile.is_some_and(|(_, profile)| {
                 matches!(profile, Cvtpi2psExecutionProfile::Cvtps2piMm0Xmm1)
             }) =>
         {
@@ -121904,7 +122025,7 @@ mod swapgs_profile_tests {
     }
 
     #[test]
-    fn cvtpi2ps_memory_rax_rounds_two_lanes_and_performs_x87_transition() {
+    fn cvtpi2_profile_rounds_two_lanes_and_performs_x87_transition() {
         let code = [0x0f, 0x2a, 0x00];
         let controls = Cvtpi2psControls {
             sse_available: true,
@@ -121984,7 +122105,7 @@ mod swapgs_profile_tests {
     }
 
     #[test]
-    fn cvtpi2ps_memory_rax_rejects_pending_and_invalid_controls_before_read() {
+    fn cvtpi2_profile_rejects_pending_and_invalid_controls_before_read() {
         let code = [0x0f, 0x2a, 0x00];
         let controls = Cvtpi2psControls {
             sse_available: true,
@@ -122338,6 +122459,91 @@ mod swapgs_profile_tests {
                 vector: 14,
                 error_code: Some(0),
                 linear_address: Some(before.rip + 2),
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn cvtpd2pi_mm0_xmm1_fetches_before_sse2_gates_and_accepts_each_cpl() {
+        let code = [0x66, 0x0f, 0x2d, 0xc1];
+        for cpl in 0..=3u16 {
+            let mut state = LongModeState::default();
+            state.rip = 0xb3c0 + u64::from(cpl) * 8;
+            state.cs_selector = Some(cpl);
+            state.sse = Some(SseState {
+                xmm: [[0; 16]; 16],
+                mxcsr: 0x1080,
+            });
+            let mut x87 = X87State::fixture_seed();
+            x87.status_word = 0x1a00;
+            state.x87 = Some(x87);
+            let stop_rip = state.rip + code.len() as u64;
+            let mut memory = Memory::at(&code, state.rip);
+            let result = run_with_cvtpd2pi_mm0_xmm1_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(stop_rip),
+                    context: AccessContext::default(),
+                },
+                Cvtpd2piControls {
+                    sse2_available: true,
+                    cr0_em: false,
+                    cr0_ts: false,
+                    cr4_osfxsr: true,
+                },
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::StopAddress);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(state.rip, stop_rip);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let short = [0x66, 0x0f, 0x2d];
+        let mut state = LongModeState::default();
+        state.rip = 0xb400;
+        state.sse = Some(SseState {
+            xmm: [[0x3c; 16]; 16],
+            mxcsr: 0x1080,
+        });
+        state.x87 = Some(X87State::fixture_seed());
+        let before = state.clone();
+        let mut memory = Memory::at(&short, state.rip);
+        memory.fetch_error = Some((
+            state.rip + 3,
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0),
+                linear_address: Some(state.rip + 3),
+            }),
+        ));
+        let result = run_with_cvtpd2pi_mm0_xmm1_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            Cvtpd2piControls {
+                sse2_available: false,
+                cr0_em: true,
+                cr0_ts: true,
+                cr4_osfxsr: false,
+            },
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0),
+                linear_address: Some(before.rip + 3),
             })
         );
         assert_eq!(result.instructions_executed, 0);

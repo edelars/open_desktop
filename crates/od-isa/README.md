@@ -589,3 +589,10 @@ exception state. Other encodings and JIT/native paths remain closed. See the
 [Stage 2 plan](../../docs/plans/STAGE_2.md#s2-37bj--bounded-long64-cvtps2pi-mm0xmm1-masked-register-profile),
 [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bj--bounded-long64-cvtps2pi-mm0xmm1-masked-register-profile),
 and [report](../../docs/reports/STAGE_2_REPORT.md#s2-37bj--cvtps2pi-mm0xmm1-masked-register-profile).
+
+S2-37bk adds the exact Long64 `66 0F 2D C1` CVTPD2PI MM0,XMM1 interpreter
+profile. It rounds two binary64 lanes with MXCSR.RC and an integer-only
+conversion, aggregates masked IE/PE, and performs the physical x87/MMX
+slot-0/TOP/tag transition. It uses a separate SSE2 availability gate; native,
+JIT and broader operand forms remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bk--bounded-long64-cvtpd2pi-mm0xmm1-masked-register-profile)
+and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-37bk--cvtpd2pi-mm0xmm1-masked-register-profile).

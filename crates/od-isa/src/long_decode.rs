@@ -1086,6 +1086,7 @@ pub enum Operation {
     Cvttps2piMm0Xmm1,
     /// Local-only legacy `0F 2D C1` XMM1 binary32-to-MM0 rounded form.
     Cvtps2piMm0Xmm1,
+    Cvtpd2piMm0Xmm1,
     /// Local-only legacy `0F 5A /r` packed binary32-to-binary64 XMM form.
     Cvtps2pdRegister {
         destination: u8,
@@ -3438,6 +3439,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
         let cvtps2pi_mm0_xmm1 = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x2d
             && prefixes == Prefixes::default();
+        let cvtpd2pi_mm0_xmm1 = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x2d
+            && prefixes.operand_override
+            && prefix_count == 1
+            && prefix_bytes[0] == 0x66
+            && prefixes.rex.is_none();
         let cvttpd2dq_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0xe6
             && prefixes.group1.is_none()
@@ -4088,6 +4095,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && !cvttsd2si_r32_register
             && !cvttsd2si_r64_register
             && !cvtps2pi_mm0_xmm1
+            && !cvtpd2pi_mm0_xmm1
         {
             return Err(self.unsupported(opcode));
         }
@@ -4437,6 +4445,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 Operation::Cvtps2piMm0Xmm1
+            }
+            (OpcodeMap::Escape0f, 0x2d) if cvtpd2pi_mm0_xmm1 => {
+                if self.byte()? != 0xc1 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::Cvtpd2piMm0Xmm1
             }
             (OpcodeMap::Escape0f, 0xe6) if cvttpd2dq_register => {
                 let modrm = self.byte()?;
@@ -20808,6 +20822,28 @@ mod tests {
             &[0x40, 0x0f, 0x2d, 0xc1],
             &[0x66, 0x0f, 0x2d, 0xc1],
             &[0xc5, 0xf8, 0x2d, 0xc1],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn cvtpd2pi_mm0_xmm1_decodes_only_the_exact_mandatory_prefix_form() {
+        let decoded = Memory::new(&[0x66, 0x0f, 0x2d, 0xc1])
+            .decode()
+            .expect("canonical CVTPD2PI MM0,XMM1 encoding");
+        assert_eq!(decoded.operation, Operation::Cvtpd2piMm0Xmm1);
+        assert_eq!(decoded.length, 4);
+        for bytes in [
+            &[0x66, 0x0f, 0x2d, 0xc0][..],
+            &[0x66, 0x0f, 0x2d, 0x01],
+            &[0x66, 0x66, 0x0f, 0x2d, 0xc1],
+            &[0xf2, 0x66, 0x0f, 0x2d, 0xc1],
+            &[0x66, 0xf2, 0x0f, 0x2d, 0xc1],
+            &[0x48, 0x66, 0x0f, 0x2d, 0xc1],
+            &[0x66, 0x48, 0x0f, 0x2d, 0xc1],
+            &[0xc5, 0xf9, 0x2d, 0xc1],
+            &[0x62, 0xf1, 0xfd, 0x08, 0x2d, 0xc1],
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }

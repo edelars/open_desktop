@@ -203,3 +203,12 @@ The schema-v2 `s2-long-cvtsd2ss-registers-v1` profile independently validates
 raw binary64-to-binary32 conversion using integer rounding and event logic. It
 checks low32 result writes, high96 preservation, MXCSR status and atomic numeric
 faults without production helpers or host floating point. See the [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37be-canonical-cvtsd2ss-register-pairs).
+
+S2-37bk adds schema-v2 profile `s2-long-cvtpd2pi-register-masked-v1` for exact
+`66 0F 2D C1`. Its independent raw-u64 oracle rounds binary64 lanes to signed
+i32 without production conversion helpers or host FP, then validates sticky
+IE/PE and the x87/MMX physical slot-0 state transition. The profile validator
+locks the instruction bytes, budget, stop RIP, MXCSR subset and no-pending-x87
+precondition; backend admission remains interpreter-only. See the [CPU
+contract](../../docs/specs/CPU_CONTRACT.md#s2-37bk--bounded-long64-cvtpd2pi-mm0xmm1-masked-register-profile)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bk-cvtpd2pi-mm0xmm1-masked-register-profile).
