@@ -500,6 +500,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37bt | Local-only legacy Long64 CVTDQ2PS XMM0,[RAX] m128 memory profile; four-lane RC conversion, masked PE, aligned atomic read; native/JIT closed | S2-37s; approved bounded contract; independent review |
 | [x] | S2-37bu | Local-only legacy Long64 CVTTPS2DQ XMM0,[RAX] m128 memory profile; four-lane toward-zero conversion, masked IE/PE, aligned atomic read; native/JIT closed | S2-37ag; approved bounded contract; independent review |
 | [x] | S2-37bv | Local-only legacy Long64 CVTPS2DQ XMM0,[RAX] aligned m128 memory profile; MXCSR.RC rounding then range check, masked IE/PE; native/JIT closed | S2-37bu; approved bounded contract; independent review complete |
+| [x] | S2-37bw | Local-only legacy Long64 CVTTPD2DQ XMM0,[RAX] aligned m128 memory profile; toward-zero conversion after truncation range check, masked IE/PE; native/JIT closed | S2-37bv; approved bounded contract; implementation and verification recorded below; independent review complete |
 | [x] | S2-37t | Local-only canonical Long64 CVTSS2SD XMM register-pair profile; raw binary32 widening with sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37u | Local-only canonical Long64 CVTPS2PD XMM register-pair profile; two-lane raw widening with aggregate sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-37t, S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37v | Local-only canonical Long64 COMISS/UCOMISS XMM register-pair profile; NaN-priority IE/DE, unordered flags, unmasked atomic flag exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
@@ -6820,7 +6821,7 @@ inventory.
 | CVTSS2SD | `F3 0F 5A /r` | SSE2 | XMM, m32; f32 → low f64 | 3-240 | S2-37t, bounded register-only |
 | CVTSS2SI | `F3 0F 2D /r`; `F3 REX.W 0F 2D /r` | SSE | m32 → r32 / r64 | 3-242 | S2-37ab, bounded register-only |
 | CVTTSS2SI | `F3 0F 2C /r`; `F3 REX.W 0F 2C /r` | SSE | m32 → r32 / r64 | 3-255 | S2-37ad, bounded register-only |
-| CVTTPD2DQ | `66 0F E6 /r` | SSE2 | XMM, m128; 2×f64 → low 2×i32 | 3-244 | S2-37ai, bounded register-only |
+| CVTTPD2DQ | `66 0F E6 /r` | SSE2 | XMM, m128; 2×f64 → low 2×i32 | 3-244 | S2-37ai registers; S2-37bw exact `[RAX]` memory |
 | CVTTPD2PI | `66 0F 2C /r` | SSE2 | XMM, m128 → mm; 2×f64 → 2×i32 | 3-248 | S2-37bl, exact masked `66 0F 2C C1` register-source; S2-37bq, aligned m128 `[RAX]` memory profile |
 | CVTTPS2DQ | `F3 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-249 | S2-37ag register; S2-37bu exact `[RAX]` memory profile |
 | CVTTPS2PI | `NP 0F 2C /r` | SSE | XMM, m64 → mm; 2×f32 → 2×i32 | 3-252 | S2-37bh, exact masked `0F 2C C1` register-source; S2-37bo, exact masked `[RAX]` memory profile |
@@ -14822,3 +14823,48 @@ CLI smoke also passed for NaN/SNaN/±infinity, signed ties, and directed signed
 subnormal rounding with full MXCSR equality checks.
 
 См. [CPU contract](../specs/CPU_CONTRACT.md#s2-37bv--bounded-long64-cvtps2dq-xmm0rax-aligned-m128-profile), [результат этапа](../reports/STAGE_2_REPORT.md#s2-37bv--cvtps2dq-xmm0rax-aligned-m128-memory-profile) и [заметки literal fixture](../../tests/fixtures/x86/stage2/README.md#s2-37bv-cvtps2dq-xmm0rax-aligned-m128-rounding-profile).
+
+
+#### S2-37bw — bounded Long64 CVTTPD2DQ XMM0,[RAX] aligned m128 memory profile
+
+Implemented exact legacy `66 0F E6 00`, schema-v2 interpreter-only, Long64,
+instruction budget 1, and stop RIP=entry+4. Full four-byte fetch precedes
+local SSE2 (CPUID bit 26), CR0.EM, CR4.OSFXSR #UD checks and then CR0.TS #NM;
+that order is local bounded policy. CPL0–3 are admitted.
+
+The operation reads one aligned 16-byte little-endian source span at RAX. The
+checked canonical48 endpoint `RAX+15` and 16-byte alignment are validated
+before the single read callback. Misalignment faults #GP(0) at every CPL and AC
+setting. Aligned accesses allow AC=0/1. A failed read commits no CPU state.
+
+Both raw binary64 lanes truncate toward zero independent of MXCSR.RC, then the
+truncated signed integer is range-checked. Exact -2^31 is valid; `-2147483648.75`
+truncates to valid INT32_MIN with PE, while `2147483647.75` truncates to
+INT32_MAX with PE. NaN, infinity, and truncated out-of-range values produce
+`0x80000000` and IE. Valid inexact lanes contribute PE; invalid lanes do not
+contribute PE. IE/PE are OR-combined across lanes with existing sticky bits.
+DAZ=0 nonzero subnormals become zero with PE and no DE. Full XMM0 is replaced,
+including zeroing its upper 64 bits. x87 state is neither gated nor mutated.
+
+The strict local MXCSR boundary requires supported mask `0xffbf`, DAZ=0 and
+IM=PM=1; other exception masks may be clear. No unmasked SIMD exception
+delivery is modeled. The independent testkit oracle uses raw u64 integer logic,
+without host floating point or production conversion helpers. JIT, native, C ABI,
+fragment and generic admissions remain closed; no physical x86 acceptance is
+claimed.
+
+Verification passed: focused ISA decoder/execution and runner matrix; full
+`od-isa` (1,617 tests), `od-testkit` (445 tests), `od-runner` (112 unit and
+452 fixture tests), and `od-x86-runner` (8 library and 4 binary tests); plus
+workspace all-target check, formatting, layout validation, diff check, and
+Graphify refresh. Independent review completed without remaining findings; the
+reviewer also reran the neighboring bu runner test (1/1 passed). Physical x86
+acceptance is not claimed.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTTPD2DQ pp. 3-244–3-247
+(legacy operation p. 3-246); Vol. 1 §§11.5.2.2, 11.5.2.6, 11.5.3, 11.5.5
+and Table 14-21; Vol. 3A §§16.1.3–16.1.4, Table 16-1.
+
+See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37bw--bounded-long64-cvttpd2dq-xmm0rax-aligned-m128-profile),
+[report](../reports/STAGE_2_REPORT.md#s2-37bw--cvttpd2dq-xmm0rax-aligned-m128-memory-profile),
+and [literal fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bw-cvttpd2dq-xmm0rax-aligned-m128-truncation-profile).

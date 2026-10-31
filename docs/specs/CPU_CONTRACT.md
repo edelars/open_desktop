@@ -14486,3 +14486,40 @@ This instruction has no x87 state effect. The bounded profile allows and preserv
 Sources: Intel SDM Rev. 093 Vol. 2A CVTPS2DQ pp. 3-225–3-227; Vol. 3A §16.1.3 Table 16-1 p. 16-3 for legacy SSE2 gates; Vol. 1 Table 14-21 for aligned m128 access. Type 2/Table 2-19 is VEX-only and is not used for this legacy form.
 
 См. [план среза](../plans/STAGE_2.md#s2-37bv--bounded-long64-cvtps2dq-xmm0rax-aligned-m128-memory-profile), [отчёт](../reports/STAGE_2_REPORT.md#s2-37bv--cvtps2dq-xmm0rax-aligned-m128-memory-profile) и [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bv-cvtps2dq-xmm0rax-aligned-m128-rounding-profile).
+
+## S2-37bw — bounded Long64 CVTTPD2DQ XMM0,[RAX] aligned m128 profile
+
+The schema-v2 interpreter admits exact legacy `66 0F E6 00`, Long64, instruction
+budget 1 and stop RIP=entry+4. It fetches all four bytes before the local SSE2
+prerequisite checks: missing CPUID.SSE2 (bit 26), CR0.EM, or CR4.OSFXSR causes
+#UD; CR0.TS causes #NM after those checks. The priority is bounded local policy,
+not a universal SDM exception-priority claim. CPL0–3 are accepted.
+
+The source is exactly one aligned 16-byte span `[RAX..RAX+15]`. The complete
+span is checked for canonical48 using checked addition, then alignment is
+checked before one read callback. Misalignment produces #GP(0) regardless of
+CPL or RFLAGS.AC; it does not produce #AC. Aligned accesses accept AC=0 and
+AC=1. A failed read preserves the complete CPU state.
+
+Each raw binary64 lane is truncated toward zero independently of MXCSR.RC, then
+the truncated integer is checked against signed i32 bounds. Exact -2^31 is
+valid. Thus `2147483647.75` becomes INT32_MAX+PE and `-2147483648.75` becomes
+INT32_MIN+PE; `+2^31` and `-2147483649` are invalid. NaN, infinity, and other
+out-of-range results produce the indefinite bits `0x80000000` and contribute
+IE. A valid inexact lane contributes PE; an invalid lane contributes no PE.
+IE/PE are OR-combined across lanes and with incoming sticky status. With DAZ=0,
+nonzero subnormals convert to zero+PE and do not raise DE. FTZ does not affect
+this integer conversion. The successful result replaces all 128 bits of XMM0:
+two i32 lanes followed by zeroes in bits 127:64.
+
+The local MXCSR policy requires supported mask `0xffbf`, DAZ=0 and IM=PM=1;
+other exception masks may be clear. This admission boundary does not model
+unmasked SIMD exception delivery. x87 state, including pending-exception
+canaries, is not gated or changed. The testkit oracle is an independent raw-u64
+integer implementation with no host floating-point arithmetic and no
+production conversion helper. JIT, native, C ABI, fragment, and generic
+admissions remain closed. No physical x86 acceptance is claimed.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTTPD2DQ pp. 3-244–3-247
+(legacy operation p. 3-246); Vol. 1 §§11.5.2.2, 11.5.2.6, 11.5.3, 11.5.5
+and Table 14-21; Vol. 3A §§16.1.3–16.1.4, Table 16-1. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bw--bounded-long64-cvttpd2dq-xmm0rax-aligned-m128-memory-profile), [report](../reports/STAGE_2_REPORT.md#s2-37bw--cvttpd2dq-xmm0rax-aligned-m128-memory-profile), and [literal fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bw-cvttpd2dq-xmm0rax-aligned-m128-truncation-profile).

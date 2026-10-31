@@ -7226,3 +7226,25 @@ Provenance: Intel SDM Rev. 093 Vol. 2A CVTPS2DQ pp. 3-225–3-227; Vol. 3A
 aligned m128 access. The VEX-only Type 2/Table 2-19 entry is not used here.
 
 Related documentation: [Stage 2 plan](../../../../docs/plans/STAGE_2.md#s2-37bv--bounded-long64-cvtps2dq-xmm0rax-aligned-m128-memory-profile), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bv--bounded-long64-cvtps2dq-xmm0rax-aligned-m128-profile), and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bv--cvtps2dq-xmm0rax-aligned-m128-memory-profile).
+
+### S2-37bw CVTTPD2DQ XMM0,[RAX] aligned m128 truncation profile
+
+`s2_37bw_cvttpd2dq_m128_truncation_and_flags.case.json` is the literal exact
+legacy `66 0F E6 00` schema-v2 fixture. Two raw binary64 lanes include
+`2147483647.75` and a quiet NaN: successful output is INT32_MAX and the masked
+indefinite value, with both IE and PE sticky; XMM0 bits 127:64 are zeroed. The
+fixture deliberately carries pending x87 canaries, which this pure XMM
+operation preserves without a pending-x87 gate.
+
+The interpreter profile fetches four bytes, then applies local SSE2/EM/OSFXSR
+#UD and TS #NM checks, and performs one aligned 16-byte RAX read after checked
+canonical48 validation. Misalignment is #GP(0) before callback at any CPL/AC;
+aligned AC=0/1 is allowed. Toward-zero conversion ignores MXCSR.RC; range is
+checked after truncation. Invalid lanes add IE only; valid inexact lanes add
+PE. DAZ=0 subnormals become zero+PE, with no DE. The local mask is `0xffbf`,
+IM=PM=1, DAZ=0. JIT/native/C ABI remain closed and physical x86 acceptance is
+not claimed. Sources: Intel SDM Rev. 093 Vol. 2A CVTTPD2DQ pp. 3-244–3-247
+(legacy operation p. 3-246); Vol. 1 §§11.5.2.2, 11.5.2.6, 11.5.3, 11.5.5
+and Table 14-21; Vol. 3A §§16.1.3–16.1.4, Table 16-1.
+
+Related docs: [Stage 2 plan](../../../../docs/plans/STAGE_2.md#s2-37bw--bounded-long64-cvttpd2dq-xmm0rax-aligned-m128-memory-profile), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bw--bounded-long64-cvttpd2dq-xmm0rax-aligned-m128-profile), and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bw--cvttpd2dq-xmm0rax-aligned-m128-memory-profile).

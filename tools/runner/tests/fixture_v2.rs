@@ -18472,7 +18472,6 @@ fn cvttps2dq_m128_raw_bits_truncate_flags_alignment_and_fail_closed() {
     wrong_encoding.memory[0].initial_bytes_hex = "f30f5b01".into();
     assert!(wrong_encoding.validate().is_err());
     assert!(Fixture::from_json(&serde_json::to_vec(&wrong_encoding).unwrap()).is_err());
-
     for backend in ["jit", "native"] {
         let (_, result) = run(&bytes, backend, 4);
         assert!(
@@ -31984,4 +31983,206 @@ fn cvtps2dq_m128_rounds_binary32_and_fails_closed() {
     };
     value.state.sse.as_mut().unwrap().xmm[0] = "00".repeat(16);
     assert!(od_testkit::v2::compare(&literal_input, &literal, &tampered).is_err());
+}
+
+#[test]
+fn cvttpd2dq_m128_truncates_binary64_and_fails_closed() {
+    use od_testkit::v2::{ExpectedExit, Fixture, Profile};
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "../../tests/fixtures/x86/stage2/s2_37bw_cvttpd2dq_m128_truncation_and_flags.case.json",
+    );
+    let bytes = fs::read(path).unwrap();
+    let base = Fixture::from_json(&bytes).unwrap().fixture;
+    let (literal_input, literal) = run(&bytes, "interpreter", 0);
+    assert_eq!(
+        literal_input.fixture.profile,
+        Profile::LongCvttpd2dqMemoryRaxV1
+    );
+    od_testkit::v2::compare(&literal_input, &literal, &literal).unwrap();
+    let literal_state = &snapshot(&literal).state;
+    assert_eq!(
+        literal_state.sse.as_ref().unwrap().xmm[0],
+        "ffffff7f000000800000000000000000"
+    );
+    assert_eq!(literal_state.sse.as_ref().unwrap().mxcsr.get() & 0x21, 0x21);
+    assert_eq!(literal_state.x87, literal_input.fixture.initial_state.x87);
+
+    let cases = [
+        (
+            "pos_fractional_boundary",
+            0x41df_ffff_fff0_0000u64,
+            0u64,
+            i32::MAX,
+            0x20u64,
+        ),
+        (
+            "neg_fractional_boundary",
+            0xc1e0_0000_0018_0000,
+            0u64,
+            i32::MIN,
+            0x20u64,
+        ),
+        (
+            "positive_two31",
+            0x41e0_0000_0000_0000,
+            0u64,
+            i32::MIN,
+            1u64,
+        ),
+        (
+            "negative_two31",
+            0xc1e0_0000_0000_0000,
+            0u64,
+            i32::MIN,
+            0u64,
+        ),
+        (
+            "negative_below_min",
+            0xc1e0_0000_0020_0000,
+            0u64,
+            i32::MIN,
+            1u64,
+        ),
+        ("qnan", 0x7ff8_0000_0000_0001, 0u64, i32::MIN, 1u64),
+        ("snan", 0x7ff0_0000_0000_0001, 0u64, i32::MIN, 1u64),
+        (
+            "positive_infinity",
+            0x7ff0_0000_0000_0000,
+            0u64,
+            i32::MIN,
+            1u64,
+        ),
+        (
+            "negative_infinity",
+            0xfff0_0000_0000_0000,
+            0u64,
+            i32::MIN,
+            1u64,
+        ),
+        ("negative_zero", 0x8000_0000_0000_0000, 0u64, 0, 0u64),
+        ("positive_subnormal", 1, 0, 0, 0x20u64),
+        (
+            "negative_subnormal",
+            0x8000_0000_0000_0001,
+            0u64,
+            0,
+            0x20u64,
+        ),
+    ];
+    for (name, first, second, expected_first, expected_flags) in cases {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("s2_37bw_cvttpd2dq_{name}");
+        fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+        fixture.memory[1].initial_bytes_hex =
+            od_testkit::memory::encode_bytes(&[first.to_le_bytes(), second.to_le_bytes()].concat());
+        let source = fixture.to_json().unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let sse = snapshot(&result).state.sse.as_ref().unwrap();
+        let xmm0 = od_testkit::v2::decode_bytes(&sse.xmm[0]).unwrap();
+        assert_eq!(
+            i32::from_le_bytes(xmm0[..4].try_into().unwrap()),
+            expected_first,
+            "{name}"
+        );
+        assert_eq!(
+            i32::from_le_bytes(xmm0[4..8].try_into().unwrap()),
+            0,
+            "{name}"
+        );
+        assert_eq!(&xmm0[8..], &[0; 8], "{name}: upper half is zero");
+        assert_eq!(sse.mxcsr.get() & 0x21, expected_flags, "{name}");
+    }
+
+    // CVTT ignores all four RC modes; IDs name lane 0's event then lane 1's.
+    let fractional = 0x3ff8_0000_0000_0000u64; // +1.5
+    let invalid = 0x7ff8_0000_0000_0001u64;
+    for (name, lanes, expected_flags) in [
+        ("pe_then_ie", [fractional, invalid], 0x21u64),
+        ("ie_then_pe", [invalid, fractional], 0x21),
+        ("both_pe", [fractional, fractional], 0x20),
+        ("exact", [0x3ff0_0000_0000_0000, 0xbff0_0000_0000_0000], 0),
+    ] {
+        for rc in 0..4u64 {
+            let mut fixture = base.clone();
+            fixture.case_id = format!("s2_37bw_cvttpd2dq_{name}_rc{rc}");
+            fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (rc << 13));
+            fixture.memory[1].initial_bytes_hex = od_testkit::memory::encode_bytes(
+                &[lanes[0].to_le_bytes(), lanes[1].to_le_bytes()].concat(),
+            );
+            let source = fixture.to_json().unwrap();
+            let (input, result) = run(&source, "interpreter", 0);
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+            let sse = snapshot(&result).state.sse.as_ref().unwrap();
+            assert_eq!(sse.mxcsr.get() & 0x21, expected_flags);
+        }
+    }
+
+    // Exact lanes preserve each pre-existing IE/PE history.
+    for flags in [0u64, 1, 1 << 5, (1 << 5) | 1] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("s2_37bw_cvttpd2dq_sticky_{flags:02x}");
+        fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | flags);
+        fixture.memory[1].initial_bytes_hex = od_testkit::memory::encode_bytes(
+            &[
+                0x3ff0_0000_0000_0000u64.to_le_bytes(),
+                0xbff0_0000_0000_0000u64.to_le_bytes(),
+            ]
+            .concat(),
+        );
+        let source = fixture.to_json().unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        assert_eq!(
+            snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x21,
+            flags
+        );
+    }
+
+    let mut foreign = base.clone();
+    foreign.cvttpd2dq_controls = Some(od_testkit::v2::Cvttpd2dqControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: true,
+    });
+    assert!(foreign.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
+    let foreign_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "../../tests/fixtures/x86/stage2/s2_37bv_cvtps2dq_m128_rounding_boundaries.case.json",
+    );
+    let foreign_bytes = fs::read(foreign_path).unwrap();
+    let mut foreign_memory_profile = Fixture::from_json(&foreign_bytes).unwrap().fixture;
+    foreign_memory_profile.cvttpd2dq_m128_controls = base.cvttpd2dq_m128_controls;
+    assert!(foreign_memory_profile.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign_memory_profile).unwrap()).is_err());
+    let mut missing_controls = base.clone();
+    missing_controls.cvttpd2dq_m128_controls = None;
+    assert!(missing_controls.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&missing_controls).unwrap()).is_err());
+    let mut unsupported_daz = base.clone();
+    unsupported_daz.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1fc0);
+    assert!(unsupported_daz.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&unsupported_daz).unwrap()).is_err());
+    let mut wrong_encoding = base.clone();
+    wrong_encoding.memory[0].initial_bytes_hex = "f30fe600".into();
+    assert!(wrong_encoding.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&wrong_encoding).unwrap()).is_err());
+
+    for backend in ["jit", "native"] {
+        let (_, result) = run(&bytes, backend, 4);
+        assert!(
+            matches!(result.outcome, Outcome::Unsupported { .. }),
+            "{backend}"
+        );
+    }
+    let mut tampered = literal.clone();
+    let Observation::Available { value } = &mut tampered.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.state.sse.as_mut().unwrap().xmm[0] = "00".repeat(16);
+    assert!(od_testkit::v2::compare(&literal_input, &literal, &tampered).is_err());
+    assert_eq!(base.expected_exit, ExpectedExit::StopAddress);
 }

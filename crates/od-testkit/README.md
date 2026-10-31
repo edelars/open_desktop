@@ -297,3 +297,10 @@ oracle rounds according to MXCSR.RC before checking signed-i32 bounds, aggregate
 IE/PE, and validates atomic one-span outcomes without host floating point or
 production conversion helpers. DAZ=0 and IM=PM=1 are local admission rules under
 the supported MXCSR mask `0xffbf`; native/JIT/C ABI stay closed.
+
+S2-37bw adds the exact schema-v2 `s2-long-cvttpd2dq-memory-rax-v1` profile.
+Its integer-only oracle decodes binary64 raw u64 lanes, truncates toward zero,
+checks the truncated i32 range, and computes masked sticky IE/PE without host
+floating point or production helpers. A separate control echo and strict
+foreign-field checks keep this m128 profile distinct from CVTTPD2DQ registers.
+See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bw--bounded-long64-cvttpd2dq-xmm0rax-aligned-m128-profile).

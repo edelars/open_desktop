@@ -55,3 +55,7 @@ The S2-37bv `CVTPS2DQ XMM0,[RAX]` schema-v2 profile is classified local-only;
 the portable classifier test and runner's native Unsupported path cover closure.
 No profile-specific Linux fixture-denial test or physical native execution is
 claimed for this slice.
+
+The S2-37bw `CVTTPD2DQ XMM0,[RAX]` schema-v2 profile is explicitly local-only
+and denied by native admission; this slice makes no physical x86 acceptance
+claim. This exact instruction profile is not in the native tracer allowlist. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bw--bounded-long64-cvttpd2dq-xmm0rax-aligned-m128-profile).

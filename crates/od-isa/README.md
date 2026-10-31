@@ -674,3 +674,12 @@ EM/OSFXSR and TS checks, then reads one aligned 16-byte span. It rounds binary32
 lanes according to MXCSR.RC before range checking, aggregates masked IE/PE, and
 commits XMM0/MXCSR only after the read succeeds. No x87 state is gated or
 changed. JIT/native/C ABI remain closed; no physical x86 execution is claimed.
+
+### S2-37bw — CVTTPD2DQ m128 memory profile
+
+The exact legacy `66 0F E6 00` `CVTTPD2DQ XMM0,[RAX]` form has a separate
+schema-v2 interpreter control path. It performs one checked aligned 16-byte
+read, truncates two binary64 inputs toward zero, then checks signed-i32 range.
+Masked IE/PE are sticky-ORed, and successful execution replaces all XMM0 bits
+with two i32 lanes and a zero upper half. x87 state is not gated or mutated.
+Native/JIT/C ABI remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bw--bounded-long64-cvttpd2dq-xmm0rax-aligned-m128-profile).

@@ -232,3 +232,9 @@ range edges, mixed IE+PE, sticky flags, aligned AC inputs at Ring0, schema
 rejection, output tampering, and JIT/native Unsupported. Direct ISA tests own
 all-CPL alignment and data callback assertions; runner snapshots do not count
 callbacks. Physical x86 acceptance was not performed.
+
+S2-37bw executes the local-only schema-v2 `CVTTPD2DQ XMM0,[RAX]` (`66 0F E6 00`)
+profile through the interpreter. It reads one aligned m128 source, truncates
+binary64 lanes toward zero before range checks, zeroes XMM0.high64, and records
+masked sticky IE/PE. JIT/native remain Unsupported; no physical x86 acceptance
+is implied. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bw--bounded-long64-cvttpd2dq-xmm0rax-aligned-m128-profile).

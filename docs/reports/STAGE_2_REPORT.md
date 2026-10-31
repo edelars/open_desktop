@@ -19694,3 +19694,43 @@ subnormal rounding with full MXCSR equality checks. Physical x86 acceptance was
 not run.
 
 See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bv--bounded-long64-cvtps2dq-xmm0rax-aligned-m128-memory-profile), [CPU contract](../specs/CPU_CONTRACT.md#s2-37bv--bounded-long64-cvtps2dq-xmm0rax-aligned-m128-profile), and [literal fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bv-cvtps2dq-xmm0rax-aligned-m128-rounding-profile).
+
+### S2-37bw — CVTTPD2DQ XMM0,[RAX] aligned m128 memory profile
+
+Implemented exact legacy `66 0F E6 00` as the separate schema-v2
+`s2-long-cvttpd2dq-memory-rax-v1` interpreter profile. The operation fetches
+all four bytes, applies the bounded SSE2/EM/OSFXSR #UD then TS #NM gate policy,
+and accepts CPL0–3. It validates one canonical48 aligned m128 source span
+before one read callback and commits no state if the read fails. Misalignment
+produces pre-read #GP(0) regardless of CPL or AC; aligned AC=0/1 succeeds.
+
+The executor and independent raw-u64 integer oracle truncate binary64 toward
+zero independent of MXCSR.RC, then range-check the truncated result. Invalid
+NaN/Inf/out-of-range lanes write `0x80000000` and add IE; valid inexact lanes
+add PE; invalid lanes do not add PE. IE/PE are OR-combined across lanes and
+with prior sticky status. DAZ=0 subnormals produce zero+PE without DE. Successful
+execution replaces all XMM0 bits and zeros its high 64 bits. x87 is not gated
+or mutated. The strict local MXCSR boundary is mask `0xffbf`, DAZ=0, IM=PM=1;
+no unmasked exception delivery is modeled. Native/JIT/C ABI/fragment/generic
+admission remain closed; no physical x86 acceptance is claimed.
+
+Focused checks passed:
+
+- `cargo check -p od-isa --offline` and `cargo check -p od-testkit --offline`.
+- `cargo test -p od-isa cvttpd2dq_memory_m128_truncation_alignment_gates_and_rollback --offline`: 1 passed. Direct ISA coverage includes exact mixed IE+PE, x87 canary preservation, aligned AC×CPL, all 15 misalignment offsets × CPL0–3 × AC0/1 with no read and unchanged state, full fetch, gate priority, noncanonical/overflow refusal, local MXCSR refusal, and failed-read rollback.
+- `cargo test -p od-runner --test fixture_v2 cvttpd2dq_m128_truncates_binary64_and_fails_closed --offline`: 1 passed. The runner covers literal valid fractional + invalid lanes, mixed orders lane0 PE/lane1 IE and lane0 IE/lane1 PE, all four RC encodings, signed boundaries and subnormals, exact sticky histories, strict controls/encoding/DAZ validation through `validate` and `from_json`, tamper detection, and JIT/native Unsupported. Direct ISA tests cover runtime local DAZ refusal and state preservation.
+
+Full verification passed: `cargo test -p od-isa --offline` (1,617 passed;
+doc-tests 0), `cargo test -p od-testkit --offline` (445 passed; doc-tests 0),
+`cargo test -p od-runner --offline` (112 unit and 452 fixture tests passed),
+`cargo test -p od-x86-runner --offline` (8 library and 4 binary tests passed;
+doc-tests 0), and `cargo check --workspace --all-targets --offline`.
+`cargo fmt --all -- --check`, `python3 tools/check_layout.py`, `git diff --check`,
+and the S2-37bw Markdown link/anchor checks also passed. `graphify update .`
+completed with 10,241 nodes, 21,739 edges, and 322 communities; it reported the
+existing parse warning for `include/open_desktop/host_abi.h` and 13 files with
+no extracted symbols. Independent review completed without remaining findings;
+the reviewer also reran the neighboring bu runner test (1/1 passed). Physical
+x86 execution was not performed.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTTPD2DQ pp. 3-244–3-247 (legacy operation p. 3-246); Vol. 1 §§11.5.2.2, 11.5.2.6, 11.5.3, 11.5.5 and Table 14-21; Vol. 3A §§16.1.3–16.1.4, Table 16-1. See the [plan](../plans/STAGE_2.md#s2-37bw--bounded-long64-cvttpd2dq-xmm0rax-aligned-m128-memory-profile), [CPU contract](../specs/CPU_CONTRACT.md#s2-37bw--bounded-long64-cvttpd2dq-xmm0rax-aligned-m128-profile), and [literal fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bw-cvttpd2dq-xmm0rax-aligned-m128-truncation-profile).
