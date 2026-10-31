@@ -19,6 +19,7 @@ pub mod lowering;
 pub mod memory_bridge;
 pub mod memory_dispatch;
 pub mod memory_load_v2;
+pub mod phase_observation;
 pub mod runtime;
 pub mod statepoints;
 pub mod translation;

@@ -38,8 +38,11 @@ use crate::block_compile::{
     compile_block_for_native_xchg_rax_rbx,
     compile_block_for_native_xchg_rax_rbx_demand_flags_candidate, compile_block_for_nop_fallback,
     compile_block_for_nop_fallback_demand_flags_candidate, compile_block_for_nop_inc_rax_fallback,
-    compile_block_for_nop_inc_rax_fallback_demand_flags_candidate, compile_prepared_dispatch_block,
+    compile_block_for_nop_inc_rax_fallback_demand_flags_candidate,
 };
+#[cfg(feature = "phase-observation")]
+use crate::phase_observation::PhaseRecorder;
+use crate::phase_observation::{DispatchPhase, NoopObserver, PhaseObserver, measure};
 use crate::runtime::RuntimeExitTag;
 use crate::translation::{
     AddressSpaceId, BackingId, BackingVersion, CodeDependencySpan, CompileFlavor,
@@ -977,6 +980,7 @@ pub fn run_cached_controlled<B: CachedBlockBackend>(
     cache: &mut SingleEntryBlockCache<B::Published>,
     backend: &mut B,
 ) -> Result<DispatchResult, DispatchError<B::Error>> {
+    let mut observer = NoopObserver;
     run_cached_store_controlled(
         code,
         admission,
@@ -987,6 +991,7 @@ pub fn run_cached_controlled<B: CachedBlockBackend>(
         control,
         cache,
         backend,
+        &mut observer,
     )
 }
 
@@ -1413,6 +1418,67 @@ pub fn run_multi_cached_controlled<B: MultiBlockCachedBackend>(
     cache: &mut MultiEntryBlockCache<B::Published>,
     backend: &mut B,
 ) -> Result<DispatchResult, DispatchError<B::Error>> {
+    let mut observer = NoopObserver;
+    run_multi_cached_controlled_with_observer(
+        code,
+        admission,
+        execution_context,
+        dependencies,
+        state,
+        total_budget,
+        control,
+        cache,
+        backend,
+        &mut observer,
+    )
+}
+
+/// Run through the same multi-entry dispatcher while collecting timings for
+/// non-overlapping cache/compiler/host boundaries. Available only to opt-in
+/// benchmark builds; ordinary callers use the no-op observer path.
+#[cfg(feature = "phase-observation")]
+pub fn run_multi_cached_controlled_observed<B: MultiBlockCachedBackend>(
+    code: CodeView<'_>,
+    admission: &AdmittedInstructionBoundaries,
+    execution_context: ExecutionContextSnapshot,
+    dependencies: &[CodeDependencySpan],
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    cache: &mut MultiEntryBlockCache<B::Published>,
+    backend: &mut B,
+    observer: &mut PhaseRecorder,
+) -> Result<DispatchResult, DispatchError<B::Error>> {
+    run_multi_cached_controlled_with_observer(
+        code,
+        admission,
+        execution_context,
+        dependencies,
+        state,
+        total_budget,
+        control,
+        cache,
+        backend,
+        observer,
+    )
+}
+
+fn run_multi_cached_controlled_with_observer<B, O>(
+    code: CodeView<'_>,
+    admission: &AdmittedInstructionBoundaries,
+    execution_context: ExecutionContextSnapshot,
+    dependencies: &[CodeDependencySpan],
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    cache: &mut MultiEntryBlockCache<B::Published>,
+    backend: &mut B,
+    observer: &mut O,
+) -> Result<DispatchResult, DispatchError<B::Error>>
+where
+    B: MultiBlockCachedBackend,
+    O: PhaseObserver,
+{
     if !execution_context.profile.is_supported_fixture() {
         return Err(DispatchError::ExecutionContext(
             ExecutionContextError::UnsupportedProfile(execution_context.profile),
@@ -1437,10 +1503,11 @@ pub fn run_multi_cached_controlled<B: MultiBlockCachedBackend>(
         control,
         cache,
         backend,
+        observer,
     )
 }
 
-fn run_cached_store_controlled<B, C>(
+fn run_cached_store_controlled<B, C, O>(
     code: CodeView<'_>,
     admission: &AdmittedInstructionBoundaries,
     execution_context: ExecutionContextSnapshot,
@@ -1450,10 +1517,12 @@ fn run_cached_store_controlled<B, C>(
     control: DispatchControl<'_>,
     cache: &mut C,
     backend: &mut B,
+    observer: &mut O,
 ) -> Result<DispatchResult, DispatchError<B::Error>>
 where
     B: CachedBlockBackend,
     C: CachedEntryStore<B::Published>,
+    O: PhaseObserver,
 {
     if !execution_context.profile.is_supported_fixture() {
         return Err(DispatchError::ExecutionContext(
@@ -1510,8 +1579,10 @@ where
             return Ok(result(exit, remaining, retired_total, blocks_executed));
         }
 
-        let built =
-            build_dispatch_block(code, state.rip, admission).map_err(DispatchError::Compile)?;
+        let built = measure(observer, DispatchPhase::BlockBuildAndAdmission, || {
+            build_dispatch_block(code, state.rip, admission)
+        })
+        .map_err(DispatchError::Compile)?;
         let guest_block = match &built {
             crate::block::BuildOutcome::Block(block) => block,
             crate::block::BuildOutcome::NoBlock(no_block) => {
@@ -1520,30 +1591,38 @@ where
                 });
             }
         };
-        let minimum = minimum_cache_key_size::<B::Published>(code, dependencies, guest_block)
-            .ok_or(DispatchError::Cache(CacheError::SizeOverflow))?;
-        cache.check_minimum(minimum).map_err(DispatchError::Cache)?;
-        let key = TranslationKey::for_block(
-            code,
-            guest_block,
-            CompileFlavor::S0_09FixtureDispatch,
-            execution_context,
-            dependencies,
-        )
-        .map_err(DispatchError::TranslationKey)?;
-        validate_cached_snapshot(&key, code, dependencies)?;
+        let (key, hit) = measure(observer, DispatchPhase::KeySnapshotAndLookup, || {
+            let minimum = minimum_cache_key_size::<B::Published>(code, dependencies, guest_block)
+                .ok_or(DispatchError::Cache(CacheError::SizeOverflow))?;
+            cache.check_minimum(minimum).map_err(DispatchError::Cache)?;
+            let key = TranslationKey::for_block(
+                code,
+                guest_block,
+                CompileFlavor::S0_09FixtureDispatch,
+                execution_context,
+                dependencies,
+            )
+            .map_err(DispatchError::TranslationKey)?;
+            validate_cached_snapshot(&key, code, dependencies)?;
 
-        let hit_index = cache.find(&key);
-        let hit = hit_index.is_some();
-        if let Some(index) = hit_index {
-            cache.record_hit(index).map_err(DispatchError::Cache)?;
-        } else {
-            cache.record_miss().map_err(DispatchError::Cache)?;
-        }
+            let hit_index = cache.find(&key);
+            let hit = hit_index.is_some();
+            if let Some(index) = hit_index {
+                cache.record_hit(index).map_err(DispatchError::Cache)?;
+            } else {
+                cache.record_miss().map_err(DispatchError::Cache)?;
+            }
+            Ok::<_, DispatchError<B::Error>>((key, hit))
+        })?;
 
         let cached_index = if !hit {
-            let compiled = match compile_prepared_dispatch_block(code.code_end(), built, admission)
-                .map_err(DispatchError::Compile)?
+            let compiled = match crate::block_compile::compile_prepared_dispatch_block_observed(
+                code.code_end(),
+                built,
+                admission,
+                observer,
+            )
+            .map_err(DispatchError::Compile)?
             {
                 BlockCompileOutcome::Compiled(block) => block,
                 BlockCompileOutcome::NoNativePrefix { rip, .. } => {
@@ -1561,9 +1640,10 @@ where
 
             validate_cached_snapshot(&key, code, dependencies)?;
 
-            let published = backend
-                .publish_cached_block(&compiled)
-                .map_err(DispatchError::CachePublish)?;
+            let published = measure(observer, DispatchPhase::Publication, || {
+                backend.publish_cached_block(&compiled)
+            })
+            .map_err(DispatchError::CachePublish)?;
             cache.record_publish().map_err(DispatchError::Cache)?;
             let published = validate_published_candidate(&key, code, dependencies, published)?;
             let index = cache
@@ -1602,8 +1682,9 @@ where
         // eviction, or slot reuse requires `&mut cache` and therefore cannot
         // occur until this call has returned; an executor error is removed
         // only below, after its call has returned.
-        let execution =
-            backend.execute_cached_block(published, cached_block, state, remaining, control);
+        let execution = measure(observer, DispatchPhase::HostExecutionBoundary, || {
+            backend.execute_cached_block(published, cached_block, state, remaining, control)
+        });
         let report = match execution {
             Ok(report) => report,
             Err(error) => {
@@ -6059,11 +6140,16 @@ mod tests {
             &deps,
         )
         .unwrap();
-        let compiled =
-            match compile_prepared_dispatch_block(view.code_end(), built, &admission).unwrap() {
-                BlockCompileOutcome::Compiled(block) => block,
-                _ => panic!("self-loop fixture should compile"),
-            };
+        let compiled = match crate::block_compile::compile_prepared_dispatch_block(
+            view.code_end(),
+            built,
+            &admission,
+        )
+        .unwrap()
+        {
+            BlockCompileOutcome::Compiled(block) => block,
+            _ => panic!("self-loop fixture should compile"),
+        };
         let expected_legacy_bytes = key
             .logical_storage_bytes()
             .unwrap()
@@ -6957,11 +7043,16 @@ mod tests {
             &deps,
         )
         .unwrap();
-        let compiled =
-            match compile_prepared_dispatch_block(view.code_end(), built, &admission).unwrap() {
-                BlockCompileOutcome::Compiled(block) => block,
-                _ => panic!(),
-            };
+        let compiled = match crate::block_compile::compile_prepared_dispatch_block(
+            view.code_end(),
+            built,
+            &admission,
+        )
+        .unwrap()
+        {
+            BlockCompileOutcome::Compiled(block) => block,
+            _ => panic!(),
+        };
         cached_entry_metadata_size::<MockPublished>(&key, &compiled).unwrap()
     }
 
@@ -7167,5 +7258,109 @@ mod tests {
         );
         assert_eq!(tracker.borrow().live, 1);
         assert_eq!(tracker.borrow().publishes, 2);
+    }
+
+    #[cfg(feature = "phase-observation")]
+    #[test]
+    fn observed_multi_cache_matches_default_and_counts_cold_and_hit_phases() {
+        let code = [0x48, 0xB8, 9, 0, 0, 0, 0, 0, 0, 0];
+        let base = 0x7A80;
+        let (view, admission) = cached_fixture(&code, base);
+        let dependencies = dependency(view, 1);
+        let stop = AtomicU8::new(0);
+        let control = DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let mut plain_state = LongModeState {
+            rip: base,
+            ..LongModeState::default()
+        };
+        let mut observed_state = plain_state.clone();
+        let mut plain_cache = new_fixture_multi_cache();
+        let mut observed_cache = new_fixture_multi_cache();
+        let mut plain_backend = new_fixture_backend().0;
+        let mut observed_backend = new_fixture_backend().0;
+
+        let plain = run_multi_cached_controlled(
+            view,
+            &admission,
+            test_context(),
+            &dependencies,
+            &mut plain_state,
+            4,
+            control,
+            &mut plain_cache,
+            &mut plain_backend,
+        )
+        .unwrap();
+        let mut recorder = PhaseRecorder::default();
+        let observed = run_multi_cached_controlled_observed(
+            view,
+            &admission,
+            test_context(),
+            &dependencies,
+            &mut observed_state,
+            4,
+            control,
+            &mut observed_cache,
+            &mut observed_backend,
+            &mut recorder,
+        )
+        .unwrap();
+        assert_eq!(observed, plain);
+        assert_eq!(observed_state, plain_state);
+        assert_eq!(observed_cache.counters(), plain_cache.counters());
+        let cold_totals = recorder.totals();
+        assert_eq!(
+            cold_totals
+                .iter()
+                .map(|total| total.calls)
+                .collect::<Vec<_>>(),
+            vec![1; 7]
+        );
+
+        observed_state.rip = base;
+        plain_state.rip = base;
+        let plain_hit = run_multi_cached_controlled(
+            view,
+            &admission,
+            test_context(),
+            &dependencies,
+            &mut plain_state,
+            4,
+            control,
+            &mut plain_cache,
+            &mut plain_backend,
+        )
+        .unwrap();
+        let observed_hit = run_multi_cached_controlled_observed(
+            view,
+            &admission,
+            test_context(),
+            &dependencies,
+            &mut observed_state,
+            4,
+            control,
+            &mut observed_cache,
+            &mut observed_backend,
+            &mut recorder,
+        )
+        .unwrap();
+        assert_eq!(observed_hit, plain_hit);
+        assert_eq!(observed_state, plain_state);
+        assert_eq!(observed_cache.counters(), plain_cache.counters());
+        let totals = recorder.totals();
+        assert_eq!(totals[0].calls, 2);
+        assert_eq!(totals[1].calls, 2);
+        assert_eq!(totals[2].calls, 1);
+        assert_eq!(totals[3].calls, 1);
+        assert_eq!(totals[4].calls, 1);
+        assert_eq!(totals[5].calls, 1);
+        assert_eq!(totals[6].calls, 2);
+        assert_eq!(observed_cache.counters().hits, 1);
+        assert_eq!(observed_cache.counters().successful_compiles, 1);
+        assert_eq!(observed_cache.counters().successful_publications, 1);
     }
 }

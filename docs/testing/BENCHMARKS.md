@@ -381,6 +381,65 @@ workloads. Full pipeline component timings, warm execution and resource gates
 remain open. Legacy fragment timing remains omitted because equivalent
 admission and semantics were not established for this corpus.
 
+### S3-35b: cold dispatcher pipeline attribution
+
+`od-bench cold-phases` uses the same frozen S3-17 case list and trace on the
+real FIFO16 dispatch/cache/compiler path. It reports distinct intervals for
+block build/decode and admission, key/snapshot/lookup, IR lowering, allocation,
+emission plus byte encoding/finalization, publication, and host execution
+boundary. A hit still includes block build and key/lookup. Guards, cache install
+and accounting remain in `other_dispatch_ns`; they are not misreported as a
+compiler phase. Stage intervals are non-overlapping and are components of the
+instrumented dispatch pass, not standalone end-to-end measurements.
+An observed phase spans the `Instant` sample taken by `begin` through the clock
+read taken by `end`; it includes the wrapped operation and callback/wrapper
+transit between those samples. Recorder bookkeeping after the end sample is
+outside that phase. The paired ordinary/observed totals measure overall
+instrumentation overhead.
+
+The ordinary path uses a statically selected no-op observer; only the bench
+dependency enables `od-jit/phase-observation`, and wall-clock phase timestamps
+are available through a separate observed dispatcher entry point. Each sweep
+constructs a fresh FIFO16 runtime/cache/arena. Input parsing, interpreter-oracle
+checking, per-case state clone and output validation are outside dispatch-call
+intervals; initialization is recorded separately and teardown is outside them.
+Ordinary and observed preflight must match each case's interpreter result for
+all `LongModeState` fields, masking only fixture-declared undefined RFLAGS bits,
+and match aggregate calls, retirement, native blocks and all cache counters
+before sampling. Phase event counts are checked against visits, cache
+misses/compiles, publications and host executions.
+
+Each paired sample must independently contain at least 200 ms of dispatch
+intervals; short samples discard and restart the series at a larger common
+sweep count, persisting each floor-triggering pair and restart decision in the
+report. Collect three sequential release processes after independent source
+review and during a quiet host window. Preserve raw samples,
+source/input hashes, host/toolchain metadata and pair order. Report paired
+observer overhead and uncertainty across all 60 pairs. Do not sum phase medians
+or compare phase components with differently scoped whole-path reports as an
+exact total. This slice does not select a cache policy or change a default.
+
+```sh
+for run in 1 2 3; do
+  cargo run --release -p od-bench --offline -- cold-phases \
+    --case-list work/tmp/stage3/s3-17/cases.txt \
+    --trace work/tmp/stage3/s3-17/dispatch-trace.json \
+    --process-run "$run" \
+    --output "work/tmp/stage3/s3-35/pipeline-clean-$run.json"
+done
+```
+
+Three clean release process runs completed on 2026-10-31 after independent
+source review. Across 60 accepted paired samples the ordinary FIFO16 dispatch
+median was 6.752 ms per 1,010-case sweep and the observed median was 6.986 ms.
+The observed/ordinary ratio median was 1.0301 (IQR 1.0261–1.0342; range
+0.9831–1.1075). Per-phase event medians, spread, host/source/input hashes, and
+raw JSON hashes are in the [S3-35b report](../reports/STAGE_3_S3-35b_2026-10-31.md).
+An initial provisional series was excluded when a Stage 2 test appeared during
+that window; the test was not stopped, and the complete three-run series was
+repeated after it exited. This evidence covers only the frozen register-only
+corpus and does not select an optimization or default.
+
 ### S3-36a: bounded resident warm register-only execution
 
 `od-bench warm-first-run` is an opt-in Apple Silicon macOS release benchmark

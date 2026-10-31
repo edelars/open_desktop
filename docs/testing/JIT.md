@@ -744,6 +744,20 @@ Performance checks описаны отдельно в S3-35/S3-36: cold path в�
 прогоны, показывать распределение и ресурсы. Пилот Stage 0 не является
 baseline block JIT; не утверждать ускорение без новых измерений.
 
+S3-35b adds opt-in phase observation on the real FIFO16 dispatch/compiler
+path. The ordinary od-jit path uses a statically selected no-op observer; the
+bench-only feature exposes clock-based phase timings. Decode/admission, key/
+snapshot/lookup, lowering, allocation, emission/finalization, publication and
+execution are recorded at their actual boundaries. Hits still pay the first
+two phases; guards and accounting are residual dispatch work. Three reviewed
+release process runs measured the same frozen S3-17 corpus: the paired
+observed/ordinary dispatch ratio median was 1.0301 across 60 pairs (IQR
+1.0261–1.0342). The component intervals include the timestamp boundary transit
+documented in [BENCHMARKS](BENCHMARKS.md#s3-35b-cold-dispatcher-pipeline-attribution);
+they do not select a default or optimization. See the
+[S3-35b report](../reports/STAGE_3_S3-35b_2026-10-31.md). Mini remains deferred
+until the end of Stage 3.
+
 ### S3-20l RIP-relative shared-IR and dispatcher extension
 
 Run `cargo test -p od-jit --lib ir_checked_rip_relative_load_store_keep_decoded_next_rip_and_displacement`, `cargo test -p od-jit --lib ir_rip_relative_singletons_reject_wrong_register_prefix_and_trailing_bytes`, and `cargo test -p od-host bounded_dispatch_composes_rip_relative_nop_and_pair_with_actual_rip_continuation`. The bounded dispatcher test exercises both RIP-relative singleton → NOP → pair and NOP → RIP-relative singleton → pair. Distinct adjacent data sentinels verify the second order uses the singleton's instruction-local `next_rip`; budgets 0..4 compare full CPU state and data RAM against interpreter steps, and continuation resumes from the actual returned RIP. Partial byte windows 1..6 return `BoundaryReached` with zero retirement, publication, or data callbacks. The RIP-relative native host test compares direct V2 and shared IR against interpreter for negative, zero and positive disp32 at an entry inside CodeView. Shared-IR load/store additionally check architectural fault payload and atomic CPU/RAM/budget state, backend errors as host errors, and STOP after successful store commit. These tests are local macOS ARM64 fixture evidence; owner/MMU integration, physical x86, and performance remain open.

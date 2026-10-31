@@ -3,6 +3,7 @@
 
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU8;
 use std::time::{Duration, Instant};
 #[cfg(target_os = "macos")]
 use std::{
@@ -17,10 +18,12 @@ use od_isa::execute::{RunConfig, RunExit, run as interpreter_run};
 use od_isa::memory::{AccessContext, GuestMemory, MemoryError};
 use od_jit::block::{AdmittedInstructionBoundaries, CodeView};
 use od_jit::dispatch::{
-    CacheEvictionPolicy, DispatchExit, MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+    CacheEvictionPolicy, DispatchControl, DispatchExit, MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
     MAX_MULTI_ENTRY_CACHE_METADATA_BYTES, MAX_SINGLE_ENTRY_CACHE_BYTES, MultiEntryBlockCache,
     SingleEntryBlockCache, run as dispatch_run, run_cached, run_multi_cached,
+    run_multi_cached_controlled_observed,
 };
+use od_jit::phase_observation::{ObservedDispatchPhase, PhaseRecorder};
 use od_jit::translation::{
     AddressSpaceId, BackingId, BackingVersion, CodeDependencySpan, CodeIdentity, MappingId,
     MappingVersion,
@@ -189,6 +192,42 @@ impl Variant {
                 backend,
             )
             .map_err(|e| err(format!("multi cache: {e:?}"))),
+        }
+    }
+
+    fn call_observed(
+        &mut self,
+        case: &Case,
+        state: &mut LongModeState,
+        observer: &mut PhaseRecorder,
+    ) -> Result<od_jit::dispatch::DispatchResult, BenchError> {
+        let code = CodeView::new(0, &case.bytes).map_err(|e| err(format!("code view: {e:?}")))?;
+        let dep = [CodeDependencySpan {
+            start_rip: 0,
+            end_rip: code.code_end(),
+            identity: case.identity,
+        }];
+        let stop = AtomicU8::new(0);
+        let control = DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        match self {
+            Self::Fifo { backend, cache } => run_multi_cached_controlled_observed(
+                code,
+                &case.admission,
+                crate::benchmark_execution_context(),
+                &dep,
+                state,
+                case.budget,
+                control,
+                cache,
+                backend,
+                observer,
+            )
+            .map_err(|e| err(format!("observed multi cache: {e:?}"))),
+            _ => Err(err("phase observation requires the FIFO(16) dispatcher")),
         }
     }
     fn counters(&self) -> Counters {
@@ -373,6 +412,87 @@ struct FirstRunReport {
     excluded_from_timing: String,
     variants: Vec<FirstRunVariantResult>,
     paired_interpreter_over_fifo_ratios: Vec<f64>,
+    total_elapsed_ns: u128,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PipelinePhaseTotal {
+    phase: String,
+    calls: u64,
+    elapsed_ns: u128,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PipelinePhaseSample {
+    pair: usize,
+    order: usize,
+    cold_sweeps: usize,
+    calls: u64,
+    retired_guest_instructions: u64,
+    native_block_executions: u64,
+    initialization_ns: u128,
+    dispatch_elapsed_ns: u128,
+    attributed_phase_ns: u128,
+    other_dispatch_ns: u128,
+    cache_hits: u64,
+    cache_misses: u64,
+    successful_compiles: u64,
+    successful_publications: u64,
+    evictions: u64,
+    phase_totals: Vec<PipelinePhaseTotal>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PipelinePhaseVariant {
+    variant: String,
+    samples: Vec<PipelinePhaseSample>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PipelinePhasePreflight {
+    full_state_exit_retirement_budget_parity: bool,
+    ordinary_observed_dispatch_results_match: bool,
+    ordinary_observed_cache_counters_match: bool,
+    ordinary_calls: u64,
+    observed_calls: u64,
+    ordinary_retired_guest_instructions: u64,
+    observed_retired_guest_instructions: u64,
+    ordinary_native_block_executions: u64,
+    observed_native_block_executions: u64,
+    ordinary_cache_hits: u64,
+    observed_cache_hits: u64,
+    ordinary_cache_misses: u64,
+    observed_cache_misses: u64,
+    phase_event_counts_match_cache_counters: bool,
+}
+
+#[derive(Serialize)]
+struct ColdPipelineReport {
+    schema: u32,
+    process_run: u8,
+    case_list_sha256: String,
+    trace_sha256: String,
+    capture_host: HostMetadata,
+    measure_host: HostMetadata,
+    inputs: usize,
+    visits: usize,
+    measured_pairs: usize,
+    common_cold_sweeps_per_sample: usize,
+    calibration_sweeps: usize,
+    measured_series_restarts: Vec<PhaseSeriesRestart>,
+    calibration_ordinary_dispatch_ns: u128,
+    calibration_observed_dispatch_ns: u128,
+    minimum_dispatch_sample_ns: u128,
+    timing_scope: String,
+    phase_boundary_contract: String,
+    phase_overhead_interpretation: String,
+    preflight: PipelinePhasePreflight,
+    ordinary_variant: PipelinePhaseVariant,
+    observed_variant: PipelinePhaseVariant,
+    paired_observer_overhead_ratios: Vec<f64>,
+    median_observer_overhead_ratio: f64,
+    min_observer_overhead_ratio: f64,
+    max_observer_overhead_ratio: f64,
     total_elapsed_ns: u128,
 }
 
@@ -795,6 +915,245 @@ pub fn run_cold_first_execution(
         excluded_from_timing: "fixture/trace parsing and admission, interpreter oracle preparation, per-case state clone/reset, post-call result validation, runtime teardown, and process launch".into(),
         variants: vec![fifo_result, interpreter_result],
         paired_interpreter_over_fifo_ratios: ratios,
+        total_elapsed_ns: started.elapsed().as_nanos(),
+    };
+    serde_json::to_value(report).map_err(|e| err(e.to_string()))
+}
+
+/// Attribute a cold FIFO16 dispatcher sweep to measured boundaries on the
+/// actual cache/compiler path. The ordinary and observed variants execute the
+/// same prepared cases through fresh runtimes and are compared before timing.
+pub fn run_cold_pipeline_attribution(
+    case_list: &Path,
+    trace_path: &Path,
+    process_run: u8,
+) -> Result<serde_json::Value, BenchError> {
+    if cfg!(debug_assertions) {
+        return Err(err("cold-phases measurement requires a release build"));
+    }
+    if !(1..=3).contains(&process_run) {
+        return Err(err("process-run must be 1..=3"));
+    }
+    let started = Instant::now();
+    let list = read_bounded(case_list, MAX_CASE_LIST_BYTES, "case list")?;
+    let trace_raw = read_bounded(trace_path, crate::MAX_LOGICAL_BYTES, "trace")?;
+    if od_testkit::sha256_hex(&list) != FROZEN_CASE_LIST_SHA256
+        || od_testkit::sha256_hex(&trace_raw) != FROZEN_TRACE_SHA256
+    {
+        return Err(err(
+            "case list or trace does not match the frozen S3-17 corpus",
+        ));
+    }
+    let trace: RecordedTrace =
+        serde_json::from_slice(&trace_raw).map_err(|e| err(format!("trace JSON: {e}")))?;
+    if trace.visits.len() != 1_322 || trace.visits.len() > MAX_TOTAL_TRACE_VISITS {
+        return Err(err("frozen trace visit count mismatch"));
+    }
+    let cases = prepare_cases(&list, &trace, started)?;
+    if cases.len() != MAX_INPUTS {
+        return Err(err("cold-phases requires the complete frozen S3-17 corpus"));
+    }
+
+    // Every case is checked against the independently prepared interpreter
+    // oracle inside each sweep; the fresh ordinary/observed paths must also
+    // agree on aggregate retirement and cache behavior before calibration.
+    let ordinary_preflight = pipeline_sweep(&cases, trace.visits.len(), started, false, true)?;
+    let observed_preflight = pipeline_sweep(&cases, trace.visits.len(), started, true, true)?;
+    let cache_counters_match =
+        counters_match(ordinary_preflight.counters, observed_preflight.counters);
+    let dispatch_results_match = ordinary_preflight.calls == observed_preflight.calls
+        && ordinary_preflight.retired == observed_preflight.retired
+        && ordinary_preflight.native_blocks == observed_preflight.native_blocks
+        && ordinary_preflight.outcomes == observed_preflight.outcomes;
+    if !cache_counters_match || !dispatch_results_match {
+        return Err(err("ordinary and observed cold preflight diverged"));
+    }
+    validate_phase_counts(&observed_preflight, trace.visits.len())?;
+
+    let mut calibration_sweeps = 0usize;
+    let mut calibration_ordinary_ns = 0u128;
+    let mut calibration_observed_ns = 0u128;
+    while calibration_ordinary_ns < MIN_SAMPLE.as_nanos()
+        || calibration_observed_ns < MIN_SAMPLE.as_nanos()
+    {
+        if started.elapsed() > MAX_RUN_TIME {
+            return Err(err(
+                "30 minute run limit exceeded during cold phase calibration",
+            ));
+        }
+        if calibration_sweeps % 2 == 0 {
+            let ordinary = pipeline_sweep(&cases, trace.visits.len(), started, false, false)?;
+            let observed = pipeline_sweep(&cases, trace.visits.len(), started, true, false)?;
+            calibration_ordinary_ns =
+                calibration_ordinary_ns.saturating_add(ordinary.dispatch_elapsed.as_nanos());
+            calibration_observed_ns =
+                calibration_observed_ns.saturating_add(observed.dispatch_elapsed.as_nanos());
+        } else {
+            let observed = pipeline_sweep(&cases, trace.visits.len(), started, true, false)?;
+            let ordinary = pipeline_sweep(&cases, trace.visits.len(), started, false, false)?;
+            calibration_ordinary_ns =
+                calibration_ordinary_ns.saturating_add(ordinary.dispatch_elapsed.as_nanos());
+            calibration_observed_ns =
+                calibration_observed_ns.saturating_add(observed.dispatch_elapsed.as_nanos());
+        }
+        calibration_sweeps = calibration_sweeps
+            .checked_add(1)
+            .ok_or_else(|| err("phase calibration sweep counter overflow"))?;
+    }
+
+    let mut common_sweeps = calibration_sweeps;
+    let mut series_restarts = Vec::new();
+    let (ordinary_samples, observed_samples) = loop {
+        let mut ordinary_samples = Vec::with_capacity(FIRST_RUN_PAIRS);
+        let mut observed_samples = Vec::with_capacity(FIRST_RUN_PAIRS);
+        let mut short_pair = None;
+        for pair in 0..FIRST_RUN_PAIRS {
+            if started.elapsed() > MAX_RUN_TIME {
+                return Err(err(
+                    "30 minute run limit exceeded during cold phase samples",
+                ));
+            }
+            let observed_first = (pair + usize::from(process_run)) % 2 != 0;
+            let (ordinary, observed) = if observed_first {
+                let observed = measure_pipeline_sample(
+                    pair,
+                    0,
+                    common_sweeps,
+                    &cases,
+                    trace.visits.len(),
+                    started,
+                    true,
+                )?;
+                let ordinary = measure_pipeline_sample(
+                    pair,
+                    1,
+                    common_sweeps,
+                    &cases,
+                    trace.visits.len(),
+                    started,
+                    false,
+                )?;
+                (ordinary, observed)
+            } else {
+                let ordinary = measure_pipeline_sample(
+                    pair,
+                    0,
+                    common_sweeps,
+                    &cases,
+                    trace.visits.len(),
+                    started,
+                    false,
+                )?;
+                let observed = measure_pipeline_sample(
+                    pair,
+                    1,
+                    common_sweeps,
+                    &cases,
+                    trace.visits.len(),
+                    started,
+                    true,
+                )?;
+                (ordinary, observed)
+            };
+            if ordinary.dispatch_elapsed_ns < MIN_SAMPLE.as_nanos()
+                || observed.dispatch_elapsed_ns < MIN_SAMPLE.as_nanos()
+            {
+                let min_elapsed = ordinary
+                    .dispatch_elapsed_ns
+                    .min(observed.dispatch_elapsed_ns)
+                    .max(1);
+                let scaled = common_sweeps
+                    .saturating_mul(
+                        usize::try_from(MIN_SAMPLE.as_nanos().div_ceil(min_elapsed))
+                            .unwrap_or(usize::MAX),
+                    )
+                    .saturating_add(1);
+                let next_sweeps = common_sweeps.saturating_add(1).max(scaled);
+                short_pair = Some(PhaseSeriesRestart {
+                    failed_pair: pair,
+                    attempted_sweeps: common_sweeps,
+                    ordinary_dispatch_ns: ordinary.dispatch_elapsed_ns,
+                    observed_dispatch_ns: observed.dispatch_elapsed_ns,
+                    next_sweeps,
+                });
+                break;
+            }
+            ordinary_samples.push(ordinary);
+            observed_samples.push(observed);
+        }
+        if let Some(restart) = short_pair {
+            common_sweeps = restart.next_sweeps;
+            series_restarts.push(restart);
+            if series_restarts.len() > 8 {
+                return Err(err(
+                    "cold phase sample repeatedly fell below the 200ms floor",
+                ));
+            }
+            continue;
+        }
+        break (ordinary_samples, observed_samples);
+    };
+
+    let paired_observer_overhead_ratios = ordinary_samples
+        .iter()
+        .zip(&observed_samples)
+        .map(|(ordinary, observed)| {
+            observed.dispatch_elapsed_ns as f64 / ordinary.dispatch_elapsed_ns as f64
+        })
+        .collect::<Vec<_>>();
+    let mut sorted_ratios = paired_observer_overhead_ratios.clone();
+    sorted_ratios.sort_by(f64::total_cmp);
+    let median_observer_overhead_ratio = median_f64(&sorted_ratios);
+    let min_observer_overhead_ratio = *sorted_ratios.first().unwrap_or(&1.0);
+    let max_observer_overhead_ratio = *sorted_ratios.last().unwrap_or(&1.0);
+    let preflight = PipelinePhasePreflight {
+        full_state_exit_retirement_budget_parity: true,
+        ordinary_observed_dispatch_results_match: dispatch_results_match,
+        ordinary_observed_cache_counters_match: cache_counters_match,
+        ordinary_calls: ordinary_preflight.calls,
+        observed_calls: observed_preflight.calls,
+        ordinary_retired_guest_instructions: ordinary_preflight.retired,
+        observed_retired_guest_instructions: observed_preflight.retired,
+        ordinary_native_block_executions: ordinary_preflight.native_blocks,
+        observed_native_block_executions: observed_preflight.native_blocks,
+        ordinary_cache_hits: ordinary_preflight.counters.hits,
+        observed_cache_hits: observed_preflight.counters.hits,
+        ordinary_cache_misses: ordinary_preflight.counters.misses,
+        observed_cache_misses: observed_preflight.counters.misses,
+        phase_event_counts_match_cache_counters: true,
+    };
+    let report = ColdPipelineReport {
+        schema: 1,
+        process_run,
+        case_list_sha256: od_testkit::sha256_hex(&list),
+        trace_sha256: od_testkit::sha256_hex(&trace_raw),
+        capture_host: trace.capture_host,
+        measure_host: HostMetadata::current(),
+        inputs: cases.len(),
+        visits: trace.visits.len(),
+        measured_pairs: FIRST_RUN_PAIRS,
+        common_cold_sweeps_per_sample: common_sweeps,
+        calibration_sweeps,
+        measured_series_restarts: series_restarts,
+        calibration_ordinary_dispatch_ns: calibration_ordinary_ns,
+        calibration_observed_dispatch_ns: calibration_observed_ns,
+        minimum_dispatch_sample_ns: MIN_SAMPLE.as_nanos(),
+        timing_scope: "dispatch-call intervals across a complete S3-17 corpus sweep; each sweep constructs a fresh FIFO16 runtime/cache/arena; per-case state cloning and interpreter-result validation are outside each dispatch-call interval; arena teardown is outside intervals".into(),
+        phase_boundary_contract: "real dispatcher boundaries: block decode/build and instruction-boundary admission; minimum-key sizing, TranslationKey/snapshot work and cache lookup; typed IR lowering; allocator build; ARM64 emission plus byte encoding/finalization; backend publication; host executor call. A cache hit still records block build and key/lookup. Every phase is sequential and non-overlapping. Each observed phase duration spans the Instant sample in PhaseRecorder::begin through the clock read in PhaseRecorder::end, so it includes the wrapped operation and wrapper/callback transit between those samples.".into(),
+        phase_overhead_interpretation: "ordinary/observed paired ratios measure total instrumentation overhead on identical cold sweeps. Phase durations include the operation and elapsed boundary transit between the begin/end clock samples; PhaseRecorder bookkeeping after the end clock read is excluded from that phase. other_dispatch_ns is measured dispatch total minus phase totals and includes control guards, cache install/accounting, result validation, and observer work outside measured phase intervals. Components are attribution within one observed pass, not independent end-to-end measurements and must not be summed with other benchmark reports.".into(),
+        preflight,
+        ordinary_variant: PipelinePhaseVariant {
+            variant: "ordinary_noop_observer".into(),
+            samples: ordinary_samples,
+        },
+        observed_variant: PipelinePhaseVariant {
+            variant: "phase_observed".into(),
+            samples: observed_samples,
+        },
+        paired_observer_overhead_ratios,
+        median_observer_overhead_ratio,
+        min_observer_overhead_ratio,
+        max_observer_overhead_ratio,
         total_elapsed_ns: started.elapsed().as_nanos(),
     };
     serde_json::to_value(report).map_err(|e| err(e.to_string()))
@@ -1500,6 +1859,286 @@ struct ColdSweep {
     counters: Counters,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct PhaseSeriesRestart {
+    failed_pair: usize,
+    attempted_sweeps: usize,
+    ordinary_dispatch_ns: u128,
+    observed_dispatch_ns: u128,
+    next_sweeps: usize,
+}
+
+struct PipelineSweep {
+    initialization: Duration,
+    dispatch_elapsed: Duration,
+    calls: u64,
+    retired: u64,
+    native_blocks: u64,
+    counters: Counters,
+    phases: Vec<PipelinePhaseTotal>,
+    outcomes: Vec<PipelineOutcome>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PipelineOutcome {
+    state: LongModeState,
+    result: od_jit::dispatch::DispatchResult,
+}
+
+fn pipeline_sweep(
+    cases: &[Case],
+    expected_visits: usize,
+    started: Instant,
+    observed: bool,
+    capture_outcomes: bool,
+) -> Result<PipelineSweep, BenchError> {
+    let initialization_started = Instant::now();
+    let mut engine = Variant::new(VariantName::MultiFifo16)?;
+    let initialization = initialization_started.elapsed();
+    let mut dispatch_elapsed = Duration::ZERO;
+    let mut calls = 0u64;
+    let mut retired = 0u64;
+    let mut native_blocks = 0u64;
+    let mut recorder = PhaseRecorder::default();
+    let mut outcomes = Vec::with_capacity(if capture_outcomes { cases.len() } else { 0 });
+
+    for case in cases {
+        if started.elapsed() > MAX_RUN_TIME {
+            return Err(err(
+                "30 minute run limit exceeded during cold pipeline sweep",
+            ));
+        }
+        let mut state = case.initial.clone();
+        let call_started = Instant::now();
+        let result = if observed {
+            engine.call_observed(case, &mut state, &mut recorder)?
+        } else {
+            engine.call(case, &mut state)?
+        };
+        dispatch_elapsed = dispatch_elapsed.saturating_add(call_started.elapsed());
+        validate_dispatch_result(case, &state, &result)?;
+        validate_full_dispatch_state(case, &state)?;
+        if capture_outcomes {
+            outcomes.push(PipelineOutcome {
+                state: state.clone(),
+                result,
+            });
+        }
+        calls = calls
+            .checked_add(1)
+            .ok_or_else(|| err("cold pipeline call count overflow"))?;
+        retired = retired
+            .checked_add(result.retired_instructions)
+            .ok_or_else(|| err("cold pipeline retirement count overflow"))?;
+        native_blocks = native_blocks
+            .checked_add(result.blocks_executed)
+            .ok_or_else(|| err("cold pipeline block count overflow"))?;
+    }
+
+    let counters = engine.counters();
+    let phases = recorder
+        .totals()
+        .into_iter()
+        .map(|total| PipelinePhaseTotal {
+            phase: phase_name(total.phase).to_owned(),
+            calls: total.calls,
+            elapsed_ns: total.elapsed_ns,
+        })
+        .collect::<Vec<_>>();
+    let sweep = PipelineSweep {
+        initialization,
+        dispatch_elapsed,
+        calls,
+        retired,
+        native_blocks,
+        counters,
+        phases,
+        outcomes,
+    };
+    if observed {
+        validate_phase_counts(&sweep, expected_visits)?;
+    } else if sweep
+        .phases
+        .iter()
+        .any(|phase| phase.calls != 0 || phase.elapsed_ns != 0)
+    {
+        return Err(err(
+            "ordinary cold sweep unexpectedly recorded phase timings",
+        ));
+    }
+    drop(engine);
+    Ok(sweep)
+}
+
+fn validate_phase_counts(sweep: &PipelineSweep, expected_visits: usize) -> Result<(), BenchError> {
+    let phase_calls = |name: &str| -> u64 {
+        sweep
+            .phases
+            .iter()
+            .find(|phase| phase.phase == name)
+            .map_or(0, |phase| phase.calls)
+    };
+    let visits = u64::try_from(expected_visits).map_err(|_| err("visit count overflow"))?;
+    let lookup_calls = sweep.counters.hits.saturating_add(sweep.counters.misses);
+    if phase_calls("block_build_and_admission") != visits
+        || phase_calls("key_snapshot_and_lookup") != visits
+        || lookup_calls != visits
+        || phase_calls("ir_lowering") != sweep.counters.compiles
+        || phase_calls("allocation") != sweep.counters.compiles
+        || phase_calls("emission_and_finalization") != sweep.counters.compiles
+        || phase_calls("publication") != sweep.counters.publications
+        || phase_calls("host_execution_boundary") != sweep.native_blocks
+        || sweep.counters.compiles != sweep.counters.misses
+        || sweep.counters.publications != sweep.counters.compiles
+    {
+        return Err(err(
+            "phase event counts do not match cold FIFO16 cache counters",
+        ));
+    }
+    let attributed = sweep
+        .phases
+        .iter()
+        .try_fold(0u128, |sum, phase| sum.checked_add(phase.elapsed_ns))
+        .ok_or_else(|| err("phase duration sum overflow"))?;
+    if attributed > sweep.dispatch_elapsed.as_nanos() {
+        return Err(err(
+            "non-overlapping phase total exceeds dispatcher elapsed time",
+        ));
+    }
+    Ok(())
+}
+
+fn phase_name(phase: ObservedDispatchPhase) -> &'static str {
+    match phase {
+        ObservedDispatchPhase::BlockBuildAndAdmission => "block_build_and_admission",
+        ObservedDispatchPhase::KeySnapshotAndLookup => "key_snapshot_and_lookup",
+        ObservedDispatchPhase::IrLowering => "ir_lowering",
+        ObservedDispatchPhase::Allocation => "allocation",
+        ObservedDispatchPhase::EmissionAndFinalization => "emission_and_finalization",
+        ObservedDispatchPhase::Publication => "publication",
+        ObservedDispatchPhase::HostExecutionBoundary => "host_execution_boundary",
+    }
+}
+
+fn counters_match(left: Counters, right: Counters) -> bool {
+    left.cache_lookup_metrics_available == right.cache_lookup_metrics_available
+        && left.hits == right.hits
+        && left.misses == right.misses
+        && left.compiles == right.compiles
+        && left.publications == right.publications
+        && left.evictions == right.evictions
+        && left.resident == right.resident
+        && left.code_bytes == right.code_bytes
+        && left.logical_bytes == right.logical_bytes
+        && left.arena_capacity == right.arena_capacity
+        && left.arena_free == right.arena_free
+        && left.arena_reserved_bytes == right.arena_reserved_bytes
+}
+
+fn measure_pipeline_sample(
+    pair: usize,
+    order: usize,
+    sweeps: usize,
+    cases: &[Case],
+    expected_visits: usize,
+    started: Instant,
+    observed: bool,
+) -> Result<PipelinePhaseSample, BenchError> {
+    let mut initialization_ns = 0u128;
+    let mut dispatch_elapsed_ns = 0u128;
+    let mut calls = 0u64;
+    let mut retired = 0u64;
+    let mut native_blocks = 0u64;
+    let mut counters = Counters {
+        arena_free: usize::MAX,
+        ..Counters::default()
+    };
+    let mut phase_totals: Option<Vec<PipelinePhaseTotal>> = None;
+    for _ in 0..sweeps {
+        let sweep = pipeline_sweep(cases, expected_visits, started, observed, false)?;
+        initialization_ns = initialization_ns.saturating_add(sweep.initialization.as_nanos());
+        dispatch_elapsed_ns = dispatch_elapsed_ns.saturating_add(sweep.dispatch_elapsed.as_nanos());
+        calls = calls
+            .checked_add(sweep.calls)
+            .ok_or_else(|| err("sample call count overflow"))?;
+        retired = retired
+            .checked_add(sweep.retired)
+            .ok_or_else(|| err("sample retirement count overflow"))?;
+        native_blocks = native_blocks
+            .checked_add(sweep.native_blocks)
+            .ok_or_else(|| err("sample native block count overflow"))?;
+        add_sample_counters(&mut counters, sweep.counters)?;
+        match &mut phase_totals {
+            Some(totals) => add_phase_totals(totals, sweep.phases)?,
+            None => phase_totals = Some(sweep.phases),
+        }
+    }
+    let phase_totals = phase_totals.unwrap_or_default();
+    let attributed_phase_ns = phase_totals
+        .iter()
+        .try_fold(0u128, |sum, phase| sum.checked_add(phase.elapsed_ns))
+        .ok_or_else(|| err("sample phase duration sum overflow"))?;
+    if attributed_phase_ns > dispatch_elapsed_ns {
+        return Err(err("aggregated phase time exceeds dispatcher sample time"));
+    }
+    let expected_calls = u64::try_from(cases.len())
+        .ok()
+        .and_then(|count| count.checked_mul(sweeps as u64))
+        .ok_or_else(|| err("sample expected-call count overflow"))?;
+    if calls != expected_calls {
+        return Err(err("ordinary/observed sweep call count mismatch"));
+    }
+    Ok(PipelinePhaseSample {
+        pair,
+        order,
+        cold_sweeps: sweeps,
+        calls,
+        retired_guest_instructions: retired,
+        native_block_executions: native_blocks,
+        initialization_ns,
+        dispatch_elapsed_ns,
+        attributed_phase_ns,
+        other_dispatch_ns: dispatch_elapsed_ns.saturating_sub(attributed_phase_ns),
+        cache_hits: counters.hits,
+        cache_misses: counters.misses,
+        successful_compiles: counters.compiles,
+        successful_publications: counters.publications,
+        evictions: counters.evictions,
+        phase_totals,
+    })
+}
+
+fn add_phase_totals(
+    accumulated: &mut [PipelinePhaseTotal],
+    current: Vec<PipelinePhaseTotal>,
+) -> Result<(), BenchError> {
+    if accumulated.len() != current.len() {
+        return Err(err("phase inventory changed within sample"));
+    }
+    for (accumulated, current) in accumulated.iter_mut().zip(current) {
+        if accumulated.phase != current.phase {
+            return Err(err("phase ordering changed within sample"));
+        }
+        accumulated.calls = accumulated
+            .calls
+            .checked_add(current.calls)
+            .ok_or_else(|| err("phase call counter overflow"))?;
+        accumulated.elapsed_ns = accumulated
+            .elapsed_ns
+            .checked_add(current.elapsed_ns)
+            .ok_or_else(|| err("phase elapsed counter overflow"))?;
+    }
+    Ok(())
+}
+
+fn median_f64(sorted_values: &[f64]) -> f64 {
+    match sorted_values.len() {
+        0 => 1.0,
+        len if len % 2 == 0 => (sorted_values[len / 2 - 1] + sorted_values[len / 2]) / 2.0,
+        len => sorted_values[len / 2],
+    }
+}
+
 fn cold_fifo_sweep(cases: &[Case], started: Instant) -> Result<ColdSweep, BenchError> {
     let init_started = Instant::now();
     let mut engine = Variant::new(VariantName::MultiFifo16)?;
@@ -1738,6 +2377,20 @@ fn validate_dispatch_result(
         || result.blocks_executed as usize != case.entry_count
     {
         return Err(err(format!("native result mismatch for {}", case.id)));
+    }
+    Ok(())
+}
+
+fn validate_full_dispatch_state(case: &Case, state: &LongModeState) -> Result<(), BenchError> {
+    let mut expected = case.expected.clone();
+    let mut actual = state.clone();
+    expected.rflags &= case.flags_mask;
+    actual.rflags &= case.flags_mask;
+    if actual != expected {
+        return Err(err(format!(
+            "full native CPU state mismatch for {} outside undefined RFLAGS bits",
+            case.id
+        )));
     }
     Ok(())
 }

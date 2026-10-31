@@ -19,6 +19,7 @@ use crate::block_emitter::{
 };
 use crate::ir::Operation;
 use crate::lowering::{self, LoweredProgram, LoweringError, LoweringOutcome};
+use crate::phase_observation::{DispatchPhase, NoopObserver, PhaseObserver, measure};
 
 pub const MAX_EMITTED_BLOCK_BYTES: usize = 4096;
 const RUNTIME_FRAME_PREFIX_BYTES: u32 = 176;
@@ -286,8 +287,20 @@ pub(crate) fn compile_prepared_dispatch_block(
     built: BuildOutcome,
     admission: &AdmittedInstructionBoundaries,
 ) -> Result<BlockCompileOutcome, BlockCompileError> {
-    let lowered_outcome =
-        lowering::lower_for_dispatch(&built, admission).map_err(BlockCompileError::Lowering)?;
+    let mut observer = NoopObserver;
+    compile_prepared_dispatch_block_observed(code_end, built, admission, &mut observer)
+}
+
+pub(crate) fn compile_prepared_dispatch_block_observed<O: PhaseObserver>(
+    code_end: u64,
+    built: BuildOutcome,
+    admission: &AdmittedInstructionBoundaries,
+    observer: &mut O,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    let lowered_outcome = measure(observer, DispatchPhase::IrLowering, || {
+        lowering::lower_for_dispatch(&built, admission)
+    })
+    .map_err(BlockCompileError::Lowering)?;
     let lowered = match lowered_outcome {
         LoweringOutcome::NoNativePrefix {
             rip,
@@ -302,10 +315,11 @@ pub(crate) fn compile_prepared_dispatch_block(
         }
         LoweringOutcome::Program(lowered) => lowered,
     };
-    compile_lowered(
+    compile_lowered_observed(
         code_end,
         lowered,
         crate::block_emitter::FlagMaterializationStrategy::Eager,
+        observer,
     )
 }
 
@@ -1510,29 +1524,44 @@ fn compile_lowered(
     lowered: LoweredProgram,
     flag_strategy: crate::block_emitter::FlagMaterializationStrategy,
 ) -> Result<BlockCompileOutcome, BlockCompileError> {
+    let mut observer = NoopObserver;
+    compile_lowered_observed(code_end, lowered, flag_strategy, &mut observer)
+}
+
+fn compile_lowered_observed<O: PhaseObserver>(
+    code_end: u64,
+    lowered: LoweredProgram,
+    flag_strategy: crate::block_emitter::FlagMaterializationStrategy,
+    observer: &mut O,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
     let frame_prefix = match flag_strategy {
         crate::block_emitter::FlagMaterializationStrategy::Eager => RUNTIME_FRAME_PREFIX_BYTES,
         crate::block_emitter::FlagMaterializationStrategy::DemandDrivenCandidate => {
             DEMAND_FLAGS_RUNTIME_FRAME_PREFIX_BYTES
         }
     };
-    let allocation = allocate_block(&lowered, frame_prefix)?;
-    let emitted = match flag_strategy {
-        crate::block_emitter::FlagMaterializationStrategy::Eager => {
-            emit_runtime_block(&lowered.program, &allocation)
+    let allocation = measure(observer, DispatchPhase::Allocation, || {
+        allocate_block(&lowered, frame_prefix)
+    })?;
+    let (emitted, actual) = measure(observer, DispatchPhase::EmissionAndFinalization, || {
+        let emitted = match flag_strategy {
+            crate::block_emitter::FlagMaterializationStrategy::Eager => {
+                emit_runtime_block(&lowered.program, &allocation)
+            }
+            crate::block_emitter::FlagMaterializationStrategy::DemandDrivenCandidate => {
+                crate::block_emitter::emit_runtime_block_demand_flags_candidate(
+                    &lowered.program,
+                    &allocation,
+                )
+            }
         }
-        crate::block_emitter::FlagMaterializationStrategy::DemandDrivenCandidate => {
-            crate::block_emitter::emit_runtime_block_demand_flags_candidate(
-                &lowered.program,
-                &allocation,
-            )
-        }
-    }
-    .map_err(BlockCompileError::Emitter)?;
-    let actual = emitted
-        .to_le_bytes()
-        .map_err(|error| BlockCompileError::Emitter(BlockEmitterError::Encoding(error)))?
-        .len();
+        .map_err(BlockCompileError::Emitter)?;
+        let actual = emitted
+            .to_le_bytes()
+            .map_err(|error| BlockCompileError::Emitter(BlockEmitterError::Encoding(error)))?
+            .len();
+        Ok::<_, BlockCompileError>((emitted, actual))
+    })?;
     if actual > MAX_EMITTED_BLOCK_BYTES {
         return Err(BlockCompileError::EmittedCodeTooLarge {
             actual,

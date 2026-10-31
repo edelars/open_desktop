@@ -2981,6 +2981,29 @@ are established for these same inputs. See the
 
 **Готово:** cold результат не замаскирован warm reuse. Замедление первого запуска допустимо как измеренный факт и должно быть отражено; обещание ускорения первого исполнения без данных запрещено.
 
+#### S3-35b: cold FIFO pipeline components
+
+На том же зафиксированном S3-17 corpus/trace и production FIFO16 path отдельно
+измерить block build/admission, key/snapshot/lookup, IR lowering, allocation,
+emission/encoding/finalization, publication и host-execution boundary. Cache hit
+по-прежнему оплачивает build и lookup. Guards и install/accounting оставить в
+остатке полного dispatch interval. Сравнить ordinary no-op и observed
+dispatcher при одинаковой работе, проверив полное per-case состояние/exit,
+retirement и все cache counters. Сохранить границы initialization/teardown,
+raw paired samples, hashes и timer/observer overhead; минимум 20 пар по 200 ms
+в каждом sample и три последовательных release process run. Не складывать
+несовместимые component samples как точный end-to-end результат и не выбирать
+оптимизацию/default по этому срезу.
+
+Source review, targeted checks и три последовательных release process run
+завершены. Frozen S3-17 corpus прошёл normalized full-state/exit/budget/
+retirement parity; paired observed/ordinary ratio median составил 1.0301 по 60
+парам. Начальная серия была исключена после обнаружения Stage 2 test в том
+окне; процесс не останавливали, а чистую серию повторили после его завершения.
+Подробные интервалы, spread и raw hashes: [S3-35b report](../reports/STAGE_3_S3-35b_2026-10-31.md).
+Mini не запускался, Stage 2 не менялся. Этот результат не выбирает оптимизацию
+или default.
+
 ### S3-36. Измерить прогретое исполнение
 
 #### S3-36a: bounded resident warm register-only path
