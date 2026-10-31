@@ -3303,6 +3303,25 @@ settle full-runtime performance. Eager stays the reference/default; S3-29,
 S3-40, and S3-41 remain open. See the
 [S3-40c addendum](../reports/STAGE_3_S3-40c_2026-10-30.md).
 
+#### S3-40d: cached composed NativeRegisterV1 flags harness
+
+Added the opt-in `cached-native-flags-compare` harness for the frozen S3-34p
+1,200-input corpus (`fnv1a64:172fb17b01c502df`). Each input combines two or
+three generated native forms with a JZ/MOV/JNZ suffix, optional NOP/back-edge,
+or the four-form index-zero anchor. Preflight checks the corpus envelope and
+input digest, recomputes interpreter outcomes, and requires full-state, exit,
+retirement and remaining-budget parity, including the frozen native/fallback
+retirement split for both cached strategies. First dispatch and repeat dispatch
+are separate phases under the same capacity-one cache policy; repeat dispatch
+does not claim hit-only behavior. Exact per-input cache deltas are checked for
+both phases. Reports separate total successfully published code bytes from
+resident high-water sizes. A bench-only checked byte counter runs once per
+successful publication under `phase-observation`, with no hit-path work; its
+latency cost is not independently measured. This is harness
+readiness only: no scored performance runs or default selection have occurred.
+S3-40 and S3-41 remain open. See
+[`BENCHMARKS.md`](../testing/BENCHMARKS.md#s3-40d-cached-composed-nativeregisterv1-eagerdemand-flags-comparison).
+
 ### S3-41. Оформить приёмку этапа
 
 1. Создать STAGE_3_REPORT: exact profiles/forms, native/helper/fallback границы, revision/fingerprint, машины/toolchains, correctness counts, commands/seeds, cold/warm/resource результаты.

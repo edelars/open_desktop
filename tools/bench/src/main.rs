@@ -21,6 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("missing command".into());
     };
     let mut input = None::<PathBuf>;
+    let mut corpus_path = None::<PathBuf>;
     let mut case_list = None::<PathBuf>;
     let mut trace_path = None::<PathBuf>;
     let mut output = None::<PathBuf>;
@@ -39,6 +40,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let path: PathBuf = args.next().ok_or("--trace requires a path")?.into();
                 trace_path = Some(path.clone());
                 input = Some(path);
+            }
+            "--corpus" => {
+                corpus_path = Some(args.next().ok_or("--corpus requires a path")?.into());
             }
             "--output" => {
                 output = Some(args.next().ok_or("--output requires a path")?.into());
@@ -330,10 +334,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
+        "cached-native-flags-compare" => {
+            let corpus = corpus_path.ok_or("cached-native-flags-compare requires --corpus PATH")?;
+            let output = output.ok_or("cached-native-flags-compare requires --output PATH")?;
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                let value = if preflight_only {
+                    serde_json::to_value(od_bench::cached_native_flags_compare::preflight(
+                        &corpus,
+                    )?)?
+                } else {
+                    serde_json::to_value(od_bench::cached_native_flags_compare::run(
+                        &corpus,
+                        process_run,
+                    )?)?
+                };
+                od_bench::dispatch_cache::write_atomic(&output, &value)?;
+            }
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                let _ = (corpus, output, process_run, preflight_only);
+                return Err(
+                    "cached-native-flags-compare requires native Apple Silicon macOS execution"
+                        .into(),
+                );
+            }
+        }
         _ => {
             print_usage();
             return Err(
-                "expected record, measure, synthetic, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, or cached-flags-compare".into(),
+                "expected record, measure, synthetic, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, cached-flags-compare, or cached-native-flags-compare".into(),
             );
         }
     }
@@ -365,6 +395,7 @@ fn print_usage() {
   od-bench cache-lifecycle-stress --case-list PATH --trace PATH --calibration calibration.json --epochs N --process-run 1..3 --output report.json\n\
   od-bench flags-compare --process-run 1..3 --output report.json\n\
   od-bench cached-flags-compare [--preflight-only] --process-run 1..3 --output report.json\n\
+  od-bench cached-native-flags-compare --corpus observations.json [--preflight-only] --process-run 1..3 --output report.json\n\
          `record` requires macOS ARM64. `measure` rebuilds all keys before timing."
     );
 }

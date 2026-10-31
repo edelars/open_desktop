@@ -303,7 +303,7 @@ trait CachedEntryStore<H> {
     fn record_hit(&mut self, index: usize) -> Result<(), CacheError>;
     fn record_miss(&mut self) -> Result<(), CacheError>;
     fn record_compile(&mut self) -> Result<(), CacheError>;
-    fn record_publish(&mut self) -> Result<(), CacheError>;
+    fn record_publish(&mut self, code_bytes: usize) -> Result<(), CacheError>;
     fn bind_execution_context(
         &mut self,
         context: ExecutionContextSnapshot,
@@ -360,6 +360,10 @@ pub struct SingleEntryCacheCounters {
     pub resident_entries_high_water: usize,
     pub resident_code_bytes_high_water: usize,
     pub resident_logical_metadata_bytes_high_water: usize,
+    /// Total native bytes successfully published by this cache. Available to
+    /// benchmark builds that enable phase observation; it is not runtime policy.
+    #[cfg(feature = "phase-observation")]
+    pub published_code_bytes: u64,
 }
 
 impl<H> SingleEntryBlockCache<H> {
@@ -537,8 +541,24 @@ impl<H> CachedEntryStore<H> for SingleEntryBlockCache<H> {
     fn record_compile(&mut self) -> Result<(), CacheError> {
         Self::add_counter(&mut self.counters.successful_compiles)
     }
-    fn record_publish(&mut self) -> Result<(), CacheError> {
-        Self::add_counter(&mut self.counters.successful_publications)
+    fn record_publish(&mut self, code_bytes: usize) -> Result<(), CacheError> {
+        #[cfg(feature = "phase-observation")]
+        let published_code_bytes =
+            u64::try_from(code_bytes).map_err(|_| CacheError::SizeOverflow)?;
+        #[cfg(feature = "phase-observation")]
+        let total_published_code_bytes = self
+            .counters
+            .published_code_bytes
+            .checked_add(published_code_bytes)
+            .ok_or(CacheError::CounterOverflow)?;
+        #[cfg(not(feature = "phase-observation"))]
+        let _ = code_bytes;
+        Self::add_counter(&mut self.counters.successful_publications)?;
+        #[cfg(feature = "phase-observation")]
+        {
+            self.counters.published_code_bytes = total_published_code_bytes;
+        }
+        Ok(())
     }
 
     fn bind_execution_context(
@@ -871,7 +891,7 @@ impl<H> CachedEntryStore<H> for MultiEntryBlockCache<H> {
     fn record_compile(&mut self) -> Result<(), CacheError> {
         Self::add_counter(&mut self.counters.successful_compiles)
     }
-    fn record_publish(&mut self) -> Result<(), CacheError> {
+    fn record_publish(&mut self, _code_bytes: usize) -> Result<(), CacheError> {
         Self::add_counter(&mut self.counters.successful_publications)
     }
 
@@ -1216,7 +1236,9 @@ fn run_cached_native_register_v1_strategy_controlled<B: CachedBlockBackend>(
             let published = backend
                 .publish_cached_block(&compiled)
                 .map_err(DispatchError::CachePublish)?;
-            cache.record_publish().map_err(DispatchError::Cache)?;
+            cache
+                .record_publish(code_bytes)
+                .map_err(DispatchError::Cache)?;
             let published = validate_published_candidate(&key, code, dependencies, published)?;
             CachedEntryStore::install(
                 cache,
@@ -1644,7 +1666,9 @@ where
                 backend.publish_cached_block(&compiled)
             })
             .map_err(DispatchError::CachePublish)?;
-            cache.record_publish().map_err(DispatchError::Cache)?;
+            cache
+                .record_publish(code_bytes)
+                .map_err(DispatchError::Cache)?;
             let published = validate_published_candidate(&key, code, dependencies, published)?;
             let index = cache
                 .install(CachedEntry {
@@ -4027,8 +4051,11 @@ mod tests {
             ..LongModeState::default()
         };
 
+        #[cfg(feature = "phase-observation")]
+        let mut expected_published_code_bytes = 0u64;
         for (candidate, expected) in [(false, 1), (true, 2), (true, 2), (false, 3)] {
             state.rip = base;
+            let publications_before = cache.counters().successful_publications;
             if candidate {
                 run_cached_native_register_v1_demand_flags_candidate_controlled(
                     view,
@@ -4066,6 +4093,14 @@ mod tests {
             }
             assert_eq!(cache.counters().successful_compiles, expected);
             assert_eq!(cache.counters().successful_publications, expected);
+            #[cfg(feature = "phase-observation")]
+            if cache.counters().successful_publications != publications_before {
+                expected_published_code_bytes += cache.resident_code_bytes() as u64;
+                assert_eq!(
+                    cache.counters().published_code_bytes,
+                    expected_published_code_bytes
+                );
+            }
         }
         assert_eq!((cache.counters().misses, cache.counters().hits), (3, 1));
         assert_eq!(cache.resident_entries(), 1);

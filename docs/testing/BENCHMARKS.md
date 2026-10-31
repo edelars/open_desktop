@@ -117,6 +117,87 @@ Three M3 Max release runs completed after preflight. The
 [S3-29g report](../reports/STAGE_3_S3-29g_2026-10-31.md) records the bounded
 result and links the raw preflight and process artifacts.
 
+## S3-40d: cached composed NativeRegisterV1 eager/demand-flags comparison
+
+`od-bench cached-native-flags-compare` is a separate, opt-in Apple Silicon
+release harness over the exact S3-34p generated-corpus inputs. It accepts only
+the 1,200 ordered cases with frozen input digest
+`fnv1a64:172fb17b01c502df`, and validates each input digest, seed/index order,
+the enclosing observation-envelope digest, and the stored interpreter
+observation before preparing the profile. The S3-34n generator prefixes two
+or three generated native forms (with a RIP-relative LEA in position two),
+then appends a JZ/MOV/JNZ control-flow suffix, an optional bare NOP, and an
+optional bounded back-edge. Input zero is a separate four-native-form anchor.
+This is composed-corpus evidence and does not repeat the S3-29f seven-case
+single-block comparison or the smaller S3-29g fixed profile.
+
+Before timing, both cached entrypoints run against a recomputed interpreter
+oracle for all cases. The gate checks complete `LongModeState`, exit, total
+retirement and remaining budget. Preflight also records exact first-dispatch
+and immediate-repeat cache deltas for each input and strategy. A composed call
+can compile several blocks, hit a block again, or replace the one cache entry
+during control-flow redispatch. Timed samples must match those frozen deltas.
+The dispatch uses the same immutable bytes, input state, execution context,
+dependency span and capacity-one `SingleEntryBlockCache` policy for eager and
+candidate.
+
+Cold samples create an empty one-entry cache per input and time its first
+dispatch, including all block compiles and publications. Repeat samples execute
+the same input once to prepare the cache, then time its second complete
+dispatch; this is a repeat-dispatch measurement, not a hit-only claim. The
+published mapping is dropped before moving to the next input or strategy, so
+there is no cross-input residency claim. Twenty paired samples alternate
+strategy order. Both sides use the same number of complete corpus sweeps, and
+calibration/restarts require at least 200 ms of summed entrypoint time on each
+side. `CodeView`, admission, cache construction, stop/control setup, state
+reset, first dispatch in repeat mode, oracle validation and teardown are
+outside timed intervals. The timer wraps the cached dispatcher entrypoint.
+
+Reports include raw sample durations and work totals, exact aggregate
+hit/miss/compile/publication/replacement counts and total bytes emitted by
+successful publications, separately from peak resident code/metadata and final
+per-case resident code sizes. The bench-only `phase-observation` feature adds
+one checked cumulative byte addition after each successful publication; it
+does no work on cache hits. That publication-path instrumentation cost is
+included for both strategies and has not been separately latency-measured.
+Raw eager/candidate calibration sweeps and each discarded short sample series
+are retained in the JSON report with trigger pair, previous/next sweep counts,
+and the shortest sample duration, so the selected sweep count and restart
+decisions can be audited.
+Reports also include frozen input digest and file SHA-256, source fingerprints,
+host and toolchain metadata. All samples include all 1,200 inputs; the exact
+per-sweep counter baselines for eager and candidate are reported separately.
+Guard-only inputs retain their observed zero-cache behavior, while composed
+branch paths can record multiple misses, compiles, publications, replacements
+and internal hits.
+Eager remains the reference/default regardless of outcome. This profile does
+not cover owner/MMU/SMC integration, a retained working set, Mini, physical
+x86, Stage 2 integration or the full Stage 3 performance gate. Mini checks
+remain deferred to the end of Stage 3.
+
+Run an explicit preflight before any scored process:
+
+```sh
+cargo run --release -p od-bench --offline -- cached-native-flags-compare \
+  --corpus work/stage3-native-register-v1/manual/native-register-v1-observations.json \
+  --preflight-only --output work/tmp/stage3/s3-40d/preflight.json
+```
+
+After independent source review, collect three release processes sequentially
+during a Stage2-quiet window:
+
+```sh
+for run in 1 2 3; do
+  cargo run --release -p od-bench --offline -- cached-native-flags-compare \
+    --corpus work/stage3-native-register-v1/manual/native-register-v1-observations.json \
+    --process-run "$run" \
+    --output "work/tmp/stage3/s3-40d/cached-native-flags-$run.json"
+done
+```
+
+No S3-40d performance result is recorded yet. The harness implementation and
+focused non-performance checks do not constitute a scored run.
+
 ## Подготовка прогона
 
 Перед измерением закрепить:
