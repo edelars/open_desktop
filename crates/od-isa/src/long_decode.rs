@@ -1073,6 +1073,11 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only legacy `F2 0F 5A /r` scalar binary64-to-binary32 XMM form.
+    Cvtsd2ssRegister {
+        destination: u8,
+        source: u8,
+    },
     /// Local-only legacy `0F 5A /r` packed binary32-to-binary64 XMM form.
     Cvtps2pdRegister {
         destination: u8,
@@ -3783,6 +3788,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     && matches!(prefixes.rex, Some(0x41 | 0x44 | 0x45))
                     && prefix_bytes[0] == 0xf3
                     && prefix_bytes[1] == prefixes.rex.unwrap());
+        let cvtsd2ss_register = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x5a
+            && prefixes.group1 == Some(0xf2)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && (prefix_count == 1 && prefixes.rex.is_none()
+                || prefix_count == 2
+                    && matches!(prefixes.rex, Some(0x41 | 0x44 | 0x45))
+                    && prefix_bytes[0] == 0xf2
+                    && prefix_bytes[1] == prefixes.rex.unwrap());
         let cvtsi2sd_r32_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x2a
             && prefixes.group1 == Some(0xf2)
@@ -4159,6 +4175,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !subss_register
                 && !cvttps2dq_register
                 && !cvtss2sd_register
+                && !cvtsd2ss_register
                 && !cvtsi2sd_r32_register
                 && !cvtsi2sd_r64_register
                 && !cvtsi2ss_r32_register
@@ -4714,6 +4731,16 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
                 Operation::Cvtss2sdRegister {
+                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                    source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x5a) if cvtsd2ss_register => {
+                let modrm = self.byte()?;
+                if modrm >> 6 != 3 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::Cvtsd2ssRegister {
                     destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                     source: (modrm & 7) | ((rex & 1) << 3),
                 }
@@ -21036,6 +21063,44 @@ mod tests {
             }
         );
         assert_eq!(instruction.length, 4);
+    }
+
+    #[test]
+    fn cvtsd2ss_decodes_all_canonical_register_pairs_and_rejects_neighbors() {
+        for destination in 0u8..16 {
+            for source in 0u8..16 {
+                let modrm = 0xc0 | ((destination & 7) << 3) | (source & 7);
+                let mut bytes = vec![0xf2];
+                if destination >= 8 || source >= 8 {
+                    bytes.push(0x40 | ((destination >> 1) & 4) | (source >> 3));
+                }
+                bytes.extend_from_slice(&[0x0f, 0x5a, modrm]);
+                let instruction = Memory::new(&bytes).decode().unwrap();
+                assert_eq!(instruction.length as usize, bytes.len());
+                assert_eq!(
+                    instruction.operation,
+                    Operation::Cvtsd2ssRegister {
+                        destination,
+                        source
+                    },
+                    "{bytes:02x?}"
+                );
+            }
+        }
+
+        for bytes in [
+            &[0xf2, 0x40, 0x0f, 0x5a, 0xc1][..],       // redundant REX
+            &[0xf2, 0x42, 0x0f, 0x5a, 0xc1][..],       // REX.X
+            &[0xf2, 0x48, 0x0f, 0x5a, 0xc1][..],       // REX.W
+            &[0x41, 0xf2, 0x0f, 0x5a, 0xc1][..],       // reordered
+            &[0xf2, 0xf2, 0x0f, 0x5a, 0xc1][..],       // duplicate mandatory prefix
+            &[0xf2, 0x0f, 0x5a, 0x00][..],             // memory form
+            &[0x66, 0xf2, 0x0f, 0x5a, 0xc1][..],       // other prefix
+            &[0xc5, 0xfb, 0x5a, 0xc1][..],             // VEX
+            &[0x62, 0xf1, 0xff, 0x08, 0x5a, 0xc1][..], // EVEX
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
     }
 
     #[test]

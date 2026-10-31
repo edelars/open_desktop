@@ -197,3 +197,9 @@ sticky bits. The schema validator keeps F2 MINSD distinct from F3 MINSS and
 bare MINPS, and the handwritten fixture includes upper-qword NaN/subnormal
 sentinels. JIT/native remain closed. See the
 [plan](../../docs/plans/STAGE_2.md#s2-37i--local-long64-register-only-legacy-minsd-with-masked-status).
+
+
+The schema-v2 `s2-long-cvtsd2ss-registers-v1` profile independently validates
+raw binary64-to-binary32 conversion using integer rounding and event logic. It
+checks low32 result writes, high96 preservation, MXCSR status and atomic numeric
+faults without production helpers or host floating point. See the [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37be-canonical-cvtsd2ss-register-pairs).

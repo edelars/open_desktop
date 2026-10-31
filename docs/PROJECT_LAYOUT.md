@@ -31,7 +31,9 @@ S2-13 shifts/rotates добавил 144 physical fixture inputs (142 register,
 profiles DIVPD, DIVPS и DIVSD; S2-37ax изменяет только low64 destination и
 сохраняет high64. Оракулы и ограничения перечислены в [Stage 2 report](reports/STAGE_2_REPORT.md#s2-37ax--divsd-register-pair-interpreter-profile);
 это локальные schema/interpreter checks, а не физическая приемка или поддержка
-memory forms.
+memory forms. S2-37be добавил CVTSD2SS: обновляется только destination.low32, high96
+сохраняются; MXCSR rounding/FTZ и атомарные SIMD исключения ограничены
+отдельным schema-v2 профилем.
 
 ## Куда класть изменение
 

@@ -19117,3 +19117,18 @@ format verification and final graph refresh were run for the completed change.
 This remains local interpreter
 coverage: no physical CPU, memory form, generic/JIT/native, C ABI or parent
 S2-37/S2-38 completion is claimed.
+
+
+## S2-37be — CVTSD2SS register-pair interpreter profile
+
+Implemented schema-v2 interpreter profile `s2-long-cvtsd2ss-registers-v1` for all 256 canonical Long64 XMM register pairs. Decoder, schema parser and runner accept only legacy `F2 [canonical optional REX 41/44/45] 0F 5A /r`, ModR/M.mod=3, with lengths 4/5. Memory, malformed/redundant/reordered prefixes, trailing bytes, VEX and EVEX are refused. Full fetch precedes SSE2/EM/OSFXSR #UD and TS #NM at CPL0–3; no data callbacks occur. JIT/native/C ABI/fragment/generic admission remains closed.
+
+The interpreter snapshots source XMM before writing and narrows only source.low64 under MXCSR.RC through `Binary32::narrow_from_binary64`. It replaces destination.low32 and preserves destination.high96; source.high64 and old destination are ignored by conversion. Aliases use the source snapshot. MXCSR requires OM=UM=1, DAZ=0 and reserved bits clear. SNaN/subnormal inputs raise IE/DE pre-events. Overflow raises OE|PE; tiny inexact results raise UE|PE. FTZ flushes a nonzero tiny result to signed zero with UE|PE, including exact tiny values, per Intel Floating-Point Reference Sheet v2.13 p.2. An unmasked pre-event commits only IE/DE before fault; an unmasked post-event commits status while preserving the full destination, RIP and retirement. OSXMMEXCPT selects #XM versus SIMD-generated #UD.
+
+The testkit's independent raw-u64 integer oracle validates conversion results and exception state without production conversion helpers or host floating point. Verification passed:
+
+- `cargo test -p od-isa cvtsd2ss_decodes_all_canonical_register_pairs_and_rejects_neighbors --offline` — 256 decoder pairs and malformed encoding neighbors.
+- `cargo test -p od-isa cvtsd2ss_fetch_and_sse2_gates_precede_execution_at_every_cpl --offline` — CPL0–3, full-fetch priority, SSE2/EM/OSFXSR before TS, and no data callbacks.
+- `cargo test -p od-runner cvtsd2ss_register_pairs_rounding_ftz_exceptions_and_denial --offline` — all register pairs/aliases, RC and FTZ boundaries, NaN payloads, overflow/tiny classes, IE/DE/PE masks and atomic faults, gate priority, malformed schema, and JIT/native denial.
+
+No confirmed unresolved defect was found; no entry was added to `docs/KNOWN_ISSUES.md`. Physical x86 acceptance, memory forms and parent S2-37/S2-38 remain open. Source: Intel SDM Rev. 093 Vol. 2A CVTSD2SS pp. 3-234–3-235. Type 3/Table 2-20 on p. 3-235 refers to VEX forms, not this legacy encoding. Generic gates and exception delivery also use Intel Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3; Vol. 3A Event 19/Table 7-8; and Floating-Point Reference Sheet v2.13 p.2.

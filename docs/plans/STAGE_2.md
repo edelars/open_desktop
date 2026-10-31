@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последнее локальное подзадание S2-37bd добавляет canonical CVTPD2PS XMM register-pair interpreter profile: SSE2-gated narrowing двух binary64 lanes до младших 64 бит destination с zeroing верхних 64 бит, MXCSR exception ordering и atomic faults. Профиль требует OM=UM=1; memory forms и physical acceptance остаются открытыми. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. S2-37bc ранее добавило canonical ADDSS XMM register-pair profile для SSE-gated scalar binary32 addition с сохранением high96. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последнее локальное подзадание S2-37be добавило canonical CVTSD2SS XMM register-pair interpreter profile: SSE2-gated scalar binary64-to-binary32 narrowing, запись только destination.low32 и сохранение high96, MXCSR rounding/FTZ и atomic faults. Профиль требует OM=UM=1; memory forms и physical acceptance остаются открытыми. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. S2-37bc ранее добавило canonical ADDSS XMM register-pair profile для SSE-gated scalar binary32 addition с сохранением high96. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -6806,7 +6806,7 @@ inventory.
 | CVTPS2PD | `NP 0F 5A /r` | SSE2 | m64; low 2×f32 → 2×f64 | 3-228 | S2-37u, bounded register-only |
 | CVTPS2PI | `NP 0F 2D /r` | SSE | XMM, m64 → mm; 2×f32 → 2×i32 | 3-231 | missing |
 | CVTSD2SI | `F2 0F 2D /r`; `F2 REX.W 0F 2D /r` | SSE2 | m64 → r32 / r64 | 3-232 | S2-37ac, bounded register-only |
-| CVTSD2SS | `F2 0F 5A /r` | SSE2 | XMM, m64; f64 → low f32 | 3-234 | missing |
+| CVTSD2SS | `F2 0F 5A /r` | SSE2 | XMM, m64; f64 → low f32 | 3-234 | S2-37be, bounded register-only |
 | CVTSI2SD | `F2 0F 2A /r`; `F2 REX.W 0F 2A /r` | SSE2 | r32/m32 or r64/m64 → low f64 | 3-236 | S2-37n/o exact forms; S2-37q canonical 512 register forms |
 | CVTSI2SS | `F3 0F 2A /r`; `F3 REX.W 0F 2A /r` | SSE | r32/m32 or r64/m64 → low f32 | 3-238 | S2-37r canonical 512 Long64 register forms |
 | CVTSS2SD | `F3 0F 5A /r` | SSE2 | XMM, m32; f32 → low f64 | 3-240 | S2-37t, bounded register-only |
@@ -14287,3 +14287,14 @@ memory forms, physical acceptance, other modes or closure of parent S2-37/S2-38.
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37bd--canonical-long64-cvtpd2ps-xmm-register-pairs),
 [report](../reports/STAGE_2_REPORT.md#s2-37bd--cvtpd2ps-register-pair-interpreter-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bd-cvtpd2ps-register-pair-profile).
+
+
+#### S2-37be — canonical Long64 CVTSD2SS XMM register pairs
+
+Implemented the interpreter-only schema-v2 profile `s2-long-cvtsd2ss-registers-v1` for all 256 Long64 XMM destination/source pairs. It accepts legacy `F2 [canonical optional REX 41/44/45] 0F 5A /r`, ModR/M.mod=3, with lengths 4/5. Memory, VEX/EVEX, malformed, redundant or reordered prefixes and trailing bytes are refused. Full fetch precedes SSE2/EM/OSFXSR #UD and TS #NM at CPL0–3; there are no data callbacks. JIT/native/C ABI/fragment/generic admission remains closed.
+
+The scalar conversion snapshots source.low64 before writing, converts binary64 to binary32 under MXCSR.RC using `Binary32::narrow_from_binary64`, writes destination.low32 and preserves destination[127:32]. Source.high64 and old destination do not affect arithmetic; source snapshots make aliases safe. MXCSR admission requires OM=UM=1, DAZ=0 and reserved bits clear. SNaN raises IE, a binary64 subnormal raises DE, overflow raises OE|PE, tiny inexact results raise UE|PE, and FTZ flushes tiny nonzero results to signed zero with UE|PE, including exact tiny results as specified by the Intel Floating-Point Reference Sheet v2.13 p.2. Unmasked IE/DE stops before conversion post-events; unmasked OE/UE/PE records status but preserves destination, RIP and retirement. OSXMMEXCPT selects #XM or SIMD-generated #UD for numeric faults.
+
+The independent schema-v2 oracle uses raw integer classification and rounding, separate from the production helper and host floating point. Local tests cover all pairs and aliases, source/destination poison, all RC/tie and normal/subnormal boundaries, FTZ, overflow, QNaN/SNaN sign/payload, DE/IE/PE masks and sticky status, atomic faults, gates/fetch/CPL/no-callbacks, malformed encodings, result/schema validation and JIT/native denial. Focused unit/integration checks passed; full workspace, layout, formatting and Graphify results are recorded in the stage report.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTSD2SS pp. 3-234–3-235. The Type 3/Table 2-20 reference on p. 3-235 is for VEX forms and is not applied to this legacy form. Generic SSE2 gates and exception behavior use Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3, Vol. 3A Event 19/Table 7-8, and Intel Floating-Point Reference Sheet v2.13 p.2. This profile does not claim memory forms, physical acceptance, or completion of parent S2-37/S2-38.

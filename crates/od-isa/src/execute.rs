@@ -454,6 +454,16 @@ pub struct Cvtss2sdControls {
     pub cr4_osxmmexcpt: bool,
 }
 
+/// Explicit SSE2 and SIMD exception-delivery controls for CVTSD2SS.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Cvtsd2ssControls {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
 /// Explicit SSE2 and SIMD exception-delivery controls for CVTPS2PD.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Cvtps2pdControls {
@@ -678,6 +688,7 @@ struct ExecutionProfiles<'a> {
     subsd_registers: Option<SubsdControls>,
     subss_registers: Option<SubssControls>,
     cvtss2sd_registers: Option<Cvtss2sdControls>,
+    cvtsd2ss_registers: Option<Cvtsd2ssControls>,
     cvtps2pd_registers: Option<Cvtps2pdControls>,
     comiss_ucomiss_registers: Option<ComissUcomissControls>,
     cmpss_registers: Option<CmpssControls>,
@@ -1536,6 +1547,7 @@ pub fn run_with_maxss_unmasked_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -1625,6 +1637,7 @@ pub fn run_with_minsd_unmasked_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -1714,6 +1727,7 @@ pub fn run_with_maxsd_unmasked_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -1803,6 +1817,7 @@ pub fn run_with_minpd_unmasked_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -1892,6 +1907,7 @@ pub fn run_with_minps_unmasked_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -1981,6 +1997,7 @@ pub fn run_with_maxps_unmasked_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2070,6 +2087,7 @@ pub fn run_with_maxpd_unmasked_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2159,6 +2177,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2248,6 +2267,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2337,6 +2357,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2426,6 +2447,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2515,6 +2537,7 @@ pub fn run_with_cvtss2si_registers_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2604,6 +2627,7 @@ pub fn run_with_cvttss2si_registers_controls(
             cvttss2si_registers: Some(controls),
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2692,6 +2716,7 @@ pub fn run_with_cvtsd2si_registers_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: Some(controls),
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2782,6 +2807,7 @@ pub fn run_with_cvttsd2si_registers_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: Some(controls),
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2871,6 +2897,7 @@ pub fn run_with_cvtdq2pd_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -2960,6 +2987,7 @@ pub fn run_with_cvtdq2pd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -3049,6 +3077,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -3138,6 +3167,7 @@ pub fn run_with_cvtps2dq_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -3227,6 +3257,7 @@ pub fn run_with_cvttps2dq_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -3316,6 +3347,7 @@ pub fn run_with_cvtpd2dq_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -3405,6 +3437,7 @@ pub fn run_with_cvtpd2ps_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -3494,6 +3527,7 @@ pub fn run_with_cvttpd2dq_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -3568,6 +3602,97 @@ pub fn run_with_cvtss2sd_register_controls(
             subsd_registers: None,
             subss_registers: None,
             cvtss2sd_registers: Some(controls),
+            cvtps2pd_registers: None,
+            comiss_ucomiss_registers: None,
+            cmpss_registers: None,
+            cmpsd_registers: None,
+            cmppd_registers: None,
+            cmpps_registers: None,
+            comisd_ucomisd_registers: None,
+            cvtsi2sd_r32: None,
+            cvtsi2sd_r64: None,
+            cvtsi2sd_registers: None,
+            cvtsi2ss_registers: None,
+            cvtss2si_registers: None,
+            cvttss2si_registers: None,
+            cvtsd2si_registers: None,
+            cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
+            fx_cr0: None,
+            unmasked_minss_denormal: false,
+            rdtsc: None,
+            swapgs: None,
+            cli: None,
+            sti: None,
+            halt: None,
+            cr0: None,
+            cr4: None,
+        },
+        StepRuntime {
+            rdtsc_source: None,
+            sti_sequence: None,
+            exact_hlt_only: false,
+            stop_requested: &mut stop_requested,
+        },
+    )
+}
+
+/// Execute the bounded canonical Long64 register-register CVTSD2SS profile.
+pub fn run_with_cvtsd2ss_register_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: Cvtsd2ssControls,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_configured(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        ExecutionProfiles {
+            cpuid: None,
+            msr: None,
+            sep: None,
+            xorpd: None,
+            minss_invalid: None,
+            maxss_unmasked: None,
+            minsd_unmasked: None,
+            maxsd_unmasked: None,
+            minpd_unmasked: None,
+            minps_unmasked: None,
+            maxps_unmasked: None,
+            maxpd_unmasked: None,
+            cvtdq2pd: None,
+            cvtdq2pd_registers: None,
+            cvtdq2ps_registers: None,
+            cvtps2dq_registers: None,
+            cvttps2dq_registers: None,
+            cvtpd2dq_registers: None,
+            cvtpd2ps_registers: None,
+            cvttpd2dq_registers: None,
+            sqrtss_registers: None,
+            sqrtsd_registers: None,
+            sqrtps_registers: None,
+            sqrtpd_registers: None,
+            subpd_registers: None,
+            mulpd_registers: None,
+            addpd_registers: None,
+            addsd_registers: None,
+            addss_registers: None,
+            addps_registers: None,
+            divpd_registers: None,
+            divsd_registers: None,
+            divps_registers: None,
+            divss_registers: None,
+            mulsd_registers: None,
+            mulss_registers: None,
+            mulps_registers: None,
+            subps_registers: None,
+            subsd_registers: None,
+            subss_registers: None,
+            cvtss2sd_registers: None,
+            cvtsd2ss_registers: Some(controls),
             cvtps2pd_registers: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
@@ -3672,6 +3797,7 @@ pub fn run_with_cvtps2pd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -3761,6 +3887,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -3850,6 +3977,7 @@ pub fn run_with_cmpss_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -3939,6 +4067,7 @@ pub fn run_with_cmpsd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -4028,6 +4157,7 @@ pub fn run_with_cmppd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -4116,6 +4246,7 @@ pub fn run_with_cmpps_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -4205,6 +4336,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: true,
             rdtsc: None,
@@ -4347,6 +4479,7 @@ pub fn run_with_efer_rdmsr_profile(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -4645,6 +4778,7 @@ pub fn run_with_cr0_profile(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -4735,6 +4869,7 @@ pub fn run_with_cr4_profile(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: profile == Cr4Profile::FpInitThenFxrstor64MinssLong64V1,
             rdtsc: None,
@@ -5059,6 +5194,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: fx_cr0_gate_controls,
             unmasked_minss_denormal,
             rdtsc: rdtsc_controls,
@@ -5333,6 +5469,7 @@ pub fn step_with_cr0_profile(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -5665,6 +5802,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: fx_cr0_gate_controls,
             unmasked_minss_denormal,
             rdtsc: rdtsc_controls,
@@ -5754,6 +5892,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -5845,6 +5984,7 @@ pub fn run_with_sqrtss_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -5934,6 +6074,7 @@ pub fn run_with_sqrtsd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -6023,6 +6164,7 @@ pub fn run_with_sqrtps_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -6112,6 +6254,7 @@ pub fn run_with_sqrtpd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -6201,6 +6344,7 @@ pub fn run_with_subpd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -6290,6 +6434,7 @@ pub fn run_with_mulpd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -6379,6 +6524,7 @@ pub fn run_with_addpd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -6468,6 +6614,7 @@ pub fn run_with_addsd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -6557,6 +6704,7 @@ pub fn run_with_divpd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -6646,6 +6794,7 @@ pub fn run_with_addss_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -6735,6 +6884,7 @@ pub fn run_with_addps_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -6824,6 +6974,7 @@ pub fn run_with_divsd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -6913,6 +7064,7 @@ pub fn run_with_divps_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -7002,6 +7154,7 @@ pub fn run_with_divss_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -7091,6 +7244,7 @@ pub fn run_with_mulsd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -7180,6 +7334,7 @@ pub fn run_with_mulss_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -7269,6 +7424,7 @@ pub fn run_with_mulps_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -7358,6 +7514,7 @@ pub fn run_with_subsd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -7447,6 +7604,7 @@ pub fn run_with_subss_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -7536,6 +7694,7 @@ pub fn run_with_subps_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
             fx_cr0: None,
             unmasked_minss_denormal: false,
             rdtsc: None,
@@ -7618,6 +7777,7 @@ fn step_configured(
         cvttss2si_registers: configured_cvttss2si_register_controls,
         cvtsd2si_registers: configured_cvtsd2si_register_controls,
         cvttsd2si_registers: configured_cvttsd2si_register_controls,
+        cvtsd2ss_registers: configured_cvtsd2ss_register_controls,
         minps_unmasked: configured_minps_controls,
         maxps_unmasked: configured_maxps_controls,
         fx_cr0: fx_cr0_gate_controls,
@@ -9293,6 +9453,42 @@ fn step_configured(
             }));
         }
     }
+    if let Some(controls) = configured_cvtsd2ss_register_controls {
+        let is_canonical_register_form = matches!(
+            instruction.operation,
+            Operation::Cvtsd2ssRegister { destination, source }
+                if instruction.length == if destination >= 8 || source >= 8 { 5 } else { 4 }
+                    && instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0x5a
+                    && instruction.prefixes.group1 == Some(0xf2)
+                    && instruction.prefixes.segment.is_none()
+                    && !instruction.prefixes.operand_override
+                    && !instruction.prefixes.address_override
+                    && instruction.prefixes.rex.map(|rex| rex & 0x4f)
+                        == if destination >= 8 || source >= 8 {
+                            Some(0x40 | (u8::from(destination >= 8) << 2) | u8::from(source >= 8))
+                        } else { None }
+        );
+        if !is_canonical_register_form {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        let fault_vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+            Some(6)
+        } else if controls.cr0_ts {
+            Some(7)
+        } else {
+            None
+        };
+        if let Some(vector) = fault_vector {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+    }
     if let Some(controls) = configured_cvtss2sd_register_controls {
         let is_canonical_register_form = matches!(
             instruction.operation,
@@ -10655,6 +10851,12 @@ fn step_configured(
             && matches!(instruction.operation, Operation::Cvtpd2dqRegister { .. })
         {
             sse.mxcsr & !0x0000_ffbf == 0 && sse.mxcsr & (1 << 6) == 0
+        } else if configured_cvtsd2ss_register_controls.is_some()
+            && matches!(instruction.operation, Operation::Cvtsd2ssRegister { .. })
+        {
+            sse.mxcsr & !0x0000_ffbf == 0
+                && sse.mxcsr & (1 << 6) == 0
+                && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
         } else if configured_cvtpd2ps_register_controls.is_some()
             && matches!(instruction.operation, Operation::Cvtpd2psRegister { .. })
         {
@@ -11360,6 +11562,10 @@ fn step_configured(
             state.sse.is_some()
         }
         Operation::Cvtpd2dqRegister { .. } => false,
+        Operation::Cvtsd2ssRegister { .. } if configured_cvtsd2ss_register_controls.is_some() => {
+            state.sse.is_some()
+        }
+        Operation::Cvtsd2ssRegister { .. } => false,
         Operation::Cvtpd2psRegister { .. } if configured_cvtpd2ps_register_controls.is_some() => {
             state.sse.is_some()
         }
@@ -17161,6 +17367,70 @@ fn step_configured(
             sse.xmm[usize::from(destination)] = result;
         }
         Operation::SqrtpsRegister { .. } => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        Operation::Cvtsd2ssRegister {
+            destination,
+            source,
+        } if configured_cvtsd2ss_register_controls.is_some() => {
+            let (source_xmm, mut result, old_mxcsr) = {
+                let sse = state.sse.as_ref().expect("CVTSD2SS state prevalidated");
+                (
+                    sse.xmm[usize::from(source)],
+                    sse.xmm[usize::from(destination)],
+                    sse.mxcsr,
+                )
+            };
+            let raw = u64::from_le_bytes(source_xmm[..8].try_into().expect("eight byte source"));
+            let binary64 = Binary64::from_bits(raw);
+            let new_ie = binary64.class() == crate::binary_float::BinaryClass::SignalingNaN;
+            let new_de = binary64.class() == crate::binary_float::BinaryClass::Subnormal;
+            let controls = configured_cvtsd2ss_register_controls.expect("profile controls");
+            let sse = state.sse.as_mut().expect("CVTSD2SS state prevalidated");
+            if (new_ie && old_mxcsr & (1 << 7) == 0) || (new_de && old_mxcsr & (1 << 8) == 0) {
+                sse.mxcsr = old_mxcsr | u32::from(new_ie) | (u32::from(new_de) << 1);
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
+            let rounding = cvtss2si_rounding_mode(old_mxcsr);
+            let computed = Binary32::narrow_from_binary64(binary64, rounding);
+            let mut raw32 = computed.value().to_bits();
+            let new_oe = computed.overflow();
+            let new_ue;
+            let mut new_pe = computed.inexact() || new_oe;
+            let tiny = computed.tiny_after_precision_rounding();
+            if old_mxcsr & (1 << 15) != 0 && tiny && raw32 & 0x7fff_ffff != 0 {
+                raw32 &= 1 << 31;
+                new_ue = true;
+                new_pe = true;
+            } else {
+                new_ue = tiny && computed.inexact();
+            }
+            sse.mxcsr = old_mxcsr
+                | u32::from(new_ie)
+                | (u32::from(new_de) << 1)
+                | (u32::from(new_oe) << 3)
+                | (u32::from(new_ue) << 4)
+                | (u32::from(new_pe) << 5);
+            if (new_oe && old_mxcsr & (1 << 10) == 0)
+                || (new_ue && old_mxcsr & (1 << 11) == 0)
+                || (new_pe && old_mxcsr & (1 << 12) == 0)
+            {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
+            result[..4].copy_from_slice(&raw32.to_le_bytes());
+            sse.xmm[usize::from(destination)] = result;
+        }
+        Operation::Cvtsd2ssRegister { .. } => {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -114167,6 +114437,156 @@ mod swapgs_profile_tests {
         assert_eq!(state.sse.as_ref().unwrap().xmm[0][8..], [0x6d; 8]);
         assert_eq!(state.sse.as_ref().unwrap().mxcsr & 3, 2);
         assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn cvtsd2ss_fetch_and_sse2_gates_precede_execution_at_every_cpl() {
+        let code = [0xf2, 0x0f, 0x5a, 0xc1];
+        let base_controls = Cvtsd2ssControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        for cpl in [
+            crate::memory::PrivilegeLevel::Ring0,
+            crate::memory::PrivilegeLevel::Ring1,
+            crate::memory::PrivilegeLevel::Ring2,
+            crate::memory::PrivilegeLevel::Ring3,
+        ] {
+            for (controls, vector) in [
+                (
+                    Cvtsd2ssControls {
+                        sse2_available: false,
+                        ..base_controls
+                    },
+                    6,
+                ),
+                (
+                    Cvtsd2ssControls {
+                        cr0_em: true,
+                        cr0_ts: true,
+                        ..base_controls
+                    },
+                    6,
+                ),
+                (
+                    Cvtsd2ssControls {
+                        cr4_osfxsr: false,
+                        cr0_ts: true,
+                        ..base_controls
+                    },
+                    6,
+                ),
+                (
+                    Cvtsd2ssControls {
+                        cr0_ts: true,
+                        ..base_controls
+                    },
+                    7,
+                ),
+            ] {
+                let mut state = LongModeState::default();
+                state.rip = 0x9900;
+                state.sse = Some(SseState {
+                    xmm: [[0x5a; 16]; 16],
+                    mxcsr: 0x1f80,
+                });
+                let before = state.clone();
+                let mut memory = Memory::at(&code, 0x9900);
+                let mut config = RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x9904),
+                    context: AccessContext::default(),
+                };
+                config.context.privilege = cpl;
+                let result = run_with_cvtsd2ss_register_controls(
+                    &mut state,
+                    &mut memory,
+                    config,
+                    controls,
+                    || false,
+                );
+                assert_eq!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector,
+                        error_code: None,
+                        linear_address: None,
+                    })
+                );
+                assert_eq!(result.instructions_executed, 0);
+                assert_eq!(memory.fetches, [0x9900, 0x9901, 0x9902, 0x9903]);
+                assert!(memory.accesses.is_empty());
+                assert_eq!(state, before);
+            }
+        }
+
+        let mut state = LongModeState::default();
+        state.rip = 0x9a00;
+        state.sse = Some(SseState {
+            xmm: [[0x77; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let mut memory = Memory::at(&code[..2], 0x9a00);
+        memory.fetch_error = Some((
+            0x9a02,
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(4),
+                linear_address: Some(0x9a02),
+            }),
+        ));
+        let result = run_with_cvtsd2ss_register_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x9a04),
+                context: AccessContext::default(),
+            },
+            Cvtsd2ssControls {
+                cr0_em: true,
+                ..base_controls
+            },
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(4),
+                linear_address: Some(0x9a02),
+            })
+        );
+        assert_eq!(memory.fetches, [0x9a00, 0x9a01, 0x9a02]);
+        assert!(memory.accesses.is_empty());
+        assert_eq!(state.rip, 0x9a00);
+
+        let mut generic_state = LongModeState::default();
+        generic_state.rip = 0x9b00;
+        generic_state.sse = Some(SseState {
+            xmm: [[0x6c; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let generic_before = generic_state.clone();
+        let mut generic_memory = Memory::at(&code, 0x9b00);
+        let result = run(
+            &mut generic_state,
+            &mut generic_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x9b04),
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x5a });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(generic_memory.fetches, [0x9b00, 0x9b01, 0x9b02, 0x9b03]);
+        assert!(generic_memory.accesses.is_empty());
+        assert_eq!(generic_state, generic_before);
     }
 
     #[test]

@@ -564,3 +564,11 @@ event ordering with explicit SSE2/CR0/CR4 gates. The schema oracle is independen
 integer code. Memory forms and JIT/native/physical acceptance remain excluded.
 See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bd--canonical-long64-cvtpd2ps-xmm-register-pairs)
 and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-37bd--cvtpd2ps-register-pair-interpreter-profile).
+
+
+S2-37be adds local interpreter-only legacy `CVTSD2SS` register pairs. It
+snapshots source.low64, narrows using MXCSR.RC, writes only destination.low32,
+and preserves high96. The profile implements bounded IE/DE/OE/UE/PE status, FTZ,
+SSE2 gates and atomic SIMD faults; memory/JIT/native/physical execution remain
+outside scope. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37be--canonical-long64-cvtsd2ss-xmm-register-pairs)
+and [stage report](../../docs/reports/STAGE_2_REPORT.md#s2-37be--cvtsd2ss-register-pair-interpreter-profile).

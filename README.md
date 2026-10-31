@@ -132,3 +132,11 @@ strict schema-v2 register profile covers MXCSR rounding/exception ordering and
 all 256 XMM pairs; physical acceptance and memory forms remain outside scope.
 See the [CPU contract](docs/specs/CPU_CONTRACT.md#s2-37bd--canonical-long64-cvtpd2ps-xmm-register-pairs)
 and [Stage 2 report](docs/reports/STAGE_2_REPORT.md#s2-37bd--cvtpd2ps-register-pair-interpreter-profile).
+
+
+The local-only S2-37be `CVTSD2SS` profile narrows source.low64 under MXCSR.RC,
+writes destination.low32 and preserves its high96. The strict schema-v2 slice
+covers all 256 XMM pairs, FTZ/rounding and atomic SIMD exceptions; JIT/native,
+memory forms and physical acceptance remain closed. See the [CPU contract](docs/specs/CPU_CONTRACT.md#s2-37be--canonical-long64-cvtsd2ss-xmm-register-pairs),
+[Stage 2 plan](docs/plans/STAGE_2.md#s2-37be--canonical-long64-cvtsd2ss-xmm-register-pairs)
+and [Stage 2 report](docs/reports/STAGE_2_REPORT.md#s2-37be--cvtsd2ss-register-pair-interpreter-profile).

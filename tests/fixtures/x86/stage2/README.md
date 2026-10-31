@@ -6974,3 +6974,8 @@ bit construction and rounding. All 256 register encodings, aliases, exceptions,
 rounding boundaries, FTZ, NaN payloads, and backend denial are covered by local
 unit/integration scenarios. This is not physical acceptance or memory-form
 support.
+
+
+### S2-37be canonical CVTSD2SS register pairs
+
+`s2_37be_cvtsd2ss_asymmetric_register_pair.case.json` is the literal schema-v2 anchor for canonical legacy `F2 0F 5A C1`. It converts the source low64 value 1+2^-24, puts a signaling-NaN-shaped pattern in source.high64, and uses destination high96 canaries. The independent raw-integer oracle and runner matrix cover all 256 register pairs, aliases, RC/tie and normal/subnormal boundaries, exact/inexact tiny values, FTZ, overflow, signed QNaN/SNaN payloads, DE/IE/PE mask and sticky behavior, atomic faults, gates/fetch/CPL, malformed encodings and JIT/native denial. Memory forms and physical acceptance are not claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37be--canonical-long64-cvtsd2ss-xmm-register-pairs), [plan](../../../../docs/plans/STAGE_2.md#s2-37be--canonical-long64-cvtsd2ss-xmm-register-pairs), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37be--cvtsd2ss-register-pair-interpreter-profile).
