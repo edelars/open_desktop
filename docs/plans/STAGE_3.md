@@ -3083,6 +3083,25 @@ execution, persistent cache reuse, or parallel MAP_JIT mappings. This is a
 partial lifecycle slice; see the
 [S3-38c report](../reports/STAGE_3_S3-38c_2026-10-30.md).
 
+#### S3-38 runtime cache slice: eager composed NativeRegisterV1
+
+Add a separately named opt-in `run_cached_native_register_v1_controlled`
+entrypoint backed by the existing `SingleEntryBlockCache`. The caller owns the
+immutable `CodeView`, complete dependency spans and frozen execution-context
+generation. NativeRegisterV1 uses a distinct semantic profile and compile
+flavor; the general S0-09 fixture admission and default runtime remain
+unchanged. Compile eagerly on miss, retain one published handle on hit, and
+preserve exact bare-NOP interpreter retirement and STOP/event guard order.
+
+The local gates cover same-source/profile isolation, bytes/dependency/context
+changes, one-entry replacement and handle release, failed publication or
+execution, branch-loop reuse, NOP fallback, and interpreter/uncached-eager
+full-state parity. The focused implementation and evidence are in the
+[runtime cache report](../reports/STAGE_3_S3-38b_NATIVE_REGISTER_CACHE_2026-10-30.md).
+This remains a fixture-level cache experiment: it does not provide SMC or
+owner/MMU invalidation, persistent VMHost/session ownership, Mini support,
+performance evidence, or Stage 2 integration.
+
 ### S3-39. Повторить ARM64 smoke на M1 Pro
 
 1. Зафиксировать реально доступные OS/toolchain, способ сборки/передачи собственного artifact и выбранную ad-hoc/Hardened Runtime конфигурацию.

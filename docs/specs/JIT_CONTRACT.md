@@ -1654,6 +1654,29 @@ no new x86 semantics and does not change the default profile.
 Mixed-block parity, pending-statepoint, ordered-pair corpus, exact local gate,
 and full-suite results are recorded in the [S3-33n report](../reports/STAGE_3_S3-33n_2026-10-30.md).
 
+### S3-38b runtime cache slice: eager NativeRegisterV1
+
+`run_cached_native_register_v1_controlled` is a separate opt-in path over a
+fixture-owned immutable `CodeView`, complete caller-owned dependency spans and
+a frozen NativeRegisterV1 execution-context generation. It reuses
+`SingleEntryBlockCache` and eagerly compiles with
+`compile_block_for_native_register_v1`; the demand-flags candidate remains
+uncached. Its `NativeRegisterV1Fixture` semantic profile and
+`S3_38bNativeRegisterV1Cached` compile flavor are distinct from the S0-09
+fixture dispatcher, so identical source bytes and RIP do not share an entry
+across profiles. The generic S0-09 dispatch admission is unchanged.
+
+The one resident entry is keyed and revalidated against the complete code
+view, block boundaries/terminal, dependency identity and versions, and frozen
+execution context. A replacement drops the previous opaque published handle
+before publishing its successor; execution borrows the retained handle through
+result validation. STOP and event guards are checked before lookup and again
+after publication immediately before entry. Exact bare NOP remains a one-step
+interpreter fallback and consumes the same guest budget. This path makes no
+SMC, owner/MMU, Mini or speed claim. Host/unit parity, branch-loop reuse,
+invalidation, capacity, guard priority and publication lifetime are recorded in
+the [bounded runtime cache report](../reports/STAGE_3_S3-38b_NATIVE_REGISTER_CACHE_2026-10-30.md).
+
 ### S3-29d: uncached arithmetic-to-checked-load handoff
 
 The bounded host fixture composes existing eager and demand-flags native
@@ -1971,13 +1994,17 @@ open under S3-17/18/22/23.
 
 ### S3-22a: bounded fixture execution-context identity
 
-The cached fixture-dispatch APIs require a caller-owned, nonzero
-`ExecutionContextId` generation and an explicit `ExecutionProfile`. The only
-admitted profile is `S0_09Fixture + Long64 + canonical48`; other modes,
-canonical widths, or semantic profiles are rejected before cache binding,
-compilation, publication, or execution. `TranslationKey` includes this
-context stamp/profile in addition to existing mapping/backing identities,
-versions, and executable permissions. No second MMU identity layer is added.
+The existing generic cached fixture-dispatch and multi-entry APIs require a
+caller-owned, nonzero `ExecutionContextId` generation and an explicit
+`ExecutionProfile`. Those APIs admit only `S0_09Fixture + Long64 + canonical48`;
+other modes, canonical widths, or semantic profiles are rejected before cache
+binding, compilation, publication, or execution. The separate S3-38b
+`run_cached_native_register_v1_controlled` API admits only
+`NativeRegisterV1Fixture + Long64 + canonical48` in its one-entry
+`SingleEntryBlockCache`. That profile is not admitted by the generic dispatcher
+or the multi-entry cache. `TranslationKey` includes the context stamp/profile
+in addition to existing mapping/backing identities, versions, and executable
+permissions. No second MMU identity layer is added.
 
 The owner must hold a frozen execution/mapping snapshot or lease for the full
 synchronous dispatch call and advance the generation without wrapping on

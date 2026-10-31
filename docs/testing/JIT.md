@@ -32,6 +32,23 @@ This is fixture-level identity/invalidation and redispatch evidence. It does
 not claim physical Intel/AMD self-modifying-code behavior, arbitrary code
 rewrites, production MMU/writer integration, or completion of S3-24.
 
+## S3-38b: cached eager NativeRegisterV1 fixture
+
+Run the three pinned `s3_38b_native_register_v1_*` gates in
+`python3 tests/cpu/stage3_harness.py --suite local`. They cover separate
+NativeRegisterV1 profile/key identity, dependency/source/context changes,
+capacity-one replacement, STOP/event guard ordering, publish/execute failures,
+and host parity/lifetime. The host scenario compares full CPU state and
+retirement against both the interpreter and uncached eager NativeRegisterV1,
+checks a backward branch re-entering the same block, exact NOP interpreter
+handoff, RIP-relative LEA, and hit counters with no repeated compile or
+publication. Counters document reuse and lifecycle only; they are not timing
+evidence.
+
+The cache is fixture-owned and bounded to one entry. These checks do not
+exercise owner/MMU invalidation, SMC, a VMHost-wide cache lifetime, Mini,
+physical x86, Stage 2, or performance acceptance. Those suites remain separate.
+
 ## S3-29a: bounded demand-driven flags correctness candidate
 
 Run `cargo test -p od-jit --lib demand_flags_candidate --offline` and

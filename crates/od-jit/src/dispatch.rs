@@ -317,7 +317,7 @@ fn validate_execution_context(
     current: Option<ExecutionContextSnapshot>,
     requested: ExecutionContextSnapshot,
 ) -> Result<bool, ExecutionContextError> {
-    if !requested.profile.is_supported_fixture() {
+    if !requested.profile.is_supported_cached_fixture() {
         return Err(ExecutionContextError::UnsupportedProfile(requested.profile));
     }
     let Some(current) = current else {
@@ -429,7 +429,7 @@ impl<H> SingleEntryBlockCache<H> {
         context: ExecutionContextSnapshot,
     ) -> Result<(), ExecutionContextError> {
         let Some(current) = self.execution_context else {
-            if !context.profile.is_supported_fixture() {
+            if !context.profile.is_supported_cached_fixture() {
                 return Err(ExecutionContextError::UnsupportedProfile(context.profile));
             }
             self.clear();
@@ -694,10 +694,10 @@ impl<H> MultiEntryBlockCache<H> {
         &mut self,
         context: ExecutionContextSnapshot,
     ) -> Result<(), ExecutionContextError> {
+        if !context.profile.is_supported_fixture() {
+            return Err(ExecutionContextError::UnsupportedProfile(context.profile));
+        }
         let Some(current) = self.execution_context else {
-            if !context.profile.is_supported_fixture() {
-                return Err(ExecutionContextError::UnsupportedProfile(context.profile));
-            }
             self.clear();
             self.execution_context = Some(context);
             return Ok(());
@@ -990,6 +990,317 @@ pub fn run_cached_controlled<B: CachedBlockBackend>(
     )
 }
 
+/// Run the composed NativeRegisterV1 fixture through a one-entry eager cache.
+/// Its cache keys use a dedicated semantic profile and compile flavor, and the
+/// demand-flags candidate remains an uncached API. This is fixture-only: the
+/// caller supplies the immutable code view, complete dependency snapshot and
+/// frozen execution-context generation.
+pub fn run_cached_native_register_v1_controlled<B: CachedBlockBackend>(
+    code: CodeView<'_>,
+    admission: &NativeRegisterV1Admission,
+    execution_context: ExecutionContextSnapshot,
+    dependencies: &[CodeDependencySpan],
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    cache: &mut SingleEntryBlockCache<B::Published>,
+    backend: &mut B,
+) -> Result<FallbackDispatchResult, DispatchError<B::Error>> {
+    if execution_context.profile != ExecutionProfile::NATIVE_REGISTER_V1_LONG64_CANONICAL48 {
+        return Err(DispatchError::ExecutionContext(
+            ExecutionContextError::UnsupportedProfile(execution_context.profile),
+        ));
+    }
+    if !admission.matches_code(code) {
+        return Err(DispatchError::NopAdmissionDoesNotMatchCode);
+    }
+    if let Some(exit) = control_exit(state.rip, code.code_end(), total_budget, control) {
+        return fallback_result(exit, total_budget, total_budget, 0, 0, 0);
+    }
+    if !admission.contains(state.rip) {
+        return Err(DispatchError::EntryNotAdmitted { rip: state.rip });
+    }
+    if let Some(exit) = event_exit(control) {
+        return fallback_result(exit, total_budget, total_budget, 0, 0, 0);
+    }
+    cache
+        .bind_execution_context(execution_context)
+        .map_err(DispatchError::ExecutionContext)?;
+
+    let mut remaining = total_budget;
+    let mut retired_native = 0u64;
+    let mut retired_interpreter = 0u64;
+    let mut blocks_executed = 0u64;
+    loop {
+        if let Some(exit) = control_exit(state.rip, code.code_end(), remaining, control) {
+            return fallback_result(
+                exit,
+                total_budget,
+                remaining,
+                retired_native,
+                retired_interpreter,
+                blocks_executed,
+            );
+        }
+        if !admission.contains(state.rip) {
+            return Err(DispatchError::EntryNotAdmitted { rip: state.rip });
+        }
+        if let Some(exit) = event_exit(control) {
+            return fallback_result(
+                exit,
+                total_budget,
+                remaining,
+                retired_native,
+                retired_interpreter,
+                blocks_executed,
+            );
+        }
+        if admission.admits_nop(state.rip) {
+            if let Some(exit) = step_admitted_fallback::<B::Error>(
+                code,
+                FallbackAdmission::NativeRegisterV1(admission),
+                state,
+                &mut remaining,
+                &mut retired_interpreter,
+                total_budget,
+                retired_native,
+                control,
+            )? {
+                return fallback_result(
+                    exit,
+                    total_budget,
+                    remaining,
+                    retired_native,
+                    retired_interpreter,
+                    blocks_executed,
+                );
+            }
+            validate_fallback_retirement_total(
+                total_budget,
+                remaining,
+                retired_native,
+                retired_interpreter,
+            )?;
+            continue;
+        }
+
+        let built = crate::block::build_block_for_native_register_v1(
+            code,
+            state.rip,
+            AccessContext::default(),
+            crate::block::BlockLimits::default(),
+        )
+        .map_err(|error| DispatchError::Compile(BlockCompileError::Build(error)))?;
+        let guest_block = match built {
+            crate::block::BuildOutcome::Block(block) => block,
+            crate::block::BuildOutcome::NoBlock(_) => {
+                return Err(DispatchError::NoNativePrefix { rip: state.rip });
+            }
+        };
+        let minimum = minimum_cache_key_size::<B::Published>(code, dependencies, &guest_block)
+            .ok_or(DispatchError::Cache(CacheError::SizeOverflow))?;
+        cache.check_minimum(minimum).map_err(DispatchError::Cache)?;
+        let key = TranslationKey::for_block(
+            code,
+            &guest_block,
+            CompileFlavor::S3_38bNativeRegisterV1Cached,
+            execution_context,
+            dependencies,
+        )
+        .map_err(DispatchError::TranslationKey)?;
+        validate_cached_snapshot(&key, code, dependencies)?;
+        let hit_index = cache.find(&key);
+        if let Some(index) = hit_index {
+            cache.record_hit(index).map_err(DispatchError::Cache)?;
+        } else {
+            cache.record_miss().map_err(DispatchError::Cache)?;
+        }
+        let cached_index = if hit_index.is_some() {
+            hit_index.expect("hit index exists")
+        } else {
+            let compiled = match crate::block_compile::compile_block_for_native_register_v1(
+                code, state.rip, admission,
+            )
+            .map_err(DispatchError::Compile)?
+            {
+                BlockCompileOutcome::Compiled(block) => block,
+                BlockCompileOutcome::NoNativePrefix { rip, .. } => {
+                    return Err(DispatchError::NoNativePrefix { rip });
+                }
+            };
+            cache.record_compile().map_err(DispatchError::Cache)?;
+            let logical_bytes = cache
+                .size_for_candidate(&key, &compiled)
+                .map_err(DispatchError::Cache)?;
+            let code_bytes = emitted_code_bytes(&compiled).map_err(DispatchError::Cache)?;
+            cache
+                .prepare_install(code_bytes, logical_bytes)
+                .map_err(DispatchError::Cache)?;
+            validate_cached_snapshot(&key, code, dependencies)?;
+            let published = backend
+                .publish_cached_block(&compiled)
+                .map_err(DispatchError::CachePublish)?;
+            cache.record_publish().map_err(DispatchError::Cache)?;
+            let published = validate_published_candidate(&key, code, dependencies, published)?;
+            CachedEntryStore::install(
+                cache,
+                CachedEntry {
+                    key,
+                    block: compiled,
+                    published,
+                    logical_bytes,
+                },
+            )
+            .map_err(DispatchError::Cache)?
+        };
+        let cached_key = &cache.entry(cached_index).expect("cache index valid").key;
+        if let Err(error) = validate_cached_snapshot(cached_key, code, dependencies) {
+            cache.remove(cached_index).map_err(DispatchError::Cache)?;
+            return Err(error);
+        }
+        if !cached_key.matches_code_view(code) {
+            cache.remove(cached_index).map_err(DispatchError::Cache)?;
+            return Err(DispatchError::StaleDependencySnapshot);
+        }
+        let cached = cache.entry(cached_index).expect("cache index valid");
+        if let Some(exit) = control_exit(state.rip, code.code_end(), remaining, control) {
+            return fallback_result(
+                exit,
+                total_budget,
+                remaining,
+                retired_native,
+                retired_interpreter,
+                blocks_executed,
+            );
+        }
+        if let Some(exit) = event_exit(control) {
+            return fallback_result(
+                exit,
+                total_budget,
+                remaining,
+                retired_native,
+                retired_interpreter,
+                blocks_executed,
+            );
+        }
+        let execution = backend.execute_cached_block(
+            &cached.published,
+            &cached.block,
+            state,
+            remaining,
+            control,
+        );
+        let report = match execution {
+            Ok(report) => report,
+            Err(error) => {
+                cache.remove(cached_index).map_err(DispatchError::Cache)?;
+                return Err(DispatchError::CacheExecutor(error));
+            }
+        };
+        validate_counters(
+            report,
+            remaining,
+            u64::from(cached.block.emitted().pc_map().instruction_count()),
+        )?;
+        remaining = report.remaining_budget;
+        retired_native = retired_native
+            .checked_add(report.retired_instructions)
+            .ok_or(DispatchError::AggregateOverflow)?;
+        blocks_executed = blocks_executed
+            .checked_add(1)
+            .ok_or(DispatchError::AggregateOverflow)?;
+        validate_fallback_retirement_total(
+            total_budget,
+            remaining,
+            retired_native,
+            retired_interpreter,
+        )?;
+        match report.exit {
+            RuntimeExitTag::NeedInterpreter => {
+                let Some(exit) = step_admitted_fallback::<B::Error>(
+                    code,
+                    FallbackAdmission::NativeRegisterV1(admission),
+                    state,
+                    &mut remaining,
+                    &mut retired_interpreter,
+                    total_budget,
+                    retired_native,
+                    control,
+                )?
+                else {
+                    validate_fallback_retirement_total(
+                        total_budget,
+                        remaining,
+                        retired_native,
+                        retired_interpreter,
+                    )?;
+                    continue;
+                };
+                return fallback_result(
+                    exit,
+                    total_budget,
+                    remaining,
+                    retired_native,
+                    retired_interpreter,
+                    blocks_executed,
+                );
+            }
+            RuntimeExitTag::BlockComplete | RuntimeExitTag::DispatchCandidate => {
+                if !admission.contains(state.rip) {
+                    return Err(DispatchError::UnadmittedDispatchRip { rip: state.rip });
+                }
+                if let Some(exit) = control_exit(state.rip, code.code_end(), remaining, control) {
+                    return fallback_result(
+                        exit,
+                        total_budget,
+                        remaining,
+                        retired_native,
+                        retired_interpreter,
+                        blocks_executed,
+                    );
+                }
+                if report.retired_instructions == 0 {
+                    return Err(DispatchError::ZeroProgress { rip: state.rip });
+                }
+                if let Some(exit) = event_exit(control) {
+                    return fallback_result(
+                        exit,
+                        total_budget,
+                        remaining,
+                        retired_native,
+                        retired_interpreter,
+                        blocks_executed,
+                    );
+                }
+            }
+            RuntimeExitTag::BudgetExhausted => {
+                if remaining != 0 {
+                    return Err(DispatchError::InvalidBudgetExit { remaining });
+                }
+                let exit = control_exit(state.rip, code.code_end(), remaining, control)
+                    .expect("zero remaining budget always produces a terminal control result");
+                return fallback_result(
+                    exit,
+                    total_budget,
+                    remaining,
+                    retired_native,
+                    retired_interpreter,
+                    blocks_executed,
+                );
+            }
+            exit => {
+                return fallback_result(
+                    DispatchExit::Runtime(exit),
+                    total_budget,
+                    remaining,
+                    retired_native,
+                    retired_interpreter,
+                    blocks_executed,
+                );
+            }
+        }
+    }
+}
 /// Run through the bounded multi-entry cache. The configured entry count must
 /// fit the backend's simultaneously published-block capacity.
 pub fn run_multi_cached<B: MultiBlockCachedBackend>(
@@ -3222,6 +3533,12 @@ mod tests {
         )
     }
 
+    fn native_test_context_with_generation(generation: u64) -> ExecutionContextSnapshot {
+        ExecutionContextSnapshot::native_register_v1_fixture(
+            ExecutionContextId::from_u64(generation).expect("test context ID is nonzero"),
+        )
+    }
+
     #[derive(Default)]
     struct ScriptedExecutor {
         reports: Vec<(BlockExecutionReport, Option<u64>)>,
@@ -3530,6 +3847,384 @@ mod tests {
                 executable: true,
             },
         }]
+    }
+
+    fn native_admission(code: CodeView<'_>) -> NativeRegisterV1Admission {
+        NativeRegisterV1Admission::from_code(code).expect("fixture code is admitted")
+    }
+
+    fn mock_cached_backend(tracker: Rc<RefCell<PublishedTracker>>) -> MockCachedBackend {
+        MockCachedBackend(tracker)
+    }
+
+    #[test]
+    fn native_cached_profile_isolated_and_dependency_context_changes_miss() {
+        let code = [0x48, 0xB8, 0x2A, 0, 0, 0, 0, 0, 0, 0];
+        let base = 0x7A00;
+        let view = CodeView::new(base, &code).unwrap();
+        let admission = native_admission(view);
+        let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let mut backend = mock_cached_backend(tracker.clone());
+        let stop = AtomicU8::new(0);
+        let control = DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let mut state = LongModeState {
+            rip: base,
+            ..LongModeState::default()
+        };
+        let deps_v1 = dependency(view, 1);
+        run_cached_native_register_v1_controlled(
+            view,
+            &admission,
+            native_test_context_with_generation(1),
+            &deps_v1,
+            &mut state,
+            4,
+            control,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        let first = cache.counters();
+        assert_eq!((first.misses, first.hits), (1, 0));
+
+        state.rip = base;
+        run_cached_native_register_v1_controlled(
+            view,
+            &admission,
+            native_test_context_with_generation(1),
+            &deps_v1,
+            &mut state,
+            4,
+            control,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(cache.counters().hits, 1);
+
+        state.rip = base;
+        let deps_v2 = dependency(view, 2);
+        run_cached_native_register_v1_controlled(
+            view,
+            &admission,
+            native_test_context_with_generation(1),
+            &deps_v2,
+            &mut state,
+            4,
+            control,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(cache.counters().misses, 2, "mapping version is in the key");
+        assert_eq!(cache.counters().replacements, 1);
+
+        let mut deps_new_mapping = deps_v2;
+        deps_new_mapping[0].identity.mapping = MappingId::new(NonZeroU64::new(22).unwrap());
+        state.rip = base;
+        run_cached_native_register_v1_controlled(
+            view,
+            &admission,
+            native_test_context_with_generation(1),
+            &deps_new_mapping,
+            &mut state,
+            4,
+            control,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(cache.counters().misses, 3, "mapping identity is in the key");
+
+        let changed_code = [0x48, 0xB8, 0x2B, 0, 0, 0, 0, 0, 0, 0];
+        let changed_view = CodeView::new(base, &changed_code).unwrap();
+        let changed_admission = native_admission(changed_view);
+        let changed_deps = dependency(changed_view, 2);
+        state.rip = base;
+        run_cached_native_register_v1_controlled(
+            changed_view,
+            &changed_admission,
+            native_test_context_with_generation(1),
+            &changed_deps,
+            &mut state,
+            4,
+            control,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(
+            cache.counters().misses,
+            4,
+            "source bytes are part of the key"
+        );
+
+        state.rip = base;
+        run_cached_native_register_v1_controlled(
+            changed_view,
+            &changed_admission,
+            native_test_context_with_generation(2),
+            &changed_deps,
+            &mut state,
+            4,
+            control,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(
+            cache.counters().misses,
+            5,
+            "context generation flushes the key"
+        );
+
+        let fixture_admission = AdmittedInstructionBoundaries::from_fixture_decode(
+            changed_view,
+            &od_isa::decode(&changed_code).unwrap(),
+        )
+        .unwrap();
+        state.rip = base;
+        run_cached_controlled(
+            changed_view,
+            &fixture_admission,
+            test_context_with_generation(3),
+            &changed_deps,
+            &mut state,
+            4,
+            control,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(cache.counters().misses, 6);
+        assert_eq!(
+            cache.counters().hits,
+            1,
+            "S0-09 cannot hit NativeRegisterV1"
+        );
+        assert_eq!(cache.counters().successful_compiles, 6);
+        assert_eq!(cache.counters().successful_publications, 6);
+        assert_eq!(cache.resident_entries(), 1);
+        assert!(cache.resident_code_bytes() <= cache.counters().resident_code_bytes_high_water);
+        assert!(cache.resident_logical_bytes() <= MAX_SINGLE_ENTRY_CACHE_BYTES);
+    }
+
+    #[test]
+    fn native_cached_guards_and_failures_preserve_publication_and_entry_counts() {
+        let code = [0x48, 0x83, 0xc0, 0x01];
+        let base = 0x7B00;
+        let view = CodeView::new(base, &code).unwrap();
+        let admission = native_admission(view);
+        let deps = dependency(view, 1);
+
+        let stop = AtomicU8::new(1);
+        let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let mut backend = mock_cached_backend(tracker.clone());
+        let mut state = LongModeState {
+            rip: base,
+            ..LongModeState::default()
+        };
+        let result = run_cached_native_register_v1_controlled(
+            view,
+            &admission,
+            native_test_context_with_generation(1),
+            &deps,
+            &mut state,
+            4,
+            DispatchControl {
+                stop_rip: None,
+                stop_requested: &stop,
+                event_requested: None,
+            },
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        assert_eq!(
+            result.exit,
+            DispatchExit::Runtime(RuntimeExitTag::StopRequested)
+        );
+        assert_eq!(cache.counters().misses, 0, "pre-lookup STOP wins");
+        assert_eq!(tracker.borrow().executions, 0);
+
+        for event_after_publish in [false, true] {
+            let stop = Rc::new(AtomicU8::new(0));
+            let event = Rc::new(AtomicBool::new(false));
+            let tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+            if event_after_publish {
+                tracker.borrow_mut().event_on_publish = Some(event.clone());
+            } else {
+                tracker.borrow_mut().stop_on_publish = Some(stop.clone());
+            }
+            let mut backend = mock_cached_backend(tracker.clone());
+            let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+            let mut state = LongModeState {
+                rip: base,
+                ..LongModeState::default()
+            };
+            let result = run_cached_native_register_v1_controlled(
+                view,
+                &admission,
+                native_test_context_with_generation(1),
+                &deps,
+                &mut state,
+                4,
+                DispatchControl {
+                    stop_rip: None,
+                    stop_requested: &stop,
+                    event_requested: Some(&event),
+                },
+                &mut cache,
+                &mut backend,
+            )
+            .unwrap();
+            assert_eq!(
+                result.exit,
+                if event_after_publish {
+                    DispatchExit::EventPending
+                } else {
+                    DispatchExit::Runtime(RuntimeExitTag::StopRequested)
+                }
+            );
+            assert_eq!(
+                tracker.borrow().executions,
+                0,
+                "guard wins before native entry"
+            );
+            assert_eq!(
+                cache.resident_entries(),
+                1,
+                "successful publication is retained"
+            );
+            assert_eq!(cache.counters().successful_publications, 1);
+        }
+
+        let tracker = Rc::new(RefCell::new(PublishedTracker {
+            fail_publish: true,
+            ..PublishedTracker::default()
+        }));
+        let mut backend = mock_cached_backend(tracker.clone());
+        let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let mut state = LongModeState {
+            rip: base,
+            ..LongModeState::default()
+        };
+        assert!(matches!(
+            run_cached_native_register_v1_controlled(
+                view,
+                &admission,
+                native_test_context_with_generation(1),
+                &deps,
+                &mut state,
+                4,
+                DispatchControl {
+                    stop_rip: None,
+                    stop_requested: &AtomicU8::new(0),
+                    event_requested: None
+                },
+                &mut cache,
+                &mut backend,
+            ),
+            Err(DispatchError::CachePublish("publish failed"))
+        ));
+        assert_eq!(cache.counters().successful_publications, 0);
+        assert_eq!(cache.resident_entries(), 0);
+
+        let tracker = Rc::new(RefCell::new(PublishedTracker {
+            fail_execute_once: true,
+            ..PublishedTracker::default()
+        }));
+        let mut backend = mock_cached_backend(tracker.clone());
+        let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let mut state = LongModeState {
+            rip: base,
+            ..LongModeState::default()
+        };
+        assert!(matches!(
+            run_cached_native_register_v1_controlled(
+                view,
+                &admission,
+                native_test_context_with_generation(1),
+                &deps,
+                &mut state,
+                4,
+                DispatchControl {
+                    stop_rip: None,
+                    stop_requested: &AtomicU8::new(0),
+                    event_requested: None
+                },
+                &mut cache,
+                &mut backend,
+            ),
+            Err(DispatchError::CacheExecutor("execution failed"))
+        ));
+        assert_eq!(cache.counters().successful_publications, 1);
+        assert_eq!(
+            cache.resident_entries(),
+            0,
+            "failed entry is safely released after return"
+        );
+        assert_eq!(tracker.borrow().live, 0);
+        multi_entry_cache_rejects_native_register_v1_context_before_and_after_binding();
+    }
+
+    fn multi_entry_cache_rejects_native_register_v1_context_before_and_after_binding() {
+        let mut cache = MultiEntryBlockCache::<MockPublished>::new(
+            1,
+            4096,
+            MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+        let native = native_test_context_with_generation(2);
+        assert!(matches!(
+            cache.reset_for_execution_context(native),
+            Err(ExecutionContextError::UnsupportedProfile(_))
+        ));
+        let code = [0x48, 0xB8, 0x2A, 0, 0, 0, 0, 0, 0, 0];
+        let view = CodeView::new(0x7C00, &code).unwrap();
+        let admission = AdmittedInstructionBoundaries::from_fixture_decode(
+            view,
+            &od_isa::decode(&code).unwrap(),
+        )
+        .unwrap();
+        let dependencies = dependency(view, 1);
+        let tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let mut backend = mock_cached_backend(tracker);
+        let mut state = LongModeState {
+            rip: view.base_rip(),
+            ..LongModeState::default()
+        };
+        assert!(matches!(
+            run_multi_cached(
+                view,
+                &admission,
+                native,
+                &dependencies,
+                &mut state,
+                1,
+                &mut cache,
+                &mut backend,
+            ),
+            Err(DispatchError::ExecutionContext(
+                ExecutionContextError::UnsupportedProfile(_)
+            ))
+        ));
+        assert_eq!(cache.counters().misses, 0);
+        assert_eq!(cache.counters().successful_compiles, 0);
+        cache
+            .reset_for_execution_context(test_context_with_generation(1))
+            .unwrap();
+        assert!(matches!(
+            cache.reset_for_execution_context(native),
+            Err(ExecutionContextError::UnsupportedProfile(_))
+        ));
+        assert_eq!(cache.resident_entries(), 0);
     }
 
     struct FixtureCodeOwner {

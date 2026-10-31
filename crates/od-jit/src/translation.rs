@@ -97,6 +97,9 @@ pub enum GuestExecutionMode {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum JitSemanticProfile {
     S0_09Fixture,
+    /// Opt-in composed NativeRegisterV1 fixture. Its translation keys are
+    /// intentionally disjoint from the S0-09 fixture dispatcher.
+    NativeRegisterV1Fixture,
     Other,
 }
 
@@ -116,8 +119,21 @@ impl ExecutionProfile {
         jit_profile: JitSemanticProfile::S0_09Fixture,
     };
 
+    pub const NATIVE_REGISTER_V1_LONG64_CANONICAL48: Self = Self {
+        mode: GuestExecutionMode::Long64,
+        canonical_address_bits: 48,
+        jit_profile: JitSemanticProfile::NativeRegisterV1Fixture,
+    };
+
     pub const fn is_supported_fixture(self) -> bool {
         matches!(self, Self::S0_09_LONG64_CANONICAL48)
+    }
+
+    pub const fn is_supported_cached_fixture(self) -> bool {
+        matches!(
+            self,
+            Self::S0_09_LONG64_CANONICAL48 | Self::NATIVE_REGISTER_V1_LONG64_CANONICAL48
+        )
     }
 }
 
@@ -138,6 +154,10 @@ impl ExecutionContextSnapshot {
     pub const fn s0_09_fixture(id: ExecutionContextId) -> Self {
         Self::new(id, ExecutionProfile::S0_09_LONG64_CANONICAL48)
     }
+
+    pub const fn native_register_v1_fixture(id: ExecutionContextId) -> Self {
+        Self::new(id, ExecutionProfile::NATIVE_REGISTER_V1_LONG64_CANONICAL48)
+    }
 }
 
 /// Compile modes whose admission/lowering assumptions can change output.
@@ -145,6 +165,8 @@ impl ExecutionContextSnapshot {
 pub enum CompileFlavor {
     S0_09NativeBlock,
     S0_09FixtureDispatch,
+    /// Eager composed NativeRegisterV1 cached dispatch; separate from S0-09.
+    S3_38bNativeRegisterV1Cached,
     S0_09NopFallback,
     /// Uncached first V2 checked `MOV r64, [mem]` compiler profile.
     S3_19bMemoryLoadV2,

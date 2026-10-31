@@ -34615,6 +34615,456 @@ mod tests {
     }
 
     #[test]
+    fn cached_native_register_v1_reuses_eager_block_with_full_state_parity() {
+        let _guard = jit_test_lock();
+        use od_jit::translation::{
+            AddressSpaceId, BackingId, BackingVersion, CodeDependencySpan, CodeIdentity,
+            ExecutionContextId, ExecutionContextSnapshot, MappingId, MappingVersion,
+        };
+        use std::num::NonZeroU64;
+
+        let base = 0x7C00;
+        // ADD writes arithmetic flags; RIP-relative LEA preserves them.
+        let code = [0x48, 0x83, 0xC0, 0x01, 0x48, 0x8D, 0x05, 0, 0, 0, 0];
+        let view = CodeView::new(base, &code).unwrap();
+        let admission = od_jit::block::NativeRegisterV1Admission::from_code(view).unwrap();
+        let nz = |value| NonZeroU64::new(value).unwrap();
+        let dependencies = [CodeDependencySpan {
+            start_rip: view.base_rip(),
+            end_rip: view.code_end(),
+            identity: CodeIdentity {
+                address_space: AddressSpaceId::new(nz(11)),
+                mapping: MappingId::new(nz(12)),
+                mapping_version: MappingVersion::new(nz(1)),
+                backing: BackingId::new(nz(13)),
+                backing_version: BackingVersion::new(nz(1)),
+                executable: true,
+            },
+        }];
+        let context = ExecutionContextSnapshot::native_register_v1_fixture(
+            ExecutionContextId::from_u64(1).unwrap(),
+        );
+        let mut initial = od_isa::LongModeState::default();
+        initial.rip = base;
+        initial.gpr[0] = u64::MAX;
+        initial.rflags = 0xA55;
+
+        let mut interpreter_state = initial.clone();
+        struct CodeOnly<'a> {
+            base: u64,
+            code: &'a [u8],
+        }
+        impl od_isa::memory::GuestMemory for CodeOnly<'_> {
+            fn fetch(
+                &mut self,
+                address: u64,
+                _: od_isa::memory::AccessContext,
+            ) -> Result<u8, od_isa::memory::MemoryError> {
+                self.code
+                    .get(usize::try_from(address - self.base).unwrap_or(usize::MAX))
+                    .copied()
+                    .ok_or(od_isa::memory::MemoryError::Unmapped {
+                        address,
+                        access: od_isa::memory::AccessKind::Fetch,
+                    })
+            }
+            fn read(
+                &mut self,
+                address: u64,
+                _: od_isa::memory::AccessContext,
+                _: &mut [u8],
+            ) -> Result<(), od_isa::memory::MemoryError> {
+                Err(od_isa::memory::MemoryError::Unmapped {
+                    address,
+                    access: od_isa::memory::AccessKind::Read,
+                })
+            }
+            fn write(
+                &mut self,
+                address: u64,
+                _: od_isa::memory::AccessContext,
+                _: &[u8],
+            ) -> Result<(), od_isa::memory::MemoryError> {
+                Err(od_isa::memory::MemoryError::Unmapped {
+                    address,
+                    access: od_isa::memory::AccessKind::Write,
+                })
+            }
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: od_isa::memory::AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, od_isa::memory::MemoryError> {
+                Err(od_isa::memory::MemoryError::Unmapped {
+                    address,
+                    access: od_isa::memory::AccessKind::Write,
+                })
+            }
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: od_isa::memory::AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, od_isa::memory::MemoryError> {
+                Err(od_isa::memory::MemoryError::Unmapped {
+                    address,
+                    access: od_isa::memory::AccessKind::Write,
+                })
+            }
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: od_isa::memory::AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, od_isa::memory::MemoryError> {
+                Err(od_isa::memory::MemoryError::Unmapped {
+                    address,
+                    access: od_isa::memory::AccessKind::Write,
+                })
+            }
+            fn mfence(
+                &mut self,
+                _: od_isa::memory::AccessContext,
+            ) -> Result<(), od_isa::memory::MemoryError> {
+                Ok(())
+            }
+        }
+        let mut memory = CodeOnly { base, code: &code };
+        let mut interpreter_retired = 0;
+        while interpreter_state.rip < view.code_end() {
+            od_isa::execute::step(
+                &mut interpreter_state,
+                &mut memory,
+                od_isa::memory::AccessContext::default(),
+            )
+            .unwrap();
+            interpreter_retired += 1;
+        }
+
+        let stop = AtomicU8::new(0);
+        let control = od_jit::dispatch::DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let mut eager_state = initial.clone();
+        let eager = od_jit::dispatch::run_with_native_register_v1(
+            view,
+            &admission,
+            &mut eager_state,
+            4,
+            control,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        assert_eq!(eager_state, interpreter_state);
+        assert_eq!(
+            eager.retired_native + eager.retired_interpreter,
+            interpreter_retired
+        );
+
+        let mut cache = od_jit::dispatch::SingleEntryBlockCache::new(
+            1,
+            od_jit::dispatch::MAX_SINGLE_ENTRY_CACHE_BYTES,
+        )
+        .unwrap();
+        let mut cached_state = initial.clone();
+        let first = od_jit::dispatch::run_cached_native_register_v1_controlled(
+            view,
+            &admission,
+            context,
+            &dependencies,
+            &mut cached_state,
+            4,
+            control,
+            &mut cache,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        assert_eq!(first, eager);
+        assert_eq!(cached_state, eager_state);
+        assert_eq!(
+            cached_state.gpr[0],
+            base + 11,
+            "RIP-relative LEA uses next RIP"
+        );
+        assert_eq!(cache.counters().successful_compiles, 1);
+        assert_eq!(cache.counters().successful_publications, 1);
+        assert_eq!(cache.resident_entries(), 1);
+
+        cached_state = initial;
+        let second = od_jit::dispatch::run_cached_native_register_v1_controlled(
+            view,
+            &admission,
+            context,
+            &dependencies,
+            &mut cached_state,
+            4,
+            control,
+            &mut cache,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        assert_eq!(second, first);
+        assert_eq!(cached_state, eager_state);
+        assert_eq!(cache.counters().hits, 1);
+        assert_eq!(cache.counters().successful_compiles, 1);
+        assert_eq!(cache.counters().successful_publications, 1);
+        assert_eq!(cache.counters().resident_entries_high_water, 1);
+        assert!(cache.counters().resident_code_bytes_high_water > 0);
+        assert!(cache.counters().resident_logical_metadata_bytes_high_water > 0);
+
+        cached_state = od_isa::LongModeState::default();
+        cached_state.rip = base;
+        cached_state.gpr[0] = u64::MAX;
+        cached_state.rflags = 0xA55;
+        let recompiled = od_jit::dispatch::run_cached_native_register_v1_controlled(
+            view,
+            &admission,
+            ExecutionContextSnapshot::native_register_v1_fixture(
+                ExecutionContextId::from_u64(2).unwrap(),
+            ),
+            &dependencies,
+            &mut cached_state,
+            4,
+            control,
+            &mut cache,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        assert_eq!(recompiled, first);
+        assert_eq!(cached_state, eager_state);
+        assert_eq!(
+            cached_state.gpr[0],
+            base + 11,
+            "recompile preserves RIP-relative LEA"
+        );
+        assert_eq!(cache.counters().hits, 1);
+        assert_eq!(cache.counters().successful_compiles, 2);
+        assert_eq!(cache.counters().successful_publications, 2);
+        cache.clear();
+        assert_eq!(cache.resident_entries(), 0);
+        cached_native_register_v1_branch_loop_and_nop_handoff_retire_exactly();
+    }
+
+    fn cached_native_register_v1_branch_loop_and_nop_handoff_retire_exactly() {
+        use od_jit::translation::{
+            AddressSpaceId, BackingId, BackingVersion, CodeDependencySpan, CodeIdentity,
+            ExecutionContextId, ExecutionContextSnapshot, MappingId, MappingVersion,
+        };
+        use std::num::NonZeroU64;
+        let nz = |value| NonZeroU64::new(value).unwrap();
+        let context = ExecutionContextSnapshot::native_register_v1_fixture(
+            ExecutionContextId::from_u64(2).unwrap(),
+        );
+        let stop = AtomicU8::new(0);
+        let control = od_jit::dispatch::DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+
+        // JNZ returns to the same entry until RAX reaches three.
+        let loop_code = [0x48, 0x83, 0xC0, 0x01, 0x48, 0x83, 0xF8, 0x03, 0x75, 0xF6];
+        let loop_view = CodeView::new(0x7D00, &loop_code).unwrap();
+        let loop_admission =
+            od_jit::block::NativeRegisterV1Admission::from_code(loop_view).unwrap();
+        let loop_dependencies = [CodeDependencySpan {
+            start_rip: loop_view.base_rip(),
+            end_rip: loop_view.code_end(),
+            identity: CodeIdentity {
+                address_space: AddressSpaceId::new(nz(21)),
+                mapping: MappingId::new(nz(22)),
+                mapping_version: MappingVersion::new(nz(1)),
+                backing: BackingId::new(nz(23)),
+                backing_version: BackingVersion::new(nz(1)),
+                executable: true,
+            },
+        }];
+        let mut initial = od_isa::LongModeState::default();
+        initial.rip = loop_view.base_rip();
+        let mut eager_state = initial.clone();
+        let eager = od_jit::dispatch::run_with_native_register_v1(
+            loop_view,
+            &loop_admission,
+            &mut eager_state,
+            12,
+            control,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        assert_eq!(eager.exit, od_jit::dispatch::DispatchExit::CodeEnd);
+        assert_eq!(eager_state.gpr[0], 3);
+        assert_eq!(eager.retired_native, 9);
+
+        let mut cache = od_jit::dispatch::SingleEntryBlockCache::new(
+            1,
+            od_jit::dispatch::MAX_SINGLE_ENTRY_CACHE_BYTES,
+        )
+        .unwrap();
+        let mut cached_state = initial;
+        let cached = od_jit::dispatch::run_cached_native_register_v1_controlled(
+            loop_view,
+            &loop_admission,
+            context,
+            &loop_dependencies,
+            &mut cached_state,
+            12,
+            control,
+            &mut cache,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        assert_eq!(cached, eager);
+        assert_eq!(cached_state, eager_state);
+        assert!(
+            cache.counters().hits >= 2,
+            "backedge reuses the resident block"
+        );
+        assert_eq!(cache.counters().successful_compiles, 1);
+        assert_eq!(cache.counters().successful_publications, 1);
+        cache.clear();
+
+        let mut budget_eager_state = od_isa::LongModeState::default();
+        budget_eager_state.rip = loop_view.base_rip();
+        let budget_eager = od_jit::dispatch::run_with_native_register_v1(
+            loop_view,
+            &loop_admission,
+            &mut budget_eager_state,
+            4,
+            control,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        let mut budget_cached_state = od_isa::LongModeState::default();
+        budget_cached_state.rip = loop_view.base_rip();
+        let budget_cached = od_jit::dispatch::run_cached_native_register_v1_controlled(
+            loop_view,
+            &loop_admission,
+            context,
+            &loop_dependencies,
+            &mut budget_cached_state,
+            4,
+            control,
+            &mut cache,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        assert_eq!(budget_cached, budget_eager);
+        assert_eq!(budget_cached_state, budget_eager_state);
+        assert_eq!(
+            budget_cached.exit,
+            od_jit::dispatch::DispatchExit::BudgetExhausted
+        );
+        assert_eq!(budget_cached.remaining_budget, 0);
+        assert_eq!(budget_cached_state.rip, loop_view.base_rip() + 4);
+
+        cache.clear();
+        let stop_control = od_jit::dispatch::DispatchControl {
+            stop_rip: Some(loop_view.base_rip() + 4),
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let mut stop_eager_state = od_isa::LongModeState::default();
+        stop_eager_state.rip = loop_view.base_rip();
+        let stop_eager = od_jit::dispatch::run_with_native_register_v1(
+            loop_view,
+            &loop_admission,
+            &mut stop_eager_state,
+            12,
+            stop_control,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        let mut stop_cached_state = od_isa::LongModeState::default();
+        stop_cached_state.rip = loop_view.base_rip();
+        let stop_cached = od_jit::dispatch::run_cached_native_register_v1_controlled(
+            loop_view,
+            &loop_admission,
+            context,
+            &loop_dependencies,
+            &mut stop_cached_state,
+            12,
+            stop_control,
+            &mut cache,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        assert_eq!(stop_cached, stop_eager);
+        assert_eq!(stop_cached_state, stop_eager_state);
+        assert_eq!(stop_cached_state.rip, loop_view.base_rip() + 4);
+        assert_eq!(stop_cached.retired_native, 1);
+        assert_eq!(
+            stop_cached.exit,
+            od_jit::dispatch::DispatchExit::Runtime(od_jit::runtime::RuntimeExitTag::StopAddress)
+        );
+        cache.clear();
+        assert_eq!(
+            cache.resident_entries(),
+            0,
+            "dropping the entry releases its mapping"
+        );
+
+        let nop_code = [0x48, 0x83, 0xC0, 0x01, 0x90, 0x48, 0x83, 0xC0, 0x01];
+        let nop_view = CodeView::new(0x7E00, &nop_code).unwrap();
+        let nop_admission = od_jit::block::NativeRegisterV1Admission::from_code(nop_view).unwrap();
+        let nop_dependencies = [CodeDependencySpan {
+            start_rip: nop_view.base_rip(),
+            end_rip: nop_view.code_end(),
+            identity: CodeIdentity {
+                address_space: AddressSpaceId::new(nz(31)),
+                mapping: MappingId::new(nz(32)),
+                mapping_version: MappingVersion::new(nz(1)),
+                backing: BackingId::new(nz(33)),
+                backing_version: BackingVersion::new(nz(1)),
+                executable: true,
+            },
+        }];
+        let mut nop_initial = od_isa::LongModeState::default();
+        nop_initial.rip = nop_view.base_rip();
+        let mut nop_eager_state = nop_initial.clone();
+        let nop_eager = od_jit::dispatch::run_with_native_register_v1(
+            nop_view,
+            &nop_admission,
+            &mut nop_eager_state,
+            3,
+            control,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        let mut nop_cache = od_jit::dispatch::SingleEntryBlockCache::new(
+            1,
+            od_jit::dispatch::MAX_SINGLE_ENTRY_CACHE_BYTES,
+        )
+        .unwrap();
+        let mut nop_cached_state = nop_initial;
+        let nop_cached = od_jit::dispatch::run_cached_native_register_v1_controlled(
+            nop_view,
+            &nop_admission,
+            context,
+            &nop_dependencies,
+            &mut nop_cached_state,
+            3,
+            control,
+            &mut nop_cache,
+            &mut PublishedBlockExecutor,
+        )
+        .unwrap();
+        assert_eq!(nop_cached, nop_eager);
+        assert_eq!(nop_cached_state, nop_eager_state);
+        assert_eq!(nop_cached.retired_native, 2);
+        assert_eq!(nop_cached.retired_interpreter, 1);
+        assert_eq!(nop_cached.exit, od_jit::dispatch::DispatchExit::CodeEnd);
+        assert!(nop_cache.counters().successful_compiles >= 2);
+        assert_eq!(nop_cache.resident_entries(), 1);
+    }
+
+    #[test]
     fn multi_entry_arena_cache_matches_uncached_native_blocks_and_reuses_key() {
         let _guard = jit_test_lock();
         use od_jit::translation::{

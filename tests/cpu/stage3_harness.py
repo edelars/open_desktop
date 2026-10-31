@@ -60,6 +60,7 @@ SELF_TEST_NAMES = (
     "test_rust_test_manifest_rejects_a_missing_mandatory_gate",
     "test_s3_33_native_gates_are_pinned_once_in_manifest_steps_and_summary",
     "test_s3_34n_native_register_corpus_gates_are_pinned_once",
+    "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
     "test_rust_gate_summary_rejects_an_omitted_mandatory_gate",
     "test_rust_gate_summary_rejects_forged_passed_evidence",
@@ -111,6 +112,18 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_27d_direct_memory_v2_error_distinction", "local_acceptance", "od-host",
         "tests::address32_low_base_rsi_rdi_index_sib_matches_all_execution_paths",
+    ),
+    (
+        "s3_38b_native_register_v1_cache_profile_invalidation", "local_acceptance", "od-jit",
+        "dispatch::tests::native_cached_profile_isolated_and_dependency_context_changes_miss",
+    ),
+    (
+        "s3_38b_native_register_v1_cache_guards_capacity", "local_acceptance", "od-jit",
+        "dispatch::tests::native_cached_guards_and_failures_preserve_publication_and_entry_counts",
+    ),
+    (
+        "s3_38b_native_register_v1_host_reuse_lifetime_parity", "local_acceptance", "od-host",
+        "tests::cached_native_register_v1_reuses_eager_block_with_full_state_parity",
     ),
     (
         "s3_27c_active_code_v3_pc_map", "local_acceptance", "od-jit",
@@ -469,6 +482,7 @@ LOCAL_RUST_TEST_SOURCES = (
     "crates/od-jit/src/block_emitter.rs",
     "crates/od-jit/src/block_compile.rs",
     "crates/od-jit/src/dispatch.rs",
+    "crates/od-jit/src/translation.rs",
     "tests/cpu/stage3_harness.py",
     "tests/cpu/test_stage3_harness.py",
 )
