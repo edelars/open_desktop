@@ -14,3 +14,7 @@ The v2 tracer reports instruction retirement using ptrace single-step. The S2-40
 - `od-isa` from this workspace: strict allowlist decoding of fixture instruction forms and branch targets; the runner does not implement a second decoder.
 
 S2-35.10 PADDSB remains a local interpreter-only XMM register profile. Its literal fixture is explicitly denied by native admission; the S2-40b slice does not add PADDSB native support.
+
+The S2-37bl `CVTTPD2PI MM0,XMM1` profile is explicitly local-only. Native
+execution is refused because the native trace does not observe the complete
+x87/MMX state required by this fixture.

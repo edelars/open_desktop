@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последний кодовый срез S2-37bj добавил exact masked CVTPS2PI MM0,XMM1 profile после CVTTPS2PI S2-37bh и static mapping S2-37bi; S2-37bg ранее добавило bounded memory-only CVTPI2PS: только `0F 2A 00`, один 8-byte read по canonical RAX, signed-i32 → binary32 под MXCSR.RC, запись только XMM0.low64 и переход x87 TOP=0/tag_word=0; профиль требует AC=0, PM=1 и отсутствия pending x87 exceptions. S2-37bf ранее добавило точный memory-only CVTPI2PD profile: только `66 0F 2A 00`, один 8-byte read по canonical RAX, точную конверсию двух signed i32 в binary64 XMM0, без изменения MXCSR/x87 и с условием AC=0. S2-37be ранее добавило canonical CVTSD2SS XMM register-pair interpreter profile с MXCSR rounding/FTZ и atomic faults. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. S2-37bc ранее добавило canonical ADDSS XMM register-pair profile для SSE-gated scalar binary32 addition с сохранением high96. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последний завершённый кодовый срез S2-37bl добавил exact masked CVTTPD2PI MM0,XMM1 profile после CVTPD2PI S2-37bk, CVTPS2PI S2-37bj и static mapping S2-37bi; следующий выбранный bounded candidate — S2-37bm CVTPI2PD XMM0,MM1; S2-37bg ранее добавило bounded memory-only CVTPI2PS: только `0F 2A 00`, один 8-byte read по canonical RAX, signed-i32 → binary32 под MXCSR.RC, запись только XMM0.low64 и переход x87 TOP=0/tag_word=0; профиль требует AC=0, PM=1 и отсутствия pending x87 exceptions. S2-37bf ранее добавило точный memory-only CVTPI2PD profile: только `66 0F 2A 00`, один 8-byte read по canonical RAX, точную конверсию двух signed i32 в binary64 XMM0, без изменения MXCSR/x87 и с условием AC=0. S2-37be ранее добавило canonical CVTSD2SS XMM register-pair interpreter profile с MXCSR rounding/FTZ и atomic faults. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. S2-37bc ранее добавило canonical ADDSS XMM register-pair profile для SSE-gated scalar binary32 addition с сохранением high96. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -6805,7 +6805,7 @@ inventory.
 | CVTPD2DQ | `F2 0F E6 /r` | SSE2 | XMM, m128; 2×f64 → low 2×i32 | 3-214 | S2-37ah, bounded register-only |
 | CVTPD2PI | `66 0F 2D /r` | SSE2 | XMM, m128 → mm; 2×f64 → 2×i32 | 3-218 | missing |
 | CVTPD2PS | `66 0F 5A /r` | SSE2 | XMM, m128; 2×f64 → low 2×f32 | 3-219 | S2-37bd, bounded register-only |
-| CVTPI2PD | `66 0F 2A /r` | SSE2 | mm/m64 → XMM; 2×i32 → 2×f64 | 3-223 | S2-37bf, exact memory-only `[RAX]` form |
+| CVTPI2PD | `66 0F 2A /r` | SSE2 | mm/m64 → XMM; 2×i32 → 2×f64 | 3-223 | S2-37bf, exact memory-only `[RAX]`; S2-37bm, next exact register-source candidate |
 | CVTPI2PS | `NP 0F 2A /r` | SSE | mm/m64 → XMM; 2×i32 → low 2×f32 | 3-224 | S2-37bg, exact memory-only `[RAX]` form |
 | CVTPS2DQ | `66 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-225 | S2-37af, bounded register-only |
 | CVTPS2PD | `NP 0F 5A /r` | SSE2 | m64; low 2×f32 → 2×f64 | 3-228 | S2-37u, bounded register-only |
@@ -6818,7 +6818,7 @@ inventory.
 | CVTSS2SI | `F3 0F 2D /r`; `F3 REX.W 0F 2D /r` | SSE | m32 → r32 / r64 | 3-242 | S2-37ab, bounded register-only |
 | CVTTSS2SI | `F3 0F 2C /r`; `F3 REX.W 0F 2C /r` | SSE | m32 → r32 / r64 | 3-255 | S2-37ad, bounded register-only |
 | CVTTPD2DQ | `66 0F E6 /r` | SSE2 | XMM, m128; 2×f64 → low 2×i32 | 3-244 | S2-37ai, bounded register-only |
-| CVTTPD2PI | `66 0F 2C /r` | SSE2 | XMM, m128 → mm; 2×f64 → 2×i32 | 3-248 | missing |
+| CVTTPD2PI | `66 0F 2C /r` | SSE2 | XMM, m128 → mm; 2×f64 → 2×i32 | 3-248 | S2-37bl, exact masked `66 0F 2C C1` register-source profile |
 | CVTTPS2DQ | `F3 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-249 | S2-37ag, bounded register-only |
 | CVTTPS2PI | `NP 0F 2C /r` | SSE | XMM, m64 → mm; 2×f32 → 2×i32 | 3-252 | S2-37bh, exact masked `0F 2C C1` register-source profile |
 | CVTTSD2SI | `F2 0F 2C /r`; `F2 REX.W 0F 2C /r` | SSE2 | m64 → r32 / r64 | 3-253 | S2-37ae, bounded register-only |
@@ -6896,12 +6896,15 @@ existing S2-37a–l code is only bounded Long64
 register-only coverage: no memory forms, full CPUID/control gates, arbitrary
 MXCSR, unmasked/fault ordering, JIT/native admission or physical acceptance.
 Static absence does not establish that any target-required form is unnecessary.
-S2-37bj now covers exact masked Long64 `CVTPS2PI MM0,XMM1` (`0F 2D C1`);
-other register and memory encodings remain missing and target-required
-independent of this kernel mapping. The next bounded local candidate is
-S2-37bk, exact masked Long64 `CVTPD2PI MM0,XMM1` (`66 0F 2D C1`), subject to
-confirming its SSE2 and exception gates from its normative entry before
-implementation. Legacy exception references in SUB and UCOMIS shared SDM
+S2-37bj covers exact masked Long64 `CVTPS2PI MM0,XMM1` (`0F 2D C1`), and
+S2-37bk covers exact masked Long64 `CVTPD2PI MM0,XMM1` (`66 0F 2D C1`). Other
+register and memory encodings remain missing and target-required independent
+of this kernel mapping. S2-37bl now covers exact masked Long64
+`CVTTPD2PI MM0,XMM1` (`66 0F 2C C1`). The next bounded local candidate is
+S2-37bm, exact Long64 `CVTPI2PD XMM0,MM1` (`66 0F 2A C1`); it must read
+physical x87 slot 1/MM1, transition TOP=0/all tags valid, and refuse pending
+x87 exceptions. This is a candidate only; no implementation is included in
+S2-37bl. Legacy exception references in SUB and UCOMIS shared SDM
 entries that are explicitly labelled for VEX encodings are not evidence for
 legacy fault classes. MINSS Rev. 093 explicitly cites Type 2/Table 2-19 despite
 its scalar width. Physical acceptance remains in the combined final Mac mini
@@ -14409,3 +14412,40 @@ Table 25-4 p. 25-22; Vol. 1 CPUID.01H:EDX[26] and MXCSR/x87-MMX state rules;
 Vol. 3A §7.9 Table 7-2 pp. 7-9–7-10. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37bk--bounded-long64-cvtpd2pi-mm0xmm1-masked-register-profile),
 [report](../reports/STAGE_2_REPORT.md#s2-37bk--cvtpd2pi-mm0xmm1-masked-register-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bk-cvtpd2pi-mm0xmm1-masked-register-profile).
+
+#### S2-37bl — bounded Long64 CVTTPD2PI MM0,XMM1 masked register profile
+
+**Status: implemented locally.** Added interpreter-only schema-v2 profile
+`s2-long-cvttpd2pi-register-masked-v1` for exactly `66 0F 2C C1`, budget=1
+and stop RIP=entry+4. It admits only MM0 destination and XMM1 source and refuses
+memory/other ModR/M forms, bare/repeated/reordered prefixes, REX, trailing
+bytes, VEX/EVEX and other modes. Fetch the complete four-byte instruction
+before the #UD gate for CPUID.SSE2=0, CR0.EM=1 or CR4.OSFXSR=0, then #NM for
+CR0.TS=1. This #UD-before-#NM order is the bounded profile policy; the cited
+exception-priority table does not establish universal priority among these
+conditions. Permit CPL0–3 and issue no data callbacks.
+
+Require SSE and x87 snapshots, supported MXCSR mask `0x0000ffbf`, IM=PM=1,
+and `FSW & 0x80ff == 0`. Pending x87 exception delivery through #MF is outside
+scope; DAZ is rejected by the supported mask. Convert both binary64 lanes in
+XMM1 to signed i32 by truncating toward zero regardless of MXCSR.RC. Masked
+invalid NaN/infinity/out-of-range inputs return `0x80000000`, set sticky IE,
+and do not contribute PE. A valid inexact lane sets sticky PE (including
+fractional values and subnormals); preserve old sticky/control bits and do not
+raise DE. Store the pair into physical x87 slot 0/MM0, set bits 79:64 to
+`ffff`, TOP=0 and all tags valid. Preserve other x87 payload/state and XMM
+registers. JIT/native/C ABI/fragment/generic dispatch remain denied.
+
+The schema oracle derives integer results and exception events from raw
+binary64 `u64` fields without production conversion helpers or host FP. The
+literal fixture and runner matrix cover all MXCSR.RC values, signed
+zeros/fractions/limits, NaN/infinity/subnormal, mixed IE/PE, sticky state,
+all TOP values and representative tag words, physical MM0 selection, gate/CPL/full-fetch
+ordering, malformed/tampered fixtures and backend denial. Physical x86
+acceptance remains in the combined S2-37 hardware substage.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTTPD2PI p. 3-248 (PDF p. 366); Vol. 3B
+§25.25.3 Table 25-4 p. 25-22; Vol. 3A §7.9 Table 7-2. See the [CPU
+contract](../specs/CPU_CONTRACT.md#s2-37bl--bounded-long64-cvttpd2pi-mm0xmm1-masked-register-profile),
+[report](../reports/STAGE_2_REPORT.md#s2-37bl--cvttpd2pi-mm0xmm1-masked-register-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bl-cvttpd2pi-mm0xmm1-masked-register-profile).

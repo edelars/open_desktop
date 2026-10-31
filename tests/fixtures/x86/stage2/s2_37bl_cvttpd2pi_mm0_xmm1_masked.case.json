@@ -1,0 +1,101 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_37bl_cvttpd2pi_mm0_xmm1_masked",
+  "profile": "s2-long-cvttpd2pi-register-masked-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten literal CVTTPD2PI MM0,XMM1 profile case with MXCSR round-up control, binary64 1.5 and QNaN lanes, XMM high64 poison, and nonzero x87 TOP/tag state.",
+    "specification": "Intel 64 and IA-32 Architectures Software Developer’s Manual, Rev. 093, Vol. 2A CVTTPD2PI p. 3-248; Vol. 3B §25.25.3 Table 25-4; Vol. 1 SSE2 and x87/MMX state transition documentation.",
+    "specification_version": "Intel SDM revision 093; project S2-37bl."
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 4,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "660f2cc1",
+      "comparison_mask_hex": "ffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100004",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000000",
+  "expected_exit": "stop_address",
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0000000000000000",
+      "0x0000000000000101",
+      "0x0000000000000102",
+      "0x0000000000000103",
+      "0x0000000000000104",
+      "0x0000000000000105",
+      "0x0000000000000106",
+      "0x0000000000000107",
+      "0x0000000000000108",
+      "0x0000000000000109",
+      "0x000000000000010a",
+      "0x000000000000010b",
+      "0x000000000000010c",
+      "0x000000000000010d",
+      "0x000000000000010e",
+      "0x000000000000010f"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000002",
+    "sse": {
+      "xmm": [
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "000000000000f83f000000000000f87f",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+      ],
+      "mxcsr": "0x0000000000005f80",
+      "diagnostic_mxcsr_mask": "0x000000000000ffbf"
+    },
+    "x87": {
+      "registers": [
+        "00070e151c232a31383f",
+        "11181f262d343b424950",
+        "222930373e454c535a61",
+        "333a41484f565d646b72",
+        "444b525960676e757c83",
+        "555c636a71787f868d94",
+        "666d747b828990979ea5",
+        "777e858c939aa1a8afb6"
+      ],
+      "control_word": "0x000000000000037f",
+      "status_word": "0x0000000000001a00",
+      "tag_word": "0x0000000000001be4",
+      "instruction_pointer": "0x0123456789abcdef",
+      "data_pointer": "0xfedcba9876543210",
+      "last_opcode": "0x00000000000005aa"
+    }
+  },
+  "cvttpd2pi_register_controls": {
+    "sse2_available": true,
+    "cr0_em": false,
+    "cr0_ts": false,
+    "cr4_osfxsr": true
+  }
+}

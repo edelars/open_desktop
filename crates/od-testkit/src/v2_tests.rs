@@ -32,6 +32,37 @@ fn cli_rflags_comparison_includes_if_and_iopl_without_expanding_definedness() {
 }
 
 #[test]
+fn cvttpd2pi_schema_requires_its_exact_four_byte_masked_profile() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_37bl_cvttpd2pi_mm0_xmm1_masked.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongCvttpd2piRegisterMaskedV1);
+
+    let mut missing_controls = fixture.clone();
+    missing_controls.cvttpd2pi_register_controls = None;
+    assert!(missing_controls.validate().is_err());
+
+    let mut wrong_instruction = fixture.clone();
+    wrong_instruction.memory[0].initial_bytes_hex = "660f2dc1".into();
+    assert!(wrong_instruction.validate().is_err());
+
+    let mut wrong_budget = fixture.clone();
+    wrong_budget.instruction_budget = 2;
+    assert!(wrong_budget.validate().is_err());
+
+    let mut foreign_controls = fixture;
+    foreign_controls.cvtpd2pi_register_controls = Some(Cvtpd2piControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+    });
+    assert!(foreign_controls.validate().is_err());
+}
+
+#[test]
 fn iretq_cs_ss_snapshot_fields_are_opt_in_and_lossless() {
     let cpu = od_isa::LongModeState {
         cr4: None,
@@ -323,6 +354,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 cvtpi2ps_memory_controls: input.fixture.cvtpi2ps_memory_controls,
                 cvtps2pi_register_controls: input.fixture.cvtps2pi_register_controls,
                 cvtpd2pi_register_controls: input.fixture.cvtpd2pi_register_controls,
+                cvttpd2pi_register_controls: input.fixture.cvttpd2pi_register_controls,
                 cvtps2pd_controls: input.fixture.cvtps2pd_controls,
                 comiss_ucomiss_controls: input.fixture.comiss_ucomiss_controls,
                 cmpss_controls: input.fixture.cmpss_controls,

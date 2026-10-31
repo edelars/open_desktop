@@ -7013,3 +7013,19 @@ order. Pending x87 states are refused; #MF delivery and physical x86 acceptance
 are not claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bk--bounded-long64-cvtpd2pi-mm0xmm1-masked-register-profile),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37bk--bounded-long64-cvtpd2pi-mm0xmm1-masked-register-profile),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bk--cvtpd2pi-mm0xmm1-masked-register-profile).
+
+### S2-37bl CVTTPD2PI MM0,XMM1 masked register profile
+
+`s2_37bl_cvttpd2pi_mm0_xmm1_masked.case.json` is the literal schema-v2 anchor
+for exactly `66 0F 2C C1`. Its XMM1 lanes are binary64 1.5 and QNaN, and MXCSR
+selects round-up to make the CVTT mode independence observable. The expected
+transition truncates the first lane to 1, maps the invalid second lane to
+`0x80000000`, sets both sticky IE and PE, and writes the pair to physical x87
+slot 0 with exponent word `ffff`, TOP=0 and all-valid tags. The independent
+raw-u64 oracle and runner matrix cover all RC modes, signed values and limits,
+QNaN/SNaN/infinity/subnormal, mixed IE/PE, prior sticky state, TOP/tag
+variation, SSE2/EM/OSFXSR/TS gates, CPL0–3, malformed encodings, tampering and
+JIT/native denial. Pending x87 states are refused; #MF delivery and physical
+x86 acceptance are not claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bl--bounded-long64-cvttpd2pi-mm0xmm1-masked-register-profile),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37bl--bounded-long64-cvttpd2pi-mm0xmm1-masked-register-profile),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bl--cvttpd2pi-mm0xmm1-masked-register-profile).

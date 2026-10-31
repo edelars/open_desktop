@@ -19183,3 +19183,50 @@ The source snapshot is all of XMM1. Its two binary64 lanes convert under MXCSR.R
 The independent testkit oracle derives integer results and exception events from raw binary64 `u64` fields without calling production conversion helpers or host floating point. The literal fixture and runner matrix cover rounding modes, signed zeros/fractions/ties/limits, NaN/infinity/subnormal classes, independently aggregated IE/PE and existing sticky flags, x87 TOP/tag/payload preservation, `MXCSR=0x1080` (only IM and PM masked), DAZ refusal, gate priorities, malformed input, result tampering and backend denial. Verification passed: `cargo test -p od-isa cvtpd2pi --offline` (2 focused tests), `cargo test -p od-runner cvtpd2pi --offline` (1 focused matrix), `cargo test -p od-testkit --offline` (443 tests), the full `cargo test -p od-runner --offline` suite (440 tests), `cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`, `git diff --check`, and `graphify update .`. No physical x86 acceptance is claimed; memory forms and broader SIMD exception delivery remain outside this slice.
 
 Normative references: Intel SDM Rev. 093 Vol. 2A CVTPD2PI p. 3-218; Vol. 3B §25.25.3 Table 25-4 p. 25-22 (PDF p. 470); Vol. 1 CPUID SSE2 bit 26 and x87/MMX shared-state rules; Vol. 3A §7.9 Table 7-2 pp. 7-9–7-10. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bk--bounded-long64-cvtpd2pi-mm0xmm1-masked-register-profile), [CPU contract](../specs/CPU_CONTRACT.md#s2-37bk--bounded-long64-cvtpd2pi-mm0xmm1-masked-register-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bk-cvtpd2pi-mm0xmm1-masked-register-profile).
+
+## S2-37bl — CVTTPD2PI MM0,XMM1 masked register profile
+
+Implemented the exact Long64 `66 0F 2C C1` encoding as the interpreter-only
+schema-v2 profile `s2-long-cvttpd2pi-register-masked-v1`. Decoder and fixture
+validation reject noncanonical prefixes, alternate ModR/M forms, extra bytes,
+VEX/EVEX and other mode/profile mismatches. The complete four-byte fetch
+precedes the selected SSE2/CR0.EM/CR4.OSFXSR #UD gates and CR0.TS #NM gate;
+CPL0–3 are accepted and no data callback occurs. This exception order is the
+bounded local policy, not a claim of universal priority. SSE and x87 state,
+supported MXCSR mask `0x0000ffbf`, IM=PM=1 and `FSW & 0x80ff == 0` are required.
+
+The interpreter truncates both binary64 XMM1 lanes toward zero independently
+of MXCSR.RC. The independent schema oracle works from raw `u64` fields and
+integer arithmetic, without production conversion helpers or host FP. Masked
+invalid values produce `0x80000000` and sticky IE; valid inexact lanes set
+sticky PE, while invalid lanes do not contribute PE. Existing status/control
+bits are preserved and DE is not raised. Successful execution writes physical
+x87 slot 0/MM0, sets exponent word `ffff`, TOP=0 and all tags valid, preserving
+other x87 and XMM state. JIT, native, C ABI, fragment and generic dispatch
+remain denied; the native x86 runner marks the profile local-only because its
+trace does not observe the required complete x87 state.
+
+The literal fixture uses RC=round-up with a 1.5 lane and QNaN lane, making
+both RC independence and mixed IE/PE observable. The runner matrix checks all
+RC modes, signed zeros/fractions/limits, NaN/infinity/subnormal, old sticky
+flags, every TOP value and representative tag words, physical MM0 selection,
+control gates, CPL, malformed and tampered fixtures, and JIT/native denial.
+The ISA tests cover exact decode, RC-independent truncation with IE+PE, all
+CPLs and full-fetch-before-gate behavior. No physical x86 acceptance is
+claimed; memory forms and broader S2-37/S2-38 coverage remain open. No
+confirmed unresolved defect was found in this slice.
+
+Verification passed: `cargo test -p od-isa cvttpd2pi --offline` (3 focused
+tests); `cargo test -p od-testkit cvttpd2pi --offline` (1 focused test) and
+`cargo test -p od-testkit --offline` (444 tests); `cargo test -p od-runner
+cvttpd2pi --offline` (1 focused integration matrix) and `cargo test -p
+od-runner --offline` (441 tests); the x86-runner's local-only denial test (1
+focused test); `cargo check --workspace --all-targets --offline`; `cargo fmt
+--all -- --check`; `git diff --check`; and `python3 tools/check_layout.py`. Graphify
+was refreshed after the code changes. No physical x86 run was performed.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTTPD2PI p. 3-248 (PDF
+p. 366); Vol. 3B §25.25.3 Table 25-4 p. 25-22; Vol. 3A §7.9 Table 7-2.
+See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bl--bounded-long64-cvttpd2pi-mm0xmm1-masked-register-profile),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37bl--bounded-long64-cvttpd2pi-mm0xmm1-masked-register-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bl-cvttpd2pi-mm0xmm1-masked-register-profile).

@@ -596,3 +596,11 @@ conversion, aggregates masked IE/PE, and performs the physical x87/MMX
 slot-0/TOP/tag transition. It uses a separate SSE2 availability gate; native,
 JIT and broader operand forms remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bk--bounded-long64-cvtpd2pi-mm0xmm1-masked-register-profile)
 and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-37bk--cvtpd2pi-mm0xmm1-masked-register-profile).
+
+S2-37bl adds the exact Long64 `66 0F 2C C1` CVTTPD2PI MM0,XMM1
+interpreter profile. It truncates both binary64 lanes toward zero regardless
+of MXCSR.RC, records masked IE and valid-lane PE, and performs the x87/MMX
+slot-0/TOP/tag transition. SSE2/CR0/CR4 gates and the no-pending-x87
+precondition are explicit; JIT/native and wider forms remain closed. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bl--bounded-long64-cvttpd2pi-mm0xmm1-masked-register-profile)
+and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-37bl--cvttpd2pi-mm0xmm1-masked-register-profile).

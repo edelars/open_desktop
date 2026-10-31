@@ -152,3 +152,9 @@ MXCSR sticky IE/PE, MM0 slot/TOP/tag transition, full-fetch SSE2 gates and
 profile refusals. Clear non-IM/PM masks are accepted when IM and PM remain set.
 JIT/native execution remains unsupported; physical x86 acceptance is separate.
 See the [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bk-cvtpd2pi-mm0xmm1-masked-register-profile).
+
+S2-37bl adds the literal schema-v2 CVTTPD2PI fixture for exact `66 0F 2C C1`.
+The runner checks RC-independent truncation, independently aggregated sticky
+IE/PE, MM0 slot/TOP/tag state, SSE2 gates, strict profile validation and
+interpreter-only admission. Physical x86 acceptance remains separate. See the
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bl-cvttpd2pi-mm0xmm1-masked-register-profile).

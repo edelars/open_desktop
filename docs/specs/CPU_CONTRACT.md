@@ -14086,3 +14086,43 @@ Normative sources: Intel SDM Rev. 093 Vol. 2A CVTPD2PI p. 3-218; Vol. 3B
 state rules; Vol. 3A §7.9 Table 7-2 pp. 7-9–7-10. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bk--bounded-long64-cvtpd2pi-mm0xmm1-masked-register-profile),
 [report](../reports/STAGE_2_REPORT.md#s2-37bk--cvtpd2pi-mm0xmm1-masked-register-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bk-cvtpd2pi-mm0xmm1-masked-register-profile).
+
+## S2-37bl — bounded Long64 CVTTPD2PI MM0,XMM1 masked register profile
+
+Schema-v2 profile `s2-long-cvttpd2pi-register-masked-v1` admits only the
+Long64 encoding `66 0F 2C C1`: MM0 destination and XMM1 source. It executes one
+instruction with budget=1 and stop RIP=entry+4. Other ModR/M/address forms,
+bare/repeated/reordered prefixes, REX, trailing bytes, VEX/EVEX and non-Long64
+modes are profile refusals. Full four-byte fetch precedes #UD for unavailable
+SSE2, CR0.EM or CR4.OSFXSR, then #NM for CR0.TS. This #UD-before-#NM order is
+the selected bounded-profile policy; the referenced priority table does not
+establish universal priority among these conditions. CPL0–3 are accepted and
+no data callback is made.
+
+SSE and x87 state are required. MXCSR accepts only bits under mask `0x0000ffbf`
+and requires IM and PM set; DAZ is therefore rejected while other supported
+exception masks, rounding/FTZ controls and old sticky flags are allowed. x87
+admission requires `FSW & 0x80ff == 0`; pending exception delivery through #MF
+is outside this profile. Each binary64 lane in XMM1 converts to signed i32 by
+truncation toward zero, independent of MXCSR.RC. Masked invalid NaN, infinity
+or out-of-range finite inputs produce `0x80000000` and sticky IE. A valid
+inexact lane sets sticky PE; an invalid lane does not contribute PE. Prior
+sticky/control bits are preserved and DE is not raised. The pair replaces
+physical x87 slot 0/MM0; exponent bits 79:64 become `ffff`, TOP becomes zero
+and all tags become valid. Other x87 payloads and XMM registers are preserved.
+JIT/native/C ABI/fragment/generic execution remains denied.
+
+The independent schema oracle reads raw binary64 `u64` fields and uses integer
+operations only; it does not call production conversion helpers or host FP.
+Coverage includes MXCSR.RC 0–3 with identical truncation, signed zeros,
+fractions/ties/limits, QNaN/SNaN/infinity/subnormal, mixed IE/PE and prior
+sticky bits, incoming TOP/tag/payload variation, physical MM0 state, supported
+non-IM/PM masks, SSE2/EM/OSFXSR/TS gates, CPL, full-fetch priority,
+malformed/tampered fixtures and backend denial. No physical x86 acceptance is
+claimed.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTTPD2PI p. 3-248 (PDF p. 366);
+Vol. 3B §25.25.3 Table 25-4 p. 25-22; Vol. 3A §7.9 Table 7-2. See the
+[Stage 2 plan](../plans/STAGE_2.md#s2-37bl--bounded-long64-cvttpd2pi-mm0xmm1-masked-register-profile),
+[report](../reports/STAGE_2_REPORT.md#s2-37bl--cvttpd2pi-mm0xmm1-masked-register-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bl-cvttpd2pi-mm0xmm1-masked-register-profile).

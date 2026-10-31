@@ -212,3 +212,11 @@ locks the instruction bytes, budget, stop RIP, MXCSR subset and no-pending-x87
 precondition; backend admission remains interpreter-only. See the [CPU
 contract](../../docs/specs/CPU_CONTRACT.md#s2-37bk--bounded-long64-cvtpd2pi-mm0xmm1-masked-register-profile)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bk-cvtpd2pi-mm0xmm1-masked-register-profile).
+
+S2-37bl adds schema-v2 profile `s2-long-cvttpd2pi-register-masked-v1` for
+exact `66 0F 2C C1`. Its independent oracle truncates raw binary64 `u64`
+fields toward zero without production helpers or host FP, irrespective of
+MXCSR.RC, and validates sticky IE/PE plus physical MM0 state. The fixture
+validator locks bytes, budget, stop RIP, MXCSR and x87 preconditions; native
+and JIT admission remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bl--bounded-long64-cvttpd2pi-mm0xmm1-masked-register-profile)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bl-cvttpd2pi-mm0xmm1-masked-register-profile).
