@@ -1,0 +1,45 @@
+{
+  "name": "arithmetic",
+  "argv": [
+    "/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/open-desktop-launcher-smoke",
+    "--vmhost",
+    "/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/od-vmhost-smoke",
+    "--hex",
+    "48 2b c1 75 fb",
+    "--rax",
+    "3",
+    "--rcx",
+    "1",
+    "--budget",
+    "32"
+  ],
+  "returncode": 0,
+  "timeout_seconds": null,
+  "duration_ns": 693583084,
+  "stdout_file": "arithmetic.stdout.txt",
+  "stderr_file": "arithmetic.stderr.txt",
+  "expected_fields": {
+    "gpr": [
+      0,
+      1,
+      0,
+      0
+    ],
+    "rip": 5,
+    "reason": 0,
+    "instructions_executed": 6
+  },
+  "observed": {
+    "gpr": [
+      0,
+      1,
+      0,
+      0
+    ],
+    "instructions_executed": 6,
+    "reason": 0,
+    "rflags": 70,
+    "rip": 5
+  },
+  "passed": true
+}

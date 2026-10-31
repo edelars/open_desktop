@@ -269,7 +269,7 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-38 | Интеграция VMHost и ABI | S3-28, S3-34 |
 | [partial] | S3-38a | Register-only S0-09 V0 C ABI through run-local eager block dispatcher | Immutable fragment, per-call arena/cache, C ABI lifecycle and local VMHost process regressions; full cache/request ownership and all S3-38 gates remain open |
 | [partial] | S3-38c | Sequential cross-thread V0 handle lifecycle | One idle handle called sequentially from two host threads, second-handle interleaving, pre-run STOP and per-call mapping release; persistent cache and full S3-38 remain open |
-| [ ] | S3-39 | Повторить macOS/ARM smoke на M1 Pro | S3-38 |
+| [x] | S3-39 | Bounded macOS/ARM smoke passed on M1 Pro; see [report](../reports/STAGE_3_S3-39_M1PRO_2026-10-31.md) | S3-38a |
 | [ ] | S3-40 | Зафиксировать решения по данным | S3-35–S3-39 |
 | [ ] | S3-41 | Документация и приёмка этапа | Все обязательные задачи |
 
@@ -3263,7 +3263,7 @@ Implementation evidence: [S3-38c report](../reports/STAGE_3_S3-38c_NATIVE_REGIST
 2. Выполнить bounded arithmetic/multi-block/helper/STOP/publication-lifecycle smoke вне debugger. Проверить отсутствие необъявленных M3-specific host instruction assumptions.
 3. Сохранить конфигурацию и результат. Если M1 недоступен, указать непроверенную конфигурацию и не объявлять широкий host support.
 
-**Готово:** повторён заявленный host smoke. M1 Pro не заменяет x86 oracle и не закрывает Developer ID/notarization вопрос ISSUE-004.
+**Готово, ограниченный smoke:** 31 октября 2026 года на MacBookPro18,3 / Apple M1 Pro / macOS 14.6.1 проверен portable ARM64 artifact с deployment target 14.0 и ad-hoc Hardened Runtime. Arithmetic, taken multi-block branch, accepted S3-14 helper profile, cooperative STOP, and same-handle C ABI publication lifecycle smoke прошли вне debugger. Это не широкая гарантия host support; M1 Pro не заменяет x86 oracle и не закрывает Developer ID/notarization вопрос ISSUE-004. Подробности и raw evidence: [S3-39 report](../reports/STAGE_3_S3-39_M1PRO_2026-10-31.md).
 
 ### S3-40. Зафиксировать решения по измерениям
 

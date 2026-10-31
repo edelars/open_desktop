@@ -1,0 +1,164 @@
+utc=2026-10-31T23:04:37Z
+
+--- uname ---
+Darwin m1.local 23.6.0 Darwin Kernel Version 23.6.0: Mon Jul 29 21:14:30 PDT 2024; root:xnu-10063.141.2~1/RELEASE_ARM64_T6000 arm64
+
+--- macOS ---
+ProductName:		macOS
+ProductVersion:		14.6.1
+BuildVersion:		23G93
+
+--- machine ---
+MacBookPro18,3
+Apple M1 Pro
+17179869184
+16384
+
+--- Xcode ---
+Xcode 15.4
+Build version 15F31d
+
+--- Swift ---
+Apple Swift version 5.10 (swiftlang-5.10.0.13 clang-1500.3.9.4)
+Target: arm64-apple-macosx14.0
+
+--- clang ---
+Apple clang version 15.0.0 (clang-1500.3.9.4)
+Target: arm64-apple-darwin23.6.0
+Thread model: posix
+InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
+
+--- SDK ---
+14.5
+
+--- artifact hashes ---
+f0b3405ea9594664f2d08035a956076557ea99ae07c0deaa7e3c58453ee143dd  /tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/od-vmhost-smoke
+069887f10d13e920f683dcbad7ea1fe40bb44499bb1880b501f074364ac531fd  /tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/open-desktop-launcher-smoke
+7279e8e88f28b7780816e81e1c3134b837de137b1b3c47d1bcd32e76be2bffed  /tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/s3-39-m1pro-package/libod_host.a
+ba3cc0563e8436a12ebed043706aa797deac3e1c56d5d841f5252f1ac12386e0  /tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/s3-39-m1pro-package/apps/vmhost/Sources/ControlFrame.swift
+41e24311ee865d07e2ba177b0c80be74060ca3edda2f1d712e6c409f71cca775  /tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/s3-39-m1pro-package/apps/vmhost/Sources/main.swift
+680f2c148f8ed65e2d254277186fc5b757bf1009e1040886bd1f79b535e76ac4  /tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/s3-39-m1pro-package/apps/macos/Sources/launcher.swift
+746811defce1d3780b9b011321ef155e9dc8403a4d139b05da34f49f8fcf0b5f  /tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/s3-39-m1pro-package/include/open_desktop/host_abi.h
+
+--- VMHost signature ---
+Executable=/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/od-vmhost-smoke
+Identifier=od-vmhost-smoke-5555494422252f1fd58d3f63a2c4f96a532a5324
+Format=Mach-O thin (arm64)
+CodeDirectory v=20500 size=18169 flags=0x10002(adhoc,runtime) hashes=556+7 location=embedded
+VersionPlatform=1
+VersionMin=917504
+VersionSDK=918784
+Hash type=sha256 size=32
+CandidateCDHash sha256=35e73ba5b93f62b431d51409ba075c9d38eae149
+CandidateCDHashFull sha256=35e73ba5b93f62b431d51409ba075c9d38eae1493f986ad9e977864ef0df8428
+Hash choices=sha256
+CMSDigest=35e73ba5b93f62b431d51409ba075c9d38eae1493f986ad9e977864ef0df8428
+CMSDigestType=2
+Executable Segment base=0
+Executable Segment limit=1441792
+Executable Segment flags=0x1
+Page size=4096
+CDHash=35e73ba5b93f62b431d51409ba075c9d38eae149
+Signature=adhoc
+Info.plist=not bound
+TeamIdentifier=not set
+Runtime Version=14.5.0
+Sealed Resources=none
+Internal requirements count=0 size=12
+
+--- VMHost entitlements ---
+Executable=/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/od-vmhost-smoke
+warning: Specifying ':' in the path is deprecated and will not work in a future release
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.cs.allow-jit</key><true/></dict></plist>
+
+--- launcher signature ---
+Executable=/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/open-desktop-launcher-smoke
+Identifier=open-desktop-launcher-smoke-55554944f8f84f680d72336da10269b06c808787
+Format=Mach-O thin (arm64)
+CodeDirectory v=20500 size=1349 flags=0x10002(adhoc,runtime) hashes=35+2 location=embedded
+VersionPlatform=1
+VersionMin=917504
+VersionSDK=918784
+Hash type=sha256 size=32
+CandidateCDHash sha256=49258cbd26338aed6b2999a6d1085f718062af5a
+CandidateCDHashFull sha256=49258cbd26338aed6b2999a6d1085f718062af5a941844746f92d7de482febfc
+Hash choices=sha256
+CMSDigest=49258cbd26338aed6b2999a6d1085f718062af5a941844746f92d7de482febfc
+CMSDigestType=2
+Executable Segment base=0
+Executable Segment limit=65536
+Executable Segment flags=0x1
+Page size=4096
+CDHash=49258cbd26338aed6b2999a6d1085f718062af5a
+Signature=adhoc
+Info.plist=not bound
+TeamIdentifier=not set
+Runtime Version=14.5.0
+Sealed Resources=none
+Internal requirements count=0 size=12
+
+--- VMHost build version ---
+/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/od-vmhost-smoke:
+Load command 11
+      cmd LC_BUILD_VERSION
+  cmdsize 32
+ platform MACOS
+    minos 14.0
+      sdk 14.5
+   ntools 1
+     tool LD
+  version 1053.12
+
+--- launcher build version ---
+/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/open-desktop-launcher-smoke:
+Load command 11
+      cmd LC_BUILD_VERSION
+  cmdsize 32
+ platform MACOS
+    minos 14.0
+      sdk 14.5
+   ntools 1
+     tool LD
+  version 1053.12
+
+--- same-process C ABI lifecycle artifact ---
+/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/publication_lifecycle_same_process: Mach-O 64-bit executable arm64
+fb98f95935216fb2a51aa076413cb46a81ed90b8da35ed38fc94a4ba22f634fb  /tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/publication_lifecycle_same_process
+b2227f34786beb033520a563d740f625e0b89fc6f54cd2c031e2f2dd803a6712  /tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/publication_lifecycle.c
+Executable=/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/publication_lifecycle_same_process
+Identifier=publication_lifecycle_same_process-55554944c67d9c10c466348fa9f52ab286f48991
+Format=Mach-O thin (arm64)
+CodeDirectory v=20500 size=17772 flags=0x10002(adhoc,runtime) hashes=543+7 location=embedded
+VersionPlatform=1
+VersionMin=917504
+VersionSDK=918784
+Hash type=sha256 size=32
+CandidateCDHash sha256=fb1f697fcb75612c648411822221bba7a16cdf06
+CandidateCDHashFull sha256=fb1f697fcb75612c648411822221bba7a16cdf066591a67f7ba9b6b8a023067c
+Hash choices=sha256
+CMSDigest=fb1f697fcb75612c648411822221bba7a16cdf066591a67f7ba9b6b8a023067c
+CMSDigestType=2
+Executable Segment base=0
+Executable Segment limit=1425408
+Executable Segment flags=0x1
+Page size=4096
+CDHash=fb1f697fcb75612c648411822221bba7a16cdf06
+Signature=adhoc
+Info.plist=not bound
+TeamIdentifier=not set
+Runtime Version=14.5.0
+Sealed Resources=none
+Internal requirements count=0 size=12
+Executable=/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/publication_lifecycle_same_process
+warning: Specifying ':' in the path is deprecated and will not work in a future release
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.cs.allow-jit</key><true/></dict></plist>
+/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/publication_lifecycle_same_process:
+Load command 11
+      cmd LC_BUILD_VERSION
+  cmdsize 32
+ platform MACOS
+    minos 14.0
+      sdk 14.5
+   ntools 1
+     tool LD
+  version 1053.12

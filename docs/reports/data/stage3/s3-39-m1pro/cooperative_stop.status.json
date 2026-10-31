@@ -1,0 +1,35 @@
+{
+  "name": "cooperative_stop",
+  "argv": [
+    "/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/open-desktop-launcher-smoke",
+    "--vmhost",
+    "/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/od-vmhost-smoke",
+    "--hex",
+    "75 fe",
+    "--budget",
+    "18446744073709551615",
+    "--stop-after-ms",
+    "25"
+  ],
+  "returncode": 0,
+  "timeout_seconds": null,
+  "duration_ns": 39195417,
+  "stdout_file": "cooperative_stop.stdout.txt",
+  "stderr_file": "cooperative_stop.stderr.txt",
+  "expected_fields": {
+    "reason": 2
+  },
+  "observed": {
+    "gpr": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "instructions_executed": 27772,
+    "reason": 2,
+    "rflags": 2,
+    "rip": 0
+  },
+  "passed": true
+}

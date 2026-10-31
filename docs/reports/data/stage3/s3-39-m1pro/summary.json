@@ -1,0 +1,274 @@
+{
+  "machine": {
+    "uname": {
+      "argv": [
+        "uname",
+        "-a"
+      ],
+      "returncode": 0,
+      "stdout": "Darwin m1.local 23.6.0 Darwin Kernel Version 23.6.0: Mon Jul 29 21:14:30 PDT 2024; root:xnu-10063.141.2~1/RELEASE_ARM64_T6000 arm64\n",
+      "stderr": ""
+    },
+    "macos": {
+      "argv": [
+        "sw_vers"
+      ],
+      "returncode": 0,
+      "stdout": "ProductName:\t\tmacOS\nProductVersion:\t\t14.6.1\nBuildVersion:\t\t23G93\n",
+      "stderr": ""
+    },
+    "model": {
+      "argv": [
+        "sysctl",
+        "-n",
+        "hw.model"
+      ],
+      "returncode": 0,
+      "stdout": "MacBookPro18,3\n",
+      "stderr": ""
+    },
+    "cpu": {
+      "argv": [
+        "sysctl",
+        "-n",
+        "machdep.cpu.brand_string"
+      ],
+      "returncode": 0,
+      "stdout": "Apple M1 Pro\n",
+      "stderr": ""
+    },
+    "memory_bytes": {
+      "argv": [
+        "sysctl",
+        "-n",
+        "hw.memsize"
+      ],
+      "returncode": 0,
+      "stdout": "17179869184\n",
+      "stderr": ""
+    },
+    "page_size": {
+      "argv": [
+        "pagesize"
+      ],
+      "returncode": 0,
+      "stdout": "16384\n",
+      "stderr": ""
+    },
+    "python": "3.12.5",
+    "outside_debugger": true
+  },
+  "cases": [
+    {
+      "name": "arithmetic",
+      "argv": [
+        "/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/open-desktop-launcher-smoke",
+        "--vmhost",
+        "/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/od-vmhost-smoke",
+        "--hex",
+        "48 2b c1 75 fb",
+        "--rax",
+        "3",
+        "--rcx",
+        "1",
+        "--budget",
+        "32"
+      ],
+      "returncode": 0,
+      "timeout_seconds": null,
+      "duration_ns": 693583084,
+      "stdout_file": "arithmetic.stdout.txt",
+      "stderr_file": "arithmetic.stderr.txt",
+      "expected_fields": {
+        "gpr": [
+          0,
+          1,
+          0,
+          0
+        ],
+        "rip": 5,
+        "reason": 0,
+        "instructions_executed": 6
+      },
+      "observed": {
+        "gpr": [
+          0,
+          1,
+          0,
+          0
+        ],
+        "instructions_executed": 6,
+        "reason": 0,
+        "rflags": 70,
+        "rip": 5
+      },
+      "passed": true
+    },
+    {
+      "name": "multi_block_taken_branch",
+      "argv": [
+        "/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/open-desktop-launcher-smoke",
+        "--vmhost",
+        "/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/od-vmhost-smoke",
+        "--hex",
+        "48 3b c1 74 04 48 83 c0 01 48 83 c0 02",
+        "--rax",
+        "5",
+        "--rcx",
+        "5",
+        "--budget",
+        "8"
+      ],
+      "returncode": 1,
+      "timeout_seconds": null,
+      "duration_ns": 27780292,
+      "stdout_file": "multi_block_taken_branch.stdout.txt",
+      "stderr_file": "multi_block_taken_branch.stderr.txt",
+      "expected_fields": {
+        "gpr": [
+          7,
+          5,
+          0,
+          0
+        ],
+        "rip": 13,
+        "reason": 0,
+        "instructions_executed": 3
+      },
+      "observed": null,
+      "passed": false,
+      "failure": "nonzero process status or missing JSON result"
+    },
+    {
+      "name": "s3_14_live_through_helpers",
+      "argv": [
+        "/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/open-desktop-launcher-smoke",
+        "--vmhost",
+        "/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/od-vmhost-smoke",
+        "--hex",
+        "48 03 c0 48 2b d2 48 03 c3 48 2b c9 48 3b c3 74 00",
+        "--rax",
+        "0x8000000000000000",
+        "--rcx",
+        "7",
+        "--rdx",
+        "9",
+        "--rbx",
+        "1",
+        "--budget",
+        "16"
+      ],
+      "returncode": 0,
+      "timeout_seconds": null,
+      "duration_ns": 17742166,
+      "stdout_file": "s3_14_live_through_helpers.stdout.txt",
+      "stderr_file": "s3_14_live_through_helpers.stderr.txt",
+      "expected_fields": {
+        "gpr": [
+          1,
+          0,
+          0,
+          1
+        ],
+        "rip": 17,
+        "reason": 0,
+        "instructions_executed": 6
+      },
+      "observed": {
+        "gpr": [
+          1,
+          0,
+          0,
+          1
+        ],
+        "instructions_executed": 6,
+        "reason": 0,
+        "rflags": 70,
+        "rip": 17
+      },
+      "passed": true
+    },
+    {
+      "name": "cooperative_stop",
+      "argv": [
+        "/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/open-desktop-launcher-smoke",
+        "--vmhost",
+        "/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/od-vmhost-smoke",
+        "--hex",
+        "75 fe",
+        "--budget",
+        "18446744073709551615",
+        "--stop-after-ms",
+        "25"
+      ],
+      "returncode": 0,
+      "timeout_seconds": null,
+      "duration_ns": 39195417,
+      "stdout_file": "cooperative_stop.stdout.txt",
+      "stderr_file": "cooperative_stop.stderr.txt",
+      "expected_fields": {
+        "reason": 2
+      },
+      "observed": {
+        "gpr": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "instructions_executed": 27772,
+        "reason": 2,
+        "rflags": 2,
+        "rip": 0
+      },
+      "passed": true
+    },
+    {
+      "name": "publication_lifecycle_repeat",
+      "argv": [
+        "/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/open-desktop-launcher-smoke",
+        "--vmhost",
+        "/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/od-vmhost-smoke",
+        "--hex",
+        "48 2b c1 75 fb",
+        "--rax",
+        "3",
+        "--rcx",
+        "1",
+        "--budget",
+        "32"
+      ],
+      "returncode": 0,
+      "timeout_seconds": null,
+      "duration_ns": 8990542,
+      "stdout_file": "publication_lifecycle_repeat.stdout.txt",
+      "stderr_file": "publication_lifecycle_repeat.stderr.txt",
+      "expected_fields": {
+        "gpr": [
+          0,
+          1,
+          0,
+          0
+        ],
+        "rip": 5,
+        "reason": 0,
+        "instructions_executed": 6
+      },
+      "observed": {
+        "gpr": [
+          0,
+          1,
+          0,
+          0
+        ],
+        "instructions_executed": 6,
+        "reason": 0,
+        "rflags": 70,
+        "rip": 5
+      },
+      "passed": true
+    }
+  ],
+  "all_passed": false,
+  "debugger_used": false
+}

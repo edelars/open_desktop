@@ -79,7 +79,7 @@ Linked legacy `stage1-20261022-221121-5c3dfa43` прошёл 1010×2 на тех
 
 | Роль | Доступность | Необходимо инвентаризировать |
 |---|---|---|
-| Контрольный Apple Silicon Mac | MacBook Pro с Apple M1 Pro, MacBookPro18,3, 16 GB RAM | Проверен 22 октября: macOS 14.6.1 (23G93), arm64, host page size 16,384 bytes. Swift 5.10, Apple clang 15.0, Xcode developer directory доступен; `rustc` не установлен. Минимальный ad-hoc JIT smoke выполнен; source rebuild на M1 не выполнялся |
+| Контрольный Apple Silicon Mac | MacBook Pro с Apple M1 Pro, MacBookPro18,3, 16 GB RAM | Проверен 31 октября: macOS 14.6.1 (23G93), arm64, host page size 16,384 bytes. Xcode 15.4, Swift 5.10, Apple clang 15.0, SDK 14.5. Rust/Cargo не установлены и не добавлялись; собственный Rust artifact собран для `aarch64-apple-darwin` с macOS 14.0 minimum и generic CPU target, затем Swift smoke binaries собраны на M1. Bounded arithmetic, taken multi-block branch, S3-14 helper, STOP и same-handle C ABI lifecycle smoke прошли; см. [S3-39 report](../reports/STAGE_3_S3-39_M1PRO_2026-10-31.md) и [raw evidence](../reports/data/stage3/s3-39-m1pro/accepted-summary.json). |
 | Физический x86 oracle | Mac mini (Late 2012), 16 GB RAM; Ubuntu 25.10, Linux 6.17.0-41-generic, x86_64, page size 4096 bytes; Intel Core i5-3210M, family 6/model 58/stepping 9, microcode `0x21`, 2 cores/4 threads. SSH `senya@192.168.1.14` подтверждён с проверкой host key | GCC 15.2.0; Rust stable 1.99.1 установлен в пользовательский каталог 22 октября 2026 года. Checkout — `~/projects/open_desktop-stage1`. Linux workspace check/build/tests прошли. V1/S0 подтверждён этапом 1 и последующими регрессиями; в S2-09 дополнительно прошли три native v2 MOV/memory cases ×2 и legacy 1010 cases ×2 на тех же исходниках, см. [отчёт](../reports/STAGE_2_REPORT.md#s2-09--native-v2-и-физическая-проверка) |
 
 Порядок подготовки этого Mac mini и физического сравнения описан в [плане этапа 1](../plans/STAGE_1.md). Адрес SSH записан со слов владельца 22 октября 2026 года; наличие адреса не подтверждает исполнение oracle-проверок.
@@ -100,7 +100,7 @@ Open Desktop пока не загружает гостевые ОС; Windows ISO
 
 ## Состояние готовности
 
-Описан основной host; ad-hoc Hardened Runtime smoke с JIT вне debugger подтверждён на M3 Max и минимально повторён на M1 Pro. На M3 Max fault в сгенерированном коде завершил дочерний процесс; отдельный protocol-level test helper подтвердил, что launcher сообщает `SIGSEGV` и завершается с ошибкой. Локальная `.app` smoke-упаковка с ad-hoc подписью проверена. Для четырёх CPU fixtures проведён повторный пилот S0-13 по 20 samples; сырые результаты и диапазоны измерений сохранены локально, сводка включена в [CPU baseline report](../reports/STAGE_0_CPU_BASELINE_2026-10-22.md). Стенд и протокол S0-06 на основном M3 Max готовы. Mac mini и x86 runner перенесены вместе с S0-12/E03; Developer ID/notarization и поставка конечного продукта остаются непроверенными.
+Описан основной host; ad-hoc Hardened Runtime smoke с JIT вне debugger подтверждён на M3 Max и bounded Stage 3 host slice повторён на M1 Pro (S3-39). Это не подтверждает полный host support, x86 oracle, UI lifecycle, Developer ID signing или notarization. На M3 Max fault в сгенерированном коде завершил дочерний процесс; отдельный protocol-level test helper подтвердил, что launcher сообщает `SIGSEGV` и завершается с ошибкой. Локальная `.app` smoke-упаковка с ad-hoc подписью проверена. Для четырёх CPU fixtures проведён повторный пилот S0-13 по 20 samples; сырые результаты и диапазоны измерений сохранены локально, сводка включена в [CPU baseline report](../reports/STAGE_0_CPU_BASELINE_2026-10-22.md). Стенд и протокол S0-06 на основном M3 Max готовы. Mac mini и x86 runner перенесены вместе с S0-12/E03; Developer ID/notarization и поставка конечного продукта остаются непроверенными.
 
 Повторная проверка рабочей копии на основном host 22 октября 2026 года: `cargo fmt --all -- --check`, `cargo test --workspace --offline` (18 тестов), `cargo check --workspace --all-targets --offline`, `python3 tools/check_layout.py` и SHA-256 manifests x86/guest fixtures прошли. Повторная проверка относительных Markdown-путей в `docs/` прошла для 20 файлов: 0 отсутствующих целей.
 
@@ -123,6 +123,40 @@ Open Desktop пока не загружает гостевые ОС; Windows ISO
 - `vmhost_isolation_smoke.py`: первый активный helper завершился от внешнего `SIGSEGV`; второй принял STOP и вернул собственное состояние.
 
 Это подтверждает исполнение сгенерированного ARM64 в ad-hoc Hardened Runtime helper на M1 и узкий STOP/isolation сценарий. Это не независимая сборка из исходников на M1, не fault внутри generated code и не тест Developer ID, notarization или packaged application. Исходники остаются источником воспроизведения; переданные бинарники находились во временном каталоге.
+
+### S3-39 bounded ARM64 smoke (2026-10-31)
+
+Для S3-39 собран новый artifact из чистой отдельной worktree на revision
+`00bf9476f107eb7343026b81899e3ec8111543f1`. Rust `od-host` собран локально
+для `aarch64-apple-darwin` с `MACOSX_DEPLOYMENT_TARGET=14.0` и
+`-C target-cpu=generic`; M1 Pro не имел Rust/Cargo ни в PATH, ни в
+`~/.cargo/bin`, и установка toolchain не потребовалась. На M1 Swift 5.10
+собрал VMHost и launcher под `arm64-apple-macosx14.0`. Оба прошли ad-hoc
+Hardened Runtime signature verification; VMHost имел
+`com.apple.security.cs.allow-jit=true`.
+
+На M1 вне debugger прошли:
+
+- Bounded арифметика `48 2b c1 75 fb`: RAX=0, RIP=5, 6 instructions.
+- Taken multi-block CMP/JZ path по принятому register-only профилю:
+  RAX=7, RIP=11, 3 instructions.
+- Принятый `s3_14_live_through_helpers` fixture: RAX=1, RCX=0, RDX=0,
+  RBX=1, RIP=17, 6 instructions.
+- Cooperative STOP на `75 fe` после 25 ms: reason=2, 27,772 instructions.
+- Отдельный C ABI lifecycle probe вызвал `od_fragment_execute` два раза на
+  одном handle в одном процессе, затем уничтожил handle; обе публикации и
+  исполнения вернули одинаковые ожидаемые результаты, все ABI statuses были
+  `OD_STATUS_OK`.
+
+Первый созданный multi-block input содержал `ADD RAX,imm8`, который не входит
+в текущий S0-09 register-only admission, и правильно получил
+`OD_STATUS_INVALID_CODE`; он сохранён как исключённый probe, не как failure
+принятого профиля. Принимающий вариант использовал только register-register
+arithmetic. Это ограниченное доказательство на одном M1 Pro, не benchmark,
+физический x86 oracle, owner/MMU/SMC, полная ISA, GUI lifecycle или широкая
+гарантия поддержки Apple Silicon. Details, signatures, hashes, stdout/stderr
+и per-process durations находятся в [S3-39 report](../reports/STAGE_3_S3-39_M1PRO_2026-10-31.md) и
+[raw evidence](../reports/data/stage3/s3-39-m1pro/accepted-summary.json).
 
 ## Fault внутри generated code на M3 Max
 
