@@ -63,6 +63,7 @@ SELF_TEST_NAMES = (
     "test_s3_34p_cached_native_register_trace_gates_are_pinned_once",
     "test_s3_34q_retained_hit_reducer_gate_is_pinned_once",
     "test_s3_34r_cross_thread_idle_handle_gate_is_pinned_once_and_fail_closed",
+    "test_s3_34s_memory_event_gates_are_pinned_once_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
     "test_rust_gate_summary_rejects_an_omitted_mandatory_gate",
@@ -400,6 +401,34 @@ ADDITIONAL_TEST_GATES = (
         "s3_34r_abi_idle_handle_cross_thread_mapping_release", "local_acceptance", "od-host",
         "tests::c_abi_idle_handle_runs_sequentially_on_host_threads_and_releases_mapping",
     ),
+    (
+        "s3_34s_memory_event_bare_nop_bridge_budget_effects", "local_acceptance", "od-host",
+        "tests::bounded_memory_dispatch_opt_in_bare_nop_bridge_preserves_budget_and_effects",
+    ),
+    (
+        "s3_34s_memory_event_after_publication_stop_wins", "local_acceptance", "od-jit",
+        "memory_dispatch::tests::event_after_publication_skips_entry_and_stop_wins",
+    ),
+    (
+        "s3_34s_memory_event_malformed_pending_accounting", "local_acceptance", "od-jit",
+        "memory_dispatch::tests::malformed_event_pending_executor_accounting_is_rejected",
+    ),
+    (
+        "s3_34s_memory_event_yield_before_and_after_committed_artifact", "local_acceptance", "od-jit",
+        "memory_dispatch::tests::controlled_event_yields_before_work_and_after_one_committed_artifact",
+    ),
+    (
+        "s3_34s_memory_event_terminal_exit_stop_not_masked", "local_acceptance", "od-jit",
+        "memory_dispatch::tests::completed_artifact_terminal_exit_and_stop_are_not_masked_by_event",
+    ),
+    (
+        "s3_34s_memory_event_stop_boundary_budget_priority", "local_acceptance", "od-jit",
+        "memory_dispatch::tests::controlled_event_respects_stop_boundary_and_budget_priority",
+    ),
+    (
+        "s3_34s_memory_event_nop_fallback_resume_without_replay", "local_acceptance", "od-jit",
+        "memory_dispatch::tests::nop_fallback_event_yields_before_nop_and_resumes_without_replay",
+    ),
 )
 RUST_TEST_GATES = (
     *(
@@ -517,6 +546,7 @@ LOCAL_RUST_TEST_SOURCES = (
     "crates/od-jit/src/block_emitter.rs",
     "crates/od-jit/src/block_compile.rs",
     "crates/od-jit/src/dispatch.rs",
+    "crates/od-jit/src/memory_dispatch.rs",
     "crates/od-jit/src/translation.rs",
     "tests/cpu/stage3_harness.py",
     "tests/cpu/test_stage3_harness.py",
