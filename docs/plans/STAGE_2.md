@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последний завершённый кодовый срез S2-37bs добавил exact legacy `CVTDQ2PD XMM0,[RAX]` (`F3 0F E6 00`): один m64 read по canonical RAX, точное integer-to-binary64 преобразование, полная замена XMM0 и полное сохранение MXCSR/x87, включая pending x87 canaries. Профиль локальный schema-v2 interpreter-only; соседние формы и native/JIT/C ABI остаются закрыты. Текущий bounded candidate S2-37bt реализует legacy `CVTDQ2PS XMM0,[RAX]` (`0F 5B 00`) с одним aligned m128 read, RC-управляемым binary32-преобразованием и masked PE; статус и проверки указаны в разделе среза ниже. Предыдущие ограничения/профили перечислены ниже. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последний завершённый кодовый срез S2-37bt добавил exact legacy `CVTDQ2PS XMM0,[RAX]` (`0F 5B 00`): один aligned m128 read, RC-управляемое binary32-преобразование и masked PE. Профиль локальный schema-v2 interpreter-only; соседние формы и native/JIT/C ABI остаются закрыты. Предыдущие ограничения/профили перечислены ниже. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -497,7 +497,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37k | Local-only Long64 legacy register MINPD profile `s2-long-minpd-reg-masked-v1`; aggregates masked IE/DE sticky status across two lanes; JIT/native closed | S2-36z, S2-38a; independent review |
 | [x] | S2-37l | Local-only Long64 legacy register MAXPD profile `s2-long-maxpd-reg-masked-v1`; aggregates masked IE/DE sticky status across two lanes; JIT/native closed | S2-36z, S2-37j/k, bounded S2-38a; independent review |
 | [x] | S2-37s | Local-only canonical Long64 CVTDQ2PS register-space profile; aggregates four-lane Precision and suppresses the full destination on unmasked PE; JIT/native closed | S2-36 rounding, S2-38 PE policy; independent review |
-| [ ] | S2-37bt | Local-only legacy Long64 CVTDQ2PS XMM0,[RAX] m128 memory profile; four-lane RC conversion, masked PE, aligned atomic read; native/JIT closed | S2-37s; approved bounded contract; independent review |
+| [x] | S2-37bt | Local-only legacy Long64 CVTDQ2PS XMM0,[RAX] m128 memory profile; four-lane RC conversion, masked PE, aligned atomic read; native/JIT closed | S2-37s; approved bounded contract; independent review |
 | [x] | S2-37t | Local-only canonical Long64 CVTSS2SD XMM register-pair profile; raw binary32 widening with sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37u | Local-only canonical Long64 CVTPS2PD XMM register-pair profile; two-lane raw widening with aggregate sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-37t, S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37v | Local-only canonical Long64 COMISS/UCOMISS XMM register-pair profile; NaN-priority IE/DE, unordered flags, unmasked atomic flag exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
@@ -14723,7 +14723,7 @@ and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bs-cvtdq2pd-x
 
 #### S2-37bt — bounded Long64 CVTDQ2PS XMM0,[RAX] aligned m128 memory profile
 
-**Status: implemented and locally verified; independent review pending.** The separate
+**Status: implemented, locally verified, and independently reviewed.** The separate
 schema-v2 interpreter profile accepts exact legacy `0F 5B 00`, one instruction,
 budget=1 and stop RIP=entry+3. It fetches all three bytes before local #UD
 conditions (missing SSE2/CPUID bit 26, CR0.EM, CR4.OSFXSR), then #NM for
