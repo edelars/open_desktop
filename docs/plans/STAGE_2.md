@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последнее локальное подзадание S2-37bh добавило exact masked CVTTPS2PI MM0,XMM1 profile; S2-37bg ранее добавило bounded memory-only CVTPI2PS: только `0F 2A 00`, один 8-byte read по canonical RAX, signed-i32 → binary32 под MXCSR.RC, запись только XMM0.low64 и переход x87 TOP=0/tag_word=0; профиль требует AC=0, PM=1 и отсутствия pending x87 exceptions. S2-37bf ранее добавило точный memory-only CVTPI2PD profile: только `66 0F 2A 00`, один 8-byte read по canonical RAX, точную конверсию двух signed i32 в binary64 XMM0, без изменения MXCSR/x87 и с условием AC=0. S2-37be ранее добавило canonical CVTSD2SS XMM register-pair interpreter profile с MXCSR rounding/FTZ и atomic faults. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. S2-37bc ранее добавило canonical ADDSS XMM register-pair profile для SSE-gated scalar binary32 addition с сохранением high96. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последний кодовый срез S2-37bh добавил exact masked CVTTPS2PI MM0,XMM1 profile; S2-37bi выполнил static mapping 62 обязательных S2-37 mnemonics в выбранном Ubuntu kernel ELF и не нашёл ни одного в пяти code sections; следующий локальный кандидат S2-37bj — exact masked CVTPS2PI MM0,XMM1; S2-37bg ранее добавило bounded memory-only CVTPI2PS: только `0F 2A 00`, один 8-byte read по canonical RAX, signed-i32 → binary32 под MXCSR.RC, запись только XMM0.low64 и переход x87 TOP=0/tag_word=0; профиль требует AC=0, PM=1 и отсутствия pending x87 exceptions. S2-37bf ранее добавило точный memory-only CVTPI2PD profile: только `66 0F 2A 00`, один 8-byte read по canonical RAX, точную конверсию двух signed i32 в binary64 XMM0, без изменения MXCSR/x87 и с условием AC=0. S2-37be ранее добавило canonical CVTSD2SS XMM register-pair interpreter profile с MXCSR rounding/FTZ и atomic faults. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. S2-37bc ранее добавило canonical ADDSS XMM register-pair profile для SSE-gated scalar binary32 addition с сохранением high96. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -6767,10 +6767,15 @@ or Stage 2.
 `amd64` / x86-64-v1 and advertises SSE and SSE2. Therefore every legacy SSE/SSE2
 form below is target-required in Long64, whether or not the examined Linux boot
 path reaches it. This is a normative target inventory, not an implementation
-claim or a complete inventory of every SSE/SSE2 instruction family. For every
-row, Linux static mapping is `not_run` and runtime observation is `not_run`;
-neither kernel reachability nor physical acceptance is inferred from the target
-contract. Source basis is Intel SDM Rev. 093, September 2026, Vol. 2A
+claim or a complete inventory of every SSE/SSE2 instruction family. S2-37bi
+scanned the authenticated built-in Ubuntu kernel ELF and found no decoded
+inventory mnemonics in its five kernel code sections; this does not change
+target requirements. Modules, initramfs and userspace are not mapped, and
+runtime observation remains `not_run`. The versioned results are in the
+[S2-37 Linux static-map manifest](../reports/data/stage2/s2-37-linux-vmlinux-map-v1.json)
+and [Linux profile report](../reports/STAGE_2_LINUX_PROFILE.md#s2-37bi--static-mapping-of-s2-37-forms-in-the-ubuntu-kernel-elf).
+Neither static absence from this kernel nor target-contract selection proves
+physical acceptance. Source basis is Intel SDM Rev. 093, September 2026, Vol. 2A
 253666-093US, instructions ADDPD through DIVSS (pp. 3-16–3-275), and Vol. 2B
 253667-093US, MAXPD through UCOMISS (pp. 4-5–4-735). The Vol. 2A source is
 [official Intel PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199); the
@@ -6885,14 +6890,17 @@ the EFLAGS update. `RCP*`/`RSQRT*` ignore MXCSR RC, have relative error bounded
 by 1.5×2^-12, and report no SIMD floating-point exceptions; source-class and
 tiny-result details remain per instruction entry.
 
-For all rows, target-required=`yes`, Linux static mapping=`not_run`, runtime
-observed=`not_run`. The existing S2-37a–l code is only bounded Long64
+For all rows, target-required=`yes`; S2-37bi found zero decoded sites in the
+exact built-in kernel ELF code sections, while runtime remains `not_run`. The
+existing S2-37a–l code is only bounded Long64
 register-only coverage: no memory forms, full CPUID/control gates, arbitrary
 MXCSR, unmasked/fault ordering, JIT/native admission or physical acceptance.
-This table deliberately selects no next opcode. First map the Linux image and
-decide the supported-mode/profile inventory; then implement the next uncovered
-required group with its exact feature gates, exception/memory behavior and
-independent oracle. Legacy exception references in SUB and UCOMIS shared SDM
+Static absence does not establish that any target-required form is unnecessary.
+The next bounded local candidate is S2-37bj, exact masked Long64 `CVTPS2PI
+MM0,XMM1` (`0F 2D C1`), because it is the closest missing MMX-destination
+conversion to S2-37bh; it remains target-required independent of this kernel
+mapping. Implement it only with its exact feature gates, exception behavior
+and independent oracle. Legacy exception references in SUB and UCOMIS shared SDM
 entries that are explicitly labelled for VEX encodings are not evidence for
 legacy fault classes. MINSS Rev. 093 explicitly cites Type 2/Table 2-19 despite
 its scalar width. Physical acceptance remains in the combined final Mac mini
@@ -14330,3 +14338,23 @@ Convert XMM1.low64's two binary32 lanes independently with `Binary32::to_i32(Tow
 The independent testkit validator uses raw-bit truncation conversion. Fixture and runner checks cover signed zero, fractional values/ties, ±2^31, QNaN/SNaN/infinity/subnormal, all RC modes, mixed IE/PE, prior sticky flags, XMM high64 poison, every incoming TOP and representative tags, physical MM0 selection, high exponent word, other state preservation, gates, malformed/trailing encodings, budget/STOP and backend denial. This slice does not claim physical acceptance or completion of parent S2-37/S2-38.
 
 Sources: Intel SDM Rev. 093 Vol. 2A CVTTPS2PI p. 3-252; Vol. 3B §25.25.3 Table 25-5 p. 25-23; Vol. 3A §15.2 pp. 15-2–15-3 Table 15-2; Vol. 1 SSE, MXCSR and x87/MMX shared-state rules. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37bh--bounded-long64-cvttps2pi-mm0xmm1-masked-register-profile), [report](../reports/STAGE_2_REPORT.md#s2-37bh--cvttps2pi-mm0xmm1-masked-register-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bh-cvttps2pi-mm0xmm1-masked-register-profile).
+
+#### S2-37bi — Static mapping of the S2-37 inventory in the selected Ubuntu kernel
+
+Map the 62 target-required S2-37 mnemonics against the exact built-in kernel
+ELF derived from Ubuntu `linux-image-7.0.0-38-generic` 7.0.0-38.38. Preserve
+the distinction between target-required status and whether an instruction
+appears in this kernel. Disassemble only `.text`, `.init.text`, `.altinstr_aux`,
+`.altinstr_replacement` and `.exit.text`; record exact package/image/ELF hashes,
+build ID, tool version, site count by mnemonic, and source/branch context for
+any site. Treat zero sites as static non-observation in this ELF only; do not
+infer absence from loadable modules, initramfs or userspace, and do not infer
+runtime execution. Runtime and physical checks remain `not_run`.
+
+**Result:** all 62 mnemonics and 68 mandatory-prefix/opcode byte signatures had zero
+sites in the selected code sections. A `FNINIT` instruction at
+`ffffffff813b3931` mapped to `arch/x86/kernel/fpu/init.c:44` as a parser/DWARF
+sanity check. See the [versioned manifest](../reports/data/stage2/s2-37-linux-vmlinux-map-v1.json)
+and [Linux profile evidence](../reports/STAGE_2_LINUX_PROFILE.md#s2-37bi--static-mapping-of-s2-37-forms-in-the-ubuntu-kernel-elf).
+This negative static result does not reduce the x86-64-v1 SSE/SSE2 target
+inventory or complete S2-37.
