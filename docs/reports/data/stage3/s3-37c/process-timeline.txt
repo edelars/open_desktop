@@ -1,0 +1,42 @@
+S3-37c final clean release series process timeline
+Source: captured command outputs from the live process snapshots. The companion
+process-inventory.txt contains the filtered `ps` lines. This timeline supplies
+UTC timestamps for those snapshots; it does not summarize or modify Stage 2.
+
+2026-10-31T14:40:39Z quiet snapshot before run 1: no cargo, rustc, or od-bench.
+2026-10-31T14:40:58Z snapshot: Stage 2 cargo test PID 76516 (`od-isa
+  cvttpd2pi_mm0_memory_rax`) and rustc PID 76535 active; no run launched.
+2026-10-31T14:41:36Z snapshot: no cargo, rustc, or od-bench.
+2026-10-31T14:41:38Z snapshot: Stage 2 cargo test PID 77612 and rustc PID 77631
+  active; no run launched.
+2026-10-31T14:42:13Z snapshot: same Stage 2 cargo test PID 77612 active.
+2026-10-31T14:42:48Z snapshot: Stage 2 cargo test PID 78331 (`od-isa
+  cvttpd2pi_mm0_memory_rax`) and rustc PID 78350 active; no run launched.
+2026-10-31T14:43:29Z snapshot: same Stage 2 cargo test PID 78331 active.
+2026-10-31T14:44:06Z snapshot: no cargo, rustc, or od-bench.
+2026-10-31T14:44:09Z quiet snapshot before run 1: no cargo, rustc, or od-bench.
+2026-10-31T14:44:28Z quiet snapshot before run 1: no cargo, rustc, or od-bench.
+
+2026-10-31T14:44:28Z before run 1: no cargo, rustc, or od-bench.
+2026-10-31T14:44:34Z during run 1 build: cargo run and od-bench build script;
+  no Stage 2 process.
+2026-10-31T14:44:54Z during run 1 build: cargo run and od-bench build script;
+  no Stage 2 process.
+2026-10-31T14:45:04Z during run 1 build: cargo run and rustc compiling od-bench;
+  no Stage 2 process.
+2026-10-31T14:45:14Z during run 1 execution: target/release/od-bench PID 79941;
+  no Stage 2 process.
+2026-10-31T14:45:24Z after run 1: no cargo, rustc, or od-bench.
+
+2026-10-31T14:45:27Z before run 2: no cargo, rustc, or od-bench.
+2026-10-31T14:45:33Z during run 2: target/release/od-bench PID 81290; no Stage 2
+  process.
+2026-10-31T14:45:47Z during run 2: no cargo, rustc, or od-bench remained.
+2026-10-31T14:45:52Z after run 2: no cargo, rustc, or od-bench.
+
+2026-10-31T14:45:55Z before run 3: no cargo, rustc, or od-bench.
+2026-10-31T14:46:00Z during run 3: target/release/od-bench PID 81942; no Stage 2
+  process.
+2026-10-31T14:46:13Z during run 3: no cargo, rustc, or od-bench remained.
+2026-10-31T14:46:19Z after run 3: no cargo, rustc, or od-bench.
+2026-10-31T14:47:01Z final status snapshot: no cargo, rustc, or od-bench.

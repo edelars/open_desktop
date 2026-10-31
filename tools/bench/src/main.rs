@@ -229,6 +229,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("cache-churn requires native Apple Silicon macOS execution".into());
             }
         }
+        "cache-lifecycle" => {
+            let case_list = case_list.ok_or("cache-lifecycle requires --case-list PATH")?;
+            let trace = trace_path.ok_or("cache-lifecycle requires --trace PATH")?;
+            let output = output.ok_or("cache-lifecycle requires --output PATH")?;
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                let value =
+                    od_bench::dispatch_cache::run_cache_lifecycle(&case_list, &trace, process_run)?;
+                od_bench::dispatch_cache::write_atomic(&output, &value)?;
+            }
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                let _ = (case_list, trace, output, process_run);
+                return Err("cache-lifecycle requires native Apple Silicon macOS execution".into());
+            }
+        }
         "flags-compare" => {
             let output = output.ok_or("flags-compare requires --output PATH")?;
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -264,7 +280,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {
             print_usage();
             return Err(
-                "expected record, measure, synthetic, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, cache-churn, flags-compare, or cached-flags-compare".into(),
+                "expected record, measure, synthetic, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, cache-churn, cache-lifecycle, flags-compare, or cached-flags-compare".into(),
             );
         }
     }
@@ -291,6 +307,7 @@ fn print_usage() {
   od-bench warm-first-run --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench warm-branch-helper --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench cache-churn --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
+  od-bench cache-lifecycle --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench flags-compare --process-run 1..3 --output report.json\n\
   od-bench cached-flags-compare [--preflight-only] --process-run 1..3 --output report.json\n\
          `record` requires macOS ARM64. `measure` rebuilds all keys before timing."

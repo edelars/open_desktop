@@ -1240,3 +1240,18 @@ pre-drop sample and remained above its pre-runtime baseline. RSS includes all
 benchmark-process allocations and cannot attribute changes to the cache;
 runtime lifecycle, SMC, broader workloads, and leak-free behavior remain
 unverified. See the [S3-37b report](../reports/STAGE_3_S3-37b_2026-10-30.md).
+
+### S3-37c deterministic cache and arena lifecycle path
+
+`od-bench cache-lifecycle` exercises the existing production FIFO16 cache with
+17 admitted one-entry fixtures: fill, controlled stop-RIP at the current guest
+boundary requiring `StopAddress` (distinct from async `StopRequested`), repeated hit, FIFO replacement, targeted between-call backing
+invalidation, changed-code miss/recompile and hit, execution-context generation
+advance, explicit clear, runtime drop, and fresh runtime reopen. The runner
+compares full interpreter-visible state, exit,
+retirement, and budget results on each dispatch. It snapshots current cache
+accounting and actual arena free slots independently from high-water counters.
+This is deterministic supported-API lifecycle evidence, not guest SMC or
+leak-free stress evidence; release measurements and review outcome remain in
+the S3-37c report. The controlled STOP step verifies no lookup/dispatch/cache
+clear, with explicit clear measured as a separate operation.

@@ -3086,6 +3086,24 @@ not establish cache attribution, leak-free behavior, or per-runtime release.
 See the [S3-37b report](../reports/STAGE_3_S3-37b_2026-10-30.md) and
 [benchmark protocol](../testing/BENCHMARKS.md#s3-37b-process-wide-rss-snapshots).
 
+#### S3-37c: deterministic invalidation and arena lifecycle path
+
+Added opt-in `od-bench cache-lifecycle` over 17 admitted one-entry fixtures
+from the frozen S3-17 corpus. Its fixed sequence observes FIFO16 fill, a
+controlled stop-RIP boundary returning `StopAddress` (distinct from async
+`StopRequested`) with no dispatch/lookup/cache clear, repeated hit,
+replacement, supported between-call backing invalidation, changed-code
+recompile and hit, execution-context generation advance, clear, runtime drop,
+and fresh runtime reopen. Every guest dispatch checks interpreter parity. Snapshots
+read current resident code/metadata accounting and allocator available slots
+directly, keeping high-water counters separate. This path does not exercise
+production guest SMC, STOP clearing, concurrent arenas, faults, or leak-free
+stress. Review and release-run evidence are pending; see the
+stress. Three release runs and raw evidence are recorded in the
+[S3-37c report](../reports/STAGE_3_S3-37c_2026-10-31.md); independent evidence
+review is pending. The [protocol](../testing/BENCHMARKS.md#s3-37c-deterministic-fifo16-invalidation-and-runtime-lifecycle)
+defines reproduction and limitations.
+
 1. Выполнить длинную серию unique blocks, повторных invalidations, capacity evictions, SMC и mixed hit/miss workloads.
 2. Снимать executable bytes, metadata bytes, live/retired blocks, compile counts и доступные process memory показатели с описанием метода.
 3. Проверить освобождение после STOP/fault/destroy и несколько независимых runtime instances. Не смешивать peaks разных процессов с памятью одной VM.

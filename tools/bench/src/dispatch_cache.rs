@@ -18,15 +18,16 @@ use od_isa::execute::{RunConfig, RunExit, run as interpreter_run};
 use od_isa::memory::{AccessContext, GuestMemory, MemoryError};
 use od_jit::block::{AdmittedInstructionBoundaries, CodeView};
 use od_jit::dispatch::{
-    CacheEvictionPolicy, DispatchControl, DispatchExit, MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
-    MAX_MULTI_ENTRY_CACHE_METADATA_BYTES, MAX_SINGLE_ENTRY_CACHE_BYTES, MultiEntryBlockCache,
-    SingleEntryBlockCache, run as dispatch_run, run_cached, run_multi_cached,
+    CacheEvictionPolicy, CodeInvalidation, DispatchControl, DispatchExit,
+    MAX_MULTI_ENTRY_CACHE_CODE_BYTES, MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+    MAX_SINGLE_ENTRY_CACHE_BYTES, MultiEntryBlockCache, SingleEntryBlockCache, run as dispatch_run,
+    run_cached, run_multi_cached, run_multi_cached_controlled,
     run_multi_cached_controlled_observed,
 };
 use od_jit::phase_observation::{ObservedDispatchPhase, PhaseRecorder};
 use od_jit::translation::{
-    AddressSpaceId, BackingId, BackingVersion, CodeDependencySpan, CodeIdentity, MappingId,
-    MappingVersion,
+    AddressSpaceId, BackingId, BackingVersion, CodeDependencySpan, CodeIdentity,
+    ExecutionContextSnapshot, MappingId, MappingVersion,
 };
 use od_testkit::case::{ExpectedExit, Fixture};
 use serde::Serialize;
@@ -230,6 +231,114 @@ impl Variant {
             _ => Err(err("phase observation requires the FIFO(16) dispatcher")),
         }
     }
+
+    fn call_fifo_with_identity_and_context(
+        &mut self,
+        case: &Case,
+        state: &mut LongModeState,
+        identity: CodeIdentity,
+        context: ExecutionContextSnapshot,
+    ) -> Result<od_jit::dispatch::DispatchResult, BenchError> {
+        self.call_fifo_controlled_with_identity_and_context(case, state, identity, context, None)
+    }
+
+    fn call_fifo_controlled_with_identity_and_context(
+        &mut self,
+        case: &Case,
+        state: &mut LongModeState,
+        identity: CodeIdentity,
+        context: ExecutionContextSnapshot,
+        stop_rip: Option<u64>,
+    ) -> Result<od_jit::dispatch::DispatchResult, BenchError> {
+        let code = CodeView::new(0, &case.bytes).map_err(|e| err(format!("code view: {e:?}")))?;
+        let dep = [CodeDependencySpan {
+            start_rip: 0,
+            end_rip: code.code_end(),
+            identity,
+        }];
+        let stop_requested = AtomicU8::new(0);
+        match self {
+            Self::Fifo { backend, cache } => run_multi_cached_controlled(
+                code,
+                &case.admission,
+                context,
+                &dep,
+                state,
+                case.budget,
+                DispatchControl {
+                    stop_rip,
+                    stop_requested: &stop_requested,
+                    event_requested: None,
+                },
+                cache,
+                backend,
+            )
+            .map_err(|e| err(format!("multi cache: {e:?}"))),
+            _ => Err(err(
+                "cache lifecycle requires the production FIFO(16) dispatcher",
+            )),
+        }
+    }
+
+    fn fifo_lifecycle_snapshot(&self) -> Result<LifecycleCacheSnapshot, BenchError> {
+        match self {
+            Self::Fifo { backend, cache } => {
+                let counters = cache.counters();
+                Ok(LifecycleCacheSnapshot {
+                    hits: counters.hits,
+                    misses: counters.misses,
+                    successful_compiles: counters.successful_compiles,
+                    successful_publications: counters.successful_publications,
+                    evictions: counters.evictions,
+                    resident_entries_current: cache.resident_entries(),
+                    resident_code_bytes_current: counters.resident_code_bytes,
+                    resident_logical_metadata_bytes_current: counters
+                        .resident_logical_metadata_bytes,
+                    resident_entries_high_water: counters.resident_entries_high_water,
+                    resident_code_bytes_high_water: counters.resident_code_bytes_high_water,
+                    resident_logical_metadata_bytes_high_water: counters
+                        .resident_logical_metadata_bytes_high_water,
+                    arena_capacity_slots: backend.capacity(),
+                    arena_available_slots_actual: backend.available_slots(),
+                    arena_reserved_mapping_bytes: backend.reserved_mapping_bytes(),
+                })
+            }
+            _ => Err(err(
+                "cache lifecycle requires the production FIFO(16) dispatcher",
+            )),
+        }
+    }
+
+    fn fifo_invalidate_backing(
+        &mut self,
+        backing: BackingId,
+        current_version: BackingVersion,
+    ) -> Result<usize, BenchError> {
+        match self {
+            Self::Fifo { cache, .. } => {
+                Ok(cache.invalidate(CodeInvalidation::BackingContentChanged {
+                    backing,
+                    current_version,
+                }))
+            }
+            _ => Err(err(
+                "cache lifecycle requires the production FIFO(16) dispatcher",
+            )),
+        }
+    }
+
+    fn fifo_clear(&mut self) -> Result<(), BenchError> {
+        match self {
+            Self::Fifo { cache, .. } => {
+                cache.clear();
+                Ok(())
+            }
+            _ => Err(err(
+                "cache lifecycle requires the production FIFO(16) dispatcher",
+            )),
+        }
+    }
+
     fn counters(&self) -> Counters {
         match self {
             Self::Uncached(_) => Counters {
@@ -583,6 +692,78 @@ struct CacheChurnReport {
     process_rss_after_runtime_drop: ProcessRssSnapshot,
     teardown_or_independent_instance_lifecycle_measured: bool,
     sweeps: Vec<ChurnSweepReport>,
+    total_elapsed_ns: u128,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+struct LifecycleCacheSnapshot {
+    hits: u64,
+    misses: u64,
+    successful_compiles: u64,
+    successful_publications: u64,
+    evictions: u64,
+    resident_entries_current: usize,
+    resident_code_bytes_current: usize,
+    resident_logical_metadata_bytes_current: usize,
+    resident_entries_high_water: usize,
+    resident_code_bytes_high_water: usize,
+    resident_logical_metadata_bytes_high_water: usize,
+    arena_capacity_slots: usize,
+    arena_available_slots_actual: usize,
+    arena_reserved_mapping_bytes: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct LifecycleExecution {
+    dispatch_exit: String,
+    blocks_executed: u64,
+    retired_guest_instructions: u64,
+    remaining_budget: u64,
+    flags_mask: u64,
+    state_debug: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct LifecycleStep {
+    index: usize,
+    action: String,
+    case_id: Option<String>,
+    code_sha256: Option<String>,
+    context_id: Option<u64>,
+    mapping_id: Option<u64>,
+    mapping_version: Option<u64>,
+    backing_id: Option<u64>,
+    backing_version: Option<u64>,
+    invalidated_entries: Option<usize>,
+    elapsed_ns: u128,
+    cache_before: Option<LifecycleCacheSnapshot>,
+    cache_after: Option<LifecycleCacheSnapshot>,
+    execution: Option<LifecycleExecution>,
+}
+
+#[derive(Serialize)]
+struct CacheLifecycleReport {
+    schema: u32,
+    process_run: u8,
+    case_list_sha256: String,
+    trace_sha256: String,
+    capture_host: HostMetadata,
+    measure_host: HostMetadata,
+    cache_capacity_entries: usize,
+    initial_fill_case_ids: Vec<String>,
+    overflow_case_id: String,
+    invalidation_target_case_id: String,
+    changed_code_case_id: String,
+    changed_code_sha256: String,
+    original_mapping_id: u64,
+    original_backing_id: u64,
+    original_backing_version: u64,
+    changed_backing_version: u64,
+    changed_result_differs_under_same_initial_state: bool,
+    context_generations: Vec<u64>,
+    lifecycle_contract: String,
+    limitations: Vec<String>,
+    steps: Vec<LifecycleStep>,
     total_elapsed_ns: u128,
 }
 
@@ -1527,6 +1708,589 @@ pub fn run_cache_churn(
         total_elapsed_ns: started.elapsed().as_nanos(),
     };
     serde_json::to_value(report).map_err(|e| err(e.to_string()))
+}
+
+/// Records one bounded FIFO16 cache invalidation, replacement, clear, and
+/// arena reopen sequence over admitted fixtures from the frozen S3-17 corpus.
+/// This is a between-call cache-owner lifecycle experiment, not production SMC.
+pub fn run_cache_lifecycle(
+    case_list: &Path,
+    trace_path: &Path,
+    process_run: u8,
+) -> Result<serde_json::Value, BenchError> {
+    if cfg!(debug_assertions) {
+        return Err(err("cache-lifecycle requires a release build"));
+    }
+    if !(1..=3).contains(&process_run) {
+        return Err(err("process-run must be 1..=3"));
+    }
+
+    let started = Instant::now();
+    let list = read_bounded(case_list, MAX_CASE_LIST_BYTES, "case list")?;
+    let trace_raw = read_bounded(trace_path, crate::MAX_LOGICAL_BYTES, "trace")?;
+    if od_testkit::sha256_hex(&list) != FROZEN_CASE_LIST_SHA256
+        || od_testkit::sha256_hex(&trace_raw) != FROZEN_TRACE_SHA256
+    {
+        return Err(err(
+            "case list or trace does not match the frozen S3-17 corpus",
+        ));
+    }
+    let trace: RecordedTrace =
+        serde_json::from_slice(&trace_raw).map_err(|e| err(format!("trace JSON: {e}")))?;
+    if trace.inputs.len() != MAX_INPUTS
+        || trace.visits.len() != 1_322
+        || trace.visits.len() > MAX_TOTAL_TRACE_VISITS
+    {
+        return Err(err("frozen S3-17 trace count mismatch"));
+    }
+    let cases = prepare_cases(&list, &trace, started)?;
+    if cases.len() != MAX_INPUTS {
+        return Err(err("cache lifecycle requires the complete frozen corpus"));
+    }
+
+    let eligible: Vec<&Case> = cases
+        .iter()
+        .filter(|case| case.entry_count == 1 && case.unique_entries == 1 && case.initial.rip == 0)
+        .collect();
+    if eligible.len() < ARENA_SLOTS + 1 {
+        return Err(err(format!(
+            "cache lifecycle needs at least {} one-entry cases starting at RIP zero",
+            ARENA_SLOTS + 1
+        )));
+    }
+
+    // The target is inserted last, so one subsequent over-capacity insert
+    // evicts an older filler rather than the entry selected for invalidation.
+    let fillers = &eligible[..ARENA_SLOTS - 1];
+    let target = eligible[ARENA_SLOTS - 1];
+    let overflow = eligible[ARENA_SLOTS];
+    let original_context = crate::benchmark_execution_context();
+    let next_context_id = original_context
+        .id
+        .checked_next()
+        .ok_or_else(|| err("execution context generation exhausted"))?;
+    let reopened_context_id = next_context_id
+        .checked_next()
+        .ok_or_else(|| err("execution context generation exhausted"))?;
+    let next_context = ExecutionContextSnapshot::s0_09_fixture(next_context_id);
+    let reopened_context = ExecutionContextSnapshot::s0_09_fixture(reopened_context_id);
+
+    let changed_version = target
+        .identity
+        .backing_version
+        .checked_next()
+        .ok_or_else(|| err("backing generation exhausted"))?;
+    let mut changed_identity = target.identity;
+    changed_identity.backing_version = changed_version;
+
+    let mut changed_case = None;
+    for candidate in cases
+        .iter()
+        .filter(|case| case.entry_count == 1 && case.unique_entries == 1 && case.initial.rip == 0)
+    {
+        if candidate.bytes == target.bytes {
+            continue;
+        }
+        let candidate_case = lifecycle_case_with_program(
+            candidate,
+            &target.initial,
+            target.budget,
+            changed_identity,
+            format!("{}-under-{}-new-backing", candidate.id, target.id),
+        )?;
+        if lifecycle_results_differ(target, &candidate_case) {
+            changed_case = Some(candidate_case);
+            break;
+        }
+    }
+    let changed_case = changed_case.ok_or_else(|| {
+        err("frozen S3-17 corpus has no admitted changed program with a distinct result")
+    })?;
+
+    let mut engine = Variant::new(VariantName::MultiFifo16)?;
+    let initial_snapshot = engine.fifo_lifecycle_snapshot()?;
+    if initial_snapshot.resident_entries_current != 0
+        || initial_snapshot.resident_code_bytes_current != 0
+        || initial_snapshot.resident_logical_metadata_bytes_current != 0
+        || initial_snapshot.arena_available_slots_actual != ARENA_SLOTS
+    {
+        return Err(err("fresh FIFO runtime did not start empty"));
+    }
+
+    let mut steps = Vec::new();
+    for case in fillers.iter().copied().chain(std::iter::once(target)) {
+        lifecycle_dispatch_step(
+            &mut steps,
+            &mut engine,
+            case,
+            case.identity,
+            original_context,
+            "fill_fifo_entry",
+        )?;
+    }
+    let full_snapshot = engine.fifo_lifecycle_snapshot()?;
+    if full_snapshot.resident_entries_current != ARENA_SLOTS
+        || full_snapshot.arena_available_slots_actual != 0
+        || full_snapshot.misses != ARENA_SLOTS as u64
+        || full_snapshot.successful_compiles != ARENA_SLOTS as u64
+        || full_snapshot.successful_publications != ARENA_SLOTS as u64
+        || full_snapshot.evictions != 0
+    {
+        return Err(err("FIFO fill did not produce 16 cold resident entries"));
+    }
+
+    lifecycle_stop_boundary_step(&mut steps, &mut engine, target, original_context)?;
+
+    lifecycle_dispatch_step(
+        &mut steps,
+        &mut engine,
+        target,
+        target.identity,
+        original_context,
+        "repeat_target_hit",
+    )?;
+    let hit_snapshot = engine.fifo_lifecycle_snapshot()?;
+    if hit_snapshot.hits != 1
+        || hit_snapshot.misses != full_snapshot.misses
+        || hit_snapshot.successful_compiles != full_snapshot.successful_compiles
+        || hit_snapshot.successful_publications != full_snapshot.successful_publications
+        || hit_snapshot.evictions != full_snapshot.evictions
+    {
+        return Err(err("repeated target call was not a hit-only dispatch"));
+    }
+
+    lifecycle_dispatch_step(
+        &mut steps,
+        &mut engine,
+        overflow,
+        overflow.identity,
+        original_context,
+        "exceed_capacity_and_replace_oldest",
+    )?;
+    let churn_snapshot = engine.fifo_lifecycle_snapshot()?;
+    if churn_snapshot.resident_entries_current != ARENA_SLOTS
+        || churn_snapshot.arena_available_slots_actual != 0
+        || churn_snapshot.evictions != 1
+        || churn_snapshot.misses != full_snapshot.misses + 1
+        || churn_snapshot.successful_compiles != full_snapshot.successful_compiles + 1
+        || churn_snapshot.successful_publications != full_snapshot.successful_publications + 1
+    {
+        return Err(err(
+            "over-capacity dispatch did not replace exactly one FIFO entry",
+        ));
+    }
+
+    let before_invalidation = engine.fifo_lifecycle_snapshot()?;
+    let invalidation_started = Instant::now();
+    let invalidated_entries =
+        engine.fifo_invalidate_backing(target.identity.backing, changed_version)?;
+    let invalidation_elapsed = invalidation_started.elapsed();
+    let after_invalidation = engine.fifo_lifecycle_snapshot()?;
+    if invalidated_entries != 1
+        || after_invalidation.resident_entries_current != ARENA_SLOTS - 1
+        || after_invalidation.arena_available_slots_actual != 1
+        || after_invalidation.resident_code_bytes_current
+            >= before_invalidation.resident_code_bytes_current
+        || after_invalidation.resident_logical_metadata_bytes_current
+            >= before_invalidation.resident_logical_metadata_bytes_current
+    {
+        return Err(err(
+            "targeted backing invalidation did not reclaim one resident entry",
+        ));
+    }
+    steps.push(LifecycleStep {
+        index: steps.len(),
+        action: "invalidate_target_backing_between_calls".into(),
+        case_id: Some(target.id.clone()),
+        code_sha256: Some(od_testkit::sha256_hex(&target.bytes)),
+        context_id: Some(original_context.id.get()),
+        mapping_id: Some(target.identity.mapping.get()),
+        mapping_version: Some(target.identity.mapping_version.get()),
+        backing_id: Some(target.identity.backing.get()),
+        backing_version: Some(changed_version.get()),
+        invalidated_entries: Some(invalidated_entries),
+        elapsed_ns: invalidation_elapsed.as_nanos(),
+        cache_before: Some(before_invalidation),
+        cache_after: Some(after_invalidation),
+        execution: None,
+    });
+
+    lifecycle_dispatch_step(
+        &mut steps,
+        &mut engine,
+        &changed_case,
+        changed_identity,
+        original_context,
+        "dispatch_changed_code_after_backing_invalidation",
+    )?;
+    let changed_cold_snapshot = engine.fifo_lifecycle_snapshot()?;
+    if changed_cold_snapshot.resident_entries_current != ARENA_SLOTS
+        || changed_cold_snapshot.arena_available_slots_actual != 0
+        || changed_cold_snapshot.misses != churn_snapshot.misses + 1
+        || changed_cold_snapshot.successful_compiles != churn_snapshot.successful_compiles + 1
+        || changed_cold_snapshot.successful_publications
+            != churn_snapshot.successful_publications + 1
+        || changed_cold_snapshot.evictions != churn_snapshot.evictions
+    {
+        return Err(err(
+            "changed backing dispatch did not compile without eviction",
+        ));
+    }
+    lifecycle_dispatch_step(
+        &mut steps,
+        &mut engine,
+        &changed_case,
+        changed_identity,
+        original_context,
+        "repeat_changed_code_hit",
+    )?;
+    let changed_hit_snapshot = engine.fifo_lifecycle_snapshot()?;
+    if changed_hit_snapshot.hits != hit_snapshot.hits + 1
+        || changed_hit_snapshot.misses != changed_cold_snapshot.misses
+        || changed_hit_snapshot.successful_compiles != changed_cold_snapshot.successful_compiles
+        || changed_hit_snapshot.successful_publications
+            != changed_cold_snapshot.successful_publications
+    {
+        return Err(err("changed code repeat was not a hit-only dispatch"));
+    }
+
+    lifecycle_dispatch_step(
+        &mut steps,
+        &mut engine,
+        &changed_case,
+        changed_identity,
+        next_context,
+        "advance_context_generation_and_recompile",
+    )?;
+    let context_snapshot = engine.fifo_lifecycle_snapshot()?;
+    if context_snapshot.resident_entries_current != 1
+        || context_snapshot.arena_available_slots_actual != ARENA_SLOTS - 1
+        || context_snapshot.misses != changed_hit_snapshot.misses + 1
+        || context_snapshot.successful_compiles != changed_hit_snapshot.successful_compiles + 1
+        || context_snapshot.successful_publications
+            != changed_hit_snapshot.successful_publications + 1
+        || context_snapshot.evictions != changed_hit_snapshot.evictions
+    {
+        return Err(err(
+            "advancing execution context did not flush then recompile",
+        ));
+    }
+
+    let before_clear = engine.fifo_lifecycle_snapshot()?;
+    let clear_started = Instant::now();
+    engine.fifo_clear()?;
+    let clear_elapsed = clear_started.elapsed();
+    let after_clear = engine.fifo_lifecycle_snapshot()?;
+    if after_clear.resident_entries_current != 0
+        || after_clear.resident_code_bytes_current != 0
+        || after_clear.resident_logical_metadata_bytes_current != 0
+        || after_clear.arena_available_slots_actual != ARENA_SLOTS
+        || after_clear.resident_entries_high_water != ARENA_SLOTS
+    {
+        return Err(err(
+            "clear did not return all slots and resident accounting to zero",
+        ));
+    }
+    steps.push(LifecycleStep {
+        index: steps.len(),
+        action: "clear_cache_between_calls".into(),
+        case_id: None,
+        code_sha256: None,
+        context_id: Some(next_context.id.get()),
+        mapping_id: None,
+        mapping_version: None,
+        backing_id: None,
+        backing_version: None,
+        invalidated_entries: None,
+        elapsed_ns: clear_elapsed.as_nanos(),
+        cache_before: Some(before_clear),
+        cache_after: Some(after_clear),
+        execution: None,
+    });
+
+    let before_drop = engine.fifo_lifecycle_snapshot()?;
+    let teardown_started = Instant::now();
+    drop(engine);
+    let teardown_elapsed = teardown_started.elapsed();
+    steps.push(LifecycleStep {
+        index: steps.len(),
+        action: "drop_cache_and_arena_mapping_lease".into(),
+        case_id: None,
+        code_sha256: None,
+        context_id: Some(next_context.id.get()),
+        mapping_id: None,
+        mapping_version: None,
+        backing_id: None,
+        backing_version: None,
+        invalidated_entries: None,
+        elapsed_ns: teardown_elapsed.as_nanos(),
+        cache_before: Some(before_drop),
+        cache_after: None,
+        execution: None,
+    });
+
+    let reopen_started = Instant::now();
+    let mut reopened = Variant::new(VariantName::MultiFifo16)?;
+    let reopen_elapsed = reopen_started.elapsed();
+    let reopened_before = reopened.fifo_lifecycle_snapshot()?;
+    if reopened_before.arena_available_slots_actual != ARENA_SLOTS
+        || reopened_before.resident_entries_current != 0
+    {
+        return Err(err("fresh arena did not reopen with all slots available"));
+    }
+    steps.push(LifecycleStep {
+        index: steps.len(),
+        action: "reopen_fresh_cache_and_arena".into(),
+        case_id: None,
+        code_sha256: None,
+        context_id: Some(reopened_context.id.get()),
+        mapping_id: None,
+        mapping_version: None,
+        backing_id: None,
+        backing_version: None,
+        invalidated_entries: None,
+        elapsed_ns: reopen_elapsed.as_nanos(),
+        cache_before: None,
+        cache_after: Some(reopened_before),
+        execution: None,
+    });
+    lifecycle_dispatch_step(
+        &mut steps,
+        &mut reopened,
+        target,
+        target.identity,
+        reopened_context,
+        "execute_after_reopen_with_new_context",
+    )?;
+    let reopened_after = reopened.fifo_lifecycle_snapshot()?;
+    if reopened_after.resident_entries_current != 1
+        || reopened_after.arena_available_slots_actual != ARENA_SLOTS - 1
+        || reopened_after.misses != 1
+        || reopened_after.successful_compiles != 1
+        || reopened_after.successful_publications != 1
+        || reopened_after.evictions != 0
+    {
+        return Err(err(
+            "reopened runtime did not execute through a fresh cold entry",
+        ));
+    }
+    drop(reopened);
+
+    let report = CacheLifecycleReport {
+        schema: 1,
+        process_run,
+        case_list_sha256: od_testkit::sha256_hex(&list),
+        trace_sha256: od_testkit::sha256_hex(&trace_raw),
+        capture_host: trace.capture_host.clone(),
+        measure_host: HostMetadata::current(),
+        cache_capacity_entries: ARENA_SLOTS,
+        initial_fill_case_ids: fillers
+            .iter()
+            .map(|case| case.id.clone())
+            .chain(std::iter::once(target.id.clone()))
+            .collect(),
+        overflow_case_id: overflow.id.clone(),
+        invalidation_target_case_id: target.id.clone(),
+        changed_code_case_id: changed_case.id.clone(),
+        changed_code_sha256: od_testkit::sha256_hex(&changed_case.bytes),
+        original_mapping_id: target.identity.mapping.get(),
+        original_backing_id: target.identity.backing.get(),
+        original_backing_version: target.identity.backing_version.get(),
+        changed_backing_version: changed_version.get(),
+        changed_result_differs_under_same_initial_state: true,
+        context_generations: vec![
+            original_context.id.get(),
+            next_context.id.get(),
+            reopened_context.id.get(),
+        ],
+        lifecycle_contract: "One synchronous FIFO16 runtime and one PublishedArenaBackend are active at a time. The exact sequence fills 16 entries, repeats the newest target as a hit, compiles a seventeenth key to evict the oldest filler, invalidates the target backing between dispatch calls, dispatches different admitted bytes under an advanced backing version, confirms the subsequent hit, advances execution-context generation to flush/recompile, clears the cache, drops the runtime/arena, then creates a fresh arena and executes with a new context.".into(),
+        limitations: vec![
+            "Backing invalidation is called directly between synchronous dispatcher invocations; this is not production owner notification or guest-write SMC.".into(),
+            "STOP is not treated as an automatic cache clear; explicit clear and runtime drop are separate recorded steps.".into(),
+            "No active-code SMC, guest memory fault, simultaneous arena, SMP, or independent concurrent runtime is exercised.".into(),
+            "Recorded nanosecond values describe one bounded lifecycle schedule per process and make no performance or leak-free claim.".into(),
+        ],
+        steps,
+        total_elapsed_ns: started.elapsed().as_nanos(),
+    };
+    serde_json::to_value(report).map_err(|e| err(e.to_string()))
+}
+
+fn lifecycle_case_with_program(
+    template: &Case,
+    initial: &LongModeState,
+    budget: u64,
+    identity: CodeIdentity,
+    id: String,
+) -> Result<Case, BenchError> {
+    let code = CodeView::new(0, &template.bytes).map_err(|e| err(format!("code view: {e:?}")))?;
+    if initial.rip != 0 {
+        return Err(err("lifecycle versioned case must start at guest RIP zero"));
+    }
+    let mut expected = initial.clone();
+    let mut memory = FetchMemory(&template.bytes);
+    let result = interpreter_run(
+        &mut expected,
+        &mut memory,
+        RunConfig {
+            instruction_budget: budget,
+            stop_rip: Some(code.code_end()),
+            context: AccessContext::default(),
+        },
+        || false,
+    );
+    if result.instructions_executed > budget {
+        return Err(err("lifecycle interpreter exceeded the instruction budget"));
+    }
+    let exit = match result.exit {
+        RunExit::StopAddress => DispatchExit::CodeEnd,
+        RunExit::InstructionBudgetExhausted => DispatchExit::BudgetExhausted,
+        _ => {
+            return Err(err(
+                "lifecycle fixture produced an unexpected interpreter exit",
+            ));
+        }
+    };
+    let retired = result.instructions_executed;
+    let remaining = budget
+        .checked_sub(retired)
+        .ok_or_else(|| err("lifecycle remaining budget underflow"))?;
+    Ok(Case {
+        id,
+        bytes: template.bytes.clone(),
+        admission: template.admission.clone(),
+        initial: initial.clone(),
+        expected,
+        budget,
+        exit,
+        retired,
+        remaining,
+        flags_mask: template.flags_mask,
+        identity,
+        entry_count: template.entry_count,
+        unique_entries: template.unique_entries,
+    })
+}
+
+fn lifecycle_results_differ(left: &Case, right: &Case) -> bool {
+    let mut left_state = left.expected.clone();
+    let mut right_state = right.expected.clone();
+    left_state.rflags &= left.flags_mask;
+    right_state.rflags &= right.flags_mask;
+    left_state != right_state
+        || left.exit != right.exit
+        || left.retired != right.retired
+        || left.remaining != right.remaining
+}
+
+fn lifecycle_dispatch_step(
+    steps: &mut Vec<LifecycleStep>,
+    engine: &mut Variant,
+    case: &Case,
+    identity: CodeIdentity,
+    context: ExecutionContextSnapshot,
+    action: &str,
+) -> Result<(), BenchError> {
+    let cache_before = engine.fifo_lifecycle_snapshot()?;
+    let mut state = case.initial.clone();
+    let dispatch_started = Instant::now();
+    let result = engine.call_fifo_with_identity_and_context(case, &mut state, identity, context)?;
+    let elapsed = dispatch_started.elapsed();
+    validate_full_dispatch_state(case, &state)?;
+    validate_dispatch_result(case, &state, &result)?;
+    let cache_after = engine.fifo_lifecycle_snapshot()?;
+    steps.push(LifecycleStep {
+        index: steps.len(),
+        action: action.into(),
+        case_id: Some(case.id.clone()),
+        code_sha256: Some(od_testkit::sha256_hex(&case.bytes)),
+        context_id: Some(context.id.get()),
+        mapping_id: Some(identity.mapping.get()),
+        mapping_version: Some(identity.mapping_version.get()),
+        backing_id: Some(identity.backing.get()),
+        backing_version: Some(identity.backing_version.get()),
+        invalidated_entries: None,
+        elapsed_ns: elapsed.as_nanos(),
+        cache_before: Some(cache_before),
+        cache_after: Some(cache_after),
+        execution: Some(LifecycleExecution {
+            dispatch_exit: format!("{:?}", result.exit),
+            blocks_executed: result.blocks_executed,
+            retired_guest_instructions: result.retired_instructions,
+            remaining_budget: result.remaining_budget,
+            flags_mask: case.flags_mask,
+            state_debug: format!("{state:?}"),
+        }),
+    });
+    Ok(())
+}
+
+fn lifecycle_stop_boundary_step(
+    steps: &mut Vec<LifecycleStep>,
+    engine: &mut Variant,
+    case: &Case,
+    context: ExecutionContextSnapshot,
+) -> Result<(), BenchError> {
+    let cache_before = engine.fifo_lifecycle_snapshot()?;
+    let mut state = case.initial.clone();
+    let before_state = state.clone();
+    let stop_rip = state.rip;
+    let dispatch_started = Instant::now();
+    let result = engine.call_fifo_controlled_with_identity_and_context(
+        case,
+        &mut state,
+        case.identity,
+        context,
+        Some(stop_rip),
+    )?;
+    let elapsed = dispatch_started.elapsed();
+    let cache_after = engine.fifo_lifecycle_snapshot()?;
+    if state != before_state
+        || result.exit != DispatchExit::Runtime(od_jit::runtime::RuntimeExitTag::StopAddress)
+        || result.blocks_executed != 0
+        || result.retired_instructions != 0
+        || result.remaining_budget != case.budget
+        || cache_after.hits != cache_before.hits
+        || cache_after.misses != cache_before.misses
+        || cache_after.successful_compiles != cache_before.successful_compiles
+        || cache_after.successful_publications != cache_before.successful_publications
+        || cache_after.evictions != cache_before.evictions
+        || cache_after.resident_entries_current != cache_before.resident_entries_current
+        || cache_after.resident_code_bytes_current != cache_before.resident_code_bytes_current
+        || cache_after.resident_logical_metadata_bytes_current
+            != cache_before.resident_logical_metadata_bytes_current
+        || cache_after.arena_available_slots_actual != cache_before.arena_available_slots_actual
+    {
+        return Err(err(
+            "controlled stop-RIP/StopAddress boundary changed guest state or cache residency/counters",
+        ));
+    }
+    steps.push(LifecycleStep {
+        index: steps.len(),
+        action:
+            "controlled_stop_rip_at_current_guest_boundary_returns_stop_address_no_lookup_or_clear"
+                .into(),
+        case_id: Some(case.id.clone()),
+        code_sha256: Some(od_testkit::sha256_hex(&case.bytes)),
+        context_id: Some(context.id.get()),
+        mapping_id: Some(case.identity.mapping.get()),
+        mapping_version: Some(case.identity.mapping_version.get()),
+        backing_id: Some(case.identity.backing.get()),
+        backing_version: Some(case.identity.backing_version.get()),
+        invalidated_entries: None,
+        elapsed_ns: elapsed.as_nanos(),
+        cache_before: Some(cache_before),
+        cache_after: Some(cache_after),
+        execution: Some(LifecycleExecution {
+            dispatch_exit: format!("{:?}", result.exit),
+            blocks_executed: result.blocks_executed,
+            retired_guest_instructions: result.retired_instructions,
+            remaining_budget: result.remaining_budget,
+            flags_mask: case.flags_mask,
+            state_debug: format!("{state:?}"),
+        }),
+    });
+    Ok(())
 }
 
 fn churn_counter_delta(after: Counters, before: Counters) -> Result<ChurnCounterDelta, BenchError> {

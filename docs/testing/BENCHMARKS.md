@@ -532,6 +532,35 @@ baseline. This is process-wide RSS observation only; it does not prove memory
 was released or retained by the cache itself. See the
 [S3-37b report](../reports/STAGE_3_S3-37b_2026-10-30.md).
 
+### S3-37c: deterministic FIFO16 invalidation and runtime lifecycle
+
+`od-bench cache-lifecycle` is an opt-in native Apple Silicon release command
+over 17 one-entry fixtures from the frozen S3-17 corpus. It fills the existing
+production FIFO16 cache, issues a controlled stop-RIP at the target's current
+guest boundary and requires `StopAddress` (the stop-RIP exit, distinct from
+async `StopRequested`), repeats the newest key, inserts one additional key to
+observe FIFO replacement, invalidates the selected target backing between synchronous calls,
+dispatches changed admitted code under the advanced backing version, repeats it
+for a hit, advances the supported execution-context generation, explicitly
+clears, drops the runtime, and creates a fresh runtime with a later context
+generation.
+
+Each dispatch validates full CPU state (with the fixture's undefined-RFLAGS
+mask), exit, block count, retirement count, and remaining budget against the
+interpreter oracle. The report records current resident entries/code/metadata
+from the cache's current counters, allocator `available_slots()` snapshots,
+and high-water counters as separate fields. It includes fixture and corpus
+hashes, identities and versions, exact action order, cache counters, state and
+diagnostic elapsed times for invalidation/recompile/clear/drop. Those timings
+are not performance claims.
+
+Invalidation is explicitly between calls and uses the supported cache API. It
+does not demonstrate production self-modifying-code ownership, guest faults,
+automatic clearing at STOP, concurrent arenas, or leak-free behavior. The STOP
+step checks that no lookup, dispatch, or cache clear occurred; explicit clear
+is a separate step. Three clean release runs and their raw evidence are
+recorded in the [S3-37c report](../reports/STAGE_3_S3-37c_2026-10-31.md).
+
 Recorded trace дополняется ограниченными synthetic-сценариями:
 1/8/64/512/4096 keys и observed unique count, hot loops на 1/8 keys, reverse
 unique sequence, alternating hit/miss, stale mapping/backing/execute
