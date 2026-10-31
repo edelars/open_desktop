@@ -19734,3 +19734,35 @@ the reviewer also reran the neighboring bu runner test (1/1 passed). Physical
 x86 execution was not performed.
 
 Normative sources: Intel SDM Rev. 093 Vol. 2A CVTTPD2DQ pp. 3-244–3-247 (legacy operation p. 3-246); Vol. 1 §§11.5.2.2, 11.5.2.6, 11.5.3, 11.5.5 and Table 14-21; Vol. 3A §§16.1.3–16.1.4, Table 16-1. See the [plan](../plans/STAGE_2.md#s2-37bw--bounded-long64-cvttpd2dq-xmm0rax-aligned-m128-memory-profile), [CPU contract](../specs/CPU_CONTRACT.md#s2-37bw--bounded-long64-cvttpd2dq-xmm0rax-aligned-m128-profile), and [literal fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bw-cvttpd2dq-xmm0rax-aligned-m128-truncation-profile).
+
+### S2-37bx — CVTPD2DQ XMM0,[RAX] aligned m128 memory profile
+
+Implemented the exact legacy `F2 0F E6 00` Long64 schema-v2 profile
+`s2-long-cvtpd2dq-memory-rax-v1`. It fetches the complete four-byte encoding,
+uses a bounded SSE2 prerequisite policy, then reads one aligned 16-byte
+canonical48 source span at RAX. Misalignment faults #GP(0) before callback at
+all CPL/AC combinations. State commits only after the read succeeds. Native,
+JIT, C ABI, fragment and generic execution remain closed.
+
+The testkit uses a raw-u64 integer oracle. It rounds binary64 lanes using
+MXCSR.RC before signed-i32 range checks. Invalid results yield the indefinite
+word and IE only; valid inexact results contribute PE. Sticky IE/PE are
+preserved and ORed across lanes. DAZ=0 subnormals round to signed one only for
+the corresponding directed mode and otherwise to zero, always with PE and no
+DE. XMM0 high64 is zeroed on success; x87 state is untouched and does not gate
+execution.
+
+Verification passed: focused ISA decoder/execution 4/4; full `od-isa` 1,619;
+full `od-testkit` 445; focused bx runner 1/1; neighboring bw runner 1/1; full
+`od-runner` 112 unit + 453 fixture tests; full `od-x86-runner` 8 library + 4
+binary tests; `cargo fmt --all -- --check`; and
+`cargo check --workspace --all-targets --offline`. The portable native local-only
+classifier test passed as one of the x86-runner binary tests. No profile-specific
+Linux native fixture-denial test exists for bx, and native physical execution
+was not attempted. Physical x86 acceptance was not run. Layout validation passed (`tools/check_layout.py`: 48 required directories, 6 crate scaffolds, 14 instruction scopes). All 13 bx Markdown links were checked for an existing target file and bx section. `graphify update .` completed; the graph now has 10,254 nodes, 21,838 edges and 275 communities. Independent review completed without remaining findings. An independent no-compile CLI smoke passed 64/64 across bx and bw rounding/truncation, boundary, subnormal, and invalid cases.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTPD2DQ pp. 3-214–3-217
+(legacy operation p. 3-216); Vol. 1 §§11.5.2.2, 11.5.2.6, 11.5.3, 11.5.5 and
+Table 14-21; Vol. 3A §§16.1.3–16.1.4, Table 16-1. See the [plan](../plans/STAGE_2.md#s2-37bx--bounded-long64-cvtpd2dq-xmm0rax-aligned-m128-memory-profile),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37bx--bounded-long64-cvtpd2dq-xmm0rax-aligned-m128-profile),
+and [literal fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bx-cvtpd2dq-xmm0rax-aligned-m128-rounding-profile).

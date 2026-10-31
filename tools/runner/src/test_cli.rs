@@ -4,14 +4,15 @@ use std::io::{self, Write};
 use std::process::{Command, ExitCode};
 
 use od_isa::execute::{
-    AddpdControls, AddpsControls, AddsdControls, AddssControls, Cvtpd2piControls, Cvtpd2psControls,
-    Cvtpi2pdControls, Cvtpi2psControls, Cvtps2dqMemoryControls, Cvtsd2ssControls,
-    Cvttpd2dqControls, Cvttpd2dqMemoryControls, Cvttps2dqControls, Cvttps2dqMemoryControls,
-    Cvttss2siRegistersControls, DivpdControls, DivpsControls, DivsdControls, DivssControls,
-    MulpdControls, MulpsControls, MulsdControls, MulssControls, SqrtpdControls, SqrtpsControls,
-    SqrtsdControls, SqrtssControls, SubpdControls, SubpsControls, SubsdControls, SubssControls,
-    run_with_addpd_register_controls, run_with_addps_register_controls,
-    run_with_addsd_register_controls, run_with_addss_register_controls,
+    AddpdControls, AddpsControls, AddsdControls, AddssControls, Cvtpd2dqMemoryControls,
+    Cvtpd2piControls, Cvtpd2psControls, Cvtpi2pdControls, Cvtpi2psControls, Cvtps2dqMemoryControls,
+    Cvtsd2ssControls, Cvttpd2dqControls, Cvttpd2dqMemoryControls, Cvttps2dqControls,
+    Cvttps2dqMemoryControls, Cvttss2siRegistersControls, DivpdControls, DivpsControls,
+    DivsdControls, DivssControls, MulpdControls, MulpsControls, MulsdControls, MulssControls,
+    SqrtpdControls, SqrtpsControls, SqrtsdControls, SqrtssControls, SubpdControls, SubpsControls,
+    SubsdControls, SubssControls, run_with_addpd_register_controls,
+    run_with_addps_register_controls, run_with_addsd_register_controls,
+    run_with_addss_register_controls, run_with_cvtpd2dq_memory_controls,
     run_with_cvtpd2dq_register_controls, run_with_cvtpd2pi_mm0_memory_rax_controls,
     run_with_cvtpd2pi_mm0_xmm1_controls, run_with_cvtpd2ps_register_controls,
     run_with_cvtpi2pd_memory_controls, run_with_cvtpi2pd_xmm0_mm1_controls,
@@ -551,6 +552,7 @@ fn expected_native_xorpd_oracle(
                 cvtpd2dq_controls: None,
                 cvttpd2dq_controls: None,
                 cvttpd2dq_m128_controls: None,
+                cvtpd2dq_m128_controls: None,
                 sqrtss_controls: None,
                 sqrtsd_controls: None,
                 sqrtps_controls: None,
@@ -1753,6 +1755,23 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongCvtpd2dqMemoryRaxV1 {
+        let controls = loaded
+            .fixture
+            .cvtpd2dq_m128_controls
+            .expect("validated CVTPD2DQ m128 controls");
+        run_with_cvtpd2dq_memory_controls(
+            &mut state,
+            memory,
+            config,
+            Cvtpd2dqMemoryControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongCvtpd2dqRegistersV1 {
         let controls = loaded
             .fixture
@@ -2716,6 +2735,7 @@ fn execute_fixture_v2(
                             | v2::Profile::LongCvttps2dqMemoryRaxV1
                             | v2::Profile::LongCvtps2dqMemoryRaxV1
                             | v2::Profile::LongCvttpd2dqMemoryRaxV1
+                            | v2::Profile::LongCvtpd2dqMemoryRaxV1
                     ) {
                         v2::INTEGER_FLAGS | (1 << 18)
                     } else {
@@ -2743,6 +2763,7 @@ fn execute_fixture_v2(
                 cvtpd2dq_controls: loaded.fixture.cvtpd2dq_controls,
                 cvttpd2dq_controls: loaded.fixture.cvttpd2dq_controls,
                 cvttpd2dq_m128_controls: loaded.fixture.cvttpd2dq_m128_controls,
+                cvtpd2dq_m128_controls: loaded.fixture.cvtpd2dq_m128_controls,
                 sqrtss_controls: loaded.fixture.sqrtss_controls,
                 sqrtsd_controls: loaded.fixture.sqrtsd_controls,
                 sqrtps_controls: loaded.fixture.sqrtps_controls,
@@ -3962,6 +3983,7 @@ mod tests {
                     cvtpd2dq_controls: input.fixture.cvtpd2dq_controls,
                     cvttpd2dq_controls: input.fixture.cvttpd2dq_controls,
                     cvttpd2dq_m128_controls: input.fixture.cvttpd2dq_m128_controls,
+                    cvtpd2dq_m128_controls: input.fixture.cvtpd2dq_m128_controls,
                     sqrtss_controls: input.fixture.sqrtss_controls,
                     sqrtsd_controls: input.fixture.sqrtsd_controls,
                     sqrtps_controls: input.fixture.sqrtps_controls,

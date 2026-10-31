@@ -947,6 +947,8 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only exact legacy `F2 0F E6 00` rounded packed binary64-to-i32 m128 form.
+    Cvtpd2dqMemoryRax,
     /// Local-only legacy `66 0F 5A /r` packed binary64-to-binary32 conversion.
     Cvtpd2psRegister {
         destination: u8,
@@ -3434,6 +3436,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         .rex
                         .is_some_and(|rex| matches!(rex, 0x41 | 0x44 | 0x45))
                     && prefix_bytes[1] == prefixes.rex.unwrap());
+        let cvtpd2dq_memory_rax = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0xe6
+            && prefixes.group1 == Some(0xf2)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && prefixes.rex.is_none()
+            && prefix_count == 1
+            && prefix_bytes[0] == 0xf2;
         let cvtpd2ps_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x5a
             && prefixes.group1.is_none()
@@ -4474,14 +4485,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
             }
-            (OpcodeMap::Escape0f, 0xe6) if cvtpd2dq_register => {
+            (OpcodeMap::Escape0f, 0xe6) if cvtpd2dq_register || cvtpd2dq_memory_rax => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if cvtpd2dq_memory_rax && modrm == 0x00 {
+                    Operation::Cvtpd2dqMemoryRax
+                } else if cvtpd2dq_register && modrm >> 6 == 3 {
+                    Operation::Cvtpd2dqRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
+                } else {
                     return Err(self.unsupported(opcode));
-                }
-                Operation::Cvtpd2dqRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
                 }
             }
             (OpcodeMap::Escape0f, 0x5a) if cvtpd2ps_register => {
@@ -21603,8 +21617,16 @@ mod tests {
             Operation::Cvtdq2pdRegister { .. }
         )); // The adjacent F3 form keeps its independent CVTDQ2PD admission.
 
+        assert_eq!(
+            Memory::new(&[0xf2, 0x0f, 0xe6, 0x00])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::Cvtpd2dqMemoryRax
+        );
+
         for bytes in [
-            &[0xf2, 0x0f, 0xe6, 0x00][..],             // memory operand
+            &[0xf2, 0x0f, 0xe6, 0x08][..],             // other memory operand
             &[0xf2, 0x48, 0x0f, 0xe6, 0xc1][..],       // REX.W
             &[0xf2, 0x42, 0x0f, 0xe6, 0xc1][..],       // REX.X
             &[0xf2, 0x40, 0x0f, 0xe6, 0xc1][..],       // unnecessary REX

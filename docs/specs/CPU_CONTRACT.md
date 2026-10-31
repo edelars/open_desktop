@@ -14523,3 +14523,35 @@ admissions remain closed. No physical x86 acceptance is claimed.
 Normative sources: Intel SDM Rev. 093 Vol. 2A CVTTPD2DQ pp. 3-244–3-247
 (legacy operation p. 3-246); Vol. 1 §§11.5.2.2, 11.5.2.6, 11.5.3, 11.5.5
 and Table 14-21; Vol. 3A §§16.1.3–16.1.4, Table 16-1. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bw--bounded-long64-cvttpd2dq-xmm0rax-aligned-m128-memory-profile), [report](../reports/STAGE_2_REPORT.md#s2-37bw--cvttpd2dq-xmm0rax-aligned-m128-memory-profile), and [literal fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bw-cvttpd2dq-xmm0rax-aligned-m128-truncation-profile).
+
+## S2-37bx — bounded Long64 CVTPD2DQ XMM0,[RAX] aligned m128 profile
+
+Exact legacy encoding `F2 0F E6 00`, Long64 only, full fetch of four bytes,
+budget one and stop RIP=entry+4. The bounded local prerequisite order is #UD
+when SSE2 (CPUID bit 26) is absent or CR0.EM/CR4.OSFXSR blocks SSE, then #NM
+for CR0.TS; CPL0–3 are admitted. This ordering is local profile policy.
+
+RAX supplies one aligned 16-byte span. Checked canonical48 `RAX+15` and 16-byte
+alignment are verified before one read callback. Misalignment raises #GP(0)
+without a callback for all CPL/AC combinations; aligned AC=0 and AC=1 are
+accepted. A failed read does not commit CPU changes. On success, two binary64
+lanes round according to MXCSR.RC, then are range-checked as signed i32. The
+low 64 bits of XMM0 receive those values and its high 64 bits become zero.
+NaN, infinity and rounded out-of-range lanes produce indefinite `0x80000000`
+and sticky IE; valid inexact lanes add PE, invalid lanes do not add PE. Flags
+OR across lanes and preserve prior sticky bits. Exact −2^31 is valid. DAZ=0
+subnormals round to ±1 only for matching directed rounding, otherwise zero;
+all nonzero subnormals add PE and do not add DE. x87 state is not checked or
+modified.
+
+The local accepted MXCSR mask is `0xffbf`, DAZ must be zero, and IM=PM=1;
+other masks can be clear. No unmasked SIMD exception delivery is modeled. The
+schema-v2 profile is interpreter-only. Native, JIT, C ABI, fragment and generic
+execution remain closed. The testkit oracle constructs results from raw u64
+bits using integer arithmetic only, with no host FP or production helper.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTPD2DQ pp. 3-214–3-217 (legacy operation
+p. 3-216); Vol. 1 §§11.5.2.2, 11.5.2.6, 11.5.3, 11.5.5 and Table 14-21;
+Vol. 3A §§16.1.3–16.1.4, Table 16-1. See [plan](../plans/STAGE_2.md#s2-37bx--bounded-long64-cvtpd2dq-xmm0rax-aligned-m128-memory-profile),
+[report](../reports/STAGE_2_REPORT.md#s2-37bx--cvtpd2dq-xmm0rax-aligned-m128-memory-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bx-cvtpd2dq-xmm0rax-aligned-m128-rounding-profile).

@@ -59,3 +59,8 @@ claimed for this slice.
 The S2-37bw `CVTTPD2DQ XMM0,[RAX]` schema-v2 profile is explicitly local-only
 and denied by native admission; this slice makes no physical x86 acceptance
 claim. This exact instruction profile is not in the native tracer allowlist. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bw--bounded-long64-cvttpd2dq-xmm0rax-aligned-m128-profile).
+
+The S2-37bx `CVTPD2DQ XMM0,[RAX]` schema-v2 profile is explicitly local-only
+and remains outside the native tracer allowlist. The portable classifier and
+runner Unsupported behavior do not imply native execution or physical x86
+acceptance. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bx--bounded-long64-cvtpd2dq-xmm0rax-aligned-m128-profile).

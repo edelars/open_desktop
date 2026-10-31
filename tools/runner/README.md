@@ -238,3 +238,9 @@ profile through the interpreter. It reads one aligned m128 source, truncates
 binary64 lanes toward zero before range checks, zeroes XMM0.high64, and records
 masked sticky IE/PE. JIT/native remain Unsupported; no physical x86 acceptance
 is implied. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bw--bounded-long64-cvttpd2dq-xmm0rax-aligned-m128-profile).
+
+S2-37bx runs the local-only schema-v2 legacy `CVTPD2DQ XMM0,[RAX]`
+(`F2 0F E6 00`) profile. It reads one aligned m128 source, rounds binary64
+lanes according to MXCSR.RC before range checking, and reports masked IE/PE
+sticky flags. Native/JIT/C ABI remain closed; physical x86 acceptance is not
+claimed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bx--bounded-long64-cvtpd2dq-xmm0rax-aligned-m128-profile).

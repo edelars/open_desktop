@@ -7248,3 +7248,23 @@ not claimed. Sources: Intel SDM Rev. 093 Vol. 2A CVTTPD2DQ pp. 3-244–3-247
 and Table 14-21; Vol. 3A §§16.1.3–16.1.4, Table 16-1.
 
 Related docs: [Stage 2 plan](../../../../docs/plans/STAGE_2.md#s2-37bw--bounded-long64-cvttpd2dq-xmm0rax-aligned-m128-memory-profile), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bw--bounded-long64-cvttpd2dq-xmm0rax-aligned-m128-profile), and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bw--cvttpd2dq-xmm0rax-aligned-m128-memory-profile).
+
+### S2-37bx CVTPD2DQ XMM0,[RAX] aligned m128 rounding profile
+
+`s2_37bx_cvtpd2dq_m128_rounding_and_flags.case.json` is the literal exact legacy
+`F2 0F E6 00` schema-v2 case. Its two raw binary64 lanes are just above the
+positive signed-i32 boundary and a QNaN, producing masked indefinite results
+with IE; the initial XMM0 high64 canary is zeroed on success. The runner matrix
+covers RC-sensitive signed boundaries, ties, mixed IE/PE, subnormals and old
+sticky-status histories.
+
+The profile reads one aligned 16-byte RAX span after checked canonical48 and
+pre-callback alignment checks. Misalignment is #GP(0) at any CPL and AC setting;
+aligned AC=0/1 is accepted. Conversion rounds by MXCSR.RC before checking range.
+DAZ=0, supported mask `0xffbf`, IM=PM=1; invalid adds IE only, valid inexact
+adds PE. x87 is preserved with no gate. JIT/native/C ABI remain closed; physical
+x86 acceptance is not claimed. Provenance: Intel SDM Rev. 093 Vol. 2A CVTPD2DQ
+pp. 3-214–3-217 (legacy operation p. 3-216); Vol. 1 §§11.5.2.2, 11.5.2.6,
+11.5.3, 11.5.5, Table 14-21; Vol. 3A §§16.1.3–16.1.4, Table 16-1.
+
+Related documentation: [Stage 2 plan](../../../../docs/plans/STAGE_2.md#s2-37bx--bounded-long64-cvtpd2dq-xmm0rax-aligned-m128-memory-profile), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bx--bounded-long64-cvtpd2dq-xmm0rax-aligned-m128-profile), and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bx--cvtpd2dq-xmm0rax-aligned-m128-memory-profile).

@@ -304,3 +304,9 @@ checks the truncated i32 range, and computes masked sticky IE/PE without host
 floating point or production helpers. A separate control echo and strict
 foreign-field checks keep this m128 profile distinct from CVTTPD2DQ registers.
 See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bw--bounded-long64-cvttpd2dq-xmm0rax-aligned-m128-profile).
+
+S2-37bx adds the exact schema-v2 `s2-long-cvtpd2dq-memory-rax-v1` profile for
+legacy `F2 0F E6 00`. Validation isolates its MXCSR and prerequisite controls;
+the independent raw-u64 oracle covers MXCSR.RC rounding and signed-i32 range
+checks without host floating point or production conversion helpers. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bx--bounded-long64-cvtpd2dq-xmm0rax-aligned-m128-profile).

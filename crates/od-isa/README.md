@@ -683,3 +683,10 @@ read, truncates two binary64 inputs toward zero, then checks signed-i32 range.
 Masked IE/PE are sticky-ORed, and successful execution replaces all XMM0 bits
 with two i32 lanes and a zero upper half. x87 state is not gated or mutated.
 Native/JIT/C ABI remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bw--bounded-long64-cvttpd2dq-xmm0rax-aligned-m128-profile).
+
+### S2-37bx — CVTPD2DQ m128 memory profile
+
+The exact legacy `F2 0F E6 00` Long64 profile performs one aligned 16-byte read,
+then rounds two binary64 values with MXCSR.RC before signed-i32 range checking.
+Masked invalid contributes IE, valid inexact contributes PE; native/JIT/C ABI
+remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bx--bounded-long64-cvtpd2dq-xmm0rax-aligned-m128-profile).
