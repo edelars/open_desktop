@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicU8;
 
 const PROFILE: &str = "NativeRegisterV1";
 const ENVELOPE_VERSION: u32 = 1;
+const CACHE_TRACE_VERSION: u32 = 1;
 const MAX_BUDGET: u64 = 16;
 const SEEDS: [u64; 3] = [
     0x5333_346e_0000_0001,
@@ -57,6 +58,125 @@ struct BackendRuns {
     eager_native: [Option<Observation>; 2],
     demand_candidate: [Option<Observation>; 2],
     errors: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CorpusObservation {
+    input: Input,
+    backend_runs: BackendRuns,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CorpusObservationsEnvelope {
+    version: u32,
+    profile: String,
+    inputs_digest: String,
+    cases: Vec<CorpusObservation>,
+    envelope_digest: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CacheBindings {
+    execution_context_id: u64,
+    address_space_id: u64,
+    mapping_id: u64,
+    mapping_version: u64,
+    backing_id: u64,
+    backing_version: u64,
+    dependency_start_rip: u64,
+    dependency_end_rip: u64,
+    code_digest: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CacheCounterSnapshot {
+    hits: u64,
+    misses: u64,
+    successful_compiles: u64,
+    successful_publications: u64,
+    replacements: u64,
+    resident_entries_high_water: usize,
+    resident_code_bytes_high_water: usize,
+    resident_logical_metadata_bytes_high_water: usize,
+    resident_entries: usize,
+    resident_code_bytes: usize,
+    resident_logical_bytes: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CacheTraceStep {
+    sequence_index: usize,
+    input: Input,
+    bindings: CacheBindings,
+    interpreter: Observation,
+    uncached: Observation,
+    cached: Observation,
+    cache: CacheCounterSnapshot,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CacheTraceSegment {
+    kind: String,
+    strategy: String,
+    steps: Vec<CacheTraceStep>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CacheTraceEnvelope {
+    version: u32,
+    profile: String,
+    source_inputs_digest: String,
+    segments: Vec<CacheTraceSegment>,
+    trace_digest: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CacheTraceFailureEnvelope {
+    version: u32,
+    profile: String,
+    source_inputs_digest: String,
+    segment_kind: String,
+    strategy: String,
+    sequence_index: usize,
+    successful_prefix: Vec<CacheTraceStep>,
+    failing_input: Input,
+    interpreter: Observation,
+    uncached: Observation,
+    cached: Option<Observation>,
+    cache_before: CacheCounterSnapshot,
+    cache_after: CacheCounterSnapshot,
+    failure_kind: String,
+    failure_detail: String,
+    reproduction_command: String,
+    failure_digest: String,
+}
+
+#[derive(Serialize)]
+struct CacheTraceFailurePayload<'a> {
+    version: u32,
+    profile: &'a str,
+    source_inputs_digest: &'a str,
+    segment_kind: &'a str,
+    strategy: &'a str,
+    sequence_index: usize,
+    successful_prefix: &'a [CacheTraceStep],
+    failing_input: &'a Input,
+    interpreter: &'a Observation,
+    uncached: &'a Observation,
+    cached: &'a Option<Observation>,
+    cache_before: &'a CacheCounterSnapshot,
+    cache_after: &'a CacheCounterSnapshot,
+    failure_kind: &'a str,
+    failure_detail: &'a str,
+    reproduction_command: &'a str,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -523,6 +643,754 @@ fn run_backend(input: &Input, candidate: bool) -> Result<Observation, String> {
         result.retired_interpreter,
         result.remaining_budget,
     ))
+}
+
+fn cache_bindings(
+    input: &Input,
+) -> (
+    od_jit::translation::ExecutionContextSnapshot,
+    [od_jit::translation::CodeDependencySpan; 1],
+    CacheBindings,
+) {
+    use od_jit::translation::{
+        AddressSpaceId, BackingId, BackingVersion, CodeDependencySpan, CodeIdentity,
+        ExecutionContextId, ExecutionContextSnapshot, MappingId, MappingVersion,
+    };
+    use std::num::NonZeroU64;
+
+    let nz = |value| NonZeroU64::new(value).expect("cache identity is non-zero");
+    let execution_context_id = 1;
+    let address_space_id = 1;
+    let mapping_id = 1;
+    let mapping_version = 1;
+    let backing_id = 1;
+    let backing_version = 1;
+    let context = ExecutionContextSnapshot::native_register_v1_fixture(
+        ExecutionContextId::from_u64(execution_context_id).expect("valid context id"),
+    );
+    let dependencies = [CodeDependencySpan {
+        start_rip: input.guest_base_rip,
+        end_rip: input.guest_base_rip + input.code.len() as u64,
+        identity: CodeIdentity {
+            address_space: AddressSpaceId::new(nz(address_space_id)),
+            mapping: MappingId::new(nz(mapping_id)),
+            mapping_version: MappingVersion::new(nz(mapping_version)),
+            backing: BackingId::new(nz(backing_id)),
+            backing_version: BackingVersion::new(nz(backing_version)),
+            executable: true,
+        },
+    }];
+    let bindings = CacheBindings {
+        execution_context_id,
+        address_space_id,
+        mapping_id,
+        mapping_version,
+        backing_id,
+        backing_version,
+        dependency_start_rip: dependencies[0].start_rip,
+        dependency_end_rip: dependencies[0].end_rip,
+        code_digest: digest(&input.code),
+    };
+    (context, dependencies, bindings)
+}
+
+fn cache_counter_snapshot(
+    cache: &od_jit::dispatch::SingleEntryBlockCache<PublishedCode>,
+) -> CacheCounterSnapshot {
+    let counters = cache.counters();
+    CacheCounterSnapshot {
+        hits: counters.hits,
+        misses: counters.misses,
+        successful_compiles: counters.successful_compiles,
+        successful_publications: counters.successful_publications,
+        replacements: counters.replacements,
+        resident_entries_high_water: counters.resident_entries_high_water,
+        resident_code_bytes_high_water: counters.resident_code_bytes_high_water,
+        resident_logical_metadata_bytes_high_water: counters
+            .resident_logical_metadata_bytes_high_water,
+        resident_entries: cache.resident_entries(),
+        resident_code_bytes: cache.resident_code_bytes(),
+        resident_logical_bytes: cache.resident_logical_bytes(),
+    }
+}
+
+fn run_cached_backend(
+    input: &Input,
+    candidate: bool,
+    cache: &mut od_jit::dispatch::SingleEntryBlockCache<PublishedCode>,
+) -> Result<(Observation, CacheCounterSnapshot), String> {
+    validate_input(input).map_err(|error| format!("invalid cached input: {error}"))?;
+    let view = od_jit::block::CodeView::new(input.guest_base_rip, &input.code).unwrap();
+    let admission = od_jit::block::NativeRegisterV1Admission::from_code(view).unwrap();
+    let (context, dependencies, _) = cache_bindings(input);
+    let stop = AtomicU8::new(u8::from(input.stop_requested));
+    let control = od_jit::dispatch::DispatchControl {
+        stop_rip: input.stop_rip,
+        stop_requested: &stop,
+        event_requested: None,
+    };
+    let mut state = state_from_input(input);
+    let result = if candidate {
+        od_jit::dispatch::run_cached_native_register_v1_demand_flags_candidate_controlled(
+            view,
+            &admission,
+            context,
+            &dependencies,
+            &mut state,
+            input.budget,
+            control,
+            cache,
+            &mut PublishedBlockExecutor,
+        )
+    } else {
+        od_jit::dispatch::run_cached_native_register_v1_controlled(
+            view,
+            &admission,
+            context,
+            &dependencies,
+            &mut state,
+            input.budget,
+            control,
+            cache,
+            &mut PublishedBlockExecutor,
+        )
+    }
+    .map_err(|error| format!("cached backend error candidate={candidate}: {error:?}"))?;
+    let label = match result.exit {
+        od_jit::dispatch::DispatchExit::CodeEnd => "CodeEnd",
+        od_jit::dispatch::DispatchExit::BudgetExhausted => "BudgetExhausted",
+        od_jit::dispatch::DispatchExit::EventPending => "EventPending",
+        od_jit::dispatch::DispatchExit::Runtime(od_jit::runtime::RuntimeExitTag::StopAddress) => {
+            "StopAddress"
+        }
+        od_jit::dispatch::DispatchExit::Runtime(od_jit::runtime::RuntimeExitTag::StopRequested) => {
+            "StopRequested"
+        }
+        other => return Err(format!("unexpected cached backend exit {other:?}")),
+    };
+    let actual = observation(
+        &state,
+        label,
+        result.retired_native,
+        result.retired_interpreter,
+        result.remaining_budget,
+    );
+    let counters = cache_counter_snapshot(cache);
+    if counters.resident_code_bytes > cache.max_bytes() {
+        return Err("cached code exceeded configured byte capacity".into());
+    }
+    Ok((actual, counters))
+}
+
+#[derive(Serialize)]
+struct CorpusObservationsPayload<'a> {
+    version: u32,
+    profile: &'a str,
+    inputs_digest: &'a str,
+    cases: &'a [CorpusObservation],
+}
+
+fn corpus_observations_digest(
+    version: u32,
+    profile: &str,
+    inputs_digest: &str,
+    cases: &[CorpusObservation],
+) -> String {
+    let bytes = serde_json::to_vec(&CorpusObservationsPayload {
+        version,
+        profile,
+        inputs_digest,
+        cases,
+    })
+    .expect("corpus observation serialization");
+    digest(&bytes)
+}
+
+#[derive(Serialize)]
+struct CacheTracePayload<'a> {
+    version: u32,
+    profile: &'a str,
+    source_inputs_digest: &'a str,
+    segments: &'a [CacheTraceSegment],
+}
+
+fn cache_trace_digest(trace: &CacheTraceEnvelope) -> String {
+    let bytes = serde_json::to_vec(&CacheTracePayload {
+        version: trace.version,
+        profile: &trace.profile,
+        source_inputs_digest: &trace.source_inputs_digest,
+        segments: &trace.segments,
+    })
+    .expect("cache trace serialization");
+    digest(&bytes)
+}
+
+fn cache_trace_failure_digest(failure: &CacheTraceFailureEnvelope) -> String {
+    let bytes = serde_json::to_vec(&CacheTraceFailurePayload {
+        version: failure.version,
+        profile: &failure.profile,
+        source_inputs_digest: &failure.source_inputs_digest,
+        segment_kind: &failure.segment_kind,
+        strategy: &failure.strategy,
+        sequence_index: failure.sequence_index,
+        successful_prefix: &failure.successful_prefix,
+        failing_input: &failure.failing_input,
+        interpreter: &failure.interpreter,
+        uncached: &failure.uncached,
+        cached: &failure.cached,
+        cache_before: &failure.cache_before,
+        cache_after: &failure.cache_after,
+        failure_kind: &failure.failure_kind,
+        failure_detail: &failure.failure_detail,
+        reproduction_command: &failure.reproduction_command,
+    })
+    .expect("cache failure serialization");
+    digest(&bytes)
+}
+
+fn replay_cache_trace_failure(
+    path: &Path,
+    injected_cached_observation: Option<Observation>,
+) -> Result<(), String> {
+    let failure: CacheTraceFailureEnvelope = serde_json::from_slice(
+        &fs::read(path).map_err(|error| format!("cannot read failure trace: {error}"))?,
+    )
+    .map_err(|error| format!("malformed failure trace: {error}"))?;
+    if failure.version != CACHE_TRACE_VERSION
+        || failure.profile != PROFILE
+        || !matches!(
+            failure.segment_kind.as_str(),
+            "generated_corpus" | "retained_hit"
+        )
+        || !matches!(failure.strategy.as_str(), "eager" | "demand_candidate")
+        || failure.sequence_index != failure.successful_prefix.len()
+        || failure.sequence_index
+            >= if failure.segment_kind == "generated_corpus" {
+                SEEDS.len() * CASES_PER_SEED
+            } else {
+                2
+            }
+        || failure.failure_digest != cache_trace_failure_digest(&failure)
+    {
+        return Err("failure trace version, bounds, strategy, or digest differs".into());
+    }
+    let source_path = artifact_dir().join("native-register-v1-observations.json");
+    let source: CorpusObservationsEnvelope = serde_json::from_slice(
+        &fs::read(&source_path)
+            .map_err(|error| format!("cannot read failure source corpus: {error}"))?,
+    )
+    .map_err(|error| format!("malformed failure source corpus: {error}"))?;
+    validate_corpus_observations(&source)?;
+    let candidate = failure.strategy == "demand_candidate";
+    let retained_baselines: Vec<_> = if failure.segment_kind == "retained_hit" {
+        retained_hit_inputs()
+            .iter()
+            .map(|input| {
+                Ok::<_, String>((
+                    reference_observation(input),
+                    run_backend(input, candidate)
+                        .map_err(|error| format!("retained failure baseline error: {error}"))?,
+                ))
+            })
+            .collect::<Result<_, _>>()?
+    } else {
+        Vec::new()
+    };
+    let (expected_input, expected_interpreter, expected_uncached) =
+        if failure.segment_kind == "generated_corpus" {
+            let source_case = source
+                .cases
+                .get(failure.sequence_index)
+                .ok_or_else(|| "failure trace sequence is outside source corpus".to_owned())?;
+            let source_uncached = if candidate {
+                &source_case.backend_runs.demand_candidate[0]
+            } else {
+                &source_case.backend_runs.eager_native[0]
+            };
+            (
+                source_case.input.clone(),
+                source_case.backend_runs.interpreter[0]
+                    .as_ref()
+                    .unwrap()
+                    .clone(),
+                source_uncached.as_ref().unwrap().clone(),
+            )
+        } else {
+            let input = retained_hit_inputs()[failure.sequence_index].clone();
+            let (interpreter, uncached) = &retained_baselines[failure.sequence_index];
+            (input, interpreter.clone(), uncached.clone())
+        };
+    if failure.source_inputs_digest != source.inputs_digest
+        || failure.failing_input != expected_input
+        || failure.interpreter != expected_interpreter
+        || failure.uncached != expected_uncached
+    {
+        return Err("failure trace source identity or baselines differ".into());
+    }
+    let candidate = failure.strategy == "demand_candidate";
+    let mut cache = od_jit::dispatch::SingleEntryBlockCache::new(
+        1,
+        od_jit::dispatch::MAX_SINGLE_ENTRY_CACHE_BYTES,
+    )
+    .map_err(|error| format!("cannot create failure replay cache: {error:?}"))?;
+    for (sequence, expected) in failure.successful_prefix.iter().enumerate() {
+        let (prefix_input, prefix_interpreter, prefix_uncached) =
+            if failure.segment_kind == "generated_corpus" {
+                let source_case = &source.cases[sequence];
+                let source_uncached = if candidate {
+                    &source_case.backend_runs.demand_candidate[0]
+                } else {
+                    &source_case.backend_runs.eager_native[0]
+                };
+                (
+                    source_case.input.clone(),
+                    source_case.backend_runs.interpreter[0]
+                        .as_ref()
+                        .unwrap()
+                        .clone(),
+                    source_uncached.as_ref().unwrap().clone(),
+                )
+            } else {
+                let input = retained_hit_inputs()[sequence].clone();
+                let (interpreter, uncached) = &retained_baselines[sequence];
+                (input, interpreter.clone(), uncached.clone())
+            };
+        if expected.sequence_index != sequence
+            || expected.input != prefix_input
+            || expected.interpreter != prefix_interpreter
+            || expected.uncached != prefix_uncached
+        {
+            return Err(format!("failure prefix sequence differs at {sequence}"));
+        }
+        let (_, _, bindings) = cache_bindings(&expected.input);
+        if bindings != expected.bindings {
+            return Err(format!("failure prefix bindings differ at {sequence}"));
+        }
+        let (actual, counters) = run_cached_backend(&expected.input, candidate, &mut cache)
+            .map_err(|error| format!("failure prefix backend error at {sequence}: {error}"))?;
+        if actual != expected.cached || counters != expected.cache {
+            return Err(format!(
+                "failure prefix observation/counters differ at {sequence}"
+            ));
+        }
+        compare(&expected.interpreter, &actual)
+            .map_err(|class| format!("saved prefix interpreter mismatch at {sequence}: {class}"))?;
+        compare(&expected.uncached, &actual)
+            .map_err(|class| format!("saved prefix uncached mismatch at {sequence}: {class}"))?;
+    }
+    let before = cache_counter_snapshot(&cache);
+    if before != failure.cache_before {
+        return Err("failure replay pre-step counters differ".into());
+    }
+    let replayed = run_cached_backend(&failure.failing_input, candidate, &mut cache);
+    let (cached, after, backend_error) = match replayed {
+        Ok((actual, counters)) => {
+            let actual = injected_cached_observation.unwrap_or(actual);
+            (Some(actual), counters, None)
+        }
+        Err(error) => (None, cache_counter_snapshot(&cache), Some(error)),
+    };
+    if cached != failure.cached || after != failure.cache_after {
+        return Err("saved cache failure did not reproduce: observation/counters differ".into());
+    }
+    let reproduced = if failure.failure_kind == "cache_counter_mismatch"
+        && failure.segment_kind == "retained_hit"
+    {
+        retained_hit_counter_mismatch(failure.sequence_index, &failure.cache_after)
+            .map(|detail| ("cache_counter_mismatch", detail))
+    } else if let Some(cached) = cached.as_ref() {
+        if let Err(detail) = compare(&failure.interpreter, cached) {
+            Some(("interpreter_mismatch", detail))
+        } else if let Err(detail) = compare(&failure.uncached, cached) {
+            Some(("uncached_mismatch", detail))
+        } else {
+            None
+        }
+    } else {
+        backend_error.map(|detail| ("backend_error", detail))
+    };
+    if reproduced
+        .as_ref()
+        .map(|(kind, detail)| (*kind, detail.as_str()))
+        != Some((
+            failure.failure_kind.as_str(),
+            failure.failure_detail.as_str(),
+        ))
+    {
+        cache.clear();
+        return Err("saved cache failure did not reproduce with the same signature".into());
+    }
+    cache.clear();
+    if cache.resident_entries() != 0 {
+        return Err("failure replay retained an executable handle after clear".into());
+    }
+    Ok(())
+}
+
+fn save_cache_trace_failure(
+    source_inputs_digest: &str,
+    segment_kind: &str,
+    strategy: &str,
+    sequence_index: usize,
+    successful_prefix: &[CacheTraceStep],
+    input: &Input,
+    interpreter: &Observation,
+    uncached: &Observation,
+    cached: Option<Observation>,
+    cache_before: CacheCounterSnapshot,
+    cache_after: CacheCounterSnapshot,
+    failure_kind: &str,
+    failure_detail: &str,
+) -> String {
+    let artifact = artifact_dir().join(format!(
+        "native-register-v1-cache-mismatch-{segment_kind}-{strategy}-{sequence_index:04}.json"
+    ));
+    let reproduction_command = format!(
+        "OD_JIT_NATIVE_REGISTER_V1_CORPUS_DIR={} OD_JIT_NATIVE_REGISTER_V1_FAILURE_TRACE={} cargo test --offline -p od-host --lib tests::native_register_v1_corpus::cached_failure_trace_replays_saved_prefix_and_failure -- --exact --test-threads=1",
+        artifact_dir().display(),
+        artifact.display()
+    );
+    let mut failure = CacheTraceFailureEnvelope {
+        version: CACHE_TRACE_VERSION,
+        profile: PROFILE.into(),
+        source_inputs_digest: source_inputs_digest.into(),
+        segment_kind: segment_kind.into(),
+        strategy: strategy.into(),
+        sequence_index,
+        successful_prefix: successful_prefix.to_vec(),
+        failing_input: input.clone(),
+        interpreter: interpreter.clone(),
+        uncached: uncached.clone(),
+        cached,
+        cache_before,
+        cache_after,
+        failure_kind: failure_kind.into(),
+        failure_detail: failure_detail.into(),
+        reproduction_command,
+        failure_digest: String::new(),
+    };
+    failure.failure_digest = cache_trace_failure_digest(&failure);
+    match write_json_create_new(&artifact, &failure) {
+        Ok(()) => format!(
+            "{failure_kind} at {segment_kind}/{strategy} step {sequence_index}: {failure_detail}; saved successful prefix and failing input to {} (digest={})",
+            artifact.display(),
+            failure.failure_digest
+        ),
+        Err(error) => format!(
+            "{failure_kind} at {segment_kind}/{strategy} step {sequence_index}: {failure_detail}; could not save mismatch artifact {}: {error}",
+            artifact.display()
+        ),
+    }
+}
+
+fn finish_cache_trace(
+    source_inputs_digest: String,
+    segments: Vec<CacheTraceSegment>,
+) -> CacheTraceEnvelope {
+    let mut trace = CacheTraceEnvelope {
+        version: CACHE_TRACE_VERSION,
+        profile: PROFILE.into(),
+        source_inputs_digest,
+        segments,
+        trace_digest: String::new(),
+    };
+    trace.trace_digest = cache_trace_digest(&trace);
+    trace
+}
+
+fn validate_corpus_observations(envelope: &CorpusObservationsEnvelope) -> Result<(), String> {
+    if envelope.version != ENVELOPE_VERSION || envelope.profile != PROFILE {
+        return Err("unsupported corpus observations version/profile".into());
+    }
+    if envelope.cases.len() != SEEDS.len() * CASES_PER_SEED {
+        return Err("corpus observations case count differs".into());
+    }
+    let mut unique = std::collections::BTreeSet::new();
+    let mut input_hash = 0xcbf2_9ce4_8422_2325u64;
+    for (sequence, case) in envelope.cases.iter().enumerate() {
+        let seed = SEEDS[sequence / CASES_PER_SEED];
+        let index = sequence % CASES_PER_SEED;
+        if case.input != generate_case(seed, index) {
+            return Err(format!(
+                "corpus source input order differs at step {sequence}"
+            ));
+        }
+        validate_input(&case.input)?;
+        let canonical = canonical_input(&case.input);
+        if !unique.insert(canonical.clone()) {
+            return Err(format!("duplicate corpus input at step {sequence}"));
+        }
+        for byte in canonical {
+            input_hash = (input_hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+        }
+        let saved = SavedCase {
+            input: case.input.clone(),
+            backend_runs: case.backend_runs.clone(),
+            failure_signature: None,
+            reproduction_command: String::new(),
+        };
+        validate_saved_observations(&saved)
+            .map_err(|error| format!("invalid source observations at step {sequence}: {error}"))?;
+        if case.backend_runs.interpreter[0] != case.backend_runs.interpreter[1]
+            || case.backend_runs.eager_native[0] != case.backend_runs.eager_native[1]
+            || case.backend_runs.demand_candidate[0] != case.backend_runs.demand_candidate[1]
+        {
+            return Err(format!("source backend repeats differ at step {sequence}"));
+        }
+    }
+    let expected_inputs_digest = format!("fnv1a64:{input_hash:016x}");
+    if envelope.inputs_digest != expected_inputs_digest {
+        return Err("corpus observations input digest mismatch".into());
+    }
+    if envelope.envelope_digest
+        != corpus_observations_digest(
+            envelope.version,
+            &envelope.profile,
+            &envelope.inputs_digest,
+            &envelope.cases,
+        )
+    {
+        return Err("corpus observations envelope digest mismatch".into());
+    }
+    Ok(())
+}
+
+fn retained_hit_inputs() -> [Input; 2] {
+    let base = 0x0000_0001_0000_8000;
+    let code = vec![0x48, 0x83, 0xc0, 0x01]; // ADD RAX, 1; one-block CodeEnd
+    let make = |index, rax, rflags| {
+        let mut gpr = [0; 16];
+        gpr[0] = rax;
+        gpr[3] = 0x0102_0304_0506_0708;
+        finish_input(Input {
+            version: ENVELOPE_VERSION,
+            profile: PROFILE.into(),
+            seed: 0x5333_3470_7265_7461,
+            index,
+            code: code.clone(),
+            guest_base_rip: base,
+            initial_gpr: gpr,
+            initial_rip: base,
+            initial_rflags: rflags,
+            initial_auxiliary_state: default_auxiliary_state(),
+            stop_rip: None,
+            stop_requested: false,
+            budget: 1,
+            input_digest: String::new(),
+        })
+    };
+    [make(0, u64::MAX, 0x202), make(1, 0x1234, 0x203)]
+}
+
+fn retained_hit_counter_mismatch(
+    sequence: usize,
+    counters: &CacheCounterSnapshot,
+) -> Option<String> {
+    let valid = if sequence == 0 {
+        counters.hits == 0
+            && counters.misses == 1
+            && counters.successful_compiles == 1
+            && counters.successful_publications == 1
+    } else if sequence == 1 {
+        counters.hits == 1
+            && counters.misses == 1
+            && counters.successful_compiles == 1
+            && counters.successful_publications == 1
+    } else {
+        false
+    };
+    (!valid).then(|| format!("retained-hit counter witness differs at step {sequence}"))
+}
+
+fn validate_cache_trace(
+    trace: &CacheTraceEnvelope,
+    corpus: &CorpusObservationsEnvelope,
+) -> Result<(), String> {
+    validate_corpus_observations(corpus)?;
+    if trace.version != CACHE_TRACE_VERSION || trace.profile != PROFILE {
+        return Err("unsupported cache trace version/profile".into());
+    }
+    if trace.source_inputs_digest != corpus.inputs_digest {
+        return Err("cache trace source digest differs from the generated corpus".into());
+    }
+    if trace.trace_digest != cache_trace_digest(trace) {
+        return Err("cache trace digest mismatch".into());
+    }
+    if trace.segments.len() != 4 {
+        return Err("cache trace must contain two corpus and two retained-hit segments".into());
+    }
+    let expected_segments = [
+        ("generated_corpus", "eager"),
+        ("generated_corpus", "demand_candidate"),
+        ("retained_hit", "eager"),
+        ("retained_hit", "demand_candidate"),
+    ];
+    for (segment_index, (segment, expected_identity)) in
+        trace.segments.iter().zip(expected_segments).enumerate()
+    {
+        if (segment.kind.as_str(), segment.strategy.as_str()) != expected_identity {
+            return Err(format!(
+                "cache trace segment order differs at {segment_index}"
+            ));
+        }
+        let retained = segment.kind == "retained_hit";
+        let expected_count = if retained { 2 } else { corpus.cases.len() };
+        if segment.steps.len() != expected_count {
+            return Err(format!(
+                "cache trace step count differs in segment {segment_index}"
+            ));
+        }
+        let mut previous = CacheCounterSnapshot {
+            hits: 0,
+            misses: 0,
+            successful_compiles: 0,
+            successful_publications: 0,
+            replacements: 0,
+            resident_entries_high_water: 0,
+            resident_code_bytes_high_water: 0,
+            resident_logical_metadata_bytes_high_water: 0,
+            resident_entries: 0,
+            resident_code_bytes: 0,
+            resident_logical_bytes: 0,
+        };
+        for (sequence, step) in segment.steps.iter().enumerate() {
+            if step.sequence_index != sequence {
+                return Err(format!(
+                    "cache trace sequence index differs at {segment_index}:{sequence}"
+                ));
+            }
+            validate_input(&step.input)?;
+            let (_, dependencies, bindings) = cache_bindings(&step.input);
+            if dependencies[0].start_rip != step.bindings.dependency_start_rip
+                || dependencies[0].end_rip != step.bindings.dependency_end_rip
+                || bindings != step.bindings
+            {
+                return Err(format!(
+                    "cache bindings differ at {segment_index}:{sequence}"
+                ));
+            }
+            let source_case = if retained {
+                let retained_inputs = retained_hit_inputs();
+                if step.input != retained_inputs[sequence] {
+                    return Err(format!(
+                        "retained cache input differs at {segment_index}:{sequence}"
+                    ));
+                }
+                None
+            } else {
+                let case = &corpus.cases[sequence];
+                if step.input != case.input {
+                    return Err(format!(
+                        "cache corpus input differs at {segment_index}:{sequence}"
+                    ));
+                }
+                Some(case)
+            };
+            let (expected_interpreter, expected_uncached) = if let Some(case) = source_case {
+                let uncached = if segment.strategy == "eager" {
+                    case.backend_runs.eager_native[0].clone().unwrap()
+                } else {
+                    case.backend_runs.demand_candidate[0].clone().unwrap()
+                };
+                (case.backend_runs.interpreter[0].clone().unwrap(), uncached)
+            } else {
+                let input = &step.input;
+                let interpreter = reference_observation(input);
+                let uncached = run_backend(input, segment.strategy == "demand_candidate")?;
+                (interpreter, uncached)
+            };
+            if step.interpreter != expected_interpreter || step.uncached != expected_uncached {
+                return Err(format!(
+                    "cache trace baseline observation differs at {segment_index}:{sequence}"
+                ));
+            }
+            compare(&step.interpreter, &step.cached).map_err(|class| {
+                format!("cached trace observation differs at {segment_index}:{sequence}: {class}")
+            })?;
+            compare(&step.uncached, &step.cached).map_err(|class| {
+                format!("cached/uncached parity differs at {segment_index}:{sequence}: {class}")
+            })?;
+            if step.cache.hits < previous.hits
+                || step.cache.misses < previous.misses
+                || step.cache.successful_compiles < previous.successful_compiles
+                || step.cache.successful_publications < previous.successful_publications
+                || step.cache.replacements < previous.replacements
+                || step.cache.resident_entries_high_water < previous.resident_entries_high_water
+                || step.cache.resident_code_bytes_high_water
+                    < previous.resident_code_bytes_high_water
+                || step.cache.resident_logical_metadata_bytes_high_water
+                    < previous.resident_logical_metadata_bytes_high_water
+                || step.cache.resident_entries > 1
+                || step.cache.resident_code_bytes > od_jit::dispatch::MAX_SINGLE_ENTRY_CACHE_BYTES
+            {
+                return Err(format!(
+                    "cache counters regress or exceed capacity at {segment_index}:{sequence}"
+                ));
+            }
+            previous = step.cache.clone();
+        }
+        if retained {
+            let first = &segment.steps[0].cache;
+            let hit = &segment.steps[1].cache;
+            if first.misses != 1
+                || first.successful_compiles != 1
+                || first.successful_publications != 1
+                || hit.hits != 1
+                || hit.successful_compiles != first.successful_compiles
+                || hit.successful_publications != first.successful_publications
+            {
+                return Err(format!(
+                    "retained one-block cache hit evidence is invalid in segment {segment_index}"
+                ));
+            }
+        }
+    }
+    let eager_retained = &trace.segments[2].steps;
+    let candidate_retained = &trace.segments[3].steps;
+    if eager_retained[0].bindings != candidate_retained[0].bindings
+        || eager_retained[1].bindings != candidate_retained[1].bindings
+    {
+        return Err("retained trace strategy bindings differ".into());
+    }
+    Ok(())
+}
+
+fn replay_cache_trace(trace: &CacheTraceEnvelope) -> Result<(), String> {
+    let corpus_path = artifact_dir().join("native-register-v1-observations.json");
+    let corpus: CorpusObservationsEnvelope = serde_json::from_slice(
+        &fs::read(&corpus_path)
+            .map_err(|error| format!("cannot read source corpus observations: {error}"))?,
+    )
+    .map_err(|error| format!("cannot decode source corpus observations: {error}"))?;
+    validate_cache_trace(trace, &corpus)?;
+    for segment in &trace.segments {
+        let mut cache = od_jit::dispatch::SingleEntryBlockCache::new(
+            1,
+            od_jit::dispatch::MAX_SINGLE_ENTRY_CACHE_BYTES,
+        )
+        .map_err(|error| format!("cannot create cache trace replay cache: {error:?}"))?;
+        let candidate = segment.strategy == "demand_candidate";
+        for step in &segment.steps {
+            let (actual, counters) = run_cached_backend(&step.input, candidate, &mut cache)?;
+            if actual != step.cached {
+                return Err(format!(
+                    "cached trace replay observation changed at {}:{}",
+                    segment.strategy, step.sequence_index
+                ));
+            }
+            if counters != step.cache {
+                return Err(format!(
+                    "cached trace replay counters changed at {}:{} expected={:?} actual={:?}",
+                    segment.strategy, step.sequence_index, step.cache, counters
+                ));
+            }
+        }
+        cache.clear();
+        if cache.resident_entries() != 0 {
+            return Err("cache trace replay did not release resident handle".into());
+        }
+    }
+    Ok(())
 }
 
 fn reference_observation(input: &Input) -> Observation {
@@ -1131,6 +1999,7 @@ fn generated_corpus_runs_twice_across_all_backends() {
     let mut zero_budget_inputs = 0usize;
     let dir = artifact_dir();
     let mut saved_sample = None;
+    let mut corpus_observations = Vec::with_capacity(SEEDS.len() * CASES_PER_SEED);
     for seed in SEEDS {
         for index in 0..CASES_PER_SEED {
             let input = generate_case(seed, index);
@@ -1156,6 +2025,10 @@ fn generated_corpus_runs_twice_across_all_backends() {
                 }
             }
             let runs = run_repeated(&input);
+            corpus_observations.push(CorpusObservation {
+                input: input.clone(),
+                backend_runs: runs.clone(),
+            });
             let first = runs.interpreter[0].as_ref().unwrap();
             match first.exit.as_str() {
                 "CodeEnd" => code_end_exits += 1,
@@ -1193,6 +2066,25 @@ fn generated_corpus_runs_twice_across_all_backends() {
     );
     let sample = saved_sample.unwrap();
     write_json(&dir.join("native-register-v1-saved-case.json"), &sample);
+    let inputs_digest = format!("fnv1a64:{code_digest:016x}");
+    let mut corpus_envelope = CorpusObservationsEnvelope {
+        version: ENVELOPE_VERSION,
+        profile: PROFILE.into(),
+        inputs_digest,
+        cases: corpus_observations,
+        envelope_digest: String::new(),
+    };
+    corpus_envelope.envelope_digest = corpus_observations_digest(
+        corpus_envelope.version,
+        &corpus_envelope.profile,
+        &corpus_envelope.inputs_digest,
+        &corpus_envelope.cases,
+    );
+    validate_corpus_observations(&corpus_envelope).unwrap();
+    write_json(
+        &dir.join("native-register-v1-observations.json"),
+        &corpus_envelope,
+    );
     #[derive(Serialize)]
     struct Summary {
         profile: &'static str,
@@ -1252,6 +2144,483 @@ fn generated_corpus_runs_twice_across_all_backends() {
     eprintln!(
         "S3-34n corpus: profile={PROFILE} unique=1200 seeds={SEEDS:?} repeats=2 forms={form_counts:?} canonical_digest=fnv1a64:{code_digest:016x}"
     );
+}
+
+fn cached_corpus_segment(
+    corpus: &CorpusObservationsEnvelope,
+    strategy: &str,
+) -> Result<CacheTraceSegment, String> {
+    let candidate = match strategy {
+        "eager" => false,
+        "demand_candidate" => true,
+        other => return Err(format!("unsupported cache trace strategy {other}")),
+    };
+    let mut cache = od_jit::dispatch::SingleEntryBlockCache::new(
+        1,
+        od_jit::dispatch::MAX_SINGLE_ENTRY_CACHE_BYTES,
+    )
+    .map_err(|error| format!("cannot create cache corpus: {error:?}"))?;
+    let mut steps = Vec::with_capacity(corpus.cases.len());
+    for (sequence, case) in corpus.cases.iter().enumerate() {
+        let interpreter = case.backend_runs.interpreter[0]
+            .clone()
+            .expect("validated corpus has interpreter observation");
+        let uncached = if candidate {
+            case.backend_runs.demand_candidate[0].clone()
+        } else {
+            case.backend_runs.eager_native[0].clone()
+        }
+        .expect("validated corpus has matching uncached observation");
+        let cache_before = cache_counter_snapshot(&cache);
+        let (cached, cache_after) = match run_cached_backend(&case.input, candidate, &mut cache) {
+            Ok(result) => result,
+            Err(error) => {
+                return Err(save_cache_trace_failure(
+                    &corpus.inputs_digest,
+                    "generated_corpus",
+                    strategy,
+                    sequence,
+                    &steps,
+                    &case.input,
+                    &interpreter,
+                    &uncached,
+                    None,
+                    cache_before,
+                    cache_counter_snapshot(&cache),
+                    "backend_error",
+                    &error,
+                ));
+            }
+        };
+        if let Err(class) = compare(&interpreter, &cached) {
+            return Err(save_cache_trace_failure(
+                &corpus.inputs_digest,
+                "generated_corpus",
+                strategy,
+                sequence,
+                &steps,
+                &case.input,
+                &interpreter,
+                &uncached,
+                Some(cached),
+                cache_before,
+                cache_after,
+                "interpreter_mismatch",
+                &class,
+            ));
+        }
+        if let Err(class) = compare(&uncached, &cached) {
+            return Err(save_cache_trace_failure(
+                &corpus.inputs_digest,
+                "generated_corpus",
+                strategy,
+                sequence,
+                &steps,
+                &case.input,
+                &interpreter,
+                &uncached,
+                Some(cached),
+                cache_before,
+                cache_after,
+                "uncached_mismatch",
+                &class,
+            ));
+        }
+        let (_, _, bindings) = cache_bindings(&case.input);
+        steps.push(CacheTraceStep {
+            sequence_index: sequence,
+            input: case.input.clone(),
+            bindings,
+            interpreter,
+            uncached,
+            cached,
+            cache: cache_after,
+        });
+    }
+    cache.clear();
+    if cache.resident_entries() != 0 {
+        return Err("cached corpus retained an executable handle after clear".into());
+    }
+    Ok(CacheTraceSegment {
+        kind: "generated_corpus".into(),
+        strategy: strategy.into(),
+        steps,
+    })
+}
+
+fn retained_hit_segment(
+    strategy: &str,
+    source_inputs_digest: &str,
+) -> Result<CacheTraceSegment, String> {
+    let candidate = match strategy {
+        "eager" => false,
+        "demand_candidate" => true,
+        other => return Err(format!("unsupported cache trace strategy {other}")),
+    };
+    let inputs = retained_hit_inputs();
+    let mut baselines = Vec::with_capacity(inputs.len());
+    for (sequence, input) in inputs.iter().enumerate() {
+        let interpreter = reference_observation(input);
+        let uncached = run_backend(input, candidate).map_err(|error| {
+            format!("retained {strategy} step {sequence} uncached executor: {error}")
+        })?;
+        compare(&interpreter, &uncached)
+            .map_err(|class| format!("retained uncached {strategy} mismatch: {class}"))?;
+        baselines.push((interpreter, uncached));
+    }
+    let mut cache = od_jit::dispatch::SingleEntryBlockCache::new(
+        1,
+        od_jit::dispatch::MAX_SINGLE_ENTRY_CACHE_BYTES,
+    )
+    .map_err(|error| format!("cannot create retained cache: {error:?}"))?;
+    let mut steps = Vec::with_capacity(2);
+    for (sequence, (input, (interpreter, uncached))) in
+        inputs.into_iter().zip(baselines).enumerate()
+    {
+        let cache_before = cache_counter_snapshot(&cache);
+        let (cached, cache_snapshot) = match run_cached_backend(&input, candidate, &mut cache) {
+            Ok(result) => result,
+            Err(error) => {
+                return Err(save_cache_trace_failure(
+                    source_inputs_digest,
+                    "retained_hit",
+                    strategy,
+                    sequence,
+                    &steps,
+                    &input,
+                    &interpreter,
+                    &uncached,
+                    None,
+                    cache_before,
+                    cache_counter_snapshot(&cache),
+                    "backend_error",
+                    &error,
+                ));
+            }
+        };
+        if let Err(class) = compare(&interpreter, &cached) {
+            return Err(save_cache_trace_failure(
+                source_inputs_digest,
+                "retained_hit",
+                strategy,
+                sequence,
+                &steps,
+                &input,
+                &interpreter,
+                &uncached,
+                Some(cached),
+                cache_before,
+                cache_snapshot,
+                "interpreter_mismatch",
+                &class,
+            ));
+        }
+        if let Err(class) = compare(&uncached, &cached) {
+            return Err(save_cache_trace_failure(
+                source_inputs_digest,
+                "retained_hit",
+                strategy,
+                sequence,
+                &steps,
+                &input,
+                &interpreter,
+                &uncached,
+                Some(cached),
+                cache_before,
+                cache_snapshot,
+                "uncached_mismatch",
+                &class,
+            ));
+        }
+        if let Some(detail) = retained_hit_counter_mismatch(sequence, &cache_snapshot) {
+            return Err(save_cache_trace_failure(
+                source_inputs_digest,
+                "retained_hit",
+                strategy,
+                sequence,
+                &steps,
+                &input,
+                &interpreter,
+                &uncached,
+                Some(cached),
+                cache_before,
+                cache_snapshot,
+                "cache_counter_mismatch",
+                &detail,
+            ));
+        }
+        let (_, _, bindings) = cache_bindings(&input);
+        steps.push(CacheTraceStep {
+            sequence_index: sequence,
+            input,
+            bindings,
+            interpreter,
+            uncached,
+            cached,
+            cache: cache_snapshot,
+        });
+    }
+    cache.clear();
+    if cache.resident_entries() != 0 {
+        return Err("retained-hit trace did not release its executable handle".into());
+    }
+    Ok(CacheTraceSegment {
+        kind: "retained_hit".into(),
+        strategy: strategy.into(),
+        steps,
+    })
+}
+
+#[test]
+fn cached_corpus_matches_existing_observations_and_saves_versioned_trace() {
+    let _guard = jit_test_lock();
+    let corpus_path = artifact_dir().join("native-register-v1-observations.json");
+    let corpus: CorpusObservationsEnvelope = serde_json::from_slice(
+        &fs::read(&corpus_path)
+            .unwrap_or_else(|error| panic!("source corpus observations missing: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("source corpus observations malformed: {error}"));
+    validate_corpus_observations(&corpus).unwrap();
+
+    let segments = vec![
+        cached_corpus_segment(&corpus, "eager").unwrap(),
+        cached_corpus_segment(&corpus, "demand_candidate").unwrap(),
+        retained_hit_segment("eager", &corpus.inputs_digest).unwrap(),
+        retained_hit_segment("demand_candidate", &corpus.inputs_digest).unwrap(),
+    ];
+    let trace = finish_cache_trace(corpus.inputs_digest.clone(), segments);
+    validate_cache_trace(&trace, &corpus).unwrap();
+    let path = artifact_dir().join("native-register-v1-cache-trace.json");
+    write_json(&path, &trace);
+    eprintln!(
+        "S3-34p cached trace: version={} profile={} generated_steps=1200 eager_hits={} candidate_hits={} retained_hits=1+1 source_digest={} trace_digest={} artifact={}",
+        trace.version,
+        trace.profile,
+        trace.segments[0].steps.last().unwrap().cache.hits,
+        trace.segments[1].steps.last().unwrap().cache.hits,
+        trace.source_inputs_digest,
+        trace.trace_digest,
+        path.display(),
+    );
+}
+
+#[test]
+fn cached_trace_replays_from_empty_cache_and_rejects_corruption() {
+    let _guard = jit_test_lock();
+    let path = artifact_dir().join("native-register-v1-cache-trace.json");
+    let trace: CacheTraceEnvelope = serde_json::from_slice(
+        &fs::read(&path)
+            .unwrap_or_else(|error| panic!("cache trace missing at {}: {error}", path.display())),
+    )
+    .unwrap_or_else(|error| panic!("cache trace malformed: {error}"));
+    let corpus_path = artifact_dir().join("native-register-v1-observations.json");
+    let corpus: CorpusObservationsEnvelope = serde_json::from_slice(
+        &fs::read(&corpus_path)
+            .unwrap_or_else(|error| panic!("source observations missing: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("source observations malformed: {error}"));
+    validate_cache_trace(&trace, &corpus).unwrap();
+
+    let mut changed_input = trace.clone();
+    changed_input.segments[0].steps[0].input.initial_gpr[0] ^= 1;
+    changed_input.trace_digest = cache_trace_digest(&changed_input);
+    assert!(
+        validate_cache_trace(&changed_input, &corpus)
+            .unwrap_err()
+            .contains("input digest mismatch")
+    );
+
+    let mut changed_counter = trace.clone();
+    changed_counter.segments[0].steps[0].cache.hits += 1;
+    changed_counter.trace_digest = cache_trace_digest(&changed_counter);
+    let changed_counter_error = replay_cache_trace(&changed_counter).unwrap_err();
+    assert!(
+        changed_counter_error.contains("counter"),
+        "counter tamper rejection had unexpected reason: {changed_counter_error}"
+    );
+
+    let mut missing_step = trace.clone();
+    missing_step.segments[0].steps.pop();
+    missing_step.trace_digest = cache_trace_digest(&missing_step);
+    assert!(
+        validate_cache_trace(&missing_step, &corpus)
+            .unwrap_err()
+            .contains("step count differs")
+    );
+
+    let mut unknown_field = serde_json::to_value(&trace).unwrap();
+    unknown_field["unrecognized"] = serde_json::Value::Bool(true);
+    assert!(serde_json::from_value::<CacheTraceEnvelope>(unknown_field).is_err());
+
+    replay_cache_trace(&trace).unwrap_or_else(|error| panic!("cache trace replay failed: {error}"));
+    eprintln!(
+        "S3-34p cache trace replay passed: segments={} generated_per_strategy=1200 retained_hits=2 digest={}",
+        trace.segments.len(),
+        trace.trace_digest,
+    );
+}
+
+#[test]
+fn cached_failure_trace_replays_saved_prefix_and_failure() {
+    let _guard = jit_test_lock();
+    if let Some(path) = std::env::var_os("OD_JIT_NATIVE_REGISTER_V1_FAILURE_TRACE") {
+        replay_cache_trace_failure(Path::new(&path), None)
+            .unwrap_or_else(|error| panic!("saved cache failure did not replay: {error}"));
+        return;
+    }
+
+    let corpus_path = artifact_dir().join("native-register-v1-observations.json");
+    let corpus: CorpusObservationsEnvelope = serde_json::from_slice(
+        &fs::read(&corpus_path)
+            .unwrap_or_else(|error| panic!("source observations missing: {error}")),
+    )
+    .unwrap_or_else(|error| panic!("source observations malformed: {error}"));
+    validate_corpus_observations(&corpus).unwrap();
+    let prefix_case = &corpus.cases[0];
+    let case = &corpus.cases[1];
+    let mut cache = od_jit::dispatch::SingleEntryBlockCache::new(
+        1,
+        od_jit::dispatch::MAX_SINGLE_ENTRY_CACHE_BYTES,
+    )
+    .unwrap();
+    let prefix_interpreter = prefix_case.backend_runs.interpreter[0].clone().unwrap();
+    let prefix_uncached = prefix_case.backend_runs.eager_native[0].clone().unwrap();
+    let (prefix_cached, prefix_after) =
+        run_cached_backend(&prefix_case.input, false, &mut cache).unwrap();
+    let (_, _, prefix_bindings) = cache_bindings(&prefix_case.input);
+    let prefix = CacheTraceStep {
+        sequence_index: 0,
+        input: prefix_case.input.clone(),
+        bindings: prefix_bindings,
+        interpreter: prefix_interpreter,
+        uncached: prefix_uncached,
+        cached: prefix_cached,
+        cache: prefix_after,
+    };
+    let before = cache_counter_snapshot(&cache);
+    let (cached, after) = run_cached_backend(&case.input, false, &mut cache).unwrap();
+    cache.clear();
+    assert_eq!(cache.resident_entries(), 0);
+
+    // This local fault injection exercises the failure consumer without reporting
+    // the deliberately altered observation as a JIT defect.
+    let mut injected = cached;
+    injected.gpr[0] ^= 1;
+    let interpreter = case.backend_runs.interpreter[0].clone().unwrap();
+    let uncached = case.backend_runs.eager_native[0].clone().unwrap();
+    let failure_detail = compare(&interpreter, &injected).unwrap_err();
+    let mut failure = CacheTraceFailureEnvelope {
+        version: CACHE_TRACE_VERSION,
+        profile: PROFILE.into(),
+        source_inputs_digest: corpus.inputs_digest.clone(),
+        segment_kind: "generated_corpus".into(),
+        strategy: "eager".into(),
+        sequence_index: 1,
+        successful_prefix: vec![prefix],
+        failing_input: case.input.clone(),
+        interpreter,
+        uncached,
+        cached: Some(injected.clone()),
+        cache_before: before,
+        cache_after: after,
+        failure_kind: "interpreter_mismatch".into(),
+        failure_detail,
+        reproduction_command: "local selfcheck injection".into(),
+        failure_digest: String::new(),
+    };
+    failure.failure_digest = cache_trace_failure_digest(&failure);
+    let path = std::env::temp_dir().join(format!(
+        "native-register-v1-cache-failure-selfcheck-{}.json",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&path);
+    write_json_create_new(&path, &failure).unwrap();
+    replay_cache_trace_failure(&path, Some(injected.clone())).unwrap();
+    assert!(
+        replay_cache_trace_failure(&path, None)
+            .unwrap_err()
+            .contains("did not reproduce")
+    );
+
+    let mut corrupted = failure;
+    corrupted.failure_digest = "fnv1a64:0000000000000000".into();
+    write_json(&path, &corrupted);
+    assert!(
+        replay_cache_trace_failure(&path, Some(injected))
+            .unwrap_err()
+            .contains("digest")
+    );
+    fs::remove_file(path).unwrap();
+
+    let retained_inputs = retained_hit_inputs();
+    let retained_baselines: Vec<_> = retained_inputs
+        .iter()
+        .map(|input| {
+            (
+                reference_observation(&input),
+                run_backend(&input, false).unwrap(),
+            )
+        })
+        .collect();
+    let mut retained_cache = od_jit::dispatch::SingleEntryBlockCache::new(
+        1,
+        od_jit::dispatch::MAX_SINGLE_ENTRY_CACHE_BYTES,
+    )
+    .unwrap();
+    let (first_cached, first_counters) =
+        run_cached_backend(&retained_inputs[0], false, &mut retained_cache).unwrap();
+    let (_, _, first_bindings) = cache_bindings(&retained_inputs[0]);
+    let retained_prefix = CacheTraceStep {
+        sequence_index: 0,
+        input: retained_inputs[0].clone(),
+        bindings: first_bindings,
+        interpreter: retained_baselines[0].0.clone(),
+        uncached: retained_baselines[0].1.clone(),
+        cached: first_cached,
+        cache: first_counters,
+    };
+    let retained_before = cache_counter_snapshot(&retained_cache);
+    let (retained_cached, retained_after) =
+        run_cached_backend(&retained_inputs[1], false, &mut retained_cache).unwrap();
+    retained_cache.clear();
+    assert_eq!(retained_cache.resident_entries(), 0);
+    let mut retained_injected = retained_cached;
+    retained_injected.gpr[0] ^= 1;
+    let retained_failure_detail =
+        compare(&retained_baselines[1].0, &retained_injected).unwrap_err();
+    let mut retained_failure = CacheTraceFailureEnvelope {
+        version: CACHE_TRACE_VERSION,
+        profile: PROFILE.into(),
+        source_inputs_digest: corpus.inputs_digest,
+        segment_kind: "retained_hit".into(),
+        strategy: "eager".into(),
+        sequence_index: 1,
+        successful_prefix: vec![retained_prefix],
+        failing_input: retained_inputs[1].clone(),
+        interpreter: retained_baselines[1].0.clone(),
+        uncached: retained_baselines[1].1.clone(),
+        cached: Some(retained_injected.clone()),
+        cache_before: retained_before,
+        cache_after: retained_after,
+        failure_kind: "interpreter_mismatch".into(),
+        failure_detail: retained_failure_detail,
+        reproduction_command: "local retained-hit selfcheck injection".into(),
+        failure_digest: String::new(),
+    };
+    retained_failure.failure_digest = cache_trace_failure_digest(&retained_failure);
+    let retained_path = std::env::temp_dir().join(format!(
+        "native-register-v1-retained-failure-selfcheck-{}.json",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&retained_path);
+    write_json_create_new(&retained_path, &retained_failure).unwrap();
+    replay_cache_trace_failure(&retained_path, Some(retained_injected.clone())).unwrap();
+    assert!(
+        replay_cache_trace_failure(&retained_path, None)
+            .unwrap_err()
+            .contains("did not reproduce")
+    );
+    fs::remove_file(retained_path).unwrap();
 }
 
 fn contains_form(code: &[u8], form: usize) -> bool {

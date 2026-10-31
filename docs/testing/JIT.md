@@ -691,6 +691,46 @@ no physical x86, Stage 2, owner/MMU, performance, global-minimality, or full
 S3-34/Stage 3 completion claim. See the
 [S3-34o report](../reports/STAGE_3_S3-34o_2026-10-30.md).
 
+### S3-34p reproducible cached NativeRegisterV1 corpus and replay
+
+`native-register-v1-observations.json` is a separate complete source artifact
+containing all 1,200 S3-34n inputs and their repeated interpreter, eager, and
+demand-candidate observations. It does not change the S3-34n `SavedCase` v1
+envelope consumed by the reducer. The cached-corpus gate runs each source input
+through a retained single-entry eager cache sequence and a separate
+demand-flags-candidate sequence, comparing every full state, exit, native and
+interpreter retirement, and remaining budget with both the saved interpreter
+and matching uncached observations. Per-step cache counters and execution
+context/dependency bindings are recorded; no hit is assumed for multi-block
+inputs.
+
+`native-register-v1-cache-trace.json` is a version-1 ordered trace with a full
+digest. It includes each input, baseline/cached observations, strategy,
+bindings and cumulative counters for the generated sequences, plus one
+two-call single-block ADD sequence for each strategy. The latter changes RAX
+and RFLAGS while reusing identical bytes/context/dependencies, and requires
+one miss/compile/publication followed by one hit without another compile or
+publication. The replay gate verifies the input order against the generated
+corpus, then executes every sequence from a fresh empty cache and compares the
+full observations and exact counters. It rejects tampered state/digests,
+unknown fields, counter changes and missing sequence steps. The harness binds
+the trace and source-observation locations, SHA-256 values and envelope digests
+to the producer/replay gates; it recomputes the source envelope digest and
+checks that the producer's binding remains unchanged through final validation.
+If a generated-corpus or retained-hit step mismatches, the producer saves a
+separate versioned failure envelope with its successful prefix, failing input,
+full observations, and cache counters before/after the failure. Its bounded
+replay reader checks the source corpus identity and digest, replays the saved
+prefix on a fresh cache, then verifies the failing input, observation, counters
+and failure signature. A third exact gate runs explicitly labeled local
+observation injections for both segment kinds to check save/read/replay, tamper
+rejection, and rejection when the failure does not recur; this is a consumer
+self-check, not evidence of a JIT defect. The local harness pins all 83 Rust identities, retaining all 42 S3-33
+identities.
+Mini, physical x86, performance, Stage 2 and owner/MMU remain deferred or
+outside this local slice. See the
+[S3-34p report](../reports/STAGE_3_S3-34p_2026-10-31.md).
+
 Каждая новая строка support matrix получает literal positive/negative cases,
 точный сравниваемый state и внешний prerequisite. В отчёте сохранять git
 revision, build fingerprint, host/OS/toolchain, fixtures/corpus fingerprint,

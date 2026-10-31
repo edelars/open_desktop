@@ -86,13 +86,93 @@ def passing_rust_gate_steps(log_dir: Path):
     return steps
 
 
+def write_valid_cache_trace(path: Path):
+    def make_input(index: int, rax: int, flags: int):
+        return {
+            "version": 1,
+            "profile": "NativeRegisterV1",
+            "input_digest": f"fnv1a64:{index:016x}",
+            "code": [0x48, 0x83, 0xC0, 1],
+            "guest_base_rip": 0x1000,
+            "initial_gpr": [rax, *([0] * 15)],
+            "initial_rflags": flags,
+        }
+
+    def make_step(index: int, input_value: dict, counters: dict):
+        return {
+            "sequence_index": index,
+            "input": input_value,
+            "bindings": {},
+            "interpreter": {},
+            "uncached": {},
+            "cached": {},
+            "cache": counters,
+        }
+
+    generated = [
+        make_step(
+            index,
+            make_input(index, 0, 0x202),
+            {"hits": 0, "misses": 0, "successful_compiles": 0, "successful_publications": 0},
+        )
+        for index in range(1200)
+    ]
+    retained = [
+        make_step(
+            0,
+            make_input(5000, 1, 0x202),
+            {"hits": 0, "misses": 1, "successful_compiles": 1, "successful_publications": 1},
+        ),
+        make_step(
+            1,
+            make_input(5001, 2, 0x203),
+            {"hits": 1, "misses": 1, "successful_compiles": 1, "successful_publications": 1},
+        ),
+    ]
+    trace = {
+        "version": 1,
+        "profile": "NativeRegisterV1",
+        "source_inputs_digest": "fnv1a64:" + "a" * 16,
+        "segments": [
+            {"kind": "generated_corpus", "strategy": "eager", "steps": generated},
+            {"kind": "generated_corpus", "strategy": "demand_candidate", "steps": generated},
+            {"kind": "retained_hit", "strategy": "eager", "steps": retained},
+            {"kind": "retained_hit", "strategy": "demand_candidate", "steps": retained},
+        ],
+    }
+    payload = {
+        "version": trace["version"],
+        "profile": trace["profile"],
+        "source_inputs_digest": trace["source_inputs_digest"],
+        "segments": trace["segments"],
+    }
+    raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    value = 0xCBF29CE484222325
+    for byte in raw:
+        value = ((value ^ byte) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    trace["trace_digest"] = f"fnv1a64:{value:016x}"
+    path.write_text(json.dumps(trace, separators=(",", ":"), ensure_ascii=False))
+    observations = {
+        "version": 1,
+        "profile": "NativeRegisterV1",
+        "inputs_digest": trace["source_inputs_digest"],
+        "cases": [{} for _ in range(1200)],
+        "envelope_digest": "",
+    }
+    observations["envelope_digest"] = harness.native_register_v1_observations_digest(observations)
+    (path.parent / "native-register-v1-observations.json").write_text(
+        json.dumps(observations, separators=(",", ":"), ensure_ascii=False)
+    )
+    return trace
+
+
 def passing_final_summary(run_id: str, log_dir: Path):
     steps = passing_rust_gate_steps(log_dir)
     run_root = harness.ROOT / "work" / "stage3-harness" / run_id
     artifact_dir = run_root / "artifacts" / "native-register-v1"
     artifact_dir.mkdir(parents=True, exist_ok=True)
     for name, _, _, _ in harness.RUST_TEST_GATES:
-        if name.startswith(("s3_34n_native_register_v1_", "s3_34o_native_register_v1_")):
+        if name.startswith(("s3_34n_native_register_v1_", "s3_34o_native_register_v1_", "s3_34p_cached_native_register_v1_")):
             steps[name]["artifact_directory"] = artifact_dir.relative_to(harness.ROOT).as_posix()
     corpus_summary = {
         "profile": "NativeRegisterV1",
@@ -114,7 +194,7 @@ def passing_final_summary(run_id: str, log_dir: Path):
         "zero_budget_inputs": 1,
         "rip_predecessor_lengths": [3, 4, 7],
         "form_counts": [1] * 13,
-        "canonical_inputs_digest": "fnv1a64:" + "1" * 16,
+        "canonical_inputs_digest": "fnv1a64:" + "a" * 16,
     }
     saved_case = {
         "input": {
@@ -126,11 +206,17 @@ def passing_final_summary(run_id: str, log_dir: Path):
     }
     (artifact_dir / "native-register-v1-summary.json").write_text(json.dumps(corpus_summary))
     (artifact_dir / "native-register-v1-saved-case.json").write_text(json.dumps(saved_case))
+    write_valid_cache_trace(artifact_dir / "native-register-v1-cache-trace.json")
     harness.attach_native_register_v1_evidence(
         steps["s3_34n_native_register_v1_corpus"],
         run_root,
         "s3_34n_native_register_v1_corpus",
     )
+    for name in (
+        "s3_34p_cached_native_register_v1_corpus",
+        "s3_34p_cached_native_register_v1_replay",
+    ):
+        harness.attach_native_register_v1_evidence(steps[name], run_root, name)
     for name in ("harness_self_tests", "stage1_dispatch", "memory_corpus"):
         steps[name] = {"status": "passed"}
     gate_name = "memory_s3_34h_exact_gate"
@@ -362,6 +448,9 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             "s3_34n_native_register_v1_selfcheck",
             "s3_34o_native_register_v1_reducer",
             "s3_34o_native_register_v1_reducer_selfcheck",
+            "s3_34p_cached_native_register_v1_corpus",
+            "s3_34p_cached_native_register_v1_replay",
+            "s3_34p_cached_native_register_v1_failure_replay",
         )
         for missing_step in (harness.RUST_TEST_GATES[-1][0], *mandatory_steps):
             manifest = {
@@ -578,13 +667,13 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ),
         ]
         gates = [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_34n_")]
-        self.assertEqual(len(harness.RUST_TEST_GATES), 80)
+        self.assertEqual(len(harness.RUST_TEST_GATES), 83)
         self.assertEqual(sum(name.startswith("s3_33") for name, _, _, _ in harness.RUST_TEST_GATES), 42)
         self.assertEqual([(name, package, identity) for name, _, package, identity in gates], expected)
         self.assertIn("crates/od-host/src/tests/native_register_v1_corpus.rs", harness.LOCAL_RUST_TEST_SOURCES)
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(manifest), 80)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 80)
+        self.assertEqual(len(manifest), 83)
+        self.assertEqual(len({gate["step"] for gate in manifest}), 83)
         native_identities = {
             gate["identity"] for gate in manifest if gate["step"].startswith("s3_33")
         }
@@ -614,7 +703,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             steps = {
                 name: {"status": "passed", "artifact_directory": artifact_rel}
                 for name, _, _, _ in harness.RUST_TEST_GATES
-                if name.startswith(("s3_34n_native_register_v1_", "s3_34o_native_register_v1_"))
+                if name.startswith(("s3_34n_native_register_v1_", "s3_34o_native_register_v1_", "s3_34p_cached_native_register_v1_"))
             }
             with self.assertRaisesRegex(harness.HarnessError, "summary evidence is missing"):
                 harness.validate_native_register_v1_artifacts(steps, run_dir)
@@ -665,6 +754,33 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 mocked_run.call_args.kwargs["env"]["OD_JIT_NATIVE_REGISTER_V1_REPLAY_CASE"],
                 expected_replay,
             )
+            failure_step, _, failure_package, failure_identity = next(
+                gate for gate in harness.RUST_TEST_GATES
+                if gate[0] == "s3_34p_cached_native_register_v1_failure_replay"
+            )
+            failure_argv = harness.rust_test_argv(failure_package, failure_identity)
+            with (
+                mock.patch.object(harness.subprocess, "run", return_value=fake_process) as failure_process,
+                mock.patch.object(harness, "source_fingerprint", return_value="a" * 64),
+                mock.patch.dict(
+                    os.environ,
+                    {"OD_JIT_NATIVE_REGISTER_V1_FAILURE_TRACE": "/external/old-failure.json"},
+                ),
+            ):
+                failure_result = harness.run_step(failure_step, failure_argv, harness_run, 30, "a" * 64)
+            self.assertEqual(failure_result["status"], "passed")
+            self.assertEqual(
+                failure_result["artifact_directory"],
+                (harness_run / "artifacts" / "native-register-v1").relative_to(harness.ROOT).as_posix(),
+            )
+            self.assertEqual(
+                failure_process.call_args.kwargs["env"]["OD_JIT_NATIVE_REGISTER_V1_CORPUS_DIR"],
+                str(harness_run / "artifacts" / "native-register-v1"),
+            )
+            self.assertNotIn(
+                "OD_JIT_NATIVE_REGISTER_V1_FAILURE_TRACE",
+                failure_process.call_args.kwargs["env"],
+            )
 
         run_id = harness.new_run_id()
         harness_run = harness.ROOT / "work" / "stage3-harness" / run_id
@@ -680,6 +796,140 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                     harness.validate_final_summary(summary, manifest_path)
         finally:
             shutil.rmtree(harness_run, ignore_errors=True)
+
+    def test_s3_34p_cached_native_register_trace_gates_are_pinned_once(self):
+        expected = [
+            (
+                "s3_34p_cached_native_register_v1_corpus", "od-host",
+                "tests::native_register_v1_corpus::cached_corpus_matches_existing_observations_and_saves_versioned_trace",
+            ),
+            (
+                "s3_34p_cached_native_register_v1_replay", "od-host",
+                "tests::native_register_v1_corpus::cached_trace_replays_from_empty_cache_and_rejects_corruption",
+            ),
+            (
+                "s3_34p_cached_native_register_v1_failure_replay", "od-host",
+                "tests::native_register_v1_corpus::cached_failure_trace_replays_saved_prefix_and_failure",
+            ),
+        ]
+        gates = [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_34p_")]
+        self.assertEqual(len(harness.RUST_TEST_GATES), 83)
+        self.assertEqual(len(harness.rust_test_gate_manifest()), 83)
+        self.assertEqual(sum(name.startswith("s3_33") for name, _, _, _ in harness.RUST_TEST_GATES), 42)
+        self.assertEqual([(name, package, identity) for name, _, package, identity in gates], expected)
+        self.assertIn("crates/od-host/src/tests/native_register_v1_corpus.rs", harness.LOCAL_RUST_TEST_SOURCES)
+
+        def counter_snapshot(hits, misses, compiles, publications):
+            return {
+                "hits": hits,
+                "misses": misses,
+                "successful_compiles": compiles,
+                "successful_publications": publications,
+            }
+
+        def trace_step(index, input_value, counters):
+            return {
+                "sequence_index": index,
+                "input": input_value,
+                "bindings": {},
+                "interpreter": {},
+                "uncached": {},
+                "cached": {},
+                "cache": counters,
+            }
+
+        def input_value(index, rax=0, rflags=0x202):
+            return {
+                "version": 1,
+                "profile": "NativeRegisterV1",
+                "input_digest": f"fnv1a64:{index:016x}",
+                "code": [0x48, 0x83, 0xC0, 1],
+                "guest_base_rip": 0x1000,
+                "initial_gpr": [rax, *([0] * 15)],
+                "initial_rflags": rflags,
+            }
+
+        generated = [
+            trace_step(index, input_value(index), counter_snapshot(0, 0, 0, 0))
+            for index in range(1200)
+        ]
+        retained = [
+            trace_step(0, input_value(5000, 1, 0x202), counter_snapshot(0, 1, 1, 1)),
+            trace_step(1, input_value(5001, 2, 0x203), counter_snapshot(1, 1, 1, 1)),
+        ]
+        trace = {
+            "version": 1,
+            "profile": "NativeRegisterV1",
+            "source_inputs_digest": "fnv1a64:" + "a" * 16,
+            "segments": [
+                {"kind": "generated_corpus", "strategy": "eager", "steps": generated},
+                {"kind": "generated_corpus", "strategy": "demand_candidate", "steps": generated},
+                {"kind": "retained_hit", "strategy": "eager", "steps": retained},
+                {"kind": "retained_hit", "strategy": "demand_candidate", "steps": retained},
+            ],
+        }
+        payload = {
+            "version": trace["version"],
+            "profile": trace["profile"],
+            "source_inputs_digest": trace["source_inputs_digest"],
+            "segments": trace["segments"],
+        }
+        raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        value = 0xCBF29CE484222325
+        for byte in raw:
+            value = ((value ^ byte) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+        trace["trace_digest"] = f"fnv1a64:{value:016x}"
+
+        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+            run_dir = Path(temporary)
+            artifact_dir = run_dir / "artifacts" / "native-register-v1"
+            artifact_dir.mkdir(parents=True)
+            trace_path = artifact_dir / "native-register-v1-cache-trace.json"
+            trace_path.write_text(json.dumps(trace, separators=(",", ":"), ensure_ascii=False))
+            observations = {
+                "version": 1,
+                "profile": "NativeRegisterV1",
+                "inputs_digest": trace["source_inputs_digest"],
+                "cases": [{} for _ in range(1200)],
+                "envelope_digest": "",
+            }
+            observations["envelope_digest"] = harness.native_register_v1_observations_digest(observations)
+            (artifact_dir / "native-register-v1-observations.json").write_text(
+                json.dumps(observations, separators=(",", ":"), ensure_ascii=False)
+            )
+            expected_dir = artifact_dir.relative_to(harness.ROOT).as_posix()
+            steps = {
+                name: {"status": "passed", "artifact_directory": expected_dir}
+                for name, _, _ in expected
+            }
+            for name in steps:
+                harness.attach_native_register_v1_cache_trace_evidence(steps[name], run_dir)
+            harness.validate_native_register_v1_cache_trace_artifacts(steps, run_dir)
+
+            observations_path = artifact_dir / "native-register-v1-observations.json"
+            original_observations = observations_path.read_bytes()
+            tampered_observations = json.loads(original_observations)
+            tampered_observations["cases"][0]["tampered"] = True
+            tampered_observations["envelope_digest"] = harness.native_register_v1_observations_digest(
+                tampered_observations
+            )
+            observations_path.write_text(json.dumps(tampered_observations, separators=(",", ":")))
+            with self.assertRaisesRegex(harness.HarnessError, "evidence is missing or forged"):
+                harness.validate_native_register_v1_cache_trace_artifacts(steps, run_dir)
+            observations_path.write_bytes(original_observations)
+
+            bad_trace = dict(trace)
+            bad_trace["trace_digest"] = "fnv1a64:" + "0" * 16
+            trace_path.write_text(json.dumps(bad_trace, separators=(",", ":"), ensure_ascii=False))
+            with self.assertRaisesRegex(harness.HarnessError, "digest"):
+                harness.native_register_v1_cache_trace_evidence(run_dir)
+
+            outside = run_dir / "outside.json"
+            outside.write_text("{}")
+            trace_path.unlink()
+            trace_path.symlink_to(outside)
+            with self.assertRaisesRegex(harness.HarnessError, "symlink"):
+                harness.native_register_v1_cache_trace_evidence(run_dir)
 
     def test_s3_38b_native_register_cache_gates_are_pinned_once(self):
         expected = {
@@ -714,8 +964,8 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 "cargo", "test", "--offline", "-p", package, "--lib", identity,
                 "--", "--exact", "--test-threads=1",
             ])
-        self.assertEqual(len(harness.RUST_TEST_GATES), 80)
-        self.assertEqual(len(manifest_by_name), 80)
+        self.assertEqual(len(harness.RUST_TEST_GATES), 83)
+        self.assertEqual(len(manifest_by_name), 83)
 
     def test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks(self):
         with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:

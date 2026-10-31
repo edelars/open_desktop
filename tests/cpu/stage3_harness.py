@@ -60,6 +60,7 @@ SELF_TEST_NAMES = (
     "test_rust_test_manifest_rejects_a_missing_mandatory_gate",
     "test_s3_33_native_gates_are_pinned_once_in_manifest_steps_and_summary",
     "test_s3_34n_native_register_corpus_gates_are_pinned_once",
+    "test_s3_34p_cached_native_register_trace_gates_are_pinned_once",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
     "test_rust_gate_summary_rejects_an_omitted_mandatory_gate",
@@ -377,6 +378,18 @@ ADDITIONAL_TEST_GATES = (
         "s3_34o_native_register_v1_reducer_selfcheck", "local_acceptance", "od-host",
         "tests::native_register_v1_corpus::native_register_v1_reducer_rejects_unstable_and_structural_changes",
     ),
+    (
+        "s3_34p_cached_native_register_v1_corpus", "local_acceptance", "od-host",
+        "tests::native_register_v1_corpus::cached_corpus_matches_existing_observations_and_saves_versioned_trace",
+    ),
+    (
+        "s3_34p_cached_native_register_v1_replay", "local_acceptance", "od-host",
+        "tests::native_register_v1_corpus::cached_trace_replays_from_empty_cache_and_rejects_corruption",
+    ),
+    (
+        "s3_34p_cached_native_register_v1_failure_replay", "local_acceptance", "od-host",
+        "tests::native_register_v1_corpus::cached_failure_trace_replays_saved_prefix_and_failure",
+    ),
 )
 RUST_TEST_GATES = (
     *(
@@ -619,6 +632,164 @@ def native_register_v1_reducer_artifact_inventory(run_dir: Path) -> list[dict[st
     return entries
 
 
+def native_register_v1_cache_trace_evidence(run_dir: Path) -> dict[str, object]:
+    artifact_dir = run_dir / "artifacts" / "native-register-v1"
+    trace_path = artifact_dir / "native-register-v1-cache-trace.json"
+    observations_path = artifact_dir / "native-register-v1-observations.json"
+    if any(path.is_symlink() for path in (run_dir, run_dir / "artifacts", artifact_dir, trace_path, observations_path)):
+        raise HarnessError("S3-34p cache trace path cannot be a symlink")
+    try:
+        trace = json.loads(trace_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise HarnessError(f"S3-34p cache trace is missing or malformed: {error}") from error
+    try:
+        observations = json.loads(observations_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise HarnessError(f"S3-34p source observations are missing or malformed: {error}") from error
+    if not isinstance(trace, dict):
+        raise HarnessError("S3-34p cache trace must be an object")
+    if not isinstance(observations, dict):
+        raise HarnessError("S3-34p source observations must be an object")
+    expected_observations_digest = native_register_v1_observations_digest(observations)
+    segments = trace.get("segments")
+    expected_segments = [
+        ("generated_corpus", "eager", 1200),
+        ("generated_corpus", "demand_candidate", 1200),
+        ("retained_hit", "eager", 2),
+        ("retained_hit", "demand_candidate", 2),
+    ]
+    if (
+        trace.get("version") != 1
+        or trace.get("profile") != "NativeRegisterV1"
+        or not isinstance(trace.get("source_inputs_digest"), str)
+        or not re.fullmatch(r"fnv1a64:[0-9a-f]{16}", trace["source_inputs_digest"])
+        or not isinstance(trace.get("trace_digest"), str)
+        or not re.fullmatch(r"fnv1a64:[0-9a-f]{16}", trace["trace_digest"])
+        or not isinstance(segments, list)
+        or len(segments) != len(expected_segments)
+        or observations.get("version") != 1
+        or observations.get("profile") != "NativeRegisterV1"
+        or observations.get("inputs_digest") != trace.get("source_inputs_digest")
+        or not isinstance(observations.get("envelope_digest"), str)
+        or not re.fullmatch(r"fnv1a64:[0-9a-f]{16}", observations["envelope_digest"])
+        or observations["envelope_digest"] != expected_observations_digest
+        or not isinstance(observations.get("cases"), list)
+        or len(observations["cases"]) != 1200
+    ):
+        raise HarnessError("S3-34p cache trace/source observations version, profile or inventory differs")
+    for segment_index, (segment, expected) in enumerate(zip(segments, expected_segments)):
+        if (
+            not isinstance(segment, dict)
+            or (segment.get("kind"), segment.get("strategy")) != expected[:2]
+            or not isinstance(segment.get("steps"), list)
+            or len(segment["steps"]) != expected[2]
+        ):
+            raise HarnessError(f"S3-34p cache trace segment differs: {segment_index}")
+        for sequence, step in enumerate(segment["steps"]):
+            if (
+                not isinstance(step, dict)
+                or step.get("sequence_index") != sequence
+                or not isinstance(step.get("input"), dict)
+                or step["input"].get("version") != 1
+                or step["input"].get("profile") != "NativeRegisterV1"
+                or not isinstance(step["input"].get("input_digest"), str)
+                or not re.fullmatch(r"fnv1a64:[0-9a-f]{16}", step["input"]["input_digest"])
+                or not isinstance(step.get("bindings"), dict)
+                or not all(isinstance(step.get(field), dict) for field in ("interpreter", "uncached", "cached", "cache"))
+            ):
+                raise HarnessError(f"S3-34p cache trace step differs: {segment_index}:{sequence}")
+    for segment_index in (2, 3):
+        steps = segments[segment_index]["steps"]
+        first_input = steps[0]["input"]
+        second_input = steps[1]["input"]
+        first_cache = steps[0]["cache"]
+        second_cache = steps[1]["cache"]
+        if (
+            first_input.get("code") != second_input.get("code")
+            or first_input.get("guest_base_rip") != second_input.get("guest_base_rip")
+            or steps[0].get("bindings") != steps[1].get("bindings")
+            or first_input.get("initial_gpr", [None])[0] == second_input.get("initial_gpr", [None])[0]
+            or first_input.get("initial_rflags") == second_input.get("initial_rflags")
+            or first_cache.get("misses") != 1
+            or first_cache.get("successful_compiles") != 1
+            or first_cache.get("successful_publications") != 1
+            or second_cache.get("hits") != 1
+            or second_cache.get("successful_compiles") != 1
+            or second_cache.get("successful_publications") != 1
+        ):
+            raise HarnessError(f"S3-34p retained-block hit evidence differs: {segment_index}")
+    payload = {
+        "version": trace["version"],
+        "profile": trace["profile"],
+        "source_inputs_digest": trace["source_inputs_digest"],
+        "segments": segments,
+    }
+    raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    value = 0xCBF29CE484222325
+    for byte in raw:
+        value = ((value ^ byte) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    if trace["trace_digest"] != f"fnv1a64:{value:016x}":
+        raise HarnessError("S3-34p cache trace digest does not bind its ordered steps")
+    return {
+        "path": trace_path.relative_to(ROOT).as_posix(),
+        "sha256": sha256_file(trace_path),
+        "observations_path": observations_path.relative_to(ROOT).as_posix(),
+        "observations_sha256": sha256_file(observations_path),
+        "observations_envelope_digest": observations["envelope_digest"],
+        "version": trace["version"],
+        "profile": trace["profile"],
+        "source_inputs_digest": trace["source_inputs_digest"],
+        "trace_digest": trace["trace_digest"],
+        "segments": [
+            {"kind": segment["kind"], "strategy": segment["strategy"], "steps": len(segment["steps"])}
+            for segment in segments
+        ],
+    }
+
+
+def native_register_v1_observations_digest(observations: dict) -> str:
+    payload = {
+        "version": observations.get("version"),
+        "profile": observations.get("profile"),
+        "inputs_digest": observations.get("inputs_digest"),
+        "cases": observations.get("cases"),
+    }
+    raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    value = 0xCBF29CE484222325
+    for byte in raw:
+        value = ((value ^ byte) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return f"fnv1a64:{value:016x}"
+
+
+def attach_native_register_v1_cache_trace_evidence(step: dict, run_dir: Path) -> None:
+    step["cache_trace_evidence"] = native_register_v1_cache_trace_evidence(run_dir)
+
+
+def validate_native_register_v1_cache_trace_artifacts(steps: dict, run_dir: Path) -> None:
+    gate_names = (
+        "s3_34p_cached_native_register_v1_corpus",
+        "s3_34p_cached_native_register_v1_replay",
+        "s3_34p_cached_native_register_v1_failure_replay",
+    )
+    expected_dir = run_dir / "artifacts" / "native-register-v1"
+    expected_relative = expected_dir.relative_to(ROOT).as_posix()
+    evidence = None
+    for name in gate_names:
+        step = steps.get(name)
+        if (
+            not isinstance(step, dict)
+            or step.get("status") != "passed"
+            or step.get("artifact_directory") != expected_relative
+        ):
+            raise HarnessError(f"S3-34p cache trace artifact binding is missing: {name}")
+        current = native_register_v1_cache_trace_evidence(run_dir)
+        if step.get("cache_trace_evidence") != current:
+            raise HarnessError(f"S3-34p cache trace evidence is missing or forged: {name}")
+        if evidence is not None and current != evidence:
+            raise HarnessError("S3-34p cache trace changed between corpus and replay gates")
+        evidence = current
+
+
 def validate_native_register_v1_reducer_inventory(steps: dict, run_dir: Path) -> None:
     expected = native_register_v1_reducer_artifact_inventory(run_dir)
     for name in (
@@ -641,18 +812,23 @@ def attach_native_register_v1_evidence(step: dict, run_dir: Path, step_name: str
     if step_name.startswith("s3_34o_native_register_v1_"):
         step["reducer_artifacts"] = native_register_v1_reducer_artifact_inventory(run_dir)
         return
+    if step_name.startswith("s3_34p_cached_native_register_v1_"):
+        attach_native_register_v1_cache_trace_evidence(step, run_dir)
+        return
     if step_name != "s3_34n_native_register_v1_corpus":
         return
     summary_path = expected_dir / "native-register-v1-summary.json"
     case_path = expected_dir / "native-register-v1-saved-case.json"
-    if summary_path.is_symlink() or case_path.is_symlink():
+    observations_path = expected_dir / "native-register-v1-observations.json"
+    if any(path.is_symlink() for path in (summary_path, case_path, observations_path)):
         raise HarnessError("S3-34n artifact file cannot be a symlink")
     try:
         summary = json.loads(summary_path.read_text())
         case = json.loads(case_path.read_text())
+        observations = json.loads(observations_path.read_text())
     except (OSError, json.JSONDecodeError) as error:
-        raise HarnessError(f"S3-34n saved corpus evidence is missing or malformed: {error}") from error
-    if not isinstance(summary, dict) or not isinstance(case, dict):
+        raise HarnessError(f"S3-34n corpus evidence is missing or malformed: {error}") from error
+    if not isinstance(summary, dict) or not isinstance(case, dict) or not isinstance(observations, dict):
         raise HarnessError("S3-34n corpus artifacts must be JSON objects")
     expected_seeds = [0x5333346E00000001, 0x5333346E00000002, 0x5333346E00000003]
     forms = summary.get("form_counts") if isinstance(summary, dict) else None
@@ -693,6 +869,12 @@ def attach_native_register_v1_evidence(step: dict, run_dir: Path, step_name: str
         or not isinstance(case_input.get("input_digest"), str)
         or not case_input["input_digest"].startswith("fnv1a64:")
         or not isinstance(case.get("backend_runs"), dict)
+        or observations.get("version") != 1
+        or observations.get("profile") != "NativeRegisterV1"
+        or observations.get("inputs_digest") != summary.get("canonical_inputs_digest")
+        or not isinstance(observations.get("cases"), list)
+        or len(observations["cases"]) != 1200
+        or observations.get("envelope_digest") != native_register_v1_observations_digest(observations)
     ):
         raise HarnessError("S3-34n corpus count, seed, form coverage or saved-case evidence differs")
     step["corpus_evidence"] = {
@@ -701,6 +883,9 @@ def attach_native_register_v1_evidence(step: dict, run_dir: Path, step_name: str
         "summary_sha256": sha256_file(summary_path),
         "saved_case_path": case_path.relative_to(ROOT).as_posix(),
         "saved_case_sha256": sha256_file(case_path),
+        "observations_path": observations_path.relative_to(ROOT).as_posix(),
+        "observations_sha256": sha256_file(observations_path),
+        "observations_envelope_digest": observations["envelope_digest"],
     }
 
 
@@ -711,6 +896,9 @@ def validate_native_register_v1_artifacts(steps: dict, run_dir: Path) -> None:
         "s3_34n_native_register_v1_selfcheck",
         "s3_34o_native_register_v1_reducer",
         "s3_34o_native_register_v1_reducer_selfcheck",
+        "s3_34p_cached_native_register_v1_corpus",
+        "s3_34p_cached_native_register_v1_replay",
+        "s3_34p_cached_native_register_v1_failure_replay",
     )
     expected_dir = run_dir / "artifacts" / "native-register-v1"
     expected_relative = expected_dir.relative_to(ROOT).as_posix()
@@ -724,13 +912,16 @@ def validate_native_register_v1_artifacts(steps: dict, run_dir: Path) -> None:
         raise HarnessError("S3-34n corpus summary evidence is missing")
     summary_path = expected_dir / "native-register-v1-summary.json"
     case_path = expected_dir / "native-register-v1-saved-case.json"
+    observations_path = expected_dir / "native-register-v1-observations.json"
     if (
-        any(path.is_symlink() for path in (run_dir, run_dir / "artifacts", expected_dir, summary_path, case_path))
+        any(path.is_symlink() for path in (run_dir, run_dir / "artifacts", expected_dir, summary_path, case_path, observations_path))
         or
         evidence.get("summary_path") != summary_path.relative_to(ROOT).as_posix()
         or evidence.get("saved_case_path") != case_path.relative_to(ROOT).as_posix()
+        or evidence.get("observations_path") != observations_path.relative_to(ROOT).as_posix()
         or evidence.get("summary_sha256") != sha256_file(summary_path)
         or evidence.get("saved_case_sha256") != sha256_file(case_path)
+        or evidence.get("observations_sha256") != sha256_file(observations_path)
     ):
         raise HarnessError("S3-34n saved corpus artifact digest/path binding differs")
     try:
@@ -739,7 +930,17 @@ def validate_native_register_v1_artifacts(steps: dict, run_dir: Path) -> None:
         raise HarnessError(f"S3-34n corpus summary cannot be reread: {error}") from error
     if evidence.get("summary") != stored_summary:
         raise HarnessError("S3-34n corpus counts/digest differ from the saved summary")
+    try:
+        stored_observations = json.loads(observations_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise HarnessError(f"S3-34n source observations cannot be reread: {error}") from error
+    if (
+        evidence.get("observations_envelope_digest") != stored_observations.get("envelope_digest")
+        or stored_observations.get("envelope_digest") != native_register_v1_observations_digest(stored_observations)
+    ):
+        raise HarnessError("S3-34n source observation envelope digest differs")
     validate_native_register_v1_reducer_inventory(steps, run_dir)
+    validate_native_register_v1_cache_trace_artifacts(steps, run_dir)
     reducer_dir = expected_dir / "native-register-v1-reducer"
     report_path = reducer_dir / "reduction-report.json"
     source_path = reducer_dir / "source-saved-case.json"
@@ -1489,12 +1690,17 @@ def run_step(
     try:
         environment = os.environ.copy()
         artifact_directory = None
+        if name == "s3_34p_cached_native_register_v1_failure_replay":
+            environment.pop("OD_JIT_NATIVE_REGISTER_V1_FAILURE_TRACE", None)
         if name in {
             "s3_34n_native_register_v1_corpus",
             "s3_34n_native_register_v1_replay",
             "s3_34n_native_register_v1_selfcheck",
             "s3_34o_native_register_v1_reducer",
             "s3_34o_native_register_v1_reducer_selfcheck",
+            "s3_34p_cached_native_register_v1_corpus",
+            "s3_34p_cached_native_register_v1_replay",
+            "s3_34p_cached_native_register_v1_failure_replay",
         }:
             artifact_directory = run_dir / "artifacts" / "native-register-v1"
             environment["OD_JIT_NATIVE_REGISTER_V1_CORPUS_DIR"] = str(artifact_directory)
@@ -2600,7 +2806,7 @@ def main(argv: list[str] | None = None) -> int:
                         step["output_tail"], exact_test_name
                     )
                     step["test_outcomes"] = outcomes
-                    if step_name.startswith(("s3_34n_native_register_v1_", "s3_34o_native_register_v1_")):
+                    if step_name.startswith(("s3_34n_native_register_v1_", "s3_34o_native_register_v1_", "s3_34p_cached_native_register_v1_")):
                         attach_native_register_v1_evidence(step, run_dir, step_name)
                 except HarnessError as error:
                     step["status"] = "failed"

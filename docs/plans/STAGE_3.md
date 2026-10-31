@@ -261,6 +261,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-34j | Add exact local gates for S3-33e CMP imm8 | S3-34i, S3-33e; full S3-34 gates remain open |
 | [partial] | S3-34k | Exact local gates for S3-33i XCHG RAX,RBX | S3-34j, S3-33i; full S3-34 gates remain open |
 | [partial] | S3-34l | Exact local gates for S3-33j LEA RAX,[RBX+disp8] | S3-34k, S3-33j; full S3-34 gates remain open |
+| [partial] | S3-34p | Cached NativeRegisterV1 corpus and versioned replay | S3-34n, S3-38b/c; full S3-34 gates remain open |
 | [partial] | S3-35 | Измерить холодное исполнение | S3-01, S3-34 |
 | [ ] | S3-36 | Измерить прогретое исполнение | S3-35 |
 | [ ] | S3-37 | Cache churn и ресурсы | S3-25, S3-34 |
@@ -2885,6 +2886,41 @@ x86, performance, Stage 2 and owner-backed checks `not_run`.
 Rust- и harness-исходники не менялись. Записанный fingerprint относится к
 проверенному до этих документальных правок срезу исходников, а не к финальному
 состоянию документации.
+
+#### S3-34p. Reproducible cached NativeRegisterV1 corpus and replay
+
+Reuse the exact 1,200 generated inputs and interpreter/eager/candidate
+observations saved by S3-34n. Preserve the S3-34n `SavedCase` v1 format and
+reducer behavior. A separate versioned cache-trace envelope records exact
+inputs, full baseline and cached observations, strategy, execution-context and
+code-dependency bindings, ordered sequence indices, and cumulative
+single-entry cache counters. It contains a fresh-cache corpus sequence for
+eager and demand-flags candidate, plus one explicit retained one-block
+ADD/RAX sequence per strategy. The latter changes incoming RAX and RFLAGS
+between calls and requires an actual cache hit with no additional compilation
+or publication. Do not infer hit-only behavior for the generated multi-block
+corpus; preserve the observed counters for each input.
+
+Replay validates the envelope version/profile, digest, full input bindings,
+source corpus order, state/exit/retirement/budget parity, and exact counters,
+then runs every ordered segment from a new empty cache. Corrupted inputs,
+counter changes, missing steps, unknown fields, and altered digests are
+rejected. A cached mismatch in either the generated or retained-hit segment
+writes a separate versioned failure envelope with the successful prefix,
+failing input, full observations and before/after counters. Its bounded reader
+verifies source identity and digest, replays each prefix step and the failing
+input, and rejects changed or unreproduced outcomes; the gate's explicit local
+fault injection covers save/read/replay for both segment kinds without
+claiming a JIT defect. The host uses the real cached executor and releases each
+cache's resident published handle before ending its segment. Three exact Rust
+gates and Python harness self-checks pin the corpus, replay and failure replay
+identities. Producer and consumer bind the source observations artifact path,
+SHA-256 and recomputed envelope digest, while preserving all prior gate
+identities and the explicit retained hit. This is bounded local correctness/replay evidence only; it changes no
+production API, ISA, cache policy, ABI, or default. Mini, physical x86,
+performance, Stage 2 and owner/MMU remain deferred/outside the slice.
+
+Implementation and final local evidence: [S3-34p report](../reports/STAGE_3_S3-34p_2026-10-31.md).
 
 ### S3-35. Измерить холодное исполнение
 
