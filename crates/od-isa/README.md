@@ -625,3 +625,12 @@ performs the physical MM0/TOP/tag transition only after a successful read.
 Pending x87 states and unsupported encodings are refused; JIT/native remain
 closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bo--bounded-long64-cvttps2pi-mm0rax-memory-profile)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bo-cvttps2pi-mm0rax-memory-profile).
+
+S2-37bp adds exact Long64 `0F 2D 00` CVTPS2PI MM0,[RAX] as a bounded
+interpreter profile. It validates one canonical m64 source span with AC=0,
+then performs one 8-byte read before any state mutation; unaligned reads are
+accepted. Rounding follows MXCSR.RC; masked invalid/inexact lanes update IE/PE.
+The SDM table and Operation pseudocode specify m64/SRC[63:0], which governs
+despite the entry's conflicting 128-bit prose. Other backends remain closed.
+See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bp--bounded-long64-cvtps2pi-mm0rax-memory-profile)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bp-cvtps2pi-mm0rax-memory-profile).

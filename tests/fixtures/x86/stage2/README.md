@@ -7079,3 +7079,21 @@ failure leaves CPU state unchanged. The runner covers the highest valid
 canonical span. Physical x86 acceptance is not claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bo--bounded-long64-cvttps2pi-mm0rax-memory-profile),
 [plan](../../../../docs/plans/STAGE_2.md#s2-37bo--bounded-long64-cvttps2pi-mm0rax-memory-profile),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bo--cvttps2pi-mm0rax-memory-profile).
+
+### S2-37bp CVTPS2PI MM0,[RAX] memory profile
+
+`s2_37bp_cvtps2pi_mm0_memory_rax.case.json` is the literal schema-v2 anchor
+for exact `0F 2D 00`. Its single unaligned m64 contains 1.25 and QNaN under
+round-up MXCSR with clear incoming status flags, demonstrating RC rounding and
+mixed PE/IE generation. Success writes physical MM0 with exponent `ffff`,
+TOP=0 and all tags valid. The SDM operand table identifies xmm/m64 and the
+Operation consumes `SRC[63:0]`, despite the prose's “128-bit memory location”
+phrase; the fixture therefore provides exactly eight source bytes. The
+independent raw-bit oracle and runner matrix exercise all RC modes, invalid
+and fractional-valid lanes, old sticky histories, TOP/tag variation, gates,
+malformed inputs, output tampering and backend denial. ISA execution tests
+provide the one-read and read-failure atomicity evidence, along with span and
+no-read refusal coverage. No physical x86 acceptance is claimed. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bp--bounded-long64-cvtps2pi-mm0rax-memory-profile),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37bp--bounded-long64-cvtps2pi-mm0rax-memory-profile),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bp--cvtps2pi-mm0rax-memory-profile).

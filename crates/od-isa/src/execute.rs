@@ -500,6 +500,7 @@ enum Cvtpi2psExecutionProfile {
     Cvttps2piMm0Xmm1,
     Cvttpd2piMm0Xmm1,
     Cvtps2piMm0Xmm1,
+    Cvtps2piMemoryRax,
     Cvtpd2piMm0Xmm1,
 }
 
@@ -4003,6 +4004,24 @@ pub fn run_with_cvtps2pi_mm0_xmm1_controls(
         config,
         Cvtpi2ExecutionControls::Sse(controls),
         Cvtpi2psExecutionProfile::Cvtps2piMm0Xmm1,
+        stop_requested,
+    )
+}
+
+/// Execute the exact Long64 memory-source CVTPS2PI MM0,[RAX] profile.
+pub fn run_with_cvtps2pi_mm0_memory_rax_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: Cvtpi2psControls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_cvtpi2ps_profile(
+        state,
+        memory,
+        config,
+        Cvtpi2ExecutionControls::Sse(controls),
+        Cvtpi2psExecutionProfile::Cvtps2piMemoryRax,
         stop_requested,
     )
 }
@@ -10041,6 +10060,13 @@ fn step_configured(
                 && instruction.opcode.byte == 0x2c
                 && instruction.prefixes == Prefixes::default()
                 && state.rflags & (1 << 18) == 0)
+            || (instruction.operation == Operation::Cvtps2piMm0MemoryRax
+                && matches!(profile, Cvtpi2psExecutionProfile::Cvtps2piMemoryRax)
+                && instruction.length == 3
+                && instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x2d
+                && instruction.prefixes == Prefixes::default()
+                && state.rflags & (1 << 18) == 0)
             || (instruction.operation == Operation::Cvttpd2piMm0Xmm1
                 && matches!(profile, Cvtpi2psExecutionProfile::Cvttpd2piMm0Xmm1)
                 && instruction.length == 4
@@ -11504,6 +11530,11 @@ fn step_configured(
         {
             sse.mxcsr & !0x0000_ffbf == 0 && sse.mxcsr & 0x0000_1080 == 0x0000_1080
         } else if configured_cvtpi2_profile.is_some_and(|(_, profile)| {
+            matches!(profile, Cvtpi2psExecutionProfile::Cvtps2piMemoryRax)
+        }) && instruction.operation == Operation::Cvtps2piMm0MemoryRax
+        {
+            sse.mxcsr & !0x0000_ffbf == 0 && sse.mxcsr & 0x0000_1080 == 0x0000_1080
+        } else if configured_cvtpi2_profile.is_some_and(|(_, profile)| {
             matches!(
                 profile,
                 Cvtpi2psExecutionProfile::Cvttps2piMm0Xmm1
@@ -12272,6 +12303,14 @@ fn step_configured(
             state.sse.is_some() && state.x87.is_some()
         }
         Operation::Cvttps2piMm0MemoryRax => false,
+        Operation::Cvtps2piMm0MemoryRax
+            if configured_cvtpi2_profile.is_some_and(|(_, profile)| {
+                matches!(profile, Cvtpi2psExecutionProfile::Cvtps2piMemoryRax)
+            }) =>
+        {
+            state.sse.is_some() && state.x87.is_some()
+        }
+        Operation::Cvtps2piMm0MemoryRax => false,
         Operation::Cvttpd2piMm0Xmm1
             if configured_cvtpi2_profile.is_some_and(|(_, profile)| {
                 matches!(profile, Cvtpi2psExecutionProfile::Cvttpd2piMm0Xmm1)
@@ -18478,6 +18517,85 @@ fn step_configured(
             x87.tag_word = 0;
         }
         Operation::Cvttps2piMm0MemoryRax => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        Operation::Cvtps2piMm0MemoryRax
+            if configured_cvtpi2_profile.is_some_and(|(_, profile)| {
+                matches!(profile, Cvtpi2psExecutionProfile::Cvtps2piMemoryRax)
+            }) =>
+        {
+            let (old_mxcsr, x87_pending) = {
+                let sse = state
+                    .sse
+                    .as_ref()
+                    .expect("CVTPS2PI memory SSE state prevalidated");
+                let x87 = state
+                    .x87
+                    .as_ref()
+                    .expect("CVTPS2PI memory x87 state prevalidated");
+                (sse.mxcsr, x87.status_word & 0x80ff != 0)
+            };
+            if old_mxcsr & !0x0000_ffbf != 0
+                || old_mxcsr & 0x0000_1080 != 0x0000_1080
+                || x87_pending
+                || state.rflags & (1 << 18) != 0
+            {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
+            let address = state.gpr[Register::Rax as usize];
+            let Some(last) = address.checked_add(7) else {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            };
+            if !long_decode::canonical(address) || !long_decode::canonical(last) {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            // The Vol. 2A table and operation specify xmm/m64 and SRC[63:0];
+            // only one eight-byte span is architecturally consumed.
+            let mut bytes = [0u8; 8];
+            memory.read(address, context, &mut bytes)?;
+            let raw = [
+                u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+                u32::from_le_bytes(bytes[4..].try_into().unwrap()),
+            ];
+            let rounding = cvtss2si_rounding_mode(old_mxcsr);
+            let mut values = [0i32; 2];
+            let mut new_ie = false;
+            let mut new_pe = false;
+            for lane in 0..2 {
+                let converted = Binary32::from_bits(raw[lane]).to_i32(rounding);
+                let invalid = converted.invalid_operation();
+                new_ie |= invalid;
+                new_pe |= !invalid && converted.inexact();
+                values[lane] = *converted.value();
+            }
+            let sse = state
+                .sse
+                .as_mut()
+                .expect("CVTPS2PI memory SSE state prevalidated");
+            sse.mxcsr = old_mxcsr | u32::from(new_ie) | (u32::from(new_pe) << 5);
+            let x87 = state
+                .x87
+                .as_mut()
+                .expect("CVTPS2PI memory x87 state prevalidated");
+            x87.registers[0][..4].copy_from_slice(&values[0].to_le_bytes());
+            x87.registers[0][4..8].copy_from_slice(&values[1].to_le_bytes());
+            x87.registers[0][8..10].copy_from_slice(&0xffffu16.to_le_bytes());
+            x87.status_word &= !(7 << 11);
+            x87.tag_word = 0;
+        }
+        Operation::Cvtps2piMm0MemoryRax => {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -123009,6 +123127,256 @@ mod swapgs_profile_tests {
             access: AccessKind::Read,
         });
         let result = run_with_cvttps2pi_mm0_memory_rax_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0xa583),
+                context: AccessContext::default(),
+            },
+            Cvtpi2psControls {
+                sse_available: true,
+                cr0_em: false,
+                cr0_ts: false,
+                cr4_osfxsr: true,
+            },
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, 8)]);
+    }
+
+    #[test]
+    fn cvtps2pi_mm0_memory_rax_reads_one_span_and_commits_after_success() {
+        let code = [0x0f, 0x2d, 0x00];
+        for cpl in 0..=3u16 {
+            let mut state = LongModeState::default();
+            state.rip = 0xa500 + u64::from(cpl) * 8;
+            state.cs_selector = Some(cpl);
+            state.gpr[Register::Rax as usize] = 0x1003;
+            state.sse = Some(SseState {
+                xmm: [[0x6b; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let mut x87 = X87State::fixture_seed();
+            x87.status_word = 0x1a00;
+            x87.tag_word = 0xaaaa;
+            let before_x87 = x87.clone();
+            state.x87 = Some(x87);
+            let stop_rip = state.rip + 3;
+            let mut memory = Memory::at(&code, state.rip);
+            memory.bytes[3..11].copy_from_slice(&[0x00, 0x00, 0xc0, 0x3f, 0x01, 0x00, 0xc0, 0x7f]);
+            let result = run_with_cvtps2pi_mm0_memory_rax_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(stop_rip),
+                    context: AccessContext::default(),
+                },
+                Cvtpi2psControls {
+                    sse_available: true,
+                    cr0_em: false,
+                    cr0_ts: false,
+                    cr4_osfxsr: true,
+                },
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::StopAddress);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(state.rip, stop_rip);
+            assert_eq!(state.sse.as_ref().unwrap().mxcsr, 0x1fa1);
+            let after_x87 = state.x87.as_ref().unwrap();
+            assert_eq!(&after_x87.registers[0][..4], &2i32.to_le_bytes());
+            assert_eq!(&after_x87.registers[0][4..8], &i32::MIN.to_le_bytes());
+            assert_eq!(&after_x87.registers[0][8..10], &0xffffu16.to_le_bytes());
+            assert_eq!(after_x87.registers[1..], before_x87.registers[1..]);
+            assert_eq!(after_x87.tag_word, 0);
+            assert_eq!(after_x87.status_word & !(7 << 11), 0x0200);
+            assert_eq!(after_x87.control_word, before_x87.control_word);
+            assert_eq!(
+                after_x87.instruction_pointer,
+                before_x87.instruction_pointer
+            );
+            assert_eq!(after_x87.data_pointer, before_x87.data_pointer);
+            assert_eq!(after_x87.last_opcode, before_x87.last_opcode);
+            assert_eq!(memory.accesses, [(AccessKind::Read, 0x1003, 8)]);
+        }
+
+        for (rax, rflags, mxcsr, x87_status, expect_gp) in [
+            (0x0000_8000_0000_0000, 2, 0x1f80, 0x1800, true), // noncanonical start
+            (0x0000_7fff_ffff_fffc, 2, 0x1f80, 0x1800, true), // crosses canonical end
+            (u64::MAX - 3, 2, 0x1f80, 0x1800, true),          // address addition overflow
+            (0x1000, (1 << 18) | 2, 0x1f80, 0x1800, false),   // AC=1
+            (0x1000, 2, 0x1f80, 0x1801, false),               // pending x87 exception
+            (0x1000, 2, 0x1f00, 0x1800, false),               // IM=0
+            (0x1000, 2, 0x0f80, 0x1800, false),               // PM=0
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0xa550;
+            state.gpr[Register::Rax as usize] = rax;
+            state.rflags = rflags;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr,
+            });
+            let mut x87 = X87State::fixture_seed();
+            x87.status_word = x87_status;
+            x87.tag_word = 0x5555;
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(&code, state.rip);
+            let stop_rip = state.rip + 3;
+            let result = run_with_cvtps2pi_mm0_memory_rax_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(stop_rip),
+                    context: AccessContext::default(),
+                },
+                Cvtpi2psControls {
+                    sse_available: true,
+                    cr0_em: false,
+                    cr0_ts: false,
+                    cr4_osfxsr: true,
+                },
+                || false,
+            );
+            if expect_gp {
+                assert_eq!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector: 13,
+                        error_code: Some(0),
+                        linear_address: None,
+                    })
+                );
+            } else {
+                assert!(matches!(result.exit, RunExit::Unsupported { .. }));
+            }
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        for (controls, vector) in [
+            (
+                Cvtpi2psControls {
+                    sse_available: false,
+                    cr0_em: true,
+                    cr0_ts: true,
+                    cr4_osfxsr: false,
+                },
+                6,
+            ),
+            (
+                Cvtpi2psControls {
+                    sse_available: true,
+                    cr0_em: false,
+                    cr0_ts: true,
+                    cr4_osfxsr: true,
+                },
+                7,
+            ),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0xa560;
+            state.gpr[Register::Rax as usize] = 0x1000;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let mut x87 = X87State::fixture_seed();
+            x87.status_word = 0x1800;
+            state.x87 = Some(x87);
+            let before = state.clone();
+            let mut memory = Memory::at(&code, state.rip);
+            let stop_rip = state.rip + 3;
+            let result = run_with_cvtps2pi_mm0_memory_rax_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(stop_rip),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector,
+                    error_code: None,
+                    linear_address: None,
+                })
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let short = [0x0f, 0x2d];
+        let mut state = LongModeState::default();
+        state.rip = 0xa570;
+        let before = state.clone();
+        let mut truncated = Memory::at(&short, state.rip);
+        truncated.fetch_error = Some((
+            state.rip + 2,
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0),
+                linear_address: Some(state.rip + 2),
+            }),
+        ));
+        let result = run_with_cvtps2pi_mm0_memory_rax_controls(
+            &mut state,
+            &mut truncated,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            Cvtpi2psControls {
+                sse_available: false,
+                cr0_em: true,
+                cr0_ts: true,
+                cr4_osfxsr: false,
+            },
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0),
+                linear_address: Some(before.rip + 2),
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(truncated.accesses.is_empty());
+
+        let mut state = LongModeState::default();
+        state.rip = 0xa580;
+        state.gpr[Register::Rax as usize] = 0x1000;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let mut x87 = X87State::fixture_seed();
+        x87.status_word = 0x1800;
+        state.x87 = Some(x87);
+        let before = state.clone();
+        let mut memory = Memory::at(&code, state.rip);
+        memory.error = Some(MemoryError::Unmapped {
+            address: 0x1000,
+            access: AccessKind::Read,
+        });
+        let result = run_with_cvtps2pi_mm0_memory_rax_controls(
             &mut state,
             &mut memory,
             RunConfig {

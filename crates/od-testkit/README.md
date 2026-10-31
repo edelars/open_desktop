@@ -245,3 +245,11 @@ Strict validation covers SSE gates, supported MXCSR with IM/PM set, no pending
 x87 state, AC=0 and a canonical eight-byte RAX span. See the [CPU
 contract](../../docs/specs/CPU_CONTRACT.md#s2-37bo--bounded-long64-cvttps2pi-mm0rax-memory-profile)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bo-cvttps2pi-mm0rax-memory-profile).
+
+S2-37bp adds `s2-long-cvtps2pi-memory-rax-v1` for exact `0F 2D 00`. Its
+independent schema oracle consumes two raw binary32 lanes from the declared
+8-byte source, implements MXCSR-directed rounding with integer logic, and
+predicts MM0/x87 transition plus sticky IE/PE without host FP or ISA helpers.
+Strict admission requires IM=PM=1, AC=0 and no pending x87 exception. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bp--bounded-long64-cvtps2pi-mm0rax-memory-profile)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bp-cvtps2pi-mm0rax-memory-profile).

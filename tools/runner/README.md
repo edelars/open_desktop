@@ -179,3 +179,13 @@ gates/admission and interpreter-only execution. Direct ISA tests verify that
 invalid spans, AC/pending-x87/MXCSR refusals and a failed data read leave CPU
 state unchanged without a data read on pre-read refusals. Physical x86
 acceptance is separate.
+
+S2-37bp adds exact `CVTPS2PI MM0,[RAX]` (`0F 2D 00`). The literal fixture
+provides one unaligned m64 source; the runner matrix checks MXCSR rounding,
+IE/PE generation and sticky preservation, MM0 transition, gate/admission
+cases, malformed inputs, output tampering and interpreter-only execution.
+Direct ISA tests cover the exact read span and atomic failure behavior. The
+SDM operand table/Operation specify m64 and `SRC[63:0]`, followed here despite
+the contradictory 128-bit prose. Physical x86 acceptance is separate. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bp--bounded-long64-cvtps2pi-mm0rax-memory-profile)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bp-cvtps2pi-mm0rax-memory-profile).

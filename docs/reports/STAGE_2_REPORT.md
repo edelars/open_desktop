@@ -19361,3 +19361,51 @@ p. 3-252; Vol. 3B §25.25.3 Table 25-5 p. 25-23; Vol. 3A §15.2 Table 15-2.
 See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bo--bounded-long64-cvttps2pi-mm0rax-memory-profile),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37bo--bounded-long64-cvttps2pi-mm0rax-memory-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bo-cvttps2pi-mm0rax-memory-profile).
+
+## S2-37bp — CVTPS2PI MM0,[RAX] memory profile
+
+Implemented exact schema-v2 Long64 interpreter profile `0F 2D 00` with full
+three-byte fetch, SSE bit-25/EM/OSFXSR #UD followed by TS #NM in bounded local
+priority order, CPL0–3 support, and one eight-byte canonical RAX source read.
+AC=0 is required and unaligned m64 is accepted. Profile admission requires
+MXCSR supported mask `0xffbf`, IM=PM=1, and no pending x87 state under the
+strict `FSW & 0x80ff == 0` rule. Pending #MF delivery is not implemented.
+MXCSR.RC rounds raw binary32 lanes; masked invalid lanes set IE and produce the
+integer indefinite value, valid inexact lanes set PE, and incoming MXCSR
+status/control bits are preserved. No DE is raised. Success writes physical
+MM0 and exponent word `ffff`, sets TOP=0/all tags valid and preserves remaining
+x87 state. No CPU mutation occurs before the source read succeeds. Native/JIT/
+C ABI remain fail-closed.
+
+Intel SDM Rev. 093 Vol. 2A's operand table says `xmm/m64` and Operation
+consumes `SRC[63:0]`, while one description sentence calls the memory operand
+128-bit. The implementation follows the operand table and operation and reads
+exactly eight bytes. The independent oracle uses raw f32 bits and integer
+arithmetic, without host FP or production conversion helpers. The literal
+fixture and runner matrix cover all RC modes, generated IE|PE from clear flags,
+old IE/PE preservation, TOP/tag variation, gates, malformed fixtures,
+tampered output and backend denial. Direct ISA tests cover one successful
+unaligned read, canonical-span refusals, no-read preconditions, complete-fetch
+ordering and rollback after a failed read. Physical x86 acceptance was not
+performed.
+
+Verification passed: focused `cargo test -p od-isa
+cvtps2pi_mm0_memory_rax --offline` (2 tests) and focused `cargo test -p
+od-runner cvtps2pi_mm0_memory_rax_rounds_memory_lanes_and_transitions_mmx_state
+--offline` (1 matrix test); full `cargo test -p od-testkit --offline` (444
+tests); full `cargo test -p od-runner --offline` (112 unit + 445 fixture
+tests); `cargo check --workspace --all-targets --offline`; `cargo fmt --all
+-- --check`; `python3 tools/check_layout.py` (48 required directories, 6 crate
+scaffolds, 14 instruction scopes); and `git diff --check`. The native fixture
+denial test is Linux-only and was cfg-disabled on this macOS host; the
+cross-platform native local-only classification test passed; the profile's
+fixture-denial test is Linux-only and cfg-disabled on this macOS host. Twelve
+S2-37bp documentation target/heading links passed. `graphify update .`
+completed with 10,136 nodes, 21,443 edges and 319 communities; the extractor
+reported the existing `host_abi.h` parse warning and 13 files without symbols,
+and community labels need refresh. No physical x86 acceptance was performed.
+Normative sources: Intel SDM
+Rev. 093 Vol. 2A CVTPS2PI p. 3-231; Vol. 3B §25.25.3 Table 25-5 p. 25-23;
+Vol. 3A §15.2 Table 15-2. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bp--bounded-long64-cvtps2pi-mm0rax-memory-profile),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37bp--bounded-long64-cvtps2pi-mm0rax-memory-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bp-cvtps2pi-mm0rax-memory-profile).

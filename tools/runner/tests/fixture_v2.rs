@@ -69,6 +69,8 @@ const CVTPI2PS_XMM0_MM1: &[u8] = include_bytes!(
 );
 const CVTTPS2PI_MM0_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37bo_cvttps2pi_mm0_memory_rax.case.json");
+const CVTPS2PI_MM0_MEMORY_RAX: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_37bp_cvtps2pi_mm0_memory_rax.case.json");
 const FS_BASE_WRMSR_FS_LOAD: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_26f_fs_base_wrmsr_fs_load.case.json");
 const FS_BASE_RDMSR: &[u8] =
@@ -23032,6 +23034,220 @@ fn cvttps2pi_mm0_memory_rax_truncates_memory_lanes_and_transitions_mmx_state() {
         ));
     }
     let (input, result) = run(CVTTPS2PI_MM0_MEMORY_RAX, "interpreter", 0);
+    let mut tampered = result.clone();
+    let Observation::Available { value: snapshot } = &mut tampered.snapshot else {
+        panic!("snapshot")
+    };
+    snapshot.state.x87.as_mut().unwrap().registers[0] = "00000000000000000000".into();
+    assert!(od_testkit::v2::compare(&input, &result, &tampered).is_err());
+}
+
+#[test]
+fn cvtps2pi_mm0_memory_rax_rounds_memory_lanes_and_transitions_mmx_state() {
+    use od_testkit::v2::Profile;
+    use od_testkit::v2::decode_bytes as decode_fixture_bytes;
+
+    let fixture = Fixture::from_json(CVTPS2PI_MM0_MEMORY_RAX).unwrap().fixture;
+    assert_eq!(fixture.profile, Profile::LongCvtps2piMemoryRaxV1);
+    let exercise = |mut case: Fixture, low: u32, high: u32, rc: u32, top: u32, tags: u64| {
+        case.case_id = format!("s2_37bp_{low:08x}_{high:08x}_rc{rc}_t{top}_g{tags:04x}");
+        case.memory[1].initial_bytes_hex = [low.to_le_bytes(), high.to_le_bytes()]
+            .concat()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        case.initial_state.sse.as_mut().unwrap().mxcsr =
+            HexU64((0x0000_5f80 & !(3 << 13)) | (u64::from(rc) << 13));
+        let x87 = case.initial_state.x87.as_mut().unwrap();
+        x87.status_word = HexU64((x87.status_word.get() & !(7 << 11)) | (u64::from(top) << 11));
+        x87.tag_word = HexU64(tags);
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let Observation::Available { value: snapshot } = &result.snapshot else {
+            panic!("snapshot")
+        };
+        let x87 = snapshot.state.x87.as_ref().unwrap();
+        assert!(x87.registers[0].ends_with("ffff"));
+        assert_eq!(x87.status_word.get() >> 11 & 7, 0);
+        assert_eq!(x87.tag_word.get(), 0);
+    };
+
+    let values = [
+        0x0000_0000u32, // +0
+        0x8000_0000,    // -0
+        0x3fe0_0000,    // +1.75, PE
+        0xbfe0_0000,    // -1.75, PE
+        0x3fc0_0000,    // +1.5, PE
+        0xbfc0_0000,    // -1.5, PE
+        0x4f00_0000,    // +2^31, IE
+        0xcf00_0000,    // -2^31, valid exact boundary
+        0x4eff_ffff,    // largest float below +2^31
+        0xcf00_0001,    // below -2^31, IE
+        0x7fc0_0001,    // QNaN, IE
+        0xffc0_0001,    // negative QNaN, IE
+        0x7f80_0001,    // SNaN, IE
+        0x7f80_0000,    // +infinity, IE
+        0xff80_0000,    // -infinity, IE
+        0x0000_0001,    // positive subnormal, PE without DE
+        0x8000_0001,    // negative subnormal, PE without DE
+    ];
+    for rc in 0..4u32 {
+        for (low, high) in values.iter().copied().zip(values.iter().copied().rev()) {
+            exercise(fixture.clone(), low, high, rc, 3, 0xaaaa);
+        }
+        for top in 0..8u32 {
+            for tags in [0x0000u64, 0x5555, 0xaaaa, 0xffff] {
+                exercise(fixture.clone(), 0x3fc0_0000, 0x7fc0_0001, rc, top, tags);
+            }
+        }
+    }
+    exercise(fixture.clone(), 0x3f80_0000, 0xcf00_0000, 0, 0, 0xffff);
+
+    // The literal fixture starts with clear status flags, so this independently
+    // proves that fractional-valid + invalid lanes generate both IE and PE.
+    let (input, mixed_result) = run(CVTPS2PI_MM0_MEMORY_RAX, "interpreter", 0);
+    od_testkit::v2::compare(&input, &mixed_result, &mixed_result).unwrap();
+    let Observation::Available {
+        value: mixed_snapshot,
+    } = &mixed_result.snapshot
+    else {
+        panic!("snapshot")
+    };
+    assert_eq!(
+        mixed_snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+        0x21
+    );
+    let mm0 = &mixed_snapshot.state.x87.as_ref().unwrap().registers[0];
+    assert_eq!(
+        &decode_fixture_bytes(mm0).unwrap()[..4],
+        &2u32.to_le_bytes()
+    );
+
+    for (rc, expected) in [(0u32, 1i32), (1, 1), (2, 2), (3, 1)] {
+        let mut rounding = fixture.clone();
+        rounding.case_id = format!("s2_37bp_rounding_rc{rc}");
+        rounding.memory[1].initial_bytes_hex = "0000a03f0000803f".into(); // 1.25, +1
+        rounding.initial_state.sse.as_mut().unwrap().mxcsr =
+            HexU64((0x0000_5f80 & !(3 << 13)) | (u64::from(rc) << 13));
+        let (input, result) = run(&rounding.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let Observation::Available { value: snapshot } = &result.snapshot else {
+            panic!("snapshot")
+        };
+        let bytes =
+            decode_fixture_bytes(&snapshot.state.x87.as_ref().unwrap().registers[0]).unwrap();
+        assert_eq!(&bytes[..4], &expected.to_le_bytes());
+        assert_eq!(
+            snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+            0x20
+        );
+    }
+
+    // Exact lanes must preserve all four combinations of incoming IE/PE.
+    for old_status in [0x00u64, 0x01, 0x20, 0x21] {
+        let mut exact = fixture.clone();
+        exact.case_id = format!("s2_37bp_exact_sticky_{old_status:02x}");
+        exact.memory[1].initial_bytes_hex = "000080bf0000803f".into(); // -1, +1
+        let incoming_mxcsr = 0x0000_5f80 | old_status;
+        exact.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(incoming_mxcsr);
+        let (input, result) = run(&exact.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let Observation::Available { value: snapshot } = &result.snapshot else {
+            panic!("snapshot")
+        };
+        assert_eq!(
+            snapshot.state.sse.as_ref().unwrap().mxcsr.get(),
+            incoming_mxcsr
+        );
+    }
+
+    let mut upper_canonical = fixture.clone();
+    upper_canonical.case_id = "s2_37bp_upper_canonical_span".into();
+    upper_canonical.initial_state.gpr[0] = HexU64(0x0000_7fff_ffff_fff8);
+    upper_canonical.memory[1].guest_address = HexU64(0x0000_7fff_ffff_fff8);
+    let (input, result) = run(&upper_canonical.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+
+    for (address, ac) in [(0x0000_7fff_ffff_fffc, false), (0x0000_2003, true)] {
+        let mut invalid = fixture.clone();
+        invalid.initial_state.gpr[0] = HexU64(address);
+        invalid.memory[1].guest_address = HexU64(address);
+        if ac {
+            invalid.initial_state.rflags = HexU64(1 << 18 | 2);
+        }
+        assert!(
+            invalid.validate().is_err(),
+            "accepted address/AC: {address:#x}"
+        );
+    }
+    for mxcsr in [0x0000_0f80, 0x0000_1e00] {
+        let mut invalid = fixture.clone();
+        invalid.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(invalid.validate().is_err(), "accepted MXCSR {mxcsr:#x}");
+    }
+    let mut pending = fixture.clone();
+    pending.initial_state.x87.as_mut().unwrap().status_word = HexU64(1);
+    assert!(pending.validate().is_err(), "accepted pending x87 state");
+    let mut foreign = fixture.clone();
+    foreign.cvtpi2ps_memory_controls = foreign.cvtps2pi_memory_controls;
+    assert!(
+        foreign.validate().is_err(),
+        "accepted CVTPI2PS memory controls"
+    );
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
+    let mut foreign = fixture.clone();
+    foreign.cvttps2pi_memory_controls = foreign.cvtps2pi_memory_controls;
+    assert!(
+        foreign.validate().is_err(),
+        "accepted CVTTPS2PI memory controls"
+    );
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
+    for code in [
+        "0f2dc1", "0f2dc2", "0f2d01", "0f2d4000", "0f2d0400", "660f2d00", "f30f2d00", "400f2d00",
+        "0f2d00c3",
+    ] {
+        let mut invalid = fixture.clone();
+        invalid.memory[0].initial_bytes_hex = code.into();
+        invalid.memory[0].length = (code.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(code.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (code.len() / 2) as u64,
+        ));
+        assert!(invalid.validate().is_err(), "accepted {code}");
+    }
+    for (sse_available, cr0_em, cr4_osfxsr, cr0_ts, vector) in [
+        (false, false, true, false, 6),
+        (true, true, true, true, 6),
+        (true, false, false, true, 6),
+        (true, false, true, true, 7),
+    ] {
+        let mut case = fixture.clone();
+        let controls = case.cvtps2pi_memory_controls.as_mut().unwrap();
+        controls.sse_available = sse_available;
+        controls.cr0_em = cr0_em;
+        controls.cr4_osfxsr = cr4_osfxsr;
+        controls.cr0_ts = cr0_ts;
+        case.expected_exit = ExpectedExit::Exception;
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let Observation::Available { value: snapshot } = &result.snapshot else {
+            panic!("snapshot")
+        };
+        let Observation::Available {
+            value: Some(exception),
+        } = &snapshot.exception
+        else {
+            panic!("exception")
+        };
+        assert_eq!(exception.vector, vector);
+    }
+    for backend in ["jit", "native"] {
+        assert!(matches!(
+            run(CVTPS2PI_MM0_MEMORY_RAX, backend, 4).1.outcome,
+            Outcome::Unsupported { .. }
+        ));
+    }
+    let (input, result) = run(CVTPS2PI_MM0_MEMORY_RAX, "interpreter", 0);
     let mut tampered = result.clone();
     let Observation::Available { value: snapshot } = &mut tampered.snapshot else {
         panic!("snapshot")

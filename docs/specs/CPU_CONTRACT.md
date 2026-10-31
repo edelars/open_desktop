@@ -14230,3 +14230,40 @@ Normative sources: Intel SDM Rev. 093 Vol. 2A CVTTPS2PI p. 3-252; Vol. 3B
 plan](../plans/STAGE_2.md#s2-37bo--bounded-long64-cvttps2pi-mm0rax-memory-profile),
 [report](../reports/STAGE_2_REPORT.md#s2-37bo--cvttps2pi-mm0rax-memory-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bo-cvttps2pi-mm0rax-memory-profile).
+
+## S2-37bp — bounded Long64 CVTPS2PI MM0,[RAX] memory profile
+
+The schema-v2 interpreter profile admits exact `0F 2D 00`, Long64, one
+instruction, budget=1 and stop RIP=entry+3. Fetch all three bytes before #UD
+for unavailable SSE (CPUID bit 25), CR0.EM or CR4.OSFXSR, then #NM for
+CR0.TS. This #UD-before-#NM ordering is bounded local policy. CPL0–3 are
+accepted.
+
+Read exactly one little-endian 8-byte m64 from RAX. The complete span must be
+canonical48; AC=0 is required and unaligned m64 is accepted. Require supported
+MXCSR bits within `0xffbf`, IM=PM=1, and `FSW & 0x80ff == 0`; pending x87
+exceptions are rejected at profile admission and #MF delivery is not modeled.
+Convert both raw binary32 lanes according to MXCSR.RC. Masked invalid lanes
+produce `0x80000000` and set sticky IE; valid inexact lanes set sticky PE.
+Preserve old MXCSR status/control bits and do not raise DE. The executor does
+not mutate CPU state until the single source read succeeds; read failure leaves
+the state unchanged. On success store both i32 values in physical MM0, set its
+exponent bits 79:64 to `ffff`, set TOP=0/all tags valid and preserve other x87
+state. JIT/native/C ABI and broader forms remain closed.
+
+The Rev. 093 Vol. 2A entry's operand table specifies `xmm/m64`, and its
+Operation pseudocode consumes `SRC[63:0]`, while a description sentence says
+“128-bit memory location.” This bounded profile follows the table and operation
+definition and reads eight bytes, not sixteen. The independent oracle uses raw
+bits and integer arithmetic, without host FP or production conversion helpers.
+The literal fixture/runner cover all RC modes, generated IE|PE from clear
+flags, preservation of incoming IE/PE, representative TOP/tag states, gate and
+malformed-input cases, tampered output and backend denial. Direct ISA tests
+cover span failures, no-read refusals, full fetch, successful unaligned access
+and read-failure rollback. No physical x86 acceptance is claimed.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTPS2PI p. 3-231; Vol. 3B
+§25.25.3 Table 25-5 p. 25-23; Vol. 3A §15.2 Table 15-2. See the [Stage 2
+plan](../plans/STAGE_2.md#s2-37bp--bounded-long64-cvtps2pi-mm0rax-memory-profile),
+[report](../reports/STAGE_2_REPORT.md#s2-37bp--cvtps2pi-mm0rax-memory-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bp-cvtps2pi-mm0rax-memory-profile).
