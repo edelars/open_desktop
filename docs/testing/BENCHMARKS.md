@@ -611,12 +611,13 @@ This profile exercises supported cache APIs only. It does not demonstrate
 production owner notification, guest-write SMC, active-code modification,
 fault cleanup, concurrent arenas, SMP, or leak-free behavior. Mini checks
 remain deferred to the end of Stage 3. The v4 run1 completed 29,682,315 epochs
-with exact counter totals in 439.482 seconds, below the 660-second target; it
-is valid lifecycle/counter evidence but does not satisfy sustained-duration
-acceptance. Its diagnostic is in
-[`S3-37d report`](../reports/STAGE_3_S3-37d_2026-10-31.md). The v5 methodology
-source review, recalibration, scored runs and independent evidence review are
-pending. Full S3-37 remains open.
+with exact counters in 439.482 seconds, below target; it remains a separate
+lifecycle/counter diagnostic. V5 calibration and run1 passed source and
+independent evidence review. Run1 completed 45,436,794 epochs with exact totals
+in 671.161 seconds and `duration_target_met: true`. The raw v4/v5 JSON and
+limitations are recorded in the [S3-37d report](../reports/STAGE_3_S3-37d_2026-10-31.md)
+and its [raw data](../reports/data/stage3/s3-37d/). Two of three v5 scored
+processes remain; Mini checks stay deferred and full S3-37 remains open.
 
 Recorded trace дополняется ограниченными synthetic-сценариями:
 1/8/64/512/4096 keys и observed unique count, hot loops на 1/8 keys, reverse

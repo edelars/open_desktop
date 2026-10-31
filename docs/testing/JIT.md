@@ -1279,9 +1279,10 @@ continues. The report uses bounded checkpoints and separates current occupancy
 from high-water values. RSS is process-wide auxiliary evidence only. This does
 not claim guest SMC, owner notification, fault cleanup, concurrent arenas,
 SMP, or leak-free behavior. Three sequential release processes are planned in
-a Stage2-quiet window. The v4 run1 completed 29,682,315 epochs with exact
-counters in 439.482 seconds, below the 660-second target. It is useful for
-lifecycle/counter evidence but does not meet sustained-duration acceptance;
-see the [S3-37d diagnostic](../reports/STAGE_3_S3-37d_2026-10-31.md). V5 source
-review, recalibration, scored runs and independent evidence review remain
-pending. Mini stays deferred until Stage 3 ends.
+a Stage2-quiet window. V5 calibration and run1 passed source and independent
+evidence review. Run1 completed 45,436,794 epochs with exact totals in 671.161
+seconds and `duration_target_met: true`; two of three scored processes remain.
+The earlier v4 run1 completed 29,682,315 epochs in 439.482 seconds, below
+target, and remains separate diagnostic evidence. Raw JSON, limitations and
+review status are in the [S3-37d report](../reports/STAGE_3_S3-37d_2026-10-31.md).
+Mini stays deferred until Stage 3 ends.

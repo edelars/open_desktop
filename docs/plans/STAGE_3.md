@@ -3130,12 +3130,13 @@ is bounded by at most 128 aggregate checkpoints. RSS is auxiliary only.
 
 Keep three scored release processes sequential in a Stage2-quiet window. Record
 the calibration, actual elapsed time, raw JSON, and independent source/evidence
-review. Overlapped attempts are inconclusive. V4 run1 completed 29,682,315
-epochs and exact counters in 439.482 seconds, below the planned 660-second
-minimum; it remains lifecycle/counter evidence but does not satisfy sustained
-duration acceptance. See the
-[S3-37d diagnostic](../reports/STAGE_3_S3-37d_2026-10-31.md). V5 source review,
-recalibration, scored runs and independent evidence review remain pending.
+review. Overlapped attempts are inconclusive. V5 calibration and run1 passed
+source and independent evidence review. Run1 completed 45,436,794 epochs with
+exact counters in 671.161 seconds and met the 660-second minimum; two of three
+scored runs remain. V4 run1 completed 29,682,315 epochs and exact counters in
+439.482 seconds, below target; it remains separate lifecycle/counter
+diagnostic evidence. See the
+[S3-37d report](../reports/STAGE_3_S3-37d_2026-10-31.md) and its raw data.
 This supported-API resource stress does not claim production SMC/owner
 notification, faults, concurrent arenas, SMP, or leak-free behavior. Mini
 remains deferred to the end of Stage 3; owner/MMU and Stage 2 are outside this
