@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последнее локальное подзадание S2-37be добавило canonical CVTSD2SS XMM register-pair interpreter profile: SSE2-gated scalar binary64-to-binary32 narrowing, запись только destination.low32 и сохранение high96, MXCSR rounding/FTZ и atomic faults. Профиль требует OM=UM=1; memory forms и physical acceptance остаются открытыми. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. S2-37bc ранее добавило canonical ADDSS XMM register-pair profile для SSE-gated scalar binary32 addition с сохранением high96. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последнее локальное подзадание S2-37bf добавило точный memory-only CVTPI2PD profile: только `66 0F 2A 00`, один 8-byte read по canonical RAX, точная конверсия двух signed i32 в binary64 XMM0, без изменения MXCSR/x87 и с условием AC=0. S2-37be ранее добавило canonical CVTSD2SS XMM register-pair interpreter profile с MXCSR rounding/FTZ и atomic faults. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. S2-37bc ранее добавило canonical ADDSS XMM register-pair profile для SSE-gated scalar binary32 addition с сохранением high96. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -6800,7 +6800,7 @@ inventory.
 | CVTPD2DQ | `F2 0F E6 /r` | SSE2 | XMM, m128; 2×f64 → low 2×i32 | 3-214 | S2-37ah, bounded register-only |
 | CVTPD2PI | `66 0F 2D /r` | SSE2 | XMM, m128 → mm; 2×f64 → 2×i32 | 3-218 | missing |
 | CVTPD2PS | `66 0F 5A /r` | SSE2 | XMM, m128; 2×f64 → low 2×f32 | 3-219 | S2-37bd, bounded register-only |
-| CVTPI2PD | `66 0F 2A /r` | SSE2 | mm/m64 → XMM; 2×i32 → 2×f64 | 3-223 | missing |
+| CVTPI2PD | `66 0F 2A /r` | SSE2 | mm/m64 → XMM; 2×i32 → 2×f64 | 3-223 | S2-37bf, exact memory-only `[RAX]` form |
 | CVTPI2PS | `NP 0F 2A /r` | SSE | mm/m64 → XMM; 2×i32 → low 2×f32 | 3-224 | missing |
 | CVTPS2DQ | `66 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-225 | S2-37af, bounded register-only |
 | CVTPS2PD | `NP 0F 5A /r` | SSE2 | m64; low 2×f32 → 2×f64 | 3-228 | S2-37u, bounded register-only |
@@ -14298,3 +14298,14 @@ The scalar conversion snapshots source.low64 before writing, converts binary64 t
 The independent schema-v2 oracle uses raw integer classification and rounding, separate from the production helper and host floating point. Local tests cover all pairs and aliases, source/destination poison, all RC/tie and normal/subnormal boundaries, FTZ, overflow, QNaN/SNaN sign/payload, DE/IE/PE masks and sticky status, atomic faults, gates/fetch/CPL/no-callbacks, malformed encodings, result/schema validation and JIT/native denial. Focused unit/integration checks passed; full workspace, layout, formatting and Graphify results are recorded in the stage report.
 
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSD2SS pp. 3-234–3-235. The Type 3/Table 2-20 reference on p. 3-235 is for VEX forms and is not applied to this legacy form. Generic SSE2 gates and exception behavior use Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3, Vol. 3A Event 19/Table 7-8, and Intel Floating-Point Reference Sheet v2.13 p.2. This profile does not claim memory forms, physical acceptance, or completion of parent S2-37/S2-38.
+
+
+#### S2-37bf — canonical Long64 CVTPI2PD memory-only RAX
+
+Implemented interpreter-only schema-v2 profile `s2-long-cvtpi2pd-memory-rax-v1` for the exact four-byte form `66 0F 2A 00`; it executes one instruction with budget 1 and stop RIP=entry+4. All register-source, alternate ModR/M/addressing, REX, additional/reordered prefixes, VEX/EVEX, trailing bytes and non-Long64 forms are refused. Full instruction fetch has priority over SSE2-unavailable/CR0.EM/CR4.OSFXSR #UD, followed by CR0.TS #NM, and all gates precede the single data read.
+
+With AC clear and reserved MXCSR bits clear under supported mask `0x0000ffbf`, the interpreter reads exactly one eight-byte span from canonical48 `[RAX..RAX+7]`, decodes two little-endian signed i32 lanes, and converts them exactly to XMM0.low64/high64. It ignores old XMM0 and preserves all other CPU state, including MXCSR and x87 tags/TOP; this memory-source operation does not deliver a pending x87 exception and raises no SIMD FP exception. It writes no memory. AC-set is outside the profile. An injected local read failure rolls back locally; guest #PF delivery is not claimed. JIT/native/C ABI/fragment/generic dispatch remain denied.
+
+The independent schema oracle builds binary64 bits using integer operations. Decoder/interpreter tests and a literal schema-v2 runner fixture cover ±0/±1, i32 extrema, 2^24 boundaries, asymmetric lanes, NaN-shaped integers, arbitrary/pending x87 state, exact read size/count, canaries, unaligned data with AC clear, canonical overflow, local read failure, gate/fetch ordering, STOP/budget, malformed/tampered metadata/results and backend denial. `cargo test -p od-isa cvtpi2pd --offline`, `cargo test -p od-runner cvtpi2pd_memory_profile --offline`, formatting, workspace check, layout validation, diff check and Graphify update passed. The Graphify extractor reports the existing parse warning for `include/open_desktop/host_abi.h` and 13 files without symbols. Physical x86 acceptance remains open.
+
+Normative source: Intel SDM Rev. 093 Vol. 2A CVTPI2PD p. 3-223 and Vol. 1 SSE2/CR0/CR4 prerequisite and floating-point state rules. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37bf--canonical-long64-cvtpi2pd-memory-only-rax), [report](../reports/STAGE_2_REPORT.md#s2-37bf--cvtpi2pd-memory-interpreter-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bf-cvtpi2pd-memory-rax-profile).

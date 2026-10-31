@@ -47,6 +47,8 @@ const CVTPD2PS_REGISTER_PAIR: &[u8] =
 const CVTSD2SS_REGISTER_PAIR: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37be_cvtsd2ss_asymmetric_register_pair.case.json"
 );
+const CVTPI2PD_MEMORY_RAX: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_37bf_cvtpi2pd_memory_rax.case.json");
 const FS_BASE_WRMSR_FS_LOAD: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_26f_fs_base_wrmsr_fs_load.case.json");
 const FS_BASE_RDMSR: &[u8] =
@@ -22484,6 +22486,104 @@ fn cvtsd2ss_register_pairs_rounding_ftz_exceptions_and_denial() {
     }
 
     let (input, result) = run(CVTSD2SS_REGISTER_PAIR, "interpreter", 0);
+    let mut tampered = result.clone();
+    let Observation::Available { value: snapshot } = &mut tampered.snapshot else {
+        panic!("snapshot")
+    };
+    snapshot.state.sse.as_mut().unwrap().xmm[0].replace_range(..2, "ff");
+    assert!(od_testkit::v2::compare(&input, &result, &tampered).is_err());
+}
+
+#[test]
+fn cvtpi2pd_memory_profile_converts_two_signed_words_and_rejects_other_backends() {
+    let fixture = Fixture::from_json(CVTPI2PD_MEMORY_RAX).unwrap().fixture;
+    for (low, high) in [
+        (0, 1),
+        (-1, 1),
+        (i32::MIN, i32::MAX),
+        (1 << 24, (1 << 24) + 1),
+        (-(1 << 24), -((1 << 24) + 1)),
+        (0x7f80_0001, 0x7fc0_0001),
+    ] {
+        for rc in 0..4u32 {
+            let mut case = fixture.clone();
+            case.case_id = format!("s2_37bf_{low}_{high}_rc{rc}");
+            case.memory[1].initial_bytes_hex = [low.to_le_bytes(), high.to_le_bytes()]
+                .concat()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            let mxcsr = 0x0000_ffbf ^ (rc << 13);
+            case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(u64::from(mxcsr));
+            let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+        }
+    }
+
+    for (sse2_available, cr0_em, cr4_osfxsr, cr0_ts, vector) in [
+        (false, false, true, false, 6),
+        (true, true, true, true, 6),
+        (true, false, false, true, 6),
+        (true, false, true, true, 7),
+    ] {
+        let mut case = fixture.clone();
+        let controls = case.cvtpi2pd_memory_controls.as_mut().unwrap();
+        controls.sse2_available = sse2_available;
+        controls.cr0_em = cr0_em;
+        controls.cr4_osfxsr = cr4_osfxsr;
+        controls.cr0_ts = cr0_ts;
+        case.expected_exit = ExpectedExit::Exception;
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let Observation::Available { value: snapshot } = &result.snapshot else {
+            panic!("snapshot")
+        };
+        let Observation::Available {
+            value: Some(exception),
+        } = &snapshot.exception
+        else {
+            panic!("exception")
+        };
+        assert_eq!(exception.vector, vector);
+    }
+
+    for backend in ["jit", "native"] {
+        assert!(matches!(
+            run(CVTPI2PD_MEMORY_RAX, backend, 4).1.outcome,
+            Outcome::Unsupported { .. }
+        ));
+    }
+
+    for code in [
+        "660f2a00c3",
+        "660f2a01",
+        "66400f2a00",
+        "f20f2a00",
+        "660f2ac0",
+    ] {
+        let mut invalid = fixture.clone();
+        invalid.memory[0].initial_bytes_hex = code.into();
+        invalid.memory[0].length = (code.len() / 2) as u32;
+        invalid.memory[0].comparison_mask_hex = "ff".repeat(code.len() / 2);
+        invalid.stop_rip = Some(HexU64(
+            invalid.initial_state.rip.get() + (code.len() / 2) as u64,
+        ));
+        assert!(invalid.validate().is_err(), "accepted {code}");
+    }
+    let mut invalid = fixture.clone();
+    invalid.initial_state.rflags = HexU64(invalid.initial_state.rflags.get() | (1 << 18));
+    assert!(invalid.validate().is_err(), "accepted alignment checking");
+    let mut invalid = fixture.clone();
+    invalid.initial_state.gpr[0] = HexU64(0x0000_7fff_ffff_ffff);
+    invalid.memory[1].guest_address = invalid.initial_state.gpr[0];
+    assert!(
+        invalid.validate().is_err(),
+        "accepted canonical-range overflow"
+    );
+    let mut invalid = fixture.clone();
+    invalid.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x0001_0000);
+    assert!(invalid.validate().is_err(), "accepted reserved MXCSR bits");
+    let (input, result) = run(CVTPI2PD_MEMORY_RAX, "interpreter", 0);
     let mut tampered = result.clone();
     let Observation::Available { value: snapshot } = &mut tampered.snapshot else {
         panic!("snapshot")

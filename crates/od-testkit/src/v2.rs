@@ -316,6 +316,8 @@ pub enum Profile {
     LongCvtss2sdRegistersV1,
     #[serde(rename = "s2-long-cvtsd2ss-registers-v1")]
     LongCvtsd2ssRegistersV1,
+    #[serde(rename = "s2-long-cvtpi2pd-memory-rax-v1")]
+    LongCvtpi2pdMemoryRaxV1,
     #[serde(rename = "s2-long-cvtps2pd-registers-v1")]
     LongCvtps2pdRegistersV1,
     #[serde(rename = "s2-long-comiss-ucomiss-registers-v1")]
@@ -1367,6 +1369,7 @@ impl IntegerState {
                     | Profile::LongSubssRegistersV1
                     | Profile::LongCvtss2sdRegistersV1
                     | Profile::LongCvtsd2ssRegistersV1
+                    | Profile::LongCvtpi2pdMemoryRaxV1
                     | Profile::LongCvtps2pdRegistersV1
                     | Profile::LongComissUcomissRegistersV1
                     | Profile::LongCmpssRegistersV1
@@ -1594,6 +1597,7 @@ impl IntegerState {
                 | Profile::LongSubssRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtsd2ssRegistersV1
+                | Profile::LongCvtpi2pdMemoryRaxV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCmpssRegistersV1
@@ -1772,6 +1776,7 @@ impl IntegerState {
                 | Profile::LongSubssRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtsd2ssRegistersV1
+                | Profile::LongCvtpi2pdMemoryRaxV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCmpssRegistersV1
@@ -2132,6 +2137,7 @@ impl IntegerState {
             | Profile::LongSubssRegistersV1
             | Profile::LongCvtss2sdRegistersV1
             | Profile::LongCvtsd2ssRegistersV1
+            | Profile::LongCvtpi2pdMemoryRaxV1
             | Profile::LongCvtps2pdRegistersV1
             | Profile::LongCvtsi2sdR32ExactV1
             | Profile::LongCvtsi2sdR64ExactV1
@@ -2316,6 +2322,7 @@ impl IntegerState {
                 | Profile::LongSubssRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtsd2ssRegistersV1
+                | Profile::LongCvtpi2pdMemoryRaxV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCmpssRegistersV1
@@ -2512,6 +2519,7 @@ impl IntegerState {
                 | Profile::LongSubssRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtsd2ssRegistersV1
+                | Profile::LongCvtpi2pdMemoryRaxV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCmpssRegistersV1
@@ -2717,6 +2725,7 @@ impl IntegerState {
                 | Profile::LongSubssRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtsd2ssRegistersV1
+                | Profile::LongCvtpi2pdMemoryRaxV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCmpssRegistersV1
@@ -2929,6 +2938,7 @@ impl IntegerState {
                 | Profile::LongSubssRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtsd2ssRegistersV1
+                | Profile::LongCvtpi2pdMemoryRaxV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCmpssRegistersV1
@@ -3771,6 +3781,7 @@ impl IntegerState {
                 | Profile::LongSubssRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtsd2ssRegistersV1
+                | Profile::LongCvtpi2pdMemoryRaxV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCmpssRegistersV1
@@ -3940,6 +3951,7 @@ impl IntegerState {
                 | Profile::LongSubssRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtsd2ssRegistersV1
+                | Profile::LongCvtpi2pdMemoryRaxV1
                 | Profile::LongCvtps2pdRegistersV1
                 | Profile::LongComissUcomissRegistersV1
                 | Profile::LongCmpssRegistersV1
@@ -4244,6 +4256,8 @@ pub struct Fixture {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtsd2ss_controls: Option<Cvtss2sdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cvtpi2pd_memory_controls: Option<Cvtpi2pdControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtps2pd_controls: Option<Cvtps2pdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comiss_ucomiss_controls: Option<ComissUcomissControlSnapshot>,
@@ -4463,6 +4477,15 @@ pub struct Cvtss2sdControlSnapshot {
     pub cr0_ts: bool,
     pub cr4_osfxsr: bool,
     pub cr4_osxmmexcpt: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cvtpi2pdControlSnapshot {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -7480,6 +7503,65 @@ impl Fixture {
                 "only valid for CVTSD2SS register-space profile",
             ));
         }
+        if self.profile == Profile::LongCvtpi2pdMemoryRaxV1 {
+            let _ = self.cvtpi2pd_memory_controls.ok_or_else(|| {
+                invalid(
+                    "cvtpi2pd_memory_controls",
+                    "required by the CVTPI2PD memory profile",
+                )
+            })?;
+            let code = self.memory.iter().find(|region| region.region_id == "code");
+            let data = self.memory.iter().find(|region| region.region_id == "data");
+            let (Some(code), Some(data)) = (code, data) else {
+                return Err(invalid("memory", "CVTPI2PD requires code and data regions"));
+            };
+            let code_bytes = decode_bytes(&code.initial_bytes_hex)?;
+            let start = self.initial_state.rip.get();
+            let address = self.initial_state.gpr[0].get();
+            if code_bytes != [0x66, 0x0f, 0x2a, 0x00]
+                || code.guest_address.get() != start
+                || code.length != 4
+                || !code.permissions.execute
+                || data.guest_address.get() != address
+                || data.length != 8
+                || decode_bytes(&data.initial_bytes_hex)?.len() != 8
+                || !data.permissions.read
+                || self.memory.len() != 2
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(4)
+                || self.initial_state.rflags.get() & (1 << 18) != 0
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+                || address.checked_add(7).is_none()
+                || !canonical48(address)
+                || !canonical48(address + 7)
+            {
+                return Err(invalid(
+                    "memory",
+                    "CVTPI2PD requires exact code, one readable m64 at canonical RAX, AC=0, budget 1, and stop RIP entry+4",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| invalid("state.sse", "CVTPI2PD requires SSE state"))?
+                .mxcsr
+                .get();
+            if mxcsr & !0x0000_ffbf != 0 {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "CVTPI2PD requires supported MXCSR bits",
+                ));
+            }
+        } else if self.cvtpi2pd_memory_controls.is_some() {
+            return Err(invalid(
+                "cvtpi2pd_memory_controls",
+                "only valid for CVTPI2PD memory profile",
+            ));
+        }
         if self.profile == Profile::LongCvtps2pdRegistersV1 {
             let _ = self
                 .cvtps2pd_controls
@@ -8588,6 +8670,10 @@ impl Fixture {
                 Profile::LongCvtsd2ssRegistersV1 => {
                     cvtsd2ss_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
+                Profile::LongCvtpi2pdMemoryRaxV1 => decode_bytes(&code_bytes)
+                    .ok()
+                    .filter(|bytes| bytes == &[0x66, 0x0f, 0x2a, 0x00])
+                    .map(|_| 4),
                 Profile::LongCvtps2pdRegistersV1 => {
                     cvtps2pd_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
@@ -10566,6 +10652,7 @@ impl Fixture {
             subss_controls: None,
             cvtss2sd_controls: None,
             cvtsd2ss_controls: None,
+            cvtpi2pd_memory_controls: None,
             cvtps2pd_controls: None,
             comiss_ucomiss_controls: None,
             cmpss_controls: None,
@@ -10728,6 +10815,8 @@ pub struct Snapshot {
     pub cvtss2sd_controls: Option<Cvtss2sdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtsd2ss_controls: Option<Cvtss2sdControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cvtpi2pd_memory_controls: Option<Cvtpi2pdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtps2pd_controls: Option<Cvtps2pdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -11307,6 +11396,19 @@ impl RunResult {
             return Err(invalid(
                 "snapshot.cvtsd2ss_controls",
                 "only valid for CVTSD2SS profile",
+            ));
+        }
+        if self.profile == Profile::LongCvtpi2pdMemoryRaxV1 {
+            if snapshot.cvtpi2pd_memory_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.cvtpi2pd_memory_controls",
+                    "required by the CVTPI2PD profile",
+                ));
+            }
+        } else if snapshot.cvtpi2pd_memory_controls.is_some() {
+            return Err(invalid(
+                "snapshot.cvtpi2pd_memory_controls",
+                "only valid for CVTPI2PD profile",
             ));
         }
         if self.profile == Profile::LongCvtps2pdRegistersV1 {
@@ -12142,6 +12244,22 @@ impl RunResult {
             }
             if loaded.fixture.profile == Profile::LongCvtsd2ssRegistersV1 {
                 validate_cvtsd2ss_registers_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.cvtpi2pd_memory_controls,
+                value.cvtpi2pd_memory_controls,
+            ) {
+                (Profile::LongCvtpi2pdMemoryRaxV1, Some(input), Some(output))
+                    if input == output => {}
+                (Profile::LongCvtpi2pdMemoryRaxV1, _, _) => {
+                    return Err(FormatError::CaseMismatch("cvtpi2pd_memory_controls"));
+                }
+                (_, None, None) => {}
+                _ => return Err(FormatError::CaseMismatch("cvtpi2pd_memory_controls")),
+            }
+            if loaded.fixture.profile == Profile::LongCvtpi2pdMemoryRaxV1 {
+                validate_cvtpi2pd_memory_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
@@ -17940,6 +18058,120 @@ fn validate_cvtsd2ss_registers_result(
     Ok(())
 }
 
+fn validate_cvtpi2pd_memory_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .cvtpi2pd_memory_controls
+        .ok_or(FormatError::CaseMismatch("cvtpi2pd_memory_controls"))?;
+    let data = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "data")
+        .ok_or(FormatError::CaseMismatch("memory.data"))?;
+    let source = decode_bytes(&data.initial_bytes_hex)?;
+    let low = i32::from_le_bytes(
+        source[..4]
+            .try_into()
+            .map_err(|_| FormatError::CaseMismatch("memory.data"))?,
+    );
+    let high = i32::from_le_bytes(
+        source[4..]
+            .try_into()
+            .map_err(|_| FormatError::CaseMismatch("memory.data"))?,
+    );
+    let gate_vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    if !matches!(
+        (gate_vector.is_some(), fixture.expected_exit),
+        (true, ExpectedExit::Exception) | (false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("CVTPI2PD expected exit"));
+    }
+    let mut expected_state = fixture.initial_state.clone();
+    if gate_vector.is_none() {
+        let sse = expected_state
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        let low64 = independent_i32_to_f64(low);
+        let high64 = independent_i32_to_f64(high);
+        let mut xmm0 = [0u8; 16];
+        xmm0[..8].copy_from_slice(&low64.to_le_bytes());
+        xmm0[8..].copy_from_slice(&high64.to_le_bytes());
+        sse.xmm[0] = crate::memory::encode_bytes(&xmm0);
+        expected_state.rip = HexU64(
+            fixture
+                .initial_state
+                .rip
+                .get()
+                .checked_add(4)
+                .ok_or(FormatError::CaseMismatch("CVTPI2PD stop overflow"))?,
+        );
+    }
+    let expected_memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected_state
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != expected_memory
+    {
+        return Err(FormatError::CaseMismatch("CVTPI2PD output state"));
+    }
+    let expected_count = u64::from(gate_vector.is_none());
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(expected_count),
+        })
+    {
+        return Err(FormatError::CaseMismatch("CVTPI2PD retirement count"));
+    }
+    match (gate_vector, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == Observation::Unavailable {
+                    reason: "exception has no architectural error code".into(),
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("CVTPI2PD outcome/exception")),
+    }
+    Ok(())
+}
+
+fn independent_i32_to_f64(value: i32) -> u64 {
+    if value == 0 {
+        return 0;
+    }
+    let magnitude = u64::from(value.unsigned_abs());
+    let top = 63 - magnitude.leading_zeros() as u64;
+    let sign = u64::from(value < 0) << 63;
+    let exponent = (1023 + top) << 52;
+    let fraction = (magnitude << (52 - top)) & ((1u64 << 52) - 1);
+    sign | exponent | fraction
+}
+
 fn validate_cvtps2pd_registers_result(
     loaded: &LoadedFixture,
     result: &RunResult,
@@ -19838,6 +20070,10 @@ fn invalid(field: &'static str, reason: &str) -> FormatError {
         field,
         reason: reason.into(),
     }
+}
+
+fn canonical48(address: u64) -> bool {
+    (address as i64) >> 47 == 0 || (address as i64) >> 47 == -1
 }
 
 /// Exact DB/DF indexed register bytes, optionally followed by FNSTSW AX.

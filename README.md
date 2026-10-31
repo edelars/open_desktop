@@ -140,3 +140,9 @@ covers all 256 XMM pairs, FTZ/rounding and atomic SIMD exceptions; JIT/native,
 memory forms and physical acceptance remain closed. See the [CPU contract](docs/specs/CPU_CONTRACT.md#s2-37be--canonical-long64-cvtsd2ss-xmm-register-pairs),
 [Stage 2 plan](docs/plans/STAGE_2.md#s2-37be--canonical-long64-cvtsd2ss-xmm-register-pairs)
 and [Stage 2 report](docs/reports/STAGE_2_REPORT.md#s2-37be--cvtsd2ss-register-pair-interpreter-profile).
+
+The local-only S2-37bf `CVTPI2PD` profile accepts only legacy `66 0F 2A 00`,
+reads one m64 from canonical RAX and writes two exact signed-i32 binary64 lanes
+to XMM0. It preserves MXCSR and x87 state, requires AC=0, and remains
+interpreter-only; other address forms, JIT/native execution and physical
+acceptance are outside the profile.

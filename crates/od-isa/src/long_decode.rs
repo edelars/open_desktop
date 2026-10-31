@@ -1078,6 +1078,8 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only legacy `66 0F 2A 00` memory-source CVTPI2PD form.
+    Cvtpi2pdMemoryRax,
     /// Local-only legacy `0F 5A /r` packed binary32-to-binary64 XMM form.
     Cvtps2pdRegister {
         destination: u8,
@@ -3407,6 +3409,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         .rex
                         .is_some_and(|rex| matches!(rex, 0x41 | 0x44 | 0x45))
                     && prefix_bytes[1] == prefixes.rex.unwrap());
+        let cvtpi2pd_memory_rax = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x2a
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && prefixes.operand_override
+            && !prefixes.address_override
+            && prefix_count == 1
+            && prefix_bytes[0] == 0x66
+            && prefixes.rex.is_none();
         let cvttpd2dq_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0xe6
             && prefixes.group1.is_none()
@@ -4039,6 +4050,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
         }
         if opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x2a
+            && !cvtpi2pd_memory_rax
             && !cvtsi2sd_r32_register
             && !cvtsi2sd_r64_register
             && !cvtsi2ss_r32_register
@@ -4376,6 +4388,13 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                     source: (modrm & 7) | ((rex & 1) << 3),
                 }
+            }
+            (OpcodeMap::Escape0f, 0x2a) if cvtpi2pd_memory_rax => {
+                let modrm = self.byte()?;
+                if modrm != 0x00 {
+                    return Err(self.unsupported(opcode));
+                }
+                Operation::Cvtpi2pdMemoryRax
             }
             (OpcodeMap::Escape0f, 0xe6) if cvttpd2dq_register => {
                 let modrm = self.byte()?;
@@ -21100,6 +21119,34 @@ mod tests {
             &[0x62, 0xf1, 0xff, 0x08, 0x5a, 0xc1][..], // EVEX
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn cvtpi2pd_accepts_only_the_exact_memory_source_rax_encoding() {
+        let mut memory = Memory::new(&[0x66, 0x0f, 0x2a, 0x00]);
+        let instruction = memory.decode().unwrap();
+        assert_eq!(instruction.operation, Operation::Cvtpi2pdMemoryRax);
+        assert_eq!(instruction.length, 4);
+        for bytes in [
+            &[0x66, 0x0f, 0x2a, 0xc0][..],             // MMX register source
+            &[0x66, 0x0f, 0x2a, 0x01][..],             // [RCX]
+            &[0x66, 0x0f, 0x2a, 0x04, 0x00][..],       // SIB
+            &[0x66, 0x0f, 0x2a, 0x40, 0x00][..],       // displacement
+            &[0x66, 0x41, 0x0f, 0x2a, 0x00][..],       // REX.B changes base
+            &[0x66, 0x44, 0x0f, 0x2a, 0x00][..],       // extended XMM destination
+            &[0x66, 0x48, 0x0f, 0x2a, 0x00][..],       // REX.W
+            &[0x66, 0x42, 0x0f, 0x2a, 0x00][..],       // REX.X
+            &[0xf2, 0x0f, 0x2a, 0x00][..],             // other mandatory prefix
+            &[0x66, 0xf2, 0x0f, 0x2a, 0x00][..],       // additional prefix
+            &[0x66, 0x66, 0x0f, 0x2a, 0x00][..],       // repeated prefix
+            &[0x40, 0x66, 0x0f, 0x2a, 0x00][..],       // REX before 66
+            &[0xc5, 0xfd, 0x2a, 0x00][..],             // VEX
+            &[0x62, 0xf1, 0x7d, 0x08, 0x2a, 0x00][..], // EVEX
+            &[0x67, 0x66, 0x0f, 0x2a, 0x00][..],       // address-size override
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
         }
     }
 
