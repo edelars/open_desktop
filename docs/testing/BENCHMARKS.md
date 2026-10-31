@@ -563,21 +563,22 @@ recorded in the [S3-37c report](../reports/STAGE_3_S3-37c_2026-10-31.md).
 
 ### S3-37d: sustained deterministic mixed FIFO16 lifecycle stress
 
-`od-bench cache-lifecycle-stress-calibrate` chooses a fixed epoch count from a
-512-epoch calibration of the same sequence used by the scored command. The
-profile targets approximately 11 minutes per scored release process, caps the
-count at 35 million epochs, rejects a cap that cannot meet the target, and
-reserves one minute below the existing 30-minute process limit. Profile v4
-uses the same 512-epoch calibration sequence and validates the target-bound
-recommendation before scoring. Calibration records epoch-body time separately from
-the same 128 RSS/report/atomic-write checkpoints used by scored runs, then
-projects body, checkpoint, and fixed process costs independently. Host
-metadata is captured once; the scored process checks the overall deadline from
-before input preparation through final report persistence. Calibration binds
-the frozen corpus, source fingerprint, build/host metadata, schedule, timing
-arithmetic, and a payload integrity digest. `od-bench cache-lifecycle-stress` requires this
-calibration artifact, the exact recommended epoch count, and process run 1..=3.
-Calibration and scored runs require the frozen S3-17 case list and trace.
+`od-bench cache-lifecycle-stress-calibrate` chooses a fixed epoch count from
+the same sequence used by the scored command. Profile v5 runs 512 warm-up
+epochs followed by eight 65,536-epoch measurement batches on one retained
+runtime/cache/arena. It measures each batch's epoch-body time separately and
+uses the fastest observed batch rate when sizing for the minimum 11-minute
+target. Warm-up time is not treated as scored loop time. It records the same
+128 bounded RSS/report/atomic-write checkpoints across calibration; with 524,800
+epochs these are spaced about every 4,100 epochs, instead of every four epochs
+in v4. Checkpoint/report-write and fixed process costs are measured separately
+from batch body time. Calibration caps scored runs at 50 million epochs,
+rejects a cap that cannot reach the target, and reserves one minute below the
+30-minute process deadline. The exact recommended epoch count and process run
+1..=3 are required. Calibration binds the frozen corpus, source fingerprint,
+build/host metadata, warm-up/batch/checkpoint schedule, timing arithmetic, and
+payload integrity digest. Both calibration and scored runs require the frozen
+S3-17 case list and trace.
 
 Each epoch retains one FIFO16 runtime/cache/arena and performs a hit on the
 active entry, a unique pressure-key miss with exactly one FIFO eviction, a
@@ -597,18 +598,25 @@ cumulative cache/dispatch counters, separate elapsed totals for pressure miss,
 version recompile dispatch, hit dispatch, invalidation, clear, teardown and
 reopen. Progress is written atomically as a bounded array of at most 128
 checkpoints; each checkpoint includes a process-wide RSS snapshot at the same
-end-of-epoch lifecycle point. Aggregate counters reconcile against exact
-schedule totals, and counter regression is an error. RSS is auxiliary and is not evidence of a
-leak-free result. The calibration and scored artifacts must be retained with
-their raw JSON. Run the three scored release processes sequentially during a
-Stage2-quiet window; an overlap with Stage 2 makes that attempt inconclusive.
+end-of-epoch lifecycle point. Completed reports include actual elapsed time
+and whether the minimum duration was met. A run below 660 seconds is persisted
+with `status: under-target` and exits with an error; it cannot count as
+sustained-duration evidence. Aggregate counters reconcile against exact
+schedule totals, and counter regression is an error. RSS is auxiliary and is
+not evidence of a leak-free result. Retain calibration, scored artifacts and
+raw JSON. Run three scored release processes sequentially during a Stage2-quiet
+window; an overlap with Stage 2 makes that attempt inconclusive.
 
 This profile exercises supported cache APIs only. It does not demonstrate
 production owner notification, guest-write SMC, active-code modification,
 fault cleanup, concurrent arenas, SMP, or leak-free behavior. Mini checks
-remain deferred to the end of Stage 3. S3-37d implementation source review is
-clean; measurements and independent evidence review are pending. Full S3-37
-remains open.
+remain deferred to the end of Stage 3. The v4 run1 completed 29,682,315 epochs
+with exact counter totals in 439.482 seconds, below the 660-second target; it
+is valid lifecycle/counter evidence but does not satisfy sustained-duration
+acceptance. Its diagnostic is in
+[`S3-37d report`](../reports/STAGE_3_S3-37d_2026-10-31.md). The v5 methodology
+source review, recalibration, scored runs and independent evidence review are
+pending. Full S3-37 remains open.
 
 Recorded trace дополняется ограниченными synthetic-сценариями:
 1/8/64/512/4096 keys и observed unique count, hot loops на 1/8 keys, reverse

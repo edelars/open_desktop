@@ -5,15 +5,19 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 
-const PROFILE: &str = "s3-37d-fifo16-mixed-lifecycle-v4";
-const CALIBRATION_EPOCHS: usize = 512;
+const PROFILE: &str = "s3-37d-fifo16-mixed-lifecycle-v5";
+const CALIBRATION_WARMUP_EPOCHS: usize = 512;
+const CALIBRATION_MEASUREMENT_BATCH_EPOCHS: usize = 65_536;
+const CALIBRATION_MEASUREMENT_BATCHES: usize = 8;
+const CALIBRATION_EPOCHS: usize = CALIBRATION_WARMUP_EPOCHS
+    + CALIBRATION_MEASUREMENT_BATCH_EPOCHS * CALIBRATION_MEASUREMENT_BATCHES;
 const TARGET_STRESS_NS: u128 = 11 * 60 * 1_000_000_000;
-const MAX_EPOCHS: usize = 35_000_000;
+const MAX_EPOCHS: usize = 50_000_000;
 const CLEAR_INTERVAL: usize = 128;
 const REOPEN_INTERVAL: usize = 512;
 const MAX_CHECKPOINTS: usize = 128;
 const RUN_TIME_MARGIN: Duration = Duration::from_secs(60);
-const CALIBRATION_SCHEDULE: &str = "same mixed hit/miss/invalidate/recompile/hit sequence as scored profile; 128 epoch clear and 512 epoch reopen cadence; reject an epoch cap that cannot meet the target duration";
+const CALIBRATION_SCHEDULE: &str = "same mixed hit/miss/invalidate/recompile/hit sequence as scored profile; one retained runtime; 512 warm-up epochs followed by eight 65,536-epoch measurement batches; 128 bounded checkpoints across all calibration epochs; 128 epoch clear and 512 epoch reopen cadence; use the fastest measured batch rate for target sizing; reject an epoch cap that cannot meet the target duration";
 const DETERMINISTIC_SCHEDULE: &str = "per epoch: hit active key; compile unique version of pressure key and verify one FIFO eviction; invalidate active backing between calls and verify one removal; execute alternate admitted bytes under advanced backing version and verify one successful compile/publication without eviction; repeat and verify hit; alternate original/changed bytes on successive epochs. Every 128 epochs clear and assert zero current resident entries/code/metadata plus all 16 arena slots, then refill. Every 512 epochs clear, drop the sole runtime/arena, reopen one runtime, execute after reopen with a bumped execution context, and refill. No more than one MAP_JIT arena is live.";
 
 const STRESS_SOURCE: &[u8] = include_bytes!("dispatch_cache_stress.rs");
@@ -88,6 +92,8 @@ struct StressReport {
     process_rss_after_stress_before_drop: ProcessRssSnapshot,
     process_rss_after_drop: ProcessRssSnapshot,
     checkpoints: Vec<Checkpoint>,
+    target_elapsed_ns: Option<u128>,
+    duration_target_met: Option<bool>,
     elapsed_ns: u128,
 }
 
@@ -99,6 +105,11 @@ struct Calibration {
     case_list_sha256: String,
     trace_sha256: String,
     calibration_epochs: usize,
+    calibration_warmup_epochs: usize,
+    calibration_measurement_batch_epochs: usize,
+    calibration_measurement_batches: usize,
+    calibration_batch_body_elapsed_ns: Vec<u128>,
+    calibration_warmup_body_elapsed_ns: u128,
     calibration_elapsed_ns: u128,
     calibration_epoch_body_elapsed_ns: u128,
     calibration_checkpoint_elapsed_ns: u128,
@@ -186,6 +197,29 @@ fn recommend_epochs(
         ));
     }
     Ok((recommended, projected))
+}
+
+fn fastest_batch_epoch_ns(
+    batch_body_elapsed_ns: &[u128],
+    batch_epochs: usize,
+) -> Result<u128, BenchError> {
+    if batch_epochs == 0 || batch_body_elapsed_ns.len() != CALIBRATION_MEASUREMENT_BATCHES {
+        return Err(err("calibration measurement batch shape is invalid"));
+    }
+    let fastest_batch = batch_body_elapsed_ns
+        .iter()
+        .copied()
+        .min()
+        .ok_or_else(|| err("calibration has no measurement batches"))?;
+    let per_epoch = fastest_batch / batch_epochs as u128;
+    if per_epoch == 0 {
+        return Err(err("calibration fastest batch has zero time per epoch"));
+    }
+    Ok(per_epoch)
+}
+
+fn duration_target_met(target_elapsed_ns: Option<u128>, elapsed_ns: u128) -> Option<bool> {
+    target_elapsed_ns.map(|target| elapsed_ns >= target)
 }
 
 fn implementation_sha256() -> String {
@@ -523,13 +557,15 @@ fn run_epochs(
     calibration_sha256: Option<String>,
     output_path: Option<&Path>,
     process_started: Instant,
+    target_elapsed_ns: Option<u128>,
+    calibration_batch_body_elapsed_ns: Option<&mut Vec<u128>>,
 ) -> Result<serde_json::Value, BenchError> {
     if cfg!(debug_assertions) {
         return Err(err("cache-lifecycle-stress requires a release build"));
     }
     if !(1..=3).contains(&process_run) || epochs == 0 || epochs > MAX_EPOCHS {
         return Err(err(
-            "stress requires process-run 1..=3 and epochs 1..=35,000,000",
+            "stress requires process-run 1..=3 and epochs 1..=50,000,000",
         ));
     }
     check_deadline(process_started, "runtime setup")?;
@@ -546,6 +582,8 @@ fn run_epochs(
     let mut min_free_slots = ARENA_SLOTS;
     let mut arena_bytes = 0;
     let mut checkpoints = Vec::with_capacity(MAX_CHECKPOINTS);
+    let mut calibration_batch_body_elapsed_ns = calibration_batch_body_elapsed_ns;
+    let mut previous_calibration_batch_body_ns = 0u128;
     let checkpoint_count = epochs.min(MAX_CHECKPOINTS);
     let checkpoint_epochs: Vec<usize> = (1..=checkpoint_count)
         .map(|index| index.saturating_mul(epochs).div_ceil(checkpoint_count))
@@ -859,13 +897,31 @@ fn run_epochs(
             }
         }
 
+        check_deadline(process_started, "versioned hit dispatch")?;
+        check_deadline(process_started, "epoch completion")?;
+        let checkpoint_due = checkpoint_epochs.get(next_checkpoint) == Some(&epoch);
         totals.epoch_body_elapsed_ns = add_time(
             totals.epoch_body_elapsed_ns,
             epoch_started.elapsed().as_nanos(),
         )?;
-        check_deadline(process_started, "versioned hit dispatch")?;
-        check_deadline(process_started, "epoch completion")?;
-        if checkpoint_epochs.get(next_checkpoint) == Some(&epoch) {
+        if let Some(batch_timings) = calibration_batch_body_elapsed_ns.as_mut() {
+            if epoch == CALIBRATION_WARMUP_EPOCHS {
+                previous_calibration_batch_body_ns = totals.epoch_body_elapsed_ns;
+            } else if epoch > CALIBRATION_WARMUP_EPOCHS
+                && (epoch - CALIBRATION_WARMUP_EPOCHS) % CALIBRATION_MEASUREMENT_BATCH_EPOCHS == 0
+            {
+                let batch_body_ns = totals
+                    .epoch_body_elapsed_ns
+                    .checked_sub(previous_calibration_batch_body_ns)
+                    .ok_or_else(|| err("calibration epoch-body counter regressed"))?;
+                if batch_body_ns == 0 {
+                    return Err(err("calibration measurement batch has zero elapsed time"));
+                }
+                batch_timings.push(batch_body_ns);
+                previous_calibration_batch_body_ns = totals.epoch_body_elapsed_ns;
+            }
+        }
+        if checkpoint_due {
             let checkpoint_started = Instant::now();
             check_deadline(process_started, "checkpoint start")?;
             let snapshot = engine.fifo_lifecycle_snapshot()?;
@@ -911,6 +967,7 @@ fn run_epochs(
                 checkpoints.clone(),
                 &prepared.measure_host,
                 process_started.elapsed().as_nanos(),
+                target_elapsed_ns,
             )?;
             if let Some(path) = output_path {
                 write_atomic(path, &partial)?;
@@ -948,13 +1005,20 @@ fn run_epochs(
     check_deadline(process_started, "runtime teardown")?;
     let rss_after_drop = process_rss_snapshot();
     check_deadline(process_started, "post-teardown RSS snapshot")?;
-    let value = report(
+    let mut elapsed_ns = process_started.elapsed().as_nanos();
+    let mut target_met = duration_target_met(target_elapsed_ns, elapsed_ns);
+    let mut status = if target_met == Some(false) {
+        "under-target"
+    } else {
+        "completed"
+    };
+    let mut value = report(
         prepared,
         process_run,
         epochs,
         epochs,
         calibration_sha256,
-        "completed",
+        status,
         totals,
         final_snapshot,
         peak_entries,
@@ -967,12 +1031,41 @@ fn run_epochs(
         rss_after_drop,
         checkpoints,
         &prepared.measure_host,
-        process_started.elapsed().as_nanos(),
+        elapsed_ns,
+        target_elapsed_ns,
     )?;
     if let Some(path) = output_path {
         write_atomic(path, &value)?;
+        if target_elapsed_ns.is_some() {
+            elapsed_ns = process_started.elapsed().as_nanos();
+            target_met = duration_target_met(target_elapsed_ns, elapsed_ns);
+            status = if target_met == Some(false) {
+                "under-target"
+            } else {
+                "completed"
+            };
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| err("final stress report is not a JSON object"))?;
+            object.insert("status".into(), status.into());
+            object.insert(
+                "elapsed_ns".into(),
+                serde_json::to_value(elapsed_ns).map_err(|e| err(e.to_string()))?,
+            );
+            object.insert(
+                "duration_target_met".into(),
+                serde_json::to_value(target_met).map_err(|e| err(e.to_string()))?,
+            );
+            write_atomic(path, &value)?;
+        }
     }
     check_deadline(process_started, "final report persistence")?;
+    if target_met == Some(false) {
+        return Err(err(format!(
+            "completed stress run was under target duration; report persisted with status under-target ({elapsed_ns} ns < {} ns)",
+            target_elapsed_ns.unwrap_or_default()
+        )));
+    }
     Ok(value)
 }
 
@@ -997,9 +1090,10 @@ fn report(
     checkpoints: Vec<Checkpoint>,
     measure_host: &HostMetadata,
     elapsed_ns: u128,
+    target_elapsed_ns: Option<u128>,
 ) -> Result<serde_json::Value, BenchError> {
     serde_json::to_value(StressReport {
-        schema: 2,
+        schema: 3,
         profile: PROFILE,
         status,
         process_run,
@@ -1032,6 +1126,12 @@ fn report(
         process_rss_after_stress_before_drop,
         process_rss_after_drop,
         checkpoints,
+        target_elapsed_ns,
+        duration_target_met: if status == "running" {
+            None
+        } else {
+            duration_target_met(target_elapsed_ns, elapsed_ns)
+        },
         elapsed_ns,
     }).map_err(|e| err(e.to_string()))
 }
@@ -1055,11 +1155,15 @@ fn calibration_payload_hash(value: &serde_json::Value) -> Result<String, BenchEr
 }
 
 fn expected_calibration_epochs(calibration: &Calibration) -> Result<usize, BenchError> {
-    if calibration.schema != 2
+    if calibration.schema != 3
         || calibration.profile != PROFILE
         || calibration.calibration_epochs != CALIBRATION_EPOCHS
+        || calibration.calibration_warmup_epochs != CALIBRATION_WARMUP_EPOCHS
+        || calibration.calibration_measurement_batch_epochs != CALIBRATION_MEASUREMENT_BATCH_EPOCHS
+        || calibration.calibration_measurement_batches != CALIBRATION_MEASUREMENT_BATCHES
         || calibration.calibration_elapsed_ns == 0
         || calibration.calibration_epoch_body_elapsed_ns == 0
+        || calibration.calibration_warmup_body_elapsed_ns == 0
         || calibration.calibration_checkpoint_count != MAX_CHECKPOINTS
         || calibration.target_stress_ns != TARGET_STRESS_NS
         || calibration.max_run_ns != MAX_RUN_TIME.as_nanos()
@@ -1068,18 +1172,31 @@ fn expected_calibration_epochs(calibration: &Calibration) -> Result<usize, Bench
     {
         return Err(err("calibration fields do not match this build/profile"));
     }
+    let batch_body_elapsed_ns = calibration
+        .calibration_batch_body_elapsed_ns
+        .iter()
+        .try_fold(0u128, |sum, elapsed| sum.checked_add(*elapsed))
+        .ok_or_else(|| err("calibration batch timing sum overflow"))?;
+    if batch_body_elapsed_ns != calibration.calibration_epoch_body_elapsed_ns {
+        return Err(err(
+            "calibration batch timings do not match measured body total",
+        ));
+    }
     let composed = calibration
         .calibration_epoch_body_elapsed_ns
-        .checked_add(calibration.calibration_checkpoint_elapsed_ns)
+        .checked_add(calibration.calibration_warmup_body_elapsed_ns)
+        .and_then(|value| value.checked_add(calibration.calibration_checkpoint_elapsed_ns))
         .and_then(|value| value.checked_add(calibration.calibration_fixed_elapsed_ns))
         .ok_or_else(|| err("calibration elapsed-time arithmetic overflow"))?;
     if composed != calibration.calibration_elapsed_ns {
         return Err(err("calibration elapsed-time components do not reconcile"));
     }
-    let expected_epoch =
-        calibration.calibration_epoch_body_elapsed_ns / calibration.calibration_epochs as u128;
-    if expected_epoch == 0 || expected_epoch != calibration.estimated_epoch_ns {
-        return Err(err("calibration epoch timing is inconsistent"));
+    let expected_epoch = fastest_batch_epoch_ns(
+        &calibration.calibration_batch_body_elapsed_ns,
+        calibration.calibration_measurement_batch_epochs,
+    )?;
+    if expected_epoch != calibration.estimated_epoch_ns {
+        return Err(err("calibration fastest-batch rate is inconsistent"));
     }
     let checkpoint_budget = calibration.calibration_checkpoint_elapsed_ns;
     let fixed_budget = calibration.calibration_fixed_elapsed_ns;
@@ -1115,6 +1232,7 @@ pub(super) fn calibrate(
     check_deadline(process_started, "calibration setup")?;
     let progress_path =
         output_path.with_extension(format!("calibration-progress.{}.json", std::process::id()));
+    let mut batch_body_elapsed_ns = Vec::with_capacity(CALIBRATION_MEASUREMENT_BATCHES);
     let stress_report = run_epochs(
         &prepared,
         CALIBRATION_EPOCHS,
@@ -1122,6 +1240,8 @@ pub(super) fn calibrate(
         None,
         Some(&progress_path),
         process_started,
+        None,
+        Some(&mut batch_body_elapsed_ns),
     )?;
     let elapsed = process_started.elapsed().as_nanos();
     let totals: Totals = serde_json::from_value(
@@ -1131,11 +1251,24 @@ pub(super) fn calibrate(
             .ok_or_else(|| err("calibration stress report has no aggregate totals"))?,
     )
     .map_err(|e| err(format!("calibration totals: {e}")))?;
+    if batch_body_elapsed_ns.len() != CALIBRATION_MEASUREMENT_BATCHES {
+        return Err(err("calibration did not complete all measurement batches"));
+    }
+    let measured_body_elapsed_ns = batch_body_elapsed_ns
+        .iter()
+        .try_fold(0u128, |sum, batch_ns| sum.checked_add(*batch_ns))
+        .ok_or_else(|| err("calibration batch elapsed-time sum overflow"))?;
+    let warmup_body_elapsed_ns = totals
+        .epoch_body_elapsed_ns
+        .checked_sub(measured_body_elapsed_ns)
+        .ok_or_else(|| err("calibration warm-up exceeds total epoch-body time"))?;
     let fixed_elapsed = elapsed
-        .checked_sub(totals.epoch_body_elapsed_ns)
+        .checked_sub(measured_body_elapsed_ns)
+        .and_then(|value| value.checked_sub(warmup_body_elapsed_ns))
         .and_then(|value| value.checked_sub(totals.checkpoint_elapsed_ns))
         .ok_or_else(|| err("calibration timing components exceed total elapsed time"))?;
-    let estimated_epoch_ns = totals.epoch_body_elapsed_ns / CALIBRATION_EPOCHS as u128;
+    let estimated_epoch_ns =
+        fastest_batch_epoch_ns(&batch_body_elapsed_ns, CALIBRATION_MEASUREMENT_BATCH_EPOCHS)?;
     let (recommended_epochs, projected) = recommend_epochs(
         TARGET_STRESS_NS,
         totals.checkpoint_elapsed_ns,
@@ -1148,13 +1281,18 @@ pub(super) fn calibrate(
         ));
     }
     let mut value = serde_json::to_value(Calibration {
-        schema: 2,
+        schema: 3,
         profile: PROFILE.into(),
         case_list_sha256: od_testkit::sha256_hex(&prepared.list),
         trace_sha256: od_testkit::sha256_hex(&prepared.trace_raw),
         calibration_epochs: CALIBRATION_EPOCHS,
+        calibration_warmup_epochs: CALIBRATION_WARMUP_EPOCHS,
+        calibration_measurement_batch_epochs: CALIBRATION_MEASUREMENT_BATCH_EPOCHS,
+        calibration_measurement_batches: CALIBRATION_MEASUREMENT_BATCHES,
+        calibration_batch_body_elapsed_ns: batch_body_elapsed_ns,
+        calibration_warmup_body_elapsed_ns: warmup_body_elapsed_ns,
         calibration_elapsed_ns: elapsed,
-        calibration_epoch_body_elapsed_ns: totals.epoch_body_elapsed_ns,
+        calibration_epoch_body_elapsed_ns: measured_body_elapsed_ns,
         calibration_checkpoint_elapsed_ns: totals.checkpoint_elapsed_ns,
         calibration_checkpoint_count: totals.checkpoint_count,
         calibration_fixed_elapsed_ns: fixed_elapsed,
@@ -1187,7 +1325,10 @@ pub(super) fn calibrate(
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_EPOCHS, recommend_epochs};
+    use super::{
+        CALIBRATION_MEASUREMENT_BATCHES, MAX_EPOCHS, duration_target_met, fastest_batch_epoch_ns,
+        recommend_epochs,
+    };
 
     #[test]
     fn recommendation_rejects_epoch_cap_below_target() {
@@ -1201,6 +1342,27 @@ mod tests {
                 .expect("cap can reach the target");
         assert!(recommended < MAX_EPOCHS);
         assert!(projected >= target_ns);
+    }
+
+    #[test]
+    fn fastest_batch_sets_conservative_minimum_duration_rate() {
+        let batch_ns = vec![140, 151, 146, 143, 158, 149, 145, 152];
+        assert_eq!(batch_ns.len(), CALIBRATION_MEASUREMENT_BATCHES);
+        assert_eq!(fastest_batch_epoch_ns(&batch_ns, 10).unwrap(), 14);
+    }
+
+    #[test]
+    fn calibration_batch_rate_rejects_missing_or_zero_batches() {
+        assert!(fastest_batch_epoch_ns(&[1, 2], 1).is_err());
+        assert!(fastest_batch_epoch_ns(&[0; CALIBRATION_MEASUREMENT_BATCHES], 1).is_err());
+        assert!(fastest_batch_epoch_ns(&[1; CALIBRATION_MEASUREMENT_BATCHES], 0).is_err());
+    }
+
+    #[test]
+    fn under_target_duration_is_explicit() {
+        assert_eq!(duration_target_met(Some(660), 659), Some(false));
+        assert_eq!(duration_target_met(Some(660), 660), Some(true));
+        assert_eq!(duration_target_met(None, 1), None);
     }
 }
 
@@ -1247,5 +1409,7 @@ pub(super) fn run(
         Some(calibration_sha256),
         Some(output_path),
         process_started,
+        Some(calibration.target_stress_ns),
+        None,
     )
 }

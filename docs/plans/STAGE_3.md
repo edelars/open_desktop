@@ -3108,12 +3108,17 @@ criteria remain open.
 #### S3-37d: sustained deterministic mixed lifecycle stress
 
 Add a separate versioned `od-bench cache-lifecycle-stress` profile over the
-same frozen corpus and existing FIFO16 runtime. A 512-epoch calibration fixes
-the scored epoch count at an approximately 11-minute target, with one minute
-reserved below the current 30-minute process limit. It separates epoch-body,
-checkpoint/report-write, and fixed process costs, and binds the artifact to the
-source fingerprint, host/build, corpus and validated timing arithmetic. One
-overall deadline covers preparation through final report persistence. Each epoch performs a current-key hit, a
+same frozen corpus and existing FIFO16 runtime. V5 calibration uses 512 warm-up
+epochs followed by eight sustained 65,536-epoch measurement batches on one
+retained runtime; it sizes from the fastest observed batch and keeps the 128
+bounded progress checkpoints distinct from scalable epoch-body time. The
+scored count targets at least 11 minutes, reserves one minute below the
+30-minute process limit, and is capped at 50 million epochs. Calibration binds
+the source fingerprint, host/build, corpus, warm-up/batch/checkpoint schedule
+and validated timing arithmetic. A scored artifact records whether actual
+elapsed time met 660 seconds; an under-target result is persisted and the
+command fails. One overall deadline covers preparation through final report
+persistence. Each epoch performs a current-key hit, a
 unique pressure miss and one FIFO eviction, between-call invalidation of the
 current backing, alternate admitted code under the advanced backing version
 with a distinct interpreter result, and a verified next-call hit. Every
@@ -3125,11 +3130,16 @@ is bounded by at most 128 aggregate checkpoints. RSS is auxiliary only.
 
 Keep three scored release processes sequential in a Stage2-quiet window. Record
 the calibration, actual elapsed time, raw JSON, and independent source/evidence
-review. Overlapped attempts are inconclusive. This supported-API resource
-stress does not claim production SMC/owner notification, faults, concurrent
-arenas, SMP, or leak-free behavior. Mini remains deferred to the end of Stage
-3; owner/MMU and Stage 2 are outside this slice. Implementation source review
-is clean; scored measurements and independent evidence review are pending.
+review. Overlapped attempts are inconclusive. V4 run1 completed 29,682,315
+epochs and exact counters in 439.482 seconds, below the planned 660-second
+minimum; it remains lifecycle/counter evidence but does not satisfy sustained
+duration acceptance. See the
+[S3-37d diagnostic](../reports/STAGE_3_S3-37d_2026-10-31.md). V5 source review,
+recalibration, scored runs and independent evidence review remain pending.
+This supported-API resource stress does not claim production SMC/owner
+notification, faults, concurrent arenas, SMP, or leak-free behavior. Mini
+remains deferred to the end of Stage 3; owner/MMU and Stage 2 are outside this
+slice.
 
 1. Выполнить длинную серию unique blocks, повторных invalidations, capacity evictions, SMC и mixed hit/miss workloads.
 2. Снимать executable bytes, metadata bytes, live/retired blocks, compile counts и доступные process memory показатели с описанием метода.

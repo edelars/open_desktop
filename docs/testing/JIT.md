@@ -1258,14 +1258,18 @@ clear, with explicit clear measured as a separate operation.
 
 ### S3-37d sustained mixed FIFO16 lifecycle stress
 
-`od-bench cache-lifecycle-stress-calibrate` fixes a count from 512 calibration
-epochs; `cache-lifecycle-stress` then runs that same count in each scored
-process, targeting about 11 minutes and reserving one minute below the
-30-minute process cap. Calibration separates scalable epoch-body time from
-the same 128 RSS/report/write checkpoints as scored runs, and records fixed
-process costs. Its integrity digest, source/build/host fingerprint, corpus,
-schedule and timing arithmetic are checked before scoring. One overall
-deadline covers input preparation through final report persistence. Each retained-runtime epoch validates hit, unique pressure miss
+`od-bench cache-lifecycle-stress-calibrate` runs 512 warm-up epochs followed
+by eight measured 65,536-epoch batches on one retained runtime, then sizes the
+scored count from the fastest batch rate. The profile targets at least 11
+minutes and reserves one minute below the 30-minute process cap. Calibration
+keeps 128 bounded RSS/report/write checkpoints across 524,800 epochs, about
+one every 4,100 epochs; its per-batch body timing excludes checkpoint work.
+Warm-up is excluded from scored loop timing. The integrity digest,
+source/build/host fingerprint, corpus, schedule and timing arithmetic are
+checked before scoring. A scored report explicitly records whether actual
+elapsed time met 660 seconds; an under-target report is persisted with an
+error status and the command fails. One overall deadline covers input
+preparation through final report persistence. Each retained-runtime epoch validates hit, unique pressure miss
 and one FIFO eviction, between-call backing invalidation, changed admitted
 code at a new backing version, and the subsequent hit. Full interpreter
 parity is checked on each dispatch. Every 128 epochs, clear must return all
@@ -1275,6 +1279,9 @@ continues. The report uses bounded checkpoints and separates current occupancy
 from high-water values. RSS is process-wide auxiliary evidence only. This does
 not claim guest SMC, owner notification, fault cleanup, concurrent arenas,
 SMP, or leak-free behavior. Three sequential release processes are planned in
-a Stage2-quiet window. Implementation source review is clean; scored results
-and independent evidence review are pending. Mini stays deferred until Stage 3
-ends.
+a Stage2-quiet window. The v4 run1 completed 29,682,315 epochs with exact
+counters in 439.482 seconds, below the 660-second target. It is useful for
+lifecycle/counter evidence but does not meet sustained-duration acceptance;
+see the [S3-37d diagnostic](../reports/STAGE_3_S3-37d_2026-10-31.md). V5 source
+review, recalibration, scored runs and independent evidence review remain
+pending. Mini stays deferred until Stage 3 ends.
