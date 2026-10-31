@@ -579,3 +579,13 @@ and writes the result into physical x87 register 0 with the documented MMX tag/T
 transition. The profile requires supported MXCSR with IM=PM=1 and an x87 snapshot
 without pending exceptions; unrelated XMM/x87 state is preserved. Other encodings
 and JIT/native paths remain closed. See the Stage 2 plan, CPU contract and report.
+
+
+S2-37bj adds the exact Long64 `0F 2D C1` CVTPS2PI MM0,XMM1 interpreter
+profile. It rounds two binary32 lanes using MXCSR.RC, aggregates masked IE/PE,
+and performs the x87/MMX physical slot-0/TOP/tag transition. The profile has
+strict SSE/CR0/CR4 gates and requires supported MXCSR plus a clear x87 pending
+exception state. Other encodings and JIT/native paths remain closed. See the
+[Stage 2 plan](../../docs/plans/STAGE_2.md#s2-37bj--bounded-long64-cvtps2pi-mm0xmm1-masked-register-profile),
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bj--bounded-long64-cvtps2pi-mm0xmm1-masked-register-profile),
+and [report](../../docs/reports/STAGE_2_REPORT.md#s2-37bj--cvtps2pi-mm0xmm1-masked-register-profile).
