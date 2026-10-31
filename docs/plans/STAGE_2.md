@@ -528,6 +528,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37ay | Strict schema-v2 canonical Long64 DIVSS XMM register pairs; scalar Binary32 raw divide, low32 write/high96 preserved; independent raw-u32 oracle, strict F3 SSE profile, OM=UM=1, atomic IE/DE/ZE/OE/UE/PE; JIT/native closed | 256-pair, RC/WPR/FTZ, NaN and pre/post event matrix, malformed/tampered/backend denial; direct runtime fetch/gates/CPL coverage; DIV/MUL/SUB regressions passed; independent review clean; physical acceptance remains open |
 | [x] | S2-37az | Strict schema-v2 canonical Long64 ADDPD XMM register pairs; two Binary64 add lanes from operand snapshots; independent raw-integer oracle; OM=UM=1; atomic IE/DE/OE/UE/PE; interpreter-only | Focused decoder/schema/runtime and 256-pair fixture matrix; physical acceptance remains open |
 | [x] | S2-37ba | Strict schema-v2 canonical Long64 ADDPS XMM register pairs; four Binary32 add lanes with WPR tininess, packed IE/DE priority, and atomic IE/DE/OE/UE/PE; OM=UM=1; interpreter-only | Focused decoder/runtime/schema matrix, 256-pair fixture, FTZ=1 combined 0x3b event case, DIV/MUL/SUB regressions and full checks passed; independent review clean |
+| [x] | S2-37bb | Strict schema-v2 canonical Long64 ADDSD XMM register pairs; scalar Binary64 addition, low64 result/high64 preservation, independent integer oracle; OM=UM=1; interpreter-only | 256-pair, rounding/tininess/overflow, DE-only pre-fault, MXCSR/gate/CPL and high64-canary tests passed; DIV/MUL/SUB/ADD regressions, full od-isa/testkit/runner and workspace checks passed; independent review clean |
 | [x] | S2-38a | Bounded S2-38 subset consumed by S2-37e/f/g/h/i/j/k/l: masked MINSS/MAXSS/MINPS/MAXPS/MINSD/MAXSD/MINPD/MAXPD invalid/denormal sticky flags; unmasked delivery and fault ordering remain open | S2-37e/f/g/h/i/j/k/l; independent review |
 | [x] | S2-38c | Exact Long64 `MINSS XMM0,XMM1` unmasked invalid-operation exit; existing fixture profile remains immutable | S2-38a; local review |
 | [x] | S2-38d | Exact Long64 `MINSS XMM0,XMM1` unmasked denormal handling with mixed IM/DM policy; new versioned fixture profile | S2-38c; independent review |
@@ -6785,7 +6786,7 @@ inventory.
 |---|---|---|---|---:|---|
 | ADDPD | `66 0F 58 /r` | SSE2 | XMM, m128; 2×f64 | 3-16 | S2-37az, bounded register-only |
 | ADDPS | `NP 0F 58 /r` | SSE | XMM, m128; 4×f32 | 3-19 | S2-37ba, bounded register-only |
-| ADDSD | `F2 0F 58 /r` | SSE2 | XMM, m64; low f64 | 3-22 | missing |
+| ADDSD | `F2 0F 58 /r` | SSE2 | XMM, m64; low f64 | 3-22 | S2-37bb, bounded register-only |
 | ADDSS | `F3 0F 58 /r` | SSE | XMM, m32; low f32 | 3-24 | missing |
 | CMPPD | `66 0F C2 /r ib` | SSE2 | XMM, m128; 2×64-bit masks | 3-168 | S2-37z, bounded register-only |
 | CMPPS | `NP 0F C2 /r ib` | SSE | XMM, m128; 4×32-bit masks | 3-175 | S2-37aa, bounded register-only |
@@ -14136,3 +14137,53 @@ parent S2-37/S2-38 remain open. See the [CPU
 contract](../specs/CPU_CONTRACT.md#s2-37az--canonical-long64-addpd-xmm-register-pairs),
 [report](../reports/STAGE_2_REPORT.md#s2-37az--addpd-register-pair-interpreter-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37az-addpd-register-pair-profile).
+
+
+#### S2-37bb — canonical Long64 ADDSD XMM register pairs
+
+Implement strict schema-v2 interpreter-only profile
+`s2-long-addsd-registers-v1` for canonical Long64 legacy `F2 0F 58 /r`,
+ModR/M.mod=3, covering all 256 XMM pairs. Low forms are four bytes; extended
+indices require one adjacent REX `41`, `44` or `45` after F2 for five bytes.
+Reject memory, 66/F3, reordered/repeated/redundant prefixes, REX.W/X/40,
+trailing bytes, VEX and EVEX. Fetch the complete instruction before SSE2,
+CR0.EM/CR4.OSFXSR #UD and then CR0.TS #NM at CPL0–3. Make no data callbacks;
+keep JIT/native/C ABI/fragment/generic execution closed.
+
+Require MXCSR.OM=1 and UM=1. Reject DAZ and reserved bits; accept RC, FTZ,
+IM/DM/ZM/PM and old sticky flags. Snapshot both XMM operands and calculate
+only `old_destination.low64 + source.low64`, preserving destination.high64 and
+ignoring source.high64. NaNs choose the first original operand, quiet a chosen
+SNaN, and raise IE for either SNaN; NaNs suppress DE. Opposite-sign infinities
+raise IE and return `fff8000000000000`; other infinities preserve their sign.
+Any subnormal operand raises precompute DE, including infinity plus subnormal.
+Aggregate IE/DE before arithmetic. An unmasked pre-event commits the new
+status and suppresses post flags and the full destination write. Otherwise use
+`Binary64::add_raw_result` with MXCSR.RC. Exact cancellation is -0 only under
+round-down; same-sign zeros preserve their sign. Masked overflow records OE|PE;
+the overflow-boundary midpoint may record PE only for directed maxfinite
+rounding, while maxfinite+maxfinite raises OE|PE in every mode. Finite exact
+same-format subnormal results raise no UE/PE with FTZ clear; FTZ flushes only
+tiny nonzero results to signed zero with UE|PE. Commit post status before
+unmasked PM delivery, preserving destination/RIP/retirement on fault.
+
+Use an independent scalar raw-u64 wrapper over the independent ADDPD lane
+oracle, with no host FP or production arithmetic helper. Cover all pairs and
+aliases; both NaN orders and SNaNs; opposite infinities; infinity plus
+subnormal; positive and negative halfway rounding; exact and FTZ tiny sums;
+signed zero; large exponent gaps; midpoint and larger directed overflow;
+sticky flags; pre/post exception atomicity; MXCSR admission; full fetch, gates,
+CPL, STOP/budget, no callbacks, malformed/tampered fixtures and backend
+denial. The literal fixture has high64 poison in both operands and checks
+destination preservation. Final physical-x86 acceptance remains part of the
+combined S2-37 hardware substage.
+
+Sources: Intel SDM Rev. 093 Vol. 2A ADDSD pp. 3-22–3-23 and legacy SSE rows on
+p. 2-28; generic SSE2/CR0/CR4 gates and SIMD exceptions; Vol. 1
+§§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel
+Floating-Point Reference Sheet v2.13. The p. 3-23 Type 3/Table 2-20 reference
+describes VEX forms and is not applied to legacy ADDSD. Memory forms, physical
+acceptance, other modes, complete unmasked OE/UE behavior and parent S2-37/
+S2-38 remain open. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37bb--canonical-long64-addsd-xmm-register-pairs),
+[report](../reports/STAGE_2_REPORT.md#s2-37bb--addsd-register-pair-interpreter-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bb-addsd-register-pair-profile).

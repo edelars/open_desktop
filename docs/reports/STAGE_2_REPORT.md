@@ -18992,3 +18992,38 @@ legacy ADDPS. No memory alignment or physical-acceptance claim is made. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37ba--canonical-long64-addps-xmm-register-pairs),
 [plan](../plans/STAGE_2.md#s2-37ba--canonical-long64-addps-xmm-register-pairs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ba-addps-register-pair-profile).
+
+
+## S2-37bb — ADDSD register-pair interpreter profile (2026-10-30)
+
+Implemented strict schema-v2 `s2-long-addsd-registers-v1` for canonical
+Long64 legacy `F2 0F 58 /r`, ModR/M.mod=3, across all 256 XMM register pairs.
+The interpreter computes the scalar low64 sum from snapshotted operands,
+preserves the destination high64, and ignores source high64. Canonical four-
+and five-byte encodings are accepted; memory forms, aliases, VEX/EVEX and
+trailing bytes are rejected. Complete fetch precedes SSE2/EM/OSFXSR and TS
+gates at CPL0–3; the path makes no data callbacks and remains interpreter-only.
+
+The production path uses `Binary64::add_raw_result`, with scalar NaN,
+subnormal, signed-zero, directed-rounding, overflow, tininess and FTZ behavior.
+Unmasked pre-events commit only their status bits and suppress post flags and
+destination/RIP commit. The independent testkit oracle wraps the independent
+ADDPD lane oracle without host FP or production arithmetic helpers. The
+literal fixture checks result, high-half preservation, backend denial and
+tamper rejection; an unmasked DE case confirms atomicity and DE-only status.
+
+Validation passed: ADDSD-focused od-isa and testkit tests, full
+`cargo test -p od-isa --offline --quiet` (1,570 tests), full
+`cargo test -p od-testkit --offline --quiet` (442 tests), and
+`cargo test -p od-runner --offline --test fixture_v2 --quiet` (432 tests).
+Focused ADDPD/ADDPS and DIV/MUL/SUB runner regressions passed. Final
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+`python3 tools/check_layout.py`, `git diff --check`, and `graphify update .`
+passed. Independent Sol-high review found and verified the oracle suppression
+fix and requested MXCSR admission coverage; no findings remain.
+
+Source: Intel SDM Rev. 093 Vol. 2A ADDSD pp. 3-22–3-23 and legacy SSE rows on
+p. 2-28. The p. 3-23 Type 3/Table 2-20 reference concerns VEX forms. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37bb--canonical-long64-addsd-xmm-register-pairs),
+[plan](../plans/STAGE_2.md#s2-37bb--canonical-long64-addsd-xmm-register-pairs),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bb-addsd-register-pair-profile).

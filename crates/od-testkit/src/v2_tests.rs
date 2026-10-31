@@ -303,6 +303,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 subpd_controls: input.fixture.subpd_controls,
                 mulpd_controls: input.fixture.mulpd_controls,
                 addpd_controls: input.fixture.addpd_controls,
+                addsd_controls: input.fixture.addsd_controls,
                 addps_controls: input.fixture.addps_controls,
                 divpd_controls: input.fixture.divpd_controls,
                 divsd_controls: input.fixture.divsd_controls,
@@ -9812,6 +9813,90 @@ fn addpd_oracle_covers_rounding_tiny_overflow_and_special_events() {
     let infinity_subnormal = independent_addpd([0x7ff0_0000_0000_0000, 0], [1, 0], 0x1f80);
     assert_eq!(infinity_subnormal.0[0], 0x7ff0_0000_0000_0000);
     assert!(!infinity_subnormal.1 && infinity_subnormal.2);
+}
+
+#[test]
+fn addsd_oracle_covers_scalar_rounding_tiny_overflow_and_special_events() {
+    let halfway = independent_addsd(0x3ff0_0000_0000_0000, 0x3ca0_0000_0000_0000, 0x1f80);
+    assert_eq!(
+        halfway,
+        (0x3ff0_0000_0000_0000, false, false, false, false, true)
+    );
+    let upward = independent_addsd(0x3ff0_0000_0000_0000, 0x3ca0_0000_0000_0000, 0x5f80);
+    assert_eq!(
+        upward,
+        (0x3ff0_0000_0000_0001, false, false, false, false, true)
+    );
+    let negative_halfway = independent_addsd(0xbff0_0000_0000_0000, 0xbca0_0000_0000_0000, 0x1f80);
+    assert_eq!(
+        negative_halfway,
+        (0xbff0_0000_0000_0000, false, false, false, false, true)
+    );
+    let negative_down = independent_addsd(0xbff0_0000_0000_0000, 0xbca0_0000_0000_0000, 0x3f80);
+    assert_eq!(
+        negative_down,
+        (0xbff0_0000_0000_0001, false, false, false, false, true)
+    );
+
+    let exact_tiny = independent_addsd(0x0010_0000_0000_0001, 0x8010_0000_0000_0000, 0x1f80);
+    assert_eq!(exact_tiny, (1, false, false, false, false, false));
+    let flushed_tiny = independent_addsd(0x0010_0000_0000_0001, 0x8010_0000_0000_0000, 0x9f80);
+    assert_eq!(flushed_tiny, (0, false, false, false, true, true));
+
+    let midpoint = independent_addsd(0x7fef_ffff_ffff_ffff, 0x7c90_0000_0000_0000, 0x1f80);
+    assert_eq!(
+        midpoint,
+        (0x7ff0_0000_0000_0000, false, false, true, false, true)
+    );
+    let midpoint_down = independent_addsd(0x7fef_ffff_ffff_ffff, 0x7c90_0000_0000_0000, 0x3f80);
+    assert_eq!(
+        midpoint_down,
+        (0x7fef_ffff_ffff_ffff, false, false, false, false, true)
+    );
+    for rc in [0x1f80, 0x3f80, 0x5f80, 0x7f80] {
+        assert_eq!(
+            independent_addsd(0x7fef_ffff_ffff_ffff, 0x7fef_ffff_ffff_ffff, rc),
+            (
+                (if rc == 0x3f80 || rc == 0x7f80 {
+                    0x7fef_ffff_ffff_ffff
+                } else {
+                    0x7ff0_0000_0000_0000
+                }),
+                false,
+                false,
+                true,
+                false,
+                true
+            )
+        );
+    }
+    let large_gap_up = independent_addsd(0x3ff0_0000_0000_0000, 1, 0x5f80);
+    assert_eq!(
+        large_gap_up,
+        (0x3ff0_0000_0000_0001, false, true, false, false, true)
+    );
+    let unmasked_de = independent_addsd(0x3ff0_0000_0000_0000, 1, 0x1e80);
+    assert_eq!(
+        unmasked_de,
+        (0x3ff0_0000_0000_0000, false, true, false, false, false)
+    );
+
+    let first_nan = independent_addsd(0x7ff0_0000_0000_0042, 0x7ff8_0000_0000_1234, 0x1f80);
+    assert_eq!(
+        first_nan,
+        (0x7ff8_0000_0000_0042, true, false, false, false, false)
+    );
+    let opposite_infinities =
+        independent_addsd(0x7ff0_0000_0000_0000, 0xfff0_0000_0000_0000, 0x1f80);
+    assert_eq!(
+        opposite_infinities,
+        (0xfff8_0000_0000_0000, true, false, false, false, false)
+    );
+    let infinity_subnormal = independent_addsd(0x7ff0_0000_0000_0000, 1, 0x1f80);
+    assert_eq!(
+        infinity_subnormal,
+        (0x7ff0_0000_0000_0000, false, true, false, false, false)
+    );
 }
 
 #[test]

@@ -6915,3 +6915,26 @@ This local interpreter profile claims no memory alignment or physical
 acceptance behavior. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37ba--canonical-long64-addps-xmm-register-pairs),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ba--canonical-long64-addps-xmm-register-pairs),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ba--addps-register-pair-interpreter-profile).
+
+### S2-37bb ADDSD register-pair profile
+
+`s2_37bb_addsd_xmm0_xmm1.case.json` is a handwritten canonical Long64
+`F2 0F 58 /r` literal. Low64 adds 2^-53 to 1.0 and rounds to even with PE;
+the destination high64 contains an SNaN canary and is preserved, while the
+source high64 contains a subnormal canary that scalar execution ignores. The
+strict schema-v2 profile admits all 256 XMM pairs, requires OM=UM=1, rejects
+DAZ/reserved MXCSR bits, and accepts RC, FTZ, IM/DM/ZM/PM and old stickies. Its
+independent raw-u64 scalar wrapper checks four RC halfway modes, signed zero,
+exact and FTZ tiny sums, large-gap DE|PE, overflow midpoint versus larger
+overflow, first-NaN selection and quieting, opposite infinities, and infinity
+plus subnormal without host FP or production helpers. Runtime checks cover
+all pairs and aliases, destination-high64 preservation, pre/post event
+atomicity, full-fetch gate ordering, CPL0–3, no data callbacks, malformed
+encodings, tampering, and JIT/native denial.
+
+Sources: Intel SDM Rev. 093 Vol. 2A ADDSD pp. 3-22–3-23 and legacy SSE rows on
+p. 2-28. The p. 3-23 Type 3/Table 2-20 reference concerns VEX forms, not
+legacy ADDSD. No memory alignment or physical-acceptance claim is made. See the
+[plan](../../../../docs/plans/STAGE_2.md#s2-37bb--canonical-long64-addsd-xmm-register-pairs),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bb--canonical-long64-addsd-xmm-register-pairs),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bb--addsd-register-pair-interpreter-profile).

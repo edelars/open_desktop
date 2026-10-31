@@ -549,3 +549,10 @@ strict schema-v2 profile, independent raw-rational oracle, tests and scope
 limits are recorded in the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ax--bounded-masked-range-long64-divsd-xmm-register-pairs),
 [Stage 2 plan](../../docs/plans/STAGE_2.md#s2-37ax--canonical-long64-divsd-xmm-register-pairs)
 and [report](../../docs/reports/STAGE_2_REPORT.md#s2-37ax--divsd-register-pair-interpreter-profile).
+
+S2-37bb adds strict interpreter-only Long64 register ADDSD under the
+schema-v2 `s2-long-addsd-registers-v1` profile. It snapshots both XMM sources,
+adds only low64, preserves destination high64, and processes MXCSR rounding and
+SIMD exceptions with full-fetch SSE2/CR0/CR4 gates. Memory forms and JIT/native
+execution remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bb--canonical-long64-addsd-xmm-register-pairs)
+and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-37bb--addsd-register-pair-interpreter-profile).
