@@ -19089,3 +19089,31 @@ errors are not repeated; this profile follows the opcode row and low32
 Operation semantics. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bc--canonical-long64-addss-xmm-register-pairs),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37bc--canonical-long64-addss-xmm-register-pairs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bc-addss-register-pair-profile).
+
+## S2-37bd — CVTPD2PS register-pair interpreter profile
+
+Added canonical Long64 `66 0F 5A /r` register-form decode and the strict
+schema-v2 `s2-long-cvtpd2ps-registers-v1` profile. Runtime uses explicit SSE2,
+CR0.EM/TS, CR4.OSFXSR/OSXMMEXCPT gates and a raw-bit narrowing helper. It
+snapshots both source lanes, writes the two binary32 lanes into destination.low64,
+zeros destination.high64 on success, and preserves the entire old destination on
+pre-event and post-PM faults. IE/DE pre-events are aggregated before conversion
+post-events; FTZ, WPR tininess, sticky flags and numeric exception delivery are
+covered by the local oracle. Intel Vol. 1 §§10.2.3.3 and 11.5.2.5 describe FTZ
+as the masked-underflow response, which flushes tiny results and sets UE|PE.
+The fixture checks an exact minimum subnormal with FTZ set as well as adjacent
+subnormal rounding boundaries.
+
+The literal fixture checks 1+2^-24 conversion, lane routing, poison destination,
+upper-zeroing, narrow-to-subnormal and overflow edges, FTZ, SNaN status, an
+unmasked DE fault, and JIT/native denial. Decoder coverage enumerates 256 XMM
+pairs and malformed prefix/form examples. An independent raw-integer
+binary64-to-binary32 oracle does not call production conversion code or host
+floating point. The focused `od-isa` decode and direct-execution tests passed (all 256 XMM
+pairs, including aliases); the focused `od-runner` integration fixture passed.
+All 443 `od-testkit` tests passed. Existing CVTPD2DQ, CVTTPD2DQ, DIVPD, MULPD,
+ADDPD and SUBPD `od-isa` regression filters passed. Workspace check, layout,
+format verification and final graph refresh were run for the completed change.
+This remains local interpreter
+coverage: no physical CPU, memory form, generic/JIT/native, C ABI or parent
+S2-37/S2-38 completion is claimed.

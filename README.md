@@ -125,3 +125,10 @@ and does not claim memory forms or physical acceptance. See the [CPU contract]
 (docs/specs/CPU_CONTRACT.md#s2-37ay--canonical-long64-divss-xmm-register-pairs),
 [Stage 2 plan](docs/plans/STAGE_2.md#s2-37ay--canonical-long64-divss-xmm-register-pairs)
 and [report](docs/reports/STAGE_2_REPORT.md#s2-37ay--divss-register-pair-interpreter-profile).
+
+The local-only S2-37bd `CVTPD2PS` profile narrows two binary64 lanes to the low
+64 bits of an XMM destination and clears its upper 64 bits after success. Its
+strict schema-v2 register profile covers MXCSR rounding/exception ordering and
+all 256 XMM pairs; physical acceptance and memory forms remain outside scope.
+See the [CPU contract](docs/specs/CPU_CONTRACT.md#s2-37bd--canonical-long64-cvtpd2ps-xmm-register-pairs)
+and [Stage 2 report](docs/reports/STAGE_2_REPORT.md#s2-37bd--cvtpd2ps-register-pair-interpreter-profile).

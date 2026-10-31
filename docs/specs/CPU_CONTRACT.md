@@ -13950,3 +13950,44 @@ physical acceptance, complete unmasked OE/UE behavior and parent S2-37/S2-38
 remain open. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bc--canonical-long64-addss-xmm-register-pairs),
 [report](../reports/STAGE_2_REPORT.md#s2-37bc--addss-register-pair-interpreter-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bc-addss-register-pair-profile).
+
+## S2-37bd — canonical Long64 CVTPD2PS XMM register pairs
+
+The local schema-v2 profile `s2-long-cvtpd2ps-registers-v1` admits only canonical
+Long64 legacy `66 0F 5A /r` with ModR/M.mod=3, covering every XMM register pair.
+An unextended encoding is four bytes; one adjacent REX `41`, `44` or `45` after
+66 extends the destination and/or source register and makes it five bytes.
+Memory operands, F2/F3, reordered/repeated/redundant prefixes, REX.W/X/40,
+trailing bytes, VEX/EVEX, other modes and generic/JIT/native execution are
+excluded. The interpreter fetches the full instruction before SSE2/CR0.EM/
+CR4.OSFXSR #UD and then CR0.TS #NM checks; the bounded register form issues no
+data callbacks and admits CPL0–3.
+
+MXCSR admission requires OM=UM=1, DAZ=0 and all reserved bits clear. RC, FTZ,
+IM/DM/ZM/PM and preexisting sticky flags are accepted. Both source lanes are
+snapshotted before narrowing. Source.low64 becomes destination.low32 and
+source.high64 becomes destination.high32; successful completion zeroes
+destination.high64. The old destination never contributes to conversion.
+
+The value conversion is binary64-to-binary32 narrowing with one precision
+rounding. Signed zero and infinity keep their sign. NaNs preserve sign and the
+high payload bits; SNaNs are quieted and set IE, while neither QNaN nor SNaN
+sets PE. Each subnormal source sets DE. IE and DE are aggregated across both
+lanes before post-conversion events. An unmasked IE or DE commits only its
+sticky status, suppresses all OE/UE/PE effects and leaves the full destination,
+RIP and retirement unchanged. Masked overflow sets OE|PE. Tiny inexact results
+set UE|PE; FTZ flushes any nonzero tiny result to signed zero and sets UE|PE.
+With FTZ clear, exact tiny results do not set UE/PE. An unmasked PM commits
+status but leaves the entire destination unchanged. When
+OSXMMEXCPT is clear, SIMD numeric faults map to #UD; otherwise they map to #XM.
+
+The independent fixture oracle constructs binary32 results from raw integers
+and MXCSR rounding controls without host floating point or production helpers.
+The local tests cover all register pairs and aliases, rounding and exponent
+boundaries, NaN payload rules, pre/post events, fault atomicity, instruction
+gates and backend denial. These checks do not establish physical acceptance,
+memory-form support, or parent S2-37/S2-38 completion. Normative references:
+Intel SDM Rev. 093 Vol. 2A CVTPD2PS pp. 3-219–3-222 and the legacy opcode row
+in Table 2-19. The Type 2/Table 2-19 note on p. 3-222 applies to VEX forms, not
+this legacy instruction. Also Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ;
+Vol. 3A Event 19/Table 7-8; Intel Floating-Point Reference Sheet v2.13.

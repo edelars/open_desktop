@@ -284,6 +284,8 @@ pub enum Profile {
     LongMulpdRegistersV1,
     #[serde(rename = "s2-long-addpd-registers-v1")]
     LongAddpdRegistersV1,
+    #[serde(rename = "s2-long-cvtpd2ps-registers-v1")]
+    LongCvtpd2psRegistersV1,
     #[serde(rename = "s2-long-addsd-registers-v1")]
     LongAddsdRegistersV1,
     #[serde(rename = "s2-long-addss-registers-v1")]
@@ -1347,6 +1349,7 @@ impl IntegerState {
                     | Profile::LongSubpdRegistersV1
                     | Profile::LongMulpdRegistersV1
                     | Profile::LongAddpdRegistersV1
+                    | Profile::LongCvtpd2psRegistersV1
                     | Profile::LongAddsdRegistersV1
                     | Profile::LongAddssRegistersV1
                     | Profile::LongAddpsRegistersV1
@@ -1572,6 +1575,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongAddpdRegistersV1
+                | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
                 | Profile::LongAddpsRegistersV1
@@ -1748,6 +1752,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongAddpdRegistersV1
+                | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
                 | Profile::LongAddpsRegistersV1
@@ -2106,6 +2111,7 @@ impl IntegerState {
             | Profile::LongSubpdRegistersV1
             | Profile::LongMulpdRegistersV1
             | Profile::LongAddpdRegistersV1
+            | Profile::LongCvtpd2psRegistersV1
             | Profile::LongAddsdRegistersV1
             | Profile::LongAddssRegistersV1
             | Profile::LongAddpsRegistersV1
@@ -2288,6 +2294,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongAddpdRegistersV1
+                | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
                 | Profile::LongAddpsRegistersV1
@@ -2482,6 +2489,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongAddpdRegistersV1
+                | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
                 | Profile::LongAddpsRegistersV1
@@ -2685,6 +2693,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongAddpdRegistersV1
+                | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
                 | Profile::LongAddpsRegistersV1
@@ -2895,6 +2904,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongAddpdRegistersV1
+                | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
                 | Profile::LongAddpsRegistersV1
@@ -3735,6 +3745,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongAddpdRegistersV1
+                | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
                 | Profile::LongAddpsRegistersV1
@@ -3902,6 +3913,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongAddpdRegistersV1
+                | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
                 | Profile::LongAddpsRegistersV1
@@ -4188,6 +4200,8 @@ pub struct Fixture {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub addpd_controls: Option<AddpdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cvtpd2ps_controls: Option<Cvtpd2psControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub addsd_controls: Option<AddsdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub addss_controls: Option<AddssControlSnapshot>,
@@ -4390,6 +4404,7 @@ pub type SqrtsdControlSnapshot = Cvtdq2psControlSnapshot;
 pub type SubpdControlSnapshot = Cvtdq2psControlSnapshot;
 pub type MulpdControlSnapshot = Cvtdq2psControlSnapshot;
 pub type AddpdControlSnapshot = Cvtdq2psControlSnapshot;
+pub type Cvtpd2psControlSnapshot = Cvtdq2psControlSnapshot;
 pub type AddsdControlSnapshot = Cvtdq2psControlSnapshot;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -6622,6 +6637,58 @@ impl Fixture {
                 "only valid for ADDPD register-space profile",
             ));
         }
+        if self.profile == Profile::LongCvtpd2psRegistersV1 {
+            let _ = self
+                .cvtpd2ps_controls
+                .ok_or_else(|| invalid("cvtpd2ps_controls", "required by the CVTPD2PS profile"))?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by the CVTPD2PS profile"))?;
+            let (_, _, length) =
+                cvtpd2ps_register_encoding(&code.initial_bytes_hex).ok_or_else(|| {
+                    invalid("memory.code", "outside canonical CVTPD2PS register profile")
+                })?;
+            let start = self.initial_state.rip.get();
+            if code.guest_address.get() != start
+                || code.length != length
+                || !code.permissions.execute
+                || self.memory.len() != 1
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(u64::from(length))
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory.code",
+                    "CVTPD2PS requires one canonical executable encoding, budget 1, and stop RIP entry+length",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .expect("SSE2 required by CVTPD2PS")
+                .mxcsr
+                .get();
+            if mxcsr & !0x0000_ffbf != 0
+                || mxcsr & (1 << 6) != 0
+                || mxcsr & ((1 << 10) | (1 << 11)) != ((1 << 10) | (1 << 11))
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "CVTPD2PS requires supported MXCSR bits, DAZ=0, OM=1, and UM=1",
+                ));
+            }
+        } else if self.cvtpd2ps_controls.is_some() {
+            return Err(invalid(
+                "cvtpd2ps_controls",
+                "only valid for CVTPD2PS register-space profile",
+            ));
+        }
         if self.profile == Profile::LongAddsdRegistersV1 {
             let _ = self
                 .addsd_controls
@@ -8394,6 +8461,9 @@ impl Fixture {
                 }
                 Profile::LongCvtpd2dqRegistersV1 => {
                     cvtpd2dq_register_encoding(&code_bytes).map(|(_, _, length)| length)
+                }
+                Profile::LongCvtpd2psRegistersV1 => {
+                    cvtpd2ps_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
                 Profile::LongCvttpd2dqRegistersV1 => {
                     cvttpd2dq_register_encoding(&code_bytes).map(|(_, _, length)| length)
@@ -10411,6 +10481,7 @@ impl Fixture {
             subpd_controls: None,
             mulpd_controls: None,
             addpd_controls: None,
+            cvtpd2ps_controls: None,
             addsd_controls: None,
             addss_controls: None,
             addps_controls: None,
@@ -10555,6 +10626,8 @@ pub struct Snapshot {
     pub mulpd_controls: Option<MulpdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub addpd_controls: Option<AddpdControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cvtpd2ps_controls: Option<Cvtpd2psControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub addsd_controls: Option<AddsdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -11006,6 +11079,19 @@ impl RunResult {
             return Err(invalid(
                 "snapshot.addpd_controls",
                 "only valid for the ADDPD profile",
+            ));
+        }
+        if self.profile == Profile::LongCvtpd2psRegistersV1 {
+            if snapshot.cvtpd2ps_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.cvtpd2ps_controls",
+                    "required by the CVTPD2PS profile",
+                ));
+            }
+        } else if snapshot.cvtpd2ps_controls.is_some() {
+            return Err(invalid(
+                "snapshot.cvtpd2ps_controls",
+                "only valid for the CVTPD2PS profile",
             ));
         }
         if self.profile == Profile::LongAddsdRegistersV1 {
@@ -11736,6 +11822,19 @@ impl RunResult {
             }
             match (
                 loaded.fixture.profile,
+                loaded.fixture.cvtpd2ps_controls,
+                value.cvtpd2ps_controls,
+            ) {
+                (Profile::LongCvtpd2psRegistersV1, Some(input), Some(output))
+                    if input == output => {}
+                (Profile::LongCvtpd2psRegistersV1, _, _) => {
+                    return Err(FormatError::CaseMismatch("cvtpd2ps_controls"));
+                }
+                (_, None, None) => {}
+                _ => return Err(FormatError::CaseMismatch("cvtpd2ps_controls")),
+            }
+            match (
+                loaded.fixture.profile,
                 loaded.fixture.addsd_controls,
                 value.addsd_controls,
             ) {
@@ -11900,6 +11999,8 @@ impl RunResult {
                 validate_subpd_registers_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongMulpdRegistersV1 {
                 validate_mulpd_registers_result(loaded, self, value)?;
+            } else if loaded.fixture.profile == Profile::LongCvtpd2psRegistersV1 {
+                validate_cvtpd2ps_registers_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongAddpdRegistersV1 {
                 validate_addpd_registers_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongAddsdRegistersV1 {
@@ -15544,6 +15645,134 @@ fn validate_addpd_registers_result(
             && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
         (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
         _ => return Err(FormatError::CaseMismatch("ADDPD outcome/exception")),
+    }
+    Ok(())
+}
+fn validate_cvtpd2ps_registers_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .cvtpd2ps_controls
+        .ok_or(FormatError::CaseMismatch("cvtpd2ps_controls"))?;
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    let (destination, source, length) = cvtpd2ps_register_encoding(&code.initial_bytes_hex)
+        .ok_or(FormatError::CaseMismatch("CVTPD2PS encoding"))?;
+    let rhs_bytes = decode_bytes(&initial_sse.xmm[usize::from(source)])?;
+    let rhs = std::array::from_fn::<_, 2, _>(|lane| {
+        u64::from_le_bytes(rhs_bytes[lane * 8..lane * 8 + 8].try_into().unwrap())
+    });
+    let old_mxcsr = initial_sse.mxcsr.get() as u32;
+    let (values, new_ie, new_de, new_oe, new_ue, new_pe) = independent_cvtpd2ps(rhs, old_mxcsr);
+    let unmasked_ie = new_ie && old_mxcsr & (1 << 7) == 0;
+    let unmasked_de = new_de && old_mxcsr & (1 << 8) == 0;
+    let unmasked_pre = unmasked_ie || unmasked_de;
+    let unmasked_oe = new_oe && old_mxcsr & (1 << 10) == 0;
+    let unmasked_ue = new_ue && old_mxcsr & (1 << 11) == 0;
+    let unmasked_pe = new_pe && old_mxcsr & (1 << 12) == 0;
+    let gate_vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let fault_vector = gate_vector.or_else(|| {
+        if unmasked_pre || unmasked_oe || unmasked_ue || unmasked_pe {
+            Some(if controls.cr4_osxmmexcpt { 19 } else { 6 })
+        } else {
+            None
+        }
+    });
+    if !matches!(
+        (fault_vector.is_some(), fixture.expected_exit),
+        (true, ExpectedExit::Exception) | (false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("CVTPD2PS expected exit"));
+    }
+    let mut expected_state = fixture.initial_state.clone();
+    if gate_vector.is_none() {
+        let sse = expected_state
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        sse.mxcsr = HexU64(u64::from(
+            old_mxcsr
+                | u32::from(new_ie)
+                | (u32::from(new_de) << 1)
+                | (u32::from(new_oe) << 3)
+                | (u32::from(new_ue) << 4)
+                | (u32::from(new_pe) << 5),
+        ));
+        if !unmasked_pre && !unmasked_oe && !unmasked_ue && !unmasked_pe {
+            let mut expected_destination = [0u8; 16];
+            for (lane, value) in values.into_iter().enumerate() {
+                expected_destination[lane * 4..lane * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            }
+            sse.xmm[usize::from(destination)] = crate::memory::encode_bytes(&expected_destination);
+            expected_state.rip = HexU64(
+                fixture
+                    .initial_state
+                    .rip
+                    .get()
+                    .checked_add(u64::from(length))
+                    .ok_or(FormatError::CaseMismatch("CVTPD2PS stop overflow"))?,
+            );
+        }
+    }
+    let expected_memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected_state {
+        return Err(FormatError::CaseMismatch("CVTPD2PS state"));
+    }
+    if snapshot.rflags_defined != HexU64(INTEGER_FLAGS) {
+        return Err(FormatError::CaseMismatch("CVTPD2PS defined flags"));
+    }
+    if snapshot.memory != expected_memory {
+        return Err(FormatError::CaseMismatch("CVTPD2PS memory"));
+    }
+    let expected_count = u64::from(fault_vector.is_none());
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(expected_count),
+        })
+    {
+        return Err(FormatError::CaseMismatch("CVTPD2PS retirement count"));
+    }
+    match (fault_vector, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == Observation::Unavailable {
+                    reason: "exception has no architectural error code".into(),
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("CVTPD2PS outcome/exception")),
     }
     Ok(())
 }
@@ -20586,6 +20815,35 @@ fn cvtpd2dq_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
     Some((destination, source, bytes.len() as u32))
 }
 
+fn cvtpd2ps_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
+    if code_bytes.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..code_bytes.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&code_bytes[index..index + 2], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let (rex, opcode_offset) = match bytes.as_slice() {
+        [0x66, 0x0f, 0x5a, modrm] if modrm >> 6 == 3 => (0u8, 1usize),
+        [0x66, rex, 0x0f, 0x5a, modrm] if matches!(*rex, 0x41 | 0x44 | 0x45) && modrm >> 6 == 3 => {
+            (*rex, 2usize)
+        }
+        _ => return None,
+    };
+    let modrm = *bytes.last()?;
+    let destination = ((modrm >> 3) & 7) | (((rex >> 2) & 1) << 3);
+    let source = (modrm & 7) | ((rex & 1) << 3);
+    let needs_rex = destination >= 8 || source >= 8;
+    if needs_rex != (opcode_offset == 2)
+        || (rex & 4 != 0) != (destination >= 8)
+        || (rex & 1 != 0) != (source >= 8)
+        || rex & 0x0a != 0
+    {
+        return None;
+    }
+    Some((destination, source, bytes.len() as u32))
+}
+
 fn cvttpd2dq_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
     if code_bytes.len() % 2 != 0 {
         return None;
@@ -22381,6 +22639,143 @@ fn independent_addpd(
         oe = false;
         ue = false;
         pe = false;
+    }
+    (values, ie, de, oe, ue, pe)
+}
+
+fn independent_narrow_binary64(raw: u64, rc: u32) -> (u32, bool, bool, bool, bool, bool, bool) {
+    let sign = (raw >> 63) as u32;
+    let exponent = ((raw >> 52) & 0x7ff) as i32;
+    let fraction = raw & 0x000f_ffff_ffff_ffff;
+    let sign32 = sign << 31;
+    if exponent == 0x7ff {
+        if fraction == 0 {
+            return (
+                sign32 | 0x7f80_0000,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+            );
+        }
+        let signaling = fraction & (1 << 51) == 0;
+        return (
+            sign32 | 0x7f80_0000 | ((fraction >> 29) as u32) | (1 << 22),
+            signaling,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+    }
+    if exponent == 0 && fraction == 0 {
+        return (sign32, false, false, false, false, false, false);
+    }
+    let denormal = exponent == 0;
+    let mut significand = if denormal {
+        fraction
+    } else {
+        (1 << 52) | fraction
+    };
+    let mut source_exponent = if denormal {
+        -1074
+    } else {
+        exponent - 1023 - 52
+    };
+    while significand < (1 << 52) {
+        significand <<= 1;
+        source_exponent -= 1;
+    }
+    let mut unbiased = source_exponent + 52;
+    let unbounded_unbiased = unbiased;
+    let mut q = significand >> 29;
+    let rem = significand & ((1 << 29) - 1);
+    let round_up = match rc {
+        0 => rem > (1 << 28) || rem == (1 << 28) && q & 1 != 0,
+        1 => sign != 0 && rem != 0,
+        2 => sign == 0 && rem != 0,
+        _ => false,
+    };
+    if round_up {
+        q += 1;
+    }
+    let mut tiny = unbiased < -126;
+    if q == (1 << 24) {
+        q >>= 1;
+        unbiased += 1;
+        tiny = unbiased < -126;
+    }
+    let mut inexact = rem != 0;
+    if unbiased > 127 {
+        let infinity = rc == 0 || rc == 1 && sign != 0 || rc == 2 && sign == 0;
+        let value = if infinity {
+            sign32 | 0x7f80_0000
+        } else {
+            sign32 | 0x7f7f_ffff
+        };
+        return (value, false, denormal, true, false, true, false);
+    }
+    let value = if unbiased >= -126 {
+        sign32 | (((unbiased + 127) as u32) << 23) | (q as u32 & 0x007f_ffff)
+    } else {
+        // Tininess is taken from the precision-rounded WPR result above, but
+        // the final bounded denormal rounding uses the original exact value.
+        // Preserve the pre-carry exponent for this direct subnormal rounding.
+        let shift = (-unbounded_unbiased - 97) as u32;
+        let (mut subnormal, discarded, half_cmp) = if shift < 64 {
+            let quotient = significand >> shift;
+            let mask = (1u64 << shift) - 1;
+            let remainder = significand & mask;
+            let half = 1u64 << (shift - 1);
+            (quotient, remainder != 0, remainder.cmp(&half))
+        } else if shift == 64 {
+            (0, significand != 0, significand.cmp(&(1u64 << 63)))
+        } else {
+            (0, significand != 0, core::cmp::Ordering::Less)
+        };
+        let sub_round = match rc {
+            0 => {
+                half_cmp == core::cmp::Ordering::Greater
+                    || half_cmp == core::cmp::Ordering::Equal && subnormal & 1 != 0
+            }
+            1 => sign != 0 && discarded,
+            2 => sign == 0 && discarded,
+            _ => false,
+        };
+        if sub_round {
+            subnormal += 1;
+        }
+        inexact |= discarded;
+        sign32 | (subnormal as u32)
+    };
+    let pe = inexact;
+    let ue = tiny && inexact;
+    (value, false, denormal, false, ue, pe, tiny)
+}
+
+fn independent_cvtpd2ps(sources: [u64; 2], mxcsr: u32) -> ([u32; 2], bool, bool, bool, bool, bool) {
+    let lanes = [
+        independent_narrow_binary64(sources[0], (mxcsr >> 13) & 3),
+        independent_narrow_binary64(sources[1], (mxcsr >> 13) & 3),
+    ];
+    let ie = lanes.iter().any(|lane| lane.1);
+    let de = lanes.iter().any(|lane| lane.2);
+    let pre_unmasked = ie && mxcsr & (1 << 7) == 0 || de && mxcsr & (1 << 8) == 0;
+    let oe = !pre_unmasked && lanes.iter().any(|lane| lane.3);
+    let mut ue = !pre_unmasked && lanes.iter().any(|lane| lane.4);
+    let mut pe = !pre_unmasked && lanes.iter().any(|lane| lane.5 || lane.3);
+    let mut values = [lanes[0].0, lanes[1].0];
+    if !pre_unmasked && mxcsr & (1 << 15) != 0 {
+        for (index, value) in values.iter_mut().enumerate() {
+            if lanes[index].6 && *value & 0x7fff_ffff != 0 {
+                *value &= 1 << 31;
+                ue = true;
+                pe = true;
+            }
+        }
     }
     (values, ie, de, oe, ue, pe)
 }

@@ -556,3 +556,11 @@ adds only low64, preserves destination high64, and processes MXCSR rounding and
 SIMD exceptions with full-fetch SSE2/CR0/CR4 gates. Memory forms and JIT/native
 execution remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bb--canonical-long64-addsd-xmm-register-pairs)
 and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-37bb--addsd-register-pair-interpreter-profile).
+
+S2-37bd adds the strict interpreter-only Long64 CVTPD2PS register-pair profile
+`s2-long-cvtpd2ps-registers-v1`. It narrows two snapshotted binary64 source lanes,
+zeroes the destination upper qword only on success, and applies MXCSR pre/post
+event ordering with explicit SSE2/CR0/CR4 gates. The schema oracle is independent
+integer code. Memory forms and JIT/native/physical acceptance remain excluded.
+See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bd--canonical-long64-cvtpd2ps-xmm-register-pairs)
+and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-37bd--cvtpd2ps-register-pair-interpreter-profile).

@@ -6962,3 +6962,15 @@ profile. No memory alignment or physical-acceptance claim is made. See the
 [plan](../../../../docs/plans/STAGE_2.md#s2-37bc--canonical-long64-addss-xmm-register-pairs),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bc--canonical-long64-addss-xmm-register-pairs),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bc--addss-register-pair-interpreter-profile).
+
+### S2-37bd: bounded masked-range CVTPD2PS register pair
+
+`s2_37bd_cvtpd2ps_xmm0_xmm1.case.json` is a schema-v2 Long64 interpreter-only
+fixture for canonical `66 0F 5A /r` register pairs. It converts two source
+binary64 lanes to destination.low64, zeros destination.high64 on success, and
+uses poisoned destination bytes to detect accidental arithmetic input or
+partial upper-state retention. The independent result validator uses integer
+bit construction and rounding. All 256 register encodings, aliases, exceptions,
+rounding boundaries, FTZ, NaN payloads, and backend denial are covered by local
+unit/integration scenarios. This is not physical acceptance or memory-form
+support.
