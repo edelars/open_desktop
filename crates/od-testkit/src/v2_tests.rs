@@ -63,6 +63,29 @@ fn cvttpd2pi_schema_requires_its_exact_four_byte_masked_profile() {
 }
 
 #[test]
+fn cvtdq2ps_memory_pm_zero_schema_keeps_prerequisite_fault_priority() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_37bt_cvtdq2ps_pm_clear_refusal.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.expected_exit, ExpectedExit::Unsupported);
+    assert!(fixture.validate().is_ok());
+
+    let mut missing_sse2_and_ts = fixture;
+    let controls = missing_sse2_and_ts
+        .cvtdq2ps_memory_controls
+        .as_mut()
+        .expect("literal carries memory-profile controls");
+    controls.sse2_available = false;
+    controls.cr0_ts = true;
+    missing_sse2_and_ts.expected_exit = ExpectedExit::Exception;
+
+    assert!(missing_sse2_and_ts.validate().is_ok());
+    assert!(Fixture::from_json(&missing_sse2_and_ts.to_json().unwrap()).is_ok());
+}
+
+#[test]
 fn iretq_cs_ss_snapshot_fields_are_opt_in_and_lossless() {
     let cpu = od_isa::LongModeState {
         cr4: None,
@@ -324,6 +347,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 cvtdq2pd_controls: input.fixture.cvtdq2pd_controls,
                 cvtdq2pd_memory_controls: input.fixture.cvtdq2pd_memory_controls,
                 cvtdq2ps_controls: input.fixture.cvtdq2ps_controls,
+                cvtdq2ps_memory_controls: input.fixture.cvtdq2ps_memory_controls,
                 cvtps2dq_controls: input.fixture.cvtps2dq_controls,
                 cvttps2dq_controls: input.fixture.cvttps2dq_controls,
                 cvtpd2dq_controls: input.fixture.cvtpd2dq_controls,

@@ -42,3 +42,7 @@ the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37br--bounded-long64-cvtp
 The S2-37bs `CVTDQ2PD XMM0,[RAX]` fixture remains local-only and is denied
 before native execution; this slice does not claim physical x86 acceptance.
 See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile).
+
+The S2-37bt `CVTDQ2PS XMM0,[RAX]` profile remains interpreter-only and is
+refused before native execution; no physical x86 acceptance is claimed. See
+the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile).

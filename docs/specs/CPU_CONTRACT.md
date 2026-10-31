@@ -14386,3 +14386,48 @@ conditions ([official Vol. 1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/6714
 [plan](../plans/STAGE_2.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile),
 [report](../reports/STAGE_2_REPORT.md#s2-37bs--cvtdq2pd-xmm0rax-m64-memory-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bs-cvtdq2pd-xmm0rax-m64-memory-profile).
+
+## S2-37bt — bounded Long64 CVTDQ2PS XMM0,[RAX] aligned m128 memory profile
+
+The schema-v2 interpreter profile admits exact legacy `0F 5B 00`, Long64,
+instruction budget 1 and stop RIP=entry+3. It fetches all three instruction
+bytes before the bounded prerequisite checks: absent SSE2 (CPUID bit 26),
+CR0.EM or CR4.OSFXSR produces #UD, then CR0.TS produces #NM. This ordering is
+local profile policy. CPL0–3 are accepted.
+
+The source is exactly one aligned 16-byte span beginning at RAX. The complete
+span is checked for canonical48 before alignment and before the single data
+read. Misalignment produces #GP(0) without a callback, regardless of CPL or
+RFLAGS.AC; aligned AC=0 and AC=1 accesses are accepted. A failed read leaves
+the entire CPU state unchanged.
+
+Four signed i32 lanes are converted to binary32 according to MXCSR.RC, and the
+full 128-bit XMM0 destination is replaced. The local supported MXCSR mask is
+`0xffbf`; PM=1 is required by this bounded profile, while IM and the other
+exception masks may be zero. PM=0 is rejected locally as Unsupported. Unmasked
+Precision delivery is outside the modeled profile. Each valid inexact lane
+contributes PE; PE is OR-combined across lanes and with incoming sticky status.
+No IE, DE, OE or UE is generated. All other MXCSR bits are preserved.
+
+This instruction does not interact with x87 state. The executor neither gates
+on pending x87 exceptions nor mutates x87 fields, and fixtures include arbitrary
+and pending x87 canaries. The testkit oracle derives binary32 results using
+integer bit construction, without host floating point or production conversion
+helpers. Literal and runner coverage includes all four RC modes, all 16 lane
+inexactness masks starting with clear status, exact-lane prior PE histories,
+rounding boundaries and carry, aligned AC states, all 15 misalignment offsets,
+x87 preservation, malformed/foreign fields, tampering and backend denial.
+Runner cases cover representative context and do not assert memory callback
+counts. Direct ISA tests cover all misalignment offsets × CPL0–3 × AC0/1 with
+#GP(0), zero callbacks and unchanged CPU state, plus aligned AC/CPL successes,
+one 16-byte read, full fetch/gates, span and PM refusals, and read-failure
+rollback. JIT/native/C ABI remain closed. Physical x86 acceptance was not run.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTDQ2PS pp. 3-211–3-213; Vol. 1
+§§11.5.2.6–11.5.3.2 for Precision and PM and Appendix C §C.4/Table C-4
+p. C-5 for SIMD exception-condition classification ([official Vol. 1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)); Vol. 3A §16.1.3 Table 16-1
+p. 16-3 for legacy SSE2 prerequisite behavior ([official Vol. 3A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)); Vol. 1 Table 14-21 for memory
+alignment behavior. The VEX-only Type 2/Table 2-19 entry does not describe this
+legacy encoding. See the [plan](../plans/STAGE_2.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile),
+[report](../reports/STAGE_2_REPORT.md#s2-37bt--cvtdq2ps-xmm0rax-aligned-m128-memory-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bt-cvtdq2ps-xmm0rax-aligned-m128-memory-profile).

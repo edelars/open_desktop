@@ -653,3 +653,9 @@ with AC=0 after canonical48 span validation, converts two signed i32 values to
 binary64, replaces all XMM0 bits, and preserves MXCSR plus every x87 field,
 including pending-state canaries. Read/gate failures do not partially update
 CPU state. JIT, native and C ABI paths remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile), [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-37bs--cvtdq2pd-xmm0rax-m64-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bs-cvtdq2pd-xmm0rax-m64-memory-profile).
+
+S2-37bt adds exact interpreter-only legacy `CVTDQ2PS XMM0,[RAX]`
+(`0F 5B 00`) for one aligned 16-byte memory operand. It rounds four signed
+integer lanes to binary32 under MXCSR.RC, aggregates masked PE, and preserves
+prior MXCSR status plus all x87 state. The local profile requires PM=1 and
+keeps JIT/native/C ABI closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile), [plan](../../docs/plans/STAGE_2.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile), and [report](../../docs/reports/STAGE_2_REPORT.md#s2-37bt--cvtdq2ps-xmm0rax-aligned-m128-memory-profile).

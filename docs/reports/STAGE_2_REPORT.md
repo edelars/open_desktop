@@ -19560,3 +19560,47 @@ conditions. See the
 [Stage 2 plan](../plans/STAGE_2.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bs-cvtdq2pd-xmm0rax-m64-memory-profile).
+
+## S2-37bt — CVTDQ2PS XMM0,[RAX] aligned m128 memory profile
+
+Implemented exact legacy `0F 5B 00` as a separate schema-v2 Long64
+interpreter-only profile. It fetches three bytes before local SSE2/EM/OSFXSR
+#UD and TS #NM gates, accepts CPL0–3, and reads one 16-byte aligned span at
+RAX. The profile rounds four signed i32 lanes to binary32 under MXCSR.RC and
+replaces XMM0. PE is ORed for valid inexact lanes, while the incoming MXCSR
+status/control state is preserved. PM=1 is a bounded local admission rule;
+IM and the other masks may be clear. PM=0 is locally Unsupported. No unmasked
+PE delivery is modeled. x87 state is neither gated nor modified. JIT, native
+and C ABI remain closed; no physical x86 acceptance is claimed.
+
+The independent testkit oracle uses integer bit construction only. Six literal
+fixtures plus the runner matrix cover all four RC values × all 16 per-lane
+inexactness masks from clear flags, exact-lane sticky histories, conversion
+boundaries/carry, aligned AC=0/1, all 15 misalignment offsets at representative
+runner context, x87 canary preservation, malformed/foreign controls, tampered
+output and backend denial. Runner snapshots do not count data callbacks.
+Direct ISA tests cover all 15 misalignment offsets × CPL0–3 × AC=0/1 as pre-read
+#GP(0), zero callbacks and unchanged CPU state; aligned AC/CPL success, exactly
+one 16-byte read, full fetch/prerequisite gates, canonical span/PM refusals and
+rollback after a failed read.
+
+Verification passed:
+
+- `cargo test -p od-isa --offline`: 1,612 passed.
+- `cargo test -p od-testkit --offline`: 445 passed; doc-tests 0 (rerun after adding the schema-priority regression).
+- Focused `cargo test -p od-runner --test fixture_v2 cvtdq2ps_m128_literals_cover_rounding_precision_and_fail_closed --offline -- --nocapture`: 1 passed.
+- `cargo test -p od-runner --offline`: 112 unit tests and 449 integration tests passed.
+- `cargo test -p od-x86-runner --offline`: 8 library tests and 4 binary tests passed; doc-tests 0. The portable local-only classification test and runner native-Unsupported path passed. No profile-specific native fixture-denial test exists for this slice, and native execution was not performed.
+- `cargo check --workspace --all-targets --offline` and `cargo fmt --all -- --check` passed.
+- Post-review focused rechecks passed: `cargo test -p od-testkit cvtdq2ps_memory_pm_zero_schema_keeps_prerequisite_fault_priority --offline` (1); the focused bt runner matrix (1, including PM=0 + missing SSE2 + TS producing #UD); and `cargo test -p od-x86-runner narrow_xorpd_is_not_blocked_with_existing_sse_and_x87_profiles_denied --offline` (1 portable classification test).
+
+The complete runner has not asserted callback counts; those claims are based on
+direct ISA tests. No hardware execution or physical x86 acceptance was run. `graphify update .` completed with 10,196 nodes, 21,611 edges and 313 communities; the extractor retained its known warning for `include/open_desktop/host_abi.h` and 13 files without symbols. `python3 tools/check_layout.py` passed (48 required directories, 6 crate scaffolds, 14 instruction scopes), as did `cargo fmt --all -- --check` and `git diff --check`.
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTDQ2PS pp. 3-211–3-213;
+Vol. 1 §§11.5.2.6–11.5.3.2 for Precision masking and Appendix C §C.4/
+Table C-4 p. C-5 for SIMD exception-condition classification ([official Vol. 1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)); Vol. 3A §16.1.3
+Table 16-1 p. 16-3 for legacy SSE2 prerequisites ([official Vol. 3A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)); Vol. 1 Table 14-21 for
+memory alignment. The VEX-only Type 2/Table 2-19 citation is not applied to
+this legacy form. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bt-cvtdq2ps-xmm0rax-aligned-m128-memory-profile).

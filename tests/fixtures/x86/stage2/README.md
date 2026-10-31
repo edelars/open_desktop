@@ -7155,3 +7155,30 @@ was not run. Provenance cites Intel SDM Rev. 093 Vol. 2A CVTDQ2PD pp. 3-208–3-
 Vol. 3A §16.1.3 Table 16-1 p. 16-3, and Vol. 1 Table 14-21 (unaligned access
 with AC=0) plus Appendix C §C.4/Table C-4 p. C-5 (no SIMD numeric exception
 conditions). See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile), [plan](../../../../docs/plans/STAGE_2.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bs--cvtdq2pd-xmm0rax-m64-memory-profile).
+
+### S2-37bt CVTDQ2PS XMM0,[RAX] aligned m128 memory profile
+
+The six `s2_37bt_cvtdq2ps_*.case.json` files are literal schema-v2 fixtures for
+exact legacy `0F 5B 00`. Success fixtures read one aligned m128 from RAX and
+replace XMM0 with four MXCSR.RC-rounded binary32 lanes. They use PM=1 while
+allowing IM and the other exception masks to be clear; one fixture checks the
+local PM=0 refusal. Inputs include signed boundaries, rounding carry, old PE,
+misalignment and pending-x87 canaries. The instruction preserves every x87
+field and only raises sticky PE for valid inexact lanes. Native/JIT/C ABI stay
+closed; the fixtures do not claim physical x86 acceptance.
+
+The runner matrix covers all four rounding modes × all 16 inexact lane masks
+from clear flags, exact-lane sticky PE histories, aligned AC=0/1, every
+misalignment offset at representative CPL/AC, state/memory preservation,
+malformed and tampered results, foreign controls and backend denial. Direct
+ISA tests establish the full misalignment offset × CPL0–3 × AC0/1 matrix as
+pre-read #GP(0) with no callbacks and unchanged state, as well as aligned
+success, one exact 16-byte read, fetch/gates, span/PM refusals and read-failure
+rollback. Runner output itself does not record callback counts.
+
+Provenance: Intel SDM Rev. 093 Vol. 2A CVTDQ2PS pp. 3-211–3-213; Vol. 1
+§§11.5.2.6–11.5.3.2 for Precision masking and Appendix C §C.4/Table C-4
+p. C-5 for SIMD exception-condition classification ([official Vol. 1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)); Vol. 3A §16.1.3 Table 16-1
+p. 16-3 for legacy SSE2 gates ([official Vol. 3A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)); Vol. 1 Table 14-21 for alignment behavior. The VEX-only Type 2/Table 2-19 entry is not used. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile),
+[plan](../../../../docs/plans/STAGE_2.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bt--cvtdq2ps-xmm0rax-aligned-m128-memory-profile).

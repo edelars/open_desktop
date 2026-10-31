@@ -277,3 +277,9 @@ binary64 bits using integer operations only, checks gates and the one m64
 source, and verifies complete MXCSR/x87 preservation. Literal fixtures include
 pending x87 canaries; they establish local interpreter behavior only. See the
 [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile), [plan](../../docs/plans/STAGE_2.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile), and [report](../../docs/reports/STAGE_2_REPORT.md#s2-37bs--cvtdq2pd-xmm0rax-m64-memory-profile).
+
+S2-37bt adds separate schema-v2 profile `s2-long-cvtdq2ps-memory-rax-v1` and
+`cvtdq2ps_memory_controls`. Its independent oracle uses integer bit construction
+to round four i32 lanes to binary32, checks aggregate sticky PE, one aligned
+m128 source, and full x87 preservation. Foreign profile controls are rejected.
+See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile), [plan](../../docs/plans/STAGE_2.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile), and [report](../../docs/reports/STAGE_2_REPORT.md#s2-37bt--cvtdq2ps-xmm0rax-aligned-m128-memory-profile).

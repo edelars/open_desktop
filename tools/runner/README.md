@@ -211,3 +211,9 @@ S2-37bs runs the exact local-only schema-v2 `CVTDQ2PD XMM0,[RAX]`
 integer lanes exactly, replaces XMM0, and preserves MXCSR and all x87 state.
 Fixtures exercise supported MXCSR variations and pending x87 canaries; JIT and
 native requests are denied. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile), [plan](../../docs/plans/STAGE_2.md#s2-37bs--bounded-long64-cvtdq2pd-xmm0rax-m64-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bs-cvtdq2pd-xmm0rax-m64-memory-profile).
+
+S2-37bt runs the local-only schema-v2 legacy `CVTDQ2PS XMM0,[RAX]`
+(`0F 5B 00`) profile. The matrix covers RC and per-lane PE, sticky status,
+aligned AC values, misalignment faults, x87 preservation, schema/tamper checks
+and JIT/native denial. Direct ISA tests provide callback-count evidence; runner
+snapshots do not record callbacks. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile), [plan](../../docs/plans/STAGE_2.md#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile), and [report](../../docs/reports/STAGE_2_REPORT.md#s2-37bt--cvtdq2ps-xmm0rax-aligned-m128-memory-profile).
