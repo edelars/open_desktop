@@ -2391,37 +2391,14 @@ fn finite_product_quotient(
 /// profile and return `None`. Zero operands are mathematical identities, and
 /// exact cancellation uses the signless zero sentinel `(false, 0, 0)`.
 pub fn add_finite_aligned(lhs: BinaryFinite, rhs: BinaryFinite) -> Option<(bool, i32, u128)> {
-    if lhs.significand == 0 {
-        return Some(if rhs.significand == 0 {
-            (false, 0, 0)
-        } else {
-            (rhs.sign, rhs.exponent, u128::from(rhs.significand))
-        });
-    }
-    if rhs.significand == 0 {
-        return Some((lhs.sign, lhs.exponent, u128::from(lhs.significand)));
-    }
-
-    let exponent = lhs.exponent.min(rhs.exponent);
-    let lhs_gap = u32::try_from(i64::from(lhs.exponent) - i64::from(exponent)).ok()?;
-    let rhs_gap = u32::try_from(i64::from(rhs.exponent) - i64::from(exponent)).ok()?;
-    if lhs_gap > 64 || rhs_gap > 64 {
-        return None;
-    }
-
-    let lhs_magnitude = u128::from(lhs.significand) << lhs_gap;
-    let rhs_magnitude = u128::from(rhs.significand) << rhs_gap;
-    if lhs.sign == rhs.sign {
-        return Some((lhs.sign, exponent, lhs_magnitude + rhs_magnitude));
-    }
-
-    if lhs_magnitude == rhs_magnitude {
-        Some((false, 0, 0))
-    } else if lhs_magnitude > rhs_magnitude {
-        Some((lhs.sign, exponent, lhs_magnitude - rhs_magnitude))
-    } else {
-        Some((rhs.sign, exponent, rhs_magnitude - lhs_magnitude))
-    }
+    crate::finite_arithmetic::add_finite_aligned(
+        lhs.sign,
+        lhs.significand,
+        lhs.exponent,
+        rhs.sign,
+        rhs.significand,
+        rhs.exponent,
+    )
 }
 
 fn finite_sum_quotient(

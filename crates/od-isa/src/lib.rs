@@ -9,6 +9,7 @@ pub mod binary_float;
 pub mod cli;
 pub mod cpuid;
 pub mod execute;
+mod finite_arithmetic;
 pub mod hlt;
 pub mod interrupt;
 pub mod iretq;

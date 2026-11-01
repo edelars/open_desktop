@@ -438,25 +438,31 @@ pub fn add_finite_same_exponent_to_binary80(
     round_pack_exact_coefficient(exponent, coefficient, mode)
 }
 
-/// Add finite values with an exact same-exponent or bounded unequal-exponent
-/// path, then round and pack once into binary80.
+/// Add finite values with exact alignment, then round and pack once into binary80.
 ///
 /// A single zero is neutral in either operand position. Two zeros and exact
-/// cancellation return `None` because no signed-zero choice is made here. For
-/// nonzero unequal exponents, only gaps through 62 are admitted; no jammed or
-/// intermediate-rounded coefficient is used. `None` also includes finite
-/// binary80 range rejection and is not a guest exception.
+/// cancellation return `None` because no signed-zero choice is made here.
+/// Nonzero operands with exponent gaps through 64 are aligned losslessly into
+/// `u128`; wider gaps are rejected. The exact magnitude is packed once without
+/// an `i128` narrowing intermediate. `None` also includes checked-exponent or
+/// finite-binary80 range rejection and is not a guest exception.
 pub fn add_finite_to_binary80(
     lhs: X87Finite,
     rhs: X87Finite,
     mode: RationalRoundingMode,
 ) -> Option<X87Binary80> {
-    let sum = if lhs.is_zero() || rhs.is_zero() || lhs.exponent == rhs.exponent {
-        add_finite_same_exponent(lhs, rhs)
-    } else {
-        add_finite_unequal_exponents(lhs, rhs)
-    }?;
-    round_pack_exact_coefficient(sum.0, sum.1, mode)
+    let (sign, exponent, magnitude) = crate::finite_arithmetic::add_finite_aligned(
+        lhs.sign,
+        lhs.significand,
+        lhs.exponent,
+        rhs.sign,
+        rhs.significand,
+        rhs.exponent,
+    )?;
+    if magnitude == 0 {
+        return None;
+    }
+    round_pack_exact_magnitude(sign, exponent.checked_add(64)?, magnitude, mode)
 }
 
 /// Normalize the exact signed coefficient of `coefficient * 2^(exponent - 63)`.
@@ -2848,6 +2854,143 @@ mod tests {
             None
         );
         assert_eq!((one, two, negative_two, zero), before);
+    }
+
+    #[test]
+    fn aligned_addition_packs_exact_gaps_ties_boundaries_and_overflow() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let make = |exponent, significand, sign| {
+            finite(exponent, significand, sign, X87Binary80Class::Normal)
+        };
+        let sig = 1_u64 << 63;
+
+        let one = make(0, sig, false);
+        let high62 = make(62, sig, false);
+        let old_coeff = add_finite_unequal_exponents(high62, one).unwrap();
+        assert_eq!(
+            add_finite_to_binary80(high62, one, Nearest),
+            round_pack_exact_coefficient(old_coeff.0, old_coeff.1, Nearest)
+        );
+
+        let high63 = make(63, sig, false);
+        for (lhs, rhs) in [(high63, one), (one, high63)] {
+            assert_eq!(
+                add_finite_to_binary80(lhs, rhs, Nearest),
+                Some(raw_finite(0x403e, sig + 1, false)),
+                "gap 63 contributes exactly one ulp"
+            );
+        }
+
+        // Gap 64 is a half ulp. Exact ties use the retained parity; directed
+        // rounding increments only when its direction is away from zero. An
+        // odd low significand adds a sticky tail above the exact tie.
+        for high_significand in [sig, sig + 1] {
+            for low_significand in [sig, sig + 1] {
+                for sign in [false, true] {
+                    for mode in [Nearest, Zero, Up, Down] {
+                        let high = make(64, high_significand, sign);
+                        let low = make(0, low_significand, sign);
+                        let above_tie = low_significand & 1 != 0;
+                        let increment = match mode {
+                            Nearest => above_tie || high_significand & 1 != 0,
+                            Zero => false,
+                            Up => !sign,
+                            Down => sign,
+                        };
+                        let expected = Some(raw_finite(
+                            0x403f,
+                            high_significand + u64::from(increment),
+                            sign,
+                        ));
+                        assert_eq!(add_finite_to_binary80(high, low, mode), expected);
+                        assert_eq!(add_finite_to_binary80(low, high, mode), expected);
+                    }
+                }
+            }
+        }
+
+        // 1 - 2^-64 is exactly the predecessor of one.
+        let negative_tiny = make(-64, sig, true);
+        for (lhs, rhs) in [(one, negative_tiny), (negative_tiny, one)] {
+            assert_eq!(
+                add_finite_to_binary80(lhs, rhs, Nearest),
+                Some(raw_finite(0x3ffe, u64::MAX, false))
+            );
+        }
+
+        // Opposite-sign low terms make exact half-ulp values just below the
+        // odd retained significand; parity and result sign remain observable.
+        for sign in [false, true] {
+            for mode in [Nearest, Zero, Up, Down] {
+                let high = make(64, sig + 1, sign);
+                let low = make(0, sig, !sign);
+                let increment = match mode {
+                    Nearest | Zero => false,
+                    Up => !sign,
+                    Down => sign,
+                };
+                let expected = Some(raw_finite(0x403f, sig + u64::from(increment), sign));
+                assert_eq!(add_finite_to_binary80(high, low, mode), expected);
+                assert_eq!(add_finite_to_binary80(low, high, mode), expected);
+            }
+        }
+
+        let gap65 = make(65, sig, false);
+        assert_eq!(add_finite_to_binary80(gap65, one, Nearest), None);
+        assert_eq!(add_finite_to_binary80(one, gap65, Nearest), None);
+
+        let maximum = make(16383, u64::MAX, false);
+        assert_eq!(add_finite_to_binary80(maximum, maximum, Nearest), None);
+        assert_eq!(add_finite_to_binary80(maximum, maximum, Zero), None);
+        let checked_exponent_overflow_low = make(i32::MAX - 63, sig, false);
+        let checked_exponent_overflow_high = make(i32::MAX, sig, false);
+        assert_eq!(
+            add_finite_to_binary80(
+                checked_exponent_overflow_high,
+                checked_exponent_overflow_low,
+                Nearest
+            ),
+            None
+        );
+
+        let zero = finite(0, 0, true, X87Binary80Class::Zero);
+        let negative_one = make(0, sig, true);
+        let before = (
+            one,
+            high62,
+            high63,
+            negative_tiny,
+            gap65,
+            maximum,
+            checked_exponent_overflow_low,
+            checked_exponent_overflow_high,
+            zero,
+        );
+        assert_eq!(
+            add_finite_to_binary80(zero, one, Nearest),
+            Some(raw_finite(0x3fff, sig, false))
+        );
+        assert_eq!(add_finite_to_binary80(one, negative_one, Nearest), None);
+        assert_eq!(add_finite_to_binary80(zero, zero, Nearest), None);
+        assert_eq!(
+            (
+                one,
+                high62,
+                high63,
+                negative_tiny,
+                gap65,
+                maximum,
+                checked_exponent_overflow_low,
+                checked_exponent_overflow_high,
+                zero,
+            ),
+            before,
+            "inputs and source-class metadata are immutable"
+        );
     }
 
     #[test]
