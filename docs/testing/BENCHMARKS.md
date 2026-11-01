@@ -214,6 +214,42 @@ executor exits for accepted runs 2 and 3 were not captured. See the
 [S3-40d result report](../reports/STAGE_3_S3-40d_2026-10-31.md) and its
 [raw data](../reports/data/stage3/s3-40d/).
 
+## S3-40g: aliased W64 ADD allocator diagnostic A/B
+
+This ledger entry records the S3-32a bounded diagnostic on one frozen
+27-byte distinct-JZ fixture containing `ADD RAX,RAX` W64. The measurement release
+binary was built from source revision
+`958be7edf97dd0e421454630285dc4d6e711b2a7` (source SHA-256
+`97d0130cb448f4834840fcbbeadb449067c6b05a0d664c4d99d03e7f1a4898c3`), with
+binary SHA-256
+`98e7fafa0a548e4eb56d77639949527be0b6c8b0b2fb076feb8e96d7b6165a65`.
+Measurements ran on Apple M3 Max, macOS 26.7.1, aarch64, rustc 1.99.0. The
+release build source tree was clean; runtime `working_tree_dirty` is `null`
+because Git status timed out, so runtime-tree cleanliness is not asserted.
+
+Three sequential release processes retained 20 paired samples per JZ stratum
+and process (60 pooled pairs per set). All 360 timed sides met the 200 ms
+floor. Candidate/baseline ratios from pooled pair totals were:
+
+| Set | Median (range), n=60 |
+|---|---:|
+| Compile | 0.9832762133712801 (0.9488835862269013–1.062649364816329) |
+| JZ taken | 0.9878736671103938 (0.9749361861693031–1.0766848438450791) |
+| JZ fallthrough | 0.9975100869584979 (0.9322534409534861–1.0375123643358157) |
+
+Every range crosses 1. The candidate's lower pooled medians are observations
+on this fixture only; they support no speedup, allocator winner, or default
+claim. The profile changed code bytes from 3,052 to 3,032, frame size from
+288 B to 272 B, and `ReadGpr` / temporary-definition / spill counts from
+10/14/10 to 9/13/9; helper capture/save/reload counts stayed 3/3/3. This is
+not general workload evidence. The broader S3-32 gate remains open; S3-40 and
+S3-41 remain open. Mini checks remain deferred until the end of Stage 3.
+The exact fixture, boundaries, raw samples, and manifest are preserved in the
+[S3-32a source report](../reports/STAGE_3_S3-32a_2026-11-01.md) and its
+[suite manifest](../reports/data/stage3/s3-32a/suite-manifest.json); the
+[S3-40g report](../reports/STAGE_3_S3-40g_2026-11-01.md) summarizes this
+ledger update without duplicating raw data.
+
 ## Подготовка прогона
 
 Перед измерением закрепить:

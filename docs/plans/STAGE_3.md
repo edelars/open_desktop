@@ -3760,6 +3760,23 @@ S3-30 and S3-40 remain open, as do full Stage 3 and Mini/physical gates. No new
 architecture decision or ADR was made. See the
 [S3-40f ledger addendum](../reports/STAGE_3_S3-40f_2026-11-01.md).
 
+#### S3-40g: aliased ADD allocator diagnostic A/B addendum
+
+Added the completed S3-32a exact aliased `ADD RAX,RAX` W64 diagnostic to the
+provisional measurement ledger. Three sequential release processes produced
+60 pooled pairs per set; all 360 timed sides met the 200 ms floor. Candidate /
+baseline pooled-pair medians were 0.9833 for compile, 0.9879 for JZ taken, and
+0.9975 for JZ fallthrough, but every observed range crosses 1. The candidate
+also reduced the fixture's emitted code by 20 bytes and frame by 16 bytes, with
+one fewer `ReadGpr`, temporary definition, and spill; helper counts were
+unchanged. This is a bounded single-fixture allocator diagnostic: lower pooled
+medians alone support no speedup, allocator winner, or default claim. The
+broader S3-32 gate remains open; S3-40 and S3-41 remain open. Stage 2 activity is not a
+blocker, and Mini checks remain deferred to the end of Stage 3. See the
+[S3-40g addendum](../reports/STAGE_3_S3-40g_2026-11-01.md), the
+[S3-32a source report](../reports/STAGE_3_S3-32a_2026-11-01.md), and its
+[suite manifest](../reports/data/stage3/s3-32a/suite-manifest.json).
+
 ### S3-41. Оформить приёмку этапа
 
 1. Создать STAGE_3_REPORT: exact profiles/forms, native/helper/fallback границы, revision/fingerprint, машины/toolchains, correctness counts, commands/seeds, cold/warm/resource результаты.
