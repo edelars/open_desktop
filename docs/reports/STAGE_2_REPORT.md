@@ -20396,3 +20396,39 @@ entry scopes its Type 3/Table 2-20 reference to VEX forms; Table 2-20 itself
 also contains legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37cn--exact-legacy-long64-cvttsd2si-raxqword-ptr-rax),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37cn--bounded-long64-cvttsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cn--cvttsd2si-raxm64).
+
+## S2-37co — COMISD XMM0,m64
+
+Implemented the separate strict schema-v2 interpreter-only profile
+`s2-long-comisd-memory-rax-v1` for exact legacy `66 0F 2F 00`. It fetches four
+bytes, compares XMM0.low64 against one m64 value read from the checked
+canonical48 span `[RAX,RAX+7]`, and performs exactly one eight-byte memory
+callback. Unaligned addresses are admitted with local AC=0; AC=1 is a valid
+negative fixture returning local `Unsupported` before span/read. Read failure
+is atomic. Success preserves GPRs, XMM/x87 state and unrelated RFLAGS bits,
+and updates only the six arithmetic flags.
+
+Greater/equal/less/unordered set the COMISD relation flags (`0`, ZF, CF,
+CF|PF|ZF); OF/SF/AF are cleared. QNaN/SNaN adds sticky IE. A NaN in either
+operand suppresses newly generated DE, including when the other operand is
+subnormal; otherwise either subnormal operand adds DE. Old MXCSR sticky bits
+are preserved. The local profile requires SSE2 bit 26, supported MXCSR mask
+`0xffbf`, DAZ=0, IM=DM=1; PM may be clear. RC and FTZ are irrelevant.
+
+Focused verification passed: decoder 1/1, direct ISA execution 2/2,
+`cargo check -p od-testkit --tests --offline`, standalone integer-only oracle
+test 1/1, runner fixture 1/1 with 192 oracle comparisons, and native-local-only
+classifier 1/1. Direct relation checks cover CPL0–3; direct gate/refusal/span/
+read-failure checks use Ring0. Full suites passed: ISA 1,665; testkit 450;
+runner 112 unit + 471 fixtures; x86-runner 8+4. Workspace all-target check,
+formatting, layout, Graphify (10,537 nodes / 22,598 edges / 301 communities),
+diff check, 13 anchors and independent code/docs reviews passed. No physical
+x86 acceptance is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `COMISD` pp. 3-199–3-200; Vol. 1
+§4.9.2, §§11.5.2.2 and 11.5.3, Tables D-6 and D-7; Vol. 3A
+§16.1.3/Table 16-1. The instruction entry scopes its Type 3/Table 2-20
+reference to VEX forms; Table 2-20 itself also contains legacy SSE
+conditions. See the [plan](../plans/STAGE_2.md#s2-37co--exact-legacy-long64-comisd-xmm0qword-ptr-rax),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37co--bounded-long64-comisd-xmm0qword-ptr-rax-m64-memory-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37co--comisd-xmm0m64).

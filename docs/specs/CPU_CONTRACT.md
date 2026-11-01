@@ -15182,3 +15182,48 @@ entry scopes its Type 3/Table 2-20 reference to VEX forms; Table 2-20 itself
 also contains legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37cn--exact-legacy-long64-cvttsd2si-raxqword-ptr-rax),
 [report](../reports/STAGE_2_REPORT.md#s2-37cn--cvttsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cn--cvttsd2si-raxm64).
+
+## S2-37co — bounded Long64 COMISD XMM0,qword ptr [RAX] m64 memory profile
+
+The strict schema-v2 profile `s2-long-comisd-memory-rax-v1` admits only the
+exact legacy encoding `66 0F 2F 00`. It fetches four bytes and executes one
+instruction. SSE2 feature bit 26 is required. CR0.EM=1 or CR4.OSFXSR=0 causes
+local `#UD`, followed by `#NM` for CR0.TS=1 under the bounded local ordering;
+this is not a universal SDM fault-priority claim. Missing SSE state is refused
+after those gates. The direct comparison-relation loop covers CPL0–3; direct
+gate/refusal/span/read-failure probes use Ring0.
+
+Execution reads XMM0.low64 as the left binary64 operand and one little-endian
+64-bit value from the checked canonical48 span `[RAX,RAX+7]` as the right
+operand. Exactly one eight-byte memory read occurs after all pre-read checks.
+AC=0 allows unaligned m64 addresses; AC=1 is an admitted negative fixture
+that returns local `Unsupported` before span checking or memory access.
+Noncanonical spans cause `#GP(0)`. A failed read preserves the complete CPU
+state. All GPRs, all XMM registers, x87/MMX state, and unrelated RFLAGS bits
+are preserved.
+
+On success, COMISD sets CF/PF/ZF according to the relation: greater=`0`,
+less=`CF`, equal=`ZF`, unordered=`CF|PF|ZF`. It clears OF/SF/AF. QNaN or SNaN
+adds sticky IE. When either operand is NaN, the comparison does not add DE,
+even if the other operand is subnormal. Without NaNs, a subnormal in either
+operand adds sticky DE. Prior MXCSR status bits are preserved. The profile
+requires the supported MXCSR mask `0xffbf`, DAZ=0, IM=1, and DM=1; PM may be
+clear. RC and FTZ have no effect on the comparison. Unmasked exception
+delivery is outside this profile.
+
+This interpreter-only profile is closed to native, JIT, generic, C ABI, and
+fragment execution. Focused evidence: decoder 1/1 and direct ISA execution
+2/2; testkit test-target compilation passed; raw-bit oracle test 1/1; runner
+fixture 1/1 with 192 oracle comparisons; native-local-only classification
+1/1. Full suites passed: ISA 1,665; testkit 450; runner 112 unit + 471
+fixtures; x86-runner 8+4. Workspace all-target check, formatting, layout,
+Graphify, diff check, 13 anchors, and independent code/docs reviews passed.
+No physical x86 acceptance is claimed.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A `COMISD` pp. 3-199–3-200;
+Vol. 1 §4.9.2, §§11.5.2.2 and 11.5.3, Tables D-6 and D-7; Vol. 3A
+§16.1.3/Table 16-1. The instruction entry scopes its Type 3/Table 2-20
+reference to VEX forms; Table 2-20 itself also contains legacy SSE
+conditions. See the [plan](../plans/STAGE_2.md#s2-37co--exact-legacy-long64-comisd-xmm0qword-ptr-rax),
+[report](../reports/STAGE_2_REPORT.md#s2-37co--comisd-xmm0m64), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37co--comisd-xmm0m64).

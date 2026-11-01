@@ -382,3 +382,17 @@ output. The Ring0 matrix covers 304 comparisons across raw values, RC modes,
 and incoming IE/PE histories; malformed/foreign controls, tampering, and
 backend denial are also checked. AC=1 refusal is covered by direct ISA tests.
 No physical x86 acceptance is claimed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cn--bounded-long64-cvttsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile).
+
+### S2-37co — COMISD XMM0,m64
+
+The runner admits the separate strict profile `s2-long-comisd-memory-rax-v1`
+for exact legacy `66 0F 2F 00`. Its raw-bit oracle compares XMM0.low64 with
+one eight-byte m64 read, checks COMISD relation flags, applies NaN-priority
+IE/DE status, and verifies preservation of the remaining state. The focused
+fixture passed 1/1 with 192 matrix comparisons across relations, RC/FTZ
+settings, and prior sticky histories. AC=1 refusal is covered by both the
+runner fixture and direct ISA; span faults and read-failure atomicity are
+covered by direct ISA tests only.
+Native/JIT/C/fragment/generic execution remains closed; the runner result is
+host-side evidence and does not claim physical x86 execution. See the [CPU
+contract](../../docs/specs/CPU_CONTRACT.md#s2-37co--bounded-long64-comisd-xmm0qword-ptr-rax-m64-memory-profile).

@@ -79,6 +79,11 @@ const CVTTSD2SI_R32_MEMORY_RAX: &[u8] = include_bytes!(
 const CVTTSD2SI_R64_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37cn_cvttsd2si_m64_i64_truncation.case.json"
 );
+const COMISD_M64_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37co_comisd_m64_qnan_subnormal_priority.case.json"
+);
+const COMISD_UCOMISD_REGISTER: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_37w_comisd_ucomisd_baseline.case.json");
 const CVTSD2SI_R64_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37ck_cvtsd2si_m64_i64_rc_rounding.case.json"
 );
@@ -26486,6 +26491,93 @@ fn comiss_ucomiss_register_pairs_raw_classes_exceptions_and_backend_denial() {
     assert!(daz.validate().is_err());
     assert!(matches!(
         run(&fixture.to_json().unwrap(), "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+}
+
+#[test]
+fn comisd_m64_memory_uses_raw_bits_flags_priority_and_denies_other_backends() {
+    let loaded = Fixture::from_json(COMISD_M64_MEMORY_RAX).unwrap();
+    let fixture = loaded.fixture;
+    let encode_u64 = |value: u64| {
+        value
+            .to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let cases: [(u64, u64, u64, u64); 6] = [
+        (0x4000_0000_0000_0000, 0x3ff0_0000_0000_0000, 0x0202, 0), // greater
+        (0x3ff0_0000_0000_0000, 0x4000_0000_0000_0000, 0x0203, 0), // less
+        (0x3ff0_0000_0000_0000, 0x3ff0_0000_0000_0000, 0x0242, 0), // equal
+        (0x7ff8_1234_5678_9abc, 0x0000_0000_0000_0001, 0x0247, 1), // QNaN suppresses DE
+        (0x0000_0000_0000_0001, 0x7ff0_1234_5678_9abc, 0x0247, 1), // SNaN suppresses DE
+        (0x0000_0000_0000_0001, 0x3ff0_0000_0000_0000, 0x0203, 2), // subnormal adds DE
+    ];
+    let old_sticky = [0u64, 1, 2, 3];
+    for (index, (left, right, expected_flags, generated_status)) in cases.into_iter().enumerate() {
+        for rc in 0..4u32 {
+            for ftz in [false, true] {
+                for old in old_sticky {
+                    let mut case = fixture.clone();
+                    case.case_id = format!("s2_37co_matrix_{index}_{rc}_{ftz}_{old}");
+                    case.initial_state.sse.as_mut().unwrap().xmm[0] =
+                        format!("{}{}", encode_u64(left), "010000000000f07f");
+                    case.initial_state.sse.as_mut().unwrap().mxcsr =
+                        HexU64(0x0180 | old | (u64::from(rc) << 13) | (u64::from(ftz) << 15));
+                    case.memory[1].initial_bytes_hex = encode_u64(right);
+                    let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                    od_testkit::v2::compare(&input, &result, &result).unwrap();
+                    let observed = match &result.snapshot {
+                        Observation::Available { value: snapshot } => snapshot,
+                        other => panic!("unexpected COMISD snapshot: {other:?}"),
+                    };
+                    assert_eq!(observed.state.rflags.get() & 0x8d5, expected_flags & 0x8d5);
+                    assert_eq!(
+                        observed.state.sse.as_ref().unwrap().mxcsr.get(),
+                        0x0180
+                            | old
+                            | generated_status
+                            | (u64::from(rc) << 13)
+                            | (u64::from(ftz) << 15),
+                    );
+                }
+            }
+        }
+    }
+
+    // AC=1 is an explicit local refusal, and the oracle checks the complete unchanged state.
+    let mut ac = fixture.clone();
+    ac.case_id = "s2_37co_ac1_unsupported".into();
+    ac.initial_state.rflags = HexU64(ac.initial_state.rflags.get() | (1 << 18));
+    ac.expected_exit = ExpectedExit::Unsupported;
+    let (_, result) = run(&ac.to_json().unwrap(), "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+
+    // The bounded schema rejects controls outside this masked profile, while PM=0 is admitted.
+    for mxcsr in [0x0100, 0x0080, 0x01c0, 0x0040_0180] {
+        let mut malformed = fixture.clone();
+        malformed.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(malformed.validate().is_err(), "accepted MXCSR {mxcsr:#x}");
+    }
+    let mut pm_clear = fixture.clone();
+    pm_clear.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x0180);
+    assert!(pm_clear.validate().is_ok());
+
+    let mut foreign = Fixture::from_json(COMISD_UCOMISD_REGISTER).unwrap().fixture;
+    assert!(foreign.validate().is_ok());
+    foreign.comisd_memory_rax_controls = fixture.comisd_memory_rax_controls;
+    assert!(foreign.validate().is_err());
+    let bytes = serde_json::to_vec(&foreign).unwrap();
+    assert!(Fixture::from_json(&bytes).is_err());
+
+    // IF remains outside the strict RFLAGS input mask of adjacent conversion slices.
+    let mut neighbor = Fixture::from_json(CVTPD2PI_MM0_MEMORY_RAX).unwrap().fixture;
+    neighbor.initial_state.rflags = HexU64(0x202);
+    assert!(neighbor.validate().is_err());
+
+    assert!(matches!(
+        run(COMISD_M64_MEMORY_RAX, "jit", 4).1.outcome,
         Outcome::Unsupported { .. }
     ));
 }

@@ -7578,3 +7578,21 @@ gate matrices cover CPL0–3, while span/read-failure probes have no CPL loop.
 No physical x86 acceptance is claimed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37cn--exact-legacy-long64-cvttsd2si-raxqword-ptr-rax),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cn--bounded-long64-cvttsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile), and
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cn--cvttsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile).
+
+### S2-37co — COMISD XMM0,m64
+
+`s2_37co_comisd_m64_qnan_subnormal_priority.case.json` is the literal exact
+legacy `66 0F 2F 00` profile. It compares a QNaN in XMM0.low64 against the
+minimum positive binary64 subnormal at `[RAX]`. The expected unordered flags
+are CF|PF|ZF; sticky IE is added while no new DE is added, demonstrating NaN
+priority. A pending-x87 canary and an RFLAGS canary exercise state preservation.
+
+The runner matrix covers six comparison/class vectors across all four RC
+values, both FTZ settings, and four incoming IE/DE histories (192 independent
+oracle comparisons). The direct comparison-relation loop covers CPL0–3;
+direct AC/refusal, canonical-span, fetch/gate, and read-failure probes use
+Ring0. The runner fixture is host-side Ring0 evidence. Native
+local-only classification is checked, but no physical x86 acceptance is
+claimed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37co--exact-legacy-long64-comisd-xmm0qword-ptr-rax),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37co--bounded-long64-comisd-xmm0qword-ptr-rax-m64-memory-profile), and
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37co--comisd-xmm0m64).
