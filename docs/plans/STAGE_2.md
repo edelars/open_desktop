@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последний завершённый срез S2-37cj — exact legacy `CVTTSD2SI EAX,qword ptr [RAX]` (`F2 0F 2C 00`): один read(8), truncation toward zero независимо от MXCSR.RC, IE для invalid и sticky PE для valid inexact; запись EAX zero-extends RAX. Полные suites, workspace check, Graphify, 13/13 links и независимые code/schema/docs reviews завершены. Отдельный schema-v2 interpreter-only профиль; native/JIT/C ABI закрыты. S2-37ci — binary32 memory-to-i32 профиль; S2-37cg — binary64 memory-to-i32; предыдущие профили перечислены ниже. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последний завершённый срез S2-37ck — exact legacy `CVTSD2SI RAX,qword ptr [RAX]` (`F2 48 0F 2D 00`): один read(8), округление MXCSR.RC до signed-i64 range check, masked IE/PE и запись полного RAX. Полные suites, workspace check, Graphify, форматирование/layout/16 links и независимые code/schema/docs reviews завершены. Отдельный schema-v2 interpreter-only профиль; native/JIT/C ABI закрыты. S2-37cj — binary64 memory-to-i32 truncation; предыдущие профили перечислены ниже. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -514,6 +514,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37ch | Local-only legacy Long64 CVTSS2SI EAX,dword ptr [RAX] exact m32→r32 profile; MXCSR.RC rounding before range-check, sticky IE/PE, RAX alias zero-extension; SSE-bit25 gates; native/JIT closed | Full suites passed: ISA 1,644; testkit 447; runner 112 unit + 464 fixtures; x86-runner 8+4; workspace check, formatting, layout, Graphify and independent reviews passed; physical x86 acceptance not run |
 | [x] | S2-37ci | Local-only legacy Long64 CVTTSS2SI EAX,dword ptr [RAX] exact m32→r32 profile; TowardZero independent of MXCSR.RC, sticky IE/PE, RAX alias zero-extension; SSE-bit25 gates; native/JIT closed | Full suites passed: ISA 1,647; testkit 447; runner 112 unit + 465 fixtures; x86-runner 8+4; workspace check, formatting, layout, Graphify, code/schema and docs/evidence reviews passed; physical x86 acceptance not run |
 | [x] | S2-37cj | Local-only legacy Long64 CVTTSD2SI EAX,qword ptr [RAX] exact m64→r32 profile; TowardZero independent of MXCSR.RC, sticky IE/PE, RAX alias zero-extension; SSE2 gates; native/JIT closed | Full suites passed: ISA 1,650; testkit 448; runner 112 unit + 466 fixtures; x86-runner 8+4; workspace check, fmt, layout, Graphify, 13/13 links and independent reviews passed; physical x86 acceptance not run |
+| [x] | S2-37ck | Local-only legacy Long64 CVTSD2SI RAX,qword ptr [RAX] exact m64→r64 profile; MXCSR.RC rounding before range-check, sticky IE/PE, full RAX result; SSE2 gates; native/JIT closed | Full suites passed: ISA 1,653; testkit 448; runner 112 unit + 467 fixture; x86-runner 8+4; workspace all-target check, fmt, layout, Graphify, 16 links and independent reviews passed; physical x86 acceptance not run |
 | [x] | S2-37t | Local-only canonical Long64 CVTSS2SD XMM register-pair profile; raw binary32 widening with sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37u | Local-only canonical Long64 CVTPS2PD XMM register-pair profile; two-lane raw widening with aggregate sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-37t, S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37v | Local-only canonical Long64 COMISS/UCOMISS XMM register-pair profile; NaN-priority IE/DE, unordered flags, unmasked atomic flag exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
@@ -6827,7 +6828,7 @@ inventory.
 | CVTPS2DQ | `66 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-225 | S2-37af registers; S2-37bv exact `[RAX]` memory |
 | CVTPS2PD | `NP 0F 5A /r` | SSE2 | m64; low 2×f32 → 2×f64 | 3-228 | S2-37u register pairs; S2-37by exact `[RAX]` m64 memory |
 | CVTPS2PI | `NP 0F 2D /r` | SSE | XMM, m64 → mm; 2×f32 → 2×i32 | 3-231 | S2-37bj, exact masked `0F 2D C1` register-source; S2-37bp, exact masked `[RAX]` memory profile |
-| CVTSD2SI | `F2 0F 2D /r`; `F2 REX.W 0F 2D /r` | SSE2 | m64 → r32 / r64 | 3-232 | S2-37ac bounded register forms; S2-37cg exact m64 `[RAX]`→EAX memory form |
+| CVTSD2SI | `F2 0F 2D /r`; `F2 REX.W 0F 2D /r` | SSE2 | m64 → r32 / r64 | 3-232 | S2-37ac bounded register forms; S2-37cg exact m64 `[RAX]`→EAX; S2-37ck exact REX.W m64 `[RAX]`→RAX memory form |
 | CVTSD2SS | `F2 0F 5A /r` | SSE2 | XMM, m64; f64 → low f32 | 3-234 | S2-37be register pairs; S2-37ca bounded m64 memory |
 | CVTSI2SD | `F2 0F 2A /r`; `F2 REX.W 0F 2A /r` | SSE2 | r32/m32 or r64/m64 → low f64 | 3-236 | S2-37n/o exact forms; S2-37q canonical 512 register forms; S2-37cc exact `[RAX]` m32 memory; S2-37cd exact REX.W `[RAX]` m64 memory |
 | CVTSI2SS | `F3 0F 2A /r`; `F3 REX.W 0F 2A /r` | SSE | r32/m32 or r64/m64 → low f32 | 3-238 | S2-37r canonical 512 Long64 register forms; S2-37ce exact m32 and S2-37cf exact REX.W m64 `[RAX]` memory forms |
@@ -15393,3 +15394,47 @@ scopes its Type 3/Table 2-20 reference to VEX-encoded forms; Table 2-20 also
 contains legacy SSE conditions. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37cj--bounded-long64-cvttsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile),
 [report](../reports/STAGE_2_REPORT.md#s2-37cj--cvttsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cj--cvttsd2si-eaxm64).
+
+#### S2-37ck — exact legacy Long64 CVTSD2SI RAX,qword ptr [RAX]
+
+The exact bytes are `F2 48 0F 2D 00`: F2 precedes REX.W. The strict
+schema-v2 interpreter-only profile fetches five bytes, executes one
+instruction, and performs exactly one eight-byte little-endian read from the
+captured original RAX. It validates the complete canonical48 span
+`[RAX,RAX+7]` before the read. Unaligned m64 is allowed by this local profile
+when AC=0; AC=1 is an admitted `Unsupported` refusal before span checking and
+data access. A failed read leaves the full CPU state unchanged. On success the
+full RAX receives the 64-bit result; source address capture precedes that
+write.
+
+Binary64 is rounded according to MXCSR.RC, then checked against signed-i64
+range. Masked invalid input returns `0x8000000000000000` and sets sticky IE;
+valid inexact conversion sets sticky PE, while exact values add neither flag.
+Exact `-2^63` shares the indefinite result bits but is valid and does not set
+IE. Values near the boundary are already integral at binary64 precision, so
+the range check uses the rounded integer. NaN and infinities are invalid. A
+nonzero subnormal source rounds toward the selected RC and may set PE, but does
+not set DE. Incoming sticky flags and all supported MXCSR controls are
+preserved. The profile admits supported MXCSR bits `0xffbf`, requires DAZ=0
+and IM=PM=1, and accepts all four RC values. SSE2 is required; EM=1 or
+OSFXSR=0 cause local `#UD`, followed by `#NM` for TS=1, at modeled CPL0–3.
+Full fetch then `#UD` before `#NM` is the bounded profile's local ordering, not
+a universal SDM priority rule. The profile admits modeled CPL0–3; focused tests
+exercise Ring0 only. No x87/MMX gate or mutation is modeled.
+
+The independent oracle classifies raw binary64 bits and performs rounding and
+range checks with integer operations; it uses no host FP or production
+conversion helper. Focused tests passed: decoder 1/1, direct ISA 2/2, runner
+1/1, and native-local classifier 1/1; the runner invokes this oracle for the
+full vector matrix. It checks 18
+raw vectors across four RC modes and four incoming IE/PE histories, RAX
+aliasing/width, optional pending x87 preservation, strict foreign-field
+validation, tampering, and backend denial. Direct ISA checks exercise gate
+behavior at Ring0, fetch/span/read rollback. Full suites passed: od-isa 1,653;
+od-testkit 448; od-runner 112 unit + 467 fixture; od-x86-runner 8 library + 4
+binary tests. Workspace all-target check, fmt, layout and 16 CK-relative links
+passed; Graphify contains 10,469 nodes, 22,415 edges, and 310 communities.
+Independent code/schema and docs/evidence review is complete. No physical x86
+acceptance is claimed. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37ck--bounded-long64-cvtsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile),
+[report](../reports/STAGE_2_REPORT.md#s2-37ck--cvtsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ck--cvtsd2si-raxm64).

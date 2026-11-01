@@ -1226,6 +1226,8 @@ pub enum Operation {
     },
     /// Local-only legacy `F2 0F 2D 00` CVTSD2SI EAX, m64 form.
     Cvtsd2siR32MemoryRax,
+    /// Local-only exact legacy `F2 48 0F 2D 00` CVTSD2SI RAX,m64 form.
+    Cvtsd2siR64MemoryRax,
     /// Local-only legacy `F2 REX.W 0F 2D /r` signed binary64-to-r64 conversion.
     Cvtsd2siR64Register {
         destination: u8,
@@ -5118,12 +5120,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Escape0f, 0x2d) if cvtsd2si_r64_register => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if modrm == 0 && prefixes.rex == Some(0x48) {
+                    Operation::Cvtsd2siR64MemoryRax
+                } else if modrm >> 6 != 3 {
                     return Err(self.unsupported(opcode));
-                }
-                Operation::Cvtsd2siR64Register {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                } else {
+                    Operation::Cvtsd2siR64Register {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x5f) if maxsd_register_masked => {
@@ -21087,6 +21092,9 @@ mod tests {
             &[0xf2, 0x0f, 0x2d, 0x40, 0x00],
             &[0xf2, 0x0f, 0x2d, 0x04, 0x00],
             &[0xf2, 0x41, 0x0f, 0x2d, 0x00],
+            &[0xf2, 0x49, 0x0f, 0x2d, 0x00],
+            &[0xf2, 0x4c, 0x0f, 0x2d, 0x00],
+            &[0xf2, 0x4d, 0x0f, 0x2d, 0x00],
             &[0xf2, 0x44, 0x0f, 0x2d, 0x00],
             &[0xf2, 0x45, 0x0f, 0x2d, 0x00],
             &[0xc5, 0xfb, 0x2d, 0xc0],
@@ -21137,6 +21145,64 @@ mod tests {
             );
         }
         for bytes in [&[][..], &[0xf3], &[0xf3, 0x0f], &[0xf3, 0x0f, 0x2d]] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn cvtsd2si_rax_memory_rax_decodes_only_exact_f2_rexw_form() {
+        let decoded = Memory::new(&[0xf2, 0x48, 0x0f, 0x2d, 0x00])
+            .decode()
+            .expect("canonical CVTSD2SI RAX,[RAX] encoding");
+        assert_eq!(decoded.operation, Operation::Cvtsd2siR64MemoryRax);
+        assert_eq!(decoded.length, 5);
+        assert_eq!(
+            Memory::new(&[0xf2, 0x48, 0x0f, 0x2d, 0xc0])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::Cvtsd2siR64Register {
+                destination: 0,
+                source: 0,
+            }
+        );
+        assert_eq!(
+            Memory::new(&[0xf2, 0x0f, 0x2d, 0x00])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::Cvtsd2siR32MemoryRax
+        );
+        assert_eq!(
+            Memory::new(&[0xf2, 0x0f, 0x2d, 0xc0])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::Cvtsd2siR32Register {
+                destination: 0,
+                source: 0,
+            }
+        );
+        for bytes in [
+            &[0xf2, 0x48, 0x0f, 0x2d][..],
+            &[0xf2, 0x48, 0x0f],
+            &[0xf2, 0x48],
+            &[0xf2],
+            &[0x48, 0xf2, 0x0f, 0x2d, 0x00],
+            &[0xf2, 0x41, 0x0f, 0x2d, 0x00],
+            &[0xf2, 0x49, 0x0f, 0x2d, 0x00],
+            &[0xf2, 0x4c, 0x0f, 0x2d, 0x00],
+            &[0xf2, 0x4d, 0x0f, 0x2d, 0x00],
+            &[0xf2, 0x44, 0x0f, 0x2d, 0x00],
+            &[0xf2, 0x45, 0x0f, 0x2d, 0x00],
+            &[0xf2, 0x48, 0x0f, 0x2d, 0x01],
+            &[0xf2, 0x48, 0x0f, 0x2d, 0x08],
+            &[0xf2, 0x48, 0x0f, 0x2d, 0x40, 0x00],
+            &[0xf2, 0x48, 0x0f, 0x2d, 0x04, 0x00],
+            &[0xf3, 0x48, 0x0f, 0x2d, 0x00],
+            &[0xc4, 0xe1, 0xfb, 0x2d, 0xc0],
+            &[0x62, 0xf1, 0xff, 0x08, 0x2d, 0xc0],
+        ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }
     }

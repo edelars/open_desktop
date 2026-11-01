@@ -397,3 +397,11 @@ then checks signed i32 range and validates IE/PE sticky status, RAX
 zero-extension, snapshot state and exact exception metadata. It uses integer
 logic only, without host FP or production conversion helpers. See the [CPU
 contract](../../docs/specs/CPU_CONTRACT.md#s2-37cj--bounded-long64-cvttsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile).
+
+### S2-37ck — CVTSD2SI RAX,m64 memory profile
+
+The independent oracle reads raw u64 from the fixture's m64 span and performs
+binary64 rounding plus signed-i64 range checking using integer bit operations.
+It checks full-width RAX output/aliasing, sticky IE/PE, read atomicity, and
+state preservation without host FP or the production conversion helper. See
+the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ck--bounded-long64-cvtsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile).

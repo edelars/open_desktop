@@ -7506,3 +7506,29 @@ scopes its Type 3/Table 2-20 reference to VEX-encoded forms; the table also
 contains legacy SSE conditions. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37cj--exact-legacy-long64-cvttsd2si-eaxqword-ptr-rax),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cj--bounded-long64-cvttsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile), and
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cj--cvttsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile).
+
+### S2-37ck — CVTSD2SI RAX,m64
+
+`s2_37ck_cvtsd2si_m64_i64_rc_rounding.case.json` is the literal exact legacy
+`F2 48 0F 2D 00` profile. It reads eight bytes at the original RAX and writes
+the 64-bit result back to RAX. The literal contains −1.5 with round-up selected
+(`MXCSR=0x5080`), so the full-width result is `RAX=0xffffffffffffffff` with PE.
+This distinguishes RAX output from an EAX write with zero-extension. The matrix
+also checks the other RC modes, sticky IE/PE histories, signed i64 limits,
+NaN/infinity/subnormal inputs and pending-x87 preservation. The integer-only
+oracle consumes raw binary64 bits, without host FP or a production conversion
+helper. Focused decoder/direct ISA, runner and native-local classifier checks
+passed (1/1, 2/2, 1/1, 1/1); the runner exercised the independent testkit
+oracle for 288 RC/sticky-history combinations. Full suites passed: od-isa
+1,653; od-testkit 448; od-runner 112 unit + 467 fixture; od-x86-runner 8+4.
+Workspace all-target check, formatting, layout, diff and 16 CK-relative links
+passed. Graphify contains 10,469 nodes, 22,415 edges and 310 communities.
+Independent code/schema and docs/evidence reviews are clean. Native/JIT/C ABI
+stay closed; no physical x86 acceptance is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTSD2SI pp. 3-232–3-233; Vol. 1 §4.8.4,
+§11.5.2.2 and Table 14-21; Vol. 3A §16.1.3/Table 16-1. The instruction entry
+scopes its Type 3/Table 2-20 reference to VEX forms; Table 2-20 itself also
+contains legacy SSE conditions. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37ck--exact-legacy-long64-cvtsd2si-raxqword-ptr-rax),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ck--bounded-long64-cvtsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile), and
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ck--cvtsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile).

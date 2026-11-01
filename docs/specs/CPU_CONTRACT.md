@@ -14997,3 +14997,53 @@ Sources: Intel SDM Rev. 093 Vol. 2A `CVTTSD2SI` pp. 3-253–3-254; Vol. 1
 §11.5.2.2 and Table 14-21; Vol. 3A §16.1.3/Table 16-1. The instruction entry
 limits its Type 3/Table 2-20 reference to VEX-encoded forms; Table 2-20 itself
 also includes legacy SSE conditions. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37cj--exact-legacy-long64-cvttsd2si-eaxqword-ptr-rax).
+
+## S2-37ck — bounded Long64 CVTSD2SI RAX,qword ptr [RAX] m64-to-r64 memory profile
+
+The strict schema-v2 profile `s2-long-cvtsd2si-r64-memory-rax-v1` admits only
+exact legacy `F2 48 0F 2D 00`, with F2 before REX.W. It fetches all five bytes,
+then applies the bounded SSE2/CR0.EM/CR4.OSFXSR `#UD` gates followed by CR0.TS
+`#NM`, with the profile admitting modeled CPL0–3. The focused tests exercise
+Ring0 only. This is a local bounded ordering, not a claim of universal SDM
+exception priority. Missing SSE state is refused only after prerequisite
+gates.
+
+After admission, the interpreter captures the original RAX as the source
+address, validates canonical48 `[RAX,RAX+7]`, then reads exactly eight
+little-endian bytes in one callback. Unaligned m64 is admitted with local
+RFLAGS.AC=0. AC=1 is a valid negative fixture producing `Unsupported` before
+span validation or data access. Any failed read preserves the entire CPU
+state; success writes the full 64-bit result to RAX.
+
+The binary64 source is rounded according to MXCSR.RC before signed-i64 range
+checking. Masked invalid input writes `0x8000000000000000` and sets sticky IE;
+valid inexact input sets sticky PE, and exact input adds neither. Invalid lanes
+do not contribute PE. Exact `-2^63` is valid despite sharing the invalid
+indefinite bits. Binary64 spacing near the signed-i64 limits means boundary
+values are integral; the range check applies to the rounded integer. NaN and
+infinity are invalid. With DAZ=0, nonzero subnormals round according to RC and
+may set PE, but do not set DE. Existing sticky status and all supported MXCSR
+controls are preserved. This local profile requires the `0xffbf` supported
+mask, DAZ=0, and IM=PM=1; all RC modes are admitted. No x87/MMX gate or state
+mutation is modeled. XMM state, unrelated GPRs, and RFLAGS are preserved.
+
+The independent oracle consumes raw binary64 fixture bits and performs
+classification, rounding, and range checks with integer operations only. It
+does not use host FP or a production conversion helper. Focused coverage passed:
+decoder 1/1, direct ISA 2/2, runner 1/1, and native-local classifier 1/1. The
+runner test invokes the testkit oracle for 18 raw values across all four RC
+modes and four old IE/PE histories (288 comparisons), full-width RAX
+results/source aliasing, optional pending-x87 canaries, tampering, foreign
+controls, and backend denial. Full suites passed: od-isa 1,653; od-testkit
+448; od-runner 112 unit + 467 fixture; od-x86-runner 8 library + 4 binary
+tests. Workspace all-target check, fmt, layout and 16 CK-relative links passed.
+Graphify has 10,469 nodes, 22,415 edges and 310 communities. Independent
+code/schema and docs/evidence reviews are clean. Native/JIT/C ABI/fragment/
+generic admission remains closed; no physical x86 execution is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CVTSD2SI` pp. 3-232–3-233; Vol. 1
+§4.8.4, §11.5.2.2 and Table 14-21; Vol. 3A §16.1.3/Table 16-1. The
+instruction entry scopes its Type 3/Table 2-20 reference to VEX-encoded forms;
+Table 2-20 itself also contains legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37ck--exact-legacy-long64-cvtsd2si-raxqword-ptr-rax),
+[report](../reports/STAGE_2_REPORT.md#s2-37ck--cvtsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ck--cvtsd2si-raxm64).

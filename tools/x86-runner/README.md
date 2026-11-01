@@ -88,3 +88,7 @@ physical x86 execution or acceptance is claimed.
 S2-37cj CVTTSD2SI EAX,m64 is classified local-only and remains outside the
 native tracer allowlist. The portable classifier and runner Unsupported path
 are closure evidence only; no physical x86 execution or acceptance is claimed.
+
+S2-37ck CVTSD2SI RAX,m64 is also classified local-only. Its classifier and
+runner denial checks establish backend closure only; no physical x86 execution
+or acceptance is claimed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ck--bounded-long64-cvtsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile).

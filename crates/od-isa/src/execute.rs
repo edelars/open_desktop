@@ -758,6 +758,15 @@ pub struct Cvtsd2siMemoryR32Controls {
     pub cr4_osfxsr: bool,
 }
 
+/// Explicit SSE2 prerequisite gates for the exact S2-37ck CVTSD2SI RAX,m64 profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Cvtsd2siMemoryR64Controls {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+}
+
 /// Explicit SSE2 prerequisite gates for the exact S2-37cj CVTTSD2SI EAX,m64 profile.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Cvttsd2siMemoryR32Controls {
@@ -921,6 +930,7 @@ struct ExecutionProfiles<'a> {
     cvttss2si_registers: Option<Cvttss2siRegistersControls>,
     cvtsd2si_registers: Option<Cvtsd2siRegistersControls>,
     cvtsd2si_r32_memory: Option<Cvtsd2siMemoryR32Controls>,
+    cvtsd2si_r64_memory: Option<Cvtsd2siMemoryR64Controls>,
     cvttsd2si_r32_memory: Option<Cvttsd2siMemoryR32Controls>,
     cvtss2si_r32_memory: Option<Cvtss2siMemoryR32Controls>,
     cvttss2si_r32_memory: Option<Cvttss2siMemoryR32Controls>,
@@ -1781,6 +1791,7 @@ pub fn run_with_maxss_unmasked_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -1891,6 +1902,7 @@ pub fn run_with_minsd_unmasked_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -2001,6 +2013,7 @@ pub fn run_with_maxsd_unmasked_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -2111,6 +2124,7 @@ pub fn run_with_minpd_unmasked_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -2221,6 +2235,7 @@ pub fn run_with_minps_unmasked_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -2331,6 +2346,7 @@ pub fn run_with_maxps_unmasked_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -2441,6 +2457,7 @@ pub fn run_with_maxpd_unmasked_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -2551,6 +2568,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -2661,6 +2679,7 @@ pub fn run_with_cvtsi2sd_r32_memory_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -2771,6 +2790,7 @@ pub fn run_with_cvtsi2sd_r64_memory_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -2881,6 +2901,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -2991,6 +3012,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -3101,6 +3123,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -3211,6 +3234,7 @@ pub fn run_with_cvtsi2ss_r32_memory_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -3321,6 +3345,7 @@ pub fn run_with_cvtsi2ss_r64_memory_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -3431,6 +3456,7 @@ pub fn run_with_cvtss2si_registers_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -3541,6 +3567,7 @@ pub fn run_with_cvttss2si_registers_controls(
             cvttss2si_registers: Some(controls),
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -3650,6 +3677,7 @@ pub fn run_with_cvtsd2si_registers_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: Some(controls),
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -3760,6 +3788,118 @@ pub fn run_with_cvtsd2si_r32_memory_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: Some(controls),
+            cvtsd2si_r64_memory: None,
+            cvttsd2si_r32_memory: None,
+            cvtss2si_r32_memory: None,
+            cvttss2si_r32_memory: None,
+            cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
+            cvtsd2ss_memory: None,
+            cvtpi2pd_memory_rax: None,
+            cvtpi2_profile: None,
+            fx_cr0: None,
+            unmasked_minss_denormal: false,
+            rdtsc: None,
+            swapgs: None,
+            cli: None,
+            sti: None,
+            halt: None,
+            cr0: None,
+            cr4: None,
+        },
+        StepRuntime {
+            rdtsc_source: None,
+            sti_sequence: None,
+            exact_hlt_only: false,
+            stop_requested: &mut stop_requested,
+        },
+    )
+}
+
+/// Execute exact `F2 48 0F 2D 00` CVTSD2SI RAX,m64 with explicit SSE2 controls.
+pub fn run_with_cvtsd2si_r64_memory_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: Cvtsd2siMemoryR64Controls,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_configured(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        ExecutionProfiles {
+            cpuid: None,
+            msr: None,
+            sep: None,
+            xorpd: None,
+            minss_invalid: None,
+            maxss_unmasked: None,
+            minsd_unmasked: None,
+            maxsd_unmasked: None,
+            minpd_unmasked: None,
+            minps_unmasked: None,
+            maxps_unmasked: None,
+            maxpd_unmasked: None,
+            cvtdq2pd: None,
+            cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
+            cvtdq2ps_registers: None,
+            cvtdq2ps_memory: None,
+            cvtps2dq_registers: None,
+            cvtps2dq_memory: None,
+            cvttps2dq_registers: None,
+            cvttps2dq_memory: None,
+            cvtpd2dq_registers: None,
+            cvtpd2ps_registers: None,
+            cvtpd2ps_memory: None,
+            cvttpd2dq_registers: None,
+            cvttpd2dq_memory: None,
+            cvtpd2dq_memory: None,
+            sqrtss_registers: None,
+            sqrtsd_registers: None,
+            sqrtps_registers: None,
+            sqrtpd_registers: None,
+            subpd_registers: None,
+            mulpd_registers: None,
+            addpd_registers: None,
+            addsd_registers: None,
+            addss_registers: None,
+            addps_registers: None,
+            divpd_registers: None,
+            divsd_registers: None,
+            divps_registers: None,
+            divss_registers: None,
+            mulsd_registers: None,
+            mulss_registers: None,
+            mulps_registers: None,
+            subps_registers: None,
+            subsd_registers: None,
+            subss_registers: None,
+            cvtss2sd_registers: None,
+            cvtps2pd_registers: None,
+            cvtps2pd_memory: None,
+            cvtss2sd_memory: None,
+            comiss_ucomiss_registers: None,
+            cmpss_registers: None,
+            cmpsd_registers: None,
+            cmppd_registers: None,
+            cmpps_registers: None,
+            comisd_ucomisd_registers: None,
+            cvtsi2sd_r32: None,
+            cvtsi2sd_r32_memory: None,
+            cvtsi2sd_r64: None,
+            cvtsi2sd_r64_memory: None,
+            cvtsi2sd_registers: None,
+            cvtsi2ss_registers: None,
+            cvtsi2ss_r32_memory: None,
+            cvtsi2ss_r64_memory: None,
+            cvtss2si_registers: None,
+            cvttss2si_registers: None,
+            cvtsd2si_registers: None,
+            cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: Some(controls),
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -3870,6 +4010,7 @@ pub fn run_with_cvttsd2si_r32_memory_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: Some(controls),
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -3980,6 +4121,7 @@ pub fn run_with_cvtss2si_r32_memory_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: Some(controls),
             cvttss2si_r32_memory: None,
@@ -4090,6 +4232,7 @@ pub fn run_with_cvttss2si_r32_memory_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: Some(controls),
@@ -4201,6 +4344,7 @@ pub fn run_with_cvttsd2si_registers_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -4311,6 +4455,7 @@ pub fn run_with_cvtdq2pd_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -4421,6 +4566,7 @@ pub fn run_with_cvtdq2pd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -4530,6 +4676,7 @@ pub fn run_with_cvtdq2pd_memory_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -4640,6 +4787,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -4750,6 +4898,7 @@ pub fn run_with_cvtdq2ps_memory_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -4860,6 +5009,7 @@ pub fn run_with_cvtps2dq_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -4970,6 +5120,7 @@ pub fn run_with_cvttps2dq_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -5080,6 +5231,7 @@ pub fn run_with_cvtps2dq_memory_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -5190,6 +5342,7 @@ pub fn run_with_cvttps2dq_memory_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -5300,6 +5453,7 @@ pub fn run_with_cvttpd2dq_memory_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -5410,6 +5564,7 @@ pub fn run_with_cvtpd2dq_memory_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -5520,6 +5675,7 @@ pub fn run_with_cvtpd2dq_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -5630,6 +5786,7 @@ pub fn run_with_cvtpd2ps_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -5740,6 +5897,7 @@ pub fn run_with_cvttpd2dq_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -5850,6 +6008,7 @@ pub fn run_with_cvtss2sd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -5964,6 +6123,7 @@ pub fn run_with_cvtpi2pd_memory_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -6110,6 +6270,7 @@ fn run_with_cvtpi2ps_profile(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -6387,6 +6548,7 @@ pub fn run_with_cvtsd2ss_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -6493,6 +6655,7 @@ pub fn run_with_cvtps2pd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -6603,6 +6766,7 @@ pub fn run_with_cvtps2pd_memory_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -6713,6 +6877,7 @@ pub fn run_with_cvtss2sd_memory_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -6823,6 +6988,7 @@ pub fn run_with_cvtsd2ss_memory_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -6932,6 +7098,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -7042,6 +7209,7 @@ pub fn run_with_cmpss_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -7152,6 +7320,7 @@ pub fn run_with_cmpsd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -7262,6 +7431,7 @@ pub fn run_with_cmppd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -7371,6 +7541,7 @@ pub fn run_with_cmpps_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -7481,6 +7652,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -7644,6 +7816,7 @@ pub fn run_with_efer_rdmsr_profile(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -7963,6 +8136,7 @@ pub fn run_with_cr0_profile(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -8074,6 +8248,7 @@ pub fn run_with_cr4_profile(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -8419,6 +8594,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -8714,6 +8890,7 @@ pub fn step_with_cr0_profile(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -9067,6 +9244,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -9177,6 +9355,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -9289,6 +9468,7 @@ pub fn run_with_sqrtss_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -9399,6 +9579,7 @@ pub fn run_with_sqrtsd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -9509,6 +9690,7 @@ pub fn run_with_sqrtps_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -9619,6 +9801,7 @@ pub fn run_with_sqrtpd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -9729,6 +9912,7 @@ pub fn run_with_subpd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -9839,6 +10023,7 @@ pub fn run_with_mulpd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -9949,6 +10134,7 @@ pub fn run_with_addpd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -10059,6 +10245,7 @@ pub fn run_with_addsd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -10169,6 +10356,7 @@ pub fn run_with_divpd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -10279,6 +10467,7 @@ pub fn run_with_addss_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -10389,6 +10578,7 @@ pub fn run_with_addps_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -10499,6 +10689,7 @@ pub fn run_with_divsd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -10609,6 +10800,7 @@ pub fn run_with_divps_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -10719,6 +10911,7 @@ pub fn run_with_divss_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -10829,6 +11022,7 @@ pub fn run_with_mulsd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -10939,6 +11133,7 @@ pub fn run_with_mulss_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -11049,6 +11244,7 @@ pub fn run_with_mulps_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -11159,6 +11355,7 @@ pub fn run_with_subsd_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -11269,6 +11466,7 @@ pub fn run_with_subss_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -11379,6 +11577,7 @@ pub fn run_with_subps_register_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -11489,6 +11688,7 @@ pub fn run_with_cvtpd2ps_memory_controls(
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
             cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvtss2si_r32_memory: None,
             cvttss2si_r32_memory: None,
@@ -11593,6 +11793,7 @@ fn step_configured(
         cvttss2si_registers: configured_cvttss2si_register_controls,
         cvtsd2si_registers: configured_cvtsd2si_register_controls,
         cvtsd2si_r32_memory: configured_cvtsd2si_memory_r32_controls,
+        cvtsd2si_r64_memory: configured_cvtsd2si_memory_r64_controls,
         cvttsd2si_r32_memory: configured_cvttsd2si_memory_r32_controls,
         cvtss2si_r32_memory: configured_cvtss2si_memory_r32_controls,
         cvttss2si_r32_memory: configured_cvttss2si_memory_r32_controls,
@@ -14675,6 +14876,51 @@ fn step_configured(
             });
         }
     }
+    if let Some(controls) = configured_cvtsd2si_memory_r64_controls {
+        let admitted = instruction.operation == Operation::Cvtsd2siR64MemoryRax
+            && instruction.length == 5
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x2d
+            && instruction.prefixes.group1 == Some(0xf2)
+            && instruction.prefixes.segment.is_none()
+            && !instruction.prefixes.operand_override
+            && !instruction.prefixes.address_override
+            && instruction.prefixes.rex == Some(0x48);
+        if !admitted {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        let fault_vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+            Some(6)
+        } else if controls.cr0_ts {
+            Some(7)
+        } else {
+            None
+        };
+        if let Some(vector) = fault_vector {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+        let Some(sse) = state.sse.as_ref() else {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        };
+        if sse.mxcsr & !0x0000_ffbf != 0
+            || sse.mxcsr & (1 << 6) != 0
+            || sse.mxcsr & (1 << 7) == 0
+            || sse.mxcsr & (1 << 12) == 0
+            || state.rflags & (1 << 18) != 0
+        {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+    }
     if let Some(controls) = configured_cvttsd2si_memory_r32_controls {
         let admitted = instruction.operation == Operation::Cvttsd2siR32MemoryRax
             && instruction.length == 4
@@ -15884,6 +16130,14 @@ fn step_configured(
                 && sse.mxcsr & (1 << 7) != 0
                 && sse.mxcsr & (1 << 12) != 0
                 && state.rflags & (1 << 18) == 0
+        } else if configured_cvtsd2si_memory_r64_controls.is_some()
+            && instruction.operation == Operation::Cvtsd2siR64MemoryRax
+        {
+            sse.mxcsr & !0x0000_ffbf == 0
+                && sse.mxcsr & (1 << 6) == 0
+                && sse.mxcsr & (1 << 7) != 0
+                && sse.mxcsr & (1 << 12) != 0
+                && state.rflags & (1 << 18) == 0
         } else if configured_cvttsd2si_memory_r32_controls.is_some()
             && instruction.operation == Operation::Cvttsd2siR32MemoryRax
         {
@@ -16720,6 +16974,10 @@ fn step_configured(
             state.sse.is_some()
         }
         Operation::Cvtsd2siR32MemoryRax => false,
+        Operation::Cvtsd2siR64MemoryRax if configured_cvtsd2si_memory_r64_controls.is_some() => {
+            state.sse.is_some()
+        }
+        Operation::Cvtsd2siR64MemoryRax => false,
         Operation::Cvttsd2siR32MemoryRax if configured_cvttsd2si_memory_r32_controls.is_some() => {
             state.sse.is_some()
         }
@@ -24783,6 +25041,47 @@ fn step_configured(
             );
         }
         Operation::Cvtsd2siR32MemoryRax => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        Operation::Cvtsd2siR64MemoryRax if configured_cvtsd2si_memory_r64_controls.is_some() => {
+            // RAX is both source address and the 64-bit destination. Capture
+            // the original address and finish the read before changing state.
+            let address = state.gpr[Register::Rax as usize];
+            let Some(last) = address.checked_add(7) else {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            };
+            if !long_decode::canonical(address) || !long_decode::canonical(last) {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            let mut source = [0u8; 8];
+            memory.read(address, context, &mut source)?;
+            let raw = u64::from_le_bytes(source);
+            let old_mxcsr = state
+                .sse
+                .as_ref()
+                .expect("CVTSD2SI R64 m64 SSE state prevalidated")
+                .mxcsr;
+            let converted = Binary64::from_bits(raw).to_i64(cvtss2si_rounding_mode(old_mxcsr));
+            let invalid = converted.invalid_operation();
+            let inexact = !invalid && converted.inexact();
+            let sse = state
+                .sse
+                .as_mut()
+                .expect("CVTSD2SI R64 m64 SSE state prevalidated");
+            sse.mxcsr = old_mxcsr | u32::from(invalid) | (u32::from(inexact) << 5);
+            state.gpr[Register::Rax as usize] = *converted.value() as u64;
+        }
+        Operation::Cvtsd2siR64MemoryRax => {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -122738,6 +123037,388 @@ mod swapgs_profile_tests {
         );
         assert!(matches!(result.exit, RunExit::MemoryError(_)));
         assert_eq!(failed_read, before);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, 8)]);
+    }
+
+    #[test]
+    fn cvtsd2si_r64_memory_rounds_range_checks_and_preserves_state() {
+        let controls = Cvtsd2siMemoryR64Controls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+        };
+        let vectors: &[(u64, [u64; 4], [u32; 4])] = &[
+            (0x3ff8_0000_0000_0000, [2, 1, 2, 1], [0x20; 4]), // +1.5
+            (
+                0xbff8_0000_0000_0000,
+                [u64::MAX - 1, u64::MAX - 1, u64::MAX, u64::MAX],
+                [0x20; 4],
+            ),
+            (0x4004_0000_0000_0000, [2, 2, 3, 2], [0x20; 4]), // +2.5, ties to even
+            (
+                0xc004_0000_0000_0000,
+                [u64::MAX - 1, u64::MAX - 2, u64::MAX - 1, u64::MAX - 1],
+                [0x20; 4],
+            ),
+            (0x0000_0000_0000_0001, [0, 0, 1, 0], [0x20; 4]),
+            (0x8000_0000_0000_0001, [0, u64::MAX, 0, 0], [0x20; 4]),
+            (0x43df_ffff_ffff_ffff, [0x7fff_ffff_ffff_fc00; 4], [0; 4]),
+            (0x43e0_0000_0000_0000, [0x8000_0000_0000_0000; 4], [1; 4]),
+            (0xc3df_ffff_ffff_ffff, [0x8000_0000_0000_0400; 4], [0; 4]),
+            (0xc3e0_0000_0000_0000, [0x8000_0000_0000_0000; 4], [0; 4]),
+            (0xc3e0_0000_0000_0001, [0x8000_0000_0000_0000; 4], [1; 4]),
+            (0xc1e0_0000_0000_0000, [0xffff_ffff_8000_0000; 4], [0; 4]), // width proof: -2^31
+            (0x41f0_0000_0000_0000, [0x0000_0001_0000_0000; 4], [0; 4]), // width proof: +2^32
+            (0x7ff8_0000_0000_0001, [0x8000_0000_0000_0000; 4], [1; 4]),
+            (0x7ff0_0000_0000_0001, [0x8000_0000_0000_0000; 4], [1; 4]),
+            (0x7ff0_0000_0000_0000, [0x8000_0000_0000_0000; 4], [1; 4]),
+            (0xfff0_0000_0000_0000, [0x8000_0000_0000_0000; 4], [1; 4]),
+        ];
+        for &(raw, values, new_flags) in vectors {
+            for rc in 0..4u32 {
+                for old_flags in [0, 1, 0x20, 0x21] {
+                    let rip = 0xa000;
+                    let source_address = 0x1000;
+                    let mut state = LongModeState::default();
+                    state.rip = rip;
+                    state.gpr = std::array::from_fn(|i| 0xfeed_0000_0000_0000 | i as u64);
+                    state.gpr[Register::Rax as usize] = source_address;
+                    state.rflags = 0x0ad7;
+                    state.sse = Some(SseState {
+                        xmm: std::array::from_fn(|i| [0x40 + i as u8; 16]),
+                        mxcsr: 0x1f80 | (rc << 13) | old_flags,
+                    });
+                    state.x87 = Some(X87State {
+                        status_word: 0x80ff,
+                        ..X87State::fixture_seed()
+                    });
+                    let before = state.clone();
+                    let mut memory = Memory::at(&[0xf2, 0x48, 0x0f, 0x2d, 0x00], rip);
+                    memory.bytes[..8].copy_from_slice(&raw.to_le_bytes());
+                    let result = run_with_cvtsd2si_r64_memory_controls(
+                        &mut state,
+                        &mut memory,
+                        RunConfig {
+                            instruction_budget: 1,
+                            stop_rip: Some(rip + 5),
+                            context: AccessContext::default(),
+                        },
+                        controls,
+                        || false,
+                    );
+                    assert_eq!(result.exit, RunExit::StopAddress, "raw={raw:#018x} rc={rc}");
+                    assert_eq!(result.instructions_executed, 1);
+                    assert_eq!(state.rip, rip + 5);
+                    assert_eq!(state.gpr[Register::Rax as usize], values[rc as usize]);
+                    for i in 1..16 {
+                        assert_eq!(state.gpr[i], before.gpr[i]);
+                    }
+                    assert_eq!(state.rflags, before.rflags);
+                    let after_sse = state.sse.as_ref().unwrap();
+                    let before_sse = before.sse.as_ref().unwrap();
+                    assert_eq!(after_sse.xmm, before_sse.xmm);
+                    assert_eq!(after_sse.mxcsr, before_sse.mxcsr | new_flags[rc as usize]);
+                    assert_eq!(state.x87, before.x87);
+                    assert_eq!(memory.fetches, (rip..rip + 5).collect::<Vec<_>>());
+                    assert_eq!(memory.accesses, [(AccessKind::Read, source_address, 8)]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cvtsd2si_r64_memory_gates_span_and_read_failure_are_atomic() {
+        let controls = Cvtsd2siMemoryR64Controls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+        };
+        let code = [0xf2, 0x48, 0x0f, 0x2d, 0x00];
+        for (case_controls, vector) in [
+            (
+                Cvtsd2siMemoryR64Controls {
+                    sse2_available: false,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                Cvtsd2siMemoryR64Controls {
+                    cr0_em: true,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                Cvtsd2siMemoryR64Controls {
+                    cr4_osfxsr: false,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                Cvtsd2siMemoryR64Controls {
+                    cr0_ts: true,
+                    ..controls
+                },
+                7,
+            ),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0xa100;
+            state.gpr[Register::Rax as usize] = 0x1000;
+            state.sse = Some(SseState {
+                xmm: [[0x61; 16]; 16],
+                mxcsr: 0x1080,
+            });
+            let before = state.clone();
+            let mut memory = Memory::at(&code, state.rip);
+            let result = run_with_cvtsd2si_r64_memory_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0xa105),
+                    context: AccessContext::default(),
+                },
+                case_controls,
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector,
+                    error_code: None,
+                    linear_address: None
+                })
+            );
+            assert_eq!(memory.fetches, (0xa100..0xa105).collect::<Vec<_>>());
+            assert!(memory.accesses.is_empty());
+            assert_eq!(state, before);
+        }
+        let mut truncated_state = LongModeState::default();
+        truncated_state.rip = 0xa180;
+        truncated_state.gpr[Register::Rax as usize] = 0x1000;
+        truncated_state.sse = Some(SseState {
+            xmm: [[0x63; 16]; 16],
+            mxcsr: 0x1080,
+        });
+        let before = truncated_state.clone();
+        let truncated_rip = truncated_state.rip;
+        let mut truncated = Memory::at(&code[..4], truncated_state.rip);
+        truncated.fetch_error = Some((
+            truncated_rip + 4,
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(4),
+                linear_address: Some(truncated_rip + 4),
+            }),
+        ));
+        let result = run_with_cvtsd2si_r64_memory_controls(
+            &mut truncated_state,
+            &mut truncated,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(truncated_rip + 5),
+                context: AccessContext::default(),
+            },
+            Cvtsd2siMemoryR64Controls {
+                sse2_available: false,
+                cr0_em: true,
+                cr0_ts: true,
+                ..controls
+            },
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(4),
+                linear_address: Some(0xa184),
+            })
+        );
+        assert_eq!(truncated.fetches, (0xa180..0xa185).collect::<Vec<_>>());
+        assert!(truncated.accesses.is_empty());
+        assert_eq!(truncated_state, before);
+        let mut missing_sse = LongModeState::default();
+        missing_sse.rip = 0xa200;
+        missing_sse.gpr[Register::Rax as usize] = 0x1000;
+        let before = missing_sse.clone();
+        let mut memory = Memory::at(&code, missing_sse.rip);
+        let result = run_with_cvtsd2si_r64_memory_controls(
+            &mut missing_sse,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0xa205),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x2d }));
+        assert_eq!(missing_sse, before);
+        assert!(memory.accesses.is_empty());
+        for (missing_controls, vector) in [
+            (
+                Cvtsd2siMemoryR64Controls {
+                    sse2_available: false,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                Cvtsd2siMemoryR64Controls {
+                    cr0_ts: true,
+                    ..controls
+                },
+                7,
+            ),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0xa280;
+            state.gpr[Register::Rax as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::at(&code, state.rip);
+            let result = run_with_cvtsd2si_r64_memory_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0xa285),
+                    context: AccessContext::default(),
+                },
+                missing_controls,
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector,
+                    error_code: None,
+                    linear_address: None,
+                })
+            );
+            assert_eq!(memory.fetches, (0xa280..0xa285).collect::<Vec<_>>());
+            assert!(memory.accesses.is_empty());
+            assert_eq!(state, before);
+        }
+
+        for mxcsr in [0x0000_1000, 0x0000_0080, 0x0000_10c0, 0x0040_1080] {
+            let mut state = LongModeState::default();
+            state.rip = 0xa300;
+            state.gpr[Register::Rax as usize] = 0x1000;
+            state.sse = Some(SseState {
+                xmm: [[0x52; 16]; 16],
+                mxcsr,
+            });
+            let before = state.clone();
+            let mut memory = Memory::at(&code, state.rip);
+            let result = run_with_cvtsd2si_r64_memory_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0xa305),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x2d }));
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        for address in [0x0000_8000_0000_0000, 0x0000_7fff_ffff_ffff, u64::MAX - 3] {
+            let mut state = LongModeState::default();
+            state.rip = 0xa400;
+            state.gpr[Register::Rax as usize] = address;
+            state.sse = Some(SseState {
+                xmm: [[0x34; 16]; 16],
+                mxcsr: 0x1080,
+            });
+            let before = state.clone();
+            let mut memory = Memory::at(&code, state.rip);
+            let result = run_with_cvtsd2si_r64_memory_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0xa405),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None
+                })
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        let mut ac = LongModeState::default();
+        ac.rip = 0xa500;
+        ac.rflags |= 1 << 18;
+        ac.gpr[Register::Rax as usize] = 0x0000_8000_0000_0000;
+        ac.sse = Some(SseState {
+            xmm: [[0x72; 16]; 16],
+            mxcsr: 0x1080,
+        });
+        let before = ac.clone();
+        let mut memory = Memory::at(&code, ac.rip);
+        let result = run_with_cvtsd2si_r64_memory_controls(
+            &mut ac,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0xa505),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x2d }));
+        assert_eq!(ac, before);
+        assert!(memory.accesses.is_empty());
+
+        let mut state = LongModeState::default();
+        state.rip = 0xa600;
+        state.gpr[Register::Rax as usize] = 0x1000;
+        state.sse = Some(SseState {
+            xmm: [[0x45; 16]; 16],
+            mxcsr: 0x1080,
+        });
+        let before = state.clone();
+        let mut memory = Memory::at(&code, state.rip);
+        memory.error = Some(MemoryError::Unmapped {
+            address: 0x1000,
+            access: AccessKind::Read,
+        });
+        let result = run_with_cvtsd2si_r64_memory_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0xa605),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(state, before);
         assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, 8)]);
     }
 

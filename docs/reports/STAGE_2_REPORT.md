@@ -20250,3 +20250,44 @@ scopes its Type 3/Table 2-20 reference to VEX-encoded forms; Table 2-20 also
 contains legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37cj--exact-legacy-long64-cvttsd2si-eaxqword-ptr-rax),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37cj--bounded-long64-cvttsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cj--cvttsd2si-eaxm64).
+
+## S2-37ck — CVTSD2SI RAX,qword ptr [RAX] m64-to-r64 memory profile
+
+Implemented exact legacy `F2 48 0F 2D 00` under separate schema-v2
+interpreter-only profile `s2-long-cvtsd2si-r64-memory-rax-v1`. The five-byte
+instruction performs one eight-byte read from the original RAX address after
+canonical48 `[RAX,RAX+7]` validation. Unaligned m64 is allowed with local AC=0;
+AC=1 returns local `Unsupported` before span/read. Failed reads preserve full
+CPU state. Success writes the full 64-bit destination RAX after capturing its
+old value as the source address.
+
+The raw binary64 value rounds with MXCSR.RC before signed-i64 range checking.
+Masked invalid input writes `0x8000000000000000` and sets IE; valid inexact
+conversion sets sticky PE; exact conversion adds no status bits. Exact
+`-2^63` is valid although its bits equal the masked-invalid result. Subnormals
+round with RC and may set PE without DE. Existing sticky flags and supported
+MXCSR controls remain unchanged. Strict profile admission requires supported
+mask `0xffbf`, DAZ=0, and IM=PM=1; all four RC modes are accepted. SSE2 gates
+and the local fetch/#UD/#NM order are bounded profile behavior, not a universal
+priority claim. x87/MMX state is neither gated nor changed.
+
+Focused verification passed: decoder 1/1, direct ISA 2/2, runner 1/1, and
+native-local classifier 1/1. The runner test invokes the testkit oracle for 18
+raw binary64 vectors across all RC modes and four incoming IE/PE histories
+(288 comparisons), including signed limits, directed rounding, NaN/infinity/
+subnormal values, full-width RAX source aliasing, and optional
+pending-x87 preservation. It also checks tampering, foreign controls, and
+JIT/native denial. Full suites passed: od-isa 1,653; od-testkit 448; od-runner
+112 unit + 467 fixture; od-x86-runner 8 library + 4 binary tests. Workspace
+all-target check, formatting, layout and diff checks pass, as do all 16
+CK-relative links. Graphify has 10,469 nodes, 22,415 edges and 310 communities.
+Independent code/schema and docs/evidence reviews are clean. Native/JIT/C
+ABI/fragment/generic admission remains closed; no physical x86 execution is
+claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CVTSD2SI` pp. 3-232–3-233; Vol. 1
+§4.8.4, §11.5.2.2 and Table 14-21; Vol. 3A §16.1.3/Table 16-1. The
+instruction entry scopes its Type 3/Table 2-20 reference to VEX-encoded forms;
+Table 2-20 itself also contains legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37ck--exact-legacy-long64-cvtsd2si-raxqword-ptr-rax),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37ck--bounded-long64-cvtsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ck--cvtsd2si-raxm64).

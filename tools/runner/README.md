@@ -349,3 +349,11 @@ host floating point or production conversion helpers. The literal +1.5 case
 selects round-up in MXCSR and still expects EAX=1+PE. JIT/native return
 `Unsupported`; this does not claim physical x86 acceptance. See the [CPU
 contract](../../docs/specs/CPU_CONTRACT.md#s2-37cj--bounded-long64-cvttsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile).
+
+### S2-37ck — CVTSD2SI RAX,m64
+
+The fixture runner dispatches exact `F2 48 0F 2D 00` through its separate
+schema-v2 interpreter profile. The oracle reads raw binary64 memory bits,
+rounds using MXCSR.RC, checks signed-i64 range, and validates full RAX output,
+sticky status, and source aliasing without host FP. Focused runner validation
+passed 1/1; JIT/native backends remain denied. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ck--bounded-long64-cvtsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile).

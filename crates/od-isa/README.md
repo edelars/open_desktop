@@ -766,3 +766,11 @@ The bounded executor profile accepts only exact legacy `F2 0F 2C 00`, performs
 one eight-byte `[RAX]` read, truncates binary64 toward zero, then checks i32
 range and commits EAX with zero-extension only after a successful read. It
 preserves unrelated state and sticky MXCSR flags. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cj--bounded-long64-cvttsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile).
+
+### S2-37ck — CVTSD2SI RAX,m64 memory form
+
+Exact `F2 48 0F 2D 00` reads one binary64 from the captured original RAX, rounds
+with MXCSR.RC, and checks signed-i64 range before committing full-width RAX.
+The local profile requires IM=PM=1 and DAZ=0, preserves sticky flags, permits
+unaligned m64 only under AC=0, and remains closed to native/JIT/C ABI paths.
+See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ck--bounded-long64-cvtsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile).
