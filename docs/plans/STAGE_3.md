@@ -3163,6 +3163,24 @@ and [evidence archive](../reports/data/stage3/s3-36d/).
 
 **Готово:** ускорение или его отсутствие установлено для конкретных workloads. Если подтверждённого ускорения целевого прогретого сценария нет, correctness slice может быть принят отдельно, а performance-критерий этапа остаётся незакрытым.
 
+#### S3-36e: resident capacity-one cached checked-memory full-call profile — in progress
+
+Added opt-in `od-bench two-site-memory-cache` for the same two frozen S3-34a
+sequences (`store_then_load`, `load_then_store`; 1,200 inputs each). This profile
+retains one capacity-one `MemoryPairCache` and one mapping per sequence. Its
+timed native call includes profile/context/source/dependency/key validation,
+cache lookup/counters, and typed host execution; interpreter execution is
+measured separately. The release preflight passed on Apple M3 Max/aarch64:
+2,400 unique inputs, two trials per backend/input, 4,800 executions per
+backend and parity trials, with one initial miss/compile/publication followed
+by 2,399 hits per sequence and one resident entry. No timing started. Runtime
+`working_tree_dirty` is unknown because the Git status probe timed out; build
+source tree was clean. Calibration and scored runs remain open. This is still a
+bounded fixture, not general memory or production owner/MMU evidence. Mini
+checks remain deferred to the end of Stage 3. See the [S3-36e
+report](../reports/STAGE_3_S3-36e_2026-11-01.md) and [preflight
+evidence](../reports/data/stage3/s3-36e/preflight-release-run1.json).
+
 ### S3-37. Проверить cache churn и ресурсы
 
 #### S3-37a: bounded FIFO16 corpus churn observation path

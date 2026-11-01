@@ -6,6 +6,11 @@
 
 ## Зафиксированное локальное evidence
 
+S3-36e implementation is committed. Its release preflight passed on Apple
+M3 Max with 2,400 frozen inputs and 4,800 parity trials; no timing started.
+Calibration and scored runs remain open. See the [S3-36e report](STAGE_3_S3-36e_2026-11-01.md)
+and [preflight artifact](data/stage3/s3-36e/preflight-release-run1.json).
+
 Последний report-inclusive локальный harness run:
 
 - Run: `stage3-20261030-054347-8d2c65aebe`, `local_only`, macOS 26.7.1 ARM64.

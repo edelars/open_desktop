@@ -814,6 +814,40 @@ for run in 1 2 3; do
 done
 ```
 
+### S3-36e: resident capacity-one cached checked-memory full-call profile
+
+`od-bench two-site-memory-cache` uses only the same two frozen S3-34a
+sequences, with 1,200 inputs per sequence. It retains one capacity-one
+`MemoryPairCache` and one published mapping for each sequence. The native
+timer covers the complete `MemoryPairCache::run`: profile/context/source and
+dependency/key checks, cache lookup and counters, and typed host execution.
+State/RAM/callback reset and complete result validation stay outside the timer.
+Interpreter calls are timed separately. Each run requires one setup
+miss/compile/publication followed by hit-only warmup, calibration, and scoring;
+cache state is cleared between sequence strata.
+
+The release preflight passed on Apple M3 Max/aarch64/macOS 26.7.1 with the
+frozen input digest and 15-file source fingerprint. It performed 4,800
+interpreter and 4,800 cached executions and 4,800 parity trials. Each sequence
+reported 2,399 hits, one miss/compile/publication, no replacements, and one
+resident entry. `timing_started` was false. Runtime Git dirty status is `null`
+because the two-second Git probe timed out; the build source tree was clean.
+Calibration-only and scored runs remain open; no performance result is claimed.
+
+Run the release preflight first:
+
+```sh
+cargo run --release --offline -p od-bench -- two-site-memory-cache \
+  --preflight-only --process-run 1 \
+  --output work/tmp/stage3/s3-36e/preflight.json
+```
+
+The [S3-36e report](../reports/STAGE_3_S3-36e_2026-11-01.md) and
+[preflight artifact](../reports/data/stage3/s3-36e/preflight-release-run1.json)
+record this partial gate. Calibration-only and three sequential scored runs
+will be archived before any conclusion. Mini checks remain deferred to the end
+of Stage 3.
+
 ### S3-37a: bounded production FIFO16 corpus churn observation
 
 `od-bench cache-churn` is an opt-in Apple Silicon macOS release command. It
