@@ -10,7 +10,12 @@ Run 1 (source revision c88fcda336a5e5e06fef13663e38aedb15af51b5):
 Run 2 (rebuilt after commit 39b075b2da6d725b776f610dba49fe77f89dd207):
 950d0670ab1dfc2c720a1f3a16fa6b4ebf69331571b73eb8a9fe18c267050819  target/release/od-bench
 
-The Run 2 release rebuild overwrote the Run 1 executable at this path. The
-Run 1 digest is preserved here as captured evidence and cannot be recomputed
-from the current file. The current executable corresponds to Run 2; its hash
-was rechecked against the Run 2 digest while preparing this receipt.
+Run 3 (source revision dd947afe08b3e86a989104dd6e172fa32ac6c3c1):
+70a28023100b792059616710120e3cb1965bf0f96a4db8dced2f6b532d59ec27  target/release/od-bench
+
+Run 2's release rebuild overwrote the Run 1 executable. The Run 2 digest was
+rechecked while the Run 2 binary was current. Run 3's rebuild then overwrote
+the Run 2 executable at this path. The Run 1 and Run 2 digests are preserved
+here as captured evidence and cannot be recomputed from the current file. The
+current executable corresponds to Run 3; its hash was rechecked against the
+Run 3 digest while preparing this receipt.
