@@ -7677,3 +7677,31 @@ acceptance is claimed. See the
 [plan](../../../../docs/plans/STAGE_2.md#s2-37cs--exact-legacy-long64-cmpss-xmm0m32-raximm8),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cs--bounded-long64-cmpss-xmm0m32-raximm8-memory-profile), and
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cs--cmpss-xmm0m32imm8).
+
+### S2-37ct — CMPSD XMM0,m64,imm8
+
+`s2_37ct_cmpsd_m64_qnan_subnormal_priority.case.json` is the literal exact
+legacy `F2 0F C2 00 03` profile. XMM0.low64 contains a QNaN and `[RAX]` holds
+the minimum positive binary64 subnormal; the high64 canary is an SNaN. The
+unordered predicate writes all ones to low64, preserves high64, pending x87,
+RFLAGS, and all unrelated state, and adds neither IE nor DE because a NaN
+suppresses denormal status.
+
+The runner checks all eight predicates against greater, less, equal, and
+unordered relations across RC, FTZ, and four incoming IE/DE histories: 1,024
+raw-bit oracle comparisons. Its 56 priority comparisons cover QNaN/SNaN and
+subnormal combinations in both operand orders where relevant. Direct ISA
+predicate/relation coverage spans CPL0–3; its gate/refusal/fetch/span/read
+probes and the runner use Ring0. Direct tests prove full five-byte fetch
+before pp>7 local refusal and before valid-predicate prerequisite gates. The
+memory oracle runs through the fixture runner; there is no separate CMPSD
+memory oracle unit test. Focused decoder, direct ISA, runner, testkit
+test-target compile, and native-local-only classifier passed. Full suites
+passed: od-isa 1,680, od-testkit 453, od-runner 112+476, and od-x86-runner
+8+4. Workspace all-target check, formatting, layout, Graphify
+(10,632/22,836/310), diff, and 13 anchors passed. Independent code/schema and
+final docs/source/evidence reviews passed. No physical x86 acceptance is
+claimed. See the
+[plan](../../../../docs/plans/STAGE_2.md#s2-37ct--exact-legacy-long64-cmpsd-xmm0m64-raximm8),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ct--bounded-long64-cmpsd-xmm0m64-raximm8-memory-profile), and
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ct--cmpsd-xmm0m64imm8).

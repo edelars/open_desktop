@@ -15389,3 +15389,47 @@ Type 3 reference is scoped to VEX forms; Table 2-20 itself also contains
 legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37cs--exact-legacy-long64-cmpss-xmm0m32-raximm8),
 [report](../reports/STAGE_2_REPORT.md#s2-37cs--cmpss-xmm0m32imm8), and [fixture
 notes](../../tests/fixtures/x86/stage2/README.md#s2-37cs--cmpss-xmm0m32imm8).
+
+## S2-37ct — bounded Long64 CMPSD XMM0,m64 [RAX],imm8 memory profile
+
+The strict schema-v2 interpreter-only profile `s2-long-cmpsd-memory-rax-v1`
+admits exact legacy `F2 0F C2 00 pp` for predicate values 0 through 7. It
+fetches the full five-byte instruction, including imm8, before gate checks or
+data access. Values above 7 are a local `Unsupported` profile refusal after
+fetch and before prerequisite gates; this is not architectural `#UD`. For
+in-range predicates, SSE2 CPUID bit 26 is required; EM=1 or OSFXSR=0 causes
+`#UD`, followed by `#NM` for TS=1. AC=0 allows unaligned reads. AC=1 is a
+local `Unsupported` refusal before span validation and the read. The profile
+checks the canonical48 span `[RAX,RAX+7]`, performs exactly one eight-byte
+read, and stops at entry+5. A pre-read refusal or failed read preserves full
+CPU state.
+
+CMPSD compares the binary64 value in XMM0.low64 with m64 and writes all ones
+or zero to XMM0.low64 only. It preserves XMM0.high64, all other XMM/GPR/x87
+state, RFLAGS, and RFLAGS definedness. The eight predicate results for
+greater/less/equal/unordered inputs are pp0 F/F/T/F; pp1 F/T/F/F; pp2
+F/T/T/F; pp3 F/F/F/T; pp4 T/T/F/T; pp5 T/F/T/T; pp6 T/F/F/T; pp7 T/T/T/F.
+SNaN adds sticky IE for every predicate; QNaN adds IE only for pp1, pp2, pp5,
+and pp6. Any NaN suppresses new DE; otherwise a subnormal operand adds DE.
+Existing IE/DE flags remain sticky. The supported MXCSR mask is `0xffbf`;
+the local profile requires DAZ=0 and IM=DM=1 while allowing PM, RC, and FTZ
+to vary. Native/JIT/C/fragment/generic execution remains closed.
+
+Focused direct ISA tests cover the predicate/control matrix at CPL0–3 and
+valid-predicate gates/refusals, state preservation, complete immediate fetch,
+canonical spans, and read rollback at Ring0. The runner checks 1,080 raw-bit
+oracle comparisons: 1,024 predicate/relation/RC/FTZ/history cases plus 56
+NaN/denormal-priority cases, at Ring0. The memory oracle is exercised through
+the runner; there is no separate CMPSD-memory testkit unit filter. Full suites
+passed: od-isa 1,680; od-testkit 453; od-runner 112 unit + 476 fixtures;
+od-x86-runner 8+4. Workspace all-target check, formatting, layout, diff check,
+13 anchors, and Graphify update (10,632 nodes / 22,836 edges / 310 communities)
+passed. Independent code/schema and final docs/source/evidence reviews passed.
+No physical x86 acceptance is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CMPSD` pp. 3-185–3-188, Table 3-8
+p. 3-169; Vol. 1 §4.9.2; Vol. 3A §16.1.3/Table 16-1. The instruction entry's
+Type 3 reference is scoped to VEX forms; Table 2-20 itself also contains
+legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37ct--exact-legacy-long64-cmpsd-xmm0m64-raximm8),
+[report](../reports/STAGE_2_REPORT.md#s2-37ct--cmpsd-xmm0m64imm8), and [fixture
+notes](../../tests/fixtures/x86/stage2/README.md#s2-37ct--cmpsd-xmm0m64imm8).

@@ -2,8 +2,8 @@
 use od_testkit::HexU64;
 use od_testkit::result::{Backend, MemoryRegionSnapshot, Observation};
 use od_testkit::v2::{
-    CmpssMemoryRaxControlSnapshot, ComissUcomissControlSnapshot, ExpectedExit, Fixture,
-    LoadedFixture, Outcome, RunResult, Snapshot, StiShadowSnapshot,
+    CmpsdMemoryRaxControlSnapshot, CmpssMemoryRaxControlSnapshot, ComissUcomissControlSnapshot,
+    ExpectedExit, Fixture, LoadedFixture, Outcome, RunResult, Snapshot, StiShadowSnapshot,
 };
 use std::fs;
 use std::process::{Command, Output};
@@ -93,6 +93,9 @@ const UCOMISS_M32_MEMORY_RAX: &[u8] = include_bytes!(
 );
 const CMPSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37cs_cmpss_m32_qnan_subnormal_priority.case.json"
+);
+const CMPSD_M64_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37ct_cmpsd_m64_qnan_subnormal_priority.case.json"
 );
 const COMISD_UCOMISD_REGISTER: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37w_comisd_ucomisd_baseline.case.json");
@@ -35500,4 +35503,199 @@ fn cvttss2si_m32_r32_truncates_independent_of_rc_and_zero_extends_rax() {
     value.state.gpr[0] = HexU64(value.state.gpr[0].get() ^ 1);
     assert!(od_testkit::v2::compare(&literal_input, &literal, &tampered).is_err());
     assert!(controls.sse_available);
+}
+
+#[test]
+fn cmpsd_m64_memory_covers_predicates_nan_priority_and_denials() {
+    let fixture = Fixture::from_json(CMPSD_M64_MEMORY_RAX).unwrap().fixture;
+    let truth = [
+        [false, false, true, false],
+        [false, true, false, false],
+        [false, true, true, false],
+        [false, false, false, true],
+        [true, true, false, true],
+        [true, false, true, true],
+        [true, false, false, true],
+        [true, true, true, false],
+    ];
+    let relations = [
+        (0x4000_0000_0000_0000u64, 0x3ff0_0000_0000_0000u64),
+        (0x3ff0_0000_0000_0000, 0x4000_0000_0000_0000),
+        (0x0000_0000_0000_0000, 0x8000_0000_0000_0000),
+        (0x7ff8_1234_5678_9abc, 0x3ff0_0000_0000_0000),
+    ];
+    let encode_u64 = |value: u64| {
+        value
+            .to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let decode_u64 = |hex: &str| {
+        let bytes = (0..8)
+            .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
+            .collect::<Vec<_>>();
+        u64::from_le_bytes(bytes.try_into().unwrap())
+    };
+    let old_sticky = [0u64, 1, 2, 3];
+    let mut comparisons = 0usize;
+    for predicate in 0u8..8 {
+        for (relation, (lhs, rhs)) in relations.iter().copied().enumerate() {
+            for rc in 0..4u32 {
+                for ftz in [false, true] {
+                    for old in old_sticky {
+                        let mut case = fixture.clone();
+                        case.case_id =
+                            format!("s2_37ct_p{predicate}_r{relation}_rc{rc}_ftz{ftz}_old{old}");
+                        case.memory[0].initial_bytes_hex = format!("f20fc200{predicate:02x}");
+                        case.memory[0].comparison_mask_hex = "ff".repeat(5);
+                        case.initial_state.sse.as_mut().unwrap().xmm[0] =
+                            format!("{}{}", encode_u64(lhs), "010000000000f07f");
+                        case.initial_state.sse.as_mut().unwrap().mxcsr =
+                            HexU64(0x0180 | old | (u64::from(rc) << 13) | (u64::from(ftz) << 15));
+                        case.memory[1].initial_bytes_hex = encode_u64(rhs);
+                        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                        od_testkit::v2::compare(&input, &result, &result).unwrap();
+                        let snapshot = match &result.snapshot {
+                            Observation::Available { value } => value,
+                            other => panic!("unexpected CMPSD snapshot: {other:?}"),
+                        };
+                        let output = decode_u64(&snapshot.state.sse.as_ref().unwrap().xmm[0]);
+                        assert_eq!(
+                            output,
+                            if truth[usize::from(predicate)][relation] {
+                                u64::MAX
+                            } else {
+                                0
+                            }
+                        );
+                        let raised_ie = relation == 3 && matches!(predicate, 1 | 2 | 5 | 6);
+                        assert_eq!(
+                            snapshot.state.sse.as_ref().unwrap().mxcsr.get(),
+                            0x0180
+                                | old
+                                | u64::from(raised_ie)
+                                | (u64::from(rc) << 13)
+                                | (u64::from(ftz) << 15)
+                        );
+                        assert_eq!(snapshot.state.rflags, case.initial_state.rflags);
+                        assert_eq!(snapshot.state.x87, case.initial_state.x87);
+                        comparisons += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(comparisons, 1024);
+
+    for (index, (lhs, rhs, generated)) in [
+        (0x7ff8_1234_5678_9abc, 1u64, 0u64),
+        (1, 0x7ff8_1234_5678_9abc, 0),
+        (0x7ff0_1234_5678_9abc, 1, 1),
+        (1, 0x7ff0_1234_5678_9abc, 1),
+        (0x7ff8_1234_5678_9abc, 0x7ff0_1234_5678_9abc, 1),
+        (1, 0x3ff0_0000_0000_0000, 2),
+        (0x3ff0_0000_0000_0000, 1, 2),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for predicate in 0u8..8 {
+            let mut case = fixture.clone();
+            case.case_id = format!("s2_37ct_priority_{index}_p{predicate}");
+            case.memory[0].initial_bytes_hex = format!("f20fc200{predicate:02x}");
+            case.memory[0].comparison_mask_hex = "ff".repeat(5);
+            case.initial_state.sse.as_mut().unwrap().xmm[0] =
+                format!("{}{}", encode_u64(lhs), "010000000000f07f");
+            case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x0180);
+            case.memory[1].initial_bytes_hex = encode_u64(rhs);
+            let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+            let snapshot = match &result.snapshot {
+                Observation::Available { value } => value,
+                other => panic!("unexpected CMPSD priority snapshot: {other:?}"),
+            };
+            let is_nan = |bits: u64| {
+                bits & 0x7ff0_0000_0000_0000 == 0x7ff0_0000_0000_0000
+                    && bits & 0x000f_ffff_ffff_ffff != 0
+            };
+            let is_signaling = |bits: u64| is_nan(bits) && bits & 0x0008_0000_0000_0000 == 0;
+            let has_nan = is_nan(lhs) || is_nan(rhs);
+            let qnan = (is_nan(lhs) && !is_signaling(lhs)) || (is_nan(rhs) && !is_signaling(rhs));
+            let raised_ie = is_signaling(lhs)
+                || is_signaling(rhs)
+                || (qnan && matches!(predicate, 1 | 2 | 5 | 6));
+            assert_eq!(
+                snapshot.state.sse.as_ref().unwrap().mxcsr.get(),
+                0x0180 | generated | u64::from(raised_ie)
+            );
+            if has_nan {
+                assert_eq!(snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 2, 0);
+            }
+        }
+    }
+
+    let (input, baseline) = run(CMPSD_M64_MEMORY_RAX, "interpreter", 0);
+    let mut wrong_low = baseline.clone();
+    if let Observation::Available { value } = &mut wrong_low.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(..16, "0000000000000000");
+    }
+    assert!(od_testkit::v2::compare(&input, &wrong_low, &baseline).is_err());
+    let mut wrong_high = baseline.clone();
+    if let Observation::Available { value } = &mut wrong_high.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(16.., "0000000000000000");
+    }
+    assert!(od_testkit::v2::compare(&input, &wrong_high, &baseline).is_err());
+    let mut wrong_status = baseline.clone();
+    if let Observation::Available { value } = &mut wrong_status.snapshot {
+        value.state.sse.as_mut().unwrap().mxcsr = HexU64(0x0181);
+    }
+    assert!(od_testkit::v2::compare(&input, &wrong_status, &baseline).is_err());
+
+    let mut ac = fixture.clone();
+    ac.case_id = "s2_37ct_ac1_unsupported".into();
+    ac.initial_state.rflags = HexU64(ac.initial_state.rflags.get() | (1 << 18));
+    ac.expected_exit = ExpectedExit::Unsupported;
+    assert!(matches!(
+        run(&ac.to_json().unwrap(), "interpreter", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+
+    for controls in [
+        CmpsdMemoryRaxControlSnapshot {
+            sse2_available: false,
+            cr0_em: false,
+            cr0_ts: true,
+            cr4_osfxsr: true,
+        },
+        CmpsdMemoryRaxControlSnapshot {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: true,
+            cr4_osfxsr: true,
+        },
+    ] {
+        let mut out_of_profile = fixture.clone();
+        out_of_profile.case_id = "s2_37ct_predicate8_precedes_gate".into();
+        out_of_profile.memory[0].initial_bytes_hex = "f20fc20008".into();
+        out_of_profile.memory[0].comparison_mask_hex = "ff".repeat(5);
+        out_of_profile.cmpsd_memory_rax_controls = Some(controls);
+        out_of_profile.expected_exit = ExpectedExit::Unsupported;
+        assert!(matches!(
+            run(&out_of_profile.to_json().unwrap(), "interpreter", 4)
+                .1
+                .outcome,
+            Outcome::Unsupported { .. }
+        ));
+    }
+
+    let mut foreign = Fixture::from_json(COMISD_UCOMISD_REGISTER).unwrap().fixture;
+    assert!(foreign.validate().is_ok());
+    foreign.cmpsd_memory_rax_controls = fixture.cmpsd_memory_rax_controls;
+    assert!(foreign.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
+    assert!(matches!(
+        run(CMPSD_M64_MEMORY_RAX, "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
 }

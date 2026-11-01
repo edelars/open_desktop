@@ -462,3 +462,24 @@ od-runner 112 unit + 475 fixtures, and od-x86-runner 8+4; workspace all-target
 check, formatting, layout, Graphify (10,615/22,791/311), diff, and 13 anchors
 passed. Independent code/schema and docs/evidence review passed. See the
 [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cs--bounded-long64-cmpss-xmm0m32-raximm8-memory-profile).
+
+### S2-37ct — CMPSD XMM0,m64,imm8
+
+The strict interpreter fixture profile `s2-long-cmpsd-memory-rax-v1` uses
+exact legacy `F2 0F C2 00 pp`, with pp=0..7. The raw-binary64 oracle checks
+1,080 cases: 1,024 predicate/relation/RC/FTZ/sticky-history comparisons and
+56 NaN/denormal-priority comparisons. It preserves XMM0.high64, RFLAGS, and
+pending x87 while changing only XMM0.low64 and applicable IE/DE sticky bits.
+The runner matrix is Ring0; direct predicate/relation ISA coverage spans
+CPL0–3. Direct ISA checks also cover valid-predicate #UD/#NM ordering, absent
+SSE state, AC=1, malformed MXCSR profile controls, full-fetch pp>7 refusal,
+truncated immediate, canonical span, and read-failure rollback. The runner
+checks AC=1 and pp>7 local Unsupported outcomes, including pp8 before missing
+SSE/TS gates, plus foreign-field and JIT denial. Values above seven are local
+profile refusals, not architectural `#UD`. Full validation passed: od-isa
+1,680, od-testkit 453, od-runner 112 unit + 476 fixtures, od-x86-runner 8+4,
+and the workspace all-target check. Formatting, layout, Graphify
+(10,632/22,836/310), diff, and 13 anchors passed. Independent code/schema and
+final docs/source/evidence reviews passed. Native/JIT/C/fragment/generic
+execution remains closed; no physical x86 acceptance is claimed. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ct--bounded-long64-cmpsd-xmm0m64-raximm8-memory-profile).

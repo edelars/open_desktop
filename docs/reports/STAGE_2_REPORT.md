@@ -20566,3 +20566,43 @@ p. 3-169; Vol. 1 §4.9.2; Vol. 3A §16.1.3/Table 16-1. The instruction entry's
 Type 3 reference is scoped to VEX forms; Table 2-20 itself also contains
 legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37cs--exact-legacy-long64-cmpss-xmm0m32-raximm8),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37cs--bounded-long64-cmpss-xmm0m32-raximm8-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cs--cmpss-xmm0m32imm8).
+
+## S2-37ct — CMPSD XMM0,m64,imm8
+
+Implemented the strict interpreter-only profile `s2-long-cmpsd-memory-rax-v1`
+for exact legacy `F2 0F C2 00 pp`. It fetches all five instruction bytes
+before gate checks or data access; pp values above 7 are a local unsupported
+profile refusal after fetch, not an architectural `#UD`. In-range execution
+requires SSE2 CPUID bit 26, then applies EM/OSFXSR `#UD` before TS `#NM`.
+AC=0 admits unaligned access; AC=1 is a local refusal. The profile validates
+canonical48 `[RAX,RAX+7]`, reads one m64, and stops at entry+5. Refusal and
+read-error paths preserve the complete CPU state.
+
+The raw-bit binary64 predicate path writes all ones or zero to XMM0.low64
+only; it preserves high64, other registers, x87, RFLAGS, and definedness.
+The eight greater/less/equal/unordered truth rows are pp0 F/F/T/F; pp1
+F/T/F/F; pp2 F/T/T/F; pp3 F/F/F/T; pp4 T/T/F/T; pp5 T/F/T/T; pp6 T/F/F/T;
+pp7 T/T/T/F. SNaN adds IE for all predicates; QNaN adds IE only for pp1/2/5/6.
+Any NaN suppresses new DE, while a no-NaN subnormal adds DE; old IE/DE stickies
+are preserved. Local MXCSR admission requires supported mask `0xffbf`, DAZ=0,
+and IM=DM=1; PM, RC, and FTZ are unrestricted. Native/JIT/C/fragment/generic
+execution remains closed.
+
+Focused checks passed: exact decoder 1/1; direct ISA 1/1 with 4,096
+predicate/relation/control cases plus gate, state, fetch, span, and read-error
+probes; runner 1/1 with 1,080 raw-bit oracle comparisons (1,024 matrix cases
+and 56 NaN/denormal-priority cases); `cargo check -p od-testkit --tests
+--offline`; native-local-only classifier 1/1. Full suites passed: od-isa
+1,680; od-testkit 453; od-runner 112 unit + 476 fixtures; od-x86-runner 8+4.
+Workspace all-target check, formatting, layout, diff check, 13 anchors, and
+Graphify update (10,632 nodes / 22,836 edges / 310 communities) passed. Runner
+evidence is Ring0; direct predicate/relation tests cover CPL0–3, while direct
+route/admission probes use Ring0. Independent code/schema and final
+docs/source/evidence reviews passed. No physical x86 acceptance is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CMPSD` pp. 3-185–3-188, Table 3-8
+p. 3-169; Vol. 1 §4.9.2; Vol. 3A §16.1.3/Table 16-1. The instruction entry's
+Type 3 reference is scoped to VEX forms; Table 2-20 itself also contains
+legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37ct--exact-legacy-long64-cmpsd-xmm0m64-raximm8),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37ct--bounded-long64-cmpsd-xmm0m64-raximm8-memory-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ct--cmpsd-xmm0m64imm8).
