@@ -569,6 +569,44 @@ pub fn round_pack_exact_coefficient(
     }
 }
 
+/// Scale a normalized nonzero finite binary80 value by an exact power of two
+/// and round once into finite binary80.
+///
+/// The input value is `(-1)^sign * significand * 2^(exponent - 63)`. Only
+/// normalized finite values with the leading significand bit set are
+/// accepted; normal, subnormal, and pseudo-denormal provenance is retained
+/// by the immutable input and does not affect the numerical result. The
+/// exponent adjustment is checked before the exact signed coefficient is
+/// passed once to `round_pack_exact_coefficient`. `None` means bounded helper
+/// rejection (invalid input, checked exponent overflow, or a result outside
+/// the finite binary80 range). No x87 control-word, status, exception,
+/// instruction, or signed-zero operation behavior is defined here.
+pub fn scale_finite_to_binary80(
+    value: X87Finite,
+    power: i32,
+    mode: RationalRoundingMode,
+) -> Option<X87Binary80> {
+    if value.is_zero()
+        || value.significand < (1_u64 << 63)
+        || !matches!(
+            value.source_class,
+            X87Binary80Class::Normal
+                | X87Binary80Class::Subnormal
+                | X87Binary80Class::PseudoDenormal
+        )
+    {
+        return None;
+    }
+
+    let exponent = value.exponent.checked_add(power)?;
+    let coefficient = if value.sign {
+        -i128::from(value.significand)
+    } else {
+        i128::from(value.significand)
+    };
+    round_pack_exact_coefficient(exponent, coefficient, mode)
+}
+
 /// Round an exact signed unsigned magnitude once into finite binary80.
 ///
 /// The exact input is `(-1)^sign * magnitude * 2^(exponent - 127)`. Unlike the
@@ -886,7 +924,7 @@ mod tests {
         normalize_exact_coefficient, normalize_exact_magnitude, pack_normal_rounded_significand,
         round_pack_exact_coefficient, round_pack_exact_magnitude, round_pack_subnormal_quotient,
         round_quotient_magnitude, round_quotient_ties_even, round_quotient_to_precision,
-        shift_right_jam, shift_right_jam_u128, sqrt_finite_to_binary80,
+        scale_finite_to_binary80, shift_right_jam, shift_right_jam_u128, sqrt_finite_to_binary80,
     };
     use crate::state::{X87State, X87Tag};
 
@@ -1842,6 +1880,430 @@ mod tests {
             significand,
             source_class,
         }
+    }
+
+    #[test]
+    fn finite_scale_exact_powers_and_low_significand_bit_match_literal_encodings() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let high = 0x8000_0000_0000_0000;
+        let exact = [
+            (0, false, [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f]),
+            (3, false, [0, 0, 0, 0, 0, 0, 0, 0x80, 0x02, 0x40]),
+            (-3, false, [0, 0, 0, 0, 0, 0, 0, 0x80, 0xfc, 0x3f]),
+            (0, true, [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0xbf]),
+            (3, true, [0, 0, 0, 0, 0, 0, 0, 0x80, 0x02, 0xc0]),
+            (-3, true, [0, 0, 0, 0, 0, 0, 0, 0x80, 0xfc, 0xbf]),
+        ];
+        for (power, sign, expected) in exact {
+            let value = finite(0, high, sign, X87Binary80Class::Normal);
+            for mode in [Nearest, Zero, Up, Down] {
+                assert_eq!(
+                    scale_finite_to_binary80(value, power, mode)
+                        .unwrap()
+                        .to_bytes(),
+                    expected
+                );
+            }
+            assert_eq!(value, finite(0, high, sign, X87Binary80Class::Normal));
+        }
+
+        let low_bit = finite(0, 0x8000_0000_0000_0001, false, X87Binary80Class::Normal);
+        assert_eq!(
+            scale_finite_to_binary80(low_bit, 1, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [0x01, 0, 0, 0, 0, 0, 0, 0x80, 0, 0x40]
+        );
+        let negative_low_bit = finite(0, 0x8000_0000_0000_0001, true, X87Binary80Class::Normal);
+        assert_eq!(
+            scale_finite_to_binary80(negative_low_bit, 1, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [0x01, 0, 0, 0, 0, 0, 0, 0x80, 0, 0xc0]
+        );
+    }
+
+    #[test]
+    fn finite_scale_normal_subnormal_and_provenance_boundaries_match_literals() {
+        use RationalRoundingMode::NearestTiesEven as Nearest;
+
+        let min_normal = finite(
+            -16382,
+            0x8000_0000_0000_0000,
+            false,
+            X87Binary80Class::Normal,
+        );
+        assert_eq!(
+            scale_finite_to_binary80(min_normal, -1, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0]
+        );
+        let negative_min_normal = finite(
+            -16382,
+            0x8000_0000_0000_0000,
+            true,
+            X87Binary80Class::Normal,
+        );
+        assert_eq!(
+            scale_finite_to_binary80(negative_min_normal, -1, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0x80]
+        );
+
+        let min_subnormal = finite(
+            -16445,
+            0x8000_0000_0000_0000,
+            false,
+            X87Binary80Class::Subnormal,
+        );
+        assert_eq!(
+            scale_finite_to_binary80(min_subnormal, 63, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 1, 0]
+        );
+        let max_subnormal = finite(
+            -16383,
+            0xffff_ffff_ffff_fffe,
+            false,
+            X87Binary80Class::Subnormal,
+        );
+        assert_eq!(
+            scale_finite_to_binary80(max_subnormal, 1, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 1, 0]
+        );
+
+        let raw_pseudo = X87Binary80::from_bytes([0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0]);
+        let pseudo = raw_pseudo.normalize_finite().unwrap();
+        assert_eq!(
+            scale_finite_to_binary80(pseudo, 0, Nearest)
+                .unwrap()
+                .to_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 1, 0]
+        );
+        assert_eq!(pseudo.source_class(), X87Binary80Class::PseudoDenormal);
+        assert_eq!(raw_pseudo.to_bytes(), [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0]);
+    }
+
+    #[test]
+    fn finite_scale_underflow_keeps_sign_and_rounds_all_modes_once() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let vectors = [
+            (
+                false,
+                -1,
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            ),
+            (
+                true,
+                -1,
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                [1, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+            ),
+            (
+                false,
+                -2,
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            ),
+            (
+                true,
+                -2,
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                [1, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+            ),
+        ];
+        for (sign, power, nearest, zero, up, down) in vectors {
+            let value = finite(
+                -16445,
+                0x8000_0000_0000_0000,
+                sign,
+                X87Binary80Class::Subnormal,
+            );
+            for (mode, expected) in [(Nearest, nearest), (Zero, zero), (Up, up), (Down, down)] {
+                assert_eq!(
+                    scale_finite_to_binary80(value, power, mode)
+                        .unwrap()
+                        .to_bytes(),
+                    expected,
+                    "sign={sign}, power={power}, mode={mode:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn finite_scale_subnormal_half_ties_and_negative_directed_results_are_literal() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let vectors = [
+            (
+                3,
+                [2, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [2, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [2, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                [1, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                [1, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                [2, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+            ),
+            (
+                5,
+                [2, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [2, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [3, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [2, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [2, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                [2, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                [2, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                [3, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+            ),
+            (
+                7,
+                [4, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [3, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [4, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [3, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [4, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                [3, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                [3, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+                [4, 0, 0, 0, 0, 0, 0, 0, 0, 0x80],
+            ),
+        ];
+        for (
+            raw_significand,
+            pos_nearest,
+            pos_zero,
+            pos_up,
+            pos_down,
+            neg_nearest,
+            neg_zero,
+            neg_up,
+            neg_down,
+        ) in vectors
+        {
+            for (sign, expected) in [
+                (false, [pos_nearest, pos_zero, pos_up, pos_down]),
+                (true, [neg_nearest, neg_zero, neg_up, neg_down]),
+            ] {
+                let value = raw_finite(0, raw_significand, sign)
+                    .normalize_finite()
+                    .unwrap();
+                for (mode, expected) in [
+                    (Nearest, expected[0]),
+                    (Zero, expected[1]),
+                    (Up, expected[2]),
+                    (Down, expected[3]),
+                ] {
+                    assert_eq!(
+                        scale_finite_to_binary80(value, -1, mode)
+                            .unwrap()
+                            .to_bytes(),
+                        expected,
+                        "sign={sign}, raw_significand={raw_significand}, mode={mode:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn finite_scale_minimum_normal_predecessor_boundary_and_finite_range_are_literal() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let predecessor = finite(
+            -16383,
+            0xffff_ffff_ffff_fffe,
+            false,
+            X87Binary80Class::Subnormal,
+        );
+        for (mode, expected) in [
+            (Nearest, [0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0]),
+            (Zero, [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3f, 0, 0]),
+            (Up, [0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0]),
+            (Down, [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3f, 0, 0]),
+        ] {
+            assert_eq!(
+                scale_finite_to_binary80(predecessor, -1, mode)
+                    .unwrap()
+                    .to_bytes(),
+                expected
+            );
+        }
+        let negative_predecessor = finite(
+            -16383,
+            0xffff_ffff_ffff_fffe,
+            true,
+            X87Binary80Class::Subnormal,
+        );
+        for (mode, expected) in [
+            (Nearest, [0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0x80]),
+            (
+                Zero,
+                [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3f, 0, 0x80],
+            ),
+            (
+                Up,
+                [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3f, 0, 0x80],
+            ),
+            (Down, [0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0x80]),
+        ] {
+            assert_eq!(
+                scale_finite_to_binary80(negative_predecessor, -1, mode)
+                    .unwrap()
+                    .to_bytes(),
+                expected
+            );
+        }
+
+        // This exact midpoint lies between the largest subnormal and minimum
+        // normal after scaling; nearest-even and directed-away modes carry.
+        for (sign, expected) in [
+            (
+                false,
+                [
+                    [0, 0, 0, 0, 0, 0, 0, 0x80, 1, 0],
+                    [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0, 0],
+                    [0, 0, 0, 0, 0, 0, 0, 0x80, 1, 0],
+                    [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0, 0],
+                ],
+            ),
+            (
+                true,
+                [
+                    [0, 0, 0, 0, 0, 0, 0, 0x80, 1, 0x80],
+                    [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0, 0x80],
+                    [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0, 0x80],
+                    [0, 0, 0, 0, 0, 0, 0, 0x80, 1, 0x80],
+                ],
+            ),
+        ] {
+            let value = finite(-16382, u64::MAX, sign, X87Binary80Class::Normal);
+            for (mode, expected) in [
+                (Nearest, expected[0]),
+                (Zero, expected[1]),
+                (Up, expected[2]),
+                (Down, expected[3]),
+            ] {
+                assert_eq!(
+                    scale_finite_to_binary80(value, -1, mode)
+                        .unwrap()
+                        .to_bytes(),
+                    expected,
+                    "sign={sign}, mode={mode:?}"
+                );
+            }
+        }
+
+        let max_finite = finite(16383, u64::MAX, false, X87Binary80Class::Normal);
+        let negative_max_finite = finite(16383, u64::MAX, true, X87Binary80Class::Normal);
+        for (value, expected) in [
+            (
+                max_finite,
+                [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe, 0x7f],
+            ),
+            (
+                negative_max_finite,
+                [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe, 0xff],
+            ),
+        ] {
+            for mode in [Nearest, Zero, Up, Down] {
+                assert_eq!(
+                    scale_finite_to_binary80(value, 0, mode).unwrap().to_bytes(),
+                    expected
+                );
+            }
+        }
+        for sign in [false, true] {
+            let value = finite(16383, u64::MAX, sign, X87Binary80Class::Normal);
+            for mode in [Nearest, Zero, Up, Down] {
+                assert_eq!(scale_finite_to_binary80(value, 1, mode), None);
+            }
+        }
+    }
+
+    #[test]
+    fn finite_scale_checks_exponent_overflow_validation_and_input_immutability() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let min = finite(-1, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal);
+        let max = finite(1, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal);
+        for mode in [Nearest, Zero, Up, Down] {
+            assert_eq!(scale_finite_to_binary80(min, i32::MIN, mode), None);
+            assert_eq!(scale_finite_to_binary80(max, i32::MAX, mode), None);
+        }
+
+        let tiny_positive = finite(0, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal);
+        let tiny_negative = finite(0, 0x8000_0000_0000_0000, true, X87Binary80Class::Normal);
+        for (value, mode, expected) in [
+            (tiny_positive, Nearest, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            (tiny_positive, Zero, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            (tiny_positive, Up, [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            (tiny_positive, Down, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            (tiny_negative, Nearest, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]),
+            (tiny_negative, Zero, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]),
+            (tiny_negative, Up, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]),
+            (tiny_negative, Down, [1, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]),
+        ] {
+            assert_eq!(
+                scale_finite_to_binary80(value, i32::MIN, mode)
+                    .unwrap()
+                    .to_bytes(),
+                expected
+            );
+        }
+
+        let zero = finite(0, 0, false, X87Binary80Class::Zero);
+        let malformed_significand =
+            finite(0, 0x7fff_ffff_ffff_ffff, false, X87Binary80Class::Normal);
+        let malformed_class = finite(0, 0x8000_0000_0000_0000, false, X87Binary80Class::Infinity);
+        for mode in [Nearest, Zero, Up, Down] {
+            assert_eq!(scale_finite_to_binary80(zero, 0, mode), None);
+            assert_eq!(
+                scale_finite_to_binary80(malformed_significand, 0, mode),
+                None
+            );
+            assert_eq!(scale_finite_to_binary80(malformed_class, 0, mode), None);
+        }
+        assert_eq!(
+            tiny_positive,
+            finite(0, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal)
+        );
+        assert_eq!(
+            tiny_negative,
+            finite(0, 0x8000_0000_0000_0000, true, X87Binary80Class::Normal)
+        );
     }
 
     fn raw_finite(exponent_field: u16, significand: u64, sign: bool) -> X87Binary80 {
