@@ -214,9 +214,11 @@
 - **S2-29r unequal-exponent helper — bounded gap closed:** exact finite addition
   now accepts two normalized nonzero binary80 operands whose exponents differ
   by at most 62, forms an exact signed `i128` coefficient at the lower exponent,
-  and rounds once through the existing packer. Equal exponents, zeros, larger
-  gaps, cancellation, and finite overflow retain bounded `None` outcomes; this
-  adds no FADD/FSUB instruction semantics or guest exception behavior. Review
+  and rounds once through the existing packer. The unequal-only helper rejects
+  equal exponents, zero operands, and gaps above 62; the composed API still
+  accepts same-exponent values and treats one zero as neutral. Two zeros,
+  cancellation, and finite overflow retain bounded `None` outcomes. This adds
+  no FADD/FSUB instruction semantics or guest exception behavior. Review
   was clean; targeted tests, all 1,682 `od-isa` tests and workspace check passed.
   The isolated worktree layout check was unavailable for its `.git` pointer and
   absent local oracle manifests, with no layout changes. ISSUE-019 remains open
