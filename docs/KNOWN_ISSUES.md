@@ -301,7 +301,9 @@
   truncating and nearest-even metadata APIs return the existing exact remainder
   plus unsigned `u128` quotient magnitude and separate sign; zero quotient is
   positive, and nearest-even reports the ties-to-even rounded integer quotient.
-  The legacy helpers project these results and preserve their acceptance and
+  Nearest-even preserves all negative gaps: `d <= -2` passes lhs through with
+  quotient zero; `d == -1` returns zero for `A <= B` and one for `A > B`. The
+  legacy helpers project these results and preserve their acceptance and
   rejection domains. Literal vectors cover values above `u64`, signed operands,
   zero quotient, exact multiples, odd/even ties, gaps through the accepted
   boundary, malformed/provenance rejects, `i32` exponent endpoints, and wrapper
@@ -309,7 +311,9 @@
   tests, format check, component/workspace checks, and Graphify update passed.
   Layout check remains unavailable in this worktree for the pre-existing
   ISSUE-023 `.git` pointer and missing ignored oracle manifests. Independent
-  review is pending separately. This adds no FPREM/FPREM1, quotient flags,
+  the initial review's P2 negative-gap wording mismatch was corrected in the
+  contract/report/helper docs; follow-up review is requested separately. This
+  adds no FPREM/FPREM1, quotient flags,
   FCW/FSW or guest exception behavior, decoder/execution/native/JIT/C ABI
   admission, physical x86 acceptance, or performance claim. ISSUE-019 remains
   open. See [plan](plans/STAGE_2.md#s2-29z-exact-quotient-metadata-for-bounded-finite-binary80-remainders),

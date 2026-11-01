@@ -5548,6 +5548,8 @@ domains and remainder results. Literal tests cover quotient values beyond
 `u64`, signed operands, positive zero quotient, both nearest-even tie parities,
 exact multiples, negative and maximum positive accepted gaps, malformed and
 endpoint exponent inputs, and legacy-wrapper projection/rejection equivalence.
+Nearest-even preserves every negative gap: `d <= -2` passes lhs through with
+zero quotient, and `d == -1` returns zero for `A <= B` or one for `A > B`.
 
 This remains helper-only; it does not add FPREM/FPREM1, quotient condition
 flags, FCW/FSW or guest exception semantics, decoder/execution/native/JIT/C ABI

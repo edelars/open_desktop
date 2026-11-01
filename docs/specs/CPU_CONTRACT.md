@@ -3615,9 +3615,11 @@ Both APIs preserve the prior operand acceptance and rejection domains exactly:
 nonzero normalized significands with bit 63 set, Normal/Subnormal/
 PseudoDenormal provenance, widened exponent-gap arithmetic, and no accepted
 gap above 64. The truncating helper accepts all negative gaps, which return a
-zero quotient; nearest-even accepts gaps down to -1 and also returns a zero
-quotient for the exact half tie. For nonnegative gaps, the full shifted
-numerator and quotient fit in `u128`. The existing `remainder_finite_trunc` and
+zero quotient. The nearest-even helper accepts every negative gap: for gaps
+`d <= -2`, it returns lhs unchanged with quotient zero; at `d == -1`, it
+returns quotient zero when `A <= B` (including the exact half tie) and
+quotient one when `A > B`. For nonnegative gaps, the full shifted numerator
+and quotient fit in `u128`. The existing `remainder_finite_trunc` and
 `remainder_finite_nearest_even` APIs remain projections of these helpers and
 retain identical remainder values and `None` domains.
 

@@ -380,8 +380,10 @@ pub fn remainder_finite_trunc(lhs: X87Finite, rhs: X87Finite) -> Option<(i32, i1
 /// `lhs - round_ties_even(lhs/rhs) * rhs`. The quotient magnitude is unsigned
 /// and the quotient sign is separate; a rounded zero is always positive. Only
 /// normalized nonzero Normal, Subnormal, or PseudoDenormal operands with
-/// significand bit 63 set are accepted. Gaps from -1 through 64 are handled;
-/// smaller lhs magnitudes yield quotient zero and larger gaps are rejected.
+/// significand bit 63 set are accepted. Every gap at or below -2 returns lhs
+/// unchanged with quotient zero. At gap -1, `A <= B` also returns quotient
+/// zero (including the half-way tie), while `A > B` returns quotient one.
+/// Gaps 0 through 64 use exact division; larger gaps are rejected.
 /// This helper does not implement FPREM1 or any x87 instruction/status effects.
 pub fn remainder_finite_nearest_even_with_quotient(
     lhs: X87Finite,
@@ -3186,6 +3188,15 @@ mod tests {
             .quotient_sign(),
             false
         );
+        let far_below = remainder_finite_nearest_even_with_quotient(
+            finite(i32::MIN, high, true, X87Binary80Class::PseudoDenormal),
+            finite(i32::MAX, high, false, normal),
+        )
+        .unwrap();
+        assert_eq!(far_below.remainder_exponent(), i32::MIN);
+        assert_eq!(far_below.remainder_coefficient(), -i128::from(high));
+        assert_eq!(far_below.quotient_magnitude(), 0);
+        assert!(!far_below.quotient_sign());
 
         for lhs_sign in [false, true] {
             for rhs_sign in [false, true] {

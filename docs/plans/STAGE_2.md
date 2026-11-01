@@ -3370,7 +3370,8 @@ performance claim. See the [standalone S2-29z report](../reports/S2_29Z_X87_REMA
 tests (13), full `od-isa` tests (1,741), formatting, and component/workspace
 checks pass; Graphify was updated. Layout validation reports only the known
 isolated-worktree failures tracked by ISSUE-023. Independent review is pending
-separately. ISSUE-019 remains open.
+follow-up after correcting its P2 negative-gap wording finding. ISSUE-019
+remains open.
 
 ### S2-30. Основные x87 операции
 
