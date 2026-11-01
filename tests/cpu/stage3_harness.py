@@ -71,6 +71,7 @@ SELF_TEST_NAMES = (
     "test_s3_34s_memory_event_gates_are_pinned_once_and_fail_closed",
     "test_s3_34t_register_event_gates_are_pinned_once_and_fail_closed",
     "test_s3_34u_memory_load_and_pc_map_gates_are_pinned_once_and_fail_closed",
+    "test_s3_34v_dword_store_gates_are_pinned_once_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_38d_result_state_validator_rejects_corruption",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
@@ -213,6 +214,14 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_34u_single_site_pc_map_publication_lifetime", "local_acceptance", "od-host",
         "published_single_site_pc_maps_match_artifacts_outlive_them_and_republish",
+    ),
+    (
+        "s3_34v_ir_dword_store_admission_provenance", "local_acceptance", "od-jit",
+        "memory_load_v2::tests::ir_dword_store_admits_only_exact_8903_and_preserves_its_provenance",
+    ),
+    (
+        "s3_34v_ir_dword_store_commits_one_four_byte_write", "local_acceptance", "od-host",
+        "tests::s3_26e_ir_dword_store_matches_interpreter_and_commits_one_four_byte_write",
     ),
     (
         "abi_create_execute_stop_destroy", "local_acceptance", "od-host",
