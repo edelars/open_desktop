@@ -1358,3 +1358,36 @@ and all three scored artifacts passed independent review. V4 run1 completed
 lifecycle/counter diagnostic evidence. Raw JSON, limitations and review status
 are in the [S3-37d report](../reports/STAGE_3_S3-37d_2026-10-31.md). Full
 S3-37 remains open. Mini stays deferred until Stage 3 ends.
+
+### S3-37e native cached-memory fault/error lifecycle
+
+The exact `capacity_one_memory_cache_republishes_after_fault_and_backend_error`
+gate exercises the existing capacity-one native memory cache. It precomputes
+uncached/interpreter references before holding a mapping, then checks cold
+publication, a same-key hit across invocation-local CPU/RAM, STOP after the
+first committed store, and a second-site architectural fault. Both STOP and
+guest fault retain the resident entry. A same-profile/same-generation
+dependency-version change replaces that entry: `replacements` changes from 0
+to 1 only on this path. The replacement is published and executed; clear,
+profile switch, backend error, error recovery publication, and fresh-cache
+creation leave the replacement count unchanged (new cache starts at zero).
+
+At the second helper site, the fixture captures the injected
+`MemoryError::Backend` before result normalization. The cached and uncached
+native paths each expose the typed `MEMORY_ERROR_BACKEND` payload with address
+and length zero; the injected message is fixture-level evidence and is not a
+claim about the native ABI. Backend failure removes the suspect entry, and an
+immediate successful publication/execution proves the old MAP_JIT mapping was
+released. Full state, RAM, flags, RIP, retired count, callback order and memory
+accesses are compared with uncached/interpreter references.
+
+In full run `stage3-20261101-154016-f87988c535`, the exact gate passed 1/1 and
+the local suite finished `local_only`: 106 passed, 0 failed, 33 `not_run`.
+There are 102 Rust gate entries (92 acceptance and 10 lifecycle), and 39
+Python harness self-checks passed. VMHost process, physical x86, Mac mini,
+performance, owner-backed and Stage 2 were `not_run`. Mini remains deferred
+until Stage 3 ends; Stage 2 was not invoked by this suite. This bounded case
+does not establish leak-free stress, SMP reclamation or full S3-37/Stage 3
+completion. Evidence bundle is under
+[`data/stage3/s3-37e-local/`](../reports/data/stage3/s3-37e-local/); see the
+[S3-37e report](../reports/STAGE_3_S3-37e-local_2026-11-01.md).

@@ -1,0 +1,13 @@
+Re-extracting code files in . (no LLM needed)...
+[graphify watch] 200 file(s) not classified (no supported extension or shebang), skipped: .editorconfig, .git, .gitattributes, .gitignore, .gitkeep, SHA256SUMS (+194 more)
+  AST cache: 2493/2504 files served from cache (99%); 11 to extract
+  AST extraction: 11/11 uncached files (100%)
+  warning: 17 code file(s) yielded no symbols (0.01 MB) — a data file, or source this extractor models no symbols for: crates/od-host/Cargo.toml, crates/od-isa/Cargo.toml, crates/od-jit/Cargo.toml, crates/od-jit/src/arm64/mod.rs, crates/od-machine/Cargo.toml (+12 more)
+[graphify watch] community set changed since labeling (0 saved labels, 465 communities now; renamed 33 community(ies) by their hub). Run `graphify label` to refresh names with the LLM.
+Graph has 11067 nodes (above 5000 limit). Building aggregated community view...
+graph.html written (aggregated: 465 community nodes, 1214 cross-community edges)
+Tip: run with --obsidian for full node-level detail.
+[graphify watch] Rebuilt: 11067 nodes, 26619 edges, 465 communities
+[graphify watch] graph.json, graph.html and GRAPH_REPORT.md updated in graphify-out
+Code graph updated. For doc/paper/image changes run /graphify --update in your AI assistant.
+Tip: set GEMINI_API_KEY or GOOGLE_API_KEY to use Gemini for semantic extraction.

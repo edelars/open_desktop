@@ -3444,6 +3444,46 @@ this slice.
 
 **Готово:** capacity/lifetime сохраняются при длительной нагрузке, ресурсные ограничения и рост/разброс объяснены. Полный budget работающей гостевой ОС не заявляется.
 
+#### S3-37e: native cached-memory fault/error lifecycle and republish gate
+
+Added one exact local integration gate for the capacity-one
+`MemoryPairCache` using its existing native published-memory backend. The test
+precomputes uncached/interpreter references before retaining a native mapping,
+then checks a cold publication and same-key hit with different invocation
+CPU/RAM, STOP after the first committed store, and an architectural fault at
+the second helper site. STOP and guest fault retain the resident entry. A
+same-profile/same-generation dependency-version change then replaces the
+occupied entry: `replacements` is 0 before and 1 after that transition, and
+the replacement mapping is published and executed successfully. Explicit
+clear, backend error, republish after error, and fresh-cache lifecycle do not
+increment that counter. The test compares complete interpreter-visible
+state, RAM, flags, RIP, retirement, callback order and memory accesses.
+
+For second-site backend failure, the fixture captures the exact injected
+`MemoryError::Backend` before normalization; both raw native paths report the
+typed `MEMORY_ERROR_BACKEND` payload with address and length zero. The message
+is fixture evidence and is not claimed to cross the native ABI. The backend
+error removes the suspect entry; immediate successful publication and
+execution verifies that the prior MAP_JIT mapping was released. The test then
+clears/drops and opens a fresh cache with a different invocation state. This
+bounded scenario is not leak-free stress, SMP reclamation, owner/MMU evidence,
+or completion of S3-37.
+
+The full local Stage 3 harness run
+`stage3-20261101-154016-f87988c535` exited 0 with `local_only`: 106 steps
+passed, 0 failed, 33 `not_run`. Its inventory has 102 Rust gate entries (92
+acceptance, 10 lifecycle); the new S3-37e exact gate passed 1/1, and all 39
+Python self-checks passed. Source fingerprints matched at start and end:
+`767df064717d4a42d4788c289bf21eb148bee671d7287e96f9f428da269b3f76`. The run
+records source revision `c87283ed2d9cdf9b71170b00864c5104cded6109`; commit
+`d2932c1` contains the same tested implementation and harness files. VMHost
+process, physical x86, Mac mini, performance, owner-backed and Stage 2 suites
+were `not_run`. The run did not invoke or depend on Stage 2; Mac mini checks
+remain deferred until the end of Stage 3. S3-37 and Stage 3 remain open.
+Summary, manifest, logs and generated artifacts are preserved in
+[`S3-37e local report data`](../reports/data/stage3/s3-37e-local/) and the
+[bounded report](../reports/STAGE_3_S3-37e-local_2026-11-01.md).
+
 ### S3-38. Интегрировать runtime с VMHost
 
 1. Подключить новый путь через существующий host ownership/lifecycle, сохранив старые публичные ABI guarantees. Новая версия ABI нужна только при реальной несовместимости и обновляется вместе со всеми consumers.
