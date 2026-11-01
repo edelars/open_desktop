@@ -590,8 +590,9 @@ invalidation workloads and does not complete S3-36.
 frozen S3-34p NativeRegisterV1 corpus. The preflight recomputes all 1,200
 interpreter observations, binds the exact corpus bytes and input digest, and
 checks both seed and index for the selected set. It rejects a selected input
-unless it reaches `BudgetExhausted`, consumes one interpreter-retired trailing
-NOP after either two or three native instructions, and its eager repeat
+unless it reaches `BudgetExhausted`, consumes one interpreter-retired NOP at
+the budget boundary after either two or three native instructions (later code
+bytes can remain unexecuted), and its eager repeat
 dispatch performs exactly one cache hit with zero misses, compiles,
 publications, or replacements. The ten two-native cases and nine three-native
 cases remain separate strata.

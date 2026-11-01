@@ -1,23 +1,35 @@
 //! Resident warm eager-dispatch comparison for frozen NOP-fallback inputs.
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 use std::collections::BTreeSet;
 use std::path::Path;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::sync::atomic::AtomicU8;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use std::time::Instant;
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use od_host::PublishedCode;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use od_isa::LongModeState;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use od_isa::memory::AccessContext;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use od_jit::block::CodeView;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use od_jit::dispatch::{MAX_SINGLE_ENTRY_CACHE_BYTES, SingleEntryBlockCache};
 use serde::Serialize;
 
+use super::{CacheCounts, SourceFingerprint};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use super::{
-    CacheCounts, CacheSnapshot, PreparedCase, SourceFingerprint, cache_behavior, calls_for_target,
-    control, counter_delta, counts, dispatch, err, load_profile, snapshot, validate_cache_bounds,
-    validate_result, validate_strategy,
+    CacheSnapshot, PreparedCase, cache_behavior, control, counter_delta, counts, dispatch, err,
+    load_profile, snapshot, validate_cache_bounds, validate_result, validate_strategy,
 };
-use crate::{HostMetadata, MAX_RUN_TIME};
+use crate::HostMetadata;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use crate::MAX_RUN_TIME;
 
 const PROFILE_ID: &str = "s3-36c-resident-warm-native-nop-fallback-v1";
 const CORPUS_SHA256: &str = "3fddc5c753f3d2884850468480ec68d13a6069d1aed16e8973e1acef56ffac1f";
@@ -330,12 +342,17 @@ fn validate_eligibility(case: &PreparedCase) -> Result<u64, super::BenchError> {
         ..CacheCounts::default()
     };
     let native_retired = case.eager_retired_native;
+    let fallback_nop_precedes_final_rip = has_nop_at_budget_boundary(
+        &case.input.code,
+        case.input.guest_base_rip,
+        case.expected_state.rip,
+    );
     if case.expected_exit != "BudgetExhausted"
         || case.expected_retired != case.input.budget
         || case.eager_retired_interpreter != 1
         || !(native_retired == 2 || native_retired == 3)
         || case.input.budget != native_retired + 1
-        || case.input.code.last() != Some(&0x90)
+        || !fallback_nop_precedes_final_rip
         || behavior.repeat != expected_repeat
     {
         return Err(err(format!(
@@ -349,6 +366,14 @@ fn validate_eligibility(case: &PreparedCase) -> Result<u64, super::BenchError> {
         )));
     }
     Ok(native_retired)
+}
+
+fn has_nop_at_budget_boundary(code: &[u8], base_rip: u64, final_rip: u64) -> bool {
+    final_rip
+        .checked_sub(base_rip)
+        .and_then(|offset| usize::try_from(offset).ok())
+        .filter(|offset| *offset > 0 && *offset <= code.len())
+        .is_some_and(|offset| code[offset - 1] == 0x90)
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -418,7 +443,7 @@ fn measure_case(
     if shortest_probe == 0 {
         return Err(err("warm calibration produced a zero-duration probe"));
     }
-    let repetitions = calls_for_target(shortest_probe)?.max(1);
+    let repetitions = repetitions_for_target(shortest_probe)?.max(1);
     if repetitions > MAX_REPETITIONS {
         return Err(err("warm calibration exceeds repetition limit"));
     }
@@ -746,6 +771,20 @@ fn resident_snapshot(snapshot: CacheSnapshot) -> ResidentSnapshot {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn repetitions_for_target(shortest_probe_ns: u128) -> Result<u64, super::BenchError> {
+    if shortest_probe_ns == 0 {
+        return Err(err("warm calibration duration is zero"));
+    }
+    let target_ns = MIN_SAMPLE
+        .as_nanos()
+        .checked_mul(6)
+        .ok_or_else(|| err("warm calibration overflow"))?
+        .div_ceil(5);
+    u64::try_from(target_ns.div_ceil(shortest_probe_ns))
+        .map_err(|_| err("warm calibration repetition count overflow"))
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn ratio_summary(values: &[f64]) -> Result<RatioSummary, super::BenchError> {
     if values.len() != SAMPLE_PAIRS || values.iter().any(|value| !value.is_finite()) {
         return Err(err("expected 20 finite per-case timing ratios"));
@@ -829,5 +868,16 @@ mod tests {
                 .count(),
             7
         );
+    }
+
+    #[test]
+    fn fallback_nop_is_checked_at_final_rip_not_at_code_end() {
+        let mut code = vec![0; 25];
+        code[10] = 0x90;
+        assert!(has_nop_at_budget_boundary(&code, 0x1000, 0x100b));
+        assert!(!has_nop_at_budget_boundary(&code, 0x1000, 0x1000));
+        assert!(!has_nop_at_budget_boundary(&code, 0x1000, 0x2000));
+        code[10] = 0x91;
+        assert!(!has_nop_at_budget_boundary(&code, 0x1000, 0x100b));
     }
 }

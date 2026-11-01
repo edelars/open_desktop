@@ -3047,9 +3047,10 @@ full S3-36 matrix. See the
 
 Added opt-in `od-bench warm-native-fallback` for 19 exact seed/index inputs
 from the frozen S3-34p corpus. Selection is fixed before timing and verified
-again by requiring `BudgetExhausted`, one interpreter-retired trailing NOP,
-two or three native retirements, and exactly one eager repeat cache hit with
-zero misses, compiles, publications, or replacements. The profile separates
+again by requiring `BudgetExhausted`, one interpreter-retired NOP immediately
+before the oracle's final RIP (later code bytes can be unexecuted), two or
+three native retirements, and exactly one eager repeat cache hit with zero
+misses, compiles, publications, or replacements. The profile separates
 the ten two-native-plus-fallback cases from the nine three-native-plus-fallback
 cases. Each case retains one capacity-one eager cache from one untimed prewarm
 through calibrated alternating interpreter/cached samples, then drops that
