@@ -3543,13 +3543,24 @@ checks remain deferred until the end of Stage 3. See the
 
 #### S3-41a. Сводка локальных bounded acceptance evidence
 
-Создан [локальный сводный отчёт](../reports/STAGE_3_REPORT.md) с точными
-ссылками на принятые bounded slices и доступные локальные run evidence.
-Отчёт не закрывает S3-41 или этап: physical x86/Mini, cold/warm/resource
-measurements и production memory-owner acceptance остаются открытыми или
-отложенными согласно их контрактам. ISSUE-027 остаётся открытой; новая попытка
-VMHost process suite без нового основания не запускается. Это документационный
-срез без нового runtime-поведения.
+Обновлён [локальный сводный отчёт](../reports/STAGE_3_REPORT.md) с матрицей,
+разделяющей четыре статуса: bounded local evidence подтверждено в его
+оговорённых пределах; широкие Stage 3 correctness/performance/workload
+условия остаются открытыми; physical x86/Mini gate отложен до конца этапа;
+production RAM/backing/mapping/MMU owner остаётся вне текущего fixture scope.
+Локальные evidence включают S3-18e, S3-35c, S3-36d/e, S3-37d, S3-38 и S3-39,
+каждое со своей ссылкой и ограничениями. S3-36e native/interpreter ratios
+выше 1 на двух проверенных fixtures, поэтому полезный целевой сценарий пока
+не доказан; различающиеся cold/warm/full-call таймеры не задают cache cost или
+break-even. Сводный harness run 30 октября привязан к revision
+`fa80ab0da77b3de268c6adf649dc2a92de9dde20` и fingerprint
+`caa5eec7590595b66910ce855e6c6eba4b476b59c1f7704619b273eb10e970c9`; он не
+покрывает более поздний HEAD, чьи slices опираются на собственные run evidence.
+Stage 2 runs/activity сами по себе не являются blocker и не требуют quiet
+окна. S3-41 и итоговая приёмка остаются открытыми; Mini checks отложены до
+конца этапа. ISSUE-027 остаётся открытой; новую попытку VMHost process suite
+без нового основания не запускаем. Изменение документационное, runtime не
+менялся.
 
 ## 10. Матрица приёмки
 
