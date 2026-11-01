@@ -1286,6 +1286,8 @@ pub enum Operation {
     SqrtpsMemoryRax,
     /// Local-only mandatory-66 legacy `66 0F 51 00` SQRTPD m128-at-RAX form.
     SqrtpdMemoryRax,
+    /// Local-only legacy `F2 0F 51 00` SQRTSD m64-at-RAX form.
+    SqrtsdMemoryRax,
     /// Local-only legacy `0F 5F /r` XMM-register form with masked IE/DE status.
     MaxpsRegisterMasked {
         destination: u8,
@@ -3930,6 +3932,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         .rex
                         .is_some_and(|rex| matches!(rex, 0x41 | 0x44 | 0x45))
                     && prefix_bytes[1] == prefixes.rex.unwrap());
+        let sqrtsd_memory_rax = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x51
+            && prefixes.group1 == Some(0xf2)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && prefixes.rex.is_none()
+            && prefix_count == 1;
         let cvtdq2ps_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x5b
             && prefixes.group1.is_none()
@@ -4856,6 +4866,20 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 Operation::SqrtpdRegister {
                     destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
                     source: (modrm & 7) | ((rex & 1) << 3),
+                }
+            }
+            (OpcodeMap::Escape0f, 0x51) if sqrtsd_memory_rax => {
+                let modrm = self.byte()?;
+                if modrm == 0x00 {
+                    Operation::SqrtsdMemoryRax
+                } else if modrm >> 6 == 3 {
+                    let rex = prefixes.rex.unwrap_or(0x40);
+                    Operation::SqrtsdRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
+                } else {
+                    return Err(self.unsupported(opcode));
                 }
             }
             (OpcodeMap::Escape0f, 0x51) if sqrtsd_register => {
@@ -13198,6 +13222,38 @@ mod tests {
                 !Memory::new(bytes)
                     .decode()
                     .is_ok_and(|decoded| decoded.operation == Operation::SqrtpsMemoryRax),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sqrtsd_memory_rax_decodes_only_exact_f2_0f_51_00() {
+        let mut exact = Memory::new(&[0xf2, 0x0f, 0x51, 0x00]);
+        let decoded = exact.decode().unwrap();
+        assert_eq!(decoded.operation, Operation::SqrtsdMemoryRax);
+        assert_eq!(decoded.length, 4);
+        for bytes in [
+            &[0xf2, 0x0f, 0x51, 0x01][..],
+            &[0xf2, 0x0f, 0x51, 0x04, 0x00][..],
+            &[0xf2, 0x0f, 0x51, 0x40, 0x00][..],
+            &[0xf2, 0x0f, 0x51, 0x80, 0, 0, 0][..],
+            &[0x48, 0xf2, 0x0f, 0x51, 0x00][..],
+            &[0xf2, 0x48, 0x0f, 0x51, 0x00][..],
+            &[0xf2, 0x41, 0x0f, 0x51, 0x00][..],
+            &[0xf2, 0x67, 0x0f, 0x51, 0x00][..],
+            &[0xf2, 0x66, 0x0f, 0x51, 0x00][..],
+            &[0xf2, 0xf3, 0x0f, 0x51, 0x00][..],
+            &[0xf2, 0x2e, 0x0f, 0x51, 0x00][..],
+            &[0xf2, 0x0f, 0x51][..],
+            &[0xc5, 0xfb, 0x51, 0x00][..],
+            &[0xc4, 0xe1, 0x7b, 0x51, 0x00][..],
+            &[0x62, 0xf1, 0xff, 0x08, 0x51, 0x00][..],
+        ] {
+            assert!(
+                !Memory::new(bytes)
+                    .decode()
+                    .is_ok_and(|d| d.operation == Operation::SqrtsdMemoryRax),
                 "{bytes:02x?}"
             );
         }

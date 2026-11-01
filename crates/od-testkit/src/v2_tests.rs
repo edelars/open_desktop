@@ -525,6 +525,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 minps_memory_rax_controls: input.fixture.minps_memory_rax_controls,
                 sqrtps_memory_rax_controls: input.fixture.sqrtps_memory_rax_controls,
                 sqrtpd_memory_rax_controls: input.fixture.sqrtpd_memory_rax_controls,
+                sqrtsd_memory_rax_controls: input.fixture.sqrtsd_memory_rax_controls,
                 maxpd_memory_rax_controls: input.fixture.maxpd_memory_rax_controls,
                 maxps_memory_rax_controls: input.fixture.maxps_memory_rax_controls,
                 cvtsi2sd_r32_controls: input.fixture.cvtsi2sd_r32_controls,

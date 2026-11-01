@@ -60,6 +60,9 @@ const SQRTPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
 const SQRTPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37de_sqrtpd_m128_memory_source_lanes_rounding.case.json"
 );
+const SQRTSD_M64_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37df_sqrtsd_m64_memory_source_rc.case.json"
+);
 const MINPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37db_minpd_m128_qnan_and_other_lane_denormal.case.json"
 );
@@ -1661,6 +1664,13 @@ fn run(bytes: &[u8], engine: &str, exit: i32) -> (LoadedFixture, RunResult) {
 
 fn snapshot(result: &RunResult) -> &Snapshot {
     match &result.snapshot {
+        Observation::Available { value } => value,
+        _ => panic!("CPU execution must capture its final state"),
+    }
+}
+
+fn snapshot_mut(result: &mut RunResult) -> &mut Snapshot {
+    match &mut result.snapshot {
         Observation::Available { value } => value,
         _ => panic!("CPU execution must capture its final state"),
     }
@@ -25844,7 +25854,7 @@ fn cvtps2pd_m64_widens_subnormals_and_fails_closed() {
     assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
     let mut malformed = fixture.clone();
     malformed.memory[0].initial_bytes_hex = "660f5a00".into();
-    assert!(malformed.validate().is_err());
+    assert!(malformed.validate().is_err(), "{:?}", malformed.validate());
     let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
     let mut tampered = result.clone();
     let Observation::Available { value } = &mut tampered.snapshot else {
@@ -37200,6 +37210,222 @@ fn sqrtps_m128_memory_uses_memory_lanes_and_aggregates_masked_exceptions() {
     let mut wrong = base.clone();
     wrong.memory[0].initial_bytes_hex = "0f5101".into();
     assert!(wrong.validate().is_err());
+}
+
+#[test]
+fn sqrtsd_m64_memory_profile_covers_scalar_rounding_classes_and_denials() {
+    use od_testkit::v2::Profile;
+    let base = Fixture::from_json(SQRTSD_M64_MEMORY_RAX).unwrap().fixture;
+    assert_eq!(base.profile, Profile::LongSqrtsdMemoryRaxV1);
+    assert_eq!(base.memory[0].initial_bytes_hex, "f20f5100");
+    assert_eq!(base.memory[0].length, 4);
+    assert_eq!(base.memory[1].length, 8);
+    assert_eq!(base.initial_state.gpr[0], HexU64(0x2003));
+
+    for rc in 0..4u64 {
+        let mut case = base.clone();
+        case.case_id = format!("s2_37df_sqrt2_rc{rc}");
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (rc << 13) | 0x15);
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let snap = match result.snapshot {
+            Observation::Available { value } => value,
+            _ => panic!("missing snapshot"),
+        };
+        let expected = if rc == 1 || rc == 3 {
+            "cc3b7f669ea0f63f"
+        } else {
+            "cd3b7f669ea0f63f"
+        };
+        assert_eq!(&snap.state.sse.as_ref().unwrap().xmm[0][..16], expected);
+        assert_eq!(
+            &snap.state.sse.as_ref().unwrap().xmm[0][16..32],
+            "123456789abcdef0"
+        );
+        assert_eq!(
+            snap.state.sse.as_ref().unwrap().mxcsr,
+            HexU64(0x1f80 | (rc << 13) | 0x35)
+        );
+    }
+
+    let vectors: [(&str, u64, u64, u64); 19] = [
+        ("four", 0x4010000000000000, 0x4000000000000000, 0),
+        ("quarter", 0x3fd0000000000000, 0x3fe0000000000000, 0),
+        ("sqrt2_rn", 0x4000000000000000, 0x3ff6a09e667f3bcd, 0x20),
+        ("sqrt2_ru", 0x4000000000000000, 0x3ff6a09e667f3bcd, 0x20),
+        ("sqrt2_rd", 0x4000000000000000, 0x3ff6a09e667f3bcc, 0x20),
+        ("sqrt2_rz", 0x4000000000000000, 0x3ff6a09e667f3bcc, 0x20),
+        ("subnormal1", 1, 0x1e60000000000000, 0x02),
+        ("subnormal2", 2, 0x1e66a09e667f3bcd, 0x22),
+        ("subnormal3", 3, 0x1e6bb67ae8584caa, 0x22),
+        ("positive_zero", 0, 0, 0),
+        ("negative_zero", 0x8000000000000000, 0x8000000000000000, 0),
+        (
+            "positive_infinity",
+            0x7ff0000000000000,
+            0x7ff0000000000000,
+            0,
+        ),
+        (
+            "negative_infinity",
+            0xfff0000000000000,
+            0xfff8000000000000,
+            1,
+        ),
+        ("negative_one", 0xbff0000000000000, 0xfff8000000000000, 1),
+        (
+            "negative_minsubnormal",
+            0x8000000000000001,
+            0xfff8000000000000,
+            1,
+        ),
+        ("qnan_pos", 0x7ff8123456789abc, 0x7ff8123456789abc, 0),
+        ("qnan_neg", 0xfff8123456789abc, 0xfff8123456789abc, 0),
+        ("snan_pos", 0x7ff0123456789abc, 0x7ff8123456789abc, 1),
+        ("snan_neg", 0xfff0123456789abc, 0xfff8123456789abc, 1),
+    ];
+    for (name, raw, expected, flags) in vectors {
+        let mut case = base.clone();
+        case.case_id = format!("s2_37df_{name}");
+        case.memory[1].initial_bytes_hex = raw
+            .to_le_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let rc = if name.ends_with("_rd") {
+            1
+        } else if name.ends_with("_ru") {
+            2
+        } else if name.ends_with("_rz") {
+            3
+        } else {
+            0
+        };
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (rc << 13));
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let snap = match result.snapshot {
+            Observation::Available { value } => value,
+            _ => panic!("missing snapshot"),
+        };
+        let actual = &snap.state.sse.as_ref().unwrap().xmm[0][..16];
+        let expected_hex: String = expected
+            .to_le_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(actual, expected_hex, "{name}");
+        assert_eq!(
+            snap.state.sse.as_ref().unwrap().mxcsr,
+            HexU64(0x1f80 | (rc << 13) | flags),
+            "{name}"
+        );
+    }
+
+    assert!(matches!(
+        run(SQRTSD_M64_MEMORY_RAX, "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    assert!(matches!(
+        run(SQRTSD_M64_MEMORY_RAX, "native", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    let (input, good) = run(SQRTSD_M64_MEMORY_RAX, "interpreter", 0);
+    let mut bad = good.clone();
+    if let Observation::Available { value } = &mut bad.snapshot {
+        value.state.rip = HexU64(value.state.rip.get() + 1);
+    }
+    assert!(od_testkit::v2::compare(&input, &good, &bad).is_err());
+    let mut bad_controls = good.clone();
+    if let Observation::Available { value } = &mut bad_controls.snapshot {
+        value.sqrtsd_memory_rax_controls.as_mut().unwrap().cr0_ts = true;
+    }
+    assert!(od_testkit::v2::compare(&input, &good, &bad_controls).is_err());
+    let mut bad_result = good.clone();
+    if let Observation::Available { value } = &mut bad_result.snapshot {
+        value.state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+    }
+    assert!(od_testkit::v2::compare(&input, &good, &bad_result).is_err());
+    for (name, sse2, ts, source) in [
+        ("ud", false, false, 0x2003u64),
+        ("nm", true, true, 0x2003u64),
+        ("gp", true, false, 0x0000_7fff_ffff_fffc),
+    ] {
+        let mut fault_case = base.clone();
+        fault_case.case_id = format!("s2_37df_fault_{name}");
+        fault_case
+            .sqrtsd_memory_rax_controls
+            .as_mut()
+            .unwrap()
+            .sse2_available = sse2;
+        fault_case
+            .sqrtsd_memory_rax_controls
+            .as_mut()
+            .unwrap()
+            .cr0_ts = ts;
+        fault_case.initial_state.gpr[0] = HexU64(source);
+        fault_case.memory[1].guest_address = HexU64(source);
+        fault_case.expected_exit = od_testkit::v2::ExpectedExit::Exception;
+        let (fault_input, fault_result) = run(&fault_case.to_json().unwrap(), "interpreter", 0);
+        assert!(matches!(fault_result.outcome, Outcome::Exception {}));
+        let mut fabricated = fault_result.clone();
+        if let Observation::Available {
+            value: Some(exception),
+        } = &mut snapshot_mut(&mut fabricated).exception
+        {
+            exception.fault_address = Observation::Available {
+                value: HexU64(0x1234),
+            };
+        } else {
+            panic!("expected exception snapshot for {name}");
+        }
+        assert!(od_testkit::v2::compare(&fault_input, &fault_result, &fabricated).is_err());
+        let mut wrong_rip = fault_result.clone();
+        if let Observation::Available {
+            value: Some(exception),
+        } = &mut snapshot_mut(&mut wrong_rip).exception
+        {
+            exception.faulting_rip = HexU64(exception.faulting_rip.get() + 1);
+        } else {
+            panic!("expected exception snapshot for {name}");
+        }
+        assert!(od_testkit::v2::compare(&fault_input, &fault_result, &wrong_rip).is_err());
+    }
+    let mut malformed = base.clone();
+    malformed.memory[0].initial_bytes_hex = "f20f5101".into();
+    assert!(
+        malformed.validate().is_err(),
+        "malformed result: {:?}",
+        malformed.validate()
+    );
+    let mut trailing = base.clone();
+    trailing.memory[0].initial_bytes_hex.push_str("90");
+    assert!(trailing.validate().is_err());
+    let mut extra_control = base.clone();
+    extra_control.sqrtpd_memory_rax_controls =
+        Some(od_testkit::v2::SqrtpdMemoryRaxControlSnapshot {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+        });
+    assert!(extra_control.validate().is_err());
+    for mxcsr in [0x1f00, 0x1fc0, 0x9f80, 0x0001_1f80] {
+        let mut invalid = base.clone();
+        invalid.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(invalid.validate().is_err());
+    }
+    let mut missing = base.clone();
+    missing.sqrtsd_memory_rax_controls = None;
+    assert!(missing.validate().is_err());
+    let mut ac = base.clone();
+    ac.case_id = "s2_37df_ac_refusal".into();
+    ac.initial_state.rflags = HexU64(ac.initial_state.rflags.get() | (1 << 18));
+    ac.expected_exit = od_testkit::v2::ExpectedExit::Unsupported;
+    assert!(matches!(
+        run(&ac.to_json().unwrap(), "interpreter", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
 }
 
 #[test]

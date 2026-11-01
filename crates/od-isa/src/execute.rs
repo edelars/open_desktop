@@ -717,6 +717,15 @@ pub struct SqrtpdMemoryRaxControls {
     pub cr4_osfxsr: bool,
 }
 
+/// Explicit SSE2 prerequisite gates for exact SQRTSD m64 at [RAX].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SqrtsdMemoryRaxControls {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MaxpsMemoryRaxControls {
     pub sse_available: bool,
@@ -1091,6 +1100,7 @@ struct ExecutionProfiles<'a> {
     minps_memory_rax: Option<MinpsMemoryRaxControls>,
     sqrtps_memory_rax: Option<SqrtpsMemoryRaxControls>,
     sqrtpd_memory_rax: Option<SqrtpdMemoryRaxControls>,
+    sqrtsd_memory_rax: Option<SqrtsdMemoryRaxControls>,
     maxpd_memory_rax: Option<MaxpdMemoryRaxControls>,
     maxps_memory_rax: Option<MaxpsMemoryRaxControls>,
     cmpps_registers: Option<CmppsControls>,
@@ -1969,6 +1979,7 @@ pub fn run_with_maxss_unmasked_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -2097,6 +2108,7 @@ pub fn run_with_minsd_unmasked_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -2225,6 +2237,7 @@ pub fn run_with_maxsd_unmasked_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -2353,6 +2366,7 @@ pub fn run_with_minpd_unmasked_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -2481,6 +2495,7 @@ pub fn run_with_minps_unmasked_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -2609,6 +2624,7 @@ pub fn run_with_maxps_unmasked_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -2737,6 +2753,7 @@ pub fn run_with_maxpd_unmasked_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -2865,6 +2882,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -2993,6 +3011,7 @@ pub fn run_with_cvtsi2sd_r32_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -3121,6 +3140,7 @@ pub fn run_with_cvtsi2sd_r64_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -3249,6 +3269,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -3377,6 +3398,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -3505,6 +3527,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -3633,6 +3656,7 @@ pub fn run_with_cvtsi2ss_r32_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -3761,6 +3785,7 @@ pub fn run_with_cvtsi2ss_r64_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -3889,6 +3914,7 @@ pub fn run_with_cvtss2si_registers_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -4017,6 +4043,7 @@ pub fn run_with_cvttss2si_registers_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -4144,6 +4171,7 @@ pub fn run_with_cvtsd2si_registers_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -4272,6 +4300,7 @@ pub fn run_with_cvtsd2si_r32_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -4400,6 +4429,7 @@ pub fn run_with_cvtsd2si_r64_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -4530,6 +4560,7 @@ pub fn run_with_cvttsd2si_r32_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -4662,6 +4693,7 @@ pub fn run_with_cvttsd2si_r64_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -4790,6 +4822,7 @@ pub fn run_with_cvtss2si_r32_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -4918,6 +4951,7 @@ pub fn run_with_cvtss2si_r64_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -5046,6 +5080,7 @@ pub fn run_with_cvttss2si_r64_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -5174,6 +5209,7 @@ pub fn run_with_cvttss2si_r32_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -5303,6 +5339,7 @@ pub fn run_with_cvttsd2si_registers_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -5431,6 +5468,7 @@ pub fn run_with_cvtdq2pd_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -5559,6 +5597,7 @@ pub fn run_with_cvtdq2pd_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -5686,6 +5725,7 @@ pub fn run_with_cvtdq2pd_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -5814,6 +5854,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -5942,6 +5983,7 @@ pub fn run_with_cvtdq2ps_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -6070,6 +6112,7 @@ pub fn run_with_cvtps2dq_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -6198,6 +6241,7 @@ pub fn run_with_cvttps2dq_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -6326,6 +6370,7 @@ pub fn run_with_cvtps2dq_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -6454,6 +6499,7 @@ pub fn run_with_cvttps2dq_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -6582,6 +6628,7 @@ pub fn run_with_cvttpd2dq_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -6710,6 +6757,7 @@ pub fn run_with_cvtpd2dq_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -6838,6 +6886,7 @@ pub fn run_with_cvtpd2dq_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -6966,6 +7015,7 @@ pub fn run_with_cvtpd2ps_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -7094,6 +7144,7 @@ pub fn run_with_cvttpd2dq_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -7222,6 +7273,7 @@ pub fn run_with_cvtss2sd_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -7354,6 +7406,7 @@ pub fn run_with_cvtpi2pd_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -7518,6 +7571,7 @@ fn run_with_cvtpi2ps_profile(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -7813,6 +7867,7 @@ pub fn run_with_cvtsd2ss_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -7937,6 +7992,7 @@ pub fn run_with_cvtps2pd_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -8065,6 +8121,7 @@ pub fn run_with_cvtps2pd_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -8193,6 +8250,7 @@ pub fn run_with_cvtss2sd_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -8321,6 +8379,7 @@ pub fn run_with_cvtsd2ss_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -8448,6 +8507,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -8634,6 +8694,7 @@ fn run_with_cmpss_profile(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -8762,6 +8823,7 @@ pub fn run_with_cmpsd_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -8890,6 +8952,7 @@ pub fn run_with_cmppd_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -9017,6 +9080,7 @@ pub fn run_with_cmppd_memory_rax_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -9144,6 +9208,7 @@ pub fn run_with_cmpps_memory_rax_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -9272,6 +9337,7 @@ pub fn run_with_minsd_memory_rax_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -9400,6 +9466,7 @@ pub fn run_with_maxsd_memory_rax_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -9528,6 +9595,7 @@ pub fn run_with_minpd_memory_rax_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -9656,6 +9724,7 @@ pub fn run_with_minps_memory_rax_controls(
             minps_memory_rax: Some(controls),
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -9784,6 +9853,7 @@ pub fn run_with_sqrtps_memory_rax_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: Some(controls),
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -9911,6 +9981,135 @@ pub fn run_with_sqrtpd_memory_rax_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: Some(controls),
+            sqrtsd_memory_rax: None,
+            maxpd_memory_rax: None,
+            maxps_memory_rax: None,
+            cmpps_registers: None,
+            comisd_ucomisd_registers: None,
+            comparison_memory_rax: None,
+            cvtsi2sd_r32: None,
+            cvtsi2sd_r32_memory: None,
+            cvtsi2sd_r64: None,
+            cvtsi2sd_r64_memory: None,
+            cvtsi2sd_registers: None,
+            cvtsi2ss_registers: None,
+            cvtsi2ss_r32_memory: None,
+            cvtsi2ss_r64_memory: None,
+            cvtss2si_registers: None,
+            cvttss2si_registers: None,
+            cvtsd2si_registers: None,
+            cvtsd2si_r32_memory: None,
+            cvtsd2si_r64_memory: None,
+            cvttsd2si_r32_memory: None,
+            cvttsd2si_r64_memory: None,
+            cvtss2si_r32_memory: None,
+            cvtss2si_r64_memory: None,
+            cvttss2si_r64_memory: None,
+            cvttss2si_r32_memory: None,
+            cvttsd2si_registers: None,
+            cvtsd2ss_registers: None,
+            cvtsd2ss_memory: None,
+            cvtpi2pd_memory_rax: None,
+            cvtpi2_profile: None,
+            fx_cr0: None,
+            unmasked_minss_denormal: false,
+            rdtsc: None,
+            swapgs: None,
+            cli: None,
+            sti: None,
+            halt: None,
+            cr0: None,
+            cr4: None,
+        },
+        StepRuntime {
+            rdtsc_source: None,
+            sti_sequence: None,
+            exact_hlt_only: false,
+            stop_requested: &mut stop_requested,
+        },
+    )
+}
+
+pub fn run_with_sqrtsd_memory_rax_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: SqrtsdMemoryRaxControls,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_configured(
+        state,
+        memory,
+        config,
+        crate::INTEGER_FLAGS,
+        ExecutionProfiles {
+            cpuid: None,
+            msr: None,
+            sep: None,
+            xorpd: None,
+            minss_invalid: None,
+            maxss_unmasked: None,
+            minsd_unmasked: None,
+            maxsd_unmasked: None,
+            minpd_unmasked: None,
+            minps_unmasked: None,
+            maxps_unmasked: None,
+            maxpd_unmasked: None,
+            cvtdq2pd: None,
+            cvtdq2pd_registers: None,
+            cvtdq2pd_memory: None,
+            cvtdq2ps_registers: None,
+            cvtdq2ps_memory: None,
+            cvtps2dq_registers: None,
+            cvtps2dq_memory: None,
+            cvttps2dq_registers: None,
+            cvttps2dq_memory: None,
+            cvtpd2dq_registers: None,
+            cvtpd2ps_registers: None,
+            cvtpd2ps_memory: None,
+            cvttpd2dq_registers: None,
+            cvttpd2dq_memory: None,
+            cvtpd2dq_memory: None,
+            sqrtss_registers: None,
+            sqrtsd_registers: None,
+            sqrtps_registers: None,
+            sqrtpd_registers: None,
+            subpd_registers: None,
+            mulpd_registers: None,
+            addpd_registers: None,
+            addsd_registers: None,
+            addss_registers: None,
+            addps_registers: None,
+            divpd_registers: None,
+            divsd_registers: None,
+            divps_registers: None,
+            divss_registers: None,
+            mulsd_registers: None,
+            mulss_registers: None,
+            mulps_registers: None,
+            subps_registers: None,
+            subsd_registers: None,
+            subss_registers: None,
+            cvtss2sd_registers: None,
+            cvtps2pd_registers: None,
+            cvtps2pd_memory: None,
+            cvtss2sd_memory: None,
+            comiss_ucomiss_registers: None,
+            cmpss_registers: None,
+            cmpss_memory_rax: None,
+            cmpsd_memory_rax: None,
+            cmpsd_registers: None,
+            cmppd_registers: None,
+            cmppd_memory_rax: None,
+            cmpps_memory_rax: None,
+            minsd_memory_rax: None,
+            maxss_memory_rax: None,
+            maxsd_memory_rax: None,
+            minpd_memory_rax: None,
+            minps_memory_rax: None,
+            sqrtps_memory_rax: None,
+            sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: Some(controls),
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -10039,6 +10238,7 @@ pub fn run_with_maxpd_memory_rax_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: Some(controls),
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -10167,6 +10367,7 @@ pub fn run_with_maxps_memory_rax_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: Some(controls),
             cmpps_registers: None,
@@ -10295,6 +10496,7 @@ pub fn run_with_maxss_memory_rax_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -10422,6 +10624,7 @@ pub fn run_with_cmpps_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: Some(controls),
@@ -10550,6 +10753,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -10731,6 +10935,7 @@ pub fn run_with_efer_rdmsr_profile(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -11068,6 +11273,7 @@ pub fn run_with_cr0_profile(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -11197,6 +11403,7 @@ pub fn run_with_cr4_profile(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -11560,6 +11767,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -11873,6 +12081,7 @@ pub fn step_with_cr0_profile(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -12244,6 +12453,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -12372,6 +12582,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -12603,6 +12814,7 @@ fn run_with_comparison_memory_rax_profile(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -12733,6 +12945,7 @@ pub fn run_with_sqrtss_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -12861,6 +13074,7 @@ pub fn run_with_sqrtsd_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -12989,6 +13203,7 @@ pub fn run_with_sqrtps_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -13117,6 +13332,7 @@ pub fn run_with_sqrtpd_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -13245,6 +13461,7 @@ pub fn run_with_subpd_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -13373,6 +13590,7 @@ pub fn run_with_mulpd_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -13501,6 +13719,7 @@ pub fn run_with_addpd_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -13629,6 +13848,7 @@ pub fn run_with_addsd_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -13757,6 +13977,7 @@ pub fn run_with_divpd_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -13885,6 +14106,7 @@ pub fn run_with_addss_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -14013,6 +14235,7 @@ pub fn run_with_addps_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -14141,6 +14364,7 @@ pub fn run_with_divsd_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -14269,6 +14493,7 @@ pub fn run_with_divps_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -14397,6 +14622,7 @@ pub fn run_with_divss_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -14525,6 +14751,7 @@ pub fn run_with_mulsd_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -14653,6 +14880,7 @@ pub fn run_with_mulss_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -14781,6 +15009,7 @@ pub fn run_with_mulps_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -14909,6 +15138,7 @@ pub fn run_with_subsd_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -15037,6 +15267,7 @@ pub fn run_with_subss_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -15165,6 +15396,7 @@ pub fn run_with_subps_register_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -15293,6 +15525,7 @@ pub fn run_with_cvtpd2ps_memory_controls(
             minps_memory_rax: None,
             sqrtps_memory_rax: None,
             sqrtpd_memory_rax: None,
+            sqrtsd_memory_rax: None,
             maxpd_memory_rax: None,
             maxps_memory_rax: None,
             cmpps_registers: None,
@@ -15585,6 +15818,7 @@ fn step_configured(
         minps_memory_rax: configured_minps_memory_rax_controls,
         sqrtps_memory_rax: configured_sqrtps_memory_rax_controls,
         sqrtpd_memory_rax: configured_sqrtpd_memory_rax_controls,
+        sqrtsd_memory_rax: configured_sqrtsd_memory_rax_controls,
         maxpd_memory_rax: configured_maxpd_memory_rax_controls,
         maxps_memory_rax: configured_maxps_memory_rax_controls,
         cmpps_registers: configured_cmpps_controls,
@@ -18596,6 +18830,52 @@ fn step_configured(
             });
         }
     }
+    if let Some(controls) = configured_sqrtsd_memory_rax_controls {
+        let is_canonical_memory_form = matches!(
+            instruction.operation,
+            Operation::SqrtsdMemoryRax
+                if instruction.length == 4
+                    && instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0x51
+                    && instruction.prefixes.group1 == Some(0xf2)
+                    && instruction.prefixes.segment.is_none()
+                    && !instruction.prefixes.operand_override
+                    && !instruction.prefixes.address_override
+                    && instruction.prefixes.rex.is_none()
+        );
+        if !is_canonical_memory_form {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        let gate = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+            Some(6)
+        } else if controls.cr0_ts {
+            Some(7)
+        } else {
+            None
+        };
+        if let Some(vector) = gate {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+        let Some(sse) = state.sse.as_ref() else {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        };
+        if sse.mxcsr & !0xffbf != 0
+            || sse.mxcsr & ((1 << 6) | (1 << 15)) != 0
+            || sse.mxcsr & 0x1f80 != 0x1f80
+        {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+    }
     if let Some(controls) = configured_maxpd_memory_rax_controls {
         let is_canonical_memory_form = matches!(
             instruction.operation,
@@ -20749,6 +21029,12 @@ fn step_configured(
             sse.mxcsr & !0x0000_ffbf == 0
                 && sse.mxcsr & ((1 << 6) | (1 << 15)) == 0
                 && sse.mxcsr & 0x1f80 == 0x1f80
+        } else if configured_sqrtsd_memory_rax_controls.is_some()
+            && instruction.operation == Operation::SqrtsdMemoryRax
+        {
+            sse.mxcsr & !0x0000_ffbf == 0
+                && sse.mxcsr & ((1 << 6) | (1 << 15)) == 0
+                && sse.mxcsr & 0x1f80 == 0x1f80
         } else if configured_maxpd_memory_rax_controls.is_some()
             && instruction.operation == Operation::MaxpdMemoryRax
         {
@@ -21730,6 +22016,10 @@ fn step_configured(
             state.sse.is_some()
         }
         Operation::SqrtpdMemoryRax => false,
+        Operation::SqrtsdMemoryRax if configured_sqrtsd_memory_rax_controls.is_some() => {
+            state.sse.is_some()
+        }
+        Operation::SqrtsdMemoryRax => false,
         Operation::MaxpdMemoryRax if configured_maxpd_memory_rax_controls.is_some() => {
             state.sse.is_some()
         }
@@ -29671,6 +29961,72 @@ fn step_configured(
                 | (u32::from(precision) << 5);
         }
         Operation::SqrtpdMemoryRax => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        Operation::SqrtsdMemoryRax if configured_sqrtsd_memory_rax_controls.is_some() => {
+            let address = state.gpr[Register::Rax as usize];
+            // Type 3 SQRTSD has no 16-byte alignment requirement. This local
+            // profile cannot model AC behavior, so refuse before span/read.
+            if state.rflags & (1 << 18) != 0 {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
+            let Some(last) = address.checked_add(7) else {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            };
+            if !long_decode::canonical(address) || !long_decode::canonical(last) {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            let mut source = [0u8; 8];
+            memory.read(address, context, &mut source)?;
+            let old_mxcsr = state
+                .sse
+                .as_ref()
+                .expect("SQRTSD memory state prevalidated")
+                .mxcsr;
+            let input = Binary64::from_bits(u64::from_le_bytes(source));
+            let result = input.sqrt_raw_result(cvtss2si_rounding_mode(old_mxcsr));
+            let value = if input.sign()
+                && input.class() != BinaryClass::Zero
+                && !matches!(
+                    input.class(),
+                    BinaryClass::QuietNaN | BinaryClass::SignalingNaN
+                ) {
+                0xfff8_0000_0000_0000
+            } else {
+                result.value().to_bits()
+            };
+            let invalid = result.invalid_operation()
+                || (input.sign()
+                    && input.class() != BinaryClass::Zero
+                    && !matches!(
+                        input.class(),
+                        BinaryClass::QuietNaN | BinaryClass::SignalingNaN
+                    ));
+            let denormal = !invalid && input.class() == BinaryClass::Subnormal;
+            let precision = result.inexact();
+            let sse = state
+                .sse
+                .as_mut()
+                .expect("SQRTSD memory state prevalidated");
+            sse.xmm[0][..8].copy_from_slice(&value.to_le_bytes());
+            sse.mxcsr = old_mxcsr
+                | u32::from(invalid)
+                | (u32::from(denormal) << 1)
+                | (u32::from(precision) << 5);
+        }
+        Operation::SqrtsdMemoryRax => {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -148548,6 +148904,272 @@ mod cvtsi2ss_r64_memory_profile_tests {
             assert_eq!(state.sse.as_ref().unwrap().mxcsr & 0x3f, 0x20);
             assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 16)]);
         }
+    }
+
+    #[test]
+    fn sqrtsd_memory_rax_is_scalar_unaligned_ac_refused_and_atomic() {
+        let code = [0xf2, 0x0f, 0x51, 0x00];
+        let controls = SqrtsdMemoryRaxControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+        };
+        let mut memory = Memory::at(&code, 0x3000);
+        memory.bytes[1..9].copy_from_slice(&0x4000_0000_0000_0000u64.to_le_bytes());
+        let mut state = LongModeState::default();
+        state.rip = 0x3000;
+        state.gpr[Register::Rax as usize] = memory.data_base + 1;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80 | (1 << 13) | 0x15,
+        });
+        state.sse.as_mut().unwrap().xmm[0][8..]
+            .copy_from_slice(&[0xde, 0xad, 0xbe, 0xef, 0x12, 0x34, 0x56, 0x78]);
+        let result = run_with_sqrtsd_memory_rax_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x3004),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(
+            state.sse.as_ref().unwrap().xmm[0][..8],
+            0x3ff6_a09e_667f_3bccu64.to_le_bytes()
+        );
+        assert_eq!(
+            &state.sse.as_ref().unwrap().xmm[0][8..],
+            &[0xde, 0xad, 0xbe, 0xef, 0x12, 0x34, 0x56, 0x78]
+        );
+        assert_eq!(state.sse.as_ref().unwrap().mxcsr, 0x1f80 | (1 << 13) | 0x35);
+        assert_eq!(state.rip, 0x3004);
+        assert_eq!(
+            memory.accesses,
+            [(AccessKind::Read, memory.data_base + 1, 8)]
+        );
+
+        let truncated = [0xf2, 0x0f, 0x51];
+        let mut truncated_memory = Memory::at(&truncated, 0x3000);
+        let mut truncated_state = LongModeState::default();
+        truncated_state.rip = 0x3000;
+        let truncated_result = run_with_sqrtsd_memory_rax_controls(
+            &mut truncated_state,
+            &mut truncated_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x3003),
+                context: AccessContext::default(),
+            },
+            SqrtsdMemoryRaxControls {
+                sse2_available: false,
+                cr0_em: true,
+                cr0_ts: true,
+                cr4_osfxsr: false,
+            },
+            || false,
+        );
+        assert!(matches!(truncated_result.exit, RunExit::MemoryError(_)));
+        assert_eq!(
+            truncated_memory.fetches,
+            (0x3000..0x3004).collect::<Vec<_>>()
+        );
+        assert!(truncated_memory.accesses.is_empty());
+
+        let mut absent_memory = Memory::at(&code, 0x3000);
+        let mut absent_state = LongModeState::default();
+        absent_state.rip = 0x3000;
+        absent_state.gpr[Register::Rax as usize] = absent_memory.data_base;
+        let absent = run_with_sqrtsd_memory_rax_controls(
+            &mut absent_state,
+            &mut absent_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x3004),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert_eq!(absent.exit, RunExit::Unsupported { opcode: 0x51 });
+        assert!(absent_memory.accesses.is_empty());
+
+        for privilege in [
+            crate::memory::PrivilegeLevel::Ring0,
+            crate::memory::PrivilegeLevel::Ring1,
+            crate::memory::PrivilegeLevel::Ring2,
+            crate::memory::PrivilegeLevel::Ring3,
+        ] {
+            for bits in 0..16u8 {
+                let gate_controls = SqrtsdMemoryRaxControls {
+                    sse2_available: bits & 1 != 0,
+                    cr0_em: bits & 2 != 0,
+                    cr0_ts: bits & 4 != 0,
+                    cr4_osfxsr: bits & 8 != 0,
+                };
+                if gate_controls == controls {
+                    continue;
+                }
+                let mut m = Memory::at(&code, 0x3000);
+                let mut s = LongModeState::default();
+                s.rip = 0x3000;
+                s.gpr[Register::Rax as usize] = m.data_base + 1;
+                s.sse = Some(SseState {
+                    xmm: [[0x44; 16]; 16],
+                    mxcsr: 0x1f80,
+                });
+                let before = s.clone();
+                let r = run_with_sqrtsd_memory_rax_controls(
+                    &mut s,
+                    &mut m,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(0x3004),
+                        context: AccessContext {
+                            privilege,
+                            ..AccessContext::default()
+                        },
+                    },
+                    gate_controls,
+                    || false,
+                );
+                let vector = if !gate_controls.sse2_available
+                    || gate_controls.cr0_em
+                    || !gate_controls.cr4_osfxsr
+                {
+                    6
+                } else {
+                    7
+                };
+                assert_eq!(
+                    r.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector,
+                        error_code: None,
+                        linear_address: None
+                    })
+                );
+                assert_eq!(s, before);
+                assert!(m.accesses.is_empty());
+                assert_eq!(m.fetches, (0x3000..0x3004).collect::<Vec<_>>());
+            }
+        }
+
+        let mut ac_memory = Memory::at(&code, 0x3000);
+        let mut ac_state = LongModeState::default();
+        ac_state.rip = 0x3000;
+        ac_state.gpr[Register::Rax as usize] = 0x0000_8000_0000_0000;
+        ac_state.rflags |= 1 << 18;
+        ac_state.sse = Some(SseState {
+            xmm: [[0x33; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = ac_state.clone();
+        let refused = run_with_sqrtsd_memory_rax_controls(
+            &mut ac_state,
+            &mut ac_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x3004),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert_eq!(refused.exit, RunExit::Unsupported { opcode: 0x51 });
+        assert_eq!(ac_state, before);
+        assert!(ac_memory.accesses.is_empty());
+
+        for address in [0x0000_8000_0000_0000, 0x0000_7fff_ffff_fffc, u64::MAX - 6] {
+            let mut m = Memory::at(&code, 0x3000);
+            let mut s = LongModeState::default();
+            s.rip = 0x3000;
+            s.gpr[Register::Rax as usize] = address;
+            s.sse = Some(SseState {
+                xmm: [[0xa5; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = s.clone();
+            let r = run_with_sqrtsd_memory_rax_controls(
+                &mut s,
+                &mut m,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x3004),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(
+                r.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None
+                })
+            );
+            assert_eq!(s, before);
+            assert!(m.accesses.is_empty());
+        }
+        let mut high_edge = Memory::at(&code, 0x3000);
+        let mut high_edge_state = LongModeState::default();
+        high_edge_state.rip = 0x3000;
+        high_edge_state.gpr[Register::Rax as usize] = u64::MAX - 7;
+        high_edge_state.sse = Some(SseState {
+            xmm: [[0x72; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let high_edge_result = run_with_sqrtsd_memory_rax_controls(
+            &mut high_edge_state,
+            &mut high_edge,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x3004),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(high_edge_result.exit, RunExit::MemoryError(_)));
+        assert_eq!(high_edge.accesses, [(AccessKind::Read, u64::MAX - 7, 8)]);
+
+        let mut failed = Memory::at(&code, 0x3000);
+        failed.error = Some(MemoryError::Unmapped {
+            address: failed.data_base + 1,
+            access: AccessKind::Read,
+        });
+        let mut s = LongModeState::default();
+        s.rip = 0x3000;
+        s.gpr[Register::Rax as usize] = failed.data_base + 1;
+        s.sse = Some(SseState {
+            xmm: [[0x6c; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = s.clone();
+        let r = run_with_sqrtsd_memory_rax_controls(
+            &mut s,
+            &mut failed,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x3004),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(r.exit, RunExit::MemoryError(_)));
+        assert_eq!(r.instructions_executed, 0);
+        assert_eq!(s, before);
+        assert_eq!(
+            failed.accesses,
+            [(AccessKind::Read, failed.data_base + 1, 8)]
+        );
     }
 
     #[test]

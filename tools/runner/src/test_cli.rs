@@ -35,9 +35,10 @@ use od_isa::execute::{
     run_with_mulsd_register_controls, run_with_mulss_register_controls,
     run_with_sqrtpd_memory_rax_controls, run_with_sqrtpd_register_controls,
     run_with_sqrtps_memory_rax_controls, run_with_sqrtps_register_controls,
-    run_with_sqrtsd_register_controls, run_with_sqrtss_register_controls,
-    run_with_subpd_register_controls, run_with_subps_register_controls,
-    run_with_subsd_register_controls, run_with_subss_register_controls,
+    run_with_sqrtsd_memory_rax_controls, run_with_sqrtsd_register_controls,
+    run_with_sqrtss_register_controls, run_with_subpd_register_controls,
+    run_with_subps_register_controls, run_with_subsd_register_controls,
+    run_with_subss_register_controls,
 };
 use od_isa::{CpuState, ExecutionResult, interpret};
 use od_testkit::case::{Fixture, LoadedFixture};
@@ -547,6 +548,7 @@ fn expected_native_xorpd_oracle(
                 minps_memory_rax_controls: None,
                 sqrtps_memory_rax_controls: None,
                 sqrtpd_memory_rax_controls: None,
+                sqrtsd_memory_rax_controls: None,
                 minps_unmasked_controls: None,
                 maxps_unmasked_controls: None,
                 maxpd_unmasked_controls: None,
@@ -2487,6 +2489,23 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongSqrtsdMemoryRaxV1 {
+        let controls = loaded
+            .fixture
+            .sqrtsd_memory_rax_controls
+            .expect("validated SQRTSD m64 controls");
+        run_with_sqrtsd_memory_rax_controls(
+            &mut state,
+            memory,
+            config,
+            od_isa::execute::SqrtsdMemoryRaxControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongSqrtpdMemoryRaxV1 {
         let controls = loaded
             .fixture
@@ -3452,6 +3471,7 @@ fn execute_fixture_v2(
                 minps_memory_rax_controls: loaded.fixture.minps_memory_rax_controls,
                 sqrtps_memory_rax_controls: loaded.fixture.sqrtps_memory_rax_controls,
                 sqrtpd_memory_rax_controls: loaded.fixture.sqrtpd_memory_rax_controls,
+                sqrtsd_memory_rax_controls: loaded.fixture.sqrtsd_memory_rax_controls,
                 maxpd_memory_rax_controls: loaded.fixture.maxpd_memory_rax_controls,
                 maxps_memory_rax_controls: loaded.fixture.maxps_memory_rax_controls,
                 cvtsi2sd_r32_controls: loaded.fixture.cvtsi2sd_r32_controls,
@@ -4705,6 +4725,7 @@ mod tests {
                     minps_memory_rax_controls: input.fixture.minps_memory_rax_controls,
                     sqrtps_memory_rax_controls: input.fixture.sqrtps_memory_rax_controls,
                     sqrtpd_memory_rax_controls: input.fixture.sqrtpd_memory_rax_controls,
+                    sqrtsd_memory_rax_controls: input.fixture.sqrtsd_memory_rax_controls,
                     maxpd_memory_rax_controls: input.fixture.maxpd_memory_rax_controls,
                     maxps_memory_rax_controls: input.fixture.maxps_memory_rax_controls,
                     cvtsi2sd_r32_controls: input.fixture.cvtsi2sd_r32_controls,
