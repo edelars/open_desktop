@@ -12471,6 +12471,41 @@ target check is blocked by pre-existing fixture/dependency compile failures,
 reproduced on base `bf1230c` and tracked in ISSUE-029. No native execution or
 physical x86 acceptance is claimed. ISSUE-019 remains open.
 
+## S2-30cl — bounded bare `FPREM ST(0), ST(1)`
+
+The interpreter admits only exact unprefixed Long64 `D9 F8`. It requires an
+x87 snapshot with absent selectors, one of the twelve all-masked PC24/53/64
+FCWs, `FSW & 0x80df == 0`, and Valid canonical positive nonzero Normal values
+at physical TOP and TOP+1. The explicit input-only range is divisor exponent
+`e1 >= -16319` and `D=e0-e1 < 64`; D>=64 is rejected before the existing
+helper, which independently supports gap 64. D<0 preserves ST(0) raw and
+reports quotient zero. Complete reductions use truncating quotient bits,
+replace C0/C3/C1 from Q2/Q1/Q0, clear C2, preserve PE and all other exception
+bits, and encode exact zero as positive zero with Zero tag. Only TOP's payload
+and tag, condition codes, FIP and RIP change. All refusals are atomic and no
+data-memory callback occurs.
+
+The 3,072-state FCW/TOP/PE/old-CC matrix and independent literal cases passed:
+quotient low bits 0–7 and q=8 wrap, 5.5/2, exact +0/tag, D<0 passthrough,
+D=63 quotient `2^63-1` with remainder `2^-63`, the `e1=-16319` normal
+boundary, valid minimum-normal operands whose mathematical remainder is
+`2^-16445`, and below-cutoff rejection. Decode, prefix, neighbor, selector,
+tag/class, status/control, missing-state, D=64/65, fetch, callback STOP,
+stop-RIP, zero-budget and one-retirement budget checks passed. Full suites passed:
+`od-isa` 1,753/1,753
+and `od-jit` 8/8. `cargo fmt --all -- --check`, workspace all-target offline
+check and `git diff --check` passed; Graphify updated to 11,046 nodes / 23,639
+edges / 339 communities. `tools/check_layout.py` reports the known ISSUE-023
+worktree `.git` pointer and two absent historical oracle manifest links. The
+native x87 deny list now includes D9 F8; its Linux-only regression test was not
+run because the cross-target all-target build is blocked by the pre-existing
+failure in [ISSUE-029](../KNOWN_ISSUES.md#issue-029--linux-x86-runner-target-does-not-compile-all-tests).
+No native execution or physical x86 acceptance is claimed. Independent
+`gpt-6.1-sol` high review is clean; it found no further concrete defect.
+ISSUE-019 remains open. See the [standalone report](S2_30CL_X87_FPREM.md),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cl-bounded-register-only-fprem-st0-st1-d9-f8),
+and [plan](../plans/STAGE_2.md#s2-30cl-bare-register-only-fprem-st0-st1-d9-f8).
+
 ## S2-18g — non-REP STOSW/D/Q interpreter slice
 
 The interpreter now accepts `66 AB` STOSW, bare `AB` STOSD, and effective

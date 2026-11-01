@@ -199,6 +199,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-29ab | Helper-local inexact/incremented diagnostics for direct binary80 square-root precision rounding; preserve both bit-only API projections and domains; no architectural PE/C1 | S2-29aa; independent Sol/high review pending |
 | [x] | S2-29x | Exact truncated finite binary80 remainder coefficient decomposition for normalized nonzero operands; exact modulo for exponent gaps 0..64, lhs passthrough below, bounded rejection above; no FPREM/FPREM1 semantics | S2-29w; independent Sol/high review clean |
 | [x] | S2-29y | Exact finite nearest-even binary80 remainder coefficient for normalized nonzero operands; d=-1 half-way handling and u128 quotient/remainder for gaps 0..64; helper-only, no FPREM1/ISA or architectural effects | S2-29x; independent Sol/high review clean |
+| [x] | S2-30cl | Bare `D9 F8` FPREM; bounded positive Normal ST(0)/ST(1), complete-only exponent gap <64, interpreter-only with exact quotient CCs and explicit underflow-safe input cutoff; independent Sol/high review clean | S2-29x/y, S2-30ck |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
@@ -11012,6 +11013,41 @@ Check complete state canaries and no data access. Confirm JIT and native
 admission remain closed. Do not add schema or CLI fixtures. ISSUE-019 remains
 open.
 
+#### S2-30cl. Bare register-only `FPREM ST(0), ST(1)` (`D9 F8`)
+
+Admit only exact unprefixed Long64 `D9 F8`. Require present x87 state, absent
+FCS/FDS selectors under the existing D8–DF interpreter gate, FCW from the
+twelve all-exception-masked PC24/53/64 encodings, and `FSW & 0x80df == 0`.
+Historical PE, TOP and every C0–C3 combination are allowed. Physical TOP and
+TOP+1 must both be Valid-tagged canonical positive nonzero Normal binary80.
+Require divisor unbiased exponent `e1 >= -16319`, and `D=e0-e1 < 64` before
+calling the shared remainder helper. This input-only cutoff prevents subnormal
+outputs; `D<0` returns ST(0) unchanged with quotient zero. `D>=64` is rejected
+atomically before helper invocation so no partial-reduction state is claimed.
+
+Use `remainder_finite_trunc_with_quotient` for admitted nonnegative gaps; its
+quotient must be nonnegative. Exact multiples write canonical `+0` with Zero
+tag. A nonzero positive coefficient is packed exactly at nearest-even and
+remains Valid-tagged. Replace only physical ST(0)'s payload/tag. Set
+C0=Q2, C3=Q1, C1=Q0 and clear C2, preserving exception bits including sticky
+PE. Preserve ST(1), TOP, other cells/tags, FCW, FDP, FOP and all unrelated
+state; write FIP=old RIP, advance RIP by two and retire once. No data memory is
+accessed. RC and PC do not alter this exact arithmetic. General x87 exception
+delivery, x87 availability/CR0 gates, #NM/#MF, JIT/native execution, schema/CLI
+fixtures and physical acceptance are outside scope; ISSUE-019 remains open.
+
+Verify 3,072 admitted snapshots (12 FCWs × 8 TOP × 2 prior-PE × 16 old-CC
+patterns), literal quotient low bits 0..7 and q=8 wrap, 5.5/2, exact-multiple
++0/tag, D<0 passthrough, the D=63 quotient `2^63-1` with remainder `2^-63`,
+the `e1=-16319` minimum-normal witness and `e1=-16320`/minimum-subnormal
+refusals. Check D=64 and 65 atomic denial, selector/tag/class/status/control
+refusals, missing state, exact decode/prefix/neighbors, fetch truncation,
+STOP callback, stop-RIP, zero/one-budget boundaries, canaries and fetch-only memory trace. The helper
+itself accepts gap 64 by contract; tests ensure the ISA gate refuses it first.
+Intel SDM Rev. 093 Vol. 2A pp. 3-366–3-367 defines FPREM reduction, quotient
+condition bits and partial reduction; Vol. 1 §§4.9.1.5 and 8.1.5.2–8.1.5.3 inform
+the local underflow and PC/RC boundary. JIT and native deny routes are explicit; the Linux
+native regression test remains unexecuted under ISSUE-029 on this host.
 
 #### S2-18j — bare CLD/STD (локальный профиль)
 

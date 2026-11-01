@@ -1394,6 +1394,8 @@ pub enum Operation {
     Frndint,
     /// Bare `D9 FA` FSQRT in the bounded local positive-Normal profile.
     Fsqrt,
+    /// Bare `D9 F8` FPREM in the bounded local positive-Normal profile.
+    Fprem,
     /// Bare `D9 18` FSTP m32fp at [RAX], bounded finite profile.
     FstpM32FpRax,
     /// Bare `D9 00` FLD m32fp at [RAX], bounded Normal binary32 stack push.
@@ -6686,6 +6688,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     0xe4 => Operation::Ftst,
                     0xe5 => Operation::Fxam,
                     0xfa => Operation::Fsqrt,
+                    0xf8 => Operation::Fprem,
                     0xfc => Operation::Frndint,
                     _ => return Err(self.unsupported(opcode)),
                 }
@@ -15504,6 +15507,8 @@ mod tests {
                     Ok(Operation::Fxam)
                 } else if second == 0xfa {
                     Ok(Operation::Fsqrt)
+                } else if second == 0xf8 {
+                    Ok(Operation::Fprem)
                 } else if second == 0xfc {
                     Ok(Operation::Frndint)
                 } else {
@@ -15691,12 +15696,7 @@ mod tests {
             assert_eq!(instruction.length, 2);
             assert_eq!(instruction.prefixes, Prefixes::default());
         }
-        for bytes in [
-            &[0xd9, 0xf5][..],
-            &[0xd9, 0xf8],
-            &[0x66, 0xd9, 0xf7],
-            &[0x48, 0xd9, 0xf6],
-        ] {
+        for bytes in [&[0xd9, 0xf5][..], &[0x66, 0xd9, 0xf7], &[0x48, 0xd9, 0xf6]] {
             assert!(matches!(
                 Memory::new(bytes).decode(),
                 Err(DecodeError::Unsupported { .. })
@@ -15752,12 +15752,49 @@ mod tests {
             (&[0xd9, 0xe4][..], Operation::Ftst),
             (&[0xd9, 0xe5][..], Operation::Fxam),
             (&[0xd9, 0xfa][..], Operation::Fsqrt),
+            (&[0xd9, 0xf8][..], Operation::Fprem),
             (&[0xd9, 0xe8][..], Operation::Fld1),
             (&[0xd9, 0xee][..], Operation::Fldz),
             (&[0xd9, 0xf6][..], Operation::Fdecstp),
             (&[0xd9, 0xf7][..], Operation::Fincstp),
         ] {
             assert_eq!(Memory::new(bytes).decode().unwrap().operation, operation);
+        }
+        for bytes in [
+            &[0x66, 0xd9, 0xf8][..],
+            &[0xf3, 0xd9, 0xf8][..],
+            &[0x9b, 0xd9, 0xf8][..],
+            &[0xd9][..],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn fprem_decodes_only_exact_bare_d9_f8() {
+        let instruction = Memory::new(&[0xd9, 0xf8]).decode().unwrap();
+        assert_eq!(instruction.operation, Operation::Fprem);
+        assert_eq!(instruction.length, 2);
+        assert_eq!(instruction.prefixes, Prefixes::default());
+        for bytes in [
+            &[0x66, 0xd9, 0xf8][..],
+            &[0xf2, 0xd9, 0xf8][..],
+            &[0xf3, 0xd9, 0xf8][..],
+            &[0x2e, 0xd9, 0xf8][..],
+            &[0x67, 0xd9, 0xf8][..],
+            &[0x48, 0xd9, 0xf8][..],
+            &[0x9b, 0xd9, 0xf8][..],
+            &[0xd9][..],
+            &[0xd9, 0xf9][..],
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+        for (bytes, expected) in [
+            (&[0xd9, 0xf6][..], Operation::Fdecstp),
+            (&[0xd9, 0xf7][..], Operation::Fincstp),
+            (&[0xd9, 0xfa][..], Operation::Fsqrt),
+        ] {
+            assert_eq!(Memory::new(bytes).decode().unwrap().operation, expected);
         }
     }
 

@@ -20,6 +20,7 @@
 - **Основание и последствия:** на macOS host `cargo check --workspace --all-targets --offline` проходит, но `cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline` завершается ошибками в Linux-only backend: `Snapshot` initializer в `native_v2.rs:533` не задаёт 98 новых profile/control fields; тестовая `Fixture` initializer в `native_v2.rs:1536` также неполна; tests используют `serde_json::json!`/`from_slice` без доступной зависимости. В результате native admission regression test не собирается/не запускается на доступном macOS host, а Linux-target regression coverage остаётся непроверенной.
 - **Воспроизведение:** указанная cross-target `cargo check`; в выводе перечислены указанные initializers и неразрешённый `serde_json`.
 - **Следующий шаг:** привести Linux-only snapshot/test fixtures к текущему `od-testkit::v2` контракту и восстановить нужную test dependency, затем собрать и выполнить x86_64 Linux native runner tests. Не считать текущую macOS workspace check доказательством Linux native backend.
+- **S2-30cl:** `D9 F8` добавлен в существующий native x87-deny regression matrix, но эта Linux-only проверка не запускалась из-за описанного compile failure. См. [S2-30cl report](reports/S2_30CL_X87_FPREM.md).
 
 ### ISSUE-028 — Неподтверждённый внешний report о CVTPI2PS memory x87 transition
 
@@ -1346,6 +1347,17 @@ pending delivery, native hardware and physical acceptance remain unresolved.
 See [S2-30ck contract](specs/CPU_CONTRACT.md#local-s2-30ck-bounded-register-only-fsqrt-st0-d9-fa),
 [plan](plans/STAGE_2.md#s2-30ck-bare-register-only-fsqrt-st0-d9-fa), and
 [report](reports/STAGE_2_REPORT.md#s2-30ck--bounded-bare-fsqrt-st0).
+
+**S2-30cl local FPREM slice:** exact unprefixed Long64 `D9 F8` is admitted only
+for positive canonical Normal operands, all-masked FCW, clean required FSW
+fields, exponent gap below 64 and a divisor exponent cutoff that proves results
+normal or zero. The local full-reduction path updates the exact quotient CCs;
+partial reduction, underflow, general exception delivery, JIT/native execution
+and physical acceptance remain outside scope. The 3,072-state matrix, literal
+quotient/remainder vectors, atomic denials and JIT denial pass. Native denial
+was added but could not be executed under ISSUE-029. See [S2-30cl contract](specs/CPU_CONTRACT.md#local-s2-30cl-bounded-register-only-fprem-st0-st1-d9-f8),
+[plan](plans/STAGE_2.md#s2-30cl-bare-register-only-fprem-st0-st1-d9-f8), and
+[report](reports/STAGE_2_REPORT.md#s2-30cl--bounded-bare-fprem-st0-st1).
 
 ### ISSUE-020 — Не подтверждён победитель dual-fault для CMPS RSI/RDI
 

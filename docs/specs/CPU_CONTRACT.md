@@ -9320,6 +9320,56 @@ the [S2-30ck plan](../plans/STAGE_2.md#s2-30ck-bare-register-only-fsqrt-st0-d9-f
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-30ck--bounded-bare-fsqrt-st0),
 and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
 
+## Local S2-30cl: bounded register-only `FPREM ST(0), ST(1)` (`D9 F8`)
+
+Only exact unprefixed Long64 `D9 F8` is admitted. Require an x87 snapshot;
+FCS/FDS selectors must both be absent under the existing D8–DF interpreter
+gate. FCW must be exactly one of the twelve all-exception-masked PC24/PC53/PC64
+values, covering all four RC encodings at each precision. Require
+`FSW & 0x80df == 0`; this permits historical PE, all TOP values, and every
+combination of C0–C3. Physical old TOP and `(TOP+1)&7` both require Valid tags
+and canonical positive nonzero Normal binary80 values. Every other tag, zero,
+negative, subnormal, pseudo-denormal, infinity, NaN, unnormal or malformed raw
+encoding rejects atomically.
+
+Let `e0`/`e1` be the normalized unbiased exponents of ST(0)/ST(1). Require
+`e1 >= -16319` and `D=e0-e1 < 64` before calling
+`remainder_finite_trunc_with_quotient`. This input-only range proves that every
+nonzero representable result is normal or zero: the smallest possible
+coefficient unit is `2^(e1-63)`, at least `2^-16382`. It intentionally excludes
+subnormal outputs and partial FPREM reduction; `D>=64` returns Unsupported
+before the helper even though its standalone mathematical contract accepts
+gap 64. For `D<0`, leave ST(0) raw bytes unchanged and use Q=0. For `D>=0`,
+the exact quotient must be nonnegative; Q is its low three bits. Zero remainder
+is encoded as canonical positive zero and changes TOP's tag to Zero. Nonzero
+remainder is packed from the exact coefficient with nearest-even (no rounding
+is needed for the admitted normal result) and retains Valid tag.
+
+Commit only old physical TOP's payload and tag; preserve ST(1), TOP, every
+other payload/tag, FCW, FSW exception bits including PE, FDP, FOP and unrelated
+CPU state. Replace all condition codes with C0=Q2, C3=Q1, C1=Q0, C2=0. Set
+FIP to instruction-start RIP, advance RIP by two and retire once. RC/PC do not
+affect the exact arithmetic. No data-memory access occurs. This local
+interpreter profile assumes x87 is available, CR0.EM=CR0.TS=0 and no pending
+exception; it does not deliver #IS/#IA/#D/#U/#NM/#MF or model general x87
+exceptions, CPUID/CR0 checks, native/JIT execution, schema/CLI acceptance, or
+physical x86 behavior. ISSUE-019 remains open.
+
+The 3,072-state matrix covers twelve FCWs × eight TOP values × both prior PE
+states × sixteen complete old condition-code combinations with full-state
+canaries. Literal vectors cover quotient low bits 0–7 plus q=8 wrap, 5.5/2,
+exact multiples/+0/Zero tag, D<0 passthrough, D=63 with q=`2^63-1` and
+remainder `2^-63`, and the `e1=-16319` minimum-normal output. Atomic refusals
+cover e1 below the cutoff, including valid minimum-normal inputs whose
+mathematical remainder is the minimum subnormal `2^-16445`, D=64/65,
+all forbidden FSW fields, unsupported FCW, both selectors, both participant
+tags/classes, absent x87 state, prefixes, WAIT/FWAIT, neighboring D9 forms,
+fetch truncation, callback STOP, stop-RIP, zero-budget and one-retirement
+budget boundaries. Successful traces contain only instruction fetches. See the
+[S2-30cl plan](../plans/STAGE_2.md#s2-30cl-bare-register-only-fprem-st0-st1-d9-f8),
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-30cl--bounded-bare-fprem-st0-st1),
+and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
 ### Local S2-19b bounded REP STOSW/D/Q contract
 
 The interpreter extends `F3 AA` REP STOSB with `F3 66 AB` word, `F3 AB`

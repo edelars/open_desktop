@@ -71,6 +71,13 @@ Special-tagged binary80 QuietNaNs to binary32, preserving sign and the upper 23
 payload bits while truncating the lower 40. It adds no flags; native/JIT
 admission remains closed.
 
+The local-only S2-30cl interpreter profile also admits exact bare Long64
+`D9 F8` FPREM for Valid-tagged canonical positive Normal ST(0)/ST(1) with a
+bounded complete-reduction exponent range. It reports the low three quotient
+bits through C0/C3/C1, writes exact +0 for multiples, and refuses possible
+subnormal results and partial reductions atomically. JIT/native and physical
+x86 execution remain closed; see the [CPU contract](docs/specs/CPU_CONTRACT.md#local-s2-30cl-bounded-register-only-fprem-st0-st1-d9-f8).
+
 Bounded Long64 REP MOVSB/W/D/Q (`F3 A4/A5`) is implemented in the local
 interpreter with source-first, destination-second element transfers. RSI, RDI
 and RCX commit only after both accesses succeed; STOP, errors and the local
