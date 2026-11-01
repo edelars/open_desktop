@@ -20130,3 +20130,43 @@ Sources: Intel SDM Rev. 093 Vol. 2A `CVTSD2SI` pp. 3-232–3-233; Vol. 1
 §3.4.1.1, §11.5.2.2, Table D-13 and Table 14-21; Vol. 3A §16.1.3 and Table 16-1
 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)). Unmasked
 SIMD-vs-memory exception priority and physical x86 behavior are not claimed.
+
+## S2-37ch — CVTSS2SI EAX,dword ptr [RAX] m32-to-r32 memory profile
+
+Implemented exact legacy `F3 0F 2D 00` under schema-v2 profile
+`s2-long-cvtss2si-r32-memory-rax-v1`. The profile fetches all four bytes,
+checks absent SSE, CR0.EM=1, or CR4.OSFXSR=0 for #UD and CR0.TS=1 for #NM,
+validates the checked
+canonical48 m32 span, and performs one four-byte read. Unaligned access is
+allowed with local AC=0. The original RAX is used as the source address before
+the EAX write zero-extends the result. No CPU state is committed before a
+successful read.
+
+The independent oracle reads raw binary32 bits from fixture memory and rounds
+per MXCSR.RC before signed-i32 range checking. Masked invalid input returns
+`0x80000000` and sets sticky IE; valid inexact conversion adds PE. Invalid
+input does not add PE, prior sticky flags are preserved, exact -2^31 is valid,
+and subnormal input does not set DE. The profile has no x87/MMX gate or state
+change. Strict schema requires MXCSR mask `0xffbf`, DAZ=0 and IM=PM=1; other
+supported controls and flags are admitted. PM=0, IM=0, DAZ=1 and reserved
+values are rejected as malformed fixtures. AC=1 is a valid runtime
+`Unsupported` case. Native/JIT/C ABI/fragment/generic paths remain closed.
+
+Focused verification: exact decoder 1/1; direct ISA rounding/gate tests 2/2;
+runner matrix fixture 1/1; and independent testkit oracle
+`cvtss2si_integer_oracle_covers_signed_boundaries_rounding_and_event_priority`
+1/1 (446 filtered). The runner covers seventeen raw values × four RC modes, sticky
+status, alias zero-extension, pending-x87 preservation, schema checks,
+tampering and backend refusal. Direct ISA checks cover CPL0–3, gates, span
+refusal and read rollback. Full suites passed: od-isa 1,644 tests; od-testkit
+447; od-runner 112 unit + 464 fixture tests; od-x86-runner 8 library + 4 main
+tests. Workspace all-target check, formatting, diff, layout, Graphify update,
+and independent code/evidence review passed. Physical x86 acceptance was not
+run. Graphify rebuilt 10,420 nodes, 22,283 edges, and 306 communities; 54
+unsupported-extension files were skipped and 13 code files yielded no symbols.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CVTSS2SI` pp. 3-242–3-243; Vol. 1
+§3.4.1.1, §11.5.2.2, Table D-13, and Table 14-21; Vol. 3A §16.1.3 and Table 16-1. Type 3/Table
+2-20 is VEX-only and not used as legacy evidence. See the [plan](../plans/STAGE_2.md#s2-37ch--exact-legacy-long64-cvtss2si-eaxdword-ptr-rax),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37ch--bounded-long64-cvtss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ch--cvtss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile).

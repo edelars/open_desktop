@@ -321,3 +321,11 @@ binary64 bit decomposition. The runner matrix validates RC/boundary/flags,
 subnormal no-DE, x87 preservation, gates, AC refusal, AC plus a noncanonical
 span, strict schema and backend closure. JIT/native results are expected
 Unsupported; no physical x86 execution is claimed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cg--bounded-long64-cvtsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile).
+
+### S2-37ch — CVTSS2SI EAX,m32
+
+The runner dispatches exact `F3 0F 2D 00` to the local schema-v2 interpreter
+profile. The independent oracle reads raw binary32 from fixture memory and
+rounds before i32 range checking. Its matrix checks all RC modes, signed limits,
+rounding ties, subnormal/NaN/infinity behavior, sticky flags, RAX zero-extension,
+x87 preservation, strict schema, tampering and backend closure. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ch--bounded-long64-cvtss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile).

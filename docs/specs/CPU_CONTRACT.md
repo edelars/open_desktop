@@ -14850,3 +14850,43 @@ source does not establish unmasked memory-vs-SIMD exception priority. See the
 [plan](../plans/STAGE_2.md#s2-37cg--exact-legacy-long64-cvtsd2si-eaxqword-ptr-rax),
 [report](../reports/STAGE_2_REPORT.md#s2-37cg--cvtsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cg--cvtsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile).
+
+## S2-37ch — bounded Long64 CVTSS2SI EAX,dword ptr [RAX] m32-to-r32 memory profile
+
+The schema-v2 interpreter-only profile `s2-long-cvtss2si-r32-memory-rax-v1`
+admits only exact legacy bytes `F3 0F 2D 00`. It fetches all four bytes,
+checks SSE CPUID bit 25, CR0.EM=1, or CR4.OSFXSR=0 for #UD and CR0.TS=1 for #NM,
+then applies the bounded local ordering. CPL0–3 are admitted. This form has no
+x87/MMX prerequisite or state transition.
+
+After checked canonical48 validation of `[RAX,RAX+3]`, it performs exactly one
+four-byte little-endian read. Unaligned addresses are admitted with local AC=0.
+The pre-execution RAX is captured before the EAX destination write. Successful
+EAX writes zero-extend into RAX; read failures and pre-read refusals preserve
+all state.
+
+Binary32 is rounded according to MXCSR.RC before checking the signed-i32 range.
+Masked invalid values yield `0x80000000` and set IE; valid inexact results set
+sticky PE, but invalid inputs do not add PE. Existing sticky IE/PE remain set.
+Exact `-2^31` is valid despite sharing the invalid-indefinite result bits.
+Subnormal conversion does not raise DE. The profile requires supported MXCSR
+mask `0xffbf`, DAZ=0 and IM=PM=1; other supported masks, RC/FTZ settings, and
+incoming sticky flags are admitted. PM=0, IM=0, DAZ=1 and reserved MXCSR values
+are rejected by strict fixture schema. AC=1 is a valid negative fixture that
+returns local `Unsupported`, with no source read or state mutation. The
+fixture comparison mask exposes integer flags only; AC preservation is checked
+through full-state equality. Native/JIT/C ABI/fragment/generic execution remain
+closed; native classifier and backend denial are closure evidence, not physical
+x86 acceptance.
+
+Focused checks passed: decoder 1/1, direct ISA 2/2, runner fixture 1/1, and
+independent testkit oracle 1/1 (446 filtered).
+Full suites passed: od-isa 1,644 tests; od-testkit 447; od-runner 112 unit +
+464 fixture tests; od-x86-runner 8 library + 4 main tests. Workspace all-target
+check, formatting, diff, layout, Graphify update, and independent code/evidence
+review passed. Sources: Intel SDM
+Rev. 093 Vol. 2A `CVTSS2SI` pp. 3-242–3-243; Vol. 1 §3.4.1.1, §11.5.2.2,
+Table D-13, and Table 14-21; Vol. 3A §16.1.3 and Table 16-1. Type 3/Table 2-20 is VEX-only, not
+legacy evidence. See the [plan](../plans/STAGE_2.md#s2-37ch--exact-legacy-long64-cvtss2si-eaxdword-ptr-rax),
+[report](../reports/STAGE_2_REPORT.md#s2-37ch--cvtss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ch--cvtss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile).

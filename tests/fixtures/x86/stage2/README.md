@@ -7447,3 +7447,18 @@ are closure evidence only, not physical x86 execution. See the [plan](../../../.
 Sources: Intel SDM Rev. 093 Vol. 2A `CVTSD2SI` pp. 3-232–3-233; Vol. 1
 §3.4.1.1, §11.5.2.2, Table D-13 and Table 14-21; Vol. 3A §16.1.3 and Table 16-1
 ([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+
+### S2-37ch — CVTSS2SI EAX,dword ptr [RAX] m32-to-r32 memory profile
+
+The literal fixture checks exact legacy `F3 0F 2D 00` and an unaligned four-byte
+binary32 source at `[RAX]`. The runner matrix covers seventeen raw values across
+all four RC modes, including signed range edges, rounding ties, subnormals,
+NaN/infinity, sticky IE/PE, EAX zero-extension, optional pending-x87 preservation,
+strict controls, tampering and JIT/native denial. Direct ISA tests cover gates,
+CPLs, full fetch, address spans and read rollback. PM=0, IM=0, DAZ=1 and reserved
+MXCSR values are malformed schema inputs; AC=1 is an admitted runtime
+`Unsupported` fixture. Backend denial does not demonstrate physical x86
+execution.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CVTSS2SI` pp. 3-242–3-243; Vol. 1
+§3.4.1.1, §11.5.2.2, Table D-13, and Table 14-21; Vol. 3A §16.1.3 and Table 16-1. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37ch--exact-legacy-long64-cvtss2si-eaxdword-ptr-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ch--bounded-long64-cvtss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ch--cvtss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile).
