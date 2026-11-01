@@ -12446,6 +12446,30 @@ schema and full-state literal testkit tests; the full
 or physical x86 checks were run; those remain in the shared final physical
 substage. ISSUE-019 remains open.
 
+## S2-30ck — bounded bare `FSQRT ST(0)`
+
+The interpreter admits exact unprefixed Long64 `D9 FA` with an existing x87
+snapshot whose selectors are absent per the shared D8–DF gate. FCW is limited
+to the twelve all-masked PC24/53/64 and four-rounding-mode encodings; FSW must
+satisfy `FSW & 0x80df == 0`. The old physical TOP must contain a Valid-tagged
+canonical positive nonzero Normal binary80 value. The implementation rounds
+directly at FCW precision, updates that payload, retains historical PE and
+sets it when inexact, replaces C1 from the helper's increment diagnostic,
+and locally preserves C0/C2/C3. It preserves TOP, tags, FCW, FDP, FOP and
+other state, sets FIP to old RIP, advances RIP by two, and performs no data
+memory access. Refusals are atomic. See the [standalone report](S2_30CK_X87_FSQRT.md)
+for exact local boundaries, literal vectors and source citations.
+
+The 1,536-state FCW/TOP/PE/condition-code matrix, literal binary80 vectors,
+excluded input/environment checks, fetch/STOP/budget boundaries and
+neighboring decode checks passed. Full `od-isa` tests passed 1,750/1,750;
+full `od-jit` tests passed 7/7, including its explicit fragment-JIT denial;
+workspace check and format check passed. Native backend has an explicit x87
+deny-group tag but no native denial test was run: the Linux-only runner all-
+target check is blocked by pre-existing fixture/dependency compile failures,
+reproduced on base `bf1230c` and tracked in ISSUE-029. No native execution or
+physical x86 acceptance is claimed. ISSUE-019 remains open.
+
 ## S2-18g — non-REP STOSW/D/Q interpreter slice
 
 The interpreter now accepts `66 AB` STOSW, bare `AB` STOSD, and effective

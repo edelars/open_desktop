@@ -10977,6 +10977,38 @@ both TEST producers. Compare full state and memory, deny JIT, and update
 ISSUE-019 with local results. Mac mini, SSH, native and physical checks remain
 for the shared final acceptance substage.
 
+#### S2-30ck. Bare register-only `FSQRT ST(0)` (`D9 FA`)
+
+Admit only exact unprefixed Long64 `D9 FA`. Require an x87 snapshot, with
+FCS/FDS selectors absent as required by the existing D8–DF interpreter gate,
+FCW exactly one of the twelve all-masked PC24/PC53/PC64 values, and
+`FSW & 0x80df == 0`; historical PE, TOP and C0/C2/C3 patterns are allowed.
+The physical old TOP must be Valid-tagged canonical positive nonzero Normal
+binary80. Reject both signed zeros, negatives, subnormals,
+pseudo-denormals, pseudo/ordinary Inf/NaN, unnormal and malformed encodings,
+and all other tags atomically.
+
+Map FCW PC directly to precision 24/53/64 and RC to the mathematical rounding
+mode; call `sqrt_finite_to_binary80_precision_with_diagnostics` once at the
+target precision. Replace only old TOP's payload. OR PE when inexact, replace
+C1 with the helper's incremented diagnostic, and retain C0/C2/C3 under this
+local undefined-field policy. Preserve TOP, tags, FCW, FDP/FOP and unrelated
+state; set FIP to old RIP, advance RIP by two, and retire once. No data-memory
+access occurs. Preflight the entire result before commit. Assume x87 is
+available, CR0.EM=CR0.TS=0, and no pending exception; availability faults,
+pending exception delivery, #NM/#MF, general exception behavior, JIT/native
+execution and physical acceptance are outside scope. CPUID.07H.00H:EBX[6]
+concerns FDP update behavior only; this register-only profile preserves FDP
+under its deterministic local policy and makes no hardware-equality claim.
+
+Verify the full 12 FCW × 8 TOP × two old-PE × eight C0/C2/C3 matrix (1,536
+success snapshots), literal independent vectors for sqrt(1), sqrt(4), sqrt(2),
+p24 even/odd ties, p53 midpoint neighbors, minimum/maximum normal exponent,
+significand carry and a p24 double-rounding counterexample, plus tag/class,
+FCW/FSW, prefix/WAIT, truncated/fetch, STOP and budget refusals. Check complete
+state canaries and no data access. Confirm JIT and native admission remain
+closed. Do not add schema or CLI fixtures. ISSUE-019 remains open.
+
 
 #### S2-18j — bare CLD/STD (локальный профиль)
 

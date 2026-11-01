@@ -9271,6 +9271,52 @@ runner denies JIT for both accepted and rejected rows. Native/JIT execution, x87
 exception delivery and physical x86 acceptance remain unverified; ISSUE-019
 stays open.
 
+## Local S2-30ck: bounded register-only `FSQRT ST(0)` (`D9 FA`)
+
+Admit only exact unprefixed Long64 `D9 FA`. An x87 snapshot is required, and
+FCS/FDS selector values must be absent because the existing D8–DF interpreter
+gate rejects selector-bearing snapshots. FCW must be exactly one of
+`007f/047f/087f/0c7f` (PC24), `027f/067f/0a7f/0e7f` (PC53), or
+`037f/077f/0b7f/0f7f` (PC64); every exception mask is set and all four RC
+modes are admitted. Require `FSW & 0x80df == 0`, allowing old PE, TOP and
+C0/C2/C3 patterns. The physical old TOP must have Valid tag and canonical
+positive nonzero Normal binary80. Zero of either sign, negative values,
+subnormal, pseudo-denormal, infinity, NaN, unnormal, malformed encoding and
+every other tag reject atomically.
+
+Map PC/RC directly from FCW and call
+`sqrt_finite_to_binary80_precision_with_diagnostics` once at p24/p53/p64.
+Do not compute p64 then narrow. On success replace only the old physical TOP
+payload, OR sticky PE when the result is inexact, replace C1 from the helper's
+`incremented` diagnostic, and retain C0/C2/C3 under this deterministic local
+policy for architecturally undefined fields. Preserve TOP, tag word, FCW, FDP,
+FOP and unrelated CPU state. Set FIP to instruction-start RIP, advance RIP by
+two and retire once. The complete result is preflighted before any commit;
+there is no data-memory access.
+
+This profile assumes x87 is available, CR0.EM=CR0.TS=0, and no pending x87
+exception. CPUID/FPU availability, those control bits, #NM/#MF and pending
+exception delivery, masked/unmasked exception behavior and general exception
+semantics are not modeled. Intel Rev. 093 Vol. 1 §8.1.8 makes CPUID.07H.00H:EBX[6]
+a condition on FDP (data-pointer) updates; this register-only profile preserves
+FDP under its explicit local policy and does not claim hardware equality. FIP
+is set to the current instruction address under the established bounded
+register-only interpreter policy. C0/C2/C3 retention is deterministic local
+behavior, not hardware behavior.
+
+The interpreter matrix covers 1,536 success states: twelve FCWs × eight TOPs
+× both old PE states × eight C0/C2/C3 patterns. Independent literal raw vectors
+cover sqrt(1), sqrt(4), sqrt(2), p24 tie parity, p53 adjacent midpoint cases,
+minimum and maximum exponent boundaries, p64 significand carry, and a direct
+p24 result that differs from p64-then-narrow. Tests reject all excluded input
+classes/tags, reserved PC=01 and unmasked PM/other masks, each forbidden FSW
+bit, missing x87, prefixes, WAIT/FWAIT, neighboring D9 encodings, truncated
+fetch, STOP, zero budget and fetch faults without commit. JIT and native
+admission explicitly deny the operation; no schema/CLI fixture is added. See
+the [S2-30ck plan](../plans/STAGE_2.md#s2-30ck-bare-register-only-fsqrt-st0-d9-fa),
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-30ck--bounded-bare-fsqrt-st0),
+and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
 ### Local S2-19b bounded REP STOSW/D/Q contract
 
 The interpreter extends `F3 AA` REP STOSB with `F3 66 AB` word, `F3 AB`

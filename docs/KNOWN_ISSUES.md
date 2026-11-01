@@ -12,6 +12,15 @@
 
 ## Записи
 
+### ISSUE-029 — Linux x86 runner target does not compile all tests
+
+- **Дата обнаружения:** 2026-11-01.
+- **Компонент:** `tools/x86-runner`, Linux x86_64-only `native_v2` backend.
+- **Статус:** открыта; найдено при попытке проверить native FSQRT denial, не вызвано S2-30ck.
+- **Основание и последствия:** на macOS host `cargo check --workspace --all-targets --offline` проходит, но `cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline` завершается ошибками в Linux-only backend: `Snapshot` initializer в `native_v2.rs:533` не задаёт 98 новых profile/control fields; тестовая `Fixture` initializer в `native_v2.rs:1536` также неполна; tests используют `serde_json::json!`/`from_slice` без доступной зависимости. В результате native admission regression test не собирается/не запускается на доступном macOS host, а Linux-target regression coverage остаётся непроверенной.
+- **Воспроизведение:** указанная cross-target `cargo check`; в выводе перечислены указанные initializers и неразрешённый `serde_json`.
+- **Следующий шаг:** привести Linux-only snapshot/test fixtures к текущему `od-testkit::v2` контракту и восстановить нужную test dependency, затем собрать и выполнить x86_64 Linux native runner tests. Не считать текущую macOS workspace check доказательством Linux native backend.
+
 ### ISSUE-028 — Неподтверждённый внешний report о CVTPI2PS memory x87 transition
 
 - **Дата обнаружения:** 2026-10-31.
@@ -1324,6 +1333,19 @@
 - **S2-30ce historical FCMOVNBE extent:** exact unprefixed Long64 `DB D1` had a local ST(1)-only interpreter slice with strict x87 environment/operand preflight and raw copy only when integer CF and ZF were both clear. That bounded scope is superseded by indexed S2-30cf; its 51,200 success and 86,016 invalid participant matrices and original six-stream/producer coverage remain historical evidence. Exception delivery, native/JIT execution and physical x86 acceptance remain unresolved under ISSUE-019. See [contract](specs/CPU_CONTRACT.md#local-s2-30ce-bounded-bare-fcmovnbe-st0-st1-db-d1), [plan](plans/STAGE_2.md#s2-30ce-exact-bare-fcmovnbe-st0-st1-db-d1), [report](reports/STAGE_2_REPORT.md#s2-30ce--bare-fcmovnbe-st0-st1), and [fixture notes](../tests/fixtures/x86/stage2/README.md#s2-30ce-bare-fcmovnbe-st0-st1-db-d1).
 - **S2-30cg FCMOVU historical extent:** its original exact `DA D9` ST(1)-only local slice covered 512 success and 768 invalid class/tag snapshots. Those counts describe only the earlier one-index matrix; S2-30ch supersedes it for indexed execution. Its two TEST producer fixtures remain compatibility evidence. No native/JIT or physical x86 behavior is established.
 - **S2-30ch indexed FCMOVU evidence:** exact unprefixed Long64 `DA D8..DF` carries the source index, preflights TOP and `(TOP+i)&7` before PF for `i>0`, and checks TOP alone for self-index. PF=1 raw-copies the exact ten bytes/tag; PF=0 retains the destination. The bounded profile remains FCW `0x037f`, `FSW & 0x82ff == 0`, Valid canonical Normal or Zero exact signed zero; C1 and Special/NaN semantics remain closed. Local coverage includes 363,520 successes, 161,280 invalid class/tag snapshots, per-index environment/boundary checks, 18 exact schema streams, nine new bare success fixtures, repeat, two TEST producer fixtures, rejection fixtures and JIT denial. Native/JIT execution, exception delivery and physical acceptance remain unverified; ISSUE-019 stays open. See [CPU contract](specs/CPU_CONTRACT.md#local-s2-30ch-bounded-indexed-fcmovu-st0-sti-da-d8df), [plan](plans/STAGE_2.md#s2-30ch-indexed-bare-fcmovu-st0-sti-da-d8df), [report](reports/STAGE_2_REPORT.md#s2-30ch--indexed-bare-fcmovu-st0-sti), and [fixture notes](../tests/fixtures/x86/stage2/README.md#s2-30ch-indexed-bare-fcmovu-st0-sti-da-d8df).
+
+**S2-30ck local FSQRT slice:** exact unprefixed Long64 `D9 FA` now executes in
+the interpreter only for Valid-tagged canonical positive nonzero Normal
+binary80 at physical TOP, under the twelve all-masked PC24/53/64 FCW values and
+`FSW & 0x80df == 0`. The full 1,536-state success matrix, literal direct-rounding
+vectors and atomic class/environment/boundary rejects are local checks. This
+assumes x87 available, CR0.EM=CR0.TS=0 and no pending exception. The existing
+selector-bearing x87 gate remains unchanged; FDP is preserved locally, and
+CPUID.07H.00H:EBX[6] concerns FDP behavior only. General x87 exceptions,
+pending delivery, native hardware and physical acceptance remain unresolved.
+See [S2-30ck contract](specs/CPU_CONTRACT.md#local-s2-30ck-bounded-register-only-fsqrt-st0-d9-fa),
+[plan](plans/STAGE_2.md#s2-30ck-bare-register-only-fsqrt-st0-d9-fa), and
+[report](reports/STAGE_2_REPORT.md#s2-30ck--bounded-bare-fsqrt-st0).
 
 ### ISSUE-020 — Не подтверждён победитель dual-fault для CMPS RSI/RDI
 

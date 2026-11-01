@@ -1392,6 +1392,8 @@ pub enum Operation {
     Fxam,
     /// Bare `D9 FC` FRNDINT in the bounded PC64/finite Normal profile.
     Frndint,
+    /// Bare `D9 FA` FSQRT in the bounded local positive-Normal profile.
+    Fsqrt,
     /// Bare `D9 18` FSTP m32fp at [RAX], bounded finite profile.
     FstpM32FpRax,
     /// Bare `D9 00` FLD m32fp at [RAX], bounded Normal binary32 stack push.
@@ -6683,6 +6685,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     0xe1 => Operation::Fabs,
                     0xe4 => Operation::Ftst,
                     0xe5 => Operation::Fxam,
+                    0xfa => Operation::Fsqrt,
                     0xfc => Operation::Frndint,
                     _ => return Err(self.unsupported(opcode)),
                 }
@@ -15499,6 +15502,8 @@ mod tests {
                     Ok(Operation::Ftst)
                 } else if second == 0xe5 {
                     Ok(Operation::Fxam)
+                } else if second == 0xfa {
+                    Ok(Operation::Fsqrt)
                 } else if second == 0xfc {
                     Ok(Operation::Frndint)
                 } else {
@@ -15746,6 +15751,7 @@ mod tests {
             (&[0xd9, 0xe1][..], Operation::Fabs),
             (&[0xd9, 0xe4][..], Operation::Ftst),
             (&[0xd9, 0xe5][..], Operation::Fxam),
+            (&[0xd9, 0xfa][..], Operation::Fsqrt),
             (&[0xd9, 0xe8][..], Operation::Fld1),
             (&[0xd9, 0xee][..], Operation::Fldz),
             (&[0xd9, 0xf6][..], Operation::Fdecstp),

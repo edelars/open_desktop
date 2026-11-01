@@ -407,6 +407,11 @@ mod tests {
     }
 
     #[test]
+    fn bounded_x87_fsqrt_is_not_admitted_to_the_fragment_jit() {
+        assert!(matches!(compile(&[0xd9, 0xfa]), Err(JitError::Decode(_))));
+    }
+
+    #[test]
     fn swapgs_is_not_admitted_to_the_fragment_jit() {
         assert!(matches!(
             compile(&[0x0f, 0x01, 0xf8]),

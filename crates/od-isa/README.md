@@ -112,6 +112,16 @@ privilege levels, descriptor loads, native execution and hardware validation
 remain outside this slice. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md)
 and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md).
 
+S2-30ck adds exact bare Long64 `D9 FA` FSQRT to the interpreter for canonical
+positive nonzero Normal binary80 at physical TOP and the twelve all-masked
+PC24/PC53/PC64 FCW values. It rounds directly to target precision, updates only
+TOP payload, sticky PE and C1 under a local undefined-condition-code policy,
+then records FIP and retires once. The existing x87 selector gate remains in
+force; availability, EM/TS, pending exception delivery, general exceptions,
+native/JIT and physical acceptance are outside this slice. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30ck-bounded-register-only-fsqrt-st0-d9-fa)
+and [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-30ck--bounded-bare-fsqrt-st0).
+
 S2-22f/g adds one local-only Long64/CPL3 `MOV FS, AX` form. It performs a
 single 8-byte descriptor-origin GDT read, checks type/readability and
 privilege before presence, then handles A. A=1 needs no write; valid P=1/A=0
