@@ -2,11 +2,15 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::sync::Mutex;
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{AtomicBool, AtomicU8};
 
-use od_host::{MemoryOperationExecutionResultV2, PublishedCode};
+use od_host::{
+    CachedPublishedMemoryPairBackend, MemoryOperationExecutionResultV2, PublishedCode,
+    PublishedMemoryBlockExecutor,
+};
 use od_isa::memory::{AccessContext, AccessKind, ArchitecturalFault, GuestMemory, MemoryError};
 use od_isa::{LongModeState, OperandSize};
 use od_testkit::memory_corpus::{
@@ -231,6 +235,7 @@ struct Ram {
     memory_accesses: Vec<String>,
     fail_read: Option<(usize, MemoryError)>,
     fail_write: Option<(usize, MemoryError)>,
+    event_on_access: Option<Arc<AtomicBool>>,
 }
 
 impl GuestMemory for Ram {
@@ -259,6 +264,9 @@ impl GuestMemory for Ram {
             .count();
         self.callbacks.push("read");
         self.memory_accesses.push(format!("read@{address:#x}"));
+        if let Some(event) = &self.event_on_access {
+            event.store(true, std::sync::atomic::Ordering::Release);
+        }
         if self
             .fail_read
             .as_ref()
@@ -289,6 +297,9 @@ impl GuestMemory for Ram {
             .count();
         self.callbacks.push("write");
         self.memory_accesses.push(format!("write@{address:#x}"));
+        if let Some(event) = &self.event_on_access {
+            event.store(true, std::sync::atomic::Ordering::Release);
+        }
         if self
             .fail_write
             .as_ref()
@@ -606,6 +617,7 @@ fn initial_ram(input: &CorpusInput) -> Ram {
         memory_accesses: Vec::new(),
         fail_read: None,
         fail_write: None,
+        event_on_access: None,
     }
 }
 
@@ -679,6 +691,140 @@ fn native_run(
             format!("{exit:?}"),
             remaining_budget,
             retired_instructions,
+        ),
+        Err(error) => outcome(state, ram, format!("error:{error:?}"), budget, 0),
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn normalize_dispatch_exit(exit: od_jit::memory_dispatch::BoundedMemoryExit) -> String {
+    match exit {
+        od_jit::memory_dispatch::BoundedMemoryExit::BoundaryReached { rip }
+            if rip == ENTRY_RIP + 6 =>
+        {
+            "Complete".to_owned()
+        }
+        other => format!("{other:?}"),
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn uncached_dispatch_run(
+    input: &CorpusInput,
+    budget: u64,
+    stop_requested: bool,
+    stop_rip: Option<u64>,
+    event: Option<&Arc<AtomicBool>>,
+    fault: Option<(u8, MemoryError)>,
+) -> Observation {
+    let code_bytes = input.sequence.bytes();
+    let code = od_jit::block::CodeView::new(ENTRY_RIP, &code_bytes).unwrap();
+    let boundary =
+        od_jit::memory_dispatch::FixtureExecutionBoundary::new(code, ENTRY_RIP + 6).unwrap();
+    let mut state = initial_state(input, ENTRY_RIP);
+    let mut ram = initial_ram(input);
+    ram.event_on_access = event.cloned();
+    if let Some((site_index, error)) = fault {
+        inject_fault(&mut ram, input.sequence, site_index, error);
+    }
+    let stop = AtomicU8::new(u8::from(stop_requested));
+    let mut executor = PublishedMemoryBlockExecutor;
+    // SAFETY: corpus RAM is private synchronous ordinary RAM, distinct from
+    // immutable code bytes, with all-or-nothing writes and no concurrent users.
+    match unsafe {
+        od_jit::memory_dispatch::run_controlled(
+            code,
+            boundary,
+            &mut state,
+            &mut ram,
+            AccessContext::default(),
+            budget,
+            stop_rip,
+            &stop,
+            event.map(Arc::as_ref),
+            &mut executor,
+        )
+    } {
+        Ok(result) => outcome(
+            state,
+            ram,
+            normalize_dispatch_exit(result.exit),
+            result.remaining_budget,
+            result.retired_instructions,
+        ),
+        Err(error) => outcome(state, ram, format!("error:{error:?}"), budget, 0),
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn cached_dispatch_run(
+    cache: &mut od_jit::memory_cache::MemoryPairCache<od_host::PublishedMemoryPairHandle>,
+    backend: &mut CachedPublishedMemoryPairBackend,
+    profile: od_jit::memory_cache::MemoryPairProfile,
+    context_generation: u64,
+    input: &CorpusInput,
+    budget: u64,
+    stop_requested: bool,
+    stop_rip: Option<u64>,
+    event: Option<&Arc<AtomicBool>>,
+    fault: Option<(u8, MemoryError)>,
+) -> Observation {
+    use std::num::NonZeroU64;
+
+    use od_jit::{
+        memory_cache::MemoryExecutionContextGeneration,
+        translation::{
+            AddressSpaceId, BackingId, BackingVersion, CodeDependencySpan, CodeIdentity, MappingId,
+            MappingVersion,
+        },
+    };
+
+    let code_bytes = input.sequence.bytes();
+    let code = od_jit::block::CodeView::new(ENTRY_RIP, &code_bytes).unwrap();
+    let dependencies = [CodeDependencySpan {
+        start_rip: ENTRY_RIP,
+        end_rip: ENTRY_RIP + 6,
+        identity: CodeIdentity {
+            address_space: AddressSpaceId::new(NonZeroU64::new(1).unwrap()),
+            mapping: MappingId::new(NonZeroU64::new(1).unwrap()),
+            mapping_version: MappingVersion::new(NonZeroU64::new(1).unwrap()),
+            backing: BackingId::new(NonZeroU64::new(1).unwrap()),
+            backing_version: BackingVersion::new(NonZeroU64::new(1).unwrap()),
+            executable: true,
+        },
+    }];
+    let mut state = initial_state(input, ENTRY_RIP);
+    let mut ram = initial_ram(input);
+    ram.event_on_access = event.cloned();
+    if let Some((site_index, error)) = fault {
+        inject_fault(&mut ram, input.sequence, site_index, error);
+    }
+    let stop = AtomicU8::new(u8::from(stop_requested));
+    let generation = MemoryExecutionContextGeneration::from_u64(context_generation).unwrap();
+    // SAFETY: corpus RAM is private synchronous ordinary RAM, distinct from
+    // immutable code bytes, with all-or-nothing writes and no concurrent users.
+    match unsafe {
+        cache.run(
+            profile,
+            generation,
+            code,
+            &dependencies,
+            &mut state,
+            &mut ram,
+            AccessContext::default(),
+            budget,
+            stop_rip,
+            &stop,
+            event.map(Arc::as_ref),
+            backend,
+        )
+    } {
+        Ok(result) => outcome(
+            state,
+            ram,
+            normalize_dispatch_exit(result.exit),
+            result.remaining_budget,
+            result.retired_instructions,
         ),
         Err(error) => outcome(state, ram, format!("error:{error:?}"), budget, 0),
     }
@@ -774,6 +920,46 @@ fn interpreter_continue(input: &CorpusInput, prior: &Observation) -> Observation
         Err(error) => format!("error:{error:?}"),
     };
     outcome(state, ram, status, 0, 1)
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn uncached_dispatch_continue(input: &CorpusInput, prior: &Observation) -> Observation {
+    let code_bytes = input.sequence.bytes();
+    let code = od_jit::block::CodeView::new(ENTRY_RIP, &code_bytes).unwrap();
+    let boundary =
+        od_jit::memory_dispatch::FixtureExecutionBoundary::new(code, ENTRY_RIP + 6).unwrap();
+    let mut state = prior.state.clone();
+    let mut ram = initial_ram(input);
+    ram.bytes = prior.ram;
+    ram.callbacks.clone_from(&prior.callbacks);
+    ram.memory_accesses.clone_from(&prior.memory_accesses);
+    let stop = AtomicU8::new(0);
+    let mut executor = PublishedMemoryBlockExecutor;
+    // SAFETY: continuation preserves the private synchronous corpus RAM
+    // contract and resumes from actual RIP without replaying the prefix.
+    match unsafe {
+        od_jit::memory_dispatch::run_controlled(
+            code,
+            boundary,
+            &mut state,
+            &mut ram,
+            AccessContext::default(),
+            1,
+            None,
+            &stop,
+            None,
+            &mut executor,
+        )
+    } {
+        Ok(result) => outcome(
+            state,
+            ram,
+            normalize_dispatch_exit(result.exit),
+            result.remaining_budget,
+            result.retired_instructions,
+        ),
+        Err(error) => outcome(state, ram, format!("error:{error:?}"), 1, 0),
+    }
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -1674,6 +1860,284 @@ fn fixed_seed_memory_corpus_matches_interpreter_twice_per_input() {
     assert_eq!(unique.len(), total);
     assert!(address_relations.iter().all(|count| *count > 0));
     assert!(load_then_load_boundaries.iter().all(|count| *count > 0));
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn capacity_one_memory_cache_matches_uncached_dispatch_for_frozen_profiles() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap();
+    use od_jit::memory_cache::MemoryPairProfile;
+
+    struct Case {
+        seed: u64,
+        case_id: usize,
+        input: CorpusInput,
+        uncached: Observation,
+        interpreter: Observation,
+    }
+
+    let sequences = [Sequence::StoreThenLoad, Sequence::LoadThenStore];
+    let mut unique = HashSet::new();
+    let mut cases = Vec::with_capacity(sequences.len() * SEEDS.len() * CASES_PER_SEED);
+
+    // Run the uncached dispatcher first. It drops its one-shot mapping on each
+    // return, so no mapping overlaps the later resident-cache phase.
+    for sequence in sequences {
+        for seed in SEEDS {
+            for case_index in 0..CASES_PER_SEED {
+                let input = generated_input(seed, case_index, Some(sequence));
+                assert!(unique.insert(input.clone()), "duplicate S3-34a input");
+                let uncached = uncached_dispatch_run(&input, 2, false, None, None, None);
+                let interpreter = interpreter_run(&input, 2, None, false, None);
+                let case_id = cases.len();
+                assert_matches(seed, case_id, &input, &uncached, &interpreter);
+                assert_eq!(uncached.status, "Complete");
+                assert_eq!(uncached.retired, 2);
+                assert_eq!(uncached.memory_accesses, expected_accesses(&input));
+                cases.push(Case {
+                    seed,
+                    case_id,
+                    input,
+                    uncached,
+                    interpreter,
+                });
+            }
+        }
+    }
+    assert_eq!(cases.len(), 2 * 3 * 400);
+    assert_eq!(unique.len(), cases.len());
+
+    let mut cache = od_jit::memory_cache::MemoryPairCache::new();
+    let mut backend = CachedPublishedMemoryPairBackend;
+    for case in &cases {
+        let (profile, context_generation) = match case.input.sequence {
+            Sequence::StoreThenLoad => (MemoryPairProfile::StoreThenLoad, 1),
+            Sequence::LoadThenStore => (MemoryPairProfile::LoadThenStore, 2),
+            Sequence::LoadThenLoad => panic!("S3-18e must not admit LoadThenLoad"),
+        };
+        for replay in 0..2 {
+            let cached = cached_dispatch_run(
+                &mut cache,
+                &mut backend,
+                profile,
+                context_generation,
+                &case.input,
+                2,
+                false,
+                None,
+                None,
+                None,
+            );
+            let envelope = CaseEnvelope::from_input(
+                &case.input,
+                case.seed,
+                case.case_id * 2 + replay,
+                ReplayProtocol::successful_pair(),
+            );
+            assert_matches_named("capacity_one_cache", &envelope, &cached, &case.uncached);
+            assert_matches_named(
+                "capacity_one_interpreter",
+                &envelope,
+                &cached,
+                &case.interpreter,
+            );
+            assert_eq!(cached.callbacks, expected_order(case.input.sequence));
+            assert_eq!(cached.memory_accesses, expected_accesses(&case.input));
+        }
+    }
+
+    let counters = cache.counters();
+    assert_eq!(counters.misses, 2);
+    assert_eq!(counters.hits, 2 * u64::try_from(cases.len()).unwrap() - 2);
+    assert_eq!(counters.successful_compiles, 2);
+    assert_eq!(counters.successful_publications, 2);
+    assert_eq!(cache.resident_entries(), 1);
+    cache.clear();
+    assert_eq!(cache.resident_entries(), 0);
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn capacity_one_memory_cache_preserves_control_and_committed_prefix_behavior() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap();
+    use od_jit::memory_cache::MemoryPairProfile;
+
+    let input = generated_input(SEEDS[0], 0, Some(Sequence::StoreThenLoad));
+    let profile = MemoryPairProfile::StoreThenLoad;
+    let mut cache = od_jit::memory_cache::MemoryPairCache::new();
+    let mut backend = CachedPublishedMemoryPairBackend;
+
+    let stopped = cached_dispatch_run(
+        &mut cache,
+        &mut backend,
+        profile,
+        1,
+        &input,
+        2,
+        true,
+        None,
+        None,
+        None,
+    );
+    assert_eq!(stopped.status, "StopRequested");
+    assert!(stopped.callbacks.is_empty());
+    let stop_rip = cached_dispatch_run(
+        &mut cache,
+        &mut backend,
+        profile,
+        1,
+        &input,
+        2,
+        false,
+        Some(ENTRY_RIP),
+        None,
+        None,
+    );
+    assert_eq!(stop_rip.status, "StopAddress");
+    assert!(stop_rip.callbacks.is_empty());
+    let no_budget = cached_dispatch_run(
+        &mut cache,
+        &mut backend,
+        profile,
+        1,
+        &input,
+        0,
+        false,
+        None,
+        None,
+        None,
+    );
+    assert_eq!(no_budget.status, "BudgetExhausted");
+    assert!(no_budget.callbacks.is_empty());
+    let pending_before_entry = Arc::new(AtomicBool::new(true));
+    let event_pending = cached_dispatch_run(
+        &mut cache,
+        &mut backend,
+        profile,
+        1,
+        &input,
+        2,
+        false,
+        None,
+        Some(&pending_before_entry),
+        None,
+    );
+    assert_eq!(event_pending.status, "EventPending");
+    assert!(event_pending.callbacks.is_empty());
+    assert_eq!(cache.counters().successful_publications, 0);
+
+    // The callback raises an event during a two-site artifact. Both paths must
+    // finish that in-flight pair, commit callbacks once, and return at code end.
+    let uncached_event = Arc::new(AtomicBool::new(false));
+    let uncached = uncached_dispatch_run(&input, 2, false, None, Some(&uncached_event), None);
+    assert!(uncached_event.load(std::sync::atomic::Ordering::Acquire));
+    let cached_event = Arc::new(AtomicBool::new(false));
+    let cached = cached_dispatch_run(
+        &mut cache,
+        &mut backend,
+        profile,
+        1,
+        &input,
+        2,
+        false,
+        None,
+        Some(&cached_event),
+        None,
+    );
+    assert!(cached_event.load(std::sync::atomic::Ordering::Acquire));
+    assert_eq!(compare_observations(&cached, &uncached), Ok(()));
+    assert_eq!(cached.callbacks, expected_order(input.sequence));
+
+    cache.clear();
+    let uncached_prefix = uncached_dispatch_run(&input, 1, false, None, None, None);
+    let cached_prefix = cached_dispatch_run(
+        &mut cache,
+        &mut backend,
+        profile,
+        1,
+        &input,
+        1,
+        false,
+        None,
+        None,
+        None,
+    );
+    assert_eq!(
+        compare_observations(&cached_prefix, &uncached_prefix),
+        Ok(())
+    );
+    assert_eq!(cached_prefix.status, "BudgetExhausted");
+    assert_eq!(cached_prefix.retired, 1);
+    assert_eq!(cached_prefix.callbacks, ["write"]);
+    assert_eq!(cached_prefix.state.rip, ENTRY_RIP + 3);
+    let interpreter_prefix = interpreter_run(&input, 1, None, false, None);
+    assert_eq!(
+        compare_observations(&cached_prefix, &interpreter_prefix),
+        Ok(())
+    );
+
+    // Drop the retained mapping before exercising the existing one-shot
+    // dispatcher for continuation from the actual second-instruction RIP.
+    cache.clear();
+    let resumed = uncached_dispatch_continue(&input, &cached_prefix);
+    let interpreter_resumed = interpreter_continue(&input, &interpreter_prefix);
+    assert_eq!(compare_observations(&resumed, &interpreter_resumed), Ok(()));
+    assert_eq!(resumed.callbacks, ["write", "read"]);
+    assert_eq!(resumed.memory_accesses, expected_accesses(&input));
+
+    let uncached_stop = uncached_dispatch_run(&input, 2, false, Some(ENTRY_RIP + 3), None, None);
+    let cached_stop = cached_dispatch_run(
+        &mut cache,
+        &mut backend,
+        profile,
+        1,
+        &input,
+        2,
+        false,
+        Some(ENTRY_RIP + 3),
+        None,
+        None,
+    );
+    assert_eq!(compare_observations(&cached_stop, &uncached_stop), Ok(()));
+    assert_eq!(cached_stop.status, "StopAddress");
+    assert_eq!(cached_stop.retired, 1);
+    assert_eq!(cached_stop.callbacks, ["write"]);
+    cache.clear();
+
+    let second_site_fault = MemoryError::Architectural(ArchitecturalFault {
+        vector: 14,
+        error_code: Some(2),
+        linear_address: Some(input.first_address),
+    });
+    let uncached_fault = uncached_dispatch_run(
+        &input,
+        2,
+        false,
+        None,
+        None,
+        Some((1, second_site_fault.clone())),
+    );
+    let cached_fault = cached_dispatch_run(
+        &mut cache,
+        &mut backend,
+        profile,
+        1,
+        &input,
+        2,
+        false,
+        None,
+        None,
+        Some((1, second_site_fault.clone())),
+    );
+    let interpreter_fault = interpreter_run(&input, 2, None, false, Some((1, second_site_fault)));
+    assert_eq!(compare_observations(&cached_fault, &uncached_fault), Ok(()));
+    assert_eq!(
+        compare_observations(&cached_fault, &interpreter_fault),
+        Ok(())
+    );
+    assert_eq!(cached_fault.retired, 1);
+    assert_eq!(cached_fault.callbacks, ["write", "read"]);
+    cache.clear();
 }
 
 fn expected_order(sequence: Sequence) -> Vec<&'static str> {

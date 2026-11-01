@@ -1971,6 +1971,110 @@ unsafe impl od_jit::memory_dispatch::MemoryBlockExecutor for PublishedMemoryBloc
     }
 }
 
+/// Opt-in publisher for the S3-18e capacity-one memory cache. Unlike
+/// `PublishedMemoryBlockExecutor`, this backend returns an owned handle whose
+/// mapping remains live until the cache replaces or clears it.
+#[derive(Default)]
+pub struct CachedPublishedMemoryPairBackend;
+
+/// Opaque code-only handle retained by `od_jit::memory_cache::MemoryPairCache`.
+/// It binds the exact published source and metadata and owns no invocation-
+/// local CPU, RAM, helper or control pointers. The execute API accepts only
+/// this handle, so a different compiled artifact cannot be paired with it.
+pub struct PublishedMemoryPairHandle {
+    published: PublishedCode,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CachedPublishedMemoryPairError {
+    Publish(ExecutableMemoryError),
+    Execute(MemoryOperationExecutionErrorV2),
+    ArtifactProfileMismatch,
+}
+
+impl od_jit::memory_cache::CachedMemoryPairBackend for CachedPublishedMemoryPairBackend {
+    type Error = CachedPublishedMemoryPairError;
+    type Published = PublishedMemoryPairHandle;
+
+    fn publish_memory_pair(
+        &mut self,
+        block: &od_jit::memory_load_v2::IrMemoryTwoSiteBlockV2,
+    ) -> Result<Self::Published, Self::Error> {
+        use od_jit::runtime::MemoryPairSequenceV2;
+
+        match block.sequence() {
+            MemoryPairSequenceV2::StoreThenLoad | MemoryPairSequenceV2::LoadThenStore => {}
+            MemoryPairSequenceV2::LoadThenLoad => {
+                return Err(CachedPublishedMemoryPairError::ArtifactProfileMismatch);
+            }
+        }
+        let published = PublishedCode::publish_ir_memory_two_site_v2(block)
+            .map_err(CachedPublishedMemoryPairError::Publish)?;
+        Ok(PublishedMemoryPairHandle { published })
+    }
+
+    unsafe fn execute_memory_pair(
+        &mut self,
+        handle: &Self::Published,
+        state: &mut od_isa::LongModeState,
+        memory: &mut dyn od_isa::memory::GuestMemory,
+        access_context: od_isa::memory::AccessContext,
+        incoming_budget: u64,
+        stop_rip: Option<u64>,
+        stop_requested: &AtomicU8,
+        event_requested: Option<&AtomicBool>,
+    ) -> Result<od_jit::memory_dispatch::MemoryBlockReport, Self::Error> {
+        use od_jit::memory_dispatch::{MemoryBlockExit, MemoryBlockReport};
+        let pre_entry_exit = if stop_rip == Some(state.rip) {
+            Some(MemoryBlockExit::StopAddress)
+        } else if stop_requested.load(Ordering::Acquire) != 0 {
+            Some(MemoryBlockExit::StopRequested)
+        } else if incoming_budget == 0 {
+            Some(MemoryBlockExit::BudgetExhausted)
+        } else if event_requested.is_some_and(|event| event.load(Ordering::Acquire)) {
+            Some(MemoryBlockExit::EventPending)
+        } else {
+            None
+        };
+        if let Some(exit) = pre_entry_exit {
+            return Ok(MemoryBlockReport {
+                exit,
+                remaining_budget: incoming_budget,
+                retired_instructions: 0,
+            });
+        }
+
+        // SAFETY: forwarded under the cache backend's private synchronous
+        // ordinary-RAM caller contract. The retained handle has no invocation
+        // state pointers; this call supplies each one afresh.
+        let result = unsafe {
+            handle.published.execute_ir_memory_two_site_v2(
+                state,
+                memory,
+                access_context,
+                incoming_budget,
+                stop_rip,
+                stop_requested,
+            )
+        }
+        .map_err(CachedPublishedMemoryPairError::Execute)?;
+        Ok(MemoryBlockReport {
+            exit: match result.exit {
+                MemoryOperationExecutionExitV2::Complete => MemoryBlockExit::Complete,
+                MemoryOperationExecutionExitV2::CodeInvalidated => MemoryBlockExit::CodeInvalidated,
+                MemoryOperationExecutionExitV2::BudgetExhausted => MemoryBlockExit::BudgetExhausted,
+                MemoryOperationExecutionExitV2::StopRequested => MemoryBlockExit::StopRequested,
+                MemoryOperationExecutionExitV2::StopAddress => MemoryBlockExit::StopAddress,
+                MemoryOperationExecutionExitV2::GuestFault(fault) => {
+                    MemoryBlockExit::GuestFault(fault)
+                }
+            },
+            remaining_budget: result.remaining_budget,
+            retired_instructions: result.retired_instructions,
+        })
+    }
+}
+
 pub const ARENA_SLOT_BYTES: usize = od_jit::block_compile::MAX_EMITTED_BLOCK_BYTES;
 pub const MAX_PUBLISHED_ARENA_BLOCKS: usize = 16;
 

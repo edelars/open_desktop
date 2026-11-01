@@ -17,6 +17,7 @@ pub mod emitter;
 pub mod ir;
 pub mod lowering;
 pub mod memory_bridge;
+pub mod memory_cache;
 pub mod memory_dispatch;
 pub mod memory_load_v2;
 pub mod phase_observation;
