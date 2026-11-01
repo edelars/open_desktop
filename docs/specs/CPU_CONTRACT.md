@@ -14704,8 +14704,11 @@ The profile is interpreter-only. Native, JIT, C ABI, and generic admission stay
 closed; no physical x86 acceptance is claimed. See the [plan](../plans/STAGE_2.md#s2-37cc--exact-legacy-long64-cvtsi2sd-xmm0dword-ptr-rax), [report](../reports/STAGE_2_REPORT.md#s2-37cc--cvtsi2sd-xmm0dword-ptr-rax-m32-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cc--cvtsi2sd-xmm0dword-ptr-rax-m32-memory-profile).
 
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SD pp. 3-236–3-237; Vol. 1
-§11.5.2.2 and Table 14-21; Vol. 3A §16.1 and Table 16-1. The VEX-only Type
-3/Table 2-20 and Type 5/Table 2-22 entries are not used as legacy evidence.
+§11.5.2.2 and Table 14-21; Vol. 3A §16.1 and Table 16-1. The CVTSI2SD
+instruction entry explicitly scopes its Type 3/Table 2-20 and Type 5/Table
+2-22 references to VEX-encoded forms. Both tables also contain legacy SSE
+conditions; this profile uses Vol. 3A Table 16-1 and Vol. 1 Table 14-21 for
+legacy gates and alignment.
 
 
 ## S2-37cd — bounded Long64 CVTSI2SD XMM0,qword ptr [RAX] m64 memory profile
@@ -14732,8 +14735,9 @@ The profile is interpreter-only. Native, JIT, C ABI, and generic backend
 admission remain closed; no physical x86 acceptance is claimed. See the [plan](../plans/STAGE_2.md#s2-37cd--exact-legacy-long64-cvtsi2sd-xmm0qword-ptr-rax), [report](../reports/STAGE_2_REPORT.md#s2-37cd--cvtsi2sd-xmm0qword-ptr-rax-m64-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cd--cvtsi2sd-xmm0qword-ptr-rax-m64-memory-profile).
 
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SD pp. 3-236–3-237; Vol. 1
-§4.8.4, §11.5.2.6, and Table 14-21; Vol. 3A Table 16-1. VEX-only Type
-3/Table 2-20 is not used as evidence for this legacy form.
+§4.8.4, §11.5.2.6, and Table 14-21; Vol. 3A Table 16-1. The CVTSI2SD
+instruction entry explicitly scopes its Type 3/Table 2-20 reference to
+VEX-encoded forms; Table 2-20 itself also contains legacy SSE conditions.
 
 
 ## S2-37ce — bounded Long64 CVTSI2SS XMM0,dword ptr [RAX] m32 memory profile
@@ -14768,7 +14772,8 @@ claimed. See the [plan](../plans/STAGE_2.md#s2-37ce--exact-legacy-long64-cvtsi2s
 
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SS pp. 3-238–3-239; Vol. 1
 §11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. The Type
-3/Table 2-20 entry is VEX-only and is not legacy evidence.
+3/Table 2-20 reference in the CVTSI2SS instruction entry is explicitly
+VEX-scoped; Table 2-20 itself also contains legacy SSE conditions.
 
 ## S2-37cf — bounded Long64 CVTSI2SS XMM0,qword ptr [RAX] m64 memory profile
 
@@ -14808,8 +14813,9 @@ generic execution are closed. Native classifier/runner denial is closure
 evidence only; physical x86 acceptance was not run. See the [plan](../plans/STAGE_2.md#s2-37cf--exact-legacy-long64-cvtsi2ss-xmm0qword-ptr-rax), [report](../reports/STAGE_2_REPORT.md#s2-37cf--cvtsi2ss-xmm0qword-ptr-rax-m64-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cf--cvtsi2ss-xmm0qword-ptr-rax-m64-memory-profile).
 
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SS pp. 3-238–3-239; Vol. 1
-§4.8.4, §11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. Type
-3/Table 2-20 is VEX-only and is not used as legacy evidence.
+§4.8.4, §11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. The
+CVTSI2SS instruction entry explicitly scopes its Type 3/Table 2-20 reference
+to VEX-encoded forms; Table 2-20 itself also contains legacy SSE conditions.
 
 ## S2-37cg — bounded Long64 CVTSD2SI EAX,qword ptr [RAX] m64-to-r32 memory profile
 
@@ -14886,7 +14892,61 @@ Full suites passed: od-isa 1,644 tests; od-testkit 447; od-runner 112 unit +
 check, formatting, diff, layout, Graphify update, and independent code/evidence
 review passed. Sources: Intel SDM
 Rev. 093 Vol. 2A `CVTSS2SI` pp. 3-242–3-243; Vol. 1 §3.4.1.1, §11.5.2.2,
-Table D-13, and Table 14-21; Vol. 3A §16.1.3 and Table 16-1. Type 3/Table 2-20 is VEX-only, not
-legacy evidence. See the [plan](../plans/STAGE_2.md#s2-37ch--exact-legacy-long64-cvtss2si-eaxdword-ptr-rax),
+Table D-13, and Table 14-21; Vol. 3A §16.1.3 and Table 16-1. The Type 3/Table
+2-20 reference in the CVTSS2SI instruction entry is explicitly VEX-scoped;
+Table 2-20 itself also contains legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37ch--exact-legacy-long64-cvtss2si-eaxdword-ptr-rax),
 [report](../reports/STAGE_2_REPORT.md#s2-37ch--cvtss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ch--cvtss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile).
+
+
+## S2-37ci — bounded Long64 CVTTSS2SI EAX,dword ptr [RAX] m32-to-r32 memory profile
+
+The strict schema-v2 profile `s2-long-cvttss2si-r32-memory-rax-v1` admits only
+the exact legacy encoding `F3 0F 2C 00`. It fetches all four bytes, then applies
+the bounded SSE bit-25, CR0.EM/CR4.OSFXSR `#UD`, and CR0.TS `#NM` gates. The
+profile models CPL0–3. This local gate order is a bounded test policy, not a
+claim about universal SDM exception priority.
+
+After admission, it reads exactly one four-byte little-endian binary32 source
+from `[RAX]`. The read is unaligned-capable under the profile's AC=0 policy and
+is completed before any CPU mutation. The original RAX is the source address;
+the result is written to EAX and zero-extends RAX. A read failure preserves the
+entire CPU snapshot. AC=1 is a valid negative fixture with expected
+`Unsupported`, no data read, and unchanged state. Noncanonical or overflowing
+checked spans produce `#GP(0)` before data access. A missing SSE snapshot fails
+closed only after the architectural prerequisite gates.
+
+The conversion truncates finite binary32 values toward zero independently of
+MXCSR.RC, then checks signed i32 range. Masked invalid input writes
+`0x80000000` and sets sticky IE, without adding PE. A valid fractional input
+sets sticky PE. Exact `-2^31` is valid even though its bits equal the invalid
+indefinite. Subnormals yield zero plus PE and do not raise DE. Existing sticky
+IE/PE and all MXCSR controls are preserved. The local profile requires MXCSR
+mask `0xffbf`, DAZ=0, and IM=PM=1; PM=0, IM=0, DAZ=1, and reserved bits are
+strict-schema rejections. Other supported masks, RC, FTZ, and sticky histories
+are admitted.
+
+Only RAX changes architecturally on successful execution, besides RIP and the
+modeled sticky MXCSR status bits. XMM and optional x87 state—including pending
+x87 canaries—are preserved. The independent oracle parses raw u32 bits from
+fixture memory and performs integer-only classification and truncation; it
+does not use host floating point or production conversion helpers. Native,
+JIT, C ABI, fragment, and generic admission remain closed. Native classifier
+and backend denial are closure evidence only; physical x86 acceptance was not
+run.
+
+Focused verification: decoder/direct ISA 5/5; testkit oracle 1/1; CI runner
+fixture 1/1; preserved CH runner fixture 1/1; native classifier 1/1. Full
+suites passed: od-isa 1,647; od-testkit 447; od-runner 112 unit + 465 fixture;
+od-x86-runner 8 library + 4 main. Workspace all-target check, formatting,
+diff, layout and Graphify update passed. Independent code/schema and
+documentation/evidence reviews are clean; all 14 S2-37ci cross-document anchors
+resolve. Physical x86 acceptance was not run.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTTSS2SI pp. 3-255–3-256; Vol. 1
+§11.5.2.2 for subnormal handling and Table 14-21 for unaligned m32 memory;
+Vol. 3A §16.1.3/Table 16-1 for legacy SSE gates. The CVTTSS2SI entry refers to
+Type 3/Table 2-20 without a VEX-only qualifier; Table 2-20 includes legacy SSE
+conditions. See the [plan](../plans/STAGE_2.md#s2-37ci--exact-legacy-long64-cvttss2si-eaxdword-ptr-rax),
+[report](../reports/STAGE_2_REPORT.md#s2-37ci--cvttss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ci--cvttss2si-eaxm32).

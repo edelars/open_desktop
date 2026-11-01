@@ -19955,8 +19955,7 @@ Physical x86 acceptance was not run.
 
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SD pp. 3-236–3-237 (legacy memory
 form p. 3-237); Vol. 1 §11.5.2.2 and Table 14-21; Vol. 3A §16.1 and Table
-16-1. VEX-only Type 3/Table 2-20 and Type 5/Table 2-22 are not used as legacy
-evidence.
+16-1. The CVTSI2SD instruction entry explicitly scopes its Type 3/Table 2-20 and Type 5/Table 2-22 references to VEX-encoded forms. Both tables also contain legacy SSE conditions; this profile uses Vol. 3A Table 16-1 and Vol. 1 Table 14-21 for legacy gates and alignment.
 
 
 ## S2-37cd — CVTSI2SD XMM0,qword ptr [RAX] m64 memory profile
@@ -20036,8 +20035,9 @@ Unsupported behavior are local closure evidence only; physical/native x86
 execution was not performed.
 
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SS pp. 3-238–3-239; Vol. 1
-§11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. Type 3/Table
-2-20 is VEX-only and is not cited as legacy evidence.
+§11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. The CVTSI2SS
+instruction entry explicitly scopes its Type 3/Table 2-20 reference to
+VEX-encoded forms; Table 2-20 itself also contains legacy SSE conditions.
 
 ## S2-37cf — CVTSI2SS XMM0,qword ptr [RAX] m64 memory profile
 
@@ -20084,8 +20084,9 @@ review are complete. Physical x86 acceptance was not run.
 See the [plan](../plans/STAGE_2.md#s2-37cf--exact-legacy-long64-cvtsi2ss-xmm0qword-ptr-rax), [CPU contract](../specs/CPU_CONTRACT.md#s2-37cf--bounded-long64-cvtsi2ss-xmm0qword-ptr-rax-m64-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cf--cvtsi2ss-xmm0qword-ptr-rax-m64-memory-profile).
 
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SS pp. 3-238–3-239; Vol. 1
-§4.8.4, §11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. Type
-3/Table 2-20 is VEX-only and is not legacy evidence.
+§4.8.4, §11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. The
+CVTSI2SS instruction entry explicitly scopes its Type 3/Table 2-20 reference
+to VEX-encoded forms; Table 2-20 itself also contains legacy SSE conditions.
 
 ## S2-37cg — CVTSD2SI EAX,qword ptr [RAX] m64-to-r32 memory profile
 
@@ -20166,7 +20167,53 @@ run. Graphify rebuilt 10,420 nodes, 22,283 edges, and 306 communities; 54
 unsupported-extension files were skipped and 13 code files yielded no symbols.
 
 Sources: Intel SDM Rev. 093 Vol. 2A `CVTSS2SI` pp. 3-242–3-243; Vol. 1
-§3.4.1.1, §11.5.2.2, Table D-13, and Table 14-21; Vol. 3A §16.1.3 and Table 16-1. Type 3/Table
-2-20 is VEX-only and not used as legacy evidence. See the [plan](../plans/STAGE_2.md#s2-37ch--exact-legacy-long64-cvtss2si-eaxdword-ptr-rax),
+§3.4.1.1, §11.5.2.2, Table D-13, and Table 14-21; Vol. 3A §16.1.3 and Table
+16-1. The Type 3/Table 2-20 reference in the CVTSS2SI instruction entry is
+explicitly VEX-scoped; Table 2-20 itself also contains legacy SSE conditions.
+See the [plan](../plans/STAGE_2.md#s2-37ch--exact-legacy-long64-cvtss2si-eaxdword-ptr-rax),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37ch--bounded-long64-cvtss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ch--cvtss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile).
+
+
+## S2-37ci — CVTTSS2SI EAX,dword ptr [RAX] m32-to-r32 memory profile
+
+Implemented exact legacy `F3 0F 2C 00` under the separate strict schema-v2
+profile `s2-long-cvttss2si-r32-memory-rax-v1`. The runner reads a four-byte
+binary32 from the original RAX, truncates toward zero independent of MXCSR.RC,
+checks signed-i32 range, and writes EAX with zero-extension to RAX. The literal
+fixture uses unaligned +1.5 at a high32 RAX address while MXCSR selects round
+up; result remains 1 with sticky PE. The integer-only oracle parses the raw
+fixture memory bits directly.
+
+Focused verification passed: `cargo test -p od-isa cvttss2si --offline
+-- --test-threads=1` (5/5); the independent oracle filter 1/1; CI runner
+fixture 1/1; preserved CH runner fixture 1/1; native classifier filter 1/1.
+Direct ISA cases cover 17 raw vectors across RC×CPL×sticky histories, gates,
+full fetch, missing SSE state, noncanonical/canonical-end/u64-wrap span refusal,
+AC refusal, exact read width/count, and read-failure rollback. Runner coverage
+includes all RC modes, boundaries, signed zero, ties, subnormals without DE,
+NaN/infinity, IE/PE history, high32 RAX alias/zero-extension, pending-x87
+preservation, schema and foreign-field rejection, tampering, and JIT/native
+backend denial.
+
+Full checks passed: `cargo test -p od-isa --offline -- --test-threads=1`
+(1,647 passed); `cargo test -p od-testkit --offline -- --test-threads=1`
+(447 passed); `cargo test -p od-runner --offline -- --test-threads=1` (112 unit
+and 465 fixture tests passed); `cargo test -p od-x86-runner --offline
+-- --test-threads=1` (8 library and 4 main tests passed); and
+`cargo check --workspace --all-targets --offline`. Doc-tests were zero for all
+four package suites. Formatting, `git diff --check`, and `python3
+tools/check_layout.py` passed. Graphify rebuilt 10,435 nodes, 22,326 edges, and
+299 communities; 54 unsupported-extension files were skipped and 13 files had
+no extracted symbols. Independent code/schema and documentation/evidence
+reviews are clean; all 14 S2-37ci cross-document anchors resolve. Physical x86
+acceptance was not run, and native classifier/backend denial does not claim
+physical execution.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTTSS2SI pp. 3-255–3-256; Vol. 1
+§11.5.2.2 for subnormal handling and Table 14-21 for unaligned m32 memory;
+Vol. 3A §16.1.3/Table 16-1 for legacy SSE gates. The CVTTSS2SI entry refers to
+Type 3/Table 2-20 without a VEX-only qualifier; Table 2-20 includes legacy SSE
+conditions. See the [plan](../plans/STAGE_2.md#s2-37ci--exact-legacy-long64-cvttss2si-eaxdword-ptr-rax),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37ci--bounded-long64-cvttss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ci--cvttss2si-eaxm32).

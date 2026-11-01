@@ -329,3 +329,13 @@ profile. The independent oracle reads raw binary32 from fixture memory and
 rounds before i32 range checking. Its matrix checks all RC modes, signed limits,
 rounding ties, subnormal/NaN/infinity behavior, sticky flags, RAX zero-extension,
 x87 preservation, strict schema, tampering and backend closure. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ch--bounded-long64-cvtss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile).
+
+### S2-37ci — CVTTSS2SI EAX,m32
+
+The schema-v2 fixture runner has a separate interpreter-only profile for exact
+legacy `F3 0F 2C 00`, reading one binary32 from `[RAX]`. Its independent oracle
+uses raw binary32 bits and integer truncation toward zero, regardless of
+MXCSR.RC, then checks signed i32 range and sticky IE/PE. The literal fixture
+uses +1.5 with round-up selected to distinguish truncation from CVT rounding.
+JIT/native requests return `unsupported`; no physical x86 execution is claimed.
+See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ci--bounded-long64-cvttss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile).

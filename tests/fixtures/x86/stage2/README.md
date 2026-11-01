@@ -7357,8 +7357,11 @@ coverage checks missing-SSE and read-failure atomicity. The focused runner passe
 Workspace all-target check passed. No physical x86 acceptance is claimed.
 
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SD pp. 3-236–3-237; Vol. 1
-§11.5.2.2 and Table 14-21; Vol. 3A §16.1/Table 16-1. VEX-only Type 3/Table
-2-20 and Type 5/Table 2-22 are not used for legacy behavior. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37cc--exact-legacy-long64-cvtsi2sd-xmm0dword-ptr-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cc--bounded-long64-cvtsi2sd-xmm0dword-ptr-rax-m32-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cc--cvtsi2sd-xmm0dword-ptr-rax-m32-memory-profile).
+§11.5.2.2 and Table 14-21; Vol. 3A §16.1/Table 16-1. The CVTSI2SD
+instruction entry explicitly scopes its Type 3/Table 2-20 and Type 5/Table
+2-22 references to VEX-encoded forms. Both tables also contain legacy SSE
+conditions; this profile uses Vol. 3A Table 16-1 and Vol. 1 Table 14-21 for
+legacy gates and alignment. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37cc--exact-legacy-long64-cvtsi2sd-xmm0dword-ptr-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cc--bounded-long64-cvtsi2sd-xmm0dword-ptr-rax-m32-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cc--cvtsi2sd-xmm0dword-ptr-rax-m32-memory-profile).
 
 
 ### S2-37cd — CVTSI2SD XMM0,qword ptr [RAX] m64 memory profile
@@ -7398,8 +7401,9 @@ Workspace all-target check passed. The portable native classifier marks the
 profile local-only; no physical x86 execution is claimed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37ce--exact-legacy-long64-cvtsi2ss-xmm0dword-ptr-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ce--bounded-long64-cvtsi2ss-xmm0dword-ptr-rax-m32-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ce--cvtsi2ss-xmm0dword-ptr-rax-m32-memory-profile).
 
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SS pp. 3-238–3-239; Vol. 1
-§11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. Type 3/Table
-2-20 is VEX-only and is not used as legacy evidence.
+§11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. The CVTSI2SS
+instruction entry explicitly scopes its Type 3/Table 2-20 reference to
+VEX-encoded forms; Table 2-20 itself also contains legacy SSE conditions.
 
 ### S2-37cf — CVTSI2SS XMM0,qword ptr [RAX] m64 memory profile
 
@@ -7420,8 +7424,9 @@ od-x86-runner 8+4) and the workspace all-target check passed. Native closure
 and classifier tests do not claim physical x86 execution. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37cf--exact-legacy-long64-cvtsi2ss-xmm0qword-ptr-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cf--bounded-long64-cvtsi2ss-xmm0qword-ptr-rax-m64-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cf--cvtsi2ss-xmm0qword-ptr-rax-m64-memory-profile).
 
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SS pp. 3-238–3-239; Vol. 1
-§4.8.4, §11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. Type
-3/Table 2-20 is VEX-only and is not used as legacy evidence.
+§4.8.4, §11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. The
+CVTSI2SS instruction entry explicitly scopes its Type 3/Table 2-20 reference
+to VEX-encoded forms; Table 2-20 itself also contains legacy SSE conditions.
 
 ### S2-37cg — CVTSD2SI EAX,qword ptr [RAX] m64-to-r32 memory profile
 
@@ -7462,3 +7467,18 @@ execution.
 
 Sources: Intel SDM Rev. 093 Vol. 2A `CVTSS2SI` pp. 3-242–3-243; Vol. 1
 §3.4.1.1, §11.5.2.2, Table D-13, and Table 14-21; Vol. 3A §16.1.3 and Table 16-1. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37ch--exact-legacy-long64-cvtss2si-eaxdword-ptr-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ch--bounded-long64-cvtss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ch--cvtss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile).
+
+### S2-37ci — CVTTSS2SI EAX,m32
+
+`s2_37ci_cvttss2si_m32_i32_rc_independence.case.json` is the exact legacy
+`F3 0F 2C 00` fixture. Its source is unaligned `+1.5` at a high32 RAX address,
+while MXCSR selects round-up; the instruction still truncates to EAX=1 and sets
+PE. The runner matrix checks seventeen raw binary32 values across four RC
+settings, signed boundaries, NaNs/infinities, subnormals without DE, sticky
+flags, RAX zero-extension, optional pending-x87 canaries, strict schema,
+tampering, and JIT/native denial. Direct ISA coverage checks full fetch, gates,
+CPL0–3, noncanonical/cross-boundary/overflow spans, AC refusal, exact read
+width/count, and atomic read failure. Native closure does not establish
+physical x86 execution. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37ci--exact-legacy-long64-cvttss2si-eaxdword-ptr-rax),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ci--bounded-long64-cvttss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile), and
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ci--cvttss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile).

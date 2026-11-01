@@ -378,3 +378,12 @@ or a register-source parser. It checks direct-rounding vectors including
 `0x0040000040000001`, XMM0 low32/high96, sticky PE, and optional x87 state.
 PM=0, DAZ=1, and reserved controls are malformed schema inputs; AC=1 is a
 runtime-refusal fixture. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cf--bounded-long64-cvtsi2ss-xmm0qword-ptr-rax-m64-memory-profile).
+
+### S2-37ci — CVTTSS2SI EAX,m32
+
+The strict `s2-long-cvttss2si-r32-memory-rax-v1` schema profile has its own
+controls field and requires exact `F3 0F 2C 00`, one four-byte source mapping at
+RAX, and the bounded IM/PM/DAZ/MXCSR policy. Its independent oracle reads raw
+u32 from fixture memory, computes truncation and signed-range flags with
+integer operations, and validates EAX zero-extension to RAX without host FP or
+production conversion helpers. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ci--bounded-long64-cvttss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile).
