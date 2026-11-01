@@ -1412,6 +1412,8 @@ pub mod dispatch_cache;
 pub mod flags_compare;
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 pub mod two_site_memory_cold;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub mod two_site_memory_warm;
 
 pub fn run_suite(
     suite: &BenchmarkSuite,

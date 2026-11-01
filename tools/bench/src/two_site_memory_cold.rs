@@ -19,16 +19,16 @@ use serde::Serialize;
 use crate::HostMetadata;
 
 const PROFILE_ID: &str = "s3-35c-two-site-memory-cold-direct-v1";
-const ENTRY_RIP: u64 = 0x9e00;
-const INSTRUCTION_BUDGET: u64 = 2;
-const EXPECTED_CASES: usize = 2 * 3 * 400;
-const PREFLIGHT_REPETITIONS_PER_CASE: usize = 2;
+pub(super) const ENTRY_RIP: u64 = 0x9e00;
+pub(super) const INSTRUCTION_BUDGET: u64 = 2;
+pub(super) const EXPECTED_CASES: usize = 2 * 3 * 400;
+pub(super) const PREFLIGHT_REPETITIONS_PER_CASE: usize = 2;
 const FROZEN_INPUT_DIGEST: &str =
     "b09478b556aa91234d8c453f20e70f637222c5de2d7369d305ffe7c78caae540";
-const MIN_SIDE_TIME: Duration = Duration::from_millis(200);
-const MAX_REPETITIONS: u32 = 2048;
-const MAX_SAMPLE_PAIRS: usize = 20;
-const MAX_RUN_TIME: Duration = Duration::from_secs(30 * 60);
+pub(super) const MIN_SIDE_TIME: Duration = Duration::from_millis(200);
+pub(super) const MAX_REPETITIONS: u32 = 2048;
+pub(super) const MAX_SAMPLE_PAIRS: usize = 20;
+pub(super) const MAX_RUN_TIME: Duration = Duration::from_secs(30 * 60);
 const CODE_SOURCE: &[u8] = include_bytes!("two_site_memory_cold.rs");
 const CLI_SOURCE: &[u8] = include_bytes!("main.rs");
 const LIB_SOURCE: &[u8] = include_bytes!("lib.rs");
@@ -114,6 +114,13 @@ pub struct SamplePair {
 }
 
 #[derive(Clone)]
+pub(super) struct GeneratedCase {
+    pub(super) seed: u64,
+    pub(super) index: usize,
+    pub(super) input: MemoryCorpusInput,
+}
+
+#[derive(Clone)]
 struct Case {
     seed: u64,
     index: usize,
@@ -122,34 +129,34 @@ struct Case {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct Outcome {
-    state: od_isa::LongModeState,
-    ram: [u8; MEMORY_CORPUS_RAM_LEN],
-    exit: String,
-    retired: u64,
-    remaining_budget: u64,
-    memory_events: [Option<MemoryEvent>; 2],
-    memory_event_count: usize,
+pub(super) struct Outcome {
+    pub(super) state: od_isa::LongModeState,
+    pub(super) ram: [u8; MEMORY_CORPUS_RAM_LEN],
+    pub(super) exit: String,
+    pub(super) retired: u64,
+    pub(super) remaining_budget: u64,
+    pub(super) memory_events: [Option<MemoryEvent>; 2],
+    pub(super) memory_event_count: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MemoryOperation {
+pub(super) enum MemoryOperation {
     Read,
     Write,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct MemoryEvent {
-    operation: MemoryOperation,
-    address: u64,
-    width: usize,
+pub(super) struct MemoryEvent {
+    pub(super) operation: MemoryOperation,
+    pub(super) address: u64,
+    pub(super) width: usize,
 }
 
-struct FixtureMemory<'a> {
-    code: &'a [u8],
-    ram: [u8; MEMORY_CORPUS_RAM_LEN],
-    memory_events: [Option<MemoryEvent>; 2],
-    memory_event_count: usize,
+pub(super) struct FixtureMemory<'a> {
+    pub(super) code: &'a [u8],
+    pub(super) ram: [u8; MEMORY_CORPUS_RAM_LEN],
+    pub(super) memory_events: [Option<MemoryEvent>; 2],
+    pub(super) memory_event_count: usize,
 }
 
 impl od_isa::memory::GuestMemory for FixtureMemory<'_> {
@@ -482,9 +489,9 @@ fn run_native(
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[derive(Debug)]
-struct BenchError {
-    message: String,
-    terminal_reason: Option<&'static str>,
+pub(super) struct BenchError {
+    pub(super) message: String,
+    pub(super) terminal_reason: Option<&'static str>,
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -498,7 +505,7 @@ impl std::fmt::Display for BenchError {
 impl std::error::Error for BenchError {}
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn err(message: impl Into<String>) -> BenchError {
+pub(super) fn err(message: impl Into<String>) -> BenchError {
     BenchError {
         message: message.into(),
         terminal_reason: None,
@@ -506,12 +513,12 @@ fn err(message: impl Into<String>) -> BenchError {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn bench_error(error: impl std::fmt::Debug) -> BenchError {
+pub(super) fn bench_error(error: impl std::fmt::Debug) -> BenchError {
     err(format!("{error:?}"))
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn append_durable_journal_record(
+pub(super) fn append_durable_journal_record(
     journal: &mut std::io::BufWriter<std::fs::File>,
     record: &impl Serialize,
 ) -> Result<(), BenchError> {
@@ -535,7 +542,7 @@ where
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn validate_process_run(process_run: u8) -> Result<(), BenchError> {
+pub(super) fn validate_process_run(process_run: u8) -> Result<(), BenchError> {
     if (1..=3).contains(&process_run) {
         Ok(())
     } else {
@@ -544,11 +551,9 @@ fn validate_process_run(process_run: u8) -> Result<(), BenchError> {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn build_and_preflight() -> Result<(Vec<Case>, String, usize, usize), BenchError> {
+pub(super) fn generate_inputs() -> Result<(Vec<GeneratedCase>, String), BenchError> {
     let mut cases = Vec::with_capacity(EXPECTED_CASES);
     let mut digest = Vec::with_capacity(EXPECTED_CASES * 256);
-    let mut interpreter_executions = 0usize;
-    let mut native_executions = 0usize;
     for sequence in S3_34A_SEQUENCES {
         for seed in S3_34A_SEEDS {
             for index in 0..S3_34A_CASES_PER_SEED {
@@ -569,45 +574,7 @@ fn build_and_preflight() -> Result<(Vec<Case>, String, usize, usize), BenchError
                 {
                     return Err(err("frozen sequence/seed/index iteration order changed"));
                 }
-                let mut oracle = None::<Outcome>;
-                let mut first_native = None::<Outcome>;
-                for repetition in 0..PREFLIGHT_REPETITIONS_PER_CASE {
-                    // Both functions rebuild CPU state and private RAM from the
-                    // immutable input, so every trial starts from a fresh reset.
-                    let interpreter = interpret(&input)?;
-                    interpreter_executions += 1;
-                    let native = native_once(&input)?;
-                    native_executions += 1;
-                    validate_pair(&interpreter, &native, &input, seed, index, true)?;
-                    if repetition == 0 {
-                        oracle = Some(interpreter);
-                        first_native = Some(native);
-                    } else {
-                        let first_interpreter = oracle
-                            .as_ref()
-                            .expect("first interpreter trial is retained");
-                        let first_native = first_native
-                            .as_ref()
-                            .expect("first native trial is retained");
-                        if !repeat_outcomes_equal(first_interpreter, &interpreter) {
-                            return Err(err(format!(
-                                "interpreter repeat mismatch for {sequence:?}, seed={seed}, index={index}"
-                            )));
-                        }
-                        if !repeat_outcomes_equal(first_native, &native) {
-                            return Err(err(format!(
-                                "native repeat mismatch for {sequence:?}, seed={seed}, index={index}"
-                            )));
-                        }
-                    }
-                }
-                let oracle = oracle.expect("exactly two interpreter trials were run");
-                cases.push(Case {
-                    seed,
-                    index,
-                    input,
-                    oracle,
-                });
+                cases.push(GeneratedCase { seed, index, input });
             }
         }
     }
@@ -625,6 +592,58 @@ fn build_and_preflight() -> Result<(Vec<Case>, String, usize, usize), BenchError
         return Err(err(format!(
             "frozen S3-34a input digest changed: {input_digest}"
         )));
+    }
+    Ok((cases, input_digest))
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn build_and_preflight() -> Result<(Vec<Case>, String, usize, usize), BenchError> {
+    let (generated, input_digest) = generate_inputs()?;
+    let mut cases = Vec::with_capacity(generated.len());
+    let mut interpreter_executions = 0usize;
+    let mut native_executions = 0usize;
+    for generated_case in generated {
+        let GeneratedCase { seed, index, input } = generated_case;
+        let mut oracle = None::<Outcome>;
+        let mut first_native = None::<Outcome>;
+        for repetition in 0..PREFLIGHT_REPETITIONS_PER_CASE {
+            // Both functions rebuild CPU state and private RAM from the
+            // immutable input, so every trial starts from a fresh reset.
+            let interpreter = interpret(&input)?;
+            interpreter_executions += 1;
+            let native = native_once(&input)?;
+            native_executions += 1;
+            validate_pair(&interpreter, &native, &input, seed, index, true)?;
+            if repetition == 0 {
+                oracle = Some(interpreter);
+                first_native = Some(native);
+            } else {
+                let first_interpreter = oracle
+                    .as_ref()
+                    .expect("first interpreter trial is retained");
+                let first_native = first_native
+                    .as_ref()
+                    .expect("first native trial is retained");
+                if !repeat_outcomes_equal(first_interpreter, &interpreter) {
+                    return Err(err(format!(
+                        "interpreter repeat mismatch for {:?}, seed={seed}, index={index}",
+                        input.sequence
+                    )));
+                }
+                if !repeat_outcomes_equal(first_native, &native) {
+                    return Err(err(format!(
+                        "native repeat mismatch for {:?}, seed={seed}, index={index}",
+                        input.sequence
+                    )));
+                }
+            }
+        }
+        cases.push(Case {
+            seed,
+            index,
+            input,
+            oracle: oracle.expect("exactly two interpreter trials were run"),
+        });
     }
     let expected_backend_executions =
         preflight_execution_count(EXPECTED_CASES, PREFLIGHT_REPETITIONS_PER_CASE)
@@ -644,16 +663,19 @@ fn build_and_preflight() -> Result<(Vec<Case>, String, usize, usize), BenchError
     ))
 }
 
-fn preflight_execution_count(unique_cases: usize, repetitions_per_case: usize) -> Option<usize> {
+pub(super) fn preflight_execution_count(
+    unique_cases: usize,
+    repetitions_per_case: usize,
+) -> Option<usize> {
     unique_cases.checked_mul(repetitions_per_case)
 }
 
-fn repeat_outcomes_equal(first: &Outcome, second: &Outcome) -> bool {
+pub(super) fn repeat_outcomes_equal(first: &Outcome, second: &Outcome) -> bool {
     first == second
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn make_state(input: &MemoryCorpusInput) -> od_isa::LongModeState {
+pub(super) fn make_state(input: &MemoryCorpusInput) -> od_isa::LongModeState {
     let mut state = od_isa::LongModeState {
         rip: ENTRY_RIP,
         rflags: input.flags | 2,
@@ -664,7 +686,7 @@ fn make_state(input: &MemoryCorpusInput) -> od_isa::LongModeState {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn interpret(input: &MemoryCorpusInput) -> Result<Outcome, BenchError> {
+pub(super) fn interpret(input: &MemoryCorpusInput) -> Result<Outcome, BenchError> {
     let mut state = make_state(input);
     let bytes = input.sequence.bytes();
     let mut memory = FixtureMemory {
@@ -673,25 +695,42 @@ fn interpret(input: &MemoryCorpusInput) -> Result<Outcome, BenchError> {
         memory_events: [None; 2],
         memory_event_count: 0,
     };
-    let result = od_isa::execute::run(
-        &mut state,
-        &mut memory,
+    let result = execute_interpreter(&mut state, &mut memory);
+    Ok(outcome_from_interpreter(&state, &memory, result))
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) fn execute_interpreter(
+    state: &mut od_isa::LongModeState,
+    memory: &mut FixtureMemory<'_>,
+) -> od_isa::execute::RunResult {
+    od_isa::execute::run(
+        state,
+        memory,
         od_isa::execute::RunConfig {
             instruction_budget: INSTRUCTION_BUDGET,
             stop_rip: None,
             context: od_isa::memory::AccessContext::default(),
         },
         || false,
-    );
-    Ok(Outcome {
-        state,
+    )
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) fn outcome_from_interpreter(
+    state: &od_isa::LongModeState,
+    memory: &FixtureMemory<'_>,
+    result: od_isa::execute::RunResult,
+) -> Outcome {
+    Outcome {
+        state: state.clone(),
         ram: memory.ram,
         exit: format!("{:?}", result.exit),
         retired: result.instructions_executed,
         remaining_budget: INSTRUCTION_BUDGET.saturating_sub(result.instructions_executed),
         memory_events: memory.memory_events,
         memory_event_count: memory.memory_event_count,
-    })
+    }
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -710,36 +749,56 @@ fn native_once(input: &MemoryCorpusInput) -> Result<Outcome, BenchError> {
         memory_event_count: 0,
     };
     let stop_requested = AtomicU8::new(0);
-    // SAFETY: the data adapter is private synchronous ordinary RAM, disjoint
-    // from the immutable six-byte code source, all-or-nothing on writes, and
-    // accessed synchronously with exclusive state and memory borrows.
-    let result = unsafe {
-        published.execute_ir_memory_two_site_v2(
-            &mut state,
-            &mut memory,
-            od_isa::memory::AccessContext::default(),
-            INSTRUCTION_BUDGET,
-            None,
-            &stop_requested,
-        )
-    }
-    .map_err(bench_error)?;
-    let outcome = Outcome {
-        state,
-        ram: memory.ram,
-        exit: format!("{:?}", result.exit),
-        retired: result.retired_instructions,
-        remaining_budget: result.remaining_budget,
-        memory_events: memory.memory_events,
-        memory_event_count: memory.memory_event_count,
-    };
+    let result = execute_published(&published, &mut state, &mut memory, &stop_requested)?;
+    let outcome = outcome_from_native(&state, &memory, result);
     drop(published);
     drop(block);
     Ok(outcome)
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn validate_pair(
+pub(super) fn execute_published(
+    published: &od_host::PublishedCode,
+    state: &mut od_isa::LongModeState,
+    memory: &mut FixtureMemory<'_>,
+    stop_requested: &AtomicU8,
+) -> Result<od_host::MemoryOperationExecutionResultV2, BenchError> {
+    // SAFETY: the data adapter is private synchronous ordinary RAM, disjoint
+    // from the immutable six-byte code source, all-or-nothing on writes, and
+    // accessed synchronously with exclusive state and memory borrows.
+    let result = unsafe {
+        published.execute_ir_memory_two_site_v2(
+            state,
+            memory,
+            od_isa::memory::AccessContext::default(),
+            INSTRUCTION_BUDGET,
+            None,
+            stop_requested,
+        )
+    }
+    .map_err(bench_error)?;
+    Ok(result)
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) fn outcome_from_native(
+    state: &od_isa::LongModeState,
+    memory: &FixtureMemory<'_>,
+    result: od_host::MemoryOperationExecutionResultV2,
+) -> Outcome {
+    Outcome {
+        state: state.clone(),
+        ram: memory.ram,
+        exit: format!("{:?}", result.exit),
+        retired: result.retired_instructions,
+        remaining_budget: result.remaining_budget,
+        memory_events: memory.memory_events,
+        memory_event_count: memory.memory_event_count,
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) fn validate_pair(
     expected: &Outcome,
     actual: &Outcome,
     input: &MemoryCorpusInput,
@@ -779,7 +838,7 @@ fn validate_pair(
     Ok(())
 }
 
-fn expected_memory_events(
+pub(super) fn expected_memory_events(
     sequence: MemoryCorpusSequence,
     first_address: u64,
     second_address: u64,
@@ -1050,7 +1109,7 @@ fn measure_sweeps(
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn check_run_bound(started: Instant) -> Result<(), BenchError> {
+pub(super) fn check_run_bound(started: Instant) -> Result<(), BenchError> {
     if wall_limit_exceeded(started.elapsed().as_nanos()) {
         Err(BenchError {
             message: "30 minute total run bound exceeded".into(),
@@ -1071,7 +1130,10 @@ fn next_calibration_repetitions(current: u32) -> Option<u32> {
         .filter(|next| *next <= MAX_REPETITIONS)
 }
 
-fn calibration_attempt_meets_floor(native_total_ns: u128, interpreter_total_ns: u128) -> bool {
+pub(super) fn calibration_attempt_meets_floor(
+    native_total_ns: u128,
+    interpreter_total_ns: u128,
+) -> bool {
     native_total_ns >= MIN_SIDE_TIME.as_nanos() && interpreter_total_ns >= MIN_SIDE_TIME.as_nanos()
 }
 
