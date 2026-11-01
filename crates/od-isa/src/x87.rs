@@ -384,6 +384,7 @@ pub fn remainder_finite_trunc(lhs: X87Finite, rhs: X87Finite) -> Option<(i32, i1
 /// unchanged with quotient zero. At gap -1, `A <= B` also returns quotient
 /// zero (including the half-way tie), while `A > B` returns quotient one.
 /// Gaps 0 through 64 use exact division; larger gaps are rejected.
+/// Here, `A` and `B` are the significands of `lhs` and `rhs`, respectively.
 /// This helper does not implement FPREM1 or any x87 instruction/status effects.
 pub fn remainder_finite_nearest_even_with_quotient(
     lhs: X87Finite,

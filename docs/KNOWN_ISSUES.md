@@ -310,8 +310,8 @@
   projection equivalence. The 13 focused remainder tests, all 1,741 `od-isa`
   tests, format check, component/workspace checks, and Graphify update passed.
   Layout check remains unavailable in this worktree for the pre-existing
-  ISSUE-023 `.git` pointer and missing ignored oracle manifests. Independent
-  the initial review's P2 negative-gap wording mismatch was corrected in the
+  ISSUE-023 `.git` pointer and missing ignored oracle manifests. The initial
+  Sol/high review's P2 negative-gap wording mismatch was corrected in the
   contract/report/helper docs; follow-up review is requested separately. This
   adds no FPREM/FPREM1, quotient flags,
   FCW/FSW or guest exception behavior, decoder/execution/native/JIT/C ABI
