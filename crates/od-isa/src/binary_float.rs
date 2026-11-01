@@ -331,54 +331,6 @@ fn normalize_i64(value: i64) -> (bool, i32, u64) {
     (sign, leading_bit, significand)
 }
 
-/// Returns `floor(sqrt(value))` for the full `u128` domain.
-///
-/// This restoring digit-by-digit algorithm processes two input bits per step
-/// and never forms a potentially overflowing square or trial product.
-fn integer_sqrt_u128(value: u128) -> u64 {
-    let mut remainder = value;
-    let mut root = 0_u128;
-    let mut bit = 1_u128 << 126;
-    while bit > remainder {
-        bit >>= 2;
-    }
-    while bit != 0 {
-        let trial = root + bit;
-        if remainder >= trial {
-            remainder -= trial;
-            root = (root >> 1) + bit;
-        } else {
-            root >>= 1;
-        }
-        bit >>= 2;
-    }
-    root as u64
-}
-
-/// Builds an integer radicand for a normalized nonzero finite value.
-///
-/// For `x = S * 2^(e-63)`, this returns `(E, q, has_tail)` with
-/// `E=floor(e/2)` and `q=floor(sqrt(S*2^(63+b)))`, where `b=e-2E`.
-/// The exact root is represented as `(q + δ) * 2^(E-63)`, with `δ=0` for an
-/// exact integer root and `0<δ<1` otherwise. The caller passes a rounding-
-/// equivalent representative tail (`0/1` or `1/2`) to the existing packer;
-/// this is not the exact fractional root remainder. It is sufficient for
-/// binary32 and binary64 because their discarded significand widths are 40
-/// and 11 bits: a nonzero tail only changes rounding when `q` is exactly at
-/// the halfway boundary, where every positive tail rounds above that tie.
-fn sqrt_finite_parts(finite: BinaryFinite) -> (i32, u64, bool) {
-    debug_assert_ne!(finite.significand(), 0);
-    let exponent = finite.exponent();
-    let result_exponent = exponent.div_euclid(2);
-    let parity = exponent.rem_euclid(2) as u32;
-    let radicand = u128::from(finite.significand()) << (63 + parity);
-    let root = integer_sqrt_u128(radicand);
-    let square = u128::from(root) * u128::from(root);
-    let remainder = radicand - square;
-    debug_assert!(remainder < (u128::from(root) * 2 + 1));
-    (result_exponent, root, remainder != 0)
-}
-
 /// Rounds the magnitude of one exact finite binary value to an integer.
 ///
 /// Exponents above 63 cannot fit any signed 64-bit destination and are
@@ -967,13 +919,17 @@ impl Binary32 {
             }
             BinaryClass::Subnormal | BinaryClass::Normal => {
                 let finite = self.normalize_finite().expect("finite binary32 operand");
-                let (exponent, quotient, has_tail) = sqrt_finite_parts(finite);
+                let (exponent, quotient, remainder) = crate::finite_arithmetic::sqrt_finite_parts(
+                    finite.significand(),
+                    finite.exponent(),
+                )
+                .expect("normalized finite binary32 significand");
                 let rounded = Self::round_pack_quotient(
                     false,
                     exponent,
                     quotient,
-                    u64::from(has_tail),
-                    if has_tail { 2 } else { 1 },
+                    u64::from(remainder != 0),
+                    if remainder != 0 { 2 } else { 1 },
                     mode,
                 )
                 .expect("positive finite binary32 square root remains normal");
@@ -1880,13 +1836,17 @@ impl Binary64 {
             }
             BinaryClass::Subnormal | BinaryClass::Normal => {
                 let finite = self.normalize_finite().expect("finite binary64 operand");
-                let (exponent, quotient, has_tail) = sqrt_finite_parts(finite);
+                let (exponent, quotient, remainder) = crate::finite_arithmetic::sqrt_finite_parts(
+                    finite.significand(),
+                    finite.exponent(),
+                )
+                .expect("normalized finite binary64 significand");
                 let rounded = Self::round_pack_quotient(
                     false,
                     exponent,
                     quotient,
-                    u64::from(has_tail),
-                    if has_tail { 2 } else { 1 },
+                    u64::from(remainder != 0),
+                    if remainder != 0 { 2 } else { 1 },
                     mode,
                 )
                 .expect("positive finite binary64 square root remains normal");
@@ -2718,8 +2678,9 @@ mod tests {
         Binary32, Binary64, BinaryClass, BinaryComparisonMode, BinaryComparisonRelation,
         BinaryFinite, BinaryFiniteQuotient, BinaryRoundingResult, RationalRoundingMode,
         add_finite_aligned, compare_finite, divide_finite_significands, finite_exponent_gap,
-        integer_sqrt_u128, multiply_finite_significands, round_quotient_to_precision,
+        multiply_finite_significands, round_quotient_to_precision,
     };
+    use crate::finite_arithmetic::integer_sqrt_u128;
 
     use core::cmp::Ordering;
 

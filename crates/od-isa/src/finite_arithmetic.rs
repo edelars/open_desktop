@@ -1,5 +1,50 @@
 //! Bounded exact arithmetic shared by normalized finite significands.
 
+/// Return `floor(sqrt(value))` for the full `u128` domain.
+///
+/// This restoring digit-by-digit algorithm processes two input bits per step
+/// and never forms a potentially overflowing square or trial product.
+pub(crate) fn integer_sqrt_u128(value: u128) -> u64 {
+    let mut remainder = value;
+    let mut root = 0_u128;
+    let mut bit = 1_u128 << 126;
+    while bit > remainder {
+        bit >>= 2;
+    }
+    while bit != 0 {
+        let trial = root + bit;
+        if remainder >= trial {
+            remainder -= trial;
+            root = (root >> 1) + bit;
+        } else {
+            root >>= 1;
+        }
+        bit >>= 2;
+    }
+    root as u64
+}
+
+/// Decompose the square root of a normalized finite binary operand.
+///
+/// For `x = significand * 2^(exponent-63)`, returns `(E, q, R)` where
+/// `E = floor(exponent/2)`, `q = floor(sqrt(N))`, `R = N-q²`, and
+/// `N = significand * 2^(63 + exponent.rem_euclid(2))`. The exact root is
+/// `(q + δ) * 2^(E-63)` with `δ=0` iff `R=0`. This helper does not round or
+/// pack a destination value.
+pub(crate) fn sqrt_finite_parts(significand: u64, exponent: i32) -> Option<(i32, u64, u128)> {
+    if significand < (1_u64 << 63) {
+        return None;
+    }
+    let result_exponent = exponent.div_euclid(2);
+    let parity = exponent.rem_euclid(2) as u32;
+    let radicand = u128::from(significand) << (63 + parity);
+    let root = integer_sqrt_u128(radicand);
+    let square = u128::from(root) * u128::from(root);
+    let remainder = radicand - square;
+    debug_assert!(remainder < (u128::from(root) * 2 + 1));
+    Some((result_exponent, root, remainder))
+}
+
 /// A nonzero tail classified at the p=64 rounding boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RoundingTail {
@@ -161,7 +206,75 @@ pub(crate) fn finite_large_gap_rounding_bridge(
 
 #[cfg(test)]
 mod tests {
-    use super::{RoundingTail, add_finite_aligned, finite_large_gap_rounding_bridge};
+    use super::{
+        RoundingTail, add_finite_aligned, finite_large_gap_rounding_bridge, integer_sqrt_u128,
+        sqrt_finite_parts,
+    };
+
+    #[test]
+    fn integer_sqrt_has_overflow_safe_floor_invariant_for_deterministic_samples() {
+        let check = |value: u128| {
+            let root = u128::from(integer_sqrt_u128(value));
+            let square = root * root;
+            assert!(square <= value);
+            assert!(value - square < 2 * root + 1);
+        };
+        for value in [0, 1, 2, 4, u128::MAX] {
+            check(value);
+        }
+        let root = 12_345_u128;
+        let square = root * root;
+        for value in [square - 1, square, square + 1] {
+            check(value);
+        }
+
+        let mut state = 0x6a09_e667_f3bc_c909_bb67_ae85_84ca_a73b_u128;
+        for _ in 0..2048 {
+            state ^= state << 23;
+            state ^= state >> 17;
+            state ^= state << 26;
+            check(state);
+        }
+        assert_eq!(integer_sqrt_u128(u128::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn finite_sqrt_decomposition_preserves_exact_u128_remainders() {
+        let cases = [
+            (0x8000_0000_0000_0000, 0, 0, 0x8000_0000_0000_0000, 0),
+            (0x9000_0000_0000_0000, 3, 1, 0xc000_0000_0000_0000, 0),
+            (
+                0x8000_0000_0000_0000,
+                1,
+                0,
+                0xb504_f333_f9de_6484,
+                0x7e8e_faac_bb98_9bf0,
+            ),
+            (
+                0x8000_0000_0000_0001,
+                0,
+                0,
+                0x8000_0000_0000_0000,
+                0x8000_0000_0000_0000,
+            ),
+            (
+                u64::MAX,
+                0,
+                0,
+                0xb504_f333_f9de_6483,
+                0x1689_8e11_4af5_564f7,
+            ),
+            (u64::MAX, 1, 0, u64::MAX, u128::from(u64::MAX)),
+        ];
+        for (significand, exponent, expected_exponent, expected_root, expected_remainder) in cases {
+            assert_eq!(
+                sqrt_finite_parts(significand, exponent),
+                Some((expected_exponent, expected_root, expected_remainder))
+            );
+        }
+        assert_eq!(sqrt_finite_parts(0, 0), None);
+        assert_eq!(sqrt_finite_parts(1_u64 << 62, 0), None);
+    }
 
     #[test]
     fn exact_aligned_addition_covers_gap_64_full_u128_and_sign_order() {

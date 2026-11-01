@@ -260,6 +260,35 @@ pub fn pack_normal_rounded_significand(
     ]))
 }
 
+/// Square-root a positive, nonzero normalized finite binary80 value and round
+/// once to the binary80 significand precision.
+///
+/// This helper accepts only normalized finite inputs with a nonnegative sign;
+/// zero, negative values, and malformed non-normalized significands return
+/// `None`. The exact radicand/root remainder are computed with integer math.
+/// It defines no x87 instruction, FCW, exception, or status behavior.
+pub fn sqrt_finite_to_binary80(
+    value: X87Finite,
+    mode: RationalRoundingMode,
+) -> Option<X87Binary80> {
+    if value.sign || value.is_zero() || value.significand < (1_u64 << 63) {
+        return None;
+    }
+
+    let (exponent, root, remainder) =
+        crate::finite_arithmetic::sqrt_finite_parts(value.significand, value.exponent)?;
+    let increment = match mode {
+        // R > q is exactly the condition that sqrt(N) is above q + 1/2.
+        // Equality at the half boundary is impossible because N and q are
+        // integers while (q + 1/2)^2 has a fractional quarter.
+        RationalRoundingMode::NearestTiesEven => remainder > u128::from(root),
+        RationalRoundingMode::TowardZero | RationalRoundingMode::TowardNegative => false,
+        RationalRoundingMode::TowardPositive => remainder != 0,
+    };
+    let rounded_significand = u128::from(root) + u128::from(increment);
+    pack_normal_rounded_significand(false, exponent, rounded_significand, 64)
+}
+
 /// Round an exact normalized quotient directly into the binary80 subnormal
 /// range, preserving the quotient's rational tail until the final rounding.
 ///
@@ -857,7 +886,7 @@ mod tests {
         normalize_exact_coefficient, normalize_exact_magnitude, pack_normal_rounded_significand,
         round_pack_exact_coefficient, round_pack_exact_magnitude, round_pack_subnormal_quotient,
         round_quotient_magnitude, round_quotient_ties_even, round_quotient_to_precision,
-        shift_right_jam, shift_right_jam_u128,
+        shift_right_jam, shift_right_jam_u128, sqrt_finite_to_binary80,
     };
     use crate::state::{X87State, X87Tag};
 
@@ -1821,6 +1850,178 @@ mod tests {
         let sign_exponent = exponent_field | if sign { 0x8000 } else { 0 };
         bytes[8..].copy_from_slice(&sign_exponent.to_le_bytes());
         X87Binary80::from_bytes(bytes)
+    }
+
+    #[test]
+    fn finite_sqrt_matches_literal_binary80_rounding_vectors() {
+        use RationalRoundingMode::{
+            NearestTiesEven as N, TowardNegative as D, TowardPositive as U, TowardZero as Z,
+        };
+        let modes = [N, Z, U, D];
+        let cases = [
+            (
+                0x8000_0000_0000_0000,
+                0,
+                [
+                    [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                    [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                    [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                    [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                ],
+            ),
+            (
+                0x9000_0000_0000_0000,
+                3,
+                [
+                    [0, 0, 0, 0, 0, 0, 0, 0xc0, 0x00, 0x40],
+                    [0, 0, 0, 0, 0, 0, 0, 0xc0, 0x00, 0x40],
+                    [0, 0, 0, 0, 0, 0, 0, 0xc0, 0x00, 0x40],
+                    [0, 0, 0, 0, 0, 0, 0, 0xc0, 0x00, 0x40],
+                ],
+            ),
+            (
+                0x8000_0000_0000_0000,
+                1,
+                [
+                    [0x84, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xff, 0x3f],
+                    [0x84, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xff, 0x3f],
+                    [0x85, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xff, 0x3f],
+                    [0x84, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xff, 0x3f],
+                ],
+            ),
+            (
+                0x8000_0000_0000_0001,
+                0,
+                [
+                    [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                    [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                    [1, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                    [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                ],
+            ),
+            (
+                0xffff_ffff_ffff_ffff,
+                0,
+                [
+                    [0x84, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xff, 0x3f],
+                    [0x83, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xff, 0x3f],
+                    [0x84, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xff, 0x3f],
+                    [0x83, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xff, 0x3f],
+                ],
+            ),
+            (
+                0xffff_ffff_ffff_ffff,
+                1,
+                [
+                    [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3f],
+                    [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3f],
+                    [0, 0, 0, 0, 0, 0, 0, 0x80, 0x00, 0x40],
+                    [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3f],
+                ],
+            ),
+        ];
+
+        for (significand, exponent, expected_by_mode) in cases {
+            let value = finite(exponent, significand, false, X87Binary80Class::Normal);
+            for (index, (mode, expected)) in modes.into_iter().zip(expected_by_mode).enumerate() {
+                assert_eq!(
+                    sqrt_finite_to_binary80(value, mode).unwrap().to_bytes(),
+                    expected,
+                    "S={significand:#018x}, e={exponent}, mode index={index}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn finite_sqrt_covers_exponent_boundaries_provenance_and_rejections() {
+        use RationalRoundingMode::{
+            NearestTiesEven as N, TowardNegative as D, TowardPositive as U, TowardZero as Z,
+        };
+        let modes = [N, Z, U, D];
+        let boundary_vectors = [
+            (
+                -1,
+                [
+                    [0x84, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xfe, 0x3f],
+                    [0x84, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xfe, 0x3f],
+                    [0x85, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xfe, 0x3f],
+                    [0x84, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xfe, 0x3f],
+                ],
+            ),
+            (
+                -3,
+                [
+                    [0x84, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xfd, 0x3f],
+                    [0x84, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xfd, 0x3f],
+                    [0x85, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xfd, 0x3f],
+                    [0x84, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xfd, 0x3f],
+                ],
+            ),
+            (
+                -16445,
+                [
+                    [0x84, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xe0, 0x1f],
+                    [0x84, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xe0, 0x1f],
+                    [0x85, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xe0, 0x1f],
+                    [0x84, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xe0, 0x1f],
+                ],
+            ),
+            (
+                16383,
+                [
+                    [0x84, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xfe, 0x5f],
+                    [0x84, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xfe, 0x5f],
+                    [0x85, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xfe, 0x5f],
+                    [0x84, 0x64, 0xde, 0xf9, 0x33, 0xf3, 0x04, 0xb5, 0xfe, 0x5f],
+                ],
+            ),
+        ];
+        for (exponent, expected_by_mode) in boundary_vectors {
+            let value = finite(
+                exponent,
+                0x8000_0000_0000_0000,
+                false,
+                X87Binary80Class::Subnormal,
+            );
+            for (mode, expected) in modes.into_iter().zip(expected_by_mode) {
+                let result = sqrt_finite_to_binary80(value, mode).unwrap();
+                assert_eq!(result.classify(), X87Binary80Class::Normal);
+                assert_eq!(
+                    result.to_bytes(),
+                    expected,
+                    "exponent={exponent}, mode={mode:?}"
+                );
+            }
+        }
+
+        let pseudo = X87Binary80::from_bytes([0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0])
+            .normalize_finite()
+            .unwrap();
+        let normal = X87Binary80::from_bytes([0, 0, 0, 0, 0, 0, 0, 0x80, 1, 0])
+            .normalize_finite()
+            .unwrap();
+        for mode in modes {
+            assert_eq!(
+                sqrt_finite_to_binary80(pseudo, mode).unwrap().to_bytes(),
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0x20]
+            );
+            assert_eq!(
+                sqrt_finite_to_binary80(pseudo, mode),
+                sqrt_finite_to_binary80(normal, mode)
+            );
+        }
+
+        let positive_zero = finite(0, 0, false, X87Binary80Class::Zero);
+        let negative_zero = finite(0, 0, true, X87Binary80Class::Zero);
+        let negative = finite(0, 0x8000_0000_0000_0000, true, X87Binary80Class::Normal);
+        let unnormalized = finite(0, 0x7fff_ffff_ffff_ffff, false, X87Binary80Class::Normal);
+        for mode in modes {
+            assert_eq!(sqrt_finite_to_binary80(positive_zero, mode), None);
+            assert_eq!(sqrt_finite_to_binary80(negative_zero, mode), None);
+            assert_eq!(sqrt_finite_to_binary80(negative, mode), None);
+            assert_eq!(sqrt_finite_to_binary80(unnormalized, mode), None);
+        }
     }
 
     #[test]
