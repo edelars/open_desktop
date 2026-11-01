@@ -45,6 +45,9 @@ const CMPPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
 const MINSD_M64_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37cw_minsd_m64_qnan_selects_rhs.case.json"
 );
+const MAXSD_M64_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37cx_maxsd_m64_qnan_selects_rhs.case.json"
+);
 const CMPPS_REGISTER_PAIRS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37aa_cmpps_registers.case.json");
 const ADDSD_REGISTER_PAIR: &[u8] =
@@ -36225,6 +36228,160 @@ fn minsd_m64_memory_covers_raw_nan_selection_denormal_stickies_and_controls() {
     let mut foreign = Fixture::from_json(CMPPS_REGISTER_PAIRS).unwrap().fixture;
     assert!(foreign.validate().is_ok());
     foreign.minsd_memory_rax_controls = fixture.minsd_memory_rax_controls;
+    assert!(foreign.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
+}
+
+#[test]
+fn maxsd_m64_memory_covers_raw_nan_selection_denormal_stickies_and_controls() {
+    let fixture = Fixture::from_json(MAXSD_M64_MEMORY_RAX).unwrap().fixture;
+    let vectors = [
+        (
+            0x3ff0_0000_0000_0000u64,
+            0x4000_0000_0000_0000,
+            0x4000_0000_0000_0000,
+            0,
+        ),
+        (
+            0x4000_0000_0000_0000,
+            0x3ff0_0000_0000_0000,
+            0x4000_0000_0000_0000,
+            0,
+        ),
+        (
+            0x3ff0_0000_0000_0000,
+            0x3ff0_0000_0000_0000,
+            0x3ff0_0000_0000_0000,
+            0,
+        ),
+        (
+            0x0000_0000_0000_0000,
+            0x8000_0000_0000_0000,
+            0x8000_0000_0000_0000,
+            0,
+        ),
+        (
+            0x8000_0000_0000_0000,
+            0x0000_0000_0000_0000,
+            0x0000_0000_0000_0000,
+            0,
+        ),
+        (
+            0x7ff8_1234_5678_9abc,
+            0xc008_0000_0000_0000,
+            0xc008_0000_0000_0000,
+            1,
+        ),
+        (
+            0x3ff0_0000_0000_0000,
+            0xfff0_1234_5678_9abc,
+            0xfff0_1234_5678_9abc,
+            1,
+        ),
+        (
+            0x0000_0000_0000_0001,
+            0x3ff0_0000_0000_0000,
+            0x3ff0_0000_0000_0000,
+            2,
+        ),
+        (
+            0x3ff0_0000_0000_0000,
+            0x800f_ffff_ffff_ffff,
+            0x3ff0_0000_0000_0000,
+            2,
+        ),
+        (
+            0x7ff8_1234_5678_9abc,
+            0x8000_0000_0000_0001,
+            0x8000_0000_0000_0001,
+            1,
+        ),
+    ];
+    let encode = |bits: u64| {
+        bits.to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let decode_low = |hex: &str| {
+        let bytes = (0..8)
+            .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
+            .collect::<Vec<_>>();
+        u64::from_le_bytes(bytes.try_into().unwrap())
+    };
+    let mut comparisons = 0usize;
+    for (vector, (lhs, rhs, expected_low, raised)) in vectors.iter().copied().enumerate() {
+        for rc in 0..4u32 {
+            for old in [0u64, 1, 2, 3] {
+                let mut case = fixture.clone();
+                case.case_id = format!("s2_37cx_vector{vector}_rc{rc}_old{old}");
+                case.initial_state.sse.as_mut().unwrap().xmm[0] =
+                    format!("{}{}", encode(lhs), "010000000000f07f");
+                case.memory[1].initial_bytes_hex = encode(rhs);
+                case.initial_state.sse.as_mut().unwrap().mxcsr =
+                    HexU64(0x1f80 | old | (u64::from(rc) << 13));
+                let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                od_testkit::v2::compare(&input, &result, &result).unwrap();
+                let snapshot = match &result.snapshot {
+                    Observation::Available { value } => value,
+                    other => panic!("unexpected MAXSD snapshot: {other:?}"),
+                };
+                let sse = snapshot.state.sse.as_ref().unwrap();
+                assert_eq!(decode_low(&sse.xmm[0]), expected_low);
+                assert_eq!(&sse.xmm[0][16..], "010000000000f07f");
+                assert_eq!(
+                    sse.mxcsr.get(),
+                    0x1f80 | old | raised | (u64::from(rc) << 13)
+                );
+                assert_eq!(snapshot.state.x87, case.initial_state.x87);
+                assert_eq!(snapshot.state.gpr, case.initial_state.gpr);
+                assert_eq!(snapshot.state.rflags, case.initial_state.rflags);
+                assert_eq!(snapshot.memory[1].bytes_hex, encode(rhs));
+                comparisons += 1;
+            }
+        }
+    }
+    assert_eq!(comparisons, 160);
+
+    let mut aligned_ac = fixture.clone();
+    aligned_ac.case_id = "s2_37cx_aligned_ac1_refused".into();
+    aligned_ac.initial_state.rflags = HexU64(aligned_ac.initial_state.rflags.get() | (1 << 18));
+    aligned_ac.expected_exit = ExpectedExit::Unsupported;
+    assert!(matches!(
+        run(&aligned_ac.to_json().unwrap(), "interpreter", 4)
+            .1
+            .outcome,
+        Outcome::Unsupported { .. }
+    ));
+
+    let mut ac_span = fixture.clone();
+    ac_span.case_id = "s2_37cx_ac_refusal_precedes_bad_span".into();
+    ac_span.initial_state.gpr[0] = HexU64(0x0000_8000_0000_0000);
+    ac_span.initial_state.rflags = HexU64(ac_span.initial_state.rflags.get() | (1 << 18));
+    ac_span.memory[1].guest_address = ac_span.initial_state.gpr[0];
+    ac_span.expected_exit = ExpectedExit::Unsupported;
+    assert!(matches!(
+        run(&ac_span.to_json().unwrap(), "interpreter", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+
+    let (input, baseline) = run(MAXSD_M64_MEMORY_RAX, "interpreter", 0);
+    let mut tampered = baseline.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(..16, "0000000000000000");
+    }
+    assert!(od_testkit::v2::compare(&input, &tampered, &baseline).is_err());
+    assert!(matches!(
+        run(MAXSD_M64_MEMORY_RAX, "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    assert!(matches!(
+        run(MAXSD_M64_MEMORY_RAX, "native", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    let mut foreign = Fixture::from_json(CMPPS_REGISTER_PAIRS).unwrap().fixture;
+    assert!(foreign.validate().is_ok());
+    foreign.maxsd_memory_rax_controls = fixture.maxsd_memory_rax_controls;
     assert!(foreign.validate().is_err());
     assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
 }
