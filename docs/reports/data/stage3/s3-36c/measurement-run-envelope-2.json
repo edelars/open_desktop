@@ -1,0 +1,801 @@
+{
+  "case_summaries": [
+    {
+      "index": 21,
+      "native_retired": 2,
+      "ratio_iqr": 0.1202897079328995,
+      "ratio_max": 5.446126315382283,
+      "ratio_median": 5.267807640818237,
+      "ratio_min": 5.032158485434241,
+      "repetitions_per_sample": 1544261,
+      "restart_count": 1,
+      "restarts": [
+        {
+          "attempt": 1,
+          "discarded_pairs": [
+            {
+              "cached_elapsed_ns": 182978286,
+              "cached_over_interpreter_ratio": 5.3128212224719285,
+              "first": "cached",
+              "interpreter_elapsed_ns": 34440889,
+              "pair": 0,
+              "repetitions": 221607
+            }
+          ],
+          "next_repetitions": 1544261,
+          "previous_repetitions": 221607,
+          "shortest_elapsed_ns": 34440889,
+          "trigger_pair": 0
+        }
+      ],
+      "seed": 5995193176011309057
+    },
+    {
+      "index": 54,
+      "native_retired": 2,
+      "ratio_iqr": 0.07064235058846169,
+      "ratio_max": 5.389891151043253,
+      "ratio_median": 5.25765457479958,
+      "ratio_min": 5.095299623632416,
+      "repetitions_per_sample": 1612392,
+      "restart_count": 1,
+      "restarts": [
+        {
+          "attempt": 1,
+          "discarded_pairs": [
+            {
+              "cached_elapsed_ns": 71738072,
+              "cached_over_interpreter_ratio": 5.271387646692023,
+              "first": "cached",
+              "interpreter_elapsed_ns": 13608954,
+              "pair": 0,
+              "repetitions": 91429
+            }
+          ],
+          "next_repetitions": 1612392,
+          "previous_repetitions": 91429,
+          "shortest_elapsed_ns": 13608954,
+          "trigger_pair": 0
+        }
+      ],
+      "seed": 5995193176011309057
+    },
+    {
+      "index": 126,
+      "native_retired": 3,
+      "ratio_iqr": 0.06904209917986126,
+      "ratio_max": 4.545306585896047,
+      "ratio_median": 4.453983540237522,
+      "ratio_min": 4.329475723296448,
+      "repetitions_per_sample": 1121519,
+      "restart_count": 1,
+      "restarts": [
+        {
+          "attempt": 1,
+          "discarded_pairs": [
+            {
+              "cached_elapsed_ns": 80369553,
+              "cached_over_interpreter_ratio": 4.239183757690981,
+              "first": "cached",
+              "interpreter_elapsed_ns": 18958733,
+              "pair": 0,
+              "repetitions": 88594
+            }
+          ],
+          "next_repetitions": 1121519,
+          "previous_repetitions": 88594,
+          "shortest_elapsed_ns": 18958733,
+          "trigger_pair": 0
+        }
+      ],
+      "seed": 5995193176011309057
+    },
+    {
+      "index": 354,
+      "native_retired": 2,
+      "ratio_iqr": 0.0794934038184607,
+      "ratio_max": 5.490992255965971,
+      "ratio_median": 5.258947948665231,
+      "ratio_min": 5.178847673868373,
+      "repetitions_per_sample": 1601444,
+      "restart_count": 1,
+      "restarts": [
+        {
+          "attempt": 1,
+          "discarded_pairs": [
+            {
+              "cached_elapsed_ns": 85246213,
+              "cached_over_interpreter_ratio": 5.233132312783204,
+              "first": "cached",
+              "interpreter_elapsed_ns": 16289711,
+              "pair": 0,
+              "repetitions": 108696
+            }
+          ],
+          "next_repetitions": 1601444,
+          "previous_repetitions": 108696,
+          "shortest_elapsed_ns": 16289711,
+          "trigger_pair": 0
+        }
+      ],
+      "seed": 5995193176011309057
+    },
+    {
+      "index": 54,
+      "native_retired": 2,
+      "ratio_iqr": 0.09103052805284673,
+      "ratio_max": 5.37475794588223,
+      "ratio_median": 5.199405410962159,
+      "ratio_min": 5.129068479494615,
+      "repetitions_per_sample": 1604380,
+      "restart_count": 1,
+      "restarts": [
+        {
+          "attempt": 1,
+          "discarded_pairs": [
+            {
+              "cached_elapsed_ns": 129257042,
+              "cached_over_interpreter_ratio": 5.098009644317145,
+              "first": "cached",
+              "interpreter_elapsed_ns": 25354413,
+              "pair": 0,
+              "repetitions": 169492
+            }
+          ],
+          "next_repetitions": 1604380,
+          "previous_repetitions": 169492,
+          "shortest_elapsed_ns": 25354413,
+          "trigger_pair": 0
+        }
+      ],
+      "seed": 5995193176011309058
+    },
+    {
+      "index": 57,
+      "native_retired": 3,
+      "ratio_iqr": 0.052924357246955545,
+      "ratio_max": 4.288907526622864,
+      "ratio_median": 4.2232064354886685,
+      "ratio_min": 4.1702643007619,
+      "repetitions_per_sample": 1139067,
+      "restart_count": 1,
+      "restarts": [
+        {
+          "attempt": 1,
+          "discarded_pairs": [
+            {
+              "cached_elapsed_ns": 59475516,
+              "cached_over_interpreter_ratio": 4.214162481532421,
+              "first": "cached",
+              "interpreter_elapsed_ns": 14113247,
+              "pair": 0,
+              "repetitions": 66983
+            }
+          ],
+          "next_repetitions": 1139067,
+          "previous_repetitions": 66983,
+          "shortest_elapsed_ns": 14113247,
+          "trigger_pair": 0
+        }
+      ],
+      "seed": 5995193176011309058
+    },
+    {
+      "index": 174,
+      "native_retired": 3,
+      "ratio_iqr": 0.03630064922103493,
+      "ratio_max": 4.5558227253987695,
+      "ratio_median": 4.406288806698705,
+      "ratio_min": 4.020327696226368,
+      "repetitions_per_sample": 1171553,
+      "restart_count": 1,
+      "restarts": [
+        {
+          "attempt": 1,
+          "discarded_pairs": [
+            {
+              "cached_elapsed_ns": 204061287,
+              "cached_over_interpreter_ratio": 4.843613279486948,
+              "first": "cached",
+              "interpreter_elapsed_ns": 42129971,
+              "pair": 0,
+              "repetitions": 205656
+            }
+          ],
+          "next_repetitions": 1171553,
+          "previous_repetitions": 205656,
+          "shortest_elapsed_ns": 42129971,
+          "trigger_pair": 0
+        }
+      ],
+      "seed": 5995193176011309058
+    },
+    {
+      "index": 177,
+      "native_retired": 2,
+      "ratio_iqr": 0.10098906087785497,
+      "ratio_max": 5.456800175864762,
+      "ratio_median": 5.292485581386412,
+      "ratio_min": 5.165808702389316,
+      "repetitions_per_sample": 1483484,
+      "restart_count": 1,
+      "restarts": [
+        {
+          "attempt": 1,
+          "discarded_pairs": [
+            {
+              "cached_elapsed_ns": 159844291,
+              "cached_over_interpreter_ratio": 5.49174825476589,
+              "first": "cached",
+              "interpreter_elapsed_ns": 29106267,
+              "pair": 0,
+              "repetitions": 179911
+            }
+          ],
+          "next_repetitions": 1483484,
+          "previous_repetitions": 179911,
+          "shortest_elapsed_ns": 29106267,
+          "trigger_pair": 0
+        }
+      ],
+      "seed": 5995193176011309058
+    },
+    {
+      "index": 186,
+      "native_retired": 3,
+      "ratio_iqr": 0.06318527819698261,
+      "ratio_max": 4.624841517199969,
+      "ratio_median": 4.32574923155399,
+      "ratio_min": 3.84365014060971,
+      "repetitions_per_sample": 1172345,
+      "restart_count": 1,
+      "restarts": [
+        {
+          "attempt": 1,
+          "discarded_pairs": [
+            {
+              "cached_elapsed_ns": 113983708,
+              "cached_over_interpreter_ratio": 4.349872551506513,
+              "first": "cached",
+              "interpreter_elapsed_ns": 26203919,
+              "pair": 0,
+              "repetitions": 128000
+            }
+          ],
+          "next_repetitions": 1172345,
+          "previous_repetitions": 128000,
+          "shortest_elapsed_ns": 26203919,
+          "trigger_pair": 0
+        }
+      ],
+      "seed": 5995193176011309058
+    },
+    {
+      "index": 303,
+      "native_retired": 2,
+      "ratio_iqr": 0.0887215101249712,
+      "ratio_max": 5.295546865764836,
+      "ratio_median": 5.106214654997052,
+      "ratio_min": 5.025978168161095,
+      "repetitions_per_sample": 1571642,
+      "restart_count": 1,
+      "restarts": [
+        {
+          "attempt": 1,
+          "discarded_pairs": [
+            {
+              "cached_elapsed_ns": 88595517,
+              "cached_over_interpreter_ratio": 5.136867750619934,
+              "first": "cached",
+              "interpreter_elapsed_ns": 17246992,
+              "pair": 0,
+              "repetitions": 112942
+            }
+          ],
+          "next_repetitions": 1571642,
+          "previous_repetitions": 112942,
+          "shortest_elapsed_ns": 17246992,
+          "trigger_pair": 0
+        }
+      ],
+      "seed": 5995193176011309058
+    },
+    {
+      "index": 336,
+      "native_retired": 2,
+      "ratio_iqr": 0.12223975102273954,
+      "ratio_max": 5.769606214732884,
+      "ratio_median": 5.6294825622320745,
+      "ratio_min": 5.5204435008115915,
+      "repetitions_per_sample": 1725864,
+      "restart_count": 1,
+      "restarts": [
+        {
+          "attempt": 1,
+          "discarded_pairs": [
+            {
+              "cached_elapsed_ns": 48127755,
+              "cached_over_interpreter_ratio": 5.707595820749176,
+              "first": "cached",
+              "interpreter_elapsed_ns": 8432229,
+              "pair": 0,
+              "repetitions": 60637
+            }
+          ],
+          "next_repetitions": 1725864,
+          "previous_repetitions": 60637,
+          "shortest_elapsed_ns": 8432229,
+          "trigger_pair": 0
+        }
+      ],
+      "seed": 5995193176011309058
+    },
+    {
+      "index": 357,
+      "native_retired": 2,
+      "ratio_iqr": 0.04785105041419069,
+      "ratio_max": 5.3328010913022315,
+      "ratio_median": 5.1540877850769276,
+      "ratio_min": 5.086984628218333,
+      "repetitions_per_sample": 1503172,
+      "restart_count": 1,
+      "restarts": [
+        {
+          "attempt": 1,
+          "discarded_pairs": [
+            {
+              "cached_elapsed_ns": 136818441,
+              "cached_over_interpreter_ratio": 5.055829677866222,
+              "first": "cached",
+              "interpreter_elapsed_ns": 27061521,
+              "pair": 0,
+              "repetitions": 169492
+            }
+          ],
+          "next_repetitions": 1503172,
+          "previous_repetitions": 169492,
+          "shortest_elapsed_ns": 27061521,
+          "trigger_pair": 0
+        }
+      ],
+      "seed": 5995193176011309058
+    },
+    {
+      "index": 72,
+      "native_retired": 3,
+      "ratio_iqr": 0.06323357677974517,
+      "ratio_max": 4.118075478607137,
+      "ratio_median": 4.059930738139877,
+      "ratio_min": 3.9530867433583445,
+      "repetitions_per_sample": 1092902,
+      "restart_count": 1,
+      "restarts": [
+        {
+          "attempt": 1,
+          "discarded_pairs": [
+            {
+              "cached_elapsed_ns": 103673004,
+              "cached_over_interpreter_ratio": 4.016787025367327,
+              "first": "cached",
+              "interpreter_elapsed_ns": 25809933,
+              "pair": 0,
+              "repetitions": 117532
+            }
+          ],
+          "next_repetitions": 1092902,
+          "previous_repetitions": 117532,
+          "shortest_elapsed_ns": 25809933,
+          "trigger_pair": 0
+        }
+      ],
+      "seed": 5995193176011309059
+    },
+    {
+      "index": 114,
+      "native_retired": 3,
+      "ratio_iqr": 0.04403880838601193,
+      "ratio_max": 4.632202023335124,
+      "ratio_median": 4.39038688805836,
+      "ratio_min": 4.183038949640888,
+      "repetitions_per_sample": 1147156,
+      "restart_count": 1,
+      "restarts": [
+        {
+          "attempt": 1,
+          "discarded_pairs": [
+            {
+              "cached_elapsed_ns": 125714186,
+              "cached_over_interpreter_ratio": 4.27631257181447,
+              "first": "cached",
+              "interpreter_elapsed_ns": 29397801,
+              "pair": 0,
+              "repetitions": 140516
+            }
+          ],
+          "next_repetitions": 1147156,
+          "previous_repetitions": 140516,
+          "shortest_elapsed_ns": 29397801,
+          "trigger_pair": 0
+        }
+      ],
+      "seed": 5995193176011309059
+    },
+    {
+      "index": 126,
+      "native_retired": 3,
+      "ratio_iqr": 0.03471184510531877,
+      "ratio_max": 4.512045262447494,
+      "ratio_median": 4.376445944407313,
+      "ratio_min": 4.304394826122502,
+      "repetitions_per_sample": 1184398,
+      "restart_count": 1,
+      "restarts": [
+        {
+          "attempt": 1,
+          "discarded_pairs": [
+            {
+              "cached_elapsed_ns": 103005460,
+              "cached_over_interpreter_ratio": 4.325041464661896,
+              "first": "cached",
+              "interpreter_elapsed_ns": 23816063,
+              "pair": 0,
+              "repetitions": 117532
+            }
+          ],
+          "next_repetitions": 1184398,
+          "previous_repetitions": 117532,
+          "shortest_elapsed_ns": 23816063,
+          "trigger_pair": 0
+        }
+      ],
+      "seed": 5995193176011309059
+    },
+    {
+      "index": 153,
+      "native_retired": 3,
+      "ratio_iqr": 0.08488702109375712,
+      "ratio_max": 4.667674313069579,
+      "ratio_median": 4.388332024837139,
+      "ratio_min": 4.341948389934865,
+      "repetitions_per_sample": 1172936,
+      "restart_count": 1,
+      "restarts": [
+        {
+          "attempt": 1,
+          "discarded_pairs": [
+            {
+              "cached_elapsed_ns": 50021053,
+              "cached_over_interpreter_ratio": 4.329023527167729,
+              "first": "cached",
+              "interpreter_elapsed_ns": 11554812,
+              "pair": 0,
+              "repetitions": 56471
+            }
+          ],
+          "next_repetitions": 1172936,
+          "previous_repetitions": 56471,
+          "shortest_elapsed_ns": 11554812,
+          "trigger_pair": 0
+        }
+      ],
+      "seed": 5995193176011309059
+    },
+    {
+      "index": 168,
+      "native_retired": 3,
+      "ratio_iqr": 0.08214811203020478,
+      "ratio_max": 4.374225676313262,
+      "ratio_median": 4.2047562681825035,
+      "ratio_min": 4.134918720669554,
+      "repetitions_per_sample": 1128424,
+      "restart_count": 1,
+      "restarts": [
+        {
+          "attempt": 1,
+          "discarded_pairs": [
+            {
+              "cached_elapsed_ns": 108400867,
+              "cached_over_interpreter_ratio": 4.160206545694917,
+              "first": "cached",
+              "interpreter_elapsed_ns": 26056607,
+              "pair": 0,
+              "repetitions": 122512
+            }
+          ],
+          "next_repetitions": 1128424,
+          "previous_repetitions": 122512,
+          "shortest_elapsed_ns": 26056607,
+          "trigger_pair": 0
+        }
+      ],
+      "seed": 5995193176011309059
+    },
+    {
+      "index": 348,
+      "native_retired": 2,
+      "ratio_iqr": 0.06832011162821416,
+      "ratio_max": 5.756453847978329,
+      "ratio_median": 5.630260961199227,
+      "ratio_min": 5.444152364488472,
+      "repetitions_per_sample": 1700536,
+      "restart_count": 1,
+      "restarts": [
+        {
+          "attempt": 1,
+          "discarded_pairs": [
+            {
+              "cached_elapsed_ns": 99458974,
+              "cached_over_interpreter_ratio": 5.626033587868821,
+              "first": "cached",
+              "interpreter_elapsed_ns": 17678347,
+              "pair": 0,
+              "repetitions": 125261
+            }
+          ],
+          "next_repetitions": 1700536,
+          "previous_repetitions": 125261,
+          "shortest_elapsed_ns": 17678347,
+          "trigger_pair": 0
+        }
+      ],
+      "seed": 5995193176011309059
+    },
+    {
+      "index": 399,
+      "native_retired": 2,
+      "ratio_iqr": 0.06750739890048507,
+      "ratio_max": 5.867891557277531,
+      "ratio_median": 5.607675717516811,
+      "ratio_min": 5.488418839641596,
+      "repetitions_per_sample": 1683785,
+      "restart_count": 1,
+      "restarts": [
+        {
+          "attempt": 1,
+          "discarded_pairs": [
+            {
+              "cached_elapsed_ns": 69119627,
+              "cached_over_interpreter_ratio": 5.556442002555077,
+              "first": "cached",
+              "interpreter_elapsed_ns": 12439548,
+              "pair": 0,
+              "repetitions": 87273
+            }
+          ],
+          "next_repetitions": 1683785,
+          "previous_repetitions": 87273,
+          "shortest_elapsed_ns": 12439548,
+          "trigger_pair": 0
+        }
+      ],
+      "seed": 5995193176011309059
+    }
+  ],
+  "classification": "completed_with_stage2_test_launches_and_one_short_compiler_overlap",
+  "created_at_utc": "2026-11-01T01:34:37Z",
+  "executor_exit_code": 0,
+  "host_metadata": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "53c058f135ddcf5722dbfbfa132a08bd5359038a",
+      "source_sha256": "7f116d2dd51f9e62de7e22491a85675db906046f051ec1154fd85c625752af56",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "53c058f135ddcf5722dbfbfa132a08bd5359038a",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "load_average_definition": "Point-in-time macOS uptime 1/5/15-minute load averages; each process list is a point-in-time ps snapshot. CPU percentages may be sampled and are not additive wall-clock attribution.",
+  "measurement_pairs_per_case": 20,
+  "process_id": 94837,
+  "process_run": 2,
+  "profile": "s3-36c-resident-warm-native-nop-fallback-v1",
+  "reconstruction_note": "Reconstructed from completed executor exit, immutable raw report, and point-in-time process/load snapshots recorded during execution. Snapshot times are rounded elapsed minutes; no continuous system monitor was persisted, and paired samples have no wall-clock timestamps. No per-pair wall-clock attribution is claimed.",
+  "record_type": "reconstructed_measurement_run_envelope",
+  "report": {
+    "bytes": 145908,
+    "path": "docs/reports/data/stage3/s3-36c/warm-native-fallback-2.json",
+    "sha256": "d70dec87f5325d7f939ae12ecddfaaecbb6255d043115fb10cb35e6869648cb0"
+  },
+  "report_total_elapsed_ns": 614744147000,
+  "schema": 1,
+  "snapshots": [
+    {
+      "benchmark_cpu_percent": null,
+      "elapsed": "00:00",
+      "load_average": [
+        4.34,
+        4.14,
+        3.94
+      ],
+      "note": "Pre-launch baseline; listed Stage2 test process had no active compiler child.",
+      "processes": [
+        {
+          "argv": "cargo test -p od-runner --test fixture_v2 ...",
+          "cpu_percent": 0.0,
+          "pid": 93943
+        }
+      ]
+    },
+    {
+      "benchmark_cpu_percent": 99.0,
+      "elapsed": "00:35",
+      "load_average": [
+        3.36,
+        3.92,
+        3.87
+      ],
+      "processes": [
+        {
+          "argv": "cargo test -p od-runner --test fixture_v2 ...",
+          "cpu_percent": 0.0,
+          "pid": 93943
+        }
+      ]
+    },
+    {
+      "benchmark_cpu_percent": 99.2,
+      "elapsed": "01:08",
+      "load_average": [
+        3.77,
+        3.96,
+        3.88
+      ],
+      "processes": [
+        {
+          "argv": "cargo test -p od-runner --test fixture_v2 ...",
+          "cpu_percent": 0.0,
+          "pid": 93943
+        }
+      ]
+    },
+    {
+      "benchmark_cpu_percent": 99.3,
+      "elapsed": "02:14",
+      "load_average": [
+        3.31,
+        3.78,
+        3.82
+      ],
+      "processes": [
+        {
+          "argv": "cargo test -p od-isa cvtsd2ss_ --offline",
+          "cpu_percent": 0.0,
+          "pid": 95860
+        }
+      ]
+    },
+    {
+      "benchmark_cpu_percent": 98.8,
+      "elapsed": "03:51",
+      "load_average": [
+        3.2,
+        3.64,
+        3.76
+      ],
+      "processes": [
+        {
+          "argv": "cargo test -p od-x86-runner narrow_xorpd_is_not_blocked_with_existing_sse_and_x87_profiles_denied --offline",
+          "cpu_percent": 0.0,
+          "pid": 97437
+        }
+      ]
+    },
+    {
+      "benchmark_cpu_percent": 99.1,
+      "elapsed": "06:01",
+      "load_average": [
+        2.95,
+        3.47,
+        3.68
+      ],
+      "processes": []
+    },
+    {
+      "benchmark_cpu_percent": 98.8,
+      "elapsed": "07:06",
+      "load_average": [
+        2.85,
+        3.33,
+        3.61
+      ],
+      "processes": [
+        {
+          "argv": "cargo test -p od-testkit --offline -- --test-threads=1",
+          "cpu_percent": 0.0,
+          "pid": 1648
+        },
+        {
+          "argv": "rustc --crate-name od_isa ...",
+          "cpu_percent": 14.7,
+          "pid": 1668
+        }
+      ]
+    },
+    {
+      "benchmark_cpu_percent": 99.5,
+      "elapsed": "08:12",
+      "load_average": [
+        4.11,
+        3.7,
+        3.73
+      ],
+      "processes": [
+        {
+          "argv": "cargo test -p od-testkit --offline -- --test-threads=1",
+          "cpu_percent": 0.0,
+          "pid": 1648
+        }
+      ]
+    },
+    {
+      "benchmark_cpu_percent": 99.7,
+      "elapsed": "09:19",
+      "load_average": [
+        3.48,
+        3.63,
+        3.71
+      ],
+      "processes": [
+        {
+          "argv": "cargo test -p od-runner --offline -- --test-threads=1",
+          "cpu_percent": 0.0,
+          "pid": 3097
+        }
+      ]
+    },
+    {
+      "benchmark_cpu_percent": 100.0,
+      "elapsed": "10:25",
+      "load_average": [
+        3.84,
+        3.69,
+        3.72
+      ],
+      "processes": [
+        {
+          "argv": "cargo test -p od-runner --offline -- --test-threads=1",
+          "cpu_percent": 0.0,
+          "pid": 3971
+        }
+      ]
+    },
+    {
+      "benchmark_cpu_percent": null,
+      "elapsed": "10:30",
+      "load_average": [
+        3.62,
+        3.65,
+        3.7
+      ],
+      "note": "Post-run; benchmark exited successfully.",
+      "processes": [
+        {
+          "argv": "cargo test -p od-runner --offline -- --test-threads=1",
+          "cpu_percent": 0.0,
+          "pid": 3971
+        }
+      ]
+    }
+  ],
+  "source_revision": "53c058f135ddcf5722dbfbfa132a08bd5359038a",
+  "stage2_monitor_definition": {
+    "commands_considered_overlap": [
+      "cargo check",
+      "cargo test",
+      "cargo build",
+      "rustc"
+    ],
+    "scope_note": "Stage 2 launches were not used as a stop condition. Actual compiler/test process overlap and sampled load are recorded; no process was stopped. A Graphify update was also recorded where observed."
+  },
+  "start_local_approx": "2026-10-31 22:12 America/Argentina/Buenos_Aires",
+  "start_utc_approx": "2026-11-01T01:12Z"
+}

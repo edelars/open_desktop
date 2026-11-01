@@ -3057,9 +3057,17 @@ through calibrated alternating interpreter/cached samples, then drops that
 mapping before the next case. Every timed cached call must add exactly one hit
 and no other cache activity; state, exit, budget, and retirement parity are
 checked outside each timed interval. Implementation and CLI wiring are in
-place; release preflight and three scored runs are pending after source review.
-This is a narrow warm NOP-fallback profile and says nothing about memory
-workloads or general fallback frequency. S3-36 and S3-41 remain open. See
+place. Three sequential release runs on M3 Max completed with 20 retained
+alternating pairs per input. The run-level median-of-case-medians ranged from
+5.223 to 5.259 for cached/interpreter elapsed ratios in the two-native stratum
+and from 4.313 to 4.376 in the three-native stratum. These results apply only
+to the frozen native-plus-NOP `BudgetExhausted` inputs; intermittent Stage 2
+compiler/test activity was observed, and a brief Graphify process overlapped
+run 3. Point-in-time process
+snapshots have no per-pair timestamps, so the timing effect of overlap cannot
+be assigned to samples. This does not measure general fallback frequency,
+memory workloads, or whole-system performance. S3-36 and S3-41 remain open.
+See the [S3-36c report](../reports/STAGE_3_S3-36c_2026-10-31.md) and
 [`BENCHMARKS.md`](../testing/BENCHMARKS.md#s3-36c-resident-warm-nop-fallback-comparison).
 
 1. Прогреть cache вне timed samples и подтвердить hit/compile counters. Повторять одинаковую гостевую работу с корректным reset initial state.

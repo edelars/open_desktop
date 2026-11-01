@@ -621,10 +621,19 @@ After the implementation commit and independent source review, collect three
 release processes sequentially with distinct report paths. A Stage 2 test
 launch by itself is not a stop condition; record actual process/load snapshots
 and keep or repeat a run based on observed impact and paired spread. Do not
-trim pairs after seeing results. No scored S3-36c result is recorded yet. This
-profile measures only the frozen warm native-plus-NOP-fallback budget-exit
-inputs; it does not establish general fallback, memory, physical x86, Mac mini,
-or full Stage 3 performance behavior.
+trim pairs after seeing results. Three runs completed with all 20 retained
+pairs per input. The run-level median-of-case-medians for cached-dispatch /
+interpreter elapsed ratios ranged from 5.223–5.259 for the 10 two-native-plus-NOP
+cases and 4.313–4.376 for the nine three-native-plus-NOP cases. Stage 2
+compiler/test activity
+overlapped snapshots in all runs; run 3 also had a brief Graphify update
+overlap; a point-in-time snapshot sampled that process at 89.5% CPU. The
+reconstructed snapshots lack per-pair wall-clock times, so overlap
+effects cannot be attributed. This profile measures only the frozen warm
+native-plus-NOP `BudgetExhausted` inputs; it does not establish general
+fallback, memory, physical x86, Mac mini, or full Stage 3 performance behavior.
+See the [S3-36c report](../reports/STAGE_3_S3-36c_2026-10-31.md) and its
+[reviewed suite evidence](../reports/data/stage3/s3-36c/measurement-suite-manifest.json).
 
 ```sh
 for run in 1 2 3; do
