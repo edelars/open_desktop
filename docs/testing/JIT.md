@@ -481,6 +481,10 @@ for both typed architectural-fault and backend-error outcomes. This is
 diagnostic attribution and does not provide host-fault recovery or replay
 authorization. Direct V2 maps and full S3-27 remain open.
 
+### Bounded S3-27e two-site V2 PC-map attribution
+
+Run `cargo test -p od-jit ir_two_site_pc_maps_attribute_all_checked_ranges_and_boundaries --offline` and `cargo test -p od-host --test memory_corpus published_two_site_pc_map_matches_artifact_and_outlives_artifact --offline`. The compiler test checks store→load, load→store, and load→load maps across all emitted ranges, per-site/shared-service attribution, guest RIP and snapshot classifications, and retirement boundaries; targeted mutations must be rejected. The host test checks artifact/published-map agreement and persistence through republication at a distinct RIP/sequence and artifact lifetime. These checks establish map attribution/publication behavior for this fixture; they do not establish host-fault recovery, guest fault delivery, owner/MMU integration, or full S3-27. See the [S3-27e report](../reports/STAGE_3_S3-27e_2026-11-01.md).
+
 Production acceptance additionally needs the `od-machine` owner contract:
 private synchronous RAM capability, code lease across compile/publication/
 execution, MMU-aware fetch with deferred next-RIP fault delivery, and

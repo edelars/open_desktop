@@ -1,6 +1,6 @@
 # Этап 3. Первый JIT x86 → ARM64 — пошаговый план реализации
 
-**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-20h/S3-20i/S3-20j/S3-20k/S3-20l/S3-20m/S3-20n/S3-20o/S3-20p/S3-20q/S3-20r/S3-20s/S3-20t/S3-20u/S3-20v/S3-20w/S3-20x/S3-20y/S3-20z/S3-20aa/S3-20ab/S3-20ac/S3-20ad/S3-20ae/S3-20af/S3-20ag/S3-20ah/S3-20ai/S3-20aj/S3-20ak/S3-20al/S3-20am/S3-20an/S3-20ao/S3-20ap/S3-20aq/S3-20ar/S3-20as/S3-20at/S3-20au/S3-20av/S3-20aw/S3-20ax/S3-20ay/S3-20az/S3-20ba/S3-20bb/S3-20bc/S3-20bd/S3-20be/S3-20bf/S3-20bg/S3-20bh/S3-20bi/S3-20bj/S3-20bk/S3-20bl/S3-20bm/S3-20bn/S3-20bo/S3-20bp/S3-20bq/S3-20br/S3-20bs/S3-20bt/S3-20bu/S3-20bv/S3-20bw/S3-20bx/S3-20ca/S3-20cb/S3-20cc/S3-20cd/S3-20ce/S3-20cf/S3-20cg/S3-20ch/S3-20ci/S3-20cj/S3-20ck/S3-20cl/S3-20cm/S3-26a/S3-26b/S3-26c/S3-26d/S3-26e/S3-27a/S3-27b/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-24b/S3-25a/S3-25b/S3-27c/S3-34f/S3-34h/S3-34i/S3-34j реализованы как bounded partial slices; S3-20cm реализован как bounded optional slice, не gate этапа. S3-27d ограничен partial slice для прямых singleton V2 load/store и не закрывает S3-27. S3-18d1 собрал три локальных dispatch/cache measurement runs без policy conclusion; S3-41a зафиксировала bounded acceptance evidence. Полный этап открыт. Общие memory lowering и S3-19/S3-20/S3-22/S3-23/S3-24/S3-25/S3-26/S3-27 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
+**Дата:** 27 октября 2026 года. **Статус:** этап начат; S3-00, S3-02, S3-03, S3-04, S3-05, S3-06, S3-07, S3-08, S3-09, S3-10, S3-11, S3-12 и S3-13 завершены; S3-01 в работе; S3-19b/S3-20a/S3-20b/S3-20c/S3-20d/S3-20e/S3-20f/S3-20g/S3-20h/S3-20i/S3-20j/S3-20k/S3-20l/S3-20m/S3-20n/S3-20o/S3-20p/S3-20q/S3-20r/S3-20s/S3-20t/S3-20u/S3-20v/S3-20w/S3-20x/S3-20y/S3-20z/S3-20aa/S3-20ab/S3-20ac/S3-20ad/S3-20ae/S3-20af/S3-20ag/S3-20ah/S3-20ai/S3-20aj/S3-20ak/S3-20al/S3-20am/S3-20an/S3-20ao/S3-20ap/S3-20aq/S3-20ar/S3-20as/S3-20at/S3-20au/S3-20av/S3-20aw/S3-20ax/S3-20ay/S3-20az/S3-20ba/S3-20bb/S3-20bc/S3-20bd/S3-20be/S3-20bf/S3-20bg/S3-20bh/S3-20bi/S3-20bj/S3-20bk/S3-20bl/S3-20bm/S3-20bn/S3-20bo/S3-20bp/S3-20bq/S3-20br/S3-20bs/S3-20bt/S3-20bu/S3-20bv/S3-20bw/S3-20bx/S3-20ca/S3-20cb/S3-20cc/S3-20cd/S3-20ce/S3-20cf/S3-20cg/S3-20ch/S3-20ci/S3-20cj/S3-20ck/S3-20cl/S3-20cm/S3-26a/S3-26b/S3-26c/S3-26d/S3-26e/S3-27a/S3-27b/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-24b/S3-25a/S3-25b/S3-27c/S3-34f/S3-34h/S3-34i/S3-34j реализованы как bounded partial slices; S3-20cm реализован как bounded optional slice, не gate этапа. S3-27d ограничен partial slice для прямых singleton V2 load/store, а S3-27e добавил отдельные partial тесты PC-map для двух-site V2; S3-27 остаётся открытой. S3-18d1 собрал три локальных dispatch/cache measurement runs без policy conclusion; S3-41a зафиксировала bounded acceptance evidence. Полный этап открыт. Общие memory lowering и S3-19/S3-20/S3-22/S3-23/S3-24/S3-25/S3-26/S3-27 остаются открытыми. S3-21 — финальный физический gate после завершения локальной работы Stage 3.
 
 План предназначен для модели, которой нужны небольшие последовательные задания, конкретные файлы, зависимости и проверяемый результат. Выполнять одну задачу `S3-NN` за раз. Не реализовывать весь JIT одним изменением. Большие группы внутри задачи проходить по указанным подшагам.
 
@@ -241,6 +241,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-27b | Fault on interpreter fetch at `A+6` after one exact two-site pair | Native pair commits are compared against interpreter-only steps; fixture-only boundary evidence, production MMU/dispatcher remains open |
 | [partial] | S3-27c | Host-PC attribution map for exact V3 active-code fixture | Validated contiguous ARM64 byte ranges and three committed boundaries; map retained through artifact drop/cache invalidation/slot reuse; diagnostic only, direct V2 and full S3-27 remain open |
 | [partial] | S3-27d | Host-PC attribution for direct singleton V2 load/store | Direct wrappers own validated maps; standalone publication and arena store retain generation-bound copies; no fault recovery, memory-class expansion, Stage2, Mini, or full S3-27 closure |
+| [partial] | S3-27e | PC-map attribution for two-site V2 memory entries | Compiler checks cover all checked ranges/boundaries and reject targeted map mutations; host test checks published-map identity/persistence across republication; no host-fault recovery or full S3-27 closure |
 | [ ] | S3-25 | Eviction, retirement и освобождение | S3-18, S3-24 |
 | [partial] | S3-25a | One-vCPU synchronous cache/arena handle lifetime and safe-point checks | Inactive entries only; active-code retirement, SMP, deferred queue not included |
 | [partial] | S3-25b | Capacity-two arena lifetime for one V3 artifact and one cached prefix | V3 slot survives cache clear/invalidation; stale source rejected; full retirement/SMP/deferred queue remain open |
@@ -2212,6 +2213,26 @@ Direct V2 maps, production owner/MMU integration, and full S3-27 remain open.
 
 См. [S3-27c report](../reports/STAGE_3_S3-27c_2026-10-30.md) and
 [JIT contract](../specs/JIT_CONTRACT.md#s3-27c-diagnostic-host-pc-attribution-for-the-exact-v3-fixture).
+
+#### S3-27e. PC-map attribution for two-site V2 memory entries — partial
+
+The compiler regression covers the exact store→load, load→store, and
+load→load two-site sequences. It checks the complete emitted range partition,
+instruction and shared-service attribution, guest RIPs, replay/snapshot
+classification, and both retirement boundaries. Negative mutations must be
+rejected for site attribution, shared service attribution, guest RIP, boundary
+retirement count, and post-helper replay classification. A host regression
+checks the published two-site map against the artifact, then republishes at a
+distinct RIP/sequence and checks distinct, equal, and persistent map results
+across artifact lifetime.
+
+The focused `od-jit` and `od-host` tests passed 1/1 each on the local Mac;
+independent Sol review passed after corrections to shared-service attribution
+and the republication assertions. This is map-contract and publication-lifetime
+evidence only. It does not test arbitrary host-fault recovery, guest fault
+delivery, owner/MMU integration, Mini, performance, or complete S3-27. See the
+[S3-27e report](../reports/STAGE_3_S3-27e_2026-11-01.md) and
+[JIT testing reference](../testing/JIT.md#bounded-s3-27e-two-site-v2-pc-map-attribution).
 
 ### S3-28. Реализовать STOP и event safepoints
 
