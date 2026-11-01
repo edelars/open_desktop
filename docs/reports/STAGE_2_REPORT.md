@@ -5584,6 +5584,29 @@ acceptance, or performance claim was added. Focused and full validation results,
 layout status, and review status are in the [standalone report](S2_29AA_X87_SQRT_PRECISION.md).
 S2-29 and ISSUE-019 remain open.
 
+## S2-29ab — finite binary80 square-root precision diagnostics
+
+Added `sqrt_finite_to_binary80_precision_with_diagnostics` for positive,
+nonzero normalized finite binary80 inputs at p=24/53/64. Its result carries the
+raw binary80 value, mathematical `inexact`, and `incremented` (whether the
+truncated positive target-precision significand increased by one before carry
+normalization). At p64, `inexact` is `R != 0`; at p<64 it is
+`L != 0 || R != 0` for exact `(E,q,R)` decomposition and `h=64-p`,
+`L=q & ((1<<h)-1)`. This correctly marks exact p24 halfway roots inexact even
+when `R=0`. `incremented` and `inexact` are helper-local; neither is
+architectural PE/C1.
+
+Both existing bit-only APIs project the `value` field, with the same output
+bytes and `None` domains as before. Independent literal bytes and booleans
+cover exact roots, all four modes and three precisions, both existing p24
+midpoint roots and their expected increment arrays, p53 nonzero-R boundaries,
+the p24 direct-rounding versus p64 double-rounding case, carry/exponent cases,
+rejections, projection equivalence, and input immutability. See the
+[standalone report](S2_29AB_X87_SQRT_DIAGNOSTICS.md) for verification and
+review status. No FCW/FSW, exception, decode/execute, native/JIT/C ABI,
+physical x86 claim, or common FP diagnostics framework was added. ISSUE-019
+remains open.
+
 ## S2-30i — exact-only FSUB ST(i), ST(0) (bounded local slice)
 
 Added bare `DC E8+i`, `i=0..7`, as `FSUB ST(i), ST(0)`. The operation shares

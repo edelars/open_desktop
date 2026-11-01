@@ -195,7 +195,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-29p | Round an exact signed `i128` coefficient once to finite binary80 through lossless normalization and direct normal/subnormal packing; no x87 architectural effects | S2-29e, S2-29f, S2-29k–n |
 | [x] | S2-29u | p64-aware large-gap binary80 finite-addition bridge for normalized operands with exponent gaps >64; classify tails below/at/above half; preserve binary32/64 adapter behavior; no x87 instruction semantics | S2-29t; independent Sol/high review clean |
 | [x] | S2-29v | Pure integer square-root helper for positive nonzero normalized finite binary80 inputs; one-round binary80 packing; no FSQRT/FCW/state/exception semantics | S2-29u; independent Sol/high review clean |
-| [x] | S2-29aa | Direct binary80 square-root rounding to precision 24/53/64 with binary80 exponent range; retain p64 wrapper domain; no FSQRT/FCW/state/exception semantics | S2-29v; independent Sol/high review pending |
+| [x] | S2-29aa | Direct binary80 square-root rounding to precision 24/53/64 with binary80 exponent range; retain p64 wrapper domain; no FSQRT/FCW/state/exception semantics | S2-29v; independent Sol/high review clean |
+| [x] | S2-29ab | Helper-local inexact/incremented diagnostics for direct binary80 square-root precision rounding; preserve both bit-only API projections and domains; no architectural PE/C1 | S2-29aa; independent Sol/high review pending |
 | [x] | S2-29x | Exact truncated finite binary80 remainder coefficient decomposition for normalized nonzero operands; exact modulo for exponent gaps 0..64, lhs passthrough below, bounded rejection above; no FPREM/FPREM1 semantics | S2-29w; independent Sol/high review clean |
 | [x] | S2-29y | Exact finite nearest-even binary80 remainder coefficient for normalized nonzero operands; d=-1 half-way handling and u128 quotient/remainder for gaps 0..64; helper-only, no FPREM1/ISA or architectural effects | S2-29x; independent Sol/high review clean |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
@@ -3403,6 +3404,34 @@ Vol. 1 §8.1.5.2 and Table 8-2, pp. 8-7–8-8.
 **Результат:** implementation and focused literal tests are recorded in the
 [standalone report](../reports/S2_29AA_X87_SQRT_PRECISION.md); S2-29 and
 ISSUE-019 remain open.
+
+### S2-29ab. Finite binary80 square-root precision diagnostics (bounded helper)
+
+Add `sqrt_finite_to_binary80_precision_with_diagnostics(value, mode,
+precision) -> Option<SqrtFiniteToBinary80PrecisionResult>` for the same accepted
+inputs and p=24/53/64 domain as S2-29aa. The result carries the raw binary80
+`value`, `inexact`, and `incremented`. For exact decomposition `(E,q,R)`,
+`inexact` is `R != 0` at p=64, and `L != 0 || R != 0` at p<64 where
+`h=64-p` and `L=q & ((1<<h)-1)`. This includes p24 exact midpoint roots whose
+`R` is zero but whose discarded low bits are nonzero. `incremented` means the
+truncated positive target-precision significand increased by one before carry
+normalization. Neither field is architectural PE/C1 or x87 status.
+
+Keep `sqrt_finite_to_binary80_precision` and `sqrt_finite_to_binary80` as
+projections of the diagnostic result's `value`, preserving every old result
+bit and `None` domain. Add independent literal raw-byte and boolean coverage
+for exact roots, every mode and precision, the two p24 midpoint roots
+`0x8000030000048000` and `0x80000500000c8000` (incremented `[true,false,true,false]`
+and `[false,false,true,false]`, respectively, with `inexact=true` in every
+mode), p53 nonzero-R boundaries, and the direct-rounding/double-rounding vector
+`0x8000030000047fff`. Retain carry/exponent, rejection, projection and
+immutability coverage. This remains helper-only: no FCW/FSW, exceptions,
+decode/execute, native/JIT/C ABI admission, physical x86 claim, or common FP
+diagnostics framework.
+
+**Результат:** реализация, независимые литералы, проверки и review status
+зафиксированы в [отчёте S2-29ab](../reports/S2_29AB_X87_SQRT_DIAGNOSTICS.md).
+S2-29 и ISSUE-019 остаются открытыми.
 
 ### S2-30. Основные x87 операции
 

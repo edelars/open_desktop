@@ -293,20 +293,33 @@ pub fn pack_normal_rounded_significand(
     ]))
 }
 
+/// Result of rounding a finite binary80 square root to a requested precision.
+///
+/// `inexact` describes whether the exact mathematical root differs from the
+/// represented target-precision value. `incremented` reports whether rounding
+/// increased the truncated positive target-precision significand by one,
+/// before any carry normalization. Neither field is architectural x87 status.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SqrtFiniteToBinary80PrecisionResult {
+    pub value: X87Binary80,
+    pub inexact: bool,
+    pub incremented: bool,
+}
+
 /// Square-root a positive, nonzero normalized finite binary80 value and round
 /// once to a supported significand precision while retaining binary80's
-/// exponent range.
+/// exponent range, returning helper-local rounding diagnostics.
 ///
 /// `precision` is limited to 24, 53, or 64 bits. Inputs follow the historical
 /// `sqrt_finite_to_binary80` acceptance domain: positive nonzero normalized
 /// finite significands. The exact radicand/root remainder are computed with
 /// integer math. This helper defines no x87 instruction, FCW, exception, or
 /// status behavior.
-pub fn sqrt_finite_to_binary80_precision(
+pub fn sqrt_finite_to_binary80_precision_with_diagnostics(
     value: X87Finite,
     mode: RationalRoundingMode,
     precision: u32,
-) -> Option<X87Binary80> {
+) -> Option<SqrtFiniteToBinary80PrecisionResult> {
     if !matches!(precision, 24 | 53 | 64) {
         return None;
     }
@@ -316,12 +329,14 @@ pub fn sqrt_finite_to_binary80_precision(
 
     let (exponent, root, remainder) =
         crate::finite_arithmetic::sqrt_finite_parts(value.significand, value.exponent)?;
-    let increment = if precision == 64 {
+    let (increment, inexact) = if precision == 64 {
         match mode {
             // At p=64 the exact root is above q+1/2 iff R > q.
-            RationalRoundingMode::NearestTiesEven => remainder > u128::from(root),
-            RationalRoundingMode::TowardZero | RationalRoundingMode::TowardNegative => false,
-            RationalRoundingMode::TowardPositive => remainder != 0,
+            RationalRoundingMode::NearestTiesEven => (remainder > u128::from(root), remainder != 0),
+            RationalRoundingMode::TowardZero | RationalRoundingMode::TowardNegative => {
+                (false, remainder != 0)
+            }
+            RationalRoundingMode::TowardPositive => (remainder != 0, remainder != 0),
         }
     } else {
         let discarded_bits = 64 - precision;
@@ -329,17 +344,35 @@ pub fn sqrt_finite_to_binary80_precision(
         let discarded_mask = (1_u64 << discarded_bits) - 1;
         let discarded = root & discarded_mask;
         let halfway = 1_u64 << (discarded_bits - 1);
-        match mode {
-            RationalRoundingMode::TowardPositive => discarded != 0 || remainder != 0,
+        let inexact = discarded != 0 || remainder != 0;
+        let increment = match mode {
+            RationalRoundingMode::TowardPositive => inexact,
             RationalRoundingMode::TowardZero | RationalRoundingMode::TowardNegative => false,
             RationalRoundingMode::NearestTiesEven => {
                 discarded > halfway
                     || (discarded == halfway && (remainder != 0 || retained & 1 != 0))
             }
-        }
+        };
+        (increment, inexact)
     };
     let retained = u128::from(root >> (64 - precision)) + u128::from(increment);
-    pack_normal_rounded_significand(false, exponent, retained, precision)
+    Some(SqrtFiniteToBinary80PrecisionResult {
+        value: pack_normal_rounded_significand(false, exponent, retained, precision)?,
+        inexact,
+        incremented: increment,
+    })
+}
+
+/// Square-root a positive, nonzero normalized finite binary80 value and round
+/// once to a supported significand precision while retaining binary80's
+/// exponent range.
+pub fn sqrt_finite_to_binary80_precision(
+    value: X87Finite,
+    mode: RationalRoundingMode,
+    precision: u32,
+) -> Option<X87Binary80> {
+    sqrt_finite_to_binary80_precision_with_diagnostics(value, mode, precision)
+        .map(|result| result.value)
 }
 
 /// Square-root a positive, nonzero normalized finite binary80 value and round
@@ -1132,7 +1165,7 @@ mod tests {
         round_pack_exact_magnitude, round_pack_subnormal_quotient, round_quotient_magnitude,
         round_quotient_ties_even, round_quotient_to_precision, scale_finite_to_binary80,
         shift_right_jam, shift_right_jam_u128, sqrt_finite_to_binary80,
-        sqrt_finite_to_binary80_precision,
+        sqrt_finite_to_binary80_precision, sqrt_finite_to_binary80_precision_with_diagnostics,
     };
     use crate::state::{X87State, X87Tag};
 
@@ -2862,16 +2895,121 @@ mod tests {
         ];
         for (significand, expected_by_mode) in cases {
             let value = finite(0, significand, false, X87Binary80Class::Normal);
-            for (mode, expected) in modes.into_iter().zip(expected_by_mode) {
+            let expected_incremented = if significand == 0x8000_0300_0004_8000 {
+                [true, false, true, false]
+            } else {
+                [false, false, true, false]
+            };
+            for (index, ((mode, expected), incremented)) in modes
+                .into_iter()
+                .zip(expected_by_mode)
+                .zip(expected_incremented)
+                .enumerate()
+            {
+                let result =
+                    sqrt_finite_to_binary80_precision_with_diagnostics(value, mode, 24).unwrap();
                 assert_eq!(
-                    sqrt_finite_to_binary80_precision(value, mode, 24)
-                        .unwrap()
-                        .to_bytes(),
+                    result.value.to_bytes(),
                     expected,
                     "S={significand:#018x}, mode={mode:?}"
                 );
+                assert!(result.inexact, "S={significand:#018x}, mode={mode:?}");
+                assert_eq!(result.incremented, incremented, "mode index={index}");
             }
         }
+    }
+
+    #[test]
+    fn finite_sqrt_diagnostics_cover_exact_p53_and_double_rounding_cases() {
+        use RationalRoundingMode::{
+            NearestTiesEven as N, TowardNegative as D, TowardPositive as U, TowardZero as Z,
+        };
+        let modes = [N, Z, U, D];
+
+        let exact = finite(0, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal);
+        for precision in [24, 53, 64] {
+            for mode in modes {
+                let result =
+                    sqrt_finite_to_binary80_precision_with_diagnostics(exact, mode, precision)
+                        .unwrap();
+                assert_eq!(
+                    result.value.to_bytes(),
+                    [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f]
+                );
+                assert!(!result.inexact);
+                assert!(!result.incremented);
+            }
+        }
+
+        let p53_vectors = [
+            (
+                0x8000_0000_0000_07ff,
+                [false, false, true, false],
+                [
+                    [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                    [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                    [0, 8, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                    [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                ],
+            ),
+            (
+                0x8000_0000_0000_0801,
+                [true, false, true, false],
+                [
+                    [0, 8, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                    [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                    [0, 8, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                    [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+                ],
+            ),
+        ];
+        for (significand, expected_incremented, expected_bytes) in p53_vectors {
+            let value = finite(0, significand, false, X87Binary80Class::Normal);
+            for (index, ((mode, incremented), bytes)) in modes
+                .into_iter()
+                .zip(expected_incremented)
+                .zip(expected_bytes)
+                .enumerate()
+            {
+                let result =
+                    sqrt_finite_to_binary80_precision_with_diagnostics(value, mode, 53).unwrap();
+                assert_eq!(result.value.to_bytes(), bytes);
+                assert!(result.inexact);
+                assert_eq!(result.incremented, incremented, "mode index={index}");
+            }
+        }
+
+        let p64_inexact = finite(-3, 0x8000_0000_0000_0001, false, X87Binary80Class::Normal);
+        let p64_bytes = [
+            [0x85, 0x64, 0xde, 0xf9, 0x33, 0xf3, 4, 0xb5, 0xfd, 0x3f],
+            [0x85, 0x64, 0xde, 0xf9, 0x33, 0xf3, 4, 0xb5, 0xfd, 0x3f],
+            [0x86, 0x64, 0xde, 0xf9, 0x33, 0xf3, 4, 0xb5, 0xfd, 0x3f],
+            [0x85, 0x64, 0xde, 0xf9, 0x33, 0xf3, 4, 0xb5, 0xfd, 0x3f],
+        ];
+        for (index, (mode, bytes)) in modes.into_iter().zip(p64_bytes).enumerate() {
+            let result =
+                sqrt_finite_to_binary80_precision_with_diagnostics(p64_inexact, mode, 64).unwrap();
+            assert_eq!(result.value.to_bytes(), bytes);
+            assert!(result.inexact);
+            assert_eq!(result.incremented, index == 2, "mode index={index}");
+        }
+
+        let double_round = finite(0, 0x8000_0300_0004_7fff, false, X87Binary80Class::Normal);
+        let direct =
+            sqrt_finite_to_binary80_precision_with_diagnostics(double_round, N, 24).unwrap();
+        let p64 = sqrt_finite_to_binary80_precision_with_diagnostics(double_round, N, 64).unwrap();
+        assert_eq!(
+            direct.value.to_bytes(),
+            [0, 0, 0, 0, 0, 1, 0, 0x80, 0xff, 0x3f]
+        );
+        assert_eq!(
+            p64.value.to_bytes(),
+            [0, 0, 0, 0, 0x80, 1, 0, 0x80, 0xff, 0x3f]
+        );
+        assert!(direct.inexact);
+        assert!(p64.inexact);
+        assert!(!direct.incremented);
+        assert!(p64.incremented);
     }
 
     #[test]
@@ -2910,10 +3048,21 @@ mod tests {
                 sqrt_finite_to_binary80_precision(valid, mode, 64),
                 sqrt_finite_to_binary80(valid, mode)
             );
+            for precision in [24, 53, 64] {
+                assert_eq!(
+                    sqrt_finite_to_binary80_precision_with_diagnostics(valid, mode, precision)
+                        .map(|result| result.value),
+                    sqrt_finite_to_binary80_precision(valid, mode, precision)
+                );
+            }
             assert_eq!(valid, before);
             for precision in [0, 1, 23, 25, 52, 54, 63, 65, u32::MAX] {
                 assert_eq!(
                     sqrt_finite_to_binary80_precision(valid, mode, precision),
+                    None
+                );
+                assert_eq!(
+                    sqrt_finite_to_binary80_precision_with_diagnostics(valid, mode, precision),
                     None
                 );
             }
@@ -2949,6 +3098,14 @@ mod tests {
             for mode in modes {
                 assert_eq!(sqrt_finite_to_binary80(invalid, mode), None);
                 assert_eq!(sqrt_finite_to_binary80_precision(invalid, mode, 64), None);
+                for precision in [24, 53, 64] {
+                    assert_eq!(
+                        sqrt_finite_to_binary80_precision_with_diagnostics(
+                            invalid, mode, precision
+                        ),
+                        None
+                    );
+                }
             }
         }
     }

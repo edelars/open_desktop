@@ -3665,6 +3665,37 @@ This contract is helper-only. It adds no FSQRT decode/execution, FCW parsing or
 state, architectural flags/exceptions, native/JIT/C ABI admission, physical x86
 acceptance, or performance claim. See the [S2-29aa plan](../plans/STAGE_2.md#s2-29aa-direct-finite-binary80-square-root-precision-rounding-bounded-helper), [implementation report](../reports/STAGE_2_REPORT.md#s2-29aa--direct-finite-binary80-square-root-precision-helper), and [standalone report](../reports/S2_29AA_X87_SQRT_PRECISION.md). ISSUE-019 remains open.
 
+## Local S2-29ab: finite binary80 square-root precision diagnostics
+
+`od_isa::x87::sqrt_finite_to_binary80_precision_with_diagnostics(value, mode,
+precision)` returns `Option<SqrtFiniteToBinary80PrecisionResult>` over the same
+positive, nonzero normalized finite inputs and p=24/53/64 choices as S2-29aa.
+The public result contains the raw binary80 `value` and helper-local booleans
+`inexact` and `incremented`.
+
+For the exact square-root decomposition `(E,q,R)`, p=64 is inexact exactly
+when `R != 0`. At p<64, let `h=64-p` and `L=q & ((1<<h)-1)`; the result is
+inexact exactly when `L != 0 || R != 0`. Thus an exact p24 midpoint with
+`R == 0` can still be inexact because discarded root bits are nonzero.
+`incremented` reports a one-unit increase to the truncated positive
+target-precision significand before carry normalization. It describes the
+mathematical helper rounding only; neither field means architectural PE or C1.
+
+The existing `sqrt_finite_to_binary80_precision` and
+`sqrt_finite_to_binary80` APIs project `value` from this result and retain
+their former raw output bits and `None` domains. Independent literal byte and
+boolean vectors cover exact roots; all modes/precisions; p24 exact midpoint
+roots `0x8000030000048000` and `0x80000500000c8000`; p53 nonzero-R boundaries;
+the direct p24 versus p64 double-rounding case `0x8000030000047fff`; carry,
+exponent limits, invalid inputs/precisions, projection equivalence, and
+immutability. The midpoint `inexact` values are true in all modes, with
+`incremented` arrays `[true,false,true,false]` and `[false,false,true,false]`
+in N/Z/U/D mode order.
+
+No FCW/FSW state, architectural exceptions, decode/execute, native/JIT/C ABI
+admission, physical x86 claim, performance claim, or reusable FP diagnostics
+framework is part of this helper. See the [S2-29ab plan](../plans/STAGE_2.md#s2-29ab-finite-binary80-square-root-precision-diagnostics-bounded-helper), [implementation report](../reports/STAGE_2_REPORT.md#s2-29ab--finite-binary80-square-root-precision-diagnostics), and [standalone report](../reports/S2_29AB_X87_SQRT_DIAGNOSTICS.md). ISSUE-019 remains open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.
