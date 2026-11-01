@@ -88,6 +88,9 @@ const UCOMISD_M64_MEMORY_RAX: &[u8] = include_bytes!(
 const COMISS_M32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37cq_comiss_m32_qnan_subnormal_priority.case.json"
 );
+const UCOMISS_M32_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37cr_ucomiss_m32_qnan_subnormal_priority.case.json"
+);
 const COMISD_UCOMISD_REGISTER: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37w_comisd_ucomisd_baseline.case.json");
 const CVTSD2SI_R64_MEMORY_RAX: &[u8] = include_bytes!(
@@ -26726,6 +26729,85 @@ fn comiss_m32_memory_uses_single_precision_nan_priority_and_denies_other_backend
 
     assert!(matches!(
         run(COMISS_M32_MEMORY_RAX, "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+}
+
+#[test]
+fn ucomiss_m32_memory_uses_quiet_nan_priority_and_denies_other_backends() {
+    let loaded = Fixture::from_json(UCOMISS_M32_MEMORY_RAX).unwrap();
+    let fixture = loaded.fixture;
+    let encode_u32 = |value: u32| {
+        value
+            .to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let cases: [(u32, u32, u64, u64); 9] = [
+        (0x4000_0000, 0x3f80_0000, 0x0202, 0), // greater
+        (0x3f80_0000, 0x4000_0000, 0x0203, 0), // less
+        (0x0000_0000, 0x8000_0000, 0x0242, 0), // signed zero equality
+        (0x7fc1_2345, 1, 0x0247, 0),           // QNaN suppresses IE and DE
+        (1, 0x7fc1_2345, 0x0247, 0),           // memory QNaN suppresses IE and DE
+        (0x7f81_2345, 1, 0x0247, 1),           // SNaN IE, NaN suppresses DE
+        (1, 0x3f80_0000, 0x0203, 2),           // subnormal adds DE
+        (0x7fc1_2345, 0x7f81_2345, 0x0247, 1), // SNaN adds IE when paired with QNaN
+        (1, 0x7f81_2345, 0x0247, 1),           // memory SNaN adds IE and suppresses DE
+    ];
+    let old_sticky = [0u64, 1, 2, 3];
+    for (index, (left, right, expected_flags, generated_status)) in cases.into_iter().enumerate() {
+        for rc in 0..4u32 {
+            for ftz in [false, true] {
+                for old in old_sticky {
+                    let mut case = fixture.clone();
+                    case.case_id = format!("s2_37cr_matrix_{index}_{rc}_{ftz}_{old}");
+                    case.initial_state.sse.as_mut().unwrap().xmm[0] =
+                        format!("{}{}", encode_u32(left), "010000000000f07f01000000");
+                    case.initial_state.sse.as_mut().unwrap().mxcsr =
+                        HexU64(0x0180 | old | (u64::from(rc) << 13) | (u64::from(ftz) << 15));
+                    case.memory[1].initial_bytes_hex = encode_u32(right);
+                    let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                    od_testkit::v2::compare(&input, &result, &result).unwrap();
+                    let observed = match &result.snapshot {
+                        Observation::Available { value: snapshot } => snapshot,
+                        other => panic!("unexpected UCOMISS snapshot: {other:?}"),
+                    };
+                    assert_eq!(observed.state.rflags.get() & 0x8d5, expected_flags & 0x8d5);
+                    assert_eq!(
+                        observed.state.sse.as_ref().unwrap().mxcsr.get(),
+                        0x0180
+                            | old
+                            | generated_status
+                            | (u64::from(rc) << 13)
+                            | (u64::from(ftz) << 15),
+                    );
+                }
+            }
+        }
+    }
+
+    let mut ac = fixture.clone();
+    ac.case_id = "s2_37cr_ac1_unsupported".into();
+    ac.initial_state.rflags = HexU64(ac.initial_state.rflags.get() | (1 << 18));
+    ac.expected_exit = ExpectedExit::Unsupported;
+    let (_, result) = run(&ac.to_json().unwrap(), "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+
+    for mxcsr in [0x0100, 0x0080, 0x01c0, 0x0040_0180] {
+        let mut malformed = fixture.clone();
+        malformed.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(malformed.validate().is_err(), "accepted MXCSR {mxcsr:#x}");
+    }
+
+    let mut foreign = Fixture::from_json(COMISD_UCOMISD_REGISTER).unwrap().fixture;
+    assert!(foreign.validate().is_ok());
+    foreign.ucomiss_memory_rax_controls = fixture.ucomiss_memory_rax_controls;
+    assert!(foreign.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
+
+    assert!(matches!(
+        run(UCOMISS_M32_MEMORY_RAX, "jit", 4).1.outcome,
         Outcome::Unsupported { .. }
     ));
 }

@@ -425,3 +425,18 @@ refusal, foreign-control rejection, and JIT denial are covered; checked-span fau
 by direct ISA tests. The full runner suite passed 112 unit tests and 473
 fixtures. Native/JIT/C/fragment/generic execution remains closed; this
 host-side result is not physical x86 evidence. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cq--bounded-long64-comiss-xmm0dword-ptr-rax-m32-memory-profile).
+
+### S2-37cr — UCOMISS XMM0,m32
+
+The runner admits `s2-long-ucomiss-memory-rax-v1` only for exact legacy
+`0F 2E 00`. Its independent raw-binary32 oracle checks a four-byte source
+read, relation flags, UCOMISS QNaN/SNaN IE priority, NaN-before-DE priority,
+sticky MXCSR status, and remaining state. The focused matrix passed 1/1 with
+288 comparisons (nine relation/class pairs, four RC values, two FTZ settings,
+four incoming IE/DE histories). AC=1 refusal, valid-baseline foreign-field
+rejection, and JIT denial are covered by the runner; checked-span and
+read-failure atomicity are covered by direct ISA tests. Native/JIT/C/fragment/
+generic execution remains closed. Full package suites passed: od-isa 1,674,
+od-testkit 453, od-runner 112 unit + 474 fixtures, and od-x86-runner 8+4;
+workspace all-target check and layout passed. Independent code/schema and final docs/evidence reviews passed. This is not physical x86 evidence. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cr--bounded-long64-ucomiss-xmm0dword-ptr-rax-m32-memory-profile).

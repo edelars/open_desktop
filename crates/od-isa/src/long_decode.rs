@@ -1138,6 +1138,8 @@ pub enum Operation {
     UcomisdMemoryRax,
     /// Local-only legacy `0F 2F 00` COMISS with an m32 source at RAX.
     ComissMemoryRax,
+    /// Local-only legacy `0F 2E 00` UCOMISS with an m32 source at RAX.
+    UcomissMemoryRax,
     /// Local-only legacy `F3 0F C2 /r ib` scalar single comparison.
     CmpssRegister {
         predicate: u8,
@@ -4942,8 +4944,12 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Escape0f, 0x2e | 0x2f) if comiss_ucomiss_register => {
                 let modrm = self.byte()?;
-                if modrm == 0 && opcode.byte == 0x2f && prefixes.rex.is_none() {
-                    Operation::ComissMemoryRax
+                if modrm == 0 && prefixes.rex.is_none() {
+                    if opcode.byte == 0x2f {
+                        Operation::ComissMemoryRax
+                    } else {
+                        Operation::UcomissMemoryRax
+                    }
                 } else if modrm >> 6 != 3 {
                     return Err(self.unsupported(opcode));
                 } else {
@@ -22423,6 +22429,43 @@ mod tests {
                 assert_ne!(
                     decoded.operation,
                     Operation::ComissMemoryRax,
+                    "{bytes:02x?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ucomiss_m32_decodes_exact_bare_rax_and_keeps_comiss_and_register_neighbors() {
+        assert_eq!(
+            Memory::new(&[0x0f, 0x2e, 0x00]).decode().unwrap().operation,
+            Operation::UcomissMemoryRax
+        );
+        assert_eq!(
+            Memory::new(&[0x0f, 0x2f, 0x00]).decode().unwrap().operation,
+            Operation::ComissMemoryRax
+        );
+        assert_eq!(
+            Memory::new(&[0x0f, 0x2e, 0xc1]).decode().unwrap().operation,
+            Operation::ComissUcomissRegister {
+                unordered_quiet: true,
+                destination: 0,
+                source: 1,
+            }
+        );
+        for bytes in [
+            &[0x0f, 0x2e][..],
+            &[0x66, 0x0f, 0x2e, 0x00][..],
+            &[0x48, 0x0f, 0x2e, 0x00][..],
+            &[0x41, 0x0f, 0x2e, 0x00][..],
+            &[0x44, 0x0f, 0x2e, 0x00][..],
+            &[0x45, 0x0f, 0x2e, 0x00][..],
+            &[0x0f, 0x2e, 0x08][..],
+        ] {
+            if let Ok(decoded) = Memory::new(bytes).decode() {
+                assert_ne!(
+                    decoded.operation,
+                    Operation::UcomissMemoryRax,
                     "{bytes:02x?}"
                 );
             }

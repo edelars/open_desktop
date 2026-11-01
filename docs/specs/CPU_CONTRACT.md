@@ -15310,3 +15310,38 @@ Source: Intel SDM Rev. 093 Vol. 2A `COMISS` pp. 3-201–3-202; Vol. 1 §4.9.2,
 §§11.5.2.2/11.5.3, Tables D-6/D-7; Vol. 3A §16.1.3/Table 16-1. The
 operand table and operation specify `xmm/m32` and bits [31:0], so this profile
 reads four bytes. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37cq--exact-legacy-long64-comiss-xmm0dword-ptr-rax), [report](../reports/STAGE_2_REPORT.md#s2-37cq--comiss-xmm0m32), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cq--comiss-xmm0m32).
+
+## S2-37cr — bounded Long64 UCOMISS XMM0,dword ptr [RAX] m32 memory profile
+
+This strict schema-v2 profile admits only exact legacy `0F 2E 00`, fetches
+three bytes, executes one instruction, and stops at entry+3. It compares
+XMM0.low32 with one little-endian four-byte memory read from the checked
+canonical48 span `[RAX,RAX+3]`. The read occurs once after preflight and before
+state mutation. Read failure or any pre-read refusal preserves CPU state.
+AC=0 admits unaligned addresses; AC=1 is a local `Unsupported` refusal before
+span validation and the callback.
+
+The result defines the six arithmetic comparison flags: greater=0, less=CF,
+equal=ZF, unordered=CF|PF|ZF; OF/SF/AF are cleared and other RFLAGS bits are
+preserved. QNaN is unordered without new IE; SNaN adds IE. Either NaN suppresses
+new DE, including when paired with a subnormal. Without NaNs, a subnormal
+operand adds DE. Existing MXCSR IE/DE stickies are preserved. The profile
+requires SSE CPUID bit 25, MXCSR mask `0xffbf`, DAZ=0, IM=DM=1; PM may be clear,
+and RC/FTZ are irrelevant. CR0.EM=1 or CR4.OSFXSR=0 causes `#UD` before
+CR0.TS=`#NM` in the local gate order. Native/JIT/C/fragment/generic execution
+remains closed.
+
+Focused evidence: decoder 1/1, direct ISA 2/2, raw-bit testkit oracle 1/1, and
+runner 1/1 with 288 comparisons. Direct numerical cases cover CPL0–3; direct
+gate/refusal/span/read-failure cases and runner coverage use Ring0. The native
+local-only classifier passed three tests. Full suites passed: ISA 1,674,
+testkit 453, runner 112 unit + 474 fixtures, and x86-runner 8+4. Workspace
+all-target check, formatting, layout, Graphify (10,595 nodes / 22,730 edges /
+311 communities), diff check, and 13 anchors passed. Independent code/schema and final docs/evidence reviews passed; no physical x86 acceptance is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2B `UCOMISS` pp. 4-735–4-736; Vol. 1 §4.9.2,
+§11.5.2.2, §11.5.3, Tables D-6/D-7; Vol. 3A §16.1.3/Table 16-1. The
+instruction entry scopes its Type 3/Table 2-20 reference to VEX forms; Table
+2-20 itself also includes legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37cr--exact-legacy-long64-ucomiss-xmm0dword-ptr-rax),
+[report](../reports/STAGE_2_REPORT.md#s2-37cr--ucomiss-xmm0m32), and [fixture
+notes](../../tests/fixtures/x86/stage2/README.md#s2-37cr--ucomiss-xmm0m32).

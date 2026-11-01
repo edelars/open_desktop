@@ -685,6 +685,15 @@ pub struct ComissMemoryRaxControls {
     pub cr4_osfxsr: bool,
 }
 
+/// Explicit SSE prerequisite gates for exact S2-37cr UCOMISS m32 at [RAX].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UcomissMemoryRaxControls {
+    pub sse_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ComparisonMemoryRaxControls {
     feature_available: bool,
@@ -10127,6 +10136,32 @@ pub fn run_with_comiss_memory_rax_controls(
     )
 }
 
+/// Execute the bounded exact Long64 UCOMISS m32-at-RAX profile.
+pub fn run_with_ucomiss_memory_rax_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: UcomissMemoryRaxControls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_comparison_memory_rax_profile(
+        state,
+        memory,
+        config,
+        ComparisonMemoryRaxProfile {
+            controls: ComparisonMemoryRaxControls {
+                feature_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            precision: ComparisonMemoryRaxPrecision::Binary32,
+            quiet_nan_raises_ie: false,
+        },
+        stop_requested,
+    )
+}
+
 fn run_with_comparison_memory_rax_profile(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -15337,7 +15372,10 @@ fn step_configured(
         let (expected_operation, expected_opcode, expected_length, operand_override) = match profile
             .precision
         {
-            ComparisonMemoryRaxPrecision::Binary32 => (Operation::ComissMemoryRax, 0x2f, 3, false),
+            ComparisonMemoryRaxPrecision::Binary32 if profile.quiet_nan_raises_ie => {
+                (Operation::ComissMemoryRax, 0x2f, 3, false)
+            }
+            ComparisonMemoryRaxPrecision::Binary32 => (Operation::UcomissMemoryRax, 0x2e, 3, false),
             ComparisonMemoryRaxPrecision::Binary64 if profile.quiet_nan_raises_ie => {
                 (Operation::ComisdMemoryRax, 0x2f, 4, true)
             }
@@ -17195,6 +17233,7 @@ fn step_configured(
             && matches!(
                 instruction.operation,
                 Operation::ComissMemoryRax
+                    | Operation::UcomissMemoryRax
                     | Operation::ComisdMemoryRax
                     | Operation::UcomisdMemoryRax
             )
@@ -18088,12 +18127,16 @@ fn step_configured(
             state.sse.is_some()
         }
         Operation::ComissUcomissRegister { .. } => false,
-        Operation::ComissMemoryRax | Operation::ComisdMemoryRax | Operation::UcomisdMemoryRax
+        Operation::ComissMemoryRax
+        | Operation::UcomissMemoryRax
+        | Operation::ComisdMemoryRax
+        | Operation::UcomisdMemoryRax
             if configured_comparison_memory_rax_controls.is_some() =>
         {
             state.sse.is_some()
         }
         Operation::ComissMemoryRax => false,
+        Operation::UcomissMemoryRax => false,
         Operation::ComisdMemoryRax => false,
         Operation::UcomisdMemoryRax => false,
         Operation::Cvtsi2sdR32Register { .. }
@@ -25715,7 +25758,10 @@ fn step_configured(
                 opcode: instruction.opcode.byte,
             });
         }
-        Operation::ComissMemoryRax | Operation::ComisdMemoryRax | Operation::UcomisdMemoryRax
+        Operation::ComissMemoryRax
+        | Operation::UcomissMemoryRax
+        | Operation::ComisdMemoryRax
+        | Operation::UcomisdMemoryRax
             if configured_comparison_memory_rax_controls.is_some() =>
         {
             let address = state.gpr[Register::Rax as usize];
@@ -25819,7 +25865,10 @@ fn step_configured(
             }
             *rflags_defined |= arithmetic_flags & crate::INTEGER_FLAGS;
         }
-        Operation::ComissMemoryRax | Operation::ComisdMemoryRax | Operation::UcomisdMemoryRax => {
+        Operation::ComissMemoryRax
+        | Operation::UcomissMemoryRax
+        | Operation::ComisdMemoryRax
+        | Operation::UcomisdMemoryRax => {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -124354,6 +124403,140 @@ mod swapgs_profile_tests {
     }
 
     #[test]
+    fn ucomiss_m32_memory_compares_raw_binary32_with_quiet_nan_priority() {
+        let code = [0x0f, 0x2e, 0x00];
+        let controls = UcomissMemoryRaxControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+        };
+        let cases: [(u32, u32, u64, u32); 9] = [
+            (0x4000_0000, 0x3f80_0000, 0x0202, 0x0180), // greater
+            (0x3f80_0000, 0x4000_0000, 0x0203, 0x0180), // less
+            (0x0000_0000, 0x8000_0000, 0x0242, 0x0180), // signed zero equality
+            (0x7fc1_2345, 1, 0x0247, 0x0180),           // QNaN suppresses IE and DE
+            (0x7f81_2345, 1, 0x0247, 0x0181),           // SNaN IE, NaN suppresses DE
+            (1, 0x3f80_0000, 0x0203, 0x0182),           // subnormal DE
+            (0x3f80_0000, 0x7fc1_2345, 0x0247, 0x0180), // memory QNaN suppresses IE for UCOMISS
+            (0x7fc1_2345, 0x7f81_2345, 0x0247, 0x0181), // SNaN adds IE when paired with QNaN
+            (1, 0x7f81_2345, 0x0247, 0x0181),           // memory SNaN adds IE and suppresses DE
+        ];
+        for privilege in [
+            PrivilegeLevel::Ring0,
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            for (left, right, expected_flags, expected_mxcsr) in cases {
+                let mut state = LongModeState::default();
+                state.rip = 0xa200;
+                state.gpr[Register::Rax as usize] = 0x0000_0001_0000_2003;
+                state.rflags = 0x0ad7;
+                let mut xmm0 = [0xa5; 16];
+                xmm0[..4].copy_from_slice(&left.to_le_bytes());
+                xmm0[4..8].copy_from_slice(&0x7f81_2345u32.to_le_bytes());
+                xmm0[8..].copy_from_slice(&0x7ff0_0000_0000_0001u64.to_le_bytes());
+                state.sse = Some(SseState {
+                    xmm: [xmm0; 16],
+                    mxcsr: 0x0180,
+                });
+                state.x87 = Some(X87State::fixture_seed());
+                let before_xmm = state.sse.as_ref().unwrap().xmm;
+                let before_x87 = state.x87.clone();
+                let mut memory = Memory::at(&code, 0xa200);
+                memory.data_base = 0x0000_0001_0000_2003;
+                memory.bytes = right.to_le_bytes().to_vec();
+                let result = run_with_ucomiss_memory_rax_controls(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(0xa203),
+                        context: AccessContext {
+                            privilege,
+                            ..AccessContext::default()
+                        },
+                    },
+                    controls,
+                    || false,
+                );
+                assert_eq!(result.exit, RunExit::StopAddress);
+                assert_eq!(result.instructions_executed, 1);
+                assert_eq!(memory.fetches, [0xa200, 0xa201, 0xa202]);
+                assert_eq!(
+                    memory.accesses,
+                    vec![(AccessKind::Read, 0x0000_0001_0000_2003, 4)]
+                );
+                assert_eq!(state.rflags, expected_flags);
+                assert_eq!(state.sse.as_ref().unwrap().mxcsr, expected_mxcsr);
+                assert_eq!(state.sse.as_ref().unwrap().xmm, before_xmm);
+                assert_eq!(state.x87, before_x87);
+                assert_eq!(state.gpr[Register::Rax as usize], 0x0000_0001_0000_2003);
+            }
+        }
+
+        for old_status in [0u32, 1, 2, 3] {
+            let mut state = LongModeState::default();
+            state.rip = 0xa300;
+            state.gpr[Register::Rax as usize] = 0x2000;
+            state.rflags = 0x0ad7;
+            let mut xmm0 = [0x5a; 16];
+            xmm0[..4].copy_from_slice(&0x7fc1_2345u32.to_le_bytes());
+            state.sse = Some(SseState {
+                xmm: [xmm0; 16],
+                mxcsr: 0x0180 | old_status,
+            });
+            let mut memory = Memory::at(&code, 0xa300);
+            memory.data_base = 0x2000;
+            memory.bytes = 1u32.to_le_bytes().to_vec();
+            let result = run_with_ucomiss_memory_rax_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0xa303),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::StopAddress);
+            assert_eq!(state.sse.as_ref().unwrap().mxcsr, 0x0180 | old_status);
+        }
+
+        // A signaling NaN is observed only after the four-byte source read succeeds.
+        let mut state = LongModeState::default();
+        state.rip = 0xa400;
+        state.gpr[Register::Rax as usize] = 0x2000;
+        state.rflags = 0x0ad7;
+        let mut xmm0 = [0x5a; 16];
+        xmm0[..4].copy_from_slice(&0x7f81_2345u32.to_le_bytes());
+        state.sse = Some(SseState {
+            xmm: [xmm0; 16],
+            mxcsr: 0x0180,
+        });
+        let before = state.clone();
+        let mut failed = Memory::at(&code, 0xa400);
+        failed.data_base = 0x2000;
+        failed.bytes.clear();
+        let result = run_with_ucomiss_memory_rax_controls(
+            &mut state,
+            &mut failed,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0xa403),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(failed.accesses, vec![(AccessKind::Read, 0x2000, 4)]);
+        assert_eq!(state, before);
+    }
+
+    #[test]
     fn comiss_m32_memory_gates_and_profile_refusals_are_pre_read() {
         let code = [0x0f, 0x2f, 0x00];
         let controls = ComissMemoryRaxControls {
@@ -124474,6 +124657,134 @@ mod swapgs_profile_tests {
                 );
             } else {
                 assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x2f }));
+            }
+            assert_eq!(memory.fetches, [0xa600, 0xa601, 0xa602]);
+            assert!(memory.accesses.is_empty());
+            assert_eq!(state, before);
+        }
+    }
+
+    #[test]
+    fn ucomiss_m32_memory_gates_and_profile_refusals_are_pre_read() {
+        let code = [0x0f, 0x2e, 0x00];
+        let controls = UcomissMemoryRaxControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+        };
+        for (gate_controls, vector) in [
+            (
+                UcomissMemoryRaxControls {
+                    sse_available: false,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                UcomissMemoryRaxControls {
+                    cr0_em: true,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                UcomissMemoryRaxControls {
+                    cr4_osfxsr: false,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                UcomissMemoryRaxControls {
+                    cr0_ts: true,
+                    ..controls
+                },
+                7,
+            ),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0xa500;
+            state.gpr[Register::Rax as usize] = 0x2000;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x0180,
+            });
+            let before = state.clone();
+            let mut memory = Memory::at(&code, state.rip);
+            memory.data_base = 0x2000;
+            memory.bytes = 1u32.to_le_bytes().to_vec();
+            let result = run_with_ucomiss_memory_rax_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0xa503),
+                    context: AccessContext::default(),
+                },
+                gate_controls,
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector,
+                    error_code: None,
+                    linear_address: None
+                })
+            );
+            assert_eq!(memory.fetches, [0xa500, 0xa501, 0xa502]);
+            assert!(memory.accesses.is_empty());
+            assert_eq!(state, before);
+        }
+        for (address, rflags, mxcsr, no_sse, expected_fault) in [
+            (0x2000, 1 << 18, 0x0180, false, false),
+            (0x0000_8000_0000_0000, 0, 0x0180, false, true),
+            (0x2000, 0, 0x0100, false, false),      // IM=0
+            (0x2000, 0, 0x0080, false, false),      // DM=0
+            (0x2000, 0, 0x01c0, false, false),      // DAZ=1
+            (0x2000, 0, 0x0040_0180, false, false), // reserved bit
+            (0x2000, 0, 0x0180, true, false),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0xa600;
+            state.gpr[Register::Rax as usize] = address;
+            state.rflags = 0x0202 | rflags;
+            if !no_sse {
+                state.sse = Some(SseState {
+                    xmm: [[0x5a; 16]; 16],
+                    mxcsr,
+                });
+            }
+            let before = state.clone();
+            let mut memory = Memory::at(&code, state.rip);
+            memory.data_base = address;
+            memory.bytes = 1u32.to_le_bytes().to_vec();
+            let result = run_with_ucomiss_memory_rax_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0xa603),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            if expected_fault {
+                assert_eq!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector: 13,
+                        error_code: Some(0),
+                        linear_address: None
+                    })
+                );
+            } else {
+                assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x2e }));
             }
             assert_eq!(memory.fetches, [0xa600, 0xa601, 0xa602]);
             assert!(memory.accesses.is_empty());

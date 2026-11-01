@@ -441,6 +441,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 comisd_memory_rax_controls: input.fixture.comisd_memory_rax_controls,
                 ucomisd_memory_rax_controls: input.fixture.ucomisd_memory_rax_controls,
                 comiss_memory_rax_controls: input.fixture.comiss_memory_rax_controls,
+                ucomiss_memory_rax_controls: input.fixture.ucomiss_memory_rax_controls,
                 cvtsi2sd_r32_controls: input.fixture.cvtsi2sd_r32_controls,
                 cvtsi2sd_r32_memory_controls: input.fixture.cvtsi2sd_r32_memory_controls,
                 cvtsi2ss_r32_memory_controls: input.fixture.cvtsi2ss_r32_memory_controls,
@@ -578,6 +579,34 @@ fn comiss_m32_oracle_raises_ie_for_qnan_before_subnormal_and_preserves_x87() {
             .status_word = HexU64(0x0080);
         assert!(tampered.validate_for(&case).is_err());
     }
+}
+
+#[test]
+fn ucomiss_m32_oracle_keeps_qnan_ie_and_de_clear_and_preserves_x87() {
+    let loaded = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_37cr_ucomiss_m32_qnan_subnormal_priority.case.json"
+    ))
+    .unwrap();
+    let mut expected = result(&loaded);
+    let output = snapshot(&mut expected);
+    output.state.rflags = HexU64(0x0247);
+    output.state.sse.as_mut().unwrap().mxcsr = HexU64(0x0180);
+    assert!(expected.validate_for(&loaded).is_ok());
+
+    for mxcsr in [0x0181, 0x0182, 0x0183] {
+        let mut tampered = expected.clone();
+        snapshot(&mut tampered).state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(tampered.validate_for(&loaded).is_err());
+    }
+
+    let mut signaling = loaded.clone();
+    signaling.fixture.initial_state.sse.as_mut().unwrap().xmm[0] =
+        "4523817f010000000000f07f00000000".into();
+    let mut signaling_expected = result(&signaling);
+    let output = snapshot(&mut signaling_expected);
+    output.state.rflags = HexU64(0x0247);
+    output.state.sse.as_mut().unwrap().mxcsr = HexU64(0x0181);
+    assert!(signaling_expected.validate_for(&signaling).is_ok());
 }
 
 fn snapshot(result: &mut RunResult) -> &mut Snapshot {

@@ -7632,3 +7632,23 @@ probes and the runner fixture use Ring0. Native-local-only classification is
 checked; full suites passed: ISA 1,671; testkit 452; runner 112+473;
 x86-runner 8+4; workspace all-target check passed. The profile has no native
 execution or physical x86 acceptance claim. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37cq--exact-legacy-long64-comiss-xmm0dword-ptr-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cq--bounded-long64-comiss-xmm0dword-ptr-rax-m32-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cq--comiss-xmm0m32).
+
+### S2-37cr — UCOMISS XMM0,m32
+
+`s2_37cr_ucomiss_m32_qnan_subnormal_priority.case.json` is the literal exact
+legacy `0F 2E 00` profile. XMM0.low32 is a QNaN and `[RAX]` holds the minimum
+positive binary32 subnormal. UCOMISS sets unordered CF|PF|ZF, adds neither IE
+nor DE for this pair, and preserves the incoming MXCSR control/status value
+`0x180`. This differs from COMISS, which sets IE for QNaN. The fixture includes
+a pending-x87 canary to prove the profile preserves that optional state.
+
+The runner checks nine relation/class cases across RC, FTZ, and four incoming
+IE/DE histories (288 raw-bit comparisons), plus foreign-control and backend
+denial. Direct numerical cases cover CPL0–3; direct gate/refusal/span/read-
+failure probes and runner cases use Ring0. The native-local-only classifier
+passed three tests. Full suites passed: ISA 1,674, testkit 453, runner 112+474,
+and x86-runner 8+4; workspace all-target check, formatting, layout, Graphify
+(10,595/22,730/311), diff check, and 13 anchors passed. Independent code/schema
+and final docs/evidence reviews passed; native execution and physical x86
+acceptance are not claimed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37cr--exact-legacy-long64-ucomiss-xmm0dword-ptr-rax),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cr--bounded-long64-ucomiss-xmm0dword-ptr-rax-m32-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cr--ucomiss-xmm0m32).

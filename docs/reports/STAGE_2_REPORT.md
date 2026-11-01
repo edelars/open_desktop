@@ -20499,3 +20499,28 @@ Sources: Intel SDM Rev. 093 Vol. 2A `COMISS` pp. 3-201–3-202; Vol. 1
 §4.9.2, §§11.5.2.2/11.5.3, Tables D-6/D-7; Vol. 3A §16.1.3/Table 16-1.
 The operand table and operation specify `xmm/m32` and bits [31:0], establishing
 the four-byte source width for this bounded form. See the [plan](../plans/STAGE_2.md#s2-37cq--exact-legacy-long64-comiss-xmm0dword-ptr-rax), [CPU contract](../specs/CPU_CONTRACT.md#s2-37cq--bounded-long64-comiss-xmm0dword-ptr-rax-m32-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cq--comiss-xmm0m32).
+
+## S2-37cr — UCOMISS XMM0,m32
+
+The exact legacy profile `s2-long-ucomiss-memory-rax-v1` accepts only
+`0F 2E 00`, fetches three bytes, and reads one little-endian m32 at checked
+span `[RAX,RAX+3]`. It compares XMM0.low32 to the memory operand. UCOMISS
+produces the standard relation flags; QNaN is unordered without IE, SNaN adds
+IE, and any NaN suppresses new DE. A subnormal with no NaN adds DE. Sticky
+IE/DE are preserved. IM=DM=1 and DAZ=0 are profile requirements; PM may be
+clear, and RC/FTZ are irrelevant. AC=1 is a local pre-read `Unsupported` case.
+
+Focused evidence: decoder 1/1, direct ISA 2/2, raw-bit testkit oracle 1/1,
+runner 1/1 with 288 comparisons, and native-local-only classifier 3 tests
+passed. The direct numerical matrix covers CPL0–3; direct gates/refusals and
+the runner matrix use Ring0. Full suites passed: ISA 1,674, testkit 453, runner
+112 unit + 474 fixtures, and x86-runner 8+4. Workspace all-target check,
+formatting, layout, Graphify (10,595 nodes / 22,730 edges / 311 communities),
+diff check, and 13 anchors passed. Independent code/schema and final docs/evidence reviews passed. No
+physical x86 acceptance is claimed. See the [plan](../plans/STAGE_2.md#s2-37cr--exact-legacy-long64-ucomiss-xmm0dword-ptr-rax),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37cr--bounded-long64-ucomiss-xmm0dword-ptr-rax-m32-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cr--ucomiss-xmm0m32).
+
+Sources: Intel SDM Rev. 093 Vol. 2B `UCOMISS` pp. 4-735–4-736; Vol. 1
+§4.9.2, §11.5.2.2, §11.5.3, Tables D-6/D-7; Vol. 3A §16.1.3/Table 16-1.
+The instruction entry scopes its Type 3/Table 2-20 reference to VEX forms;
+Table 2-20 itself also includes legacy SSE conditions.

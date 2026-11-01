@@ -12,30 +12,30 @@ use od_isa::execute::{
     Cvttss2siRegistersControls, DivpdControls, DivpsControls, DivsdControls, DivssControls,
     MulpdControls, MulpsControls, MulsdControls, MulssControls, SqrtpdControls, SqrtpsControls,
     SqrtsdControls, SqrtssControls, SubpdControls, SubpsControls, SubsdControls, SubssControls,
-    UcomisdMemoryRaxControls, run_with_addpd_register_controls, run_with_addps_register_controls,
-    run_with_addsd_register_controls, run_with_addss_register_controls,
-    run_with_cvtpd2dq_memory_controls, run_with_cvtpd2dq_register_controls,
-    run_with_cvtpd2pi_mm0_memory_rax_controls, run_with_cvtpd2pi_mm0_xmm1_controls,
-    run_with_cvtpd2ps_memory_controls, run_with_cvtpd2ps_register_controls,
-    run_with_cvtpi2pd_memory_controls, run_with_cvtpi2pd_xmm0_mm1_controls,
-    run_with_cvtpi2ps_memory_controls, run_with_cvtpi2ps_xmm0_mm1_controls,
-    run_with_cvtps2dq_memory_controls, run_with_cvtps2pd_memory_controls,
-    run_with_cvtps2pi_mm0_memory_rax_controls, run_with_cvtps2pi_mm0_xmm1_controls,
-    run_with_cvtsd2ss_memory_controls, run_with_cvtsd2ss_register_controls,
-    run_with_cvtss2sd_memory_controls, run_with_cvttpd2dq_memory_controls,
-    run_with_cvttpd2dq_register_controls, run_with_cvttpd2pi_mm0_memory_rax_controls,
-    run_with_cvttpd2pi_mm0_xmm1_controls, run_with_cvttps2dq_memory_controls,
-    run_with_cvttps2dq_register_controls, run_with_cvttps2pi_mm0_memory_rax_controls,
-    run_with_cvttps2pi_mm0_xmm1_controls, run_with_cvttsd2si_registers_controls,
-    run_with_cvttss2si_registers_controls, run_with_divpd_register_controls,
-    run_with_divps_register_controls, run_with_divsd_register_controls,
-    run_with_divss_register_controls, run_with_mulpd_register_controls,
-    run_with_mulps_register_controls, run_with_mulsd_register_controls,
-    run_with_mulss_register_controls, run_with_sqrtpd_register_controls,
-    run_with_sqrtps_register_controls, run_with_sqrtsd_register_controls,
-    run_with_sqrtss_register_controls, run_with_subpd_register_controls,
-    run_with_subps_register_controls, run_with_subsd_register_controls,
-    run_with_subss_register_controls,
+    UcomisdMemoryRaxControls, UcomissMemoryRaxControls, run_with_addpd_register_controls,
+    run_with_addps_register_controls, run_with_addsd_register_controls,
+    run_with_addss_register_controls, run_with_cvtpd2dq_memory_controls,
+    run_with_cvtpd2dq_register_controls, run_with_cvtpd2pi_mm0_memory_rax_controls,
+    run_with_cvtpd2pi_mm0_xmm1_controls, run_with_cvtpd2ps_memory_controls,
+    run_with_cvtpd2ps_register_controls, run_with_cvtpi2pd_memory_controls,
+    run_with_cvtpi2pd_xmm0_mm1_controls, run_with_cvtpi2ps_memory_controls,
+    run_with_cvtpi2ps_xmm0_mm1_controls, run_with_cvtps2dq_memory_controls,
+    run_with_cvtps2pd_memory_controls, run_with_cvtps2pi_mm0_memory_rax_controls,
+    run_with_cvtps2pi_mm0_xmm1_controls, run_with_cvtsd2ss_memory_controls,
+    run_with_cvtsd2ss_register_controls, run_with_cvtss2sd_memory_controls,
+    run_with_cvttpd2dq_memory_controls, run_with_cvttpd2dq_register_controls,
+    run_with_cvttpd2pi_mm0_memory_rax_controls, run_with_cvttpd2pi_mm0_xmm1_controls,
+    run_with_cvttps2dq_memory_controls, run_with_cvttps2dq_register_controls,
+    run_with_cvttps2pi_mm0_memory_rax_controls, run_with_cvttps2pi_mm0_xmm1_controls,
+    run_with_cvttsd2si_registers_controls, run_with_cvttss2si_registers_controls,
+    run_with_divpd_register_controls, run_with_divps_register_controls,
+    run_with_divsd_register_controls, run_with_divss_register_controls,
+    run_with_mulpd_register_controls, run_with_mulps_register_controls,
+    run_with_mulsd_register_controls, run_with_mulss_register_controls,
+    run_with_sqrtpd_register_controls, run_with_sqrtps_register_controls,
+    run_with_sqrtsd_register_controls, run_with_sqrtss_register_controls,
+    run_with_subpd_register_controls, run_with_subps_register_controls,
+    run_with_subsd_register_controls, run_with_subss_register_controls,
 };
 use od_isa::{CpuState, ExecutionResult, interpret};
 use od_testkit::case::{Fixture, LoadedFixture};
@@ -605,6 +605,7 @@ fn expected_native_xorpd_oracle(
                 comisd_memory_rax_controls: None,
                 ucomisd_memory_rax_controls: None,
                 comiss_memory_rax_controls: None,
+                ucomiss_memory_rax_controls: None,
                 cvtsi2sd_r32_controls: None,
                 cvtsi2sd_r32_memory_controls: None,
                 cvtsi2ss_r32_memory_controls: None,
@@ -1143,7 +1144,7 @@ fn execute_fixture_v2(
         run_with_minss_unmasked_denormal_controls, run_with_msr_profile, run_with_rdtsc_source,
         run_with_rep_continuation, run_with_sep_profile, run_with_sti_profile,
         run_with_swapgs_profile, run_with_ucomisd_memory_rax_controls,
-        run_with_xorpd_prerequisites,
+        run_with_ucomiss_memory_rax_controls, run_with_xorpd_prerequisites,
     };
     use od_testkit::v2;
     use std::time::{Duration, Instant};
@@ -2432,6 +2433,23 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongUcomissMemoryRaxV1 {
+        let controls = loaded
+            .fixture
+            .ucomiss_memory_rax_controls
+            .expect("validated UCOMISS m32 controls");
+        run_with_ucomiss_memory_rax_controls(
+            &mut state,
+            memory,
+            config,
+            UcomissMemoryRaxControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongCvtss2sdRegistersV1 {
         let controls = loaded
             .fixture
@@ -3177,6 +3195,7 @@ fn execute_fixture_v2(
                 comisd_memory_rax_controls: loaded.fixture.comisd_memory_rax_controls,
                 ucomisd_memory_rax_controls: loaded.fixture.ucomisd_memory_rax_controls,
                 comiss_memory_rax_controls: loaded.fixture.comiss_memory_rax_controls,
+                ucomiss_memory_rax_controls: loaded.fixture.ucomiss_memory_rax_controls,
                 cvtsi2sd_r32_controls: loaded.fixture.cvtsi2sd_r32_controls,
                 cvtsi2sd_r32_memory_controls: loaded.fixture.cvtsi2sd_r32_memory_controls,
                 cvtsi2ss_r32_memory_controls: loaded.fixture.cvtsi2ss_r32_memory_controls,
@@ -4416,6 +4435,7 @@ mod tests {
                     comisd_memory_rax_controls: input.fixture.comisd_memory_rax_controls,
                     ucomisd_memory_rax_controls: input.fixture.ucomisd_memory_rax_controls,
                     comiss_memory_rax_controls: input.fixture.comiss_memory_rax_controls,
+                    ucomiss_memory_rax_controls: input.fixture.ucomiss_memory_rax_controls,
                     cvtsi2sd_r32_controls: input.fixture.cvtsi2sd_r32_controls,
                     cvtsi2sd_r32_memory_controls: input.fixture.cvtsi2sd_r32_memory_controls,
                     cvtsi2ss_r32_memory_controls: input.fixture.cvtsi2ss_r32_memory_controls,
