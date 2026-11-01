@@ -481,6 +481,73 @@ without failure and all sample floors passed. Mac mini checks remain deferred
 until the end of Stage 3. See the [S3-30a report](../reports/STAGE_3_S3-30a_2026-11-01.md)
 and [reviewed raw evidence](../reports/data/stage3/s3-30a/).
 
+### S3-30b: bounded distinct-branch allocator-configuration profile
+
+`od-bench allocator-cost-branch-routing` is a separate opt-in Apple Silicon
+macOS release diagnostic. It preserves the S3-30a six-instruction prefix and
+frozen input states, but changes the final `JZ` displacement to `+10` and adds
+an admitted `MOV RBX,imm64` fallthrough suffix. The exact 27 bytes are
+`48 03 C0 48 2B D2 48 03 C3 48 2B C9 48 3B C3 74 0A 48 BB 11 00 FF EE DD CC BB AA`;
+SHA-256 is
+`72210fb82b0ffa9f88f10f63697a1051347d07587e3569028947119726fac8c7`. At base
+RIP `0x1000`, the JZ-taken input (ZF=1) exits at `0x101b`; the not-taken input
+(ZF=0) exits at the fallthrough RIP `0x1011`. The suffix is outside the
+Jcc-terminated emitted block and outside the timed native call. This measures
+the configuration cost of `register_homes=4` versus diagnostic `0`; it does
+not isolate marginal spill cost, choose an allocator algorithm, or select a
+production default.
+
+Build the release runner in an isolated target directory. Run a correctness
+preflight and an unscored calibration-only pass before collecting three
+sequential scored process reports:
+
+```sh
+CARGO_TARGET_DIR=/tmp/od-bench-s3-30b-target cargo build --release --offline -p od-bench
+/tmp/od-bench-s3-30b-target/release/od-bench allocator-cost-branch-routing \
+  --preflight-only --process-run 1 \
+  --output work/tmp/stage3/s3-30b/preflight.json
+/tmp/od-bench-s3-30b-target/release/od-bench allocator-cost-branch-routing \
+  --calibration-only --process-run 1 \
+  --output work/tmp/stage3/s3-30b/calibration-only.json
+for run in 1 2 3; do
+  /tmp/od-bench-s3-30b-target/release/od-bench allocator-cost-branch-routing \
+    --process-run "$run" \
+    --output "work/tmp/stage3/s3-30b/run${run}.json"
+done
+```
+
+The preflight checks both exact branch targets, full-state parity, exit and
+retirement accounting, and allocation limits before timing. Calibration-only
+emits no scored samples; each scored process independently repeats correctness
+preflight and calibrates interpreter/native repetition counts for both budgets
+and branch cases, writing its own adjacent calibration journal. The standalone
+calibration report is a feasibility check and does not supply repetition
+counts to the scored runs.
+All durations are retained raw. A pair is one sequential budget4/budget0
+comparison for the same branch input; pair order alternates, and each side is
+published, warmed, timed, then dropped before the other side is published.
+There are 20 such native allocator-configuration pairs per branch input per
+process. Every timed compile or execution side must meet the 200 ms floor; any
+short side leaves the full process diagnostic-only rather than trimming or
+scoring only passing pairs.
+The profile also records 20 paired compile samples per process. Scored reports
+include the per-side warm-up count (64 calls per publication) and the pair
+orders so the protocol can be audited.
+
+Timer boundaries remain separate: compile samples time block construction,
+lowering, allocation, ARM64 emission/finalization, and destruction of each
+unpublished compiled block; publication and published-mapping drop are timed
+and reported separately. Warm-up calls are outside the execution timer. The
+execution timer covers repeated direct `PublishedCode::execute_block` calls,
+including safe host wrapper/context setup, generated entry, and result copy/
+decode; state setup and full-state/exit validation are outside it. The harness
+retains only one `MAP_JIT` mapping at a time. It does not measure cache lookup,
+dispatcher traversal, or the fallthrough suffix, and the execution timing is
+not pure guest-instruction time. This profile adds no allocator/runtime policy
+change. S3-30 remains open pending scored evidence and broader allocator
+correctness/performance evidence; Mac mini checks remain deferred until the end
+of Stage 3.
+
 ### S3-35a: cold first full-corpus execution
 
 `od-bench cold-first-run` is an opt-in Apple Silicon macOS release benchmark

@@ -2373,6 +2373,12 @@ Bounded test-only slice расширил existing `ADD RAX,RCX → MOV RAX,7 →
 
 Focused host test прошёл 1/1; `cargo fmt --all -- --check`, `git diff --check` и Graphify update завершились успешно. Это только локальное correctness evidence для названного W64 fixture и opt-in candidate; не доказывает сохранение произвольных live values, все allocator paths, physical x86, производительность или выбор allocator/default. Runtime/compiler/API и production policy не менялись. S3-30 остаётся открытым для broader pressure/path correctness и allocator cost/performance evidence. См. [S3-30p4 report](../reports/STAGE_3_S3-30p4_2026-11-01.md), [JIT test method](../testing/JIT.md#s3-30p4-jzjnz-pending-flags-under-allocator-pressure) и [saved focused output](../reports/data/stage3/s3-30p4/focused-test.log).
 
+#### S3-30b. Подготовить bounded distinct-branch allocator-configuration measurement
+
+Измерительный профиль `allocator-cost-branch-routing` реализован поверх отдельной frozen fixture: исходные пять инструкций сохранены, `JZ +10` направляет ZF=1 к `0x101b`, а ZF=0 — к `0x1011`; admitted `MOV RBX,imm64` fallthrough находится за границей измеряемого Jcc block. Preflight проверяет обе ветви, full-state/exit/accounting и allocation; scored protocol сравнивает только configuration `register_homes=4` и diagnostic `0`, с alternating native pairs, 200 ms floor и единственной MAP_JIT mapping одновременно. Compile, publication, drop и warm direct-entry execution имеют раздельные границы таймера; описание команды, hash/bytes fixture и воспроизводимый порядок release build/preflight/calibration/scoring приведены в [BENCHMARKS S3-30b](../testing/BENCHMARKS.md#s3-30b-bounded-distinct-branch-allocator-configuration-profile).
+
+Harness и non-scored preflight готовы; три scored process reports ещё не собраны. Это только подготовка bounded configuration-cost evidence: она не выделяет marginal spill cost, не измеряет dispatcher/cache path, не выбирает allocator algorithm или production default. S3-30 остаётся открытым до результатов и более широкой проверки correctness/performance.
+
 ### S3-31. Оценить прямые связи блоков
 
 1. Сначала измерить долю dispatcher/lookup в representative multi-block workload. Переходы через dispatcher уже должны корректно работать.
