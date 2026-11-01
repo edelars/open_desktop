@@ -229,6 +229,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
+        "warm-dispatch-phases" => {
+            let case_list = case_list.ok_or("warm-dispatch-phases requires --case-list PATH")?;
+            let trace = trace_path.ok_or("warm-dispatch-phases requires --trace PATH")?;
+            let output = output.ok_or("warm-dispatch-phases requires --output PATH")?;
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                let value = od_bench::dispatch_cache::run_warm_dispatch_phases(
+                    &case_list,
+                    &trace,
+                    process_run,
+                )?;
+                od_bench::dispatch_cache::write_atomic(&output, &value)?;
+            }
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                let _ = (case_list, trace, output);
+                return Err(
+                    "warm-dispatch-phases requires native Apple Silicon macOS execution".into(),
+                );
+            }
+        }
         "cache-churn" => {
             let case_list = case_list.ok_or("cache-churn requires --case-list PATH")?;
             let trace = trace_path.ok_or("cache-churn requires --trace PATH")?;
@@ -576,7 +597,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {
             print_usage();
             return Err(
-                "expected record, measure, synthetic, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, warm-native-fallback, two-site-memory-cold, two-site-memory-warm, two-site-memory-cache, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, cached-flags-compare, cached-native-flags-compare, or allocator-cost".into(),
+                "expected record, measure, synthetic, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, warm-dispatch-phases, warm-native-fallback, two-site-memory-cold, two-site-memory-warm, two-site-memory-cache, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, cached-flags-compare, cached-native-flags-compare, or allocator-cost".into(),
             );
         }
     }
@@ -620,6 +641,7 @@ fn print_usage() {
   od-bench cold-phases --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench warm-first-run --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench warm-branch-helper --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
+  od-bench warm-dispatch-phases --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench warm-native-fallback --corpus observations.json [--preflight-only] --process-run 1..3 --output report.json\n\
   od-bench cache-churn --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench cache-lifecycle --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\

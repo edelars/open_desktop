@@ -56,6 +56,21 @@ const BRANCH_HELPER_TRACE_SHA256: &str =
     "272eb80c3283e71962f1bc2a2e6d847723164d48f56dd3970134a814df57d2c8";
 const BRANCH_HELPER_INPUTS: usize = 5;
 const BRANCH_HELPER_VISITS: usize = 5;
+const WARM_DISPATCH_PHASE_MAX_RESTARTS: usize = 8;
+const WARM_DISPATCH_PHASE_STRATA: [WarmDispatchPhaseStratumSpec; 2] = [
+    WarmDispatchPhaseStratumSpec {
+        name: "recorded_multiblock",
+        input_index: 9,
+        case_id: "gen_v1_000000005eedcafe_00000009",
+        entry_rips: &[0, 15],
+    },
+    WarmDispatchPhaseStratumSpec {
+        name: "self_loop",
+        input_index: 1003,
+        case_id: "s0_09_sub_jnz_loop",
+        entry_rips: &[0, 0, 0],
+    },
+];
 
 #[derive(Debug)]
 pub struct BenchError(String);
@@ -640,6 +655,128 @@ struct WarmRunReport {
     variants: Vec<FirstRunVariantResult>,
     paired_interpreter_over_fifo_ratios: Vec<f64>,
     total_elapsed_ns: u128,
+}
+
+#[derive(Clone, Copy)]
+struct WarmDispatchPhaseStratumSpec {
+    name: &'static str,
+    input_index: usize,
+    case_id: &'static str,
+    entry_rips: &'static [u64],
+}
+
+#[derive(Serialize)]
+struct WarmDispatchPhasesReport {
+    schema: u32,
+    profile: &'static str,
+    process_run: u8,
+    case_list_sha256: String,
+    trace_sha256: String,
+    capture_host: HostMetadata,
+    measure_host: HostMetadata,
+    inputs: usize,
+    trace_visits: usize,
+    timing_scope: String,
+    phase_boundary_contract: String,
+    observer_effect_interpretation: String,
+    cache_counter_interpretation: String,
+    strata: Vec<WarmDispatchPhasesStratumReport>,
+    total_elapsed_ns: u128,
+}
+
+#[derive(Serialize)]
+struct WarmDispatchPhasesStratumReport {
+    name: &'static str,
+    case_index: usize,
+    case_id: String,
+    fixture_sha256: String,
+    trace_entry_rips: Vec<u64>,
+    unique_entry_count: usize,
+    preflight: WarmDispatchPreflight,
+    ordinary_prewarm_counters: Counters,
+    observed_prewarm_counters: Counters,
+    calibration_attempts: Vec<WarmDispatchCalibrationAttempt>,
+    common_sweeps_per_sample: usize,
+    measured_pairs: usize,
+    measured_series_restarts: Vec<WarmDispatchSeriesRestart>,
+    ordinary_variant: WarmDispatchVariantSamples,
+    observed_variant: WarmDispatchVariantSamples,
+    paired_observed_over_ordinary_call_ratios: Vec<f64>,
+    median_observed_over_ordinary_call_ratio: f64,
+    min_observed_over_ordinary_call_ratio: f64,
+    max_observed_over_ordinary_call_ratio: f64,
+}
+
+#[derive(Serialize)]
+struct WarmDispatchPreflight {
+    full_state_matches_interpreter_oracle: bool,
+    ordinary_observed_results_match: bool,
+    ordinary_observed_normalized_state_matches: bool,
+    ordinary_observed_cache_counters_match: bool,
+    ordinary_prewarm_delta: WarmDispatchCacheDelta,
+    observed_prewarm_delta: WarmDispatchCacheDelta,
+    observed_phase_counts_match_visits: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+struct WarmDispatchCacheDelta {
+    hits: u64,
+    misses: u64,
+    successful_compiles: u64,
+    successful_publications: u64,
+    evictions: u64,
+}
+
+#[derive(Serialize)]
+struct WarmDispatchCalibrationAttempt {
+    sweeps_per_side: usize,
+    ordinary_dispatch_call_elapsed_ns: u128,
+    observed_dispatch_call_elapsed_ns: u128,
+}
+
+#[derive(Serialize)]
+struct WarmDispatchSeriesRestart {
+    failed_pair: usize,
+    attempted_sweeps: usize,
+    ordinary_dispatch_call_elapsed_ns: u128,
+    observed_dispatch_call_elapsed_ns: u128,
+    next_sweeps: usize,
+}
+
+#[derive(Serialize)]
+struct WarmDispatchVariantSamples {
+    variant: &'static str,
+    samples: Vec<WarmDispatchSample>,
+}
+
+#[derive(Serialize)]
+struct WarmDispatchSample {
+    pair: usize,
+    order: usize,
+    sweeps: usize,
+    dispatch_calls: u64,
+    retired_guest_instructions: u64,
+    native_block_executions: u64,
+    dispatch_call_elapsed_ns: u128,
+    attributed_phase_ns: u128,
+    unattributed_adapter_dispatcher_ns: u128,
+    cache_delta: WarmDispatchCacheDelta,
+    resident_entries_high_water: usize,
+    resident_code_bytes_high_water: usize,
+    resident_logical_metadata_bytes_high_water: usize,
+    arena_capacity_slots: usize,
+    arena_available_slots_from_high_water: usize,
+    phase_totals: Vec<PipelinePhaseTotal>,
+}
+
+struct WarmDispatchSweep {
+    elapsed_ns: u128,
+    calls: u64,
+    retired: u64,
+    native_blocks: u64,
+    cache_delta: WarmDispatchCacheDelta,
+    counters_after: Counters,
+    phase_totals: Vec<PipelinePhaseTotal>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize)]
@@ -1382,6 +1519,592 @@ pub fn run_warm_branch_helper(
         BRANCH_HELPER_VISITS,
         "S3-14 branch/helper",
     )
+}
+
+/// Compares ordinary and phase-observed dispatch calls on two explicitly
+/// selected warmed strata from the accepted frozen S3-17 trace.
+pub fn run_warm_dispatch_phases(
+    case_list: &Path,
+    trace_path: &Path,
+    process_run: u8,
+) -> Result<serde_json::Value, BenchError> {
+    if cfg!(debug_assertions) {
+        return Err(err("warm-dispatch-phases requires a release build"));
+    }
+    if !(1..=3).contains(&process_run) {
+        return Err(err("process-run must be 1..=3"));
+    }
+
+    let started = Instant::now();
+    let list = read_bounded(case_list, MAX_CASE_LIST_BYTES, "case list")?;
+    let trace_raw = read_bounded(trace_path, crate::MAX_LOGICAL_BYTES, "trace")?;
+    if od_testkit::sha256_hex(&list) != FROZEN_CASE_LIST_SHA256
+        || od_testkit::sha256_hex(&trace_raw) != FROZEN_TRACE_SHA256
+    {
+        return Err(err(
+            "case list or trace does not match the frozen S3-17 corpus",
+        ));
+    }
+    let trace: RecordedTrace =
+        serde_json::from_slice(&trace_raw).map_err(|e| err(format!("trace JSON: {e}")))?;
+    if trace.inputs.len() != MAX_INPUTS || trace.visits.len() != 1_322 {
+        return Err(err("frozen S3-17 input or trace visit count mismatch"));
+    }
+    let cases = prepare_cases(&list, &trace, started)?;
+    if cases.len() != MAX_INPUTS {
+        return Err(err(
+            "warm-dispatch-phases requires the full S3-17 case list",
+        ));
+    }
+
+    let mut strata = Vec::with_capacity(WARM_DISPATCH_PHASE_STRATA.len());
+    for spec in WARM_DISPATCH_PHASE_STRATA {
+        let trace_entry_rips = trace
+            .visits
+            .iter()
+            .filter(|visit| visit.input_index == spec.input_index)
+            .map(|visit| visit.entry_rip)
+            .collect::<Vec<_>>();
+        if trace_entry_rips != spec.entry_rips {
+            return Err(err(format!(
+                "frozen {} trace entry sequence mismatch",
+                spec.name
+            )));
+        }
+        let case = cases
+            .get(spec.input_index)
+            .ok_or_else(|| err(format!("frozen {} case index is missing", spec.name)))?;
+        let unique_entry_count = spec
+            .entry_rips
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        if case.id != spec.case_id
+            || case.entry_count != spec.entry_rips.len()
+            || case.unique_entries != unique_entry_count
+        {
+            return Err(err(format!("frozen {} case identity mismatch", spec.name)));
+        }
+        strata.push(run_warm_dispatch_phase_stratum(
+            spec,
+            case,
+            &trace.inputs[spec.input_index].fixture_sha256,
+            trace_entry_rips,
+            unique_entry_count,
+            process_run,
+            started,
+        )?);
+    }
+
+    let report = WarmDispatchPhasesReport {
+        schema: 1,
+        profile: "s3-17-recorded-multiblock-and-self-loop",
+        process_run,
+        case_list_sha256: od_testkit::sha256_hex(&list),
+        trace_sha256: od_testkit::sha256_hex(&trace_raw),
+        capture_host: trace.capture_host,
+        measure_host: HostMetadata::current(),
+        inputs: cases.len(),
+        trace_visits: trace.visits.len(),
+        timing_scope: "sum of full Variant::call / Variant::call_observed adapter-plus-dispatcher intervals over one warmed FIFO(16) stratum; each interval includes CodeView, dependency and control/context setup performed by the adapter plus the complete dispatcher call. Case-state cloning/reset, full result/state validation, PhaseRecorder construction/reset and totals extraction are outside the interval. Separate ordinary and observed engines are retained independently through calibration and measured pairs; strata are never aggregated.".into(),
+        phase_boundary_contract: "warm hit-only phase inventory: block_build_and_admission; key_snapshot_and_initial_lookup (minimum sizing, TranslationKey construction, initial snapshot validation, first cache.find and hit/miss counter update only); host_execution_boundary (backend/arena checks, host context, generated entry and result decoding, not pure guest execution). Lowering/allocation/emission/publication phase calls must be zero after warmup. Phase call counts are checked against the full expected visit/block counts for each completed deterministic dispatch; an early exit fails reconciliation. PhaseRecorder end-phase/index work before its elapsed clock read is inside that phase; duration/call accumulation after the clock read is outside. The unattributed_adapter_dispatcher_ns residual also includes the second cache.find, cached snapshot and code-view revalidation, guards, accounting, other cache bookkeeping, adapter setup, and observer bookkeeping outside the phase clock samples.".into(),
+        observer_effect_interpretation: "paired observed/ordinary call ratios are the net difference between two full adapter-plus-dispatcher call paths, including PhaseRecorder work and any difference between generic instantiations; they are not a pure observer-cost estimate. No pure generated-code host-execution time, dispatcher-only total lookup time, or linking benefit is isolated.".into(),
+        cache_counter_interpretation: "hit/miss/compile/publication/eviction fields are per-sample deltas from cumulative counters. Resident entry/code/metadata values are high-water values; arena_available_slots_from_high_water is derived from capacity minus resident-entry high-water and is not live occupancy.".into(),
+        strata,
+        total_elapsed_ns: started.elapsed().as_nanos(),
+    };
+    serde_json::to_value(report).map_err(|e| err(e.to_string()))
+}
+
+fn run_warm_dispatch_phase_stratum(
+    spec: WarmDispatchPhaseStratumSpec,
+    case: &Case,
+    fixture_sha256: &str,
+    trace_entry_rips: Vec<u64>,
+    unique_entry_count: usize,
+    process_run: u8,
+    started: Instant,
+) -> Result<WarmDispatchPhasesStratumReport, BenchError> {
+    let mut ordinary_engine = Variant::new(VariantName::MultiFifo16)?;
+    let mut observed_engine = Variant::new(VariantName::MultiFifo16)?;
+
+    let ordinary_counters_before = ordinary_engine.counters();
+    let mut ordinary_state = case.initial.clone();
+    let ordinary_prewarm_result = ordinary_engine.call(case, &mut ordinary_state)?;
+    validate_dispatch_result(case, &ordinary_state, &ordinary_prewarm_result)?;
+    validate_full_dispatch_state(case, &ordinary_state)?;
+    let ordinary_prewarm_counters = ordinary_engine.counters();
+    let ordinary_prewarm_delta =
+        cache_counter_delta(ordinary_counters_before, ordinary_prewarm_counters)?;
+    validate_warm_prewarm_delta(case, unique_entry_count, ordinary_prewarm_delta, spec.name)?;
+
+    let observed_counters_before = observed_engine.counters();
+    let mut observed_state = case.initial.clone();
+    let mut prewarm_recorder = PhaseRecorder::default();
+    let observed_prewarm_result =
+        observed_engine.call_observed(case, &mut observed_state, &mut prewarm_recorder)?;
+    validate_dispatch_result(case, &observed_state, &observed_prewarm_result)?;
+    validate_full_dispatch_state(case, &observed_state)?;
+    let observed_prewarm_counters = observed_engine.counters();
+    let observed_prewarm_delta =
+        cache_counter_delta(observed_counters_before, observed_prewarm_counters)?;
+    validate_warm_prewarm_delta(case, unique_entry_count, observed_prewarm_delta, spec.name)?;
+    let observed_prewarm_phases = collect_warm_phase_totals(&prewarm_recorder);
+    validate_warm_phase_counts(
+        &observed_prewarm_phases,
+        u64::try_from(case.entry_count).map_err(|_| err("warm phase visit count overflow"))?,
+        observed_prewarm_delta.successful_compiles,
+        observed_prewarm_result.blocks_executed,
+    )?;
+
+    let normalized_states_match = normalized_case_state(case, &ordinary_state)
+        == normalized_case_state(case, &observed_state);
+    let results_match = ordinary_prewarm_result == observed_prewarm_result;
+    let counters_match = counters_match(ordinary_prewarm_counters, observed_prewarm_counters);
+    if !normalized_states_match || !results_match || !counters_match {
+        return Err(err(format!(
+            "ordinary/observed warmed preflight mismatch for {}",
+            spec.name
+        )));
+    }
+
+    let mut calibration_attempts = Vec::new();
+    let mut common_sweeps = 1usize;
+    loop {
+        if started.elapsed() > MAX_RUN_TIME {
+            return Err(err(
+                "30 minute run limit exceeded during warm phase calibration",
+            ));
+        }
+        let observed_first = (calibration_attempts.len() + usize::from(process_run)) % 2 != 0;
+        let (ordinary, observed) = if observed_first {
+            let observed =
+                run_warm_dispatch_sweep(&mut observed_engine, case, common_sweeps, true, started)?;
+            let ordinary =
+                run_warm_dispatch_sweep(&mut ordinary_engine, case, common_sweeps, false, started)?;
+            (ordinary, observed)
+        } else {
+            let ordinary =
+                run_warm_dispatch_sweep(&mut ordinary_engine, case, common_sweeps, false, started)?;
+            let observed =
+                run_warm_dispatch_sweep(&mut observed_engine, case, common_sweeps, true, started)?;
+            (ordinary, observed)
+        };
+        calibration_attempts.push(WarmDispatchCalibrationAttempt {
+            sweeps_per_side: common_sweeps,
+            ordinary_dispatch_call_elapsed_ns: ordinary.elapsed_ns,
+            observed_dispatch_call_elapsed_ns: observed.elapsed_ns,
+        });
+        if ordinary.elapsed_ns >= MIN_SAMPLE.as_nanos()
+            && observed.elapsed_ns >= MIN_SAMPLE.as_nanos()
+        {
+            break;
+        }
+        common_sweeps =
+            scale_warm_phase_sweeps(common_sweeps, ordinary.elapsed_ns.min(observed.elapsed_ns))?;
+    }
+
+    let mut measured_series_restarts = Vec::new();
+    let (ordinary_samples, observed_samples) = loop {
+        let mut ordinary_samples = Vec::with_capacity(FIRST_RUN_PAIRS);
+        let mut observed_samples = Vec::with_capacity(FIRST_RUN_PAIRS);
+        let mut short_pair = None;
+        for pair in 0..FIRST_RUN_PAIRS {
+            if started.elapsed() > MAX_RUN_TIME {
+                return Err(err(
+                    "30 minute run limit exceeded during warm phase samples",
+                ));
+            }
+            let observed_first = (pair + usize::from(process_run)) % 2 != 0;
+            let (ordinary, observed) = if observed_first {
+                let observed = run_warm_dispatch_phase_sample(
+                    pair,
+                    0,
+                    common_sweeps,
+                    &mut observed_engine,
+                    case,
+                    true,
+                    started,
+                )?;
+                let ordinary = run_warm_dispatch_phase_sample(
+                    pair,
+                    1,
+                    common_sweeps,
+                    &mut ordinary_engine,
+                    case,
+                    false,
+                    started,
+                )?;
+                (ordinary, observed)
+            } else {
+                let ordinary = run_warm_dispatch_phase_sample(
+                    pair,
+                    0,
+                    common_sweeps,
+                    &mut ordinary_engine,
+                    case,
+                    false,
+                    started,
+                )?;
+                let observed = run_warm_dispatch_phase_sample(
+                    pair,
+                    1,
+                    common_sweeps,
+                    &mut observed_engine,
+                    case,
+                    true,
+                    started,
+                )?;
+                (ordinary, observed)
+            };
+            if ordinary.dispatch_call_elapsed_ns < MIN_SAMPLE.as_nanos()
+                || observed.dispatch_call_elapsed_ns < MIN_SAMPLE.as_nanos()
+            {
+                short_pair = Some(WarmDispatchSeriesRestart {
+                    failed_pair: pair,
+                    attempted_sweeps: common_sweeps,
+                    ordinary_dispatch_call_elapsed_ns: ordinary.dispatch_call_elapsed_ns,
+                    observed_dispatch_call_elapsed_ns: observed.dispatch_call_elapsed_ns,
+                    next_sweeps: scale_warm_phase_sweeps(
+                        common_sweeps,
+                        ordinary
+                            .dispatch_call_elapsed_ns
+                            .min(observed.dispatch_call_elapsed_ns),
+                    )?,
+                });
+                break;
+            }
+            ordinary_samples.push(ordinary);
+            observed_samples.push(observed);
+        }
+        if let Some(restart) = short_pair {
+            common_sweeps = restart.next_sweeps;
+            measured_series_restarts.push(restart);
+            if measured_series_restarts.len() > WARM_DISPATCH_PHASE_MAX_RESTARTS {
+                return Err(err(
+                    "warm phase samples repeatedly fell below the 200ms floor",
+                ));
+            }
+            continue;
+        }
+        break (ordinary_samples, observed_samples);
+    };
+
+    let mut ratios = ordinary_samples
+        .iter()
+        .zip(&observed_samples)
+        .map(|(ordinary, observed)| {
+            observed.dispatch_call_elapsed_ns as f64 / ordinary.dispatch_call_elapsed_ns as f64
+        })
+        .collect::<Vec<_>>();
+    if ratios.len() != FIRST_RUN_PAIRS {
+        return Err(err(
+            "warm phase series did not retain the requested pair count",
+        ));
+    }
+    let mut sorted_ratios = ratios.clone();
+    sorted_ratios.sort_by(f64::total_cmp);
+    let median_ratio = median_f64(&sorted_ratios);
+    let min_ratio = *sorted_ratios.first().unwrap();
+    let max_ratio = *sorted_ratios.last().unwrap();
+    ratios.shrink_to_fit();
+
+    Ok(WarmDispatchPhasesStratumReport {
+        name: spec.name,
+        case_index: spec.input_index,
+        case_id: case.id.clone(),
+        fixture_sha256: fixture_sha256.to_owned(),
+        trace_entry_rips,
+        unique_entry_count,
+        preflight: WarmDispatchPreflight {
+            full_state_matches_interpreter_oracle: true,
+            ordinary_observed_results_match: results_match,
+            ordinary_observed_normalized_state_matches: normalized_states_match,
+            ordinary_observed_cache_counters_match: counters_match,
+            ordinary_prewarm_delta,
+            observed_prewarm_delta,
+            observed_phase_counts_match_visits: true,
+        },
+        ordinary_prewarm_counters,
+        observed_prewarm_counters,
+        calibration_attempts,
+        common_sweeps_per_sample: common_sweeps,
+        measured_pairs: FIRST_RUN_PAIRS,
+        measured_series_restarts,
+        ordinary_variant: WarmDispatchVariantSamples {
+            variant: "ordinary_noop_observer",
+            samples: ordinary_samples,
+        },
+        observed_variant: WarmDispatchVariantSamples {
+            variant: "phase_observed",
+            samples: observed_samples,
+        },
+        paired_observed_over_ordinary_call_ratios: ratios,
+        median_observed_over_ordinary_call_ratio: median_ratio,
+        min_observed_over_ordinary_call_ratio: min_ratio,
+        max_observed_over_ordinary_call_ratio: max_ratio,
+    })
+}
+
+fn validate_warm_prewarm_delta(
+    case: &Case,
+    unique_entry_count: usize,
+    delta: WarmDispatchCacheDelta,
+    stratum: &str,
+) -> Result<(), BenchError> {
+    let expected_misses = u64::try_from(unique_entry_count)
+        .map_err(|_| err("warm phase unique-entry count overflow"))?;
+    let expected_hits = u64::try_from(case.entry_count)
+        .ok()
+        .and_then(|visits| visits.checked_sub(expected_misses))
+        .ok_or_else(|| err("warm phase prewarm hit count underflow"))?;
+    if delta.hits != expected_hits
+        || delta.misses != expected_misses
+        || delta.successful_compiles != expected_misses
+        || delta.successful_publications != expected_misses
+        || delta.evictions != 0
+    {
+        return Err(err(format!(
+            "{} prewarm counters do not match the frozen entry trace",
+            stratum
+        )));
+    }
+    Ok(())
+}
+
+fn normalized_case_state(case: &Case, state: &LongModeState) -> LongModeState {
+    let mut normalized = state.clone();
+    normalized.rflags &= case.flags_mask;
+    normalized
+}
+
+fn cache_counter_delta(
+    before: Counters,
+    after: Counters,
+) -> Result<WarmDispatchCacheDelta, BenchError> {
+    if !before.cache_lookup_metrics_available || !after.cache_lookup_metrics_available {
+        return Err(err("warm phase requires FIFO cache counters"));
+    }
+    Ok(WarmDispatchCacheDelta {
+        hits: after
+            .hits
+            .checked_sub(before.hits)
+            .ok_or_else(|| err("warm phase hit counter regressed"))?,
+        misses: after
+            .misses
+            .checked_sub(before.misses)
+            .ok_or_else(|| err("warm phase miss counter regressed"))?,
+        successful_compiles: after
+            .compiles
+            .checked_sub(before.compiles)
+            .ok_or_else(|| err("warm phase compile counter regressed"))?,
+        successful_publications: after
+            .publications
+            .checked_sub(before.publications)
+            .ok_or_else(|| err("warm phase publication counter regressed"))?,
+        evictions: after
+            .evictions
+            .checked_sub(before.evictions)
+            .ok_or_else(|| err("warm phase eviction counter regressed"))?,
+    })
+}
+
+fn collect_warm_phase_totals(recorder: &PhaseRecorder) -> Vec<PipelinePhaseTotal> {
+    recorder
+        .totals()
+        .into_iter()
+        .map(|total| PipelinePhaseTotal {
+            phase: warm_phase_name(total.phase).to_owned(),
+            calls: total.calls,
+            elapsed_ns: total.elapsed_ns,
+        })
+        .collect()
+}
+
+fn warm_phase_name(phase: ObservedDispatchPhase) -> &'static str {
+    match phase {
+        ObservedDispatchPhase::BlockBuildAndAdmission => "block_build_and_admission",
+        ObservedDispatchPhase::KeySnapshotAndLookup => "key_snapshot_and_initial_lookup",
+        ObservedDispatchPhase::IrLowering => "ir_lowering",
+        ObservedDispatchPhase::Allocation => "allocation",
+        ObservedDispatchPhase::EmissionAndFinalization => "emission_and_finalization",
+        ObservedDispatchPhase::Publication => "publication",
+        ObservedDispatchPhase::HostExecutionBoundary => "host_execution_boundary",
+    }
+}
+
+fn validate_warm_phase_counts(
+    phases: &[PipelinePhaseTotal],
+    dispatcher_visits: u64,
+    expected_compiles: u64,
+    native_blocks: u64,
+) -> Result<(), BenchError> {
+    let phase_calls = |name: &str| -> u64 {
+        phases
+            .iter()
+            .find(|phase| phase.phase == name)
+            .map_or(0, |phase| phase.calls)
+    };
+    if phase_calls("block_build_and_admission") != dispatcher_visits
+        || phase_calls("key_snapshot_and_initial_lookup") != dispatcher_visits
+        || phase_calls("host_execution_boundary") != native_blocks
+        || phase_calls("ir_lowering") != expected_compiles
+        || phase_calls("allocation") != expected_compiles
+        || phase_calls("emission_and_finalization") != expected_compiles
+        || phase_calls("publication") != expected_compiles
+    {
+        return Err(err(
+            "warm dispatch phase counts do not match visits/counters",
+        ));
+    }
+    Ok(())
+}
+
+fn run_warm_dispatch_sweep(
+    engine: &mut Variant,
+    case: &Case,
+    sweeps: usize,
+    observed: bool,
+    started: Instant,
+) -> Result<WarmDispatchSweep, BenchError> {
+    if sweeps == 0 {
+        return Err(err("warm phase sweep count must be nonzero"));
+    }
+    let counters_before = engine.counters();
+    let mut recorder = PhaseRecorder::default();
+    let mut elapsed_ns = 0u128;
+    let mut calls = 0u64;
+    let mut retired = 0u64;
+    let mut native_blocks = 0u64;
+    for _ in 0..sweeps {
+        if started.elapsed() > MAX_RUN_TIME {
+            return Err(err("30 minute run limit exceeded during warm phase sweep"));
+        }
+        let mut state = case.initial.clone();
+        let call_started = Instant::now();
+        let result = if observed {
+            engine.call_observed(case, &mut state, &mut recorder)?
+        } else {
+            engine.call(case, &mut state)?
+        };
+        elapsed_ns = elapsed_ns
+            .checked_add(call_started.elapsed().as_nanos())
+            .ok_or_else(|| err("warm phase dispatch elapsed overflow"))?;
+
+        // Full parity work is deliberately outside each timed adapter call.
+        validate_dispatch_result(case, &state, &result)?;
+        validate_full_dispatch_state(case, &state)?;
+        calls = calls
+            .checked_add(1)
+            .ok_or_else(|| err("warm phase call count overflow"))?;
+        retired = retired
+            .checked_add(result.retired_instructions)
+            .ok_or_else(|| err("warm phase retirement count overflow"))?;
+        native_blocks = native_blocks
+            .checked_add(result.blocks_executed)
+            .ok_or_else(|| err("warm phase native-block count overflow"))?;
+    }
+
+    let counters_after = engine.counters();
+    let cache_delta = cache_counter_delta(counters_before, counters_after)?;
+    let visits_per_sweep =
+        u64::try_from(case.entry_count).map_err(|_| err("warm phase visit count overflow"))?;
+    let sweep_count = u64::try_from(sweeps).map_err(|_| err("warm phase sweep count overflow"))?;
+    let expected_hits = visits_per_sweep
+        .checked_mul(sweep_count)
+        .ok_or_else(|| err("warm phase expected hit count overflow"))?;
+    let expected_retired = case
+        .retired
+        .checked_mul(sweep_count)
+        .ok_or_else(|| err("warm phase expected retirement count overflow"))?;
+    let expected_native_blocks = visits_per_sweep
+        .checked_mul(sweep_count)
+        .ok_or_else(|| err("warm phase expected native-block count overflow"))?;
+    if calls != sweep_count
+        || retired != expected_retired
+        || native_blocks != expected_native_blocks
+        || cache_delta.hits != expected_hits
+        || cache_delta.misses != 0
+        || cache_delta.successful_compiles != 0
+        || cache_delta.successful_publications != 0
+        || cache_delta.evictions != 0
+    {
+        return Err(err(
+            "warm dispatch sweep was not hit-only with expected work",
+        ));
+    }
+
+    let phase_totals = if observed {
+        let dispatcher_visits = visits_per_sweep
+            .checked_mul(sweep_count)
+            .ok_or_else(|| err("warm phase event count overflow"))?;
+        let totals = collect_warm_phase_totals(&recorder);
+        validate_warm_phase_counts(&totals, dispatcher_visits, 0, native_blocks)?;
+        totals
+    } else {
+        Vec::new()
+    };
+    Ok(WarmDispatchSweep {
+        elapsed_ns,
+        calls,
+        retired,
+        native_blocks,
+        cache_delta,
+        counters_after,
+        phase_totals,
+    })
+}
+
+fn run_warm_dispatch_phase_sample(
+    pair: usize,
+    order: usize,
+    sweeps: usize,
+    engine: &mut Variant,
+    case: &Case,
+    observed: bool,
+    started: Instant,
+) -> Result<WarmDispatchSample, BenchError> {
+    let sweep = run_warm_dispatch_sweep(engine, case, sweeps, observed, started)?;
+    let attributed_phase_ns = sweep
+        .phase_totals
+        .iter()
+        .try_fold(0u128, |sum, phase| sum.checked_add(phase.elapsed_ns))
+        .ok_or_else(|| err("warm phase duration sum overflow"))?;
+    let unattributed_adapter_dispatcher_ns = sweep
+        .elapsed_ns
+        .checked_sub(attributed_phase_ns)
+        .ok_or_else(|| err("warm phases exceed full adapter-plus-dispatcher elapsed"))?;
+    Ok(WarmDispatchSample {
+        pair,
+        order,
+        sweeps,
+        dispatch_calls: sweep.calls,
+        retired_guest_instructions: sweep.retired,
+        native_block_executions: sweep.native_blocks,
+        dispatch_call_elapsed_ns: sweep.elapsed_ns,
+        attributed_phase_ns,
+        unattributed_adapter_dispatcher_ns,
+        cache_delta: sweep.cache_delta,
+        resident_entries_high_water: sweep.counters_after.resident,
+        resident_code_bytes_high_water: sweep.counters_after.code_bytes,
+        resident_logical_metadata_bytes_high_water: sweep.counters_after.logical_bytes,
+        arena_capacity_slots: sweep.counters_after.arena_capacity,
+        arena_available_slots_from_high_water: sweep.counters_after.arena_free,
+        phase_totals: sweep.phase_totals,
+    })
+}
+
+fn scale_warm_phase_sweeps(current: usize, shortest_elapsed_ns: u128) -> Result<usize, BenchError> {
+    let floor_ns = MIN_SAMPLE.as_nanos();
+    let shortest_elapsed_ns = shortest_elapsed_ns.max(1);
+    let multiplier = usize::try_from(floor_ns.div_ceil(shortest_elapsed_ns))
+        .unwrap_or(usize::MAX)
+        .max(2);
+    current
+        .checked_mul(multiplier)
+        .and_then(|sweeps| sweeps.checked_add(1))
+        .ok_or_else(|| err("warm phase calibration sweep count overflow"))
 }
 
 fn run_warm_profile(
