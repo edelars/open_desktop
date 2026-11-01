@@ -393,6 +393,36 @@ pub fn add_finite_same_exponent(lhs: X87Finite, rhs: X87Finite) -> Option<(i32, 
     }
 }
 
+/// Add two nonzero finite values with unequal exponents using an exact
+/// coefficient at the lower exponent.
+///
+/// The returned pair represents `coefficient * 2^(exponent - 63)`. Exponent
+/// gaps from one through 62 fit the aligned signed coefficient in `i128`;
+/// larger gaps are rejected rather than rounded or jammed. Equal exponents
+/// and zero operands are outside this helper. `None` is bounded-helper
+/// rejection, not an architectural result or guest exception.
+pub fn add_finite_unequal_exponents(lhs: X87Finite, rhs: X87Finite) -> Option<(i32, i128)> {
+    if lhs.is_zero() || rhs.is_zero() || lhs.exponent == rhs.exponent {
+        return None;
+    }
+
+    let (higher, lower) = if lhs.exponent > rhs.exponent {
+        (lhs, rhs)
+    } else {
+        (rhs, lhs)
+    };
+    let gap = i64::from(higher.exponent) - i64::from(lower.exponent);
+    if !(1..=62).contains(&gap) {
+        return None;
+    }
+
+    let scale = 1_i128.checked_shl(gap as u32)?;
+    let coefficient = signed_significand(higher)
+        .checked_mul(scale)?
+        .checked_add(signed_significand(lower))?;
+    Some((lower.exponent, coefficient))
+}
+
 /// Add finite binary80 values with matching nonzero exponents and round once.
 ///
 /// Zero operands are neutral; two zeros and exact cancellation are rejected
@@ -406,6 +436,27 @@ pub fn add_finite_same_exponent_to_binary80(
 ) -> Option<X87Binary80> {
     let (exponent, coefficient) = add_finite_same_exponent(lhs, rhs)?;
     round_pack_exact_coefficient(exponent, coefficient, mode)
+}
+
+/// Add finite values with an exact same-exponent or bounded unequal-exponent
+/// path, then round and pack once into binary80.
+///
+/// A single zero is neutral in either operand position. Two zeros and exact
+/// cancellation return `None` because no signed-zero choice is made here. For
+/// nonzero unequal exponents, only gaps through 62 are admitted; no jammed or
+/// intermediate-rounded coefficient is used. `None` also includes finite
+/// binary80 range rejection and is not a guest exception.
+pub fn add_finite_to_binary80(
+    lhs: X87Finite,
+    rhs: X87Finite,
+    mode: RationalRoundingMode,
+) -> Option<X87Binary80> {
+    let sum = if lhs.is_zero() || rhs.is_zero() || lhs.exponent == rhs.exponent {
+        add_finite_same_exponent(lhs, rhs)
+    } else {
+        add_finite_unequal_exponents(lhs, rhs)
+    }?;
+    round_pack_exact_coefficient(sum.0, sum.1, mode)
 }
 
 /// Normalize the exact signed coefficient of `coefficient * 2^(exponent - 63)`.
@@ -715,12 +766,12 @@ impl X87Binary80 {
 mod tests {
     use super::{
         RationalRoundingMode, X87Binary80, X87Binary80Class, X87Finite, X87Grs,
-        add_finite_same_exponent, add_finite_same_exponent_to_binary80, align_finite_pair,
-        divide_finite_significands, divide_finite_to_binary80, multiply_finite_significands,
-        normalize_exact_coefficient, normalize_exact_magnitude, pack_normal_rounded_significand,
-        round_pack_exact_coefficient, round_pack_subnormal_quotient, round_quotient_magnitude,
-        round_quotient_ties_even, round_quotient_to_precision, shift_right_jam,
-        shift_right_jam_u128,
+        add_finite_same_exponent, add_finite_same_exponent_to_binary80, add_finite_to_binary80,
+        add_finite_unequal_exponents, align_finite_pair, divide_finite_significands,
+        divide_finite_to_binary80, multiply_finite_significands, normalize_exact_coefficient,
+        normalize_exact_magnitude, pack_normal_rounded_significand, round_pack_exact_coefficient,
+        round_pack_subnormal_quotient, round_quotient_magnitude, round_quotient_ties_even,
+        round_quotient_to_precision, shift_right_jam, shift_right_jam_u128,
     };
     use crate::state::{X87State, X87Tag};
 
@@ -2589,6 +2640,155 @@ mod tests {
             X87Binary80::from_bytes(raw_before.1.to_bytes()).classify(),
             X87Binary80Class::Normal
         );
+    }
+
+    #[test]
+    fn unequal_exponent_sum_is_exact_at_the_lower_exponent_and_bounded_by_gap() {
+        let make = |exponent, significand, sign| {
+            finite(exponent, significand, sign, X87Binary80Class::Normal)
+        };
+        let one_e0 = make(0, 0x8000_0000_0000_0000, false);
+        let two_e1 = make(1, 0x8000_0000_0000_0000, false);
+        let negative_two_e1 = make(1, 0x8000_0000_0000_0000, true);
+        let negative_one_e0 = make(0, 0x8000_0000_0000_0000, true);
+
+        assert_eq!(
+            add_finite_unequal_exponents(two_e1, one_e0),
+            Some((0, 0x1_8000_0000_0000_0000))
+        );
+        assert_eq!(
+            add_finite_unequal_exponents(one_e0, two_e1),
+            Some((0, 0x1_8000_0000_0000_0000))
+        );
+        assert_eq!(
+            add_finite_unequal_exponents(negative_two_e1, one_e0),
+            Some((0, -0x8000_0000_0000_0000))
+        );
+        assert_eq!(
+            add_finite_unequal_exponents(one_e0, negative_two_e1),
+            Some((0, -0x8000_0000_0000_0000))
+        );
+        assert_eq!(
+            add_finite_unequal_exponents(two_e1, negative_one_e0),
+            Some((0, 0x8000_0000_0000_0000))
+        );
+        assert_eq!(
+            add_finite_unequal_exponents(negative_one_e0, two_e1),
+            Some((0, 0x8000_0000_0000_0000))
+        );
+        assert_eq!(
+            add_finite_unequal_exponents(negative_two_e1, negative_one_e0),
+            Some((0, -0x1_8000_0000_0000_0000))
+        );
+
+        let high_gap = make(62, 0x8000_0000_0000_0000, false);
+        let low_gap = make(0, 0x8000_0000_0000_0000, false);
+        assert_eq!(
+            add_finite_unequal_exponents(high_gap, low_gap),
+            Some((0, (1_i128 << 125) + (1_i128 << 63)))
+        );
+        assert_eq!(
+            add_finite_unequal_exponents(make(63, 0x8000_0000_0000_0000, false), low_gap),
+            None
+        );
+        assert_eq!(add_finite_unequal_exponents(two_e1, two_e1), None);
+        assert_eq!(
+            add_finite_unequal_exponents(one_e0, finite(0, 0, false, X87Binary80Class::Zero)),
+            None
+        );
+    }
+
+    #[test]
+    fn unequal_exponent_addition_composes_once_with_rounding_and_binary80_packing() {
+        let make = |exponent, significand, sign| {
+            finite(exponent, significand, sign, X87Binary80Class::Normal)
+        };
+        let one = make(0, 0x8000_0000_0000_0000, false);
+        let two = make(1, 0x8000_0000_0000_0000, false);
+        let negative_two = make(1, 0x8000_0000_0000_0000, true);
+        let zero = finite(0, 0, false, X87Binary80Class::Zero);
+        let before = (one, two, negative_two, zero);
+
+        assert_eq!(
+            add_finite_to_binary80(two, one, RationalRoundingMode::NearestTiesEven)
+                .unwrap()
+                .to_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 0xc0, 0, 0x40]
+        );
+        assert_eq!(
+            add_finite_to_binary80(negative_two, one, RationalRoundingMode::NearestTiesEven)
+                .unwrap()
+                .to_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0xbf]
+        );
+        assert_eq!(
+            add_finite_to_binary80(zero, one, RationalRoundingMode::NearestTiesEven)
+                .unwrap()
+                .to_bytes(),
+            raw_finite(0x3fff, 0x8000_0000_0000_0000, false).to_bytes()
+        );
+        assert_eq!(
+            add_finite_to_binary80(one, zero, RationalRoundingMode::NearestTiesEven)
+                .unwrap()
+                .to_bytes(),
+            raw_finite(0x3fff, 0x8000_0000_0000_0000, false).to_bytes()
+        );
+        assert_eq!(
+            add_finite_to_binary80(zero, zero, RationalRoundingMode::NearestTiesEven),
+            None
+        );
+        assert_eq!(
+            add_finite_to_binary80(
+                one,
+                make(0, 0x8000_0000_0000_0000, true),
+                RationalRoundingMode::NearestTiesEven
+            ),
+            None
+        );
+
+        let high = make(62, 0x8000_0000_0000_0000, false);
+        let low = make(0, 0x8000_0000_0000_0001, false);
+        let expected_sig = |mode| match mode {
+            RationalRoundingMode::TowardPositive => 0x8000_0000_0000_0003,
+            RationalRoundingMode::NearestTiesEven
+            | RationalRoundingMode::TowardZero
+            | RationalRoundingMode::TowardNegative => 0x8000_0000_0000_0002,
+        };
+        for mode in [
+            RationalRoundingMode::NearestTiesEven,
+            RationalRoundingMode::TowardZero,
+            RationalRoundingMode::TowardPositive,
+            RationalRoundingMode::TowardNegative,
+        ] {
+            assert_eq!(
+                add_finite_to_binary80(high, low, mode).unwrap().to_bytes(),
+                raw_finite(0x403d, expected_sig(mode), false).to_bytes()
+            );
+        }
+        let negative_high = make(62, 0x8000_0000_0000_0000, true);
+        let negative_low = make(0, 0x8000_0000_0000_0001, true);
+        assert_eq!(
+            add_finite_to_binary80(
+                negative_high,
+                negative_low,
+                RationalRoundingMode::TowardNegative
+            )
+            .unwrap()
+            .to_bytes(),
+            raw_finite(0x403d, 0x8000_0000_0000_0003, true).to_bytes()
+        );
+
+        let max_finite = make(16383, u64::MAX, false);
+        let tiny_positive = make(16321, 0x8000_0000_0000_0000, false);
+        assert_eq!(
+            add_finite_to_binary80(
+                max_finite,
+                tiny_positive,
+                RationalRoundingMode::NearestTiesEven
+            ),
+            None
+        );
+        assert_eq!((one, two, negative_two, zero), before);
     }
 
     #[test]
