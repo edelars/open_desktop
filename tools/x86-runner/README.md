@@ -95,3 +95,9 @@ or acceptance is claimed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.m
 
 
 S2-37cl CVTSS2SI RAX,m32 is classified local-only. Portable classifier and runner denial evidence establishes backend closure only, not physical x86 execution or acceptance.
+
+### S2-37cm local-only classification
+
+The exact legacy `CVTTSS2SI RAX,dword ptr [RAX]` schema-v2 profile remains
+classified as local-only. The portable classifier test covers its denial
+classification; this is not a claim that native physical execution was run.

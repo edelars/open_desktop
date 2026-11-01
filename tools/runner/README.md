@@ -362,3 +362,13 @@ passed 1/1; JIT/native backends remain denied. See the [CPU contract](../../docs
 ### S2-37cl — CVTSS2SI RAX,m32
 
 The fixture runner supports only exact `F3 48 0F 2D 00` through a separate strict interpreter profile. The testkit oracle covers 20 source vectors × 4 RC modes × 4 IE/PE histories (320 comparisons); AC=1, malformed controls, tampering, and backend denial are also checked.
+
+### S2-37cm — CVTTSS2SI RAX,m32
+
+The runner has a separate strict interpreter profile for exact
+`F3 48 0F 2C 00`. A literal -1.5 source with MXCSR round-down proves truncation
+toward zero and the full 64-bit RAX result. The independent oracle covers 320
+comparisons across raw values, all RC values, and incoming IE/PE histories;
+malformed/foreign controls, AC refusal, tampering, and JIT/native denial are
+checked. This is Ring0 fixture evidence, not physical-x86 acceptance. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cm--bounded-long64-cvttss2si-raxdword-ptr-rax-m32-to-r64-memory-profile).

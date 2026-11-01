@@ -779,3 +779,12 @@ See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ck--bounded-long64-
 ### S2-37cl — CVTSS2SI RAX,m32 memory profile
 
 Exact `F3 48 0F 2D 00` is interpreter-only. It reads one dword at captured RAX, rounds binary32 under MXCSR.RC, range-checks signed i64, and writes full RAX; masked invalid adds IE, valid inexact adds PE. It requires SSE bit 25 and local IM=PM=1/DAZ=0 admission, and leaves native/JIT/generic routes closed.
+
+### S2-37cm — CVTTSS2SI RAX,m32 memory profile
+
+The bounded interpreter accepts exact legacy `F3 48 0F 2C 00`, captures the
+original RAX, reads exactly four bytes, truncates binary32 toward zero, checks
+signed-i64 range, and writes full RAX. Invalid inputs set sticky IE; valid
+inexact inputs set PE. The profile uses SSE bit 25, requires IM=PM=1 and DAZ=0,
+and keeps generic/JIT/native/C routes closed. Focused ISA checks passed 2/2
+execution tests and 1/1 decoder test; no physical x86 acceptance is claimed.

@@ -453,6 +453,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 cvtss2si_r32_memory_controls: input.fixture.cvtss2si_r32_memory_controls,
                 cvtss2si_r64_memory_controls: input.fixture.cvtss2si_r64_memory_controls,
                 cvttss2si_r32_memory_controls: input.fixture.cvttss2si_r32_memory_controls,
+                cvttss2si_r64_memory_controls: input.fixture.cvttss2si_r64_memory_controls,
                 fxsave64_cr0_controls: input.fixture.fxsave64_cr0_controls,
                 fxrstor64_cr0_controls: input.fixture.fxrstor64_cr0_controls,
                 rdtsc_source_calls: None,
@@ -9586,6 +9587,46 @@ fn cvttss2si_oracle_always_truncates_toward_zero() {
         independent_binary32_to_integer(0x4f00_0000, 3, false),
         (0x8000_0000, true, false)
     );
+}
+
+#[test]
+fn cvttss2si_r64_memory_oracle_covers_raw_integer_anchors() {
+    let cases = [
+        (0x3fc0_0000, 1u64, false, true),
+        (0xbfc0_0000, u64::MAX, false, true),
+        (0x4020_0000, 2, false, true),
+        (0xc020_0000, u64::MAX - 1, false, true),
+        (0x0000_0001, 0, false, true),
+        (0x8000_0001, 0, false, true),
+        (0x5eff_ffff, 0x7fff_ff80_0000_0000, false, false),
+        (0x5f00_0000, 0x8000_0000_0000_0000, true, false),
+        (0xdeff_ffff, 0x8000_0080_0000_0000, false, false),
+        (0xdf00_0000, 0x8000_0000_0000_0000, false, false),
+        (0xdf00_0001, 0x8000_0000_0000_0000, true, false),
+    ];
+    for (raw, expected_bits, expected_invalid, expected_inexact) in cases {
+        let (bits, invalid, inexact) = independent_binary32_to_integer(raw, 3, true);
+        assert_eq!(bits, expected_bits, "raw={raw:08x}");
+        assert_eq!(invalid, expected_invalid, "raw={raw:08x}");
+        assert_eq!(inexact, expected_inexact, "raw={raw:08x}");
+    }
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_37cm_cvttss2si_m32_i64_truncation.case.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        fixture.fixture.profile,
+        Profile::LongCvttss2siR64MemoryRaxV1
+    );
+    let mut foreign = fixture.fixture;
+    foreign.cvttss2si_r32_memory_controls = Some(Cvttss2siR32MemoryControlSnapshot {
+        sse_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+    });
+    assert!(foreign.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
 }
 
 #[test]

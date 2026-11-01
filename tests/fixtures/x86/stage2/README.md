@@ -7549,3 +7549,17 @@ direct ISA gate/span/read-failure tests exercise Ring0; they are not physical-x8
 acceptance. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37cl--exact-legacy-long64-cvtss2si-raxdword-ptr-rax),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cl--bounded-long64-cvtss2si-raxdword-ptr-rax-m32-to-r64-memory-profile), and
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cl--cvtss2si-raxdword-ptr-rax-m32-to-r64-memory-profile).
+
+### S2-37cm — CVTTSS2SI RAX,m32
+
+`s2_37cm_cvttss2si_m32_i64_truncation.case.json` is the literal exact legacy
+`F3 48 0F 2C 00` profile. It reads four bytes from the captured original RAX
+and writes the signed-i64 result to full RAX. The binary32 source is -1.5 with
+MXCSR round-down (`0x3080`); the result remains -1 with PE, distinguishing
+TowardZero from ordinary CVT rounding and an EAX write. The runner matrix
+covers signed boundaries, fractions, subnormals, NaN/infinity, RC independence,
+sticky histories, pending-x87 preservation, tampering, and backend denial. Its
+numerical comparisons and direct ISA gate/span/read-failure tests exercise
+Ring0 only; no physical-x86 acceptance is claimed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37cm--exact-legacy-long64-cvttss2si-raxdword-ptr-rax),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cm--bounded-long64-cvttss2si-raxdword-ptr-rax-m32-to-r64-memory-profile), and
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cm--cvttss2si-raxdword-ptr-rax-m32-to-r64-memory-profile).

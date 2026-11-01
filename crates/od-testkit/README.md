@@ -410,3 +410,13 @@ the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ck--bounded-long64-cvts
 ### S2-37cl — CVTSS2SI RAX,m32 memory oracle
 
 The separate schema-v2 profile parses raw binary32 memory bits and uses integer classification, MXCSR rounding, and signed-i64 range checks. It validates full RAX aliasing, sticky IE/PE, exception metadata, and state preservation without host FP or production conversion helpers.
+
+### S2-37cm — CVTTSS2SI RAX,m32 memory oracle
+
+The separate schema-v2 profile validates the exact `F3 48 0F 2C 00` memory
+form and carries a dedicated SSE-control echo. Its independent oracle reads
+raw binary32 bits, applies TowardZero regardless of MXCSR.RC, checks signed-i64
+range, and validates sticky IE/PE plus full RAX output without host FP or a
+production conversion helper. The runner exercises 20 raw values × 4 RC modes ×
+4 sticky histories (320 comparisons); the focused raw-integer anchor test passed
+1/1.

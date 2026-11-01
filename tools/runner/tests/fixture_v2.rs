@@ -84,6 +84,9 @@ const CVTSS2SI_R32_MEMORY_RAX: &[u8] =
 const CVTSS2SI_R64_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37cl_cvtss2si_m32_i64_rc_rounding.case.json"
 );
+const CVTTSS2SI_R64_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37cm_cvttss2si_m32_i64_truncation.case.json"
+);
 const CVTTSS2SI_R32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37ci_cvttss2si_m32_i32_rc_independence.case.json"
 );
@@ -34385,6 +34388,190 @@ fn cvtss2si_m32_r64_rounds_binary32_and_writes_full_rax() {
         ),
         (0x0000_0001, [0, 0, 1, 0], [false; 4], [true; 4]),
         (0x8000_0001, [0, u64::MAX, 0, 0], [false; 4], [true; 4]),
+        (
+            0x7fc0_0001,
+            [0x8000_0000_0000_0000; 4],
+            [true; 4],
+            [false; 4],
+        ),
+        (
+            0x7f80_0001,
+            [0x8000_0000_0000_0000; 4],
+            [true; 4],
+            [false; 4],
+        ),
+        (
+            0x7f80_0000,
+            [0x8000_0000_0000_0000; 4],
+            [true; 4],
+            [false; 4],
+        ),
+        (
+            0xff80_0000,
+            [0x8000_0000_0000_0000; 4],
+            [true; 4],
+            [false; 4],
+        ),
+    ];
+    for (raw, expected, new_ie, new_pe) in cases {
+        for rc in 0..4u64 {
+            for old_flags in [0, 1, 0x20, 0x21] {
+                let mut case = fixture.clone();
+                case.memory[1].initial_bytes_hex = raw
+                    .to_le_bytes()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
+                let initial_rax = case.initial_state.gpr[0].get();
+                let mxcsr = 0x1080 | (rc << 13) | old_flags;
+                case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+                let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                od_testkit::v2::compare(&input, &result, &result).unwrap();
+                assert_eq!(result.outcome, Outcome::StopAddress {});
+                let actual = snapshot(&result);
+                assert_eq!(actual.state.gpr[0], HexU64(expected[rc as usize]));
+                assert_eq!(
+                    actual.state.sse.as_ref().unwrap().mxcsr,
+                    HexU64(
+                        mxcsr
+                            | u64::from(new_ie[rc as usize])
+                            | (u64::from(new_pe[rc as usize]) << 5)
+                    )
+                );
+                assert_eq!(actual.state.x87, case.initial_state.x87);
+                assert_eq!(actual.state.gpr[1..], case.initial_state.gpr[1..]);
+                assert_eq!(actual.state.rip, HexU64(case.initial_state.rip.get() + 5));
+                assert_eq!(initial_rax, input.fixture.initial_state.gpr[0].get());
+                assert_eq!(actual.memory[1].bytes_hex, case.memory[1].initial_bytes_hex);
+            }
+        }
+    }
+
+    let literal_source = fixture.to_json().unwrap();
+    let (literal_input, literal) = run(&literal_source, "interpreter", 0);
+    for backend in ["jit", "native"] {
+        let (_, result) = run(&literal_source, backend, 4);
+        assert!(
+            matches!(result.outcome, Outcome::Unsupported { .. }),
+            "{backend}"
+        );
+    }
+    let mut ac = fixture.clone();
+    ac.initial_state.rflags = HexU64(ac.initial_state.rflags.get() | (1 << 18));
+    ac.expected_exit = ExpectedExit::Unsupported;
+    let (_, result) = run(&ac.to_json().unwrap(), "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(snapshot(&result).state, ac.initial_state);
+
+    let mut ac_noncanonical = fixture.clone();
+    let noncanonical = 0x0000_8000_0000_0000;
+    ac_noncanonical.initial_state.gpr[0] = HexU64(noncanonical);
+    ac_noncanonical.memory[1].guest_address = HexU64(noncanonical);
+    ac_noncanonical.initial_state.rflags =
+        HexU64(ac_noncanonical.initial_state.rflags.get() | (1 << 18));
+    ac_noncanonical.expected_exit = ExpectedExit::Unsupported;
+    let (_, result) = run(&ac_noncanonical.to_json().unwrap(), "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(snapshot(&result).state, ac_noncanonical.initial_state);
+
+    for mxcsr in [0x1000, 0x0080, 0x10c0, 0x0040_1080] {
+        let mut malformed = fixture.clone();
+        malformed.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(malformed.validate().is_err(), "MXCSR={mxcsr:#010x}");
+        assert!(Fixture::from_json(&serde_json::to_vec(&malformed).unwrap()).is_err());
+    }
+    let mut foreign = fixture.clone();
+    foreign.cvtss2si_r32_memory_controls = Some(od_testkit::v2::Cvtss2siR32MemoryControlSnapshot {
+        sse_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+    });
+    assert!(foreign.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
+
+    let mut tampered = literal.clone();
+    let Observation::Available { value } = &mut tampered.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.state.gpr[0] = HexU64(value.state.gpr[0].get() ^ 1);
+    assert!(od_testkit::v2::compare(&literal_input, &literal, &tampered).is_err());
+}
+
+#[test]
+fn cvttss2si_m32_r64_truncates_independent_of_rc_and_writes_full_rax() {
+    let mut fixture = Fixture::from_json(CVTTSS2SI_R64_MEMORY_RAX)
+        .unwrap()
+        .fixture;
+    assert_eq!(
+        fixture.profile,
+        od_testkit::v2::Profile::LongCvttss2siR64MemoryRaxV1
+    );
+    assert_eq!(fixture.initial_state.gpr[0].get() >> 32, 1);
+    let x87_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_25a_read_cpl0.case.json");
+    let x87_fixture = Fixture::from_json(&fs::read(x87_path).unwrap()).unwrap();
+    let mut x87 = x87_fixture.fixture.initial_state.x87.unwrap();
+    x87.status_word = HexU64(x87.status_word.get() | 0x80);
+    fixture.initial_state.x87 = Some(x87);
+
+    let cases: [(u32, [u64; 4], [bool; 4], [bool; 4]); 20] = [
+        (
+            0x5eff_ffff,
+            [0x7fff_ff80_0000_0000; 4],
+            [false; 4],
+            [false; 4],
+        ),
+        (
+            0x5f00_0000,
+            [0x8000_0000_0000_0000; 4],
+            [true; 4],
+            [false; 4],
+        ),
+        (
+            0xdeff_ffff,
+            [0x8000_0080_0000_0000; 4],
+            [false; 4],
+            [false; 4],
+        ),
+        (
+            0xdf00_0000,
+            [0x8000_0000_0000_0000; 4],
+            [false; 4],
+            [false; 4],
+        ),
+        (
+            0xdf00_0001,
+            [0x8000_0000_0000_0000; 4],
+            [true; 4],
+            [false; 4],
+        ),
+        (
+            0x4f00_0000,
+            [0x0000_0000_8000_0000; 4],
+            [false; 4],
+            [false; 4],
+        ),
+        (
+            0x4f80_0000,
+            [0x0000_0001_0000_0000; 4],
+            [false; 4],
+            [false; 4],
+        ),
+        (
+            0xcf00_0000,
+            [0xffff_ffff_8000_0000; 4],
+            [false; 4],
+            [false; 4],
+        ),
+        (0x0000_0000, [0; 4], [false; 4], [false; 4]),
+        (0x8000_0000, [0; 4], [false; 4], [false; 4]),
+        (0x3fc0_0000, [1; 4], [false; 4], [true; 4]),
+        (0xbfc0_0000, [u64::MAX; 4], [false; 4], [true; 4]),
+        (0x4020_0000, [2; 4], [false; 4], [true; 4]),
+        (0xc020_0000, [u64::MAX - 1; 4], [false; 4], [true; 4]),
+        (0x0000_0001, [0; 4], [false; 4], [true; 4]),
+        (0x8000_0001, [0; 4], [false; 4], [true; 4]),
         (
             0x7fc0_0001,
             [0x8000_0000_0000_0000; 4],
