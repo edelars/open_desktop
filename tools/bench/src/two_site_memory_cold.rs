@@ -22,6 +22,7 @@ const PROFILE_ID: &str = "s3-35c-two-site-memory-cold-direct-v1";
 const ENTRY_RIP: u64 = 0x9e00;
 const INSTRUCTION_BUDGET: u64 = 2;
 const EXPECTED_CASES: usize = 2 * 3 * 400;
+const PREFLIGHT_REPETITIONS_PER_CASE: usize = 2;
 const FROZEN_INPUT_DIGEST: &str =
     "b09478b556aa91234d8c453f20e70f637222c5de2d7369d305ffe7c78caae540";
 const MIN_SIDE_TIME: Duration = Duration::from_millis(200);
@@ -47,6 +48,10 @@ pub struct PreflightReport {
     source_sha256: String,
     measure_host: HostMetadata,
     preflight_parity_cases: usize,
+    unique_cases: usize,
+    repetitions_per_case: usize,
+    interpreter_executions: usize,
+    native_executions: usize,
     frozen_seed_values: [u64; 3],
     sequence_counts: [usize; 2],
 }
@@ -65,6 +70,10 @@ pub struct Report {
     journal_path: String,
     measure_host: HostMetadata,
     preflight_parity_cases: usize,
+    preflight_unique_cases: usize,
+    preflight_repetitions_per_case: usize,
+    interpreter_preflight_executions: usize,
+    native_preflight_executions: usize,
     frozen_seed_values: [u64; 3],
     sequence_counts: [usize; 2],
     repetitions_per_side: u32,
@@ -279,7 +288,8 @@ pub fn preflight(process_run: u8) -> Result<PreflightReport, Box<dyn std::error:
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
         validate_process_run(process_run)?;
-        let (cases, input_digest) = build_and_preflight()?;
+        let (cases, input_digest, interpreter_executions, native_executions) =
+            build_and_preflight()?;
         let sequence_counts = count_sequences(&cases);
         Ok(PreflightReport {
             schema: 1,
@@ -290,7 +300,11 @@ pub fn preflight(process_run: u8) -> Result<PreflightReport, Box<dyn std::error:
             input_digest,
             source_sha256: source_sha256(),
             measure_host: HostMetadata::current(),
-            preflight_parity_cases: cases.len(),
+            preflight_parity_cases: cases.len() * PREFLIGHT_REPETITIONS_PER_CASE,
+            unique_cases: cases.len(),
+            repetitions_per_case: PREFLIGHT_REPETITIONS_PER_CASE,
+            interpreter_executions,
+            native_executions,
             frozen_seed_values: S3_34A_SEEDS,
             sequence_counts,
         })
@@ -315,7 +329,8 @@ fn run_native(process_run: u8, journal_path: &Path) -> Result<Report, BenchError
 
     validate_process_run(process_run)?;
     let started = Instant::now();
-    let (cases, input_digest) = build_and_preflight()?;
+    let (cases, input_digest, interpreter_preflight_executions, native_preflight_executions) =
+        build_and_preflight()?;
     let sequence_counts = count_sequences(&cases);
     if let Some(parent) = journal_path
         .parent()
@@ -420,7 +435,11 @@ fn run_native(process_run: u8, journal_path: &Path) -> Result<Report, BenchError
         source_sha256,
         journal_path: journal_path.display().to_string(),
         measure_host,
-        preflight_parity_cases: case_count,
+        preflight_parity_cases: case_count * PREFLIGHT_REPETITIONS_PER_CASE,
+        preflight_unique_cases: case_count,
+        preflight_repetitions_per_case: PREFLIGHT_REPETITIONS_PER_CASE,
+        interpreter_preflight_executions,
+        native_preflight_executions,
         frozen_seed_values: S3_34A_SEEDS,
         sequence_counts,
         repetitions_per_side: repetitions,
@@ -498,9 +517,11 @@ fn validate_process_run(process_run: u8) -> Result<(), BenchError> {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn build_and_preflight() -> Result<(Vec<Case>, String), BenchError> {
+fn build_and_preflight() -> Result<(Vec<Case>, String, usize, usize), BenchError> {
     let mut cases = Vec::with_capacity(EXPECTED_CASES);
     let mut digest = Vec::with_capacity(EXPECTED_CASES * 256);
+    let mut interpreter_executions = 0usize;
+    let mut native_executions = 0usize;
     for sequence in S3_34A_SEQUENCES {
         for seed in S3_34A_SEEDS {
             for index in 0..S3_34A_CASES_PER_SEED {
@@ -521,9 +542,39 @@ fn build_and_preflight() -> Result<(Vec<Case>, String), BenchError> {
                 {
                     return Err(err("frozen sequence/seed/index iteration order changed"));
                 }
-                let oracle = interpret(&input)?;
-                let native = native_once(&input)?;
-                validate_pair(&oracle, &native, &input, seed, index, true)?;
+                let mut oracle = None::<Outcome>;
+                let mut first_native = None::<Outcome>;
+                for repetition in 0..PREFLIGHT_REPETITIONS_PER_CASE {
+                    // Both functions rebuild CPU state and private RAM from the
+                    // immutable input, so every trial starts from a fresh reset.
+                    let interpreter = interpret(&input)?;
+                    interpreter_executions += 1;
+                    let native = native_once(&input)?;
+                    native_executions += 1;
+                    validate_pair(&interpreter, &native, &input, seed, index, true)?;
+                    if repetition == 0 {
+                        oracle = Some(interpreter);
+                        first_native = Some(native);
+                    } else {
+                        let first_interpreter = oracle
+                            .as_ref()
+                            .expect("first interpreter trial is retained");
+                        let first_native = first_native
+                            .as_ref()
+                            .expect("first native trial is retained");
+                        if !repeat_outcomes_equal(first_interpreter, &interpreter) {
+                            return Err(err(format!(
+                                "interpreter repeat mismatch for {sequence:?}, seed={seed}, index={index}"
+                            )));
+                        }
+                        if !repeat_outcomes_equal(first_native, &native) {
+                            return Err(err(format!(
+                                "native repeat mismatch for {sequence:?}, seed={seed}, index={index}"
+                            )));
+                        }
+                    }
+                }
+                let oracle = oracle.expect("exactly two interpreter trials were run");
                 cases.push(Case {
                     seed,
                     index,
@@ -548,7 +599,30 @@ fn build_and_preflight() -> Result<(Vec<Case>, String), BenchError> {
             "frozen S3-34a input digest changed: {input_digest}"
         )));
     }
-    Ok((cases, input_digest))
+    let expected_backend_executions =
+        preflight_execution_count(EXPECTED_CASES, PREFLIGHT_REPETITIONS_PER_CASE)
+            .ok_or_else(|| err("preflight execution count overflow"))?;
+    if interpreter_executions != expected_backend_executions
+        || native_executions != expected_backend_executions
+    {
+        return Err(err(format!(
+            "preflight backend execution counts differ from exact repeated matrix: interpreter={interpreter_executions}, native={native_executions}, expected={expected_backend_executions}"
+        )));
+    }
+    Ok((
+        cases,
+        input_digest,
+        interpreter_executions,
+        native_executions,
+    ))
+}
+
+fn preflight_execution_count(unique_cases: usize, repetitions_per_case: usize) -> Option<usize> {
+    unique_cases.checked_mul(repetitions_per_case)
+}
+
+fn repeat_outcomes_equal(first: &Outcome, second: &Outcome) -> bool {
+    first == second
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -988,8 +1062,9 @@ fn classify_final_status(
 mod tests {
     use super::{
         EXPECTED_CASES, FixtureMemory, MAX_REPETITIONS, MIN_SIDE_TIME, MemoryCorpusSequence,
-        MemoryEvent, MemoryOperation, append_record_with_sync, classify_final_status,
-        expected_memory_events, wall_limit_exceeded,
+        MemoryEvent, MemoryOperation, Outcome, PREFLIGHT_REPETITIONS_PER_CASE,
+        append_record_with_sync, classify_final_status, expected_memory_events,
+        preflight_execution_count, repeat_outcomes_equal, wall_limit_exceeded,
     };
     use od_testkit::memory_corpus::{S3_34A_CASES_PER_SEED, S3_34A_SEEDS, S3_34A_SEQUENCES};
 
@@ -1000,6 +1075,40 @@ mod tests {
             2400
         );
         assert_eq!(EXPECTED_CASES, 2400);
+    }
+
+    #[test]
+    fn preflight_runs_two_trials_per_backend_and_rejects_repeat_mismatch() {
+        assert_eq!(PREFLIGHT_REPETITIONS_PER_CASE, 2);
+        assert_eq!(
+            preflight_execution_count(2400, PREFLIGHT_REPETITIONS_PER_CASE),
+            Some(4800)
+        );
+        assert_eq!(preflight_execution_count(usize::MAX, 2), None);
+
+        let first = Outcome {
+            state: od_isa::LongModeState::default(),
+            ram: [0; 128],
+            exit: "InstructionBudgetExhausted".into(),
+            retired: 2,
+            remaining_budget: 0,
+            memory_events: expected_memory_events(MemoryCorpusSequence::StoreThenLoad, 24, 40)
+                .unwrap(),
+            memory_event_count: 2,
+        };
+        assert!(repeat_outcomes_equal(&first, &first.clone()));
+
+        let mut changed_state = first.clone();
+        changed_state.state.gpr[0] = 1;
+        assert!(!repeat_outcomes_equal(&first, &changed_state));
+
+        let mut changed_trace = first.clone();
+        changed_trace.memory_events[0] = Some(MemoryEvent {
+            operation: MemoryOperation::Read,
+            address: 24,
+            width: 8,
+        });
+        assert!(!repeat_outcomes_equal(&first, &changed_trace));
     }
 
     #[test]
