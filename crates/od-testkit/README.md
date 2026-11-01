@@ -368,3 +368,13 @@ little-endian i32 from fixture memory, then constructs the binary32 result with
 integer rounding logic; it does not use host FP, the register-source result
 parser, or a production conversion helper. It verifies low32 output, high96 and
 x87 preservation, and sticky PE. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ce--bounded-long64-cvtsi2ss-xmm0dword-ptr-rax-m32-memory-profile).
+
+### S2-37cf — CVTSI2SS m64 memory profile
+
+The strict `s2-long-cvtsi2ss-memory64-rax-v1` field is separate from the m32
+profile. Its independent oracle reads raw fixture memory as signed i64 and
+constructs binary32 via integer rounding, without host FP, production helpers,
+or a register-source parser. It checks direct-rounding vectors including
+`0x0040000040000001`, XMM0 low32/high96, sticky PE, and optional x87 state.
+PM=0, DAZ=1, and reserved controls are malformed schema inputs; AC=1 is a
+runtime-refusal fixture. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cf--bounded-long64-cvtsi2ss-xmm0qword-ptr-rax-m64-memory-profile).

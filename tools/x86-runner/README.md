@@ -80,3 +80,7 @@ closed; classifier evidence does not claim physical x86 execution.
 S2-37ce CVTSI2SS m32 is classified local-only by the portable native-profile
 matcher. The classifier test and runner `Unsupported` result establish backend
 closure only; no physical x86 execution or acceptance is claimed.
+
+S2-37cf CVTSI2SS m64 is classified local-only by the portable native profile
+matcher. Runner/native classifier denial establishes backend closure only; no
+physical x86 execution or acceptance is claimed.

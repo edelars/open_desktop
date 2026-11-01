@@ -750,3 +750,12 @@ high96 and unrelated CPU/x87 state, and sets sticky PE only for inexact
 conversion. It uses CPUID.SSE bit 25, a single m32 read, and local AC=0
 admission. The strict schema-v2 profile remains interpreter-only. See the [CPU
 contract](../../docs/specs/CPU_CONTRACT.md#s2-37ce--bounded-long64-cvtsi2ss-xmm0dword-ptr-rax-m32-memory-profile).
+
+### S2-37cf — CVTSI2SS m64 memory form
+
+The exact legacy `F3 48 0F 2A 00` interpreter profile reads one signed i64 and
+converts directly to binary32 under MXCSR.RC. It writes XMM0.low32, preserves
+high96 and unrelated state, and adds sticky PE only for inexact conversion.
+The direct integer path preserves low source bits that an intermediate binary64
+would lose. It uses SSE feature bit 25, allows unaligned reads at local AC=0,
+and stays closed to generic/JIT/native/C execution. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cf--bounded-long64-cvtsi2ss-xmm0qword-ptr-rax-m64-memory-profile).

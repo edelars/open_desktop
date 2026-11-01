@@ -441,6 +441,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 cvtsi2sd_r32_controls: input.fixture.cvtsi2sd_r32_controls,
                 cvtsi2sd_r32_memory_controls: input.fixture.cvtsi2sd_r32_memory_controls,
                 cvtsi2ss_r32_memory_controls: input.fixture.cvtsi2ss_r32_memory_controls,
+                cvtsi2ss_r64_memory_controls: input.fixture.cvtsi2ss_r64_memory_controls,
                 cvtsi2sd_r64_controls: input.fixture.cvtsi2sd_r64_controls,
                 cvtsi2sd_r64_memory_controls: input.fixture.cvtsi2sd_r64_memory_controls,
                 cvtsi2ss_controls: input.fixture.cvtsi2ss_controls,
@@ -8465,6 +8466,14 @@ fn cvtsi2ss_integer_oracle_covers_precision_boundaries_and_double_rounding() {
         (i64::MAX, 2, 0x5f00_0000, true),
         (i64::MIN, 0, 0xdf00_0000, false),
         ((1i64 << 55) + (1i64 << 31) + 1, 0, 0x5b00_0001, true),
+        ((1i64 << 54) + (1i64 << 30) + 1, 0, 0x5a80_0001, true),
+        ((1i64 << 54) + (1i64 << 30) + 1, 1, 0x5a80_0000, true),
+        ((1i64 << 54) + (1i64 << 30) + 1, 2, 0x5a80_0001, true),
+        ((1i64 << 54) + (1i64 << 30) + 1, 3, 0x5a80_0000, true),
+        (-((1i64 << 54) + (1i64 << 30) + 1), 0, 0xda80_0001, true),
+        (-((1i64 << 54) + (1i64 << 30) + 1), 1, 0xda80_0001, true),
+        (-((1i64 << 54) + (1i64 << 30) + 1), 2, 0xda80_0000, true),
+        (-((1i64 << 54) + (1i64 << 30) + 1), 3, 0xda80_0000, true),
     ];
     for (value, rc, bits, inexact) in vectors {
         assert_eq!(

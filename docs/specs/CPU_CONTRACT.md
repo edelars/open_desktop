@@ -14769,3 +14769,44 @@ claimed. See the [plan](../plans/STAGE_2.md#s2-37ce--exact-legacy-long64-cvtsi2s
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SS pp. 3-238–3-239; Vol. 1
 §11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. The Type
 3/Table 2-20 entry is VEX-only and is not legacy evidence.
+
+## S2-37cf — bounded Long64 CVTSI2SS XMM0,qword ptr [RAX] m64 memory profile
+
+The local schema-v2 profile `s2-long-cvtsi2ss-memory64-rax-v1` admits only
+legacy bytes `F3 48 0F 2A 00`, fetched in full before the local CPUID.SSE
+(bit 25)/CR0.EM/CR4.OSFXSR `#UD` and CR0.TS `#NM` checks. The profile order is
+bounded policy, not a universal exception-priority claim. CPL0–3 are admitted.
+A missing SSE snapshot after prerequisite gates is a local `Unsupported`
+refusal, not a host panic.
+
+After checked canonical48 validation of `[RAX,RAX+7]`, execution performs one
+8-byte little-endian read. Unaligned access is allowed at local RFLAGS.AC=0;
+AC=1 is a valid negative fixture with local `Unsupported`. Read errors and all
+pre-read refusals preserve full CPU state.
+
+The signed i64 source converts directly to binary32 according to MXCSR.RC. An
+intermediate binary64 is forbidden by this slice's contract: the raw integer
+`0x0040000040000001` rounds to `0x5a800001` under nearest-even, whereas an
+intermediate binary64 conversion would lose the low +1. Success writes only
+XMM0.low32 and preserves XMM0.high96, architectural bits above 127, other XMM
+registers, GPRs, MXCSR controls/sticky bits except for newly sticky PE, and
+optional x87 state. PE is the only possible newly generated status bit and is
+ORed with existing PE; exact conversions add no flags. The complete signed-i64
+range fits binary32's exponent range, so no overflow event is possible.
+
+Strict fixture admission uses its own control field and requires supported
+MXCSR mask `0xffbf`, DAZ=0, PM=1, exact bytes, budget one, and STOP at entry+5.
+All RC and FTZ modes, other supported exception masks, and existing status bits
+are admitted. PM=0, DAZ=1, and reserved MXCSR bits are malformed schema inputs;
+AC=1 is admitted for runtime refusal/no-read coverage and checked through
+full-state equality. The fixture comparison mask remains `INTEGER_FLAGS` only
+and does not support requesting an AC-bit comparison. The independent oracle
+reads signed i64 directly from fixture memory and computes binary32 with
+integer rounding logic, without host FP or a production conversion helper.
+The interpreter profile remains local-only; JIT, native, C ABI, fragments, and
+generic execution are closed. Native classifier/runner denial is closure
+evidence only; physical x86 acceptance was not run. See the [plan](../plans/STAGE_2.md#s2-37cf--exact-legacy-long64-cvtsi2ss-xmm0qword-ptr-rax), [report](../reports/STAGE_2_REPORT.md#s2-37cf--cvtsi2ss-xmm0qword-ptr-rax-m64-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cf--cvtsi2ss-xmm0qword-ptr-rax-m64-memory-profile).
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SS pp. 3-238–3-239; Vol. 1
+§4.8.4, §11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. Type
+3/Table 2-20 is VEX-only and is not used as legacy evidence.

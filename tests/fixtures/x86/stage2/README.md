@@ -7400,3 +7400,25 @@ profile local-only; no physical x86 execution is claimed. See the [plan](../../.
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SS pp. 3-238–3-239; Vol. 1
 §11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. Type 3/Table
 2-20 is VEX-only and is not used as legacy evidence.
+
+### S2-37cf — CVTSI2SS XMM0,qword ptr [RAX] m64 memory profile
+
+`s2_37cf_cvtsi2ss_m64_double_round_guard.case.json` is the literal exact legacy
+`F3 48 0F 2A 00` profile. Its unaligned signed-i64 source is
+`0x0040000040000001`; direct nearest-even conversion yields binary32
+`0x5a800001` with PE, distinguishing it from a binary64 intermediate. XMM0
+high96 and an arbitrary pending x87 environment are canaries. The runner matrix
+covers seven signed boundaries/ties across all RCs, PM-only and full-mask
+settings, and both old-PE histories (112 conversions), plus backend denial,
+AC refusal, gates, malformed and foreign controls, output tampering, and
+cross-profile result rejection. Direct ISA tests cover eight source offsets,
+all CPLs, gates and no-SSE ordering, PM/DAZ/reserved-control refusals, canonical
+span failures, exact one-read width, and rollback. Strict schema rejects PM=0,
+DAZ=1, and reserved MXCSR bits; AC=1 is valid runtime refusal coverage. Full
+local suites passed (od-isa 1,639; od-testkit 446; od-runner 112+462;
+od-x86-runner 8+4) and the workspace all-target check passed. Native closure
+and classifier tests do not claim physical x86 execution. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37cf--exact-legacy-long64-cvtsi2ss-xmm0qword-ptr-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cf--bounded-long64-cvtsi2ss-xmm0qword-ptr-rax-m64-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cf--cvtsi2ss-xmm0qword-ptr-rax-m64-memory-profile).
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SS pp. 3-238–3-239; Vol. 1
+§4.8.4, §11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. Type
+3/Table 2-20 is VEX-only and is not used as legacy evidence.

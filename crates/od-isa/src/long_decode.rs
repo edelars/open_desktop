@@ -1182,6 +1182,7 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    Cvtsi2ssR64MemoryRax,
     /// Local-only legacy `F3 0F 2D /r` signed binary32-to-r32 conversion.
     Cvtss2siR32Register {
         destination: u8,
@@ -5005,12 +5006,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Escape0f, 0x2a) if cvtsi2ss_r64_register => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if modrm == 0 && prefixes.rex == Some(0x48) {
+                    Operation::Cvtsi2ssR64MemoryRax
+                } else if modrm >> 6 != 3 {
                     return Err(self.unsupported(opcode));
-                }
-                Operation::Cvtsi2ssR64Register {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                } else {
+                    Operation::Cvtsi2ssR64Register {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x2d) if cvtss2si_r32_register => {
@@ -20874,7 +20878,7 @@ mod tests {
     }
 
     #[test]
-    fn cvtsi2ss_accepts_exact_m32_memory_form_and_keeps_register_form_distinct() {
+    fn cvtsi2ss_accepts_exact_m32_m64_memory_forms_and_keeps_register_forms_distinct() {
         let mut memory = Memory::new(&[0xf3, 0x0f, 0x2a, 0x00]);
         let instruction = memory.decode().unwrap();
         assert_eq!(instruction.operation, Operation::Cvtsi2ssR32MemoryRax);
@@ -20896,9 +20900,31 @@ mod tests {
                 .operation,
             Operation::Cvtsi2sdR32MemoryRax
         );
+        let mut m64 = Memory::new(&[0xf3, 0x48, 0x0f, 0x2a, 0x00]);
+        let instruction = m64.decode().unwrap();
+        assert_eq!(instruction.operation, Operation::Cvtsi2ssR64MemoryRax);
+        assert_eq!(instruction.length, 5);
+        let mut wide_register = Memory::new(&[0xf3, 0x48, 0x0f, 0x2a, 0xc0]);
+        assert!(matches!(
+            wide_register.decode().unwrap().operation,
+            Operation::Cvtsi2ssR64Register { .. }
+        ));
+        let reversed_prefix_order = Memory::new(&[0x48, 0xf3, 0x0f, 0x2a, 0x00]).decode();
+        assert!(
+            reversed_prefix_order.is_err()
+                || reversed_prefix_order.unwrap().operation != Operation::Cvtsi2ssR64MemoryRax,
+            "the required legacy-prefix then REX.W order is exact"
+        );
+        assert_ne!(
+            Memory::new(&[0xf2, 0x48, 0x0f, 0x2a, 0x00])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::Cvtsi2ssR64MemoryRax,
+            "F2 selects CVTSI2SD, not CVTSI2SS"
+        );
         for bytes in [
-            &[0xf3, 0x48, 0x0f, 0x2a, 0x00][..],
-            &[0xf3, 0x0f, 0x2a, 0x01],
+            &[0xf3, 0x0f, 0x2a, 0x01][..],
             &[0xf3, 0x0f, 0x2a, 0x04, 0x00],
             &[0xf3, 0x0f, 0x2a, 0x40, 0x00],
             &[0x40, 0xf3, 0x0f, 0x2a, 0x00],
@@ -20911,6 +20937,10 @@ mod tests {
             &[0xf3][..],
             &[0xf3, 0x0f],
             &[0xf3, 0x0f, 0x2a],
+            &[0xf3, 0x48][..],
+            &[0xf3, 0x48, 0x0f],
+            &[0xf3, 0x48, 0x0f, 0x2a],
+            &[0xf3, 0x49, 0x0f, 0x2a, 0x00],
         ] {
             let decoded = Memory::new(bytes).decode();
             assert!(decoded.is_err(), "{bytes:02x?}: {decoded:?}");

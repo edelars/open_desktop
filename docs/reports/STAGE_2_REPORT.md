@@ -20038,3 +20038,51 @@ execution was not performed.
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SS pp. 3-238–3-239; Vol. 1
 §11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. Type 3/Table
 2-20 is VEX-only and is not cited as legacy evidence.
+
+## S2-37cf — CVTSI2SS XMM0,qword ptr [RAX] m64 memory profile
+
+Implemented exact legacy `F3 48 0F 2A 00` under separate strict schema-v2
+profile `s2-long-cvtsi2ss-memory64-rax-v1`. It fetches all five bytes, applies
+SSE-bit-25/EM/OSFXSR `#UD` then TS `#NM` local gates, and admits CPL0–3. A
+missing SSE state after prerequisite gates produces local `Unsupported` rather
+than panicking. Checked canonical48 `[RAX,RAX+7]` precedes exactly one 8-byte
+little-endian read; unaligned access is allowed with local AC=0. Pre-read
+refusals and read errors leave CPU state unchanged.
+
+The raw signed i64 converts directly to binary32 using MXCSR.RC. The oracle
+independently parses the fixture's eight source bytes as i64 and uses integer
+rounding only; it does not use host FP, a register-source parser, or production
+conversion helpers. This direct conversion is important for
+`0x0040000040000001`: nearest-even produces `0x5a800001`, while a binary64
+intermediate would discard the low +1 and double-round incorrectly. Only
+XMM0.low32 changes; high96 and unrelated SSE/GPR/x87 state remain unchanged.
+PE is sticky-ORed only for inexact conversions. Exact conversions add no flag,
+and no signed-i64 input can cause binary32 overflow.
+
+The profile requires supported MXCSR mask `0xffbf`, DAZ=0, PM=1, and AC=0;
+all RC/FTZ modes, other supported masks, and incoming status bits are admitted.
+PM=0/DAZ=1/reserved MXCSR controls are strict-schema malformed cases. AC=1 is
+a valid runtime `Unsupported` fixture with no data read or state mutation, checked
+through full-state equality. The fixture comparison mask remains `INTEGER_FLAGS`
+only and cannot request comparison of AC itself. Native/JIT/C ABI/generic execution
+remain closed; portable classifier and runner denial are not physical execution
+claims.
+
+Focused verification: `cargo test -p od-isa cvtsi2ss --offline --
+--test-threads=1` passed 10/10; focused runner
+`cvtsi2ss_m64_rounds_i64_directly_and_preserves_high96_and_x87` passed 1/1
+(461 filtered, 112 conversion matrix combinations); focused independent testkit
+oracle passed 1/1 (445 filtered); portable x86 native-local-only classifier
+passed 1/1 (3 filtered). Full local verification passed: od-isa 1,639 tests;
+od-testkit 446; od-runner 112 unit + 462 fixture tests; od-x86-runner 8 library
++ 4 main tests; workspace all-target check passed. Formatting, diff, layout, and
+link checks passed. Graphify update after implementation reported 10,388 nodes,
+22,198 edges, and 310 communities (54 unsupported-extension files skipped; 13
+code files had no extracted symbols). Independent code review and document/evidence
+review are complete. Physical x86 acceptance was not run.
+
+See the [plan](../plans/STAGE_2.md#s2-37cf--exact-legacy-long64-cvtsi2ss-xmm0qword-ptr-rax), [CPU contract](../specs/CPU_CONTRACT.md#s2-37cf--bounded-long64-cvtsi2ss-xmm0qword-ptr-rax-m64-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cf--cvtsi2ss-xmm0qword-ptr-rax-m64-memory-profile).
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SS pp. 3-238–3-239; Vol. 1
+§4.8.4, §11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. Type
+3/Table 2-20 is VEX-only and is not legacy evidence.
