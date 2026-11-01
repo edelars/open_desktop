@@ -72,6 +72,7 @@ SELF_TEST_NAMES = (
     "test_s3_34t_register_event_gates_are_pinned_once_and_fail_closed",
     "test_s3_34u_memory_load_and_pc_map_gates_are_pinned_once_and_fail_closed",
     "test_s3_34v_dword_store_gates_are_pinned_once_and_fail_closed",
+    "test_s3_34w_dword_pc_map_gates_are_pinned_once_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_38d_result_state_validator_rejects_corruption",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
@@ -222,6 +223,18 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_34v_ir_dword_store_commits_one_four_byte_write", "local_acceptance", "od-host",
         "tests::s3_26e_ir_dword_store_matches_interpreter_and_commits_one_four_byte_write",
+    ),
+    (
+        "s3_34w_ir_dword_load_pc_map_exact_8b03", "local_acceptance", "od-jit",
+        "memory_load_v2::tests::ir_dword_load_pc_map_has_exact_8b03_single_site_contract",
+    ),
+    (
+        "s3_34w_ir_dword_store_pc_map_exact_8903", "local_acceptance", "od-jit",
+        "memory_load_v2::tests::ir_dword_store_pc_map_has_exact_8903_single_site_contract",
+    ),
+    (
+        "s3_34w_published_dword_pc_maps_lifetime", "local_acceptance", "od-host",
+        "published_dword_pc_maps_match_artifacts_survive_drop_and_republish_at_new_rips",
     ),
     (
         "abi_create_execute_stop_destroy", "local_acceptance", "od-host",
@@ -511,6 +524,10 @@ RUST_TEST_TARGET_OVERRIDES = {
     (
         "od-host",
         "capacity_one_memory_cache_republishes_after_fault_and_backend_error",
+    ): ("--test", "memory_corpus"),
+    (
+        "od-host",
+        "published_dword_pc_maps_match_artifacts_survive_drop_and_republish_at_new_rips",
     ): ("--test", "memory_corpus"),
 }
 RUST_TEST_GATES = (
