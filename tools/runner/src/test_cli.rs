@@ -614,6 +614,7 @@ fn expected_native_xorpd_oracle(
                 minsd_memory_rax_controls: None,
                 maxss_memory_rax_controls: None,
                 maxsd_memory_rax_controls: None,
+                minpd_memory_rax_controls: None,
                 maxpd_memory_rax_controls: None,
                 maxps_memory_rax_controls: None,
                 cvtsi2sd_r32_controls: None,
@@ -1155,13 +1156,14 @@ fn execute_fixture_v2(
         run_with_maxpd_memory_rax_controls, run_with_maxpd_unmasked_controls,
         run_with_maxps_unmasked_controls, run_with_maxsd_memory_rax_controls,
         run_with_maxsd_unmasked_controls, run_with_maxss_memory_rax_controls,
-        run_with_maxss_unmasked_controls, run_with_minpd_unmasked_controls,
-        run_with_minps_unmasked_controls, run_with_minsd_memory_rax_controls,
-        run_with_minsd_unmasked_controls, run_with_minss_invalid_controls,
-        run_with_minss_unmasked_denormal_controls, run_with_msr_profile, run_with_rdtsc_source,
-        run_with_rep_continuation, run_with_sep_profile, run_with_sti_profile,
-        run_with_swapgs_profile, run_with_ucomisd_memory_rax_controls,
-        run_with_ucomiss_memory_rax_controls, run_with_xorpd_prerequisites,
+        run_with_maxss_unmasked_controls, run_with_minpd_memory_rax_controls,
+        run_with_minpd_unmasked_controls, run_with_minps_unmasked_controls,
+        run_with_minsd_memory_rax_controls, run_with_minsd_unmasked_controls,
+        run_with_minss_invalid_controls, run_with_minss_unmasked_denormal_controls,
+        run_with_msr_profile, run_with_rdtsc_source, run_with_rep_continuation,
+        run_with_sep_profile, run_with_sti_profile, run_with_swapgs_profile,
+        run_with_ucomisd_memory_rax_controls, run_with_ucomiss_memory_rax_controls,
+        run_with_xorpd_prerequisites,
     };
     use od_testkit::v2;
     use std::time::{Duration, Instant};
@@ -2429,6 +2431,23 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongMinpdMemoryRaxV1 {
+        let controls = loaded
+            .fixture
+            .minpd_memory_rax_controls
+            .expect("validated MINPD m128 controls");
+        run_with_minpd_memory_rax_controls(
+            &mut state,
+            memory,
+            config,
+            od_isa::execute::MinpdMemoryRaxControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongMaxpdMemoryRaxV1 {
         let controls = loaded
             .fixture
@@ -3373,6 +3392,7 @@ fn execute_fixture_v2(
                 minsd_memory_rax_controls: loaded.fixture.minsd_memory_rax_controls,
                 maxss_memory_rax_controls: loaded.fixture.maxss_memory_rax_controls,
                 maxsd_memory_rax_controls: loaded.fixture.maxsd_memory_rax_controls,
+                minpd_memory_rax_controls: loaded.fixture.minpd_memory_rax_controls,
                 maxpd_memory_rax_controls: loaded.fixture.maxpd_memory_rax_controls,
                 maxps_memory_rax_controls: loaded.fixture.maxps_memory_rax_controls,
                 cvtsi2sd_r32_controls: loaded.fixture.cvtsi2sd_r32_controls,
@@ -4622,6 +4642,7 @@ mod tests {
                     minsd_memory_rax_controls: input.fixture.minsd_memory_rax_controls,
                     maxss_memory_rax_controls: input.fixture.maxss_memory_rax_controls,
                     maxsd_memory_rax_controls: input.fixture.maxsd_memory_rax_controls,
+                    minpd_memory_rax_controls: input.fixture.minpd_memory_rax_controls,
                     maxpd_memory_rax_controls: input.fixture.maxpd_memory_rax_controls,
                     maxps_memory_rax_controls: input.fixture.maxps_memory_rax_controls,
                     cvtsi2sd_r32_controls: input.fixture.cvtsi2sd_r32_controls,
