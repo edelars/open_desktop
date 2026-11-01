@@ -250,6 +250,33 @@ The exact fixture, boundaries, raw samples, and manifest are preserved in the
 [S3-40g report](../reports/STAGE_3_S3-40g_2026-11-01.md) summarizes this
 ledger update without duplicating raw data.
 
+## S3-40j: offline validator for saved S3-31c reports
+
+`tools/bench/validate_s3_31c.py` audits only the S3-31c NativeRegisterV1
+prepared-key profile. It checks the frozen profile/workload and sample
+schedule, validates the optional preflight schema and build identity, then
+recomputes candidate/baseline and candidate/interpreter ratios and ranges from
+the raw elapsed samples. It is an offline report audit and does not start a
+benchmark or select a production policy.
+
+Run it against the archived process reports and untimed preflight:
+
+```sh
+python3 -u tools/bench/validate_s3_31c.py \
+  docs/reports/data/stage3/s3-31c-20261101/process-1.json \
+  docs/reports/data/stage3/s3-31c-20261101/process-2.json \
+  docs/reports/data/stage3/s3-31c-20261101/process-3.json \
+  --preflight docs/reports/data/stage3/s3-31c-20261101/preflight-release-final.json \
+  > docs/reports/data/stage3/s3-31c-20261101/validator-audit.json
+```
+
+The saved audit returned `status: passed`: six strata, 60 pairs each, all
+retained sides at or above 200 ms, and source revision
+`dcd1bfe5db813a2647c100c4c64a008dca9bd21c` with clean build metadata. The
+correctness-only preflight uses the same source/fingerprints but preserves its
+own clean detached work directory. The focused Python test suite passed 16
+tests and independent code review passed. See the [bounded S3-31c report](../reports/STAGE_3_S3-31c_2026-11-01.md) and [saved audit JSON](../reports/data/stage3/s3-31c-20261101/validator-audit.json). This does not complete full S3-40 or Stage 3.
+
 ## Подготовка прогона
 
 Перед измерением закрепить:

@@ -1,0 +1,761 @@
+{
+  "build": {
+    "profile": "release",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "source_revision": "dcd1bfe5db813a2647c100c4c64a008dca9bd21c",
+    "source_sha256": "68c08c7ff7f91f3fffea8eab3ba7c85e2094725e6cadc23c1eab42c5a5cb696c",
+    "source_tree_dirty": false,
+    "target": "aarch64-apple-darwin"
+  },
+  "host_runs": [
+    {
+      "measure_host": {
+        "architecture": "aarch64",
+        "build": {
+          "profile": "release",
+          "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+          "source_revision": "dcd1bfe5db813a2647c100c4c64a008dca9bd21c",
+          "source_sha256": "68c08c7ff7f91f3fffea8eab3ba7c85e2094725e6cadc23c1eab42c5a5cb696c",
+          "source_tree_dirty": false,
+          "target": "aarch64-apple-darwin"
+        },
+        "cpu_model": "Apple M3 Max",
+        "execution": {
+          "repository_revision": "dcd1bfe5db813a2647c100c4c64a008dca9bd21c",
+          "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+          "working_tree_dirty": null
+        },
+        "os": "macos",
+        "os_version": "26.7.1"
+      },
+      "process_run": 1
+    },
+    {
+      "measure_host": {
+        "architecture": "aarch64",
+        "build": {
+          "profile": "release",
+          "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+          "source_revision": "dcd1bfe5db813a2647c100c4c64a008dca9bd21c",
+          "source_sha256": "68c08c7ff7f91f3fffea8eab3ba7c85e2094725e6cadc23c1eab42c5a5cb696c",
+          "source_tree_dirty": false,
+          "target": "aarch64-apple-darwin"
+        },
+        "cpu_model": "Apple M3 Max",
+        "execution": {
+          "repository_revision": "dcd1bfe5db813a2647c100c4c64a008dca9bd21c",
+          "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+          "working_tree_dirty": null
+        },
+        "os": "macos",
+        "os_version": "26.7.1"
+      },
+      "process_run": 2
+    },
+    {
+      "measure_host": {
+        "architecture": "aarch64",
+        "build": {
+          "profile": "release",
+          "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+          "source_revision": "dcd1bfe5db813a2647c100c4c64a008dca9bd21c",
+          "source_sha256": "68c08c7ff7f91f3fffea8eab3ba7c85e2094725e6cadc23c1eab42c5a5cb696c",
+          "source_tree_dirty": false,
+          "target": "aarch64-apple-darwin"
+        },
+        "cpu_model": "Apple M3 Max",
+        "execution": {
+          "repository_revision": "dcd1bfe5db813a2647c100c4c64a008dca9bd21c",
+          "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+          "working_tree_dirty": null
+        },
+        "os": "macos",
+        "os_version": "26.7.1"
+      },
+      "process_run": 3
+    }
+  ],
+  "preflight": {
+    "checked_strata": [
+      "a_1",
+      "a_64",
+      "a_4096",
+      "b_1",
+      "b_64",
+      "b_4096"
+    ],
+    "measure_host": {
+      "architecture": "aarch64",
+      "build": {
+        "profile": "release",
+        "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+        "source_revision": "dcd1bfe5db813a2647c100c4c64a008dca9bd21c",
+        "source_sha256": "68c08c7ff7f91f3fffea8eab3ba7c85e2094725e6cadc23c1eab42c5a5cb696c",
+        "source_tree_dirty": false,
+        "target": "aarch64-apple-darwin"
+      },
+      "cpu_model": "Apple M3 Max",
+      "execution": {
+        "repository_revision": "dcd1bfe5db813a2647c100c4c64a008dca9bd21c",
+        "working_directory": "/private/tmp/stage3-s31c-clean",
+        "working_tree_dirty": false
+      },
+      "os": "macos",
+      "os_version": "26.7.1"
+    },
+    "partial_controls": [
+      "later_iteration_after_lea",
+      "later_iteration_after_xchg",
+      "later_iteration_before_jnz",
+      "stop_address_at_jnz",
+      "stop_address_before_xchg",
+      "wrapping_operand_later_iteration"
+    ],
+    "timing_started": false
+  },
+  "process_runs": [
+    1,
+    2,
+    3
+  ],
+  "profile_id": "s3-31c-native-register-v1-run-local-prepared-key-reuse-v1",
+  "ratio_contract": "candidate_over_baseline_ratio and candidate_over_interpreter_ratio are elapsed candidate / elapsed comparator; below 1 is faster; no speedup is inferred without the raw repeated ranges and cross-process comparison",
+  "sampling_protocol": "each sample side has at least 200 ms measured elapsed time; 20 retained paired samples per stratum; baseline/candidate/interpreter order rotates across all six permutations; calibration begins at 64 calls per side and doubles on restart; raw samples preserve order, seed, calls and elapsed nanoseconds",
+  "schema": 1,
+  "source_fingerprints": [
+    [
+      "block",
+      "a910ba720ecb0f5286c26531014417b65d1d53ff302bf90a2cb3f750ada7aa78"
+    ],
+    [
+      "cli",
+      "47f1cb26659df6e2d9ca1a440db4bde37175a2cecb79a80a47fc3edfb3ef2140"
+    ],
+    [
+      "dispatch",
+      "853bd584fdbaa9252a2866ca5277adc24585623a23c55a072bf02f9c4eb28f0a"
+    ],
+    [
+      "frozen_fixture",
+      "09faa149db18ec66f2d11961ab18196ccb938c669fdc795c94d791f6bcfe079b"
+    ],
+    [
+      "host",
+      "d4138880dbae0c090641d4b5cc361f8e5925f23ab6e79ecd967b48d2eb56cf6d"
+    ],
+    [
+      "lib",
+      "1ddd0fa26fd399d75aca1f3594db5e1f7f8019ebacb475f8bb3c84507323f7ce"
+    ],
+    [
+      "profile",
+      "26f2754e17463742be81dd0b6d337e03963b1b47887d6d666ec40e1896f0e6f6"
+    ]
+  ],
+  "status": "passed",
+  "strata": {
+    "a_1": {
+      "candidate_over_baseline_ratio": {
+        "count": 60,
+        "max": 1.3680422780468193,
+        "median": 1.1997592381431161,
+        "min": 0.882050873574221
+      },
+      "candidate_over_interpreter_ratio": {
+        "count": 60,
+        "max": 5.014687612720377,
+        "median": 4.764040874188867,
+        "min": 3.53927432406336
+      },
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "guest_work_per_call": 3,
+      "iterations": 1,
+      "minimum_retained_elapsed_ns": 320990671,
+      "retained_pair_count": 60,
+      "retained_pair_ids_by_run": {
+        "1": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19
+        ],
+        "2": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19
+        ],
+        "3": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19
+        ]
+      },
+      "sample_floor_ns": 200000000,
+      "seed": 3538945
+    },
+    "a_4096": {
+      "candidate_over_baseline_ratio": {
+        "count": 60,
+        "max": 0.3520303031316364,
+        "median": 0.3416182929211969,
+        "min": 0.3309693718766638
+      },
+      "candidate_over_interpreter_ratio": {
+        "count": 60,
+        "max": 1.523677756333831,
+        "median": 1.4329829006637975,
+        "min": 1.3094013180591257
+      },
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "guest_work_per_call": 12288,
+      "iterations": 4096,
+      "minimum_retained_elapsed_ns": 293281420,
+      "retained_pair_count": 60,
+      "retained_pair_ids_by_run": {
+        "1": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19
+        ],
+        "2": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19
+        ],
+        "3": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19
+        ]
+      },
+      "sample_floor_ns": 200000000,
+      "seed": 3543040
+    },
+    "a_64": {
+      "candidate_over_baseline_ratio": {
+        "count": 60,
+        "max": 0.5166276671711547,
+        "median": 0.3531538113680879,
+        "min": 0.22572360576558048
+      },
+      "candidate_over_interpreter_ratio": {
+        "count": 60,
+        "max": 2.2680702436966214,
+        "median": 1.4813550705662508,
+        "min": 1.0262570698509157
+      },
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "guest_work_per_call": 192,
+      "iterations": 64,
+      "minimum_retained_elapsed_ns": 301340870,
+      "retained_pair_count": 60,
+      "retained_pair_ids_by_run": {
+        "1": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19
+        ],
+        "2": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19
+        ],
+        "3": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19
+        ]
+      },
+      "sample_floor_ns": 200000000,
+      "seed": 3539008
+    },
+    "b_1": {
+      "candidate_over_baseline_ratio": {
+        "count": 60,
+        "max": 1.1870184382775657,
+        "median": 1.1352061975688796,
+        "min": 1.008201122221032
+      },
+      "candidate_over_interpreter_ratio": {
+        "count": 60,
+        "max": 4.665400948297651,
+        "median": 3.706571770343234,
+        "min": 3.0947879022789087
+      },
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "guest_work_per_call": 5,
+      "iterations": 1,
+      "minimum_retained_elapsed_ns": 270549052,
+      "retained_pair_count": 60,
+      "retained_pair_ids_by_run": {
+        "1": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19
+        ],
+        "2": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19
+        ],
+        "3": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19
+        ]
+      },
+      "sample_floor_ns": 200000000,
+      "seed": 3538945
+    },
+    "b_4096": {
+      "candidate_over_baseline_ratio": {
+        "count": 60,
+        "max": 0.2759646570915592,
+        "median": 0.2591382474497528,
+        "min": 0.24284753118149033
+      },
+      "candidate_over_interpreter_ratio": {
+        "count": 60,
+        "max": 0.9217314606819931,
+        "median": 0.8741277084063594,
+        "min": 0.8216875766929397
+      },
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "guest_work_per_call": 20480,
+      "iterations": 4096,
+      "minimum_retained_elapsed_ns": 223746544,
+      "retained_pair_count": 60,
+      "retained_pair_ids_by_run": {
+        "1": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19
+        ],
+        "2": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19
+        ],
+        "3": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19
+        ]
+      },
+      "sample_floor_ns": 200000000,
+      "seed": 3543040
+    },
+    "b_64": {
+      "candidate_over_baseline_ratio": {
+        "count": 60,
+        "max": 0.2875582272371528,
+        "median": 0.27272169152987746,
+        "min": 0.2549095214166228
+      },
+      "candidate_over_interpreter_ratio": {
+        "count": 60,
+        "max": 0.974893997986815,
+        "median": 0.9184375954061934,
+        "min": 0.8491037519227991
+      },
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "guest_work_per_call": 320,
+      "iterations": 64,
+      "minimum_retained_elapsed_ns": 237204299,
+      "retained_pair_count": 60,
+      "retained_pair_ids_by_run": {
+        "1": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19
+        ],
+        "2": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19
+        ],
+        "3": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19
+        ]
+      },
+      "sample_floor_ns": 200000000,
+      "seed": 3539008
+    }
+  },
+  "timed_scope": "full synchronous interpreter, ordinary cached dispatcher, or prepared-key candidate call; state reset and CodeView/control setup are outside each interval; candidate memo setup/use/drop are inside the dispatcher call",
+  "workloads": {
+    "a_1": {
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "guest_work_per_call": 3,
+      "iterations": 1,
+      "resident_code_bytes": 1408,
+      "resident_entries": 1,
+      "resident_logical_bytes": 7193,
+      "seed": 3538945,
+      "warmup_calls_per_side": 32
+    },
+    "a_4096": {
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "guest_work_per_call": 12288,
+      "iterations": 4096,
+      "resident_code_bytes": 1408,
+      "resident_entries": 1,
+      "resident_logical_bytes": 7193,
+      "seed": 3543040,
+      "warmup_calls_per_side": 32
+    },
+    "a_64": {
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "guest_work_per_call": 192,
+      "iterations": 64,
+      "resident_code_bytes": 1408,
+      "resident_entries": 1,
+      "resident_logical_bytes": 7193,
+      "seed": 3539008,
+      "warmup_calls_per_side": 32
+    },
+    "b_1": {
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "guest_work_per_call": 5,
+      "iterations": 1,
+      "resident_code_bytes": 2188,
+      "resident_entries": 1,
+      "resident_logical_bytes": 10552,
+      "seed": 3538945,
+      "warmup_calls_per_side": 32
+    },
+    "b_4096": {
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "guest_work_per_call": 20480,
+      "iterations": 4096,
+      "resident_code_bytes": 2188,
+      "resident_entries": 1,
+      "resident_logical_bytes": 10552,
+      "seed": 3543040,
+      "warmup_calls_per_side": 32
+    },
+    "b_64": {
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "guest_work_per_call": 320,
+      "iterations": 64,
+      "resident_code_bytes": 2188,
+      "resident_entries": 1,
+      "resident_logical_bytes": 10552,
+      "seed": 3539008,
+      "warmup_calls_per_side": 32
+    }
+  }
+}

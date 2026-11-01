@@ -120,6 +120,14 @@
       {"path": "process-2.json", "sha256": "ae04f7bb97d52b60ed1e0b38c6ca7b031df7e78f4ff54577c6617f252d57ea46", "bytes": 184119},
       {"path": "process-3.json", "sha256": "96f993f459878d07caef17973614d2ea80eff56c327e8b5b03924ae475b1756b", "bytes": 184119}
     ],
-    "report": {"path": "../../../STAGE_3_S3-31c_2026-11-01.md", "sha256": "52f4eb0bb0dea08cc5199798c9ddecdc680692151373f754320c8da6fab84a02"}
+    "report": {"path": "../../../STAGE_3_S3-31c_2026-11-01.md", "sha256": "4f98957d5aa230269068f9e70a85b05a29cc69461a9dc889c83e42fbc21b4787"},
+    "derived_audit": {
+      "path": "validator-audit.json",
+      "sha256": "cf68768aae06445becc6fa8c08cc53e1b3569cf342934c90f0e53ac2577a7bde",
+      "bytes": 17439,
+      "status": "passed",
+      "derived_from": ["preflight-release-final.json", "process-1.json", "process-2.json", "process-3.json"],
+      "circular_reference": false
+    }
   }
 }

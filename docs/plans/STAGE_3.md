@@ -272,6 +272,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-38c | Sequential cross-thread V0 handle lifecycle | One idle handle called sequentially from two host threads, second-handle interleaving, pre-run STOP and per-call mapping release; persistent cache and full S3-38 remain open |
 | [x] | S3-39 | Bounded macOS/ARM smoke passed on M1 Pro; see [report](../reports/STAGE_3_S3-39_M1PRO_2026-10-31.md) | S3-38a |
 | [ ] | S3-40 | Зафиксировать решения по данным | S3-35–S3-39 |
+| [partial] | S3-40j | Profile-specific offline audit of saved S3-31c reports | Recomputes both paired ratios/ranges and validates profile, workload, schedule, and preflight schema; does not complete S3-40 or Stage 3 |
 | [ ] | S3-41 | Документация и приёмка этапа | Все обязательные задачи |
 
 Первый вертикальный путь: `00 → 02 → 03 → 04 → 05`, затем `06 → 07 → 08 → 09 → 10 → 11 → 12 → 13 → 14`. Baseline S3-01 выполняется до выбора оптимизаций. Тесты добавляются в каждой задаче, S3-34 объединяет их и проверяет сам стенд.
@@ -3955,6 +3956,26 @@ benefit, or any runtime/cache policy change. S3-31, S3-36, S3-40, and S3-41
 remain open; Mini remains deferred. See the
 [S3-40i addendum](../reports/STAGE_3_S3-40i_2026-11-01.md) and
 [S3-31b report](../reports/STAGE_3_S3-31b_2026-11-01.md).
+
+#### S3-40j: profile-specific audit of saved S3-31c reports
+
+Commit `5c313e758377e59c737961a9b237c71853e6a85e` adds a standard-library
+validator scoped to the saved S3-31c process reports and optional preflight.
+It checks profile/source compatibility, fixed strata and workloads, pair
+identity and schedule, positive timings and the 200 ms floor, then recomputes
+candidate/baseline and candidate/interpreter ratios and min/median/max ranges
+from raw elapsed samples. The optional preflight validator checks its schema,
+source/build identity, state/retirement/budget parity, and partial controls.
+
+Evidence: `python3 -u tools/bench/test_validate_s3_31c.py` passed 16 tests;
+independent Sol code review passed. The CLI audit of the three archived
+process reports plus the clean untimed preflight returned `status: passed` for
+all six strata and 60 pairs per stratum, with every retained side at or above
+200 ms. The audit JSON and its hash are in the
+[S3-31c evidence bundle](../reports/data/stage3/s3-31c-20261101/validator-audit.json).
+This is a profile-specific audit of existing S3-31c data, not a second
+benchmark, full S3-40 acceptance, or Stage 3 completion. Broader Stage 3 and
+Mini checks remain open/deferred. See the [bounded report](../reports/STAGE_3_S3-31c_2026-11-01.md).
 
 ### S3-41. Оформить приёмку этапа
 
