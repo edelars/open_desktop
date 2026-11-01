@@ -1,0 +1,4 @@
+   Compiling od-bench v0.1.0 (/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/tools/bench)
+    Finished `release` profile [optimized] target(s) in 35.56s
+     Running `target/release/od-bench warm-dispatch-phases --case-list work/tmp/stage3/s3-17/cases.txt --trace work/tmp/stage3/s3-17/dispatch-trace.json --process-run 2 --output docs/reports/data/stage3/s3-31/warm-dispatch-2.json`
+host metadata git status unavailable: git timed out after 2000 ms

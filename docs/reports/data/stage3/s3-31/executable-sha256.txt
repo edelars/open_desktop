@@ -1,0 +1,16 @@
+Executable identity receipt
+==========================
+
+These exact `shasum -a 256 target/release/od-bench` outputs were captured
+after their corresponding S3-31 run commands completed:
+
+Run 1 (source revision c88fcda336a5e5e06fef13663e38aedb15af51b5):
+71e3ea52f5e0bb254d74b37bdf50cd09625659db7b263e3eff777ca741d1c2c3  target/release/od-bench
+
+Run 2 (rebuilt after commit 39b075b2da6d725b776f610dba49fe77f89dd207):
+950d0670ab1dfc2c720a1f3a16fa6b4ebf69331571b73eb8a9fe18c267050819  target/release/od-bench
+
+The Run 2 release rebuild overwrote the Run 1 executable at this path. The
+Run 1 digest is preserved here as captured evidence and cannot be recomputed
+from the current file. The current executable corresponds to Run 2; its hash
+was rechecked against the Run 2 digest while preparing this receipt.
