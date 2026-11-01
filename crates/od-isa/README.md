@@ -706,3 +706,13 @@ only the low 64 bits of XMM0. It widens binary32 exactly, adding masked IE for
 SNaN quieting and DE for nonzero subnormal input; it preserves all upper XMM0
 bits, MXCSR control/sticky state, and x87 canaries. RC/FTZ do not affect the
 result. Native/JIT/C ABI remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bz--bounded-long64-cvtss2sd-xmm0rax-m32-memory-profile).
+
+### S2-37ca — CVTSD2SS m64 memory profile
+
+The exact legacy `F2 0F 5A 00` form reads one unaligned-allowed m64 at RAX
+under local AC=0 and writes only XMM0.low32. It rounds with MXCSR.RC and uses
+WPR tininess before final binary32 exponent encoding; FTZ flushes all WPR-tiny
+values with UE|PE, including exact tiny values. The bounded masked profile
+requires IM/DM/OM/UM/PM=1 and DAZ=0. It preserves upper XMM0 and x87 state.
+Missing SSE is refused after prerequisite gates and before data access.
+Native/JIT/C ABI remain closed; see the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ca--bounded-long64-cvtsd2ss-xmm0rax-m64-memory-profile).

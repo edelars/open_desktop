@@ -19844,3 +19844,41 @@ Normative sources: Intel SDM Rev. 093 Vol. 2A CVTSS2SD pp. 3-240–3-241; Vol. 1
 §§16.1.3–16.1.4, Table 16-1. See the [plan](../plans/STAGE_2.md#s2-37bz--bounded-long64-cvtss2sd-xmm0rax-m32-memory-profile),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37bz--bounded-long64-cvtss2sd-xmm0rax-m32-memory-profile), and
 [literal fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bz--cvtss2sd-xmm0rax-m32-memory-profile).
+
+## S2-37ca — CVTSD2SS XMM0,[RAX] m64 memory profile
+
+Implemented exact legacy `F2 0F 5A 00` as schema-v2 interpreter-only profile
+`s2-long-cvtsd2ss-memory-rax-v1`. It performs one checked 8-byte read from
+RAX, permits unaligned input under local AC=0, and commits state only after a
+successful read. Conversion rounds binary64 to binary32 using MXCSR.RC and
+checks tininess after precision rounding with unbounded exponent. FTZ flushes
+all WPR-tiny results to signed zero with UE|PE, including exact tiny values;
+WPR-normal results are not flushed. IE/DE/OE/UE/PE are masked/sticky only;
+SNaN contributes IE, subnormal source contributes DE, and only XMM0.low32 is
+replaced. x87 state is not gated or modified. Missing SSE state is Unsupported
+after prerequisite gates and before a data read. Native/JIT/C ABI/fragment/
+generic execution remain closed; no physical x86 acceptance is claimed.
+
+Verification passed: focused `cargo test -p od-isa cvtsd2ss_ --offline` 5/5;
+full `cargo test -p od-isa --offline -- --test-threads=1` 1,628/1,628;
+focused `cargo test -p od-runner --test fixture_v2
+cvtsd2ss_m64_rounds_wpr_and_fails_closed --offline -- --nocapture` 1/1
+(455 filtered), including 168 raw-input × RC × FTZ positive cases plus sticky,
+unsupported-admission, prerequisite-gate, schema, tamper and backend checks;
+full `cargo test -p od-testkit --offline -- --test-threads=1` 446/446 with
+0 doc-tests; full `cargo test -p od-runner --offline -- --test-threads=1` 112
+unit + 456 fixture tests; full `cargo test -p od-x86-runner --offline
+-- --test-threads=1` 8 library + 4 binary tests. Workspace all-target check,
+format check, diff check, layout validation, and Graphify refresh passed with 10,311 nodes, 21,990 edges and 287 communities; 54 unsupported-extension files were skipped and 13 code files had no symbols.
+After review, focused exact-tiny checks passed: ISA 1/1 and runner 1/1; the
+runner matrix includes 168 raw-input × RC × FTZ positive cases. An independent
+no-compile CLI smoke passed 176/176. Full suite counts above are from the full
+runs before adding these exact-tiny cases; the focused post-review tests cover
+the added cases. Independent review completed without remaining findings.
+Runner snapshots do not expose memory callback counts; direct ISA tests cover
+single-read behavior and read-failure atomicity.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTSD2SS pp. 3-234–3-235; Vol. 1
+§§4.9.1.4–4.9.1.6, Table 4-12, §10.2.3.3, §§11.5.2–11.5.3, 11.5.5, Table
+D-12 and Table 14-21; Vol. 3A §§16.1.3–16.1.4, Table 16-1; Intel
+Floating-Point Reference Sheet v2.13 p. 2. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37ca--bounded-long64-cvtsd2ss-xmm0rax-m64-memory-profile), [plan](../plans/STAGE_2.md#s2-37ca--bounded-long64-cvtsd2ss-xmm0rax-m64-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ca--cvtsd2ss-xmm0rax-m64-memory-profile).

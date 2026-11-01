@@ -14605,3 +14605,39 @@ Sources: Intel SDM Rev. 093 Vol. 2A CVTSS2SD pp. 3-240–3-241; Vol. 1
 §§11.5.2, 11.5.3, 11.5.5, Table D-11 p. D-8, Table 14-21; Vol. 3A
 §§16.1.3–16.1.4, Table 16-1. The instruction-page Type 3/Table 2-20 is VEX-only
 and is not used as a legacy alignment reference. See [plan](../plans/STAGE_2.md#s2-37bz--bounded-long64-cvtss2sd-xmm0rax-m32-memory-profile), [report](../reports/STAGE_2_REPORT.md#s2-37bz--cvtss2sd-xmm0rax-m32-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bz--cvtss2sd-xmm0rax-m32-memory-profile).
+
+## S2-37ca — bounded Long64 CVTSD2SS XMM0,[RAX] m64 memory profile
+
+The exact schema-v2 interpreter-only encoding is legacy `F2 0F 5A 00` in
+Long64. Fetch all four bytes before the local SSE2/EM/OSFXSR #UD then TS #NM
+gates; CPL0–3 are admitted. This is bounded test ordering, not a universal
+exception-priority claim. RAX names one checked canonical48 `[RAX..RAX+7]`
+span, read exactly once after preflight. Unaligned m64 reads are allowed when
+RFLAGS.AC=0; AC=1 is a profile-local Unsupported refusal. CPU state is not
+committed if the read fails.
+
+The input binary64 is rounded to binary32 according to MXCSR.RC. Tininess is
+determined after rounding to 24-bit precision with unbounded exponent (WPR),
+before final exponent range encoding. Thus the rounded value's encoded
+exponent alone does not determine UE. With FTZ=0, a WPR-tiny inexact result
+raises UE|PE, while a WPR-tiny exact result raises neither. With FTZ=1, every
+WPR-tiny result is flushed to signed zero and raises UE|PE, including an exact
+tiny result; WPR-normal outputs are not flushed. Overflow contributes OE|PE.
+SNaNs are quieted, preserve sign and narrowed payload, and contribute IE only;
+QNaNs add no IE/PE. DAZ=0 means nonzero source subnormals contribute DE and can
+also cause underflow. Existing MXCSR sticky status is preserved. Only
+XMM0.low32 changes; XMM0[127:32], architectural state above 127, MXCSR control
+bits and unrelated state are preserved. x87/MMX has no gate and is untouched.
+
+Admission requires MXCSR mask `0xffbf`, DAZ=0, and IM/DM/OM/UM/PM=1; ZM is
+unrestricted. No unmasked SIMD exception delivery is modeled. A missing SSE
+snapshot yields Unsupported after the prerequisite gates and before any data
+read. The independent raw-u64 oracle uses integer-only bit construction, not
+host FP or production conversion helpers. Native/JIT/C ABI/fragment/generic
+execution remains closed; no physical x86 acceptance is claimed.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTSD2SS pp. 3-234–3-235; Vol. 1
+§§4.9.1.4–4.9.1.6, Table 4-12, §10.2.3.3, §§11.5.2–11.5.3, 11.5.5, Table
+D-12, Table 14-21; Vol. 3A §§16.1.3–16.1.4, Table 16-1; Intel Floating-Point
+Reference Sheet v2.13 p. 2. Type 3/Table 2-20 is VEX-specific and is not used
+as a legacy alignment source. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37ca--bounded-long64-cvtsd2ss-xmm0rax-m64-memory-profile), [report](../reports/STAGE_2_REPORT.md#s2-37ca--cvtsd2ss-xmm0rax-m64-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ca--cvtsd2ss-xmm0rax-m64-memory-profile).

@@ -326,3 +326,11 @@ only the low 64 bits of XMM0. It widens binary32 exactly, adding masked IE for
 SNaN quieting and DE for nonzero subnormal input; it preserves all upper XMM0
 bits, MXCSR control/sticky state, and x87 canaries. RC/FTZ do not affect the
 result. Native/JIT/C ABI remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bz--bounded-long64-cvtss2sd-xmm0rax-m32-memory-profile).
+
+### S2-37ca — CVTSD2SS m64 memory profile
+
+The `s2-long-cvtsd2ss-memory-rax-v1` schema profile uses a separate control
+field and strict foreign-field admission. Its independent raw-u64 oracle
+rounds by integer bit operations, checks WPR tininess, models FTZ and sticky
+IE/DE/OE/UE/PE, and preserves XMM0 high bits. It does not use host FP or a
+production conversion helper. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ca--bounded-long64-cvtsd2ss-xmm0rax-m64-memory-profile).

@@ -1092,6 +1092,8 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only exact legacy `F2 0F 5A 00` scalar binary64-to-binary32 m64 form.
+    Cvtsd2ssMemoryRax,
     /// Local-only legacy `66 0F 2A 00` memory-source CVTPI2PD form.
     Cvtpi2pdMemoryRax,
     /// Local-only legacy `66 0F 2A C1` register-source CVTPI2PD form.
@@ -4931,12 +4933,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Escape0f, 0x5a) if cvtsd2ss_register => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if modrm == 0 && prefixes.rex.is_none() {
+                    Operation::Cvtsd2ssMemoryRax
+                } else if modrm >> 6 != 3 {
                     return Err(self.unsupported(opcode));
-                }
-                Operation::Cvtsd2ssRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                } else {
+                    Operation::Cvtsd2ssRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x2a) if cvtsi2sd_r32_register => {
@@ -21489,10 +21494,24 @@ mod tests {
             &[0xf2, 0x48, 0x0f, 0x5a, 0xc1][..],       // REX.W
             &[0x41, 0xf2, 0x0f, 0x5a, 0xc1][..],       // reordered
             &[0xf2, 0xf2, 0x0f, 0x5a, 0xc1][..],       // duplicate mandatory prefix
-            &[0xf2, 0x0f, 0x5a, 0x00][..],             // memory form
             &[0x66, 0xf2, 0x0f, 0x5a, 0xc1][..],       // other prefix
             &[0xc5, 0xfb, 0x5a, 0xc1][..],             // VEX
             &[0x62, 0xf1, 0xff, 0x08, 0x5a, 0xc1][..], // EVEX
+        ] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn cvtsd2ss_exact_m64_rax_form_decodes_and_neighbors_refuse() {
+        let mut memory = Memory::new(&[0xf2, 0x0f, 0x5a, 0x00]);
+        let instruction = memory.decode().unwrap();
+        assert_eq!(instruction.operation, Operation::Cvtsd2ssMemoryRax);
+        assert_eq!(instruction.length, 4);
+        for bytes in [
+            &[0xf2, 0x0f, 0x5a, 0x01][..],
+            &[0xf2, 0x40, 0x0f, 0x5a, 0x00][..],
+            &[0x66, 0xf2, 0x0f, 0x5a, 0x00][..],
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }

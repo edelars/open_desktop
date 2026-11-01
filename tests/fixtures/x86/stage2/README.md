@@ -7301,3 +7301,21 @@ without host FP or production helpers. No physical x86 acceptance is claimed.
 Normative sources: Intel SDM Rev. 093 Vol. 2A CVTSS2SD pp. 3-240–3-241; Vol. 1
 §§11.5.2, 11.5.3, 11.5.5, Table D-11 p. D-8, Table 14-21; Vol. 3A
 §§16.1.3–16.1.4, Table 16-1. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37bz--bounded-long64-cvtss2sd-xmm0rax-m32-memory-profile), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bz--bounded-long64-cvtss2sd-xmm0rax-m32-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bz--cvtss2sd-xmm0rax-m32-memory-profile).
+
+### S2-37ca — CVTSD2SS XMM0,[RAX] m64 memory profile
+
+`s2_37ca_cvtsd2ss_m64_wpr_tiny_ftz_rc_up.case.json` is the literal exact legacy
+`F2 0F 5A 00` case. It supplies an unaligned binary64 just below the binary32
+minimum-normal boundary with round-up and FTZ enabled. The source remains
+WPR-tiny even if final binary32 boundary rounding with FTZ disabled produces
+minimum normal; this fixture flushes the WPR-tiny value to signed zero with UE|PE. Runner cases cover all RC/FTZ settings, both signed WPR
+thresholds, overflow boundaries, NaNs, infinities, signed zero, subnormals,
+sticky flags, and strict refusal/schema/tamper/backend paths. The raw-u64 oracle
+uses integer operations only. Direct ISA coverage establishes one 8-byte read,
+unaligned success, AC refusal, gate priority, missing-SSE refusal, and read
+rollback. Native/JIT/C ABI are closed; no physical x86 acceptance is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTSD2SS pp. 3-234–3-235; Vol. 1
+§§4.9.1.4–4.9.1.6, Table 4-12, §10.2.3.3, §§11.5.2–11.5.3, 11.5.5, Table
+D-12, Table 14-21; Vol. 3A §§16.1.3–16.1.4, Table 16-1; Intel Floating-Point
+Reference Sheet v2.13 p. 2. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37ca--bounded-long64-cvtsd2ss-xmm0rax-m64-memory-profile), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ca--bounded-long64-cvtsd2ss-xmm0rax-m64-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ca--cvtsd2ss-xmm0rax-m64-memory-profile).

@@ -259,3 +259,12 @@ only the low 64 bits of XMM0. It widens binary32 exactly, adding masked IE for
 SNaN quieting and DE for nonzero subnormal input; it preserves all upper XMM0
 bits, MXCSR control/sticky state, and x87 canaries. RC/FTZ do not affect the
 result. Native/JIT/C ABI remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bz--bounded-long64-cvtss2sd-xmm0rax-m32-memory-profile).
+
+### S2-37ca — CVTSD2SS m64 memory profile
+
+The exact `F2 0F 5A 00` profile has a literal fixture and a RC×FTZ matrix over
+WPR boundaries, overflow, NaN classes, infinities, zeros, and subnormals. The
+runner verifies sticky status, high-XMM preservation, schema/tamper behavior,
+and JIT/native denial. Direct ISA tests cover gates, no-SSE refusal, unaligned
+single-read behavior, and read rollback. No physical x86 acceptance is claimed.
+See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ca--bounded-long64-cvtsd2ss-xmm0rax-m64-memory-profile).
