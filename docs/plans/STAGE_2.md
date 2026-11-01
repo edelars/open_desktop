@@ -189,6 +189,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-29p | Round an exact signed `i128` coefficient once to finite binary80 through lossless normalization and direct normal/subnormal packing; no x87 architectural effects | S2-29e, S2-29f, S2-29k–n |
 | [x] | S2-29u | p64-aware large-gap binary80 finite-addition bridge for normalized operands with exponent gaps >64; classify tails below/at/above half; preserve binary32/64 adapter behavior; no x87 instruction semantics | S2-29t; independent Sol/high review clean |
 | [x] | S2-29v | Pure integer square-root helper for positive nonzero normalized finite binary80 inputs; one-round binary80 packing; no FSQRT/FCW/state/exception semantics | S2-29u; independent Sol/high review clean |
+| [x] | S2-29x | Exact truncated finite binary80 remainder coefficient decomposition for normalized nonzero operands; exact modulo for exponent gaps 0..64, lhs passthrough below, bounded rejection above; no FPREM/FPREM1 semantics | S2-29w; independent Sol/high review clean |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
@@ -3274,6 +3275,31 @@ mapping, x87 state or FSW behavior, guest exceptions, or physical x86
 acceptance. Verification and the complete literal matrix are in the
 [standalone S2-29w report](../reports/S2_29W_X87_FINITE_SCALE_BINARY80.md).
 S2-29, S2-28, and ISSUE-019 remain open.
+
+### S2-29x. Exact truncated finite binary80 remainder decomposition (bounded helper)
+
+`remainder_finite_trunc(lhs, rhs) -> Option<(i32, i128)>` returns the exact
+coefficient decomposition `(exponent, coefficient)` for
+`lhs - trunc(lhs / rhs) * rhs`. It accepts normalized nonzero inputs with
+Normal, Subnormal, or PseudoDenormal provenance. Let
+`d = i64(lhs.exponent) - i64(rhs.exponent)`: when `d < 0`, the normalized
+significand range proves that the left operand is smaller in magnitude and the
+helper returns its signed significand and exponent. For `0 <= d <= 64`, it
+computes `N = u128(lhs.significand) << d`, `R = N % rhs.significand`, and
+returns the remainder signed only by the left operand at the right exponent.
+For `d > 64`, zero, malformed normalization, or invalid provenance, it returns
+`None`. The exact zero representation is `(rhs.exponent, 0)` without
+architectural zero-sign behavior. Widened exponent subtraction and the bounded
+shift/remainder fit in `i64`, `u128`, and `i128` without overflow.
+
+Literal tests cover signs and divisor-sign independence, exact multiples,
+smaller-left operands, gaps 0/1/63/64/65, normalized subnormal cases, pseudo-
+denormal equivalence, exponent `i32` endpoints, malformed inputs, immutability,
+and exact binary80 packing of 1.5 and minimum-subnormal remainders in all four
+mathematical modes. This remains helper-only: no FPREM/FPREM1, partial
+reduction/C2, quotient bits, FCW/FSW, guest exceptions, or physical x86
+acceptance. The [standalone S2-29x report](../reports/S2_29X_X87_FINITE_REMAINDER.md)
+records the literal vectors and validation. ISSUE-019 remains open.
 
 ### S2-30. Основные x87 операции
 

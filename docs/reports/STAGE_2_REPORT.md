@@ -5475,6 +5475,39 @@ gitignored oracle manifests absent there. See the [standalone S2-29w report](S2_
 ISSUE-019 remains open for broader architectural x87 behavior and physical
 acceptance.
 
+## S2-29x — exact truncated finite binary80 remainder decomposition
+
+Added the helper-only `x87::remainder_finite_trunc(lhs, rhs)` returning an exact
+`(exponent, coefficient)` decomposition of
+`lhs - trunc(lhs / rhs) * rhs`. It accepts normalized nonzero Normal,
+Subnormal, and PseudoDenormal values. A negative exponent gap returns the
+signed left operand unchanged; gaps from 0 through 64 use an exact `u128`
+numerator modulo the right significand; larger gaps and malformed inputs return
+`None`. Exact multiples use `(rhs.exponent, 0)` without architectural zero-sign
+semantics.
+
+Literal tests cover sign combinations, divisor-sign independence, exact
+multiples, the left-smaller path, gap boundaries 0/1/63/64/65, minimum normal
+modulo maximum subnormal, raw subnormal 7 modulo 3, pseudo-denormal equivalence,
+`i32` exponent endpoints, malformed inputs, and immutability. Independent
+literal binary80 bytes verify exact 1.5 and minimum-subnormal remainders in all
+four mathematical modes. Focused tests passed 3/3 and the full
+`cargo test -p od-isa --offline` passed (1,717 tests). Formatting,
+`cargo check -p od-isa --all-targets --offline`, and
+`cargo check --workspace --all-targets --offline` passed. Graphify was updated;
+independent `gpt-6.1-sol` high review completed with no remaining findings.
+The [implementation and three literal unit tests](../../crates/od-isa/src/x87.rs)
+include `remainder_finite_trunc` and the signed/gap, provenance/rejection, and
+exact-packing compositions.
+
+This is exact finite helper coverage only. No FPREM/FPREM1, partial
+reduction/C2, quotient condition bits, FCW/FSW, guest exceptions, architectural
+signed-zero behavior, or physical x86 acceptance is claimed. ISSUE-019 remains
+open for architectural x87 behavior and physical acceptance. See the
+[plan](../plans/STAGE_2.md#s2-29x-exact-truncated-finite-binary80-remainder-decomposition-bounded-helper),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-29x-exact-truncated-finite-binary80-remainder-decomposition),
+and [standalone report](S2_29X_X87_FINITE_REMAINDER.md).
+
 ## S2-30i — exact-only FSUB ST(i), ST(0) (bounded local slice)
 
 Added bare `DC E8+i`, `i=0..7`, as `FSUB ST(i), ST(0)`. The operation shares

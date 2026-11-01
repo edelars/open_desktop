@@ -3542,6 +3542,33 @@ x86 acceptance. Literal coverage and verification are recorded in the
 [S2-29w standalone report](../reports/S2_29W_X87_FINITE_SCALE_BINARY80.md).
 S2-29, S2-28, and ISSUE-019 remain open.
 
+## Local S2-29x: exact truncated finite binary80 remainder decomposition
+
+`od_isa::x87::remainder_finite_trunc(lhs: X87Finite, rhs: X87Finite) ->
+Option<(i32, i128)>` returns `(exponent, coefficient)`, representing
+`coefficient * 2^(exponent - 63)` for the exact value
+`lhs - trunc(lhs / rhs) * rhs`. It accepts normalized nonzero significands
+`S >= 2^63` with Normal, Subnormal, or PseudoDenormal provenance. Zero,
+malformed normalization, and invalid provenance return `None`.
+
+Compute `d = i64(lhs.exponent) - i64(rhs.exponent)`. For `d < 0`, normalized
+significands prove `|lhs| < |rhs|`; return the signed left significand at the
+left exponent. For `0 <= d <= 64`, compute the exact unsigned remainder
+`R = (u128(lhs.significand) << d) % rhs.significand`, then return it with the
+left operand's sign at the right exponent. The right operand's sign does not
+change truncating-remainder sign. For `d > 64`, return `None`. The exponent
+subtraction is widened before execution; the numerator fits `u128`, and the
+remainder fits signed `i128`. Exact zero is represented as
+`(rhs.exponent, 0)` with no architectural signed-zero choice.
+
+This contract covers the exact finite helper only. It adds no FPREM or FPREM1,
+partial reduction, C2 or quotient condition bits, FCW/FSW effects, guest
+exceptions, x87 state mutation, or physical x86 acceptance. It does not compose
+rounded division, multiplication, or subtraction. Literal coverage and
+verification are recorded in the
+[S2-29x standalone report](../reports/S2_29X_X87_FINITE_REMAINDER.md).
+ISSUE-019 remains open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.
