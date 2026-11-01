@@ -1,0 +1,270 @@
+{
+  "accounting": {
+    "compile_publish_ir_drop_published_drop_count_per_sequence": 1,
+    "ratios_computed_from": "native_total_ns / interpreter_total_ns per retained pair; median/range recomputed from raw totals, never truncated ns-per-call",
+    "repetitions_per_side_per_sequence": 2048,
+    "resident_mapping_high_water_per_sequence": 1,
+    "sample_floor_ns": 200000000,
+    "scored_pairs_per_sequence_per_run": 20,
+    "warmup_sweeps_per_backend_per_sequence": 1
+  },
+  "bound_artifacts": [
+    {
+      "path": "work/tmp/stage3/s3-36d/preflight.json",
+      "sha256": "e84285d321d3f508753651192377c12b3122f2aa5978d7a0dc72644ea22b7e33"
+    },
+    {
+      "path": "work/tmp/stage3/s3-36d/preflight.monitoring.json",
+      "sha256": "79f8140b22f64484c628fb3aa6ea0c6d22a7d78f535b4b7233d6e85773f67662"
+    },
+    {
+      "path": "work/tmp/stage3/s3-36d/calibration.json",
+      "sha256": "5c6a2a075f633e66a6923d5d01591416bc4d28feb6f907b585ebb5d471657315"
+    },
+    {
+      "path": "work/tmp/stage3/s3-36d/calibration.json.warm.journal.jsonl",
+      "sha256": "ce516df83252b61394acb6c4dd14ea320d2dbd7a05e67abcd304b03545cb2fa9"
+    },
+    {
+      "path": "work/tmp/stage3/s3-36d/calibration.monitoring.json",
+      "sha256": "fa007405c244af31f5a02b5135df105f42a34cdc9b3db3c26a71f62c559ac96f"
+    },
+    {
+      "path": "work/tmp/stage3/s3-36d/run1.json",
+      "sha256": "06228ccf5bece0d02d6318539f3b6b202438280bc079a9fce5d4b634cfe8208d"
+    },
+    {
+      "path": "work/tmp/stage3/s3-36d/run1.json.warm.journal.jsonl",
+      "sha256": "86620d37b0a441836499f24a8b441aaac76f70f2f8c5e7568df9f1e8f18c6d01"
+    },
+    {
+      "path": "work/tmp/stage3/s3-36d/run1.monitoring.json",
+      "sha256": "4df86c41a6d547b8cfb553e659e0c1515bcd4c19293cd063e594172ef0e56eef"
+    },
+    {
+      "path": "work/tmp/stage3/s3-36d/run2.json",
+      "sha256": "190638c9fa2c2607b3b7ff4dead469c262d254db3af4fda711cff9f6e23a3e35"
+    },
+    {
+      "path": "work/tmp/stage3/s3-36d/run2.json.warm.journal.jsonl",
+      "sha256": "5af88cd9888d41df483441626ea3e3149240e92138bb1254170206e80e09dc91"
+    },
+    {
+      "path": "work/tmp/stage3/s3-36d/run2.monitoring.json",
+      "sha256": "30f19d90cfee21fcb70e8a4a3cc9b19dbb823cef295c2b91aba4427b7620082c"
+    },
+    {
+      "path": "work/tmp/stage3/s3-36d/run3.json",
+      "sha256": "dc017d1e07dfb94a322accc7a2bfe94d7aa0670177f682f5ab6f68e650be4cbd"
+    },
+    {
+      "path": "work/tmp/stage3/s3-36d/run3.json.warm.journal.jsonl",
+      "sha256": "f3f6843116e47beccb8e098962e94e9ee8d926d8b04e0773982fe868d60d3d8b"
+    },
+    {
+      "path": "work/tmp/stage3/s3-36d/run3.monitoring.json",
+      "sha256": "8a6f31c2b7936823c6d8519fca09500443e2431854c32c32eec4c0ba67248691"
+    }
+  ],
+  "calibration_only": {
+    "calibration_floor_passed": true,
+    "journal_path": "work/tmp/stage3/s3-36d/calibration.json.warm.journal.jsonl",
+    "journal_sha256": "ce516df83252b61394acb6c4dd14ea320d2dbd7a05e67abcd304b03545cb2fa9",
+    "monitoring_path": "work/tmp/stage3/s3-36d/calibration.monitoring.json",
+    "monitoring_sha256": "fa007405c244af31f5a02b5135df105f42a34cdc9b3db3c26a71f62c559ac96f",
+    "path": "work/tmp/stage3/s3-36d/calibration.json",
+    "repetitions_by_sequence": {
+      "load_then_store": 2048,
+      "store_then_load": 2048
+    },
+    "scored_pairs": 0,
+    "sha256": "5c6a2a075f633e66a6923d5d01591416bc4d28feb6f907b585ebb5d471657315",
+    "status": "calibration_only_unscored"
+  },
+  "caveats": [
+    "Bounded warm direct-entry checked-memory result for only the two S3-34a sequences; not broad workload evidence.",
+    "Per-sequence strata are reported independently; no combined cross-sequence ratio is calculated.",
+    "Monitoring envelopes are point-in-time; Stage2 observations cannot be attributed to individual pairs because no pair timestamps exist.",
+    "Runtime working_tree_dirty is null because git status probe timed out; build source_tree_dirty was false.",
+    "No sample trimming; all retained 20 pairs per stratum/run are included.",
+    "Mac mini checks deferred and not run."
+  ],
+  "corpus": {
+    "inputs_per_sequence": 1200,
+    "preflight_trials_per_backend": 2,
+    "sequence_names": [
+      "store_then_load",
+      "load_then_store"
+    ],
+    "unique_inputs": 2400
+  },
+  "corpus_digest": "b09478b556aa91234d8c453f20e70f637222c5de2d7369d305ffe7c78caae540",
+  "host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "dee1c860895c94883be7ce5650f50585569291f8",
+      "source_sha256": "16771ca3b7d4f5e227a6c42a87c52b2788eb6987f8e1256488058a1568fbb5b0",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "dee1c860895c94883be7ce5650f50585569291f8",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "preflight": {
+    "interpreter_executions": 4800,
+    "monitoring_path": "work/tmp/stage3/s3-36d/preflight.monitoring.json",
+    "monitoring_sha256": "79f8140b22f64484c628fb3aa6ea0c6d22a7d78f535b4b7233d6e85773f67662",
+    "native_executions": 4800,
+    "parity_trials": 4800,
+    "path": "work/tmp/stage3/s3-36d/preflight.json",
+    "sha256": "e84285d321d3f508753651192377c12b3122f2aa5978d7a0dc72644ea22b7e33",
+    "timing_started": false
+  },
+  "profile_id": "s3-36d-two-site-memory-warm-direct-v1",
+  "schema": 1,
+  "scored_runs": [
+    {
+      "all_calibration_floors_passed": true,
+      "all_sample_floors_passed": true,
+      "exit_code": 0,
+      "journal_path": "work/tmp/stage3/s3-36d/run1.json.warm.journal.jsonl",
+      "journal_sha256": "86620d37b0a441836499f24a8b441aaac76f70f2f8c5e7568df9f1e8f18c6d01",
+      "monitoring_path": "work/tmp/stage3/s3-36d/run1.monitoring.json",
+      "monitoring_sha256": "4df86c41a6d547b8cfb553e659e0c1515bcd4c19293cd063e594172ef0e56eef",
+      "process_run": 1,
+      "profile_elapsed_ns": 53920628250,
+      "report_path": "work/tmp/stage3/s3-36d/run1.json",
+      "report_sha256": "06228ccf5bece0d02d6318539f3b6b202438280bc079a9fce5d4b634cfe8208d",
+      "sample_pairs_per_sequence": {
+        "load_then_store": 20,
+        "store_then_load": 20
+      },
+      "sample_pairs_total": 40,
+      "status": "scored"
+    },
+    {
+      "all_calibration_floors_passed": true,
+      "all_sample_floors_passed": true,
+      "exit_code": 0,
+      "journal_path": "work/tmp/stage3/s3-36d/run2.json.warm.journal.jsonl",
+      "journal_sha256": "5af88cd9888d41df483441626ea3e3149240e92138bb1254170206e80e09dc91",
+      "monitoring_path": "work/tmp/stage3/s3-36d/run2.monitoring.json",
+      "monitoring_sha256": "30f19d90cfee21fcb70e8a4a3cc9b19dbb823cef295c2b91aba4427b7620082c",
+      "process_run": 2,
+      "profile_elapsed_ns": 56305182500,
+      "report_path": "work/tmp/stage3/s3-36d/run2.json",
+      "report_sha256": "190638c9fa2c2607b3b7ff4dead469c262d254db3af4fda711cff9f6e23a3e35",
+      "sample_pairs_per_sequence": {
+        "load_then_store": 20,
+        "store_then_load": 20
+      },
+      "sample_pairs_total": 40,
+      "status": "scored"
+    },
+    {
+      "all_calibration_floors_passed": true,
+      "all_sample_floors_passed": true,
+      "exit_code": 0,
+      "journal_path": "work/tmp/stage3/s3-36d/run3.json.warm.journal.jsonl",
+      "journal_sha256": "f3f6843116e47beccb8e098962e94e9ee8d926d8b04e0773982fe868d60d3d8b",
+      "monitoring_path": "work/tmp/stage3/s3-36d/run3.monitoring.json",
+      "monitoring_sha256": "8a6f31c2b7936823c6d8519fca09500443e2431854c32c32eec4c0ba67248691",
+      "process_run": 3,
+      "profile_elapsed_ns": 55145861583,
+      "report_path": "work/tmp/stage3/s3-36d/run3.json",
+      "report_sha256": "dc017d1e07dfb94a322accc7a2bfe94d7aa0670177f682f5ab6f68e650be4cbd",
+      "sample_pairs_per_sequence": {
+        "load_then_store": 20,
+        "store_then_load": 20
+      },
+      "sample_pairs_total": 40,
+      "status": "scored"
+    }
+  ],
+  "source_revision": "dee1c860895c94883be7ce5650f50585569291f8",
+  "source_sha256": "2ba1b077bc7a905adae120a98436a1fbf4d9d7de157cc2d02692db1d08ee0177",
+  "strata_summary": [
+    {
+      "all_pairs_met_200ms_floor": true,
+      "by_run": [
+        {
+          "max_raw_total_ratio": 1.3768362870649271,
+          "median_raw_total_ratio": 1.3611507363997484,
+          "min_raw_total_ratio": 1.3116083379757935,
+          "minimum_side_time_ns": 294272015,
+          "pair_count": 20,
+          "process_run": 1,
+          "repetitions_per_side": 2048
+        },
+        {
+          "max_raw_total_ratio": 1.4203506059567454,
+          "median_raw_total_ratio": 1.405221218434525,
+          "min_raw_total_ratio": 1.3849596817658085,
+          "minimum_side_time_ns": 298828300,
+          "pair_count": 20,
+          "process_run": 2,
+          "repetitions_per_side": 2048
+        },
+        {
+          "max_raw_total_ratio": 1.3842114449761402,
+          "median_raw_total_ratio": 1.3680748729979717,
+          "min_raw_total_ratio": 1.3240537978214968,
+          "minimum_side_time_ns": 300899588,
+          "pair_count": 20,
+          "process_run": 3,
+          "repetitions_per_side": 2048
+        }
+      ],
+      "max_raw_total_ratio": 1.4203506059567454,
+      "median_raw_total_ratio": 1.371884744510079,
+      "min_raw_total_ratio": 1.3116083379757935,
+      "pairs_across_runs": 60,
+      "sequence": "store_then_load"
+    },
+    {
+      "all_pairs_met_200ms_floor": true,
+      "by_run": [
+        {
+          "max_raw_total_ratio": 1.4060961092348487,
+          "median_raw_total_ratio": 1.3581303712638566,
+          "min_raw_total_ratio": 1.3240393696053891,
+          "minimum_side_time_ns": 293639541,
+          "pair_count": 20,
+          "process_run": 1,
+          "repetitions_per_side": 2048
+        },
+        {
+          "max_raw_total_ratio": 1.4421564463826295,
+          "median_raw_total_ratio": 1.4007509385009604,
+          "min_raw_total_ratio": 1.382420203263857,
+          "minimum_side_time_ns": 296225210,
+          "pair_count": 20,
+          "process_run": 2,
+          "repetitions_per_side": 2048
+        },
+        {
+          "max_raw_total_ratio": 1.3928754595130086,
+          "median_raw_total_ratio": 1.3615679009514412,
+          "min_raw_total_ratio": 1.2865399535072035,
+          "minimum_side_time_ns": 301237654,
+          "pair_count": 20,
+          "process_run": 3,
+          "repetitions_per_side": 2048
+        }
+      ],
+      "max_raw_total_ratio": 1.4421564463826295,
+      "median_raw_total_ratio": 1.3662312960732588,
+      "min_raw_total_ratio": 1.2865399535072035,
+      "pairs_across_runs": 60,
+      "sequence": "load_then_store"
+    }
+  ]
+}

@@ -754,6 +754,66 @@ for run in 1 2 3; do
 done
 ```
 
+### S3-36d: resident warm direct-entry checked-memory profile
+
+`od-bench two-site-memory-warm` is an opt-in Apple Silicon macOS profile over
+only the original two S3-34a sequences: `store_then_load` and
+`load_then_store`, three fixed seeds, and 400 inputs per seed/sequence (1,200
+per sequence, 2,400 total). It excludes the later `load_then_load` sequence.
+Two untimed preflight trials per input/backend compare complete CPU state,
+RAM, exit/retirement/budget and callback events; this gives 4,800 executions
+per backend and 4,800 parity trials. Each backend also completes one validated
+warmup sweep per sequence.
+
+For each sequence, the runner compiles and publishes one block, retains that
+same mapping throughout preflight, warmup, calibration and scoring, then drops
+it before compiling the next sequence. Timed samples call the direct typed
+native entry or interpreter only. Reset and validation are outside the timers.
+The profile has no dispatcher lookup or cache activity, so it reports no
+cache hit/miss counters. Calibration-only passed the 200 ms common floor at
+2,048 repetitions per side; three scored runs kept all 20 alternating pairs
+per sequence and all pairs passed the 200 ms floor.
+
+The pooled raw-total native/interpreter ratio median/range was 1.3718847445
+(1.3116083380–1.4203506060) for `store_then_load` and 1.3662312961
+(1.2865399535–1.4421564464) for `load_then_store`. These per-sequence results
+are not combined across strata. They describe only this bounded resident
+direct-entry fixture; they do not establish general memory performance,
+production behavior, or a global winner. Full S3-36 dispatcher/lookup and
+workload coverage remains open.
+
+Monitoring is point-in-time. Stage 2 test processes appeared idle at sampled
+scored-run snapshots; the calibration envelope also records Stage 2 compiler
+activity after or near that short run. With no per-pair timestamps, overlap
+and pair-level impact are unknown. Runtime dirty status is `null` because the
+git status probe timed out. Mac mini checks were not run and remain deferred to
+the end of Stage 3. No owner/MMU, VMHost, SMC, other memory forms, or broader
+guest workloads are covered.
+
+The preflight and calibration-only invocations are:
+
+```sh
+cargo run --release -p od-bench --offline -- two-site-memory-warm \
+  --preflight-only --process-run 1 \
+  --output work/tmp/stage3/s3-36d/preflight.json
+cargo run --release -p od-bench --offline -- two-site-memory-warm \
+  --calibration-only --process-run 1 \
+  --output work/tmp/stage3/s3-36d/calibration.json
+```
+
+The three scored processes use `--process-run 1`, `2`, and `3` with distinct
+output paths. The [S3-36d report](../reports/STAGE_3_S3-36d_2026-11-01.md)
+and [reviewed evidence archive](../reports/data/stage3/s3-36d/) preserve the
+reports, journals, monitoring envelopes, and suite manifest.
+
+```sh
+for run in 1 2 3; do
+  cargo run --release -p od-bench --offline -- two-site-memory-warm \
+    --process-run "$run" \
+    --output "work/tmp/stage3/s3-36d/run$run.json"
+done
+```
+
 ### S3-37a: bounded production FIFO16 corpus churn observation
 
 `od-bench cache-churn` is an opt-in Apple Silicon macOS release command. It

@@ -3111,6 +3111,31 @@ memory workloads, or whole-system performance. S3-36 and S3-41 remain open.
 See the [S3-36c report](../reports/STAGE_3_S3-36c_2026-10-31.md) and
 [`BENCHMARKS.md`](../testing/BENCHMARKS.md#s3-36c-resident-warm-nop-fallback-comparison).
 
+#### S3-36d: resident warm direct-entry checked-memory profile — partial
+
+Implemented opt-in `od-bench two-site-memory-warm` for only the two original
+S3-34a sequences, three fixed seeds, and 400 inputs per seed/sequence (1,200
+per sequence; 2,400 unique inputs). The profile compiles and publishes one
+block per sequence, retains that mapping through preflight, warmup, calibration
+and samples, then drops it before compiling the next sequence. The timed native
+path is direct typed entry; interpreter execution is measured separately.
+Preflight uses two trials per backend/input and checks full CPU/RAM/exit/budget
+and callback parity. The separate calibration-only run passed at 2,048
+repetitions per side. Three scored runs retained 20 pairs per sequence and all
+sides passed the 200 ms floor. The pooled raw-total native/interpreter ratio
+median/range was 1.3718847445 [1.3116083380, 1.4203506060] for
+`store_then_load` and 1.3662312961 [1.2865399535, 1.4421564464] for
+`load_then_store`; the two strata are not combined.
+
+This is partial warm direct-entry checked-memory evidence only. It has no
+dispatcher/lookup or cache counters and does not cover the third sequence,
+other memory forms, owner/MMU, VMHost, SMC, or broader guest workloads. Stage 2
+and Graphify records are point-in-time snapshots; there are no per-pair
+timestamps, and runtime dirty status is unknown. Mini was not run and remains
+deferred to the end of Stage 3. Full S3-36 dispatcher/lookup and workload
+coverage remains open. See the [S3-36d report](../reports/STAGE_3_S3-36d_2026-11-01.md)
+and [evidence archive](../reports/data/stage3/s3-36d/).
+
 1. Прогреть cache вне timed samples и подтвердить hit/compile counters. Повторять одинаковую гостевую работу с корректным reset initial state.
 2. Измерять полный steady-state runtime path с lookup/dispatcher/helpers/flags и exits, а не только одну ARM64 arithmetic instruction.
 3. Чередовать варианты, применять повторные calibrated samples, сохранять raw elapsed/work counts, median и разброс; при пересекающемся шуме не утверждать speedup.

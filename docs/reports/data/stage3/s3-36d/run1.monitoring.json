@@ -1,0 +1,121 @@
+{
+  "schema": 1,
+  "profile": "s3-36d-two-site-memory-warm-direct-v1",
+  "run_kind": "scored_process_run_1",
+  "command": "cargo run --release -p od-bench --offline -- two-site-memory-warm --process-run 1 --output work/tmp/stage3/s3-36d/run1.json",
+  "source_revision": "dee1c860895c94883be7ce5650f50585569291f8",
+  "process": {
+    "benchmark_pid": 35618,
+    "benchmark_start_utc_inferred_from_elapsed_snapshot": "2026-11-01T06:08:37Z",
+    "completed_by_utc": "2026-11-01T06:09:43Z",
+    "exit_code": 0,
+    "reported_profile_elapsed_ns": 53920628250,
+    "scored_samples_started": true
+  },
+  "outputs": {
+    "report_path": "work/tmp/stage3/s3-36d/run1.json",
+    "report_sha256": "06228ccf5bece0d02d6318539f3b6b202438280bc079a9fce5d4b634cfe8208d",
+    "journal_path": "work/tmp/stage3/s3-36d/run1.json.warm.journal.jsonl",
+    "journal_sha256": "86620d37b0a441836499f24a8b441aaac76f70f2f8c5e7568df9f1e8f18c6d01",
+    "journal_records": 64,
+    "source_sha256_from_report": "2ba1b077bc7a905adae120a98436a1fbf4d9d7de157cc2d02692db1d08ee0177"
+  },
+  "snapshots": [
+    {
+      "observed_at_utc": "2026-11-01T06:08:21Z",
+      "phase": "immediately_before_launch",
+      "load_average_raw": "{ 2.17 2.61 2.42 }",
+      "stage2_cargo_test_pid": 34311,
+      "stage2_cargo_test_cpu_percent": 0.0,
+      "stage2_cargo_test_elapsed_seconds": 87,
+      "stage2_rustc_visible": false,
+      "graphify_visible": false,
+      "note": "Output report and journal paths checked absent; HEAD was dee1c860895c94883be7ce5650f50585569291f8."
+    },
+    {
+      "observed_at_utc": "2026-11-01T06:08:40Z",
+      "phase": "early_run",
+      "load_average_raw": "{ 1.96 2.53 2.40 }",
+      "benchmark_pid": 35618,
+      "benchmark_elapsed_seconds": 3,
+      "benchmark_cpu_percent": 0.0,
+      "stage2_cargo_test_pid": 34311,
+      "stage2_cargo_test_cpu_percent": 0.0,
+      "stage2_rustc_visible": false,
+      "graphify_visible": false,
+      "journal_records_visible": 0,
+      "note": "Point-in-time process sample during initial resident setup/preflight."
+    },
+    {
+      "observed_at_utc": "2026-11-01T06:09:14Z",
+      "phase": "active_measurement",
+      "load_average_raw": "{ 2.44 2.58 2.42 }",
+      "benchmark_pid": 35618,
+      "benchmark_elapsed_seconds": 37,
+      "benchmark_cpu_percent": 99.2,
+      "stage2_cargo_test_pid": 35763,
+      "stage2_cargo_test_command": "cargo test -p od-isa --offline -- --test-threads=1",
+      "stage2_cargo_test_cpu_percent": 0.0,
+      "stage2_cargo_test_elapsed_seconds": 26,
+      "stage2_rustc_visible": false,
+      "graphify_visible": false,
+      "journal_records_visible": 45,
+      "note": "Point-in-time process sample. Pair-level timestamps are not present in the report/journal."
+    },
+    {
+      "observed_at_utc": "2026-11-01T06:09:43Z",
+      "phase": "after_command_completion",
+      "load_average_raw": "{ 2.48 2.57 2.42 }",
+      "benchmark_pid_visible": false,
+      "stage2_cargo_test_pid": 35763,
+      "stage2_cargo_test_cpu_percent": 0.0,
+      "stage2_cargo_test_elapsed_seconds": 55,
+      "stage2_rustc_visible": false,
+      "graphify_visible": false,
+      "journal_records_visible": 64
+    }
+  ],
+  "run_summary": {
+    "status": "scored",
+    "stop_reason": null,
+    "unique_cases": 2400,
+    "sequence_counts": {
+      "store_then_load": 1200,
+      "load_then_store": 1200
+    },
+    "preflight_trials_per_input_backend": 2,
+    "preflight_executions_per_backend": 4800,
+    "parity_trials": 4800,
+    "warmup_sweeps_per_backend_per_sequence": 1,
+    "calibration_repetitions_per_side_per_sequence": 2048,
+    "scored_pairs_per_sequence": 20,
+    "scored_pairs_total": 40,
+    "sample_floor_ns": 200000000,
+    "all_sample_sides_met_floor": true,
+    "store_then_load_native_over_interpreter_ratio_median_min_max": [
+      1.3611507363997484,
+      1.3116083379757935,
+      1.3768362870649271
+    ],
+    "load_then_store_native_over_interpreter_ratio_median_min_max": [
+      1.3581303712638566,
+      1.3240393696053891,
+      1.4060961092348487
+    ],
+    "per_sequence_lifecycle_counts": {
+      "compile": 1,
+      "publish": 1,
+      "IR_drop": 1,
+      "published_drop": 1,
+      "resident_mapping_high_water": 1
+    },
+    "lifecycle_order_note": "The report counts are per sequence; source-reviewed loop explicitly drops the current PublishedCode before the next sequence is compiled. There is no cross-sequence aggregate ratio.",
+    "runtime_working_tree_dirty": null,
+    "runtime_working_tree_note": "Runtime git status was unavailable because the probe timed out after 2000 ms; build source_tree_dirty was false."
+  },
+  "limitations": [
+    "Process and Stage2 observations are point-in-time snapshots; no per-pair timestamps exist.",
+    "Concurrent Stage2 process was sampled at 0% CPU with no rustc visible in snapshots; unobserved intervals cannot be reconstructed.",
+    "Results are per-stratum bounded diagnostics on the two S3-34a checked-memory sequences, not a general workload result."
+  ]
+}
