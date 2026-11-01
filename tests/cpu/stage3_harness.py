@@ -25,6 +25,8 @@ GENERATED_COUNT = 1000
 GENERATED_SEED = "0x5eedcafe"
 REPEATS = 2
 RUN_ID_PATTERN = re.compile(r"stage3-\d{8}-\d{6}-[0-9a-f]{10}")
+S3_30P3_GATE_STEP = "s3_30p3_allocator_helper_clobber_values"
+S3_30P3_GATE_IDENTITY = "tests::allocated_register_and_spill_values_survive_helper_clobbers"
 
 MEMORY_REQUIRED_TESTS = {
     "fixed_seed_memory_corpus_matches_interpreter_twice_per_input",
@@ -83,6 +85,7 @@ SELF_TEST_NAMES = (
     "test_generated_fault_smoke_cleans_child_group_on_success_and_failure",
     "test_app_bundle_smoke_preserves_and_executes_five_argument_bundle",
     "test_vmhost_process_timeout_kills_child_group",
+    "test_s3_30p3_allocator_helper_clobber_gate_is_pinned_and_fails_closed",
 )
 SELF_TEST_IDENTITIES = {
     f"__main__.Stage3HarnessValidationTests.{name}" for name in SELF_TEST_NAMES
@@ -449,6 +452,9 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_34s_memory_event_nop_fallback_resume_without_replay", "local_acceptance", "od-jit",
         "memory_dispatch::tests::nop_fallback_event_yields_before_nop_and_resumes_without_replay",
+    ),
+    (
+        S3_30P3_GATE_STEP, "local_acceptance", "od-host", S3_30P3_GATE_IDENTITY,
     ),
 )
 RUST_TEST_GATES = (

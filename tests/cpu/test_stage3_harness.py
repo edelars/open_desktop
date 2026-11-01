@@ -467,6 +467,108 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 with self.assertRaisesRegex(harness.HarnessError, "exact required Rust test gates"):
                     harness.validate_rust_test_manifest(manifest)
 
+    def test_s3_30p3_allocator_helper_clobber_gate_is_pinned_and_fails_closed(self):
+        p3_step = harness.S3_30P3_GATE_STEP
+        p3_identity = harness.S3_30P3_GATE_IDENTITY
+        expected_gate = (p3_step, "local_acceptance", "od-host", p3_identity)
+        gates = [gate for gate in harness.RUST_TEST_GATES if gate[0] == p3_step]
+        self.assertEqual(gates, [expected_gate])
+        manifest_gates = [
+            gate for gate in harness.rust_test_gate_manifest()
+            if gate["step"] == p3_step
+        ]
+        self.assertEqual(manifest_gates, [{
+            "step": p3_step,
+            "suite": "local_acceptance",
+            "package": "od-host",
+            "identity": p3_identity,
+        }])
+        self.assertEqual(harness.LOCAL_STEPS.count(p3_step), 1)
+        self.assertEqual(len(harness.RUST_TEST_GATES), 98)
+        self.assertEqual(len(harness.rust_test_gate_manifest()), 98)
+        self.assertEqual(harness.rust_test_argv("od-host", p3_identity), [
+            "cargo", "test", "--offline", "-p", "od-host", "--lib", p3_identity,
+            "--", "--exact", "--test-threads=1",
+        ])
+
+        p4_step = "demand_flags_branch_materialization"
+        p4_identity = (
+            "tests::demand_flags_candidate_materializes_before_jz_and_jnz_after_preserving_mov"
+        )
+        p4 = [gate for gate in harness.RUST_TEST_GATES if gate[0] == p4_step]
+        self.assertEqual(p4, [(p4_step, "local_acceptance", "od-host", p4_identity)])
+        self.assertEqual(harness.LOCAL_STEPS.count(p4_step), 1)
+
+        manifest = {
+            "gates": harness.rust_test_gate_manifest(),
+            "sources": [
+                {"path": name, "sha256": harness.sha256_file(harness.ROOT / name)}
+                for name in harness.LOCAL_RUST_TEST_SOURCES
+            ],
+        }
+        manifest["gates"] = [gate for gate in manifest["gates"] if gate["step"] != p3_step]
+        with self.assertRaisesRegex(harness.HarnessError, "exact required Rust test gates"):
+            harness.validate_rust_test_manifest(manifest)
+
+        run_id = harness.new_run_id()
+        run_root = harness.ROOT / "work" / "stage3-harness" / run_id
+        try:
+            with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+                with mock.patch.object(harness, "source_fingerprint", return_value="a" * 64):
+                    summary = passing_final_summary(run_id, Path(temporary))
+            self.assertEqual(summary["steps"][p3_step]["test_identity"], p3_identity)
+            self.assertEqual(
+                summary["suites"]["local_acceptance"]["tests"].count(p3_step), 1
+            )
+            self.assertEqual(summary["suites"]["local_acceptance"]["tests"].count(p4_step), 1)
+        finally:
+            shutil.rmtree(run_root, ignore_errors=True)
+
+        temporary, run_root = temporary_run_root()
+        try:
+            def valid_steps():
+                return passing_rust_gate_steps(run_root / "logs")
+
+            steps = valid_steps()
+            del steps[p3_step]
+            with self.assertRaisesRegex(harness.HarnessError, p3_step):
+                harness.validate_required_rust_test_evidence(steps, run_root)
+
+            for output in (
+                "test result: ok. 0 passed; 0 failed; 0 ignored\n",
+                f"test {p3_identity} ... ignored\n",
+            ):
+                steps = valid_steps()
+                replace_step_log_output(steps[p3_step], output)
+                with self.assertRaisesRegex(harness.HarnessError, p3_step):
+                    harness.validate_required_rust_test_evidence(steps, run_root)
+
+            steps = valid_steps()
+            steps[p3_step]["test_identity"] = "tests::unrelated_test"
+            with self.assertRaisesRegex(harness.HarnessError, p3_step):
+                harness.validate_required_rust_test_evidence(steps, run_root)
+
+            steps = valid_steps()
+            steps[p3_step]["argv"] = harness.rust_test_argv("od-host", "tests::unrelated_test")
+            with self.assertRaisesRegex(harness.HarnessError, p3_step):
+                harness.validate_required_rust_test_evidence(steps, run_root)
+
+            steps = valid_steps()
+            steps[p3_step]["log"] = (run_root / "logs" / "wrong-binding.log").relative_to(
+                harness.ROOT
+            ).as_posix()
+            with self.assertRaisesRegex(harness.HarnessError, "log path differs"):
+                harness.validate_required_rust_test_evidence(steps, run_root)
+
+            steps = valid_steps()
+            replace_step_log_output(steps[p3_step], "test tests::unrelated_test ... ok\n")
+            self.assertEqual(steps[p3_step]["status"], "passed")
+            self.assertEqual(steps[p3_step]["returncode"], 0)
+            with self.assertRaisesRegex(harness.HarnessError, p3_step):
+                harness.validate_required_rust_test_evidence(steps, run_root)
+        finally:
+            temporary.cleanup()
+
     def test_s3_33_native_gates_are_pinned_once_in_manifest_steps_and_summary(self):
         expected_steps = [
             "s3_33a_native_inc_rax_host",
@@ -667,13 +769,13 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ),
         ]
         gates = [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_34n_")]
-        self.assertEqual(len(harness.RUST_TEST_GATES), 97)
+        self.assertEqual(len(harness.RUST_TEST_GATES), 98)
         self.assertEqual(sum(name.startswith("s3_33") for name, _, _, _ in harness.RUST_TEST_GATES), 42)
         self.assertEqual([(name, package, identity) for name, _, package, identity in gates], expected)
         self.assertIn("crates/od-host/src/tests/native_register_v1_corpus.rs", harness.LOCAL_RUST_TEST_SOURCES)
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(manifest), 97)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 97)
+        self.assertEqual(len(manifest), 98)
+        self.assertEqual(len({gate["step"] for gate in manifest}), 98)
         native_identities = {
             gate["identity"] for gate in manifest if gate["step"].startswith("s3_33")
         }
@@ -813,8 +915,8 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ),
         ]
         gates = [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_34p_")]
-        self.assertEqual(len(harness.RUST_TEST_GATES), 97)
-        self.assertEqual(len(harness.rust_test_gate_manifest()), 97)
+        self.assertEqual(len(harness.RUST_TEST_GATES), 98)
+        self.assertEqual(len(harness.rust_test_gate_manifest()), 98)
         self.assertEqual(sum(name.startswith("s3_33") for name, _, _, _ in harness.RUST_TEST_GATES), 42)
         self.assertEqual([(name, package, identity) for name, _, package, identity in gates], expected)
         self.assertIn("crates/od-host/src/tests/native_register_v1_corpus.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -964,8 +1066,8 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 "cargo", "test", "--offline", "-p", package, "--lib", identity,
                 "--", "--exact", "--test-threads=1",
             ])
-        self.assertEqual(len(harness.RUST_TEST_GATES), 97)
-        self.assertEqual(len(manifest_by_name), 97)
+        self.assertEqual(len(harness.RUST_TEST_GATES), 98)
+        self.assertEqual(len(manifest_by_name), 98)
 
     def test_s3_34q_retained_hit_reducer_gate_is_pinned_once(self):
         expected = (
@@ -1103,10 +1205,10 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             [gate for gate in harness.ADDITIONAL_TEST_GATES if gate[0].startswith("s3_34s_")],
             expected,
         )
-        self.assertEqual(len(harness.RUST_TEST_GATES), 97)
+        self.assertEqual(len(harness.RUST_TEST_GATES), 98)
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(manifest), 97)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 97)
+        self.assertEqual(len(manifest), 98)
+        self.assertEqual(len({gate["step"] for gate in manifest}), 98)
         self.assertIn("crates/od-jit/src/memory_dispatch.rs", harness.LOCAL_RUST_TEST_SOURCES)
         for step, suite, package, identity in expected:
             self.assertEqual(harness.LOCAL_STEPS.count(step), 1)
@@ -1248,10 +1350,10 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             [gate for gate in harness.ADDITIONAL_TEST_GATES if gate[0].startswith("s3_34t_")],
             expected,
         )
-        self.assertEqual(len(harness.RUST_TEST_GATES), 97)
+        self.assertEqual(len(harness.RUST_TEST_GATES), 98)
         manifest = harness.rust_test_gate_manifest()
-        self.assertEqual(len(manifest), 97)
-        self.assertEqual(len({gate["step"] for gate in manifest}), 97)
+        self.assertEqual(len(manifest), 98)
+        self.assertEqual(len({gate["step"] for gate in manifest}), 98)
         self.assertIn("crates/od-jit/src/dispatch.rs", harness.LOCAL_RUST_TEST_SOURCES)
         for step, suite, package, identity in expected:
             self.assertEqual(harness.LOCAL_STEPS.count(step), 1)
