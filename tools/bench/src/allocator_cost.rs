@@ -38,6 +38,8 @@ const COMPILE_PAIRS: usize = 20;
 const MAX_COMPILE_CALLS: usize = 1 << 20;
 const WARMUP_CALLS: usize = 64;
 const FROZEN_CODE_SHA256: &str = "4fe980f463d01c3fc413943b73860314d9c780c638acdc9bf50072290c89f778";
+const DISTINCT_BRANCH_CODE_SHA256: &str =
+    "72210fb82b0ffa9f88f10f63697a1051347d07587e3569028947119726fac8c7";
 const CODE: [u8; 17] = [
     0x48, 0x03, 0xC0, // ADD RAX, RAX
     0x48, 0x2B, 0xD2, // SUB RDX, RDX
@@ -46,12 +48,48 @@ const CODE: [u8; 17] = [
     0x48, 0x3B, 0xC3, // CMP RAX, RBX
     0x74, 0x00, // JZ code_end; taken and fall-through converge
 ];
+const DISTINCT_BRANCH_CODE: [u8; 27] = [
+    0x48, 0x03, 0xC0, // ADD RAX, RAX
+    0x48, 0x2B, 0xD2, // SUB RDX, RDX
+    0x48, 0x03, 0xC3, // ADD RAX, RBX
+    0x48, 0x2B, 0xC9, // SUB RCX, RCX
+    0x48, 0x3B, 0xC3, // CMP RAX, RBX
+    0x74, 0x0A, // JZ over the fall-through MOV
+    0x48, 0xBB, // MOV RBX, imm64; outside the measured block
+    0x11, 0x00, 0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA,
+];
+
+#[derive(Clone, Copy)]
+struct FixtureProfile {
+    name: &'static str,
+    code: &'static [u8],
+    code_sha256: &'static str,
+    branch_scope: &'static str,
+    distinct_branch: bool,
+}
+
+const LEGACY_PROFILE: FixtureProfile = FixtureProfile {
+    name: "same-target-jz",
+    code: &CODE,
+    code_sha256: FROZEN_CODE_SHA256,
+    branch_scope: "Final JZ displacement is zero; taken and fall-through converge at code_end. This preserves the original S3-30a profile and does not test distinct branch routing.",
+    distinct_branch: false,
+};
+const DISTINCT_BRANCH_PROFILE: FixtureProfile = FixtureProfile {
+    name: "distinct-jz-fallthrough",
+    code: &DISTINCT_BRANCH_CODE,
+    code_sha256: DISTINCT_BRANCH_CODE_SHA256,
+    branch_scope: "The first five instructions are unchanged; final JZ +10 selects code_end when taken and the next RIP (code_end-10) when not taken. The admitted MOV RBX,imm64 suffix lies beyond the emitted Jcc-terminated block and is outside the measured native call.",
+    distinct_branch: true,
+};
 
 #[derive(Clone)]
 struct Case {
     id: &'static str,
     initial: LongModeState,
     expected_zf: bool,
+    expected_rip: u64,
+    code: &'static [u8],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -117,9 +155,27 @@ struct CaseReport {
     id: String,
     initial: StateSnapshot,
     expected_zf: bool,
+    expected_rip: u64,
     interpreter_oracle: Observation,
     preflight_native: Vec<(u8, Observation)>,
     execution_pairs: Vec<(u8, Vec<PairSample>)>,
+    allocator_pairs: Vec<AllocatorPairSample>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct AllocatorPairSample {
+    order: String,
+    calls_per_side: usize,
+    budget4_total_ns: u128,
+    budget0_total_ns: u128,
+    budget4_ns_per_call: u128,
+    budget0_ns_per_call: u128,
+    budget0_over_budget4: f64,
+    budget4_publication_ns: u128,
+    budget4_drop_ns: u128,
+    budget0_publication_ns: u128,
+    budget0_drop_ns: u128,
+    minimum_sample_met: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -132,8 +188,11 @@ struct VariantReport {
 
 #[derive(Clone, Debug, Serialize)]
 struct CalibrationReport {
+    fixture_profile: String,
     common_repetitions_per_case_and_side: Option<usize>,
-    warmup_calls_per_case: usize,
+    warmup_calls_per_case_per_publication: usize,
+    warmup_publications_per_case: usize,
+    total_warmup_calls_per_case: usize,
     sample_pairs: usize,
     minimum_sample_ns: u128,
     maximum_repetitions_per_side: usize,
@@ -147,6 +206,7 @@ struct CalibrationReport {
 
 #[derive(Clone, Debug, Serialize)]
 struct CalibrationCheck {
+    fixture_profile: String,
     record_kind: String,
     budget: u8,
     case_id: String,
@@ -176,6 +236,7 @@ struct CalibrationRun {
 #[derive(Clone, Debug, Serialize)]
 pub struct Report {
     schema_version: u32,
+    fixture_profile: String,
     timing_started: bool,
     calibration_only_mode: bool,
     sample_floor_passed: Option<bool>,
@@ -216,7 +277,7 @@ fn fail(message: impl Into<String>) -> CostError {
     CostError(message.into())
 }
 
-fn cases() -> Vec<Case> {
+fn cases(profile: FixtureProfile) -> Vec<Case> {
     let mut equal = LongModeState::default();
     equal.rip = BASE_RIP;
     equal.rflags = 0x202;
@@ -231,36 +292,97 @@ fn cases() -> Vec<Case> {
     let mut unequal = equal.clone();
     unequal.gpr[0] = 1; // 2*1 + 7 != 7, so final CMP clears ZF.
 
+    let end = BASE_RIP + profile.code.len() as u64;
+    let equal_rip = end;
+    let unequal_rip = if profile.distinct_branch {
+        end - 10
+    } else {
+        end
+    };
     vec![
         Case {
-            id: "multi-helper-equal",
+            id: if profile.distinct_branch {
+                "jz-taken"
+            } else {
+                "multi-helper-equal"
+            },
             initial: equal,
             expected_zf: true,
+            expected_rip: equal_rip,
+            code: profile.code,
         },
         Case {
-            id: "multi-helper-not-equal",
+            id: if profile.distinct_branch {
+                "jz-fallthrough"
+            } else {
+                "multi-helper-not-equal"
+            },
             initial: unequal,
             expected_zf: false,
+            expected_rip: unequal_rip,
+            code: profile.code,
         },
     ]
 }
 
 pub fn preflight(process_run: u8) -> Result<Report, Box<dyn std::error::Error>> {
-    build_report(process_run, true, false, None)
+    build_report(process_run, true, false, None, LEGACY_PROFILE)
 }
 
 pub fn run(
     process_run: u8,
     calibration_journal: &Path,
 ) -> Result<Report, Box<dyn std::error::Error>> {
-    build_report(process_run, false, false, Some(calibration_journal))
+    build_report(
+        process_run,
+        false,
+        false,
+        Some(calibration_journal),
+        LEGACY_PROFILE,
+    )
 }
 
 pub fn calibration_only(
     process_run: u8,
     calibration_journal: &Path,
 ) -> Result<Report, Box<dyn std::error::Error>> {
-    build_report(process_run, false, true, Some(calibration_journal))
+    build_report(
+        process_run,
+        false,
+        true,
+        Some(calibration_journal),
+        LEGACY_PROFILE,
+    )
+}
+
+pub fn preflight_distinct_branch(process_run: u8) -> Result<Report, Box<dyn std::error::Error>> {
+    build_report(process_run, true, false, None, DISTINCT_BRANCH_PROFILE)
+}
+
+pub fn run_distinct_branch(
+    process_run: u8,
+    calibration_journal: &Path,
+) -> Result<Report, Box<dyn std::error::Error>> {
+    build_report(
+        process_run,
+        false,
+        false,
+        Some(calibration_journal),
+        DISTINCT_BRANCH_PROFILE,
+    )
+}
+
+pub fn calibration_only_distinct_branch(
+    process_run: u8,
+    calibration_journal: &Path,
+) -> Result<Report, Box<dyn std::error::Error>> {
+    build_report(
+        process_run,
+        false,
+        true,
+        Some(calibration_journal),
+        DISTINCT_BRANCH_PROFILE,
+    )
 }
 
 fn build_report(
@@ -268,15 +390,16 @@ fn build_report(
     preflight_only: bool,
     calibration_only: bool,
     calibration_journal: Option<&Path>,
+    profile: FixtureProfile,
 ) -> Result<Report, Box<dyn std::error::Error>> {
     if !(1..=3).contains(&process_run) {
         return Err(fail("process-run must be 1..=3").into());
     }
-    let code_sha256 = od_testkit::sha256_hex(&CODE);
-    if code_sha256 != FROZEN_CODE_SHA256 {
-        return Err(fail("frozen helper fixture digest mismatch").into());
+    let code_sha256 = od_testkit::sha256_hex(profile.code);
+    if code_sha256 != profile.code_sha256 {
+        return Err(fail(format!("frozen {} fixture digest mismatch", profile.name)).into());
     }
-    let cases = cases();
+    let cases = cases(profile);
     let mut interpreters = Vec::with_capacity(cases.len());
     for case in &cases {
         interpreters.push(interpreter_observation(case)?);
@@ -290,9 +413,11 @@ fn build_report(
             id: case.id.into(),
             initial: snapshot(&case.initial),
             expected_zf: case.expected_zf,
+            expected_rip: case.expected_rip,
             interpreter_oracle: oracle.clone(),
             preflight_native: Vec::new(),
             execution_pairs: Vec::new(),
+            allocator_pairs: Vec::new(),
         })
         .collect::<Vec<_>>();
 
@@ -308,7 +433,7 @@ fn build_report(
     // Complete both variant parity and allocation gates before any timing
     // calibration or sample collection.
     for &budget in &budgets {
-        let (compiled, allocation) = compile_variant(budget)?;
+        let (compiled, allocation) = compile_variant(budget, profile.code)?;
         validate_allocation(&allocation)?;
         let published = PublishedCode::publish_block(compiled.emitted())
             .map_err(|error| fail(format!("preflight publish budget {budget}: {error:?}")))?;
@@ -332,18 +457,29 @@ fn build_report(
             &cases,
             &interpreters,
             &budgets,
+            profile.code,
+            profile.name,
             calibration_journal.ok_or_else(|| fail("calibration journal path is required"))?,
             calibration_started,
         )?;
         calibration_failed = repetitions.failure.is_some();
         let common_repetitions = repetitions.common_repetitions.unwrap_or(0);
+        let collect_samples = collect_scored_samples(calibration_only, calibration_failed);
+        let warmup_calls_per_publication = if collect_samples { WARMUP_CALLS } else { 0 };
+        let warmup_publications_per_case = if !collect_samples {
+            0
+        } else if profile.distinct_branch {
+            PAIRS * 2
+        } else {
+            budgets.len()
+        };
         calibration = Some(CalibrationReport {
+            fixture_profile: profile.name.into(),
             common_repetitions_per_case_and_side: repetitions.common_repetitions,
-            warmup_calls_per_case: if calibration_only || calibration_failed {
-                0
-            } else {
-                WARMUP_CALLS
-            },
+            warmup_calls_per_case_per_publication: warmup_calls_per_publication,
+            warmup_publications_per_case,
+            total_warmup_calls_per_case: warmup_calls_per_publication
+                * warmup_publications_per_case,
             sample_pairs: if calibration_only || calibration_failed {
                 0
             } else {
@@ -353,7 +489,11 @@ fn build_report(
             maximum_repetitions_per_side: MAX_CALIBRATED_CALLS,
             maximum_measured_side_ns: MAX_CALIBRATION_MEASURED_SIDE_WALL.as_nanos(),
             maximum_overall_wall_ns: MAX_CALIBRATION_WALL.as_nanos(),
-            wall_bound_derivation: "Measured-side ceiling is 3s; the 16,777,216-call and cooperative 180s post-preflight calibration limits remain active. One observed condition (budget4, equal state) measured 181,908,558ns native at 4,194,304 completed calls and 1,000,016,691ns interpreter at 3,582,464 completed calls before the prior 1s ceiling. Linear projection to 8,388,608 calls is 363,817,116ns native and about 2,341,614,044ns interpreter; both exceed the 200ms floor and fit the 3s ceiling. This is a single-condition feasibility estimate, not a claim about other cases or budgets. The 180s limit is checked at 256-call chunk boundaries and after teardown.".into(),
+            wall_bound_derivation: if profile.distinct_branch {
+                "Uses the current distinct-jz-fallthrough fixture profile and the same 200ms side floor, 16,777,216-call ceiling, 3s measured-side ceiling, 180s process ceiling, and 256-call checkpoint interval. Repetitions are calibrated afresh for both budgets and cases; no legacy-profile timing projection is reused."
+            } else {
+                "Measured-side ceiling is 3s; the 16,777,216-call and cooperative 180s post-preflight calibration limits remain active. One observed condition (budget4, equal state) measured 181,908,558ns native at 4,194,304 completed calls and 1,000,016,691ns interpreter at 3,582,464 completed calls before the prior 1s ceiling. Linear projection to 8,388,608 calls is 363,817,116ns native and about 2,341,614,044ns interpreter; both exceed the 200ms floor and fit the 3s ceiling. This is a single-condition feasibility estimate, not a claim about other cases or budgets. The 180s limit is checked at 256-call chunk boundaries and after teardown."
+            }.into(),
             total_wall_ns: repetitions.total_wall_ns,
             outcome: repetitions
                 .failure
@@ -363,96 +503,115 @@ fn build_report(
         });
 
         if collect_scored_samples(calibration_only, calibration_failed) {
-            let (compile_calls, compile_pairs) = measure_compile_pairs(process_run)?;
+            let (compile_calls, compile_pairs) = measure_compile_pairs(process_run, profile.code)?;
             compile_calls_per_sample = Some(compile_calls);
             compile_pairs_ns_per_call = compile_pairs;
         }
 
         if collect_scored_samples(calibration_only, calibration_failed) {
-            for (variant_index, &budget) in budgets.iter().enumerate() {
-                let (compiled, allocation) = compile_variant(budget)?;
-                validate_allocation(&allocation)?;
-                if allocation != variant_reports[variant_index].allocation {
-                    return Err(fail(format!(
-                        "allocator summary changed after preflight for budget {budget}"
-                    ))
-                    .into());
-                }
-                let publication_started = Instant::now();
-                let published = PublishedCode::publish_block(compiled.emitted())
-                    .map_err(|error| fail(format!("publish budget {budget}: {error:?}")))?;
-                let publication_ns = publication_started.elapsed().as_nanos();
-
-                for case in &cases {
-                    for _ in 0..WARMUP_CALLS {
-                        let native = native_observation(&published, case)?;
-                        let expected = &interpreters
-                            [cases.iter().position(|item| item.id == case.id).unwrap()];
-                        validate_pair(case, &native, expected)?;
-                    }
-                }
-
+            if profile.distinct_branch {
+                let (budget4, allocation4) = compile_variant(HOME_BUDGET, profile.code)?;
+                let (budget0, allocation0) = compile_variant(SPILL_ONLY_BUDGET, profile.code)?;
+                validate_allocation(&allocation4)?;
+                validate_allocation(&allocation0)?;
                 for (index, case) in cases.iter().enumerate() {
-                    let mut samples = Vec::with_capacity(PAIRS);
-                    for pair in 0..PAIRS {
-                        let interpreter_first = (pair + usize::from(process_run) + index) % 2 == 0;
-                        let (interpreter_ns, native_ns) = if interpreter_first {
-                            let interpreter_ns = time_interpreter_batch(
-                                case,
-                                &interpreters[index],
-                                common_repetitions,
-                            )?;
-                            let native_ns = time_native_batch(
-                                &published,
-                                case,
-                                &interpreters[index],
-                                common_repetitions,
-                            )?;
-                            (interpreter_ns, native_ns)
-                        } else {
-                            let native_ns = time_native_batch(
-                                &published,
-                                case,
-                                &interpreters[index],
-                                common_repetitions,
-                            )?;
-                            let interpreter_ns = time_interpreter_batch(
-                                case,
-                                &interpreters[index],
-                                common_repetitions,
-                            )?;
-                            (interpreter_ns, native_ns)
-                        };
-                        let interpreter_per_call =
-                            interpreter_ns.as_nanos() / common_repetitions as u128;
-                        let native_per_call = native_ns.as_nanos() / common_repetitions as u128;
-                        samples.push(PairSample {
-                            order: if interpreter_first {
-                                "interpreter_then_published_native".into()
-                            } else {
-                                "published_native_then_interpreter".into()
-                            },
-                            interpreter_total_ns: interpreter_ns.as_nanos(),
-                            native_total_ns: native_ns.as_nanos(),
-                            interpreter_ns_per_call: interpreter_per_call,
-                            native_ns_per_call: native_per_call,
-                            native_over_interpreter: native_ns.as_nanos() as f64
-                                / interpreter_ns.as_nanos().max(1) as f64,
-                            minimum_sample_met: interpreter_ns >= MIN_SAMPLE
-                                && native_ns >= MIN_SAMPLE,
-                        });
-                    }
-                    case_reports[index].execution_pairs.push((budget, samples));
+                    case_reports[index].allocator_pairs = collect_allocator_pairs(
+                        process_run,
+                        &budget4,
+                        &budget0,
+                        case,
+                        &interpreters[index],
+                        common_repetitions,
+                        index,
+                    )?;
                 }
+            } else {
+                for (variant_index, &budget) in budgets.iter().enumerate() {
+                    let (compiled, allocation) = compile_variant(budget, profile.code)?;
+                    validate_allocation(&allocation)?;
+                    if allocation != variant_reports[variant_index].allocation {
+                        return Err(fail(format!(
+                            "allocator summary changed after preflight for budget {budget}"
+                        ))
+                        .into());
+                    }
+                    let publication_started = Instant::now();
+                    let published = PublishedCode::publish_block(compiled.emitted())
+                        .map_err(|error| fail(format!("publish budget {budget}: {error:?}")))?;
+                    let publication_ns = publication_started.elapsed().as_nanos();
 
-                let drop_started = Instant::now();
-                drop(published);
-                let drop_ns = drop_started.elapsed().as_nanos();
-                variant_reports[variant_index].publication_ns = Some(publication_ns);
-                variant_reports[variant_index].drop_ns = Some(drop_ns);
-                variant_reports[variant_index].publication_lifetime =
+                    for case in &cases {
+                        for _ in 0..WARMUP_CALLS {
+                            let native = native_observation(&published, case)?;
+                            let expected = &interpreters
+                                [cases.iter().position(|item| item.id == case.id).unwrap()];
+                            validate_pair(case, &native, expected)?;
+                        }
+                    }
+
+                    for (index, case) in cases.iter().enumerate() {
+                        let mut samples = Vec::with_capacity(PAIRS);
+                        for pair in 0..PAIRS {
+                            let interpreter_first =
+                                (pair + usize::from(process_run) + index) % 2 == 0;
+                            let (interpreter_ns, native_ns) = if interpreter_first {
+                                let interpreter_ns = time_interpreter_batch(
+                                    case,
+                                    &interpreters[index],
+                                    common_repetitions,
+                                )?;
+                                let native_ns = time_native_batch(
+                                    &published,
+                                    case,
+                                    &interpreters[index],
+                                    common_repetitions,
+                                )?;
+                                (interpreter_ns, native_ns)
+                            } else {
+                                let native_ns = time_native_batch(
+                                    &published,
+                                    case,
+                                    &interpreters[index],
+                                    common_repetitions,
+                                )?;
+                                let interpreter_ns = time_interpreter_batch(
+                                    case,
+                                    &interpreters[index],
+                                    common_repetitions,
+                                )?;
+                                (interpreter_ns, native_ns)
+                            };
+                            let interpreter_per_call =
+                                interpreter_ns.as_nanos() / common_repetitions as u128;
+                            let native_per_call = native_ns.as_nanos() / common_repetitions as u128;
+                            samples.push(PairSample {
+                                order: if interpreter_first {
+                                    "interpreter_then_published_native".into()
+                                } else {
+                                    "published_native_then_interpreter".into()
+                                },
+                                interpreter_total_ns: interpreter_ns.as_nanos(),
+                                native_total_ns: native_ns.as_nanos(),
+                                interpreter_ns_per_call: interpreter_per_call,
+                                native_ns_per_call: native_per_call,
+                                native_over_interpreter: native_ns.as_nanos() as f64
+                                    / interpreter_ns.as_nanos().max(1) as f64,
+                                minimum_sample_met: interpreter_ns >= MIN_SAMPLE
+                                    && native_ns >= MIN_SAMPLE,
+                            });
+                        }
+                        case_reports[index].execution_pairs.push((budget, samples));
+                    }
+
+                    let drop_started = Instant::now();
+                    drop(published);
+                    let drop_ns = drop_started.elapsed().as_nanos();
+                    variant_reports[variant_index].publication_ns = Some(publication_ns);
+                    variant_reports[variant_index].drop_ns = Some(drop_ns);
+                    variant_reports[variant_index].publication_lifetime =
                 "published once; retained for warmup and both cases; dropped before next budget"
                     .into();
+                }
             }
         }
     }
@@ -468,6 +627,10 @@ fn build_report(
                     .iter()
                     .flat_map(|case| &case.execution_pairs)
                     .flat_map(|(_, samples)| samples)
+                    .all(|sample| sample.minimum_sample_met)
+                && case_reports
+                    .iter()
+                    .flat_map(|case| &case.allocator_pairs)
                     .all(|sample| sample.minimum_sample_met),
         )
     };
@@ -488,7 +651,8 @@ fn build_report(
     };
 
     Ok(Report {
-        schema_version: 1,
+        schema_version: 2,
+        fixture_profile: profile.name.into(),
         timing_started: !preflight_only,
         calibration_only_mode: calibration_only,
         sample_floor_passed,
@@ -496,16 +660,24 @@ fn build_report(
         process_run,
         host: crate::HostMetadata::current(),
         frozen_code_sha256: code_sha256,
-        code_bytes: CODE.to_vec(),
+        code_bytes: profile.code.to_vec(),
         guest_base_rip: BASE_RIP,
         instruction_budget: INSTRUCTION_BUDGET,
-        scope: "One frozen six-instruction register-only multi-helper block; budget4 baseline versus budget0 spill-only diagnostic. This does not choose an allocator globally.".into(),
+        scope: if profile.distinct_branch {
+            "One frozen six-instruction register-only multi-helper block with distinct JZ taken/fallthrough RIPs; alternating register-homes budget4 versus diagnostic budget0 allocator-configuration pairs. The admitted fallthrough MOV is outside the measured block. This does not isolate marginal spill cost or choose an allocator algorithm globally."
+        } else {
+            "One frozen six-instruction register-only multi-helper block; budget4 baseline versus budget0 spill-only diagnostic. This does not choose an allocator globally."
+        }.into(),
         compile_timer_boundary: "compile_block_with_register_homes: block build/decode, lowering, allocation, ARM64 emission, finalization, and destruction of each unpublished CompiledBlock within the timed compile batch; excludes allocator-summary reconstruction, publication, execution, input reset and validation".into(),
         publication_timer_boundary: "PublishedCode::publish_block and PublishedCode drop are timed and reported separately. The mapping remains live for warmup/timing; drop occurs after execution timing and before the other budget is published. These durations are never added to compile or execution samples.".into(),
-        execution_timer_boundary: "Repeated PublishedCode::execute_block calls over the same retained artifact; state vectors are initialized before timing, and full-state/exit validation is outside timing. Interpreter uses the same initial state and code fetch adapter.".into(),
+        execution_timer_boundary: "Repeated PublishedCode::execute_block calls over one published artifact. The timer includes the safe host wrapper/context setup, generated entry call, and result copy/decode; state-vector creation and full-state/exit validation are outside the timer. The interpreter uses the same initial state and code bytes. For distinct-jz-fallthrough, the single compiled block ends at Jcc; no dispatcher traversal or MOV RBX suffix is timed.".into(),
         cache_and_mapping_policy: "No translation-cache lookup or cache entry. One MAP_JIT PublishedCode mapping at a time; publication is separate from repeated execution; each budget mapping is dropped before publishing the other.".into(),
-        exit_normalization: "Preserve raw tags. Normalize only BlockComplete versus InstructionBudgetExhausted when complete LongModeState matches, both retire exactly 6, both have zero remaining budget, and RIP equals code_end.".into(),
-        branch_scope: "Final JZ is checked via ZF=1/0, but its displacement is zero, so taken and fall-through both target code_end; this fixture does not test distinct branch routing.".into(),
+        exit_normalization: if profile.distinct_branch {
+            "Keep native BlockComplete and interpreter InstructionBudgetExhausted tags distinct. Require full LongModeState parity, six retired instructions, zero remaining budget, ZF matching the case, and the case-specific expected RIP (taken code_end; not-taken fallthrough at code_end-10). The native block ends at Jcc; the suffix is not executed or included in timed calls."
+        } else {
+            "Preserve raw tags. Normalize only BlockComplete versus InstructionBudgetExhausted when complete LongModeState matches, both retire exactly 6, both have zero remaining budget, and RIP equals code_end."
+        }.into(),
+        branch_scope: profile.branch_scope.into(),
         sample_floor_policy: "Retain every raw sample. A compile or execution side below 200ms sets sample_floor_passed=false and classifies the full process as diagnostic-only; no samples are trimmed and no comparison result should be scored.".into(),
         compile_calls_per_sample,
         compile_pairs_ns_per_call,
@@ -517,9 +689,10 @@ fn build_report(
 
 fn compile_variant(
     register_homes: u8,
+    code: &'static [u8],
 ) -> Result<(CompiledBlock, AllocationReport), Box<dyn std::error::Error>> {
     let view =
-        CodeView::new(BASE_RIP, &CODE).map_err(|error| fail(format!("code view: {error:?}")))?;
+        CodeView::new(BASE_RIP, code).map_err(|error| fail(format!("code view: {error:?}")))?;
     let built = build_block(
         view,
         BASE_RIP,
@@ -652,7 +825,7 @@ fn validate_allocation(report: &AllocationReport) -> Result<(), CostError> {
 
 fn interpreter_observation(case: &Case) -> Result<Observation, CostError> {
     let mut state = case.initial.clone();
-    let mut memory = CodeMemory;
+    let mut memory = CodeMemory { code: case.code };
     let result = interpreter_run(
         &mut state,
         &mut memory,
@@ -694,7 +867,6 @@ fn validate_pair(
     native: &Observation,
     interpreter: &Observation,
 ) -> Result<(), CostError> {
-    let end = BASE_RIP + CODE.len() as u64;
     if native.state != interpreter.state
         || native.raw_exit != format!("{:?}", RuntimeExitTag::BlockComplete)
         || interpreter.raw_exit != format!("{:?}", RunExit::InstructionBudgetExhausted)
@@ -702,7 +874,7 @@ fn validate_pair(
         || interpreter.retired != INSTRUCTION_BUDGET
         || native.remaining_budget != 0
         || interpreter.remaining_budget != 0
-        || native.state.rip != end
+        || native.state.rip != case.expected_rip
         || ((native.state.rflags & (1 << 6)) != 0) != case.expected_zf
     {
         return Err(fail(format!(
@@ -732,7 +904,9 @@ fn snapshot(state: &LongModeState) -> StateSnapshot {
     }
 }
 
-struct CodeMemory;
+struct CodeMemory {
+    code: &'static [u8],
+}
 
 impl GuestMemory for CodeMemory {
     fn fetch(&mut self, address: u64, _context: AccessContext) -> Result<u8, MemoryError> {
@@ -740,7 +914,7 @@ impl GuestMemory for CodeMemory {
             .checked_sub(BASE_RIP)
             .and_then(|n| usize::try_from(n).ok());
         offset
-            .and_then(|index| CODE.get(index).copied())
+            .and_then(|index| self.code.get(index).copied())
             .ok_or(MemoryError::Unmapped {
                 address,
                 access: AccessKind::Fetch,
@@ -816,9 +990,9 @@ impl GuestMemory for CodeMemory {
     }
 }
 
-fn compile_once(register_homes: u8) -> Result<CompiledBlock, CostError> {
+fn compile_once(register_homes: u8, code: &'static [u8]) -> Result<CompiledBlock, CostError> {
     let view =
-        CodeView::new(BASE_RIP, &CODE).map_err(|error| fail(format!("code view: {error:?}")))?;
+        CodeView::new(BASE_RIP, code).map_err(|error| fail(format!("code view: {error:?}")))?;
     let outcome = compile_block_with_register_homes(view, BASE_RIP, register_homes)
         .map_err(|error| fail(format!("compile: {error:?}")))?;
     match outcome {
@@ -829,11 +1003,14 @@ fn compile_once(register_homes: u8) -> Result<CompiledBlock, CostError> {
     }
 }
 
-fn measure_compile_pairs(process_run: u8) -> Result<(usize, Vec<CompilePairSample>), CostError> {
+fn measure_compile_pairs(
+    process_run: u8,
+    code: &'static [u8],
+) -> Result<(usize, Vec<CompilePairSample>), CostError> {
     let mut calls = 256usize;
     loop {
-        let first = compile_batch(HOME_BUDGET, calls)?;
-        let second = compile_batch(SPILL_ONLY_BUDGET, calls)?;
+        let first = compile_batch(HOME_BUDGET, code, calls)?;
+        let second = compile_batch(SPILL_ONLY_BUDGET, code, calls)?;
         if first.0 >= MIN_SAMPLE && second.0 >= MIN_SAMPLE {
             break;
         }
@@ -846,12 +1023,12 @@ fn measure_compile_pairs(process_run: u8) -> Result<(usize, Vec<CompilePairSampl
     for pair in 0..COMPILE_PAIRS {
         let reverse = (pair + usize::from(process_run)) % 2 != 0;
         let (four, zero) = if reverse {
-            let zero = compile_batch(SPILL_ONLY_BUDGET, calls)?.0;
-            let four = compile_batch(HOME_BUDGET, calls)?.0;
+            let zero = compile_batch(SPILL_ONLY_BUDGET, code, calls)?.0;
+            let four = compile_batch(HOME_BUDGET, code, calls)?.0;
             (four, zero)
         } else {
-            let four = compile_batch(HOME_BUDGET, calls)?.0;
-            let zero = compile_batch(SPILL_ONLY_BUDGET, calls)?.0;
+            let four = compile_batch(HOME_BUDGET, code, calls)?.0;
+            let zero = compile_batch(SPILL_ONLY_BUDGET, code, calls)?.0;
             (four, zero)
         };
         samples.push(CompilePairSample {
@@ -870,11 +1047,15 @@ fn measure_compile_pairs(process_run: u8) -> Result<(usize, Vec<CompilePairSampl
     Ok((calls, samples))
 }
 
-fn compile_batch(register_homes: u8, calls: usize) -> Result<(Duration, usize), CostError> {
+fn compile_batch(
+    register_homes: u8,
+    code: &'static [u8],
+    calls: usize,
+) -> Result<(Duration, usize), CostError> {
     let started = Instant::now();
     let mut last_bytes = 0usize;
     for _ in 0..calls {
-        let compiled = compile_once(register_homes)?;
+        let compiled = compile_once(register_homes, code)?;
         last_bytes = usize::try_from(compiled.emitted().pc_map().code_len())
             .map_err(|_| fail("emitted byte count exceeds host size"))?;
         std::hint::black_box(last_bytes);
@@ -882,10 +1063,77 @@ fn compile_batch(register_homes: u8, calls: usize) -> Result<(Duration, usize), 
     Ok((started.elapsed(), last_bytes))
 }
 
+fn collect_allocator_pairs(
+    process_run: u8,
+    budget4: &CompiledBlock,
+    budget0: &CompiledBlock,
+    case: &Case,
+    oracle: &Observation,
+    calls: usize,
+    case_index: usize,
+) -> Result<Vec<AllocatorPairSample>, CostError> {
+    let mut samples = Vec::with_capacity(PAIRS);
+    for pair in 0..PAIRS {
+        let reverse = (pair + usize::from(process_run) + case_index) % 2 != 0;
+        let (four, zero) = if reverse {
+            let zero = time_allocator_variant_side(budget0, case, oracle, calls)?;
+            let four = time_allocator_variant_side(budget4, case, oracle, calls)?;
+            (four, zero)
+        } else {
+            let four = time_allocator_variant_side(budget4, case, oracle, calls)?;
+            let zero = time_allocator_variant_side(budget0, case, oracle, calls)?;
+            (four, zero)
+        };
+        samples.push(AllocatorPairSample {
+            order: if reverse {
+                "budget0_then_budget4_sequential_publications".into()
+            } else {
+                "budget4_then_budget0_sequential_publications".into()
+            },
+            calls_per_side: calls,
+            budget4_total_ns: four.0.as_nanos(),
+            budget0_total_ns: zero.0.as_nanos(),
+            budget4_ns_per_call: four.0.as_nanos() / calls as u128,
+            budget0_ns_per_call: zero.0.as_nanos() / calls as u128,
+            budget0_over_budget4: zero.0.as_nanos() as f64 / four.0.as_nanos().max(1) as f64,
+            budget4_publication_ns: four.1,
+            budget4_drop_ns: four.2,
+            budget0_publication_ns: zero.1,
+            budget0_drop_ns: zero.2,
+            minimum_sample_met: four.0 >= MIN_SAMPLE && zero.0 >= MIN_SAMPLE,
+        });
+    }
+    Ok(samples)
+}
+
+fn time_allocator_variant_side(
+    compiled: &CompiledBlock,
+    case: &Case,
+    oracle: &Observation,
+    calls: usize,
+) -> Result<(Duration, u128, u128), CostError> {
+    let publication_started = Instant::now();
+    let published = PublishedCode::publish_block(compiled.emitted())
+        .map_err(|error| fail(format!("paired publish: {error:?}")))?;
+    let publication_ns = publication_started.elapsed().as_nanos();
+
+    for _ in 0..WARMUP_CALLS {
+        let native = native_observation(&published, case)?;
+        validate_pair(case, &native, oracle)?;
+    }
+    let elapsed = time_native_batch(&published, case, oracle, calls)?;
+    let drop_started = Instant::now();
+    drop(published);
+    let drop_ns = drop_started.elapsed().as_nanos();
+    Ok((elapsed, publication_ns, drop_ns))
+}
+
 fn calibrate_common_repetitions(
     cases: &[Case],
     interpreters: &[Observation],
     budgets: &[u8],
+    code: &'static [u8],
+    fixture_profile: &'static str,
     journal_path: &Path,
     calibration_started: Instant,
 ) -> Result<CalibrationRun, CostError> {
@@ -897,7 +1145,7 @@ fn calibrate_common_repetitions(
     let mut failure = None;
     reset_calibration_journal(journal_path)?;
     for budget in budgets {
-        let (compiled, _) = compile_variant(*budget).map_err(|e| fail(e.to_string()))?;
+        let (compiled, _) = compile_variant(*budget, code).map_err(|e| fail(e.to_string()))?;
         let published = PublishedCode::publish_block(compiled.emitted())
             .map_err(|e| fail(format!("calibration publish: {e:?}")))?;
         for (index, case) in cases.iter().enumerate() {
@@ -978,6 +1226,7 @@ fn calibrate_common_repetitions(
                             .then(|| "repetition_ceiling".into())
                     });
                 let check = CalibrationCheck {
+                    fixture_profile: fixture_profile.into(),
                     record_kind: "attempt".into(),
                     budget: *budget,
                     case_id: case.id.into(),
@@ -1004,6 +1253,7 @@ fn calibrate_common_repetitions(
                     persist_terminal_stop(
                         journal_path,
                         &mut checks,
+                        fixture_profile,
                         post_sync_wall.as_nanos(),
                         "overall_wall_ceiling_after_journal_sync",
                     )?;
@@ -1039,7 +1289,13 @@ fn calibrate_common_repetitions(
     }
     let final_elapsed = calibration_started.elapsed();
     if let Some(reason) = calibration_finalization_stop_reason(failure.is_some(), final_elapsed) {
-        persist_terminal_stop(journal_path, &mut checks, final_elapsed.as_nanos(), reason)?;
+        persist_terminal_stop(
+            journal_path,
+            &mut checks,
+            fixture_profile,
+            final_elapsed.as_nanos(),
+            reason,
+        )?;
         failure = Some(format!(
             "calibration exceeded overall wall ceiling after final teardown: process_wall_ns={}",
             final_elapsed.as_nanos()
@@ -1084,11 +1340,13 @@ fn append_calibration_check(path: &Path, check: &CalibrationCheck) -> Result<(),
 fn persist_terminal_stop(
     path: &Path,
     checks: &mut Vec<CalibrationCheck>,
+    fixture_profile: &str,
     process_wall_ns: u128,
     reason: &str,
 ) -> Result<(), CostError> {
     let previous = checks.last().cloned();
     let mut terminal = previous.unwrap_or_else(|| CalibrationCheck {
+        fixture_profile: fixture_profile.into(),
         record_kind: "terminal_stop".into(),
         budget: 0,
         case_id: "calibration".into(),
@@ -1319,7 +1577,7 @@ fn time_interpreter_batch_bounded(
         let count = remaining.min(CHUNK_CALLS);
         let mut states = vec![case.initial.clone(); count];
         let mut results = Vec::with_capacity(count);
-        let mut memory = CodeMemory;
+        let mut memory = CodeMemory { code: case.code };
         let started = Instant::now();
         for state in &mut states {
             results.push(interpreter_run(
@@ -1370,15 +1628,37 @@ fn time_interpreter_batch_bounded(
 #[cfg(test)]
 mod tests {
     use super::{
-        CHUNK_CALLS, CalibrationCheck, CalibrationLimits, MAX_CALIBRATED_CALLS,
+        BASE_RIP, CHUNK_CALLS, CODE, CalibrationCheck, CalibrationLimits, DISTINCT_BRANCH_CODE,
+        DISTINCT_BRANCH_CODE_SHA256, DISTINCT_BRANCH_PROFILE, MAX_CALIBRATED_CALLS,
         MAX_CALIBRATION_MEASURED_SIDE_WALL, MAX_CALIBRATION_WALL, MIN_SAMPLE,
         append_calibration_check, both_samples_meet_floor, calibration_finalization_stop_reason,
-        calibration_stop_reason, collect_scored_samples, next_calibration_call_count,
+        calibration_stop_reason, cases, collect_scored_samples, next_calibration_call_count,
         persist_terminal_stop, project_calibration_candidate, report_requires_nonzero_exit,
         reset_calibration_journal, sample_meets_floor,
     };
     use std::fs;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn distinct_branch_profile_is_frozen_and_has_explicit_taken_and_fallthrough_rips() {
+        assert_eq!(&DISTINCT_BRANCH_CODE[..15], &CODE[..15]);
+        assert_eq!(&DISTINCT_BRANCH_CODE[15..17], &[0x74, 0x0A]);
+        assert_eq!(
+            &DISTINCT_BRANCH_CODE[17..],
+            &[0x48, 0xBB, 0x11, 0x00, 0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA]
+        );
+        assert_eq!(
+            od_testkit::sha256_hex(&DISTINCT_BRANCH_CODE),
+            DISTINCT_BRANCH_CODE_SHA256
+        );
+
+        let branch_cases = cases(DISTINCT_BRANCH_PROFILE);
+        assert_eq!(branch_cases.len(), 2);
+        assert_eq!(branch_cases[0].expected_zf, true);
+        assert_eq!(branch_cases[0].expected_rip, BASE_RIP + 27);
+        assert_eq!(branch_cases[1].expected_zf, false);
+        assert_eq!(branch_cases[1].expected_rip, BASE_RIP + 17);
+    }
 
     #[test]
     fn calibration_floor_and_doubling_boundaries_are_exact() {
@@ -1502,6 +1782,7 @@ mod tests {
         ));
         reset_calibration_journal(&path).expect("initialize journal");
         let attempt = CalibrationCheck {
+            fixture_profile: "test-fixture".into(),
             record_kind: "attempt".into(),
             budget: 0,
             case_id: "frozen-case".into(),
@@ -1524,6 +1805,7 @@ mod tests {
         persist_terminal_stop(
             &path,
             &mut checks,
+            "test-fixture",
             MAX_CALIBRATION_WALL.as_nanos() + 1,
             "overall_wall_ceiling_after_calibration_teardown",
         )

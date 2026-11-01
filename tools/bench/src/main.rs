@@ -418,6 +418,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("allocator-cost requires native Apple Silicon macOS execution".into());
             }
         }
+        "allocator-cost-branch-routing" => {
+            let output = output.ok_or("allocator-cost-branch-routing requires --output PATH")?;
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                if let Some(parent) = output.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let journal = output.with_extension("calibration.jsonl");
+                let value = if preflight_only {
+                    serde_json::to_value(od_bench::allocator_cost::preflight_distinct_branch(
+                        process_run,
+                    )?)?
+                } else if calibration_only {
+                    serde_json::to_value(
+                        od_bench::allocator_cost::calibration_only_distinct_branch(
+                            process_run,
+                            &journal,
+                        )?,
+                    )?
+                } else {
+                    serde_json::to_value(od_bench::allocator_cost::run_distinct_branch(
+                        process_run,
+                        &journal,
+                    )?)?
+                };
+                od_bench::dispatch_cache::write_atomic(&output, &value)?;
+                if od_bench::allocator_cost::report_requires_nonzero_exit(&value) {
+                    return Err(format!(
+                        "allocator-cost-branch-routing wrote an unscored diagnostic report: {}",
+                        output.display(),
+                    )
+                    .into());
+                }
+            }
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                let _ = (output, process_run, preflight_only, calibration_only);
+                return Err(
+                    "allocator-cost-branch-routing requires native Apple Silicon macOS execution"
+                        .into(),
+                );
+            }
+        }
         "two-site-memory-cold" => {
             let output = output.ok_or("two-site-memory-cold requires --output PATH")?;
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -597,7 +640,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {
             print_usage();
             return Err(
-                "expected record, measure, synthetic, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, warm-dispatch-phases, warm-native-fallback, two-site-memory-cold, two-site-memory-warm, two-site-memory-cache, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, cached-flags-compare, cached-native-flags-compare, or allocator-cost".into(),
+                "expected record, measure, synthetic, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, warm-dispatch-phases, warm-native-fallback, two-site-memory-cold, two-site-memory-warm, two-site-memory-cache, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, cached-flags-compare, cached-native-flags-compare, allocator-cost, or allocator-cost-branch-routing".into(),
             );
         }
     }
@@ -651,6 +694,7 @@ fn print_usage() {
   od-bench cached-flags-compare [--preflight-only] --process-run 1..3 --output report.json\n\
   od-bench cached-native-flags-compare --corpus observations.json [--preflight-only] --process-run 1..3 --output report.json\n\
   od-bench allocator-cost [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
+  od-bench allocator-cost-branch-routing [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
   od-bench two-site-memory-cold [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
   od-bench two-site-memory-warm [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
   od-bench two-site-memory-cache [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
@@ -665,12 +709,13 @@ fn validate_mode_flags(
 ) -> Result<(), &'static str> {
     if calibration_only
         && mode != "allocator-cost"
+        && mode != "allocator-cost-branch-routing"
         && mode != "two-site-memory-cold"
         && mode != "two-site-memory-warm"
         && mode != "two-site-memory-cache"
     {
         return Err(
-            "--calibration-only is only valid for allocator-cost, two-site-memory-cold, two-site-memory-warm, or two-site-memory-cache",
+            "--calibration-only is only valid for allocator-cost, allocator-cost-branch-routing, two-site-memory-cold, two-site-memory-warm, or two-site-memory-cache",
         );
     }
     if preflight_only && calibration_only {
@@ -721,11 +766,13 @@ mod tests {
     #[test]
     fn calibration_only_is_rejected_for_other_commands() {
         assert!(validate_mode_flags("allocator-cost", false, true).is_ok());
+        assert!(validate_mode_flags("allocator-cost-branch-routing", false, true).is_ok());
         assert!(validate_mode_flags("two-site-memory-cold", false, true).is_ok());
         assert!(validate_mode_flags("two-site-memory-warm", false, true).is_ok());
         assert!(validate_mode_flags("two-site-memory-cache", false, true).is_ok());
         assert!(validate_mode_flags("cached-flags-compare", false, true).is_err());
         assert!(validate_mode_flags("allocator-cost", true, true).is_err());
+        assert!(validate_mode_flags("allocator-cost-branch-routing", true, true).is_err());
     }
 
     #[test]
