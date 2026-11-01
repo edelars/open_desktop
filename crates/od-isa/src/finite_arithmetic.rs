@@ -1,5 +1,26 @@
 //! Bounded exact arithmetic shared by normalized finite significands.
 
+/// A nonzero tail classified at the p=64 rounding boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RoundingTail {
+    BelowHalf,
+    ExactHalf,
+    AboveHalf,
+}
+
+impl RoundingTail {
+    /// Return a compact rational representative with the same p=64 rounding
+    /// classification. Lower precisions only need to know that this tail is
+    /// nonzero, while p=64 distinguishes below, at, and above half.
+    pub(crate) const fn representative(self) -> (u64, u64) {
+        match self {
+            Self::BelowHalf => (1, 4),
+            Self::ExactHalf => (1, 2),
+            Self::AboveHalf => (3, 4),
+        }
+    }
+}
+
 /// Add two normalized finite significands at their lower exponent without
 /// rounding or discarding bits.
 ///
@@ -59,9 +80,88 @@ pub(crate) fn add_finite_aligned(
     }
 }
 
+/// Describe the rounding-equivalent normalized quotient for a sum whose
+/// nonzero finite operands have an exponent gap greater than 64.
+///
+/// The result `(sign, exponent, quotient, tail)` represents the exact result's
+/// retained 64-bit quotient and the tail's relation to one half. The tail
+/// itself is compressed because p=64 rounding observes only that relation;
+/// all returned tails are nonzero. Gaps through 64 must use exact alignment.
+pub(crate) fn finite_large_gap_rounding_bridge(
+    lhs_sign: bool,
+    lhs_significand: u64,
+    lhs_exponent: i32,
+    rhs_sign: bool,
+    rhs_significand: u64,
+    rhs_exponent: i32,
+) -> Option<(bool, i32, u64, RoundingTail)> {
+    if lhs_significand == 0
+        || rhs_significand == 0
+        || lhs_significand < (1_u64 << 63)
+        || rhs_significand < (1_u64 << 63)
+    {
+        return None;
+    }
+
+    let (dominant, small) = if lhs_exponent > rhs_exponent {
+        (
+            (lhs_sign, lhs_significand, lhs_exponent),
+            (rhs_sign, rhs_significand, rhs_exponent),
+        )
+    } else if rhs_exponent > lhs_exponent {
+        (
+            (rhs_sign, rhs_significand, rhs_exponent),
+            (lhs_sign, lhs_significand, lhs_exponent),
+        )
+    } else {
+        return None;
+    };
+    let (dominant_sign, dominant_significand, dominant_exponent) = dominant;
+    let (small_sign, small_significand, small_exponent) = small;
+    let gap = u32::try_from(i64::from(dominant_exponent) - i64::from(small_exponent)).ok()?;
+    if gap <= 64 {
+        return None;
+    }
+
+    if dominant_sign == small_sign {
+        // T = b / 2^gap, strictly less than one half for gap > 64.
+        return Some((
+            dominant_sign,
+            dominant_exponent,
+            dominant_significand,
+            RoundingTail::BelowHalf,
+        ));
+    }
+
+    if dominant_significand > (1_u64 << 63) {
+        // T = 1 - b / 2^gap, strictly greater than one half.
+        return Some((
+            dominant_sign,
+            dominant_exponent,
+            dominant_significand - 1,
+            RoundingTail::AboveHalf,
+        ));
+    }
+
+    let exponent = dominant_exponent.checked_sub(1)?;
+    let tail = if gap == 65 {
+        if small_significand == 1_u64 << 63 {
+            RoundingTail::ExactHalf
+        } else {
+            // T = 1 - b / 2^64, below one half once b exceeds 2^63.
+            RoundingTail::BelowHalf
+        }
+    } else {
+        // For gap >= 66, b / 2^(gap-1) < one half, so its complement is
+        // strictly greater than one half.
+        RoundingTail::AboveHalf
+    };
+    Some((dominant_sign, exponent, u64::MAX, tail))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::add_finite_aligned;
+    use super::{RoundingTail, add_finite_aligned, finite_large_gap_rounding_bridge};
 
     #[test]
     fn exact_aligned_addition_covers_gap_64_full_u128_and_sign_order() {
@@ -87,5 +187,35 @@ mod tests {
             add_finite_aligned(false, 1 << 62, 0, false, 1 << 63, 0),
             None
         );
+    }
+
+    #[test]
+    fn large_gap_bridge_classifies_binary80_half_tails() {
+        let sig = 1_u64 << 63;
+        let bridge = |dominant_sig: u64, small_sig: u64, gap: i32, same_sign: bool| {
+            finite_large_gap_rounding_bridge(false, dominant_sig, 0, !same_sign, small_sig, -gap)
+        };
+
+        assert_eq!(
+            bridge(sig, sig, 65, true),
+            Some((false, 0, sig, RoundingTail::BelowHalf))
+        );
+        assert_eq!(
+            bridge(sig, sig, 65, false),
+            Some((false, -1, u64::MAX, RoundingTail::ExactHalf))
+        );
+        assert_eq!(
+            bridge(sig, sig + 1, 65, false),
+            Some((false, -1, u64::MAX, RoundingTail::BelowHalf))
+        );
+        assert_eq!(
+            bridge(sig, sig, 66, false),
+            Some((false, -1, u64::MAX, RoundingTail::AboveHalf))
+        );
+        assert_eq!(
+            bridge(sig + 1, sig, 65, false),
+            Some((false, 0, sig, RoundingTail::AboveHalf))
+        );
+        assert_eq!(bridge(sig, sig, 64, false), None);
     }
 }

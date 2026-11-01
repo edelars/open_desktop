@@ -2433,45 +2433,17 @@ fn finite_large_gap_rounding_bridge(
     lhs: BinaryFinite,
     rhs: BinaryFinite,
 ) -> Option<(bool, i32, u64, u64, u64)> {
-    if lhs.significand == 0 || rhs.significand == 0 {
-        return None;
-    }
-    let (dominant, small) = if lhs.exponent > rhs.exponent {
-        (lhs, rhs)
-    } else if rhs.exponent > lhs.exponent {
-        (rhs, lhs)
-    } else {
-        return None;
-    };
-    let gap = u32::try_from(i64::from(dominant.exponent) - i64::from(small.exponent)).ok()?;
-    if gap <= 64 {
-        return None;
-    }
-
-    // With dominant sign s, exponent e, significand a and small significand b:
-    // same-sign addition has E=e, Q=a, T=b/2^d; opposite-sign subtraction
-    // with a>2^63 has E=e, Q=a-1, T=1-b/2^d; at a=2^63 it has
-    // E=e-1, Q=2^64-1, T=1-b/2^(d-1). In every case Q is normalized and
-    // 0<T<1, so cancellation is impossible at this gap.
-    let (sign, exponent, quotient) = if dominant.sign == small.sign {
-        (dominant.sign, dominant.exponent, dominant.significand)
-    } else if dominant.significand > (1_u64 << 63) {
-        (dominant.sign, dominant.exponent, dominant.significand - 1)
-    } else {
-        let exponent = dominant.exponent.checked_sub(1)?;
-        (dominant.sign, exponent, u64::MAX)
-    };
-
-    // This is a rounding-equivalent bridge, not the exact sum quotient. Its
-    // tail is 1/4 although the exact tail is another value strictly between
-    // zero and one. For binary32/binary64 packing, normal precision is at most
-    // 53 bits and subnormal rounding retains at most 53 bits, so the integer
-    // quotient fixes every retained bit and the tail only distinguishes an
-    // exact tie below/at/above a rounding midpoint. Any nonzero tail has the
-    // same decisions for those precisions, including inexact, post-rounding
-    // tininess, and overflow. This equivalence is not valid for 64-bit
-    // precision rounding and must not be used as a generic exact quotient.
-    Some((sign, exponent, quotient, 1, 4))
+    let (sign, exponent, quotient, tail) =
+        crate::finite_arithmetic::finite_large_gap_rounding_bridge(
+            lhs.sign,
+            lhs.significand,
+            lhs.exponent,
+            rhs.sign,
+            rhs.significand,
+            rhs.exponent,
+        )?;
+    let (remainder, denominator) = tail.representative();
+    Some((sign, exponent, quotient, remainder, denominator))
 }
 
 /// Exact quotient and remainder decomposition for two normalized finite values.

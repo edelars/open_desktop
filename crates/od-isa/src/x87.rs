@@ -443,26 +443,47 @@ pub fn add_finite_same_exponent_to_binary80(
 /// A single zero is neutral in either operand position. Two zeros and exact
 /// cancellation return `None` because no signed-zero choice is made here.
 /// Nonzero operands with exponent gaps through 64 are aligned losslessly into
-/// `u128`; wider gaps are rejected. The exact magnitude is packed once without
-/// an `i128` narrowing intermediate. `None` also includes checked-exponent or
-/// finite-binary80 range rejection and is not a guest exception.
+/// `u128`; wider gaps use a p=64-aware quotient-tail bridge. The exact path
+/// uses the magnitude packer once without an `i128` narrowing intermediate.
+/// `None` also includes checked-exponent or finite-binary80 range rejection
+/// and is not a guest exception.
 pub fn add_finite_to_binary80(
     lhs: X87Finite,
     rhs: X87Finite,
     mode: RationalRoundingMode,
 ) -> Option<X87Binary80> {
-    let (sign, exponent, magnitude) = crate::finite_arithmetic::add_finite_aligned(
+    let exact = crate::finite_arithmetic::add_finite_aligned(
         lhs.sign,
         lhs.significand,
         lhs.exponent,
         rhs.sign,
         rhs.significand,
         rhs.exponent,
-    )?;
-    if magnitude == 0 {
-        return None;
+    );
+    if let Some((sign, exponent, magnitude)) = exact {
+        if magnitude == 0 {
+            return None;
+        }
+        return round_pack_exact_magnitude(sign, exponent.checked_add(64)?, magnitude, mode);
     }
-    round_pack_exact_magnitude(sign, exponent.checked_add(64)?, magnitude, mode)
+
+    let (sign, exponent, quotient, tail) =
+        crate::finite_arithmetic::finite_large_gap_rounding_bridge(
+            lhs.sign,
+            lhs.significand,
+            lhs.exponent,
+            rhs.sign,
+            rhs.significand,
+            rhs.exponent,
+        )?;
+    let (remainder, denominator) = tail.representative();
+    if exponent >= -16382 {
+        let rounded =
+            round_quotient_to_precision(sign, quotient, remainder, denominator, 64, mode)?;
+        pack_normal_rounded_significand(sign, exponent, rounded, 64)
+    } else {
+        round_pack_subnormal_quotient(sign, exponent, quotient, remainder, denominator, mode)
+    }
 }
 
 /// Normalize the exact signed coefficient of `coefficient * 2^(exponent - 63)`.
@@ -2940,8 +2961,14 @@ mod tests {
         }
 
         let gap65 = make(65, sig, false);
-        assert_eq!(add_finite_to_binary80(gap65, one, Nearest), None);
-        assert_eq!(add_finite_to_binary80(one, gap65, Nearest), None);
+        assert_eq!(
+            add_finite_to_binary80(gap65, one, Nearest),
+            Some(raw_finite(0x4040, sig, false))
+        );
+        assert_eq!(
+            add_finite_to_binary80(one, gap65, Nearest),
+            Some(raw_finite(0x4040, sig, false))
+        );
 
         let maximum = make(16383, u64::MAX, false);
         assert_eq!(add_finite_to_binary80(maximum, maximum, Nearest), None);
@@ -2991,6 +3018,210 @@ mod tests {
             before,
             "inputs and source-class metadata are immutable"
         );
+    }
+
+    #[test]
+    fn large_gap_addition_rounds_binary80_tail_categories_in_all_modes() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let make = |exponent, significand, sign| {
+            finite(exponent, significand, sign, X87Binary80Class::Normal)
+        };
+        let sig = 1_u64 << 63;
+        let one = make(0, sig, false);
+        let predecessor = raw_finite(0x3ffe, u64::MAX, false);
+        let negative_one = make(0, sig, true);
+
+        let half_below_one = make(-65, sig, true);
+        assert_eq!(
+            add_finite_to_binary80(one, half_below_one, Nearest),
+            Some(raw_finite(0x3fff, sig, false)),
+            "1 - 2^-65 is an exact tie to even one"
+        );
+        let just_below_half = make(-65, sig + 1, true);
+        assert_eq!(
+            add_finite_to_binary80(one, just_below_half, Nearest),
+            Some(predecessor),
+            "1 - (2^-65 + 2^-128) is below the tie"
+        );
+        let below_half = make(-66, sig, true);
+        assert_eq!(
+            add_finite_to_binary80(one, below_half, Nearest),
+            Some(raw_finite(0x3fff, sig, false)),
+            "1 - 2^-66 is closer to one"
+        );
+
+        // Gap 65 is an exact path boundary: it is still rejected by the old
+        // signed-coefficient API, while the composed helper uses its bridge.
+        assert_eq!(add_finite_unequal_exponents(one, half_below_one), None);
+
+        // Same-sign tails are below half. Check both signs, operand orders,
+        // and every rounding direction.
+        for sign in [false, true] {
+            for mode in [Nearest, Zero, Up, Down] {
+                let high = make(0, sig, sign);
+                let low = make(-65, sig, sign);
+                let increment = match mode {
+                    Up => !sign,
+                    Down => sign,
+                    Nearest | Zero => false,
+                };
+                let expected = raw_finite(0x3fff, sig + u64::from(increment), sign);
+                assert_eq!(add_finite_to_binary80(high, low, mode), Some(expected));
+                assert_eq!(add_finite_to_binary80(low, high, mode), Some(expected));
+            }
+        }
+
+        // Opposite signs with a dominant significand above 2^63 create a
+        // greater-than-half tail after borrowing one retained unit.
+        for sign in [false, true] {
+            for mode in [Nearest, Zero, Up, Down] {
+                let high = make(0, sig + 1, sign);
+                let low = make(-65, sig, !sign);
+                let increment = match mode {
+                    Nearest => true,
+                    Zero => false,
+                    Up => !sign,
+                    Down => sign,
+                };
+                let expected = raw_finite(0x3fff, sig + u64::from(increment), sign);
+                assert_eq!(add_finite_to_binary80(high, low, mode), Some(expected));
+                assert_eq!(add_finite_to_binary80(low, high, mode), Some(expected));
+            }
+        }
+
+        // Opposite-sign tails at the leading significand exercise exact-half
+        // (gap 65), below-half (gap 65, b > 2^63), and above-half (gap >= 66).
+        for (gap, low_sig, nearest_increments) in [
+            (65, sig, true),
+            (65, sig + 1, false),
+            (66, sig, true),
+            (127, sig, true),
+            (128, sig, true),
+        ] {
+            for sign in [false, true] {
+                for mode in [Nearest, Zero, Up, Down] {
+                    let high = make(0, sig, sign);
+                    let low = make(-gap, low_sig, !sign);
+                    let increment = match mode {
+                        Nearest => nearest_increments,
+                        Zero => false,
+                        Up => !sign,
+                        Down => sign,
+                    };
+                    let expected = if increment {
+                        raw_finite(0x3fff, sig, sign)
+                    } else {
+                        raw_finite(0x3ffe, u64::MAX, sign)
+                    };
+                    assert_eq!(add_finite_to_binary80(high, low, mode), Some(expected));
+                    assert_eq!(add_finite_to_binary80(low, high, mode), Some(expected));
+                }
+            }
+        }
+
+        let max_finite = make(16383, u64::MAX, false);
+        let min_subnormal = finite(-16445, sig, false, X87Binary80Class::Subnormal);
+        let negative_max = make(16383, u64::MAX, true);
+        let negative_min_subnormal = finite(-16445, sig, true, X87Binary80Class::Subnormal);
+        let max_raw = raw_finite(0x7ffe, u64::MAX, false);
+        let previous_max_raw = raw_finite(0x7ffe, u64::MAX - 1, false);
+        let negative_max_raw = raw_finite(0x7ffe, u64::MAX, true);
+        let negative_previous_max_raw = raw_finite(0x7ffe, u64::MAX - 1, true);
+
+        for (lhs, rhs, expected) in [
+            (
+                max_finite,
+                min_subnormal,
+                [Some(max_raw), Some(max_raw), None, Some(max_raw)],
+            ),
+            (
+                max_finite,
+                negative_min_subnormal,
+                [
+                    Some(max_raw),
+                    Some(previous_max_raw),
+                    Some(max_raw),
+                    Some(previous_max_raw),
+                ],
+            ),
+            (
+                negative_max,
+                min_subnormal,
+                [
+                    Some(negative_max_raw),
+                    Some(negative_previous_max_raw),
+                    Some(negative_previous_max_raw),
+                    Some(negative_max_raw),
+                ],
+            ),
+            (
+                negative_max,
+                negative_min_subnormal,
+                [
+                    Some(negative_max_raw),
+                    Some(negative_max_raw),
+                    Some(negative_max_raw),
+                    None,
+                ],
+            ),
+        ] {
+            for (mode, expected) in [
+                (Nearest, expected[0]),
+                (Zero, expected[1]),
+                (Up, expected[2]),
+                (Down, expected[3]),
+            ] {
+                assert_eq!(add_finite_to_binary80(lhs, rhs, mode), expected);
+                assert_eq!(add_finite_to_binary80(rhs, lhs, mode), expected);
+            }
+        }
+
+        // Gap 64 remains on exact full-u128 alignment and keeps its earlier
+        // one-round result. The pair is nonzero and same sign.
+        let gap64 = make(-64, sig, false);
+        assert_eq!(
+            add_finite_to_binary80(one, gap64, Nearest),
+            Some(raw_finite(0x3fff, sig, false))
+        );
+
+        let zero = finite(0, 0, true, X87Binary80Class::Zero);
+        let before = (
+            one,
+            half_below_one,
+            just_below_half,
+            below_half,
+            max_finite,
+            min_subnormal,
+            negative_max,
+            negative_min_subnormal,
+            zero,
+        );
+        assert_eq!(
+            add_finite_to_binary80(zero, one, Nearest),
+            Some(raw_finite(0x3fff, sig, false))
+        );
+        assert_eq!(add_finite_to_binary80(one, negative_one, Nearest), None);
+        assert_eq!(add_finite_to_binary80(zero, zero, Nearest), None);
+        assert_eq!(
+            (
+                one,
+                half_below_one,
+                just_below_half,
+                below_half,
+                max_finite,
+                min_subnormal,
+                negative_max,
+                negative_min_subnormal,
+                zero,
+            ),
+            before,
+            "input values and class provenance remain unchanged"
+        );
+        assert_eq!(negative_one.sign(), true);
     }
 
     #[test]
