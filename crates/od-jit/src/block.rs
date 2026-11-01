@@ -238,6 +238,13 @@ pub struct S0_09NopAddRaxImm8Admission {
     add_rax_imm8_values: Vec<(u64, u64)>,
 }
 
+/// Exact, uncached S3-32a experiment admission for bare `48 03 C0` only.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct S3_32aAddRaxRaxAdmission {
+    boundaries: S0_09NopAdmission,
+    add_rax_rax_rips: Vec<u64>,
+}
+
 /// Separate bounded admission for S0-09 plus exact bare `CMP RAX, sign-extended imm8`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct S0_09NopCmpRaxImm8Admission {
@@ -403,6 +410,53 @@ impl S0_09NopAdmission {
 
     pub(crate) fn admits_nop(&self, rip: u64) -> bool {
         self.nop_rips.contains(&rip)
+    }
+}
+
+impl S3_32aAddRaxRaxAdmission {
+    /// Admit an immutable S0-09 code view only when it contains the exact
+    /// bare `48 03 C0` form at a decoded instruction boundary.
+    pub fn from_code(code: CodeView<'_>) -> Result<Self, S0_09NopAdmissionError> {
+        let boundaries = S0_09NopAdmission::from_code(code)?;
+        let mut add_rax_rax_rips = Vec::new();
+        let mut rip = code.base_rip();
+        while rip < code.code_end() {
+            let offset = usize::try_from(rip - code.base_rip())
+                .map_err(|_| S0_09NopAdmissionError::RangeOverflow { rip, length: 0 })?;
+            let mut memory = CodeMemory::full_code(code);
+            let instruction = long_decode::decode(&mut memory, rip, AccessContext::default())
+                .map_err(|error| S0_09NopAdmissionError::Decode { rip, error })?;
+            if is_exact_add_rax_rax(instruction, &code.bytes()[offset..]) {
+                add_rax_rax_rips.push(rip);
+            }
+            rip = rip.checked_add(u64::from(instruction.length)).ok_or(
+                S0_09NopAdmissionError::RangeOverflow {
+                    rip,
+                    length: instruction.length,
+                },
+            )?;
+        }
+        if add_rax_rax_rips.is_empty() {
+            return Err(S0_09NopAdmissionError::UnsupportedInstruction {
+                rip: code.base_rip(),
+            });
+        }
+        Ok(Self {
+            boundaries,
+            add_rax_rax_rips,
+        })
+    }
+
+    pub(crate) fn matches_code(&self, code: CodeView<'_>) -> bool {
+        self.boundaries.matches_code(code)
+    }
+
+    pub(crate) fn contains(&self, rip: u64) -> bool {
+        self.boundaries.contains(rip)
+    }
+
+    pub(crate) fn admits_add_rax_rax(&self, rip: u64) -> bool {
+        self.add_rax_rax_rips.contains(&rip)
     }
 }
 
@@ -1861,6 +1915,30 @@ pub(crate) fn is_exact_add_rax_imm8(instruction: Instruction, bytes: &[u8]) -> b
             };
             decoded == (*immediate as i8 as i64) as u64
         })
+}
+
+fn is_exact_add_rax_rax(instruction: Instruction, bytes: &[u8]) -> bool {
+    matches!(
+        instruction.operation,
+        Operation::Arithmetic {
+            kind: ArithmeticKind::Add,
+            dst: Operand::Register(dst),
+            src: Operand::Register(src),
+        } if dst.register() == od_isa::Register::Rax
+            && dst.size() == OperandSize::Qword
+            && src.register() == od_isa::Register::Rax
+            && src.size() == OperandSize::Qword
+    ) && instruction.opcode.map == OpcodeMap::Primary
+        && instruction.opcode.byte == 0x03
+        && instruction.prefixes.rex == Some(0x48)
+        && instruction.prefixes.group1.is_none()
+        && instruction.prefixes.segment.is_none()
+        && !instruction.prefixes.operand_override
+        && !instruction.prefixes.address_override
+        && instruction.operand_size == OperandSize::Qword
+        && instruction.address_size == OperandSize::Qword
+        && instruction.length == 3
+        && bytes.get(..3) == Some(&[0x48, 0x03, 0xc0])
 }
 
 pub(crate) fn is_exact_sub_rax_imm8(instruction: Instruction, bytes: &[u8]) -> bool {

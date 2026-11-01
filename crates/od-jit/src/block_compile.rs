@@ -77,6 +77,8 @@ pub enum BlockCompileError {
     NopEntryNotAdmitted { entry_rip: u64 },
     NativeRegisterV1AdmissionDoesNotMatchCode,
     NativeRegisterV1EntryNotAdmitted { entry_rip: u64 },
+    S3_32aAdmissionDoesNotMatchCode,
+    S3_32aEntryNotAdmitted { entry_rip: u64 },
 }
 
 /// Build and compile a single bounded block with the current runtime profile.
@@ -112,6 +114,58 @@ pub fn compile_block_with_register_homes(
         None,
         crate::block_emitter::FlagMaterializationStrategy::Eager,
         register_homes,
+    )
+}
+
+/// Compile the exact S3-32a alias-read candidate through the ordinary
+/// verifier, allocator, and emitter. This entry is uncached and opt-in.
+pub fn compile_block_for_s3_32a_add_rax_rax_candidate(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: &block::S3_32aAddRaxRaxAdmission,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    if !admission.matches_code(code) {
+        return Err(BlockCompileError::S3_32aAdmissionDoesNotMatchCode);
+    }
+    if !admission.contains(entry_rip) || !admission.admits_add_rax_rax(entry_rip) {
+        return Err(BlockCompileError::S3_32aEntryNotAdmitted { entry_rip });
+    }
+    let built = block::build_block(
+        code,
+        entry_rip,
+        AccessContext::default(),
+        BlockLimits::default(),
+    )
+    .map_err(BlockCompileError::Build)?;
+    let lowered = match lowering::lower_for_s3_32a_add_rax_rax_candidate(&built, admission)
+        .map_err(BlockCompileError::Lowering)?
+    {
+        LoweringOutcome::Program(lowered) => lowered,
+        LoweringOutcome::NoNativePrefix {
+            rip,
+            reason,
+            deferred_error,
+        } => {
+            return Ok(BlockCompileOutcome::NoNativePrefix {
+                rip,
+                reason,
+                deferred_error,
+            });
+        }
+    };
+    if let BuildOutcome::Block(block) = &built {
+        for instruction in &block.instructions {
+            for rip in [instruction.guest_rip, instruction.next_rip] {
+                if !admission.contains(rip) {
+                    return Err(BlockCompileError::DispatchBlockBoundaryNotAdmitted { rip });
+                }
+            }
+        }
+    }
+    compile_lowered(
+        code.code_end(),
+        lowered,
+        crate::block_emitter::FlagMaterializationStrategy::Eager,
     )
 }
 
@@ -1734,6 +1788,72 @@ mod tests {
                 deferred_error: None,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn s3_32a_exact_candidate_uses_the_normal_verified_compile_pipeline() {
+        let bytes = [0x48, 0x03, 0xc0];
+        let view = CodeView::new(0x3200, &bytes).unwrap();
+        let admission = block::S3_32aAddRaxRaxAdmission::from_code(view).unwrap();
+        let BlockCompileOutcome::Compiled(compiled) =
+            compile_block_for_s3_32a_add_rax_rax_candidate(view, 0x3200, &admission).unwrap()
+        else {
+            panic!("exact ADD candidate should compile");
+        };
+        assert!(compiled.emitted().safe_entry_provenance());
+        assert_eq!(compiled.emitted().entry_rip(), 0x3200);
+        let pc_map = compiled.emitted().pc_map();
+        assert!(pc_map.code_len() > 0);
+        assert_eq!(pc_map.instruction_count(), 1);
+        assert!(pc_map.ranges().iter().any(|range| {
+            range.guest_rip == crate::statepoints::GuestRipSource::Fixed(0x3200)
+                && range.instruction_index == Some(0)
+                && range.phase != crate::statepoints::StatePhase::Exit
+        }));
+        assert!(pc_map.boundaries().iter().any(|boundary| {
+            boundary.rip == crate::statepoints::GuestRipBoundary::Fixed(0x3203)
+                && boundary.instruction_index == 0
+                && boundary.committed_instructions == 1
+        }));
+
+        let built = block::build_block(
+            view,
+            0x3200,
+            AccessContext::default(),
+            BlockLimits::default(),
+        )
+        .unwrap();
+        let LoweringOutcome::Program(lowered) =
+            lowering::lower_for_s3_32a_add_rax_rax_candidate(&built, &admission).unwrap()
+        else {
+            panic!("exact ADD candidate should lower");
+        };
+        let allocation = allocate_lowered_block(
+            &lowered,
+            AllocatorConfig {
+                register_homes: 4,
+                reserved_prefix_bytes: RUNTIME_FRAME_PREFIX_BYTES,
+            },
+        )
+        .unwrap();
+        assert_eq!(allocation.program(), &lowered.program);
+        assert_eq!(
+            allocation.frame().reserved_prefix_bytes,
+            RUNTIME_FRAME_PREFIX_BYTES
+        );
+        assert!(allocation.frame().frame_bytes >= RUNTIME_FRAME_PREFIX_BYTES);
+        let location_counts = allocation.location_counts();
+        assert!(location_counts.register_homes > 0);
+        assert!(location_counts.register_homes <= 4);
+        assert!(allocation.location(crate::ir::TempId(0)).is_ok());
+        assert!(allocation.location(crate::ir::TempId(1)).is_ok());
+
+        let other_bytes = [0x48, 0x03, 0xc1];
+        let other = CodeView::new(0x3200, &other_bytes).unwrap();
+        assert!(matches!(
+            compile_block_for_s3_32a_add_rax_rax_candidate(other, 0x3200, &admission),
+            Err(BlockCompileError::S3_32aAdmissionDoesNotMatchCode)
         ));
     }
 

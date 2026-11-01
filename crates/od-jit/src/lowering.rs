@@ -57,6 +57,35 @@ pub fn lower(outcome: &BuildOutcome) -> Result<LoweringOutcome, LoweringError> {
     )
 }
 
+/// Candidate-only lowering for the exact admitted aliased `ADD RAX,RAX`.
+pub(crate) fn lower_for_s3_32a_add_rax_rax_candidate(
+    outcome: &BuildOutcome,
+    admission: &block::S3_32aAddRaxRaxAdmission,
+) -> Result<LoweringOutcome, LoweringError> {
+    lower_with_admission_and_lea_s32a(
+        outcome,
+        None,
+        None,
+        None,
+        None,
+        false,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(admission),
+    )
+}
+
 /// Lower a block for a future dispatcher using complete fixture-v1 decode
 /// boundaries. Unlike `lower`, an admitted Jcc commits and returns a typed
 /// dispatch candidate; unresolved targets absent from the proof remain
@@ -527,6 +556,52 @@ fn lower_with_admission_and_lea(
     native_lea_rax_rip_disp32_admission: Option<&S0_09NopLeaRaxRipDisp32Admission>,
     native_register_v1_admission: Option<&NativeRegisterV1Admission>,
 ) -> Result<LoweringOutcome, LoweringError> {
+    lower_with_admission_and_lea_s32a(
+        outcome,
+        admission,
+        nop_admission,
+        nop_inc_rax_admission,
+        nop_dec_rax_admission,
+        native_inc_rax,
+        native_dec_rax,
+        native_neg_rax_admission,
+        native_not_rax_admission,
+        native_add_rax_imm8_admission,
+        native_cmp_rax_imm8_admission,
+        native_sub_rax_imm8_admission,
+        native_lea_rax_rbx_admission,
+        native_xchg_rax_rbx_admission,
+        native_lea_rax_rbx_disp8_admission,
+        native_mov_rax_imm32_admission,
+        native_lea_rax_rbx_rcx_admission,
+        native_lea_rax_rip_disp32_admission,
+        native_register_v1_admission,
+        None,
+    )
+}
+
+fn lower_with_admission_and_lea_s32a(
+    outcome: &BuildOutcome,
+    admission: Option<&AdmittedInstructionBoundaries>,
+    nop_admission: Option<&S0_09NopAdmission>,
+    nop_inc_rax_admission: Option<&S0_09NopIncRaxAdmission>,
+    nop_dec_rax_admission: Option<&S0_09NopDecRaxAdmission>,
+    native_inc_rax: bool,
+    native_dec_rax: bool,
+    native_neg_rax_admission: Option<&S0_09NopNegRaxAdmission>,
+    native_not_rax_admission: Option<&S0_09NopNotRaxAdmission>,
+    native_add_rax_imm8_admission: Option<&S0_09NopAddRaxImm8Admission>,
+    native_cmp_rax_imm8_admission: Option<&S0_09NopCmpRaxImm8Admission>,
+    native_sub_rax_imm8_admission: Option<&S0_09NopSubRaxImm8Admission>,
+    native_lea_rax_rbx_admission: Option<&S0_09NopLeaRaxRbxAdmission>,
+    native_xchg_rax_rbx_admission: Option<&S0_09NopXchgRaxRbxAdmission>,
+    native_lea_rax_rbx_disp8_admission: Option<&S0_09NopLeaRaxRbxDisp8Admission>,
+    native_mov_rax_imm32_admission: Option<&S0_09NopMovRaxImm32Admission>,
+    native_lea_rax_rbx_rcx_admission: Option<&S0_09NopLeaRaxRbxRcxAdmission>,
+    native_lea_rax_rip_disp32_admission: Option<&S0_09NopLeaRaxRipDisp32Admission>,
+    native_register_v1_admission: Option<&NativeRegisterV1Admission>,
+    s3_32a_add_rax_rax_admission: Option<&block::S3_32aAddRaxRaxAdmission>,
+) -> Result<LoweringOutcome, LoweringError> {
     let block = match outcome {
         BuildOutcome::NoBlock(no_block) => {
             let deferred_error = deferred_error(&no_block.stop_reason);
@@ -958,7 +1033,15 @@ fn lower_with_admission_and_lea(
         }) {
             lower_exact_mov_rax_imm32(instruction, index, value, &mut next_temp, &mut operations)?;
         } else {
-            lower_instruction(instruction, index, &mut next_temp, &mut operations)?;
+            let reuse_aliased_add_rax_rax = s3_32a_add_rax_rax_admission
+                .is_some_and(|admission| admission.admits_add_rax_rax(instruction.guest_rip));
+            lower_instruction(
+                instruction,
+                index,
+                reuse_aliased_add_rax_rax,
+                &mut next_temp,
+                &mut operations,
+            )?;
         }
     }
 
@@ -1767,6 +1850,7 @@ fn lower_exact_cmp_rax_imm8(
 fn lower_instruction(
     instruction: &DecodedInstruction,
     index: usize,
+    reuse_aliased_add_rax_rax: bool,
     next_temp: &mut u32,
     operations: &mut Vec<Operation>,
 ) -> Result<(), LoweringError> {
@@ -1825,20 +1909,36 @@ fn lower_instruction(
             };
             let dst_gpr = guest_gpr(dst).ok_or_else(invalid)?;
             let src_gpr = guest_gpr(src).ok_or_else(invalid)?;
-            // Capture both operands before any destination write, including
-            // the aliasing case where dst and src name the same guest GPR.
+            let reuse_read = reuse_aliased_add_rax_rax
+                && kind == ArithmeticKind::Add
+                && dst_gpr == GuestGpr(0)
+                && src_gpr == GuestGpr(0)
+                && instruction.decoded.length == 3
+                && instruction.decoded.opcode.byte == 0x03
+                && instruction.decoded.prefixes.rex == Some(0x48);
+            if reuse_aliased_add_rax_rax && !reuse_read {
+                return Err(invalid());
+            }
+            // Baseline captures both operands before any destination write.
+            // The exact S3-32a candidate shares the capture only for bare
+            // `48 03 C0`, where both inputs are the same pre-instruction RAX.
             let lhs = allocate_temp(next_temp);
-            let rhs = allocate_temp(next_temp);
             operations.push(Operation::ReadGpr {
                 dst: lhs,
                 register: dst_gpr,
                 width: IntWidth::W64,
             });
-            operations.push(Operation::ReadGpr {
-                dst: rhs,
-                register: src_gpr,
-                width: IntWidth::W64,
-            });
+            let rhs = if reuse_read {
+                lhs
+            } else {
+                let rhs = allocate_temp(next_temp);
+                operations.push(Operation::ReadGpr {
+                    dst: rhs,
+                    register: src_gpr,
+                    width: IntWidth::W64,
+                });
+                rhs
+            };
             let (kind, result) = match kind {
                 ArithmeticKind::Add => (IntegerKind::Add, Some(allocate_temp(next_temp))),
                 ArithmeticKind::Sub => (IntegerKind::Subtract, Some(allocate_temp(next_temp))),
@@ -2509,6 +2609,89 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn s3_32a_candidate_reuses_one_preinstruction_rax_read_only_for_exact_opcode() {
+        let bytes = [0x48, 0x03, 0xc0]; // exact ADD RAX,RAX
+        let code = CodeView::new(BASE, &bytes).unwrap();
+        let admission = block::S3_32aAddRaxRaxAdmission::from_code(code).unwrap();
+        assert!(admission.admits_add_rax_rax(BASE));
+        let built = build(&bytes);
+        let baseline = match lower(&built).unwrap() {
+            LoweringOutcome::Program(program) => program,
+            other => panic!("expected baseline program, got {other:?}"),
+        };
+        let candidate = match lower_for_s3_32a_add_rax_rax_candidate(&built, &admission).unwrap() {
+            LoweringOutcome::Program(program) => program,
+            other => panic!("expected candidate program, got {other:?}"),
+        };
+        let reads = |program: &Program| {
+            program
+                .operations
+                .iter()
+                .filter(|op| {
+                    matches!(
+                        op,
+                        Operation::ReadGpr {
+                            register: GuestGpr(0),
+                            width: IntWidth::W64,
+                            ..
+                        }
+                    )
+                })
+                .count()
+        };
+        assert_eq!(reads(&baseline.program), 2);
+        assert_eq!(reads(&candidate.program), 1);
+        let integer = candidate
+            .program
+            .operations
+            .iter()
+            .find_map(|op| match op {
+                Operation::Integer {
+                    kind: IntegerKind::Add,
+                    lhs,
+                    rhs,
+                    result: Some(_),
+                    width: IntWidth::W64,
+                    flags: FlagEffect::Arithmetic,
+                } => Some((*lhs, *rhs)),
+                _ => None,
+            })
+            .expect("candidate arithmetic operation");
+        assert_eq!(integer.0, integer.1);
+        assert!(matches!(
+            candidate.program.operations.first(),
+            Some(Operation::BeginInstruction { index: 0 })
+        ));
+        assert!(candidate.program.operations.iter().any(|op| matches!(
+            op,
+            Operation::WriteGpr {
+                register: GuestGpr(0),
+                width: IntWidth::W64,
+                ..
+            }
+        )));
+        assert!(matches!(
+            candidate.program.operations[1..]
+                .iter()
+                .find(|op| matches!(op, Operation::CommitInstruction { index: 0 })),
+            Some(_)
+        ));
+        assert_eq!(ir::verify(&candidate.program), Ok(()));
+
+        for other in [
+            &[0x48, 0x03, 0xc1][..],       // nonalias register source
+            &[0x66, 0x48, 0x03, 0xc0][..], // extra operand-size prefix
+            &[0x48, 0x01, 0xc0][..],       // different opcode direction
+        ] {
+            let view = CodeView::new(BASE, other).unwrap();
+            assert!(
+                block::S3_32aAddRaxRaxAdmission::from_code(view).is_err(),
+                "{other:02x?}"
+            );
+        }
     }
 
     #[test]

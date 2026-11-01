@@ -41447,6 +41447,269 @@ mod tests {
     }
 
     #[test]
+    fn s3_32a_candidate_matches_interpreter_edges_and_budget_resume() {
+        let _guard = jit_test_lock();
+        use od_isa::memory::{AccessKind, GuestMemory};
+
+        struct CodeOnly<'a> {
+            base: u64,
+            bytes: &'a [u8],
+        }
+        impl GuestMemory for CodeOnly<'_> {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                address
+                    .checked_sub(self.base)
+                    .and_then(|offset| self.bytes.get(offset as usize))
+                    .copied()
+                    .ok_or(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Fetch,
+                    })
+            }
+            fn read(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: &[u8],
+            ) -> Result<(), MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+
+        fn compile_pair(
+            view: CodeView<'_>,
+            entry: u64,
+            admission: &od_jit::block::S3_32aAddRaxRaxAdmission,
+        ) -> (
+            od_jit::block_compile::CompiledBlock,
+            od_jit::block_compile::CompiledBlock,
+        ) {
+            let baseline = match compile_block(view, entry).unwrap() {
+                BlockCompileOutcome::Compiled(block) => block,
+                other => panic!("expected baseline block, got {other:?}"),
+            };
+            let candidate =
+                match od_jit::block_compile::compile_block_for_s3_32a_add_rax_rax_candidate(
+                    view, entry, admission,
+                )
+                .unwrap()
+                {
+                    BlockCompileOutcome::Compiled(block) => block,
+                    other => panic!("expected S3-32a block, got {other:?}"),
+                };
+            (baseline, candidate)
+        }
+        fn execute(
+            block: &od_jit::block_compile::CompiledBlock,
+            state: &mut od_isa::LongModeState,
+            budget: u64,
+            stop_rip: Option<u64>,
+        ) -> (RuntimeExitTag, u64, u64) {
+            let published = PublishedCode::publish_block(block.emitted()).unwrap();
+            let stop = AtomicU8::new(0);
+            let result = published
+                .execute_block(state, budget, stop_rip, &stop)
+                .unwrap();
+            drop(published);
+            (
+                result.exit,
+                result.remaining_budget,
+                result.retired_instructions,
+            )
+        }
+        fn interpret_one(code: &[u8], base: u64, state: &mut od_isa::LongModeState) {
+            let mut memory = CodeOnly { base, bytes: code };
+            assert!(matches!(
+                od_isa::execute::step(state, &mut memory, AccessContext::default()).unwrap(),
+                od_isa::execute::StepOutcome::Advanced | od_isa::execute::StepOutcome::Branched
+            ));
+        }
+
+        let base = 0x9320;
+        let one_add = [0x48, 0x03, 0xc0];
+        let view = CodeView::new(base, &one_add).unwrap();
+        let admission = block::S3_32aAddRaxRaxAdmission::from_code(view).unwrap();
+        let (baseline, candidate) = compile_pair(view, base, &admission);
+        for value in [0, 1, 0x7fff_ffff_ffff_ffff, 0x8000_0000_0000_0000, u64::MAX] {
+            for flags in [2, 2 | (1 << 0), 2 | (1 << 6), 2 | (1 << 11)] {
+                let mut initial = od_isa::LongModeState {
+                    rip: base,
+                    rflags: flags,
+                    ..od_isa::LongModeState::default()
+                };
+                initial.gpr[0] = value;
+                initial.gpr[1] = 0x8877_6655_4433_2211;
+                let mut expected = initial.clone();
+                interpret_one(&one_add, base, &mut expected);
+                let mut baseline_state = initial.clone();
+                let baseline_result = execute(&baseline, &mut baseline_state, 1, None);
+                let mut candidate_state = initial;
+                let candidate_result = execute(&candidate, &mut candidate_state, 1, None);
+                assert_eq!(
+                    candidate_state, expected,
+                    "candidate value={value:#x}, flags={flags:#x}"
+                );
+                assert_eq!(
+                    baseline_state, expected,
+                    "baseline value={value:#x}, flags={flags:#x}"
+                );
+                assert_eq!(candidate_result, baseline_result);
+                assert_eq!(candidate_result.2, 1);
+            }
+        }
+
+        let two_adds = [0x48, 0x03, 0xc0, 0x48, 0x03, 0xc0];
+        let view = CodeView::new(base, &two_adds).unwrap();
+        let admission = block::S3_32aAddRaxRaxAdmission::from_code(view).unwrap();
+        let (baseline_first, candidate_first) = compile_pair(view, base, &admission);
+        let (baseline_second, candidate_second) = compile_pair(view, base + 3, &admission);
+        let initial = od_isa::LongModeState {
+            rip: base,
+            gpr: [3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59],
+            ..od_isa::LongModeState::default()
+        };
+        for first in [&baseline_first, &candidate_first] {
+            let mut untouched = initial.clone();
+            let budget_result = execute(first, &mut untouched, 0, None);
+            assert_eq!(untouched, initial);
+            assert_eq!(budget_result, (RuntimeExitTag::BudgetExhausted, 0, 0));
+
+            let mut stopped = initial.clone();
+            let stop_at_entry = execute(first, &mut stopped, 2, Some(base));
+            assert_eq!(stopped, initial);
+            assert_eq!(stop_at_entry, (RuntimeExitTag::StopAddress, 2, 0));
+
+            let mut after_first = initial.clone();
+            let first_result = execute(first, &mut after_first, 1, None);
+            assert_eq!(first_result, (RuntimeExitTag::BudgetExhausted, 0, 1));
+            assert_eq!(after_first.rip, base + 3);
+            let mut expected_after_first = initial.clone();
+            interpret_one(&two_adds, base, &mut expected_after_first);
+            assert_eq!(after_first, expected_after_first);
+            let mut after_second = after_first.clone();
+            let second = if std::ptr::eq(first, &baseline_first) {
+                &baseline_second
+            } else {
+                &candidate_second
+            };
+            let second_result = execute(second, &mut after_second, 1, None);
+            assert_eq!(second_result, (RuntimeExitTag::BlockComplete, 0, 1));
+            assert_eq!(first_result.2 + second_result.2, 2);
+            let mut expected_final = expected_after_first;
+            interpret_one(&two_adds, base, &mut expected_final);
+            assert_eq!(after_second, expected_final);
+
+            let mut stopped_after_first = initial.clone();
+            let stop_after_first = execute(first, &mut stopped_after_first, 2, Some(base + 3));
+            assert_eq!(stop_after_first, (RuntimeExitTag::StopAddress, 1, 1));
+            let mut expected_prefix = initial.clone();
+            interpret_one(&two_adds, base, &mut expected_prefix);
+            assert_eq!(stopped_after_first, expected_prefix);
+
+            let mut resumed = stopped_after_first;
+            let resumed_result = execute(second, &mut resumed, stop_after_first.1, None);
+            assert_eq!(resumed_result, (RuntimeExitTag::BlockComplete, 0, 1));
+            assert_eq!(stop_after_first.2 + resumed_result.2, 2);
+            let mut expected_final = expected_prefix;
+            interpret_one(&two_adds, base, &mut expected_final);
+            assert_eq!(resumed, expected_final);
+        }
+
+        let distinct_branch_code = [
+            0x48, 0x03, 0xc0, // ADD RAX,RAX
+            0x48, 0x2b, 0xd2, // SUB RDX,RDX
+            0x48, 0x03, 0xc3, // ADD RAX,RBX
+            0x48, 0x2b, 0xc9, // SUB RCX,RCX
+            0x48, 0x3b, 0xc3, // CMP RAX,RBX
+            0x74, 0x0a, // JZ over fall-through MOV
+            0x48, 0xbb, 0x11, 0x00, 0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa,
+        ];
+        let branch_view = CodeView::new(base, &distinct_branch_code).unwrap();
+        let branch_admission = block::S3_32aAddRaxRaxAdmission::from_code(branch_view).unwrap();
+        let (branch_baseline, branch_candidate) =
+            compile_pair(branch_view, base, &branch_admission);
+        for (initial_rax, expected_rip) in [(0, base + 27), (1, base + 17)] {
+            let mut initial = od_isa::LongModeState {
+                rip: base,
+                rflags: 0x202,
+                ..od_isa::LongModeState::default()
+            };
+            initial.gpr[0] = initial_rax;
+            initial.gpr[3] = 7;
+            initial.gpr[1] = 0x22;
+            initial.gpr[2] = 0x33;
+            let mut expected = initial.clone();
+            for _ in 0..6 {
+                interpret_one(&distinct_branch_code, base, &mut expected);
+            }
+            assert_eq!(expected.rip, expected_rip);
+
+            let mut baseline_state = initial.clone();
+            let baseline_result = execute(&branch_baseline, &mut baseline_state, 6, None);
+            let mut candidate_state = initial;
+            let candidate_result = execute(&branch_candidate, &mut candidate_state, 6, None);
+            assert_eq!(baseline_result, (RuntimeExitTag::BlockComplete, 0, 6));
+            assert_eq!(candidate_result, baseline_result);
+            assert_eq!(baseline_state, expected);
+            assert_eq!(candidate_state, expected);
+        }
+    }
+
+    #[test]
     fn native_add_rax_imm8_matches_interpreter_full_state_and_pending_branch() {
         let _guard = jit_test_lock();
         use od_isa::memory::{AccessKind, GuestMemory};
