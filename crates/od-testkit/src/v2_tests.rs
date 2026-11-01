@@ -448,6 +448,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 cvtss2si_controls: input.fixture.cvtss2si_controls,
                 cvtsd2si_controls: input.fixture.cvtsd2si_controls,
                 cvtsd2si_r32_memory_controls: input.fixture.cvtsd2si_r32_memory_controls,
+                cvttsd2si_r32_memory_controls: input.fixture.cvttsd2si_r32_memory_controls,
                 cvtss2si_r32_memory_controls: input.fixture.cvtss2si_r32_memory_controls,
                 cvttss2si_r32_memory_controls: input.fixture.cvttss2si_r32_memory_controls,
                 fxsave64_cr0_controls: input.fixture.fxsave64_cr0_controls,
@@ -8754,6 +8755,57 @@ fn cvtsd2si_m64_r32_independent_oracle_rounds_then_range_checks() {
     ))
     .unwrap();
     assert_eq!(fixture.fixture.profile, Profile::LongCvtsd2siR32MemoryRaxV1);
+}
+
+#[test]
+fn cvttsd2si_m64_r32_independent_oracle_truncates_for_every_rc() {
+    let cases = [
+        (0x3ff8_0000_0000_0000, 1u32, false, true), // +1.5 -> +1, PE
+        (0xbff8_0000_0000_0000, 0xffff_ffff, false, true), // -1.5 -> -1, PE
+        (0x4004_0000_0000_0000, 2, false, true),    // +2.5 -> +2, PE
+        (0xc004_0000_0000_0000, 0xffff_fffe, false, true), // -2.5 -> -2, PE
+        (0x0000_0000_0000_0001, 0, false, true),    // tiny positive -> +0, no DE
+        (0x8000_0000_0000_0001, 0, false, true),    // tiny negative -> -0, no DE
+        (0xc1e0_0000_0000_0000, 0x8000_0000, false, false), // exact i32::MIN
+        (0x41df_ffff_ffff_ffff, 0x7fff_ffff, false, true), // just below +2^31
+        (0x41e0_0000_0000_0000, 0x8000_0000, true, false), // +2^31 invalid, no PE
+        (0xc1e0_0000_0010_0000, 0x8000_0000, false, true), // MIN - 0.5 truncates valid
+        (0xc1e0_0000_0020_0000, 0x8000_0000, true, false), // below MIN - 1
+        (0x7ff8_0000_0000_0001, 0x8000_0000, true, false), // QNaN
+        (0x7ff0_0000_0000_0000, 0x8000_0000, true, false), // +infinity
+    ];
+    for (raw, expected_bits, expected_invalid, expected_inexact) in cases {
+        for rc in 0..4 {
+            let (bits, invalid, inexact) = independent_binary64_to_integer(raw, 3, false);
+            assert_eq!(bits as u32, expected_bits, "raw={raw:016x}, RC={rc}");
+            assert_eq!(invalid, expected_invalid, "raw={raw:016x}, RC={rc}");
+            assert_eq!(inexact, expected_inexact, "raw={raw:016x}, RC={rc}");
+            let old_ie = rc & 1 != 0;
+            let old_pe = rc & 2 != 0;
+            let status =
+                u32::from(old_ie || invalid) | (u32::from(old_pe || (!invalid && inexact)) << 5);
+            assert_eq!(status & 1 != 0, old_ie || invalid);
+            assert_eq!(status & 0x20 != 0, old_pe || (!invalid && inexact));
+        }
+    }
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_37cj_cvttsd2si_m64_i32_rc_independence.case.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        fixture.fixture.profile,
+        Profile::LongCvttsd2siR32MemoryRaxV1
+    );
+    let mut foreign = fixture.fixture;
+    foreign.cvtsd2si_r32_memory_controls = Some(Cvtsd2siControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: false,
+    });
+    assert!(foreign.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
 }
 
 #[test]

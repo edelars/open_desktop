@@ -387,3 +387,13 @@ RAX, and the bounded IM/PM/DAZ/MXCSR policy. Its independent oracle reads raw
 u32 from fixture memory, computes truncation and signed-range flags with
 integer operations, and validates EAX zero-extension to RAX without host FP or
 production conversion helpers. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ci--bounded-long64-cvttss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile).
+
+### S2-37cj — CVTTSD2SI EAX,m64
+
+The strict `s2-long-cvttsd2si-r32-memory-rax-v1` profile has its own control
+snapshot and rejects foreign controls. The oracle parses raw binary64 bits from
+the eight-byte fixture memory source, truncates toward zero independently of RC,
+then checks signed i32 range and validates IE/PE sticky status, RAX
+zero-extension, snapshot state and exact exception metadata. It uses integer
+logic only, without host FP or production conversion helpers. See the [CPU
+contract](../../docs/specs/CPU_CONTRACT.md#s2-37cj--bounded-long64-cvttsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile).

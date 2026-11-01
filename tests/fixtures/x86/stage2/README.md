@@ -7482,3 +7482,27 @@ width/count, and atomic read failure. Native closure does not establish
 physical x86 execution. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37ci--exact-legacy-long64-cvttss2si-eaxdword-ptr-rax),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ci--bounded-long64-cvttss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile), and
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ci--cvttss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile).
+
+### S2-37cj — CVTTSD2SI EAX,m64
+
+`s2_37cj_cvttsd2si_m64_i32_rc_independence.case.json` is a literal exact legacy
+`F2 0F 2C 00` fixture. It supplies unaligned +1.5 at a high32 RAX address while
+MXCSR selects round-up; CVTT still writes EAX=1 and sets PE. The runner matrix
+covers truncation boundaries, exact and invalid i32 minima, NaN/infinity,
+signed zero and subnormals, all RC settings, sticky histories, RAX
+zero-extension, pending-x87 preservation, schema/foreign-field validation,
+tampering and backend denial. The independent oracle uses raw binary64 bits
+and integer operations only. Focused ISA/decoder, testkit oracle, runner, and
+native-local checks passed (3/3, 1/1, 1/1, 1/1). Full suites passed: od-isa
+1,650; od-testkit 448; od-runner 112 unit + 466 fixture; od-x86-runner 8+4.
+Workspace all-target check, formatting, diff-check, layout and Graphify passed;
+the graph has 10,454 nodes, 22,374 edges and 313 communities. Independent code
+and documentation review is complete; 13 CJ cross-document/component links
+resolve. Native/JIT/C ABI remain closed; no physical x86 acceptance is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTTSD2SI pp. 3-253–3-254; Vol. 1
+§11.5.2.2 and Table 14-21; Vol. 3A §16.1.3/Table 16-1. The instruction entry
+scopes its Type 3/Table 2-20 reference to VEX-encoded forms; the table also
+contains legacy SSE conditions. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37cj--exact-legacy-long64-cvttsd2si-eaxqword-ptr-rax),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cj--bounded-long64-cvttsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile), and
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cj--cvttsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile).

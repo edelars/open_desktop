@@ -1212,6 +1212,8 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only exact legacy `F2 0F 2C 00` CVTTSD2SI EAX,m64 form.
+    Cvttsd2siR32MemoryRax,
     /// Local-only legacy `F2 REX.W 0F 2C /r` truncating binary64-to-r64 conversion.
     Cvttsd2siR64Register {
         destination: u8,
@@ -5080,12 +5082,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Escape0f, 0x2c) if cvttsd2si_r32_register => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if modrm == 0x00 && rex == 0 {
+                    Operation::Cvttsd2siR32MemoryRax
+                } else if modrm >> 6 != 3 {
                     return Err(self.unsupported(opcode));
-                }
-                Operation::Cvttsd2siR32Register {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                } else {
+                    Operation::Cvttsd2siR32Register {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x2c) if cvttsd2si_r64_register => {
@@ -21415,11 +21420,44 @@ mod tests {
             &[0xf2, 0x42, 0x0f, 0x2c, 0xc0],
             &[0xf2, 0xf2, 0x0f, 0x2c, 0xc0],
             &[0x48, 0xf2, 0x0f, 0x2c, 0xc0],
-            &[0xf2, 0x0f, 0x2c, 0x00],
             &[0xc5, 0xfb, 0x2c, 0xc0],
             &[0x62, 0xf1, 0xff, 0x08, 0x2c, 0xc0],
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn cvttsd2si_r32_memory_rax_decodes_only_exact_f2_form() {
+        let decoded = Memory::new(&[0xf2, 0x0f, 0x2c, 0x00]).decode().unwrap();
+        assert_eq!(decoded.length, 4);
+        assert_eq!(decoded.operation, Operation::Cvttsd2siR32MemoryRax);
+        for bytes in [
+            &[0xf2, 0x0f, 0x2c, 0x01][..],
+            &[0xf2, 0x0f, 0x2c, 0x08],
+            &[0xf2, 0x0f, 0x2c, 0x40, 0x00],
+            &[0xf2, 0x0f, 0x2c, 0x04, 0x24],
+            &[0xf2, 0x41, 0x0f, 0x2c, 0x00],
+            &[0xf2, 0x44, 0x0f, 0x2c, 0x00],
+            &[0xf2, 0x45, 0x0f, 0x2c, 0x00],
+            &[0x48, 0xf2, 0x0f, 0x2c, 0x00],
+            &[0xf2, 0x66, 0x0f, 0x2c, 0x00],
+            &[0xf2, 0x67, 0x0f, 0x2c, 0x00],
+            &[0xf2, 0xf2, 0x0f, 0x2c, 0x00],
+            &[0xc5, 0xfb, 0x2c, 0xc0],
+            &[0x62, 0xf1, 0xff, 0x08, 0x2c, 0xc0],
+        ] {
+            let outcome = Memory::new(bytes).decode();
+            assert!(
+                outcome.is_err() || outcome.unwrap().operation != Operation::Cvttsd2siR32MemoryRax,
+                "accepted {bytes:02x?} as CVTTSD2SI EAX,[RAX]"
+            );
+        }
+        for bytes in [&[0xf2][..], &[0xf2, 0x0f], &[0xf2, 0x0f, 0x2c]] {
+            assert!(
+                Memory::new(bytes).decode().is_err(),
+                "accepted {bytes:02x?}"
+            );
         }
     }
 

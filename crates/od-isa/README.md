@@ -759,3 +759,10 @@ high96 and unrelated state, and adds sticky PE only for inexact conversion.
 The direct integer path preserves low source bits that an intermediate binary64
 would lose. It uses SSE feature bit 25, allows unaligned reads at local AC=0,
 and stays closed to generic/JIT/native/C execution. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cf--bounded-long64-cvtsi2ss-xmm0qword-ptr-rax-m64-memory-profile).
+
+### S2-37cj — CVTTSD2SI EAX,m64
+
+The bounded executor profile accepts only exact legacy `F2 0F 2C 00`, performs
+one eight-byte `[RAX]` read, truncates binary64 toward zero, then checks i32
+range and commits EAX with zero-extension only after a successful read. It
+preserves unrelated state and sticky MXCSR flags. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cj--bounded-long64-cvttsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile).

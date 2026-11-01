@@ -20217,3 +20217,36 @@ Type 3/Table 2-20 without a VEX-only qualifier; Table 2-20 includes legacy SSE
 conditions. See the [plan](../plans/STAGE_2.md#s2-37ci--exact-legacy-long64-cvttss2si-eaxdword-ptr-rax),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37ci--bounded-long64-cvttss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ci--cvttss2si-eaxm32).
+
+## S2-37cj — CVTTSD2SI EAX,qword ptr [RAX] m64-to-r32 memory profile
+
+Implemented the exact legacy `F2 0F 2C 00` form under separate strict
+schema-v2 profile `s2-long-cvttsd2si-r32-memory-rax-v1`. It reads exactly one
+unaligned-allowed eight-byte source at RAX (local AC=0), captures old RAX before
+writing EAX, then zero-extends the result to RAX. The bounded read is atomic
+with respect to CPU state. Masked conversion truncates binary64 toward zero
+independently of MXCSR.RC, then checks signed-i32 range: invalid produces
+`0x80000000`+IE without PE; valid inexact sets PE; exact `-2^31` remains valid.
+Subnormals add PE but no DE. Sticky flags and unrelated state are preserved.
+
+Focused verification passed: ISA/decoder 3/3 (one decoder and two direct
+execution tests); testkit independent oracle 1/1;
+runner matrix 1/1; native local-only classifier 1/1. The runner's matrix covers
+18 raw binary64 vectors across all RC values, sticky histories, signed limits,
+NaNs/infinities/subnormals, high32 RAX source aliasing, zero-extension, pending
+x87 preservation, tampering, foreign controls and backend denial. The oracle
+uses raw u64 classification/truncation and no host FP or production conversion
+helper. Full suites passed: od-isa 1,650; od-testkit 448; od-runner 112 unit +
+466 fixture; od-x86-runner 8 library + 4 binary tests. Workspace all-target
+check, formatting, diff-check, layout and Graphify passed; the graph contains
+10,454 nodes, 22,374 edges and 313 communities. Independent code/schema and
+documentation/evidence reviews are clean; 13 CJ cross-document/component links
+resolve. JIT/native/C ABI/fragment/generic admission remain closed; backend
+denial is not physical-x86 acceptance evidence.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CVTTSD2SI` pp. 3-253–3-254; Vol. 1
+§11.5.2.2 and Table 14-21; Vol. 3A §16.1.3/Table 16-1. The instruction entry
+scopes its Type 3/Table 2-20 reference to VEX-encoded forms; Table 2-20 also
+contains legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37cj--exact-legacy-long64-cvttsd2si-eaxqword-ptr-rax),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37cj--bounded-long64-cvttsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cj--cvttsd2si-eaxm64).

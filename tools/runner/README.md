@@ -339,3 +339,13 @@ MXCSR.RC, then checks signed i32 range and sticky IE/PE. The literal fixture
 uses +1.5 with round-up selected to distinguish truncation from CVT rounding.
 JIT/native requests return `unsupported`; no physical x86 execution is claimed.
 See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ci--bounded-long64-cvttss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile).
+
+### S2-37cj — CVTTSD2SI EAX,m64
+
+The runner has a separate strict schema-v2 interpreter-only profile for exact
+`F2 0F 2C 00`. Its independent oracle reads raw u64 memory bits, truncates
+binary64 toward zero, then checks i32 range and sticky IE/PE; it does not use
+host floating point or production conversion helpers. The literal +1.5 case
+selects round-up in MXCSR and still expects EAX=1+PE. JIT/native return
+`Unsupported`; this does not claim physical x86 acceptance. See the [CPU
+contract](../../docs/specs/CPU_CONTRACT.md#s2-37cj--bounded-long64-cvttsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile).

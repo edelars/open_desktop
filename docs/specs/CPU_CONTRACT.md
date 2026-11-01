@@ -14950,3 +14950,50 @@ Type 3/Table 2-20 without a VEX-only qualifier; Table 2-20 includes legacy SSE
 conditions. See the [plan](../plans/STAGE_2.md#s2-37ci--exact-legacy-long64-cvttss2si-eaxdword-ptr-rax),
 [report](../reports/STAGE_2_REPORT.md#s2-37ci--cvttss2si-eaxdword-ptr-rax-m32-to-r32-memory-profile), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ci--cvttss2si-eaxm32).
+
+## S2-37cj — bounded Long64 CVTTSD2SI EAX,qword ptr [RAX] m64-to-r32 memory profile
+
+The strict schema-v2 profile `s2-long-cvttsd2si-r32-memory-rax-v1` admits only
+exact legacy `F2 0F 2C 00`. It fetches all four bytes, then applies the bounded
+SSE2/CR0.EM/CR4.OSFXSR `#UD` gates followed by CR0.TS `#NM`, at modeled CPL0–3.
+That local order is a test policy, not a claim of universal SDM priority. Missing
+SSE state is refused only after prerequisite gates.
+
+On admission, the interpreter reads exactly eight little-endian bytes from
+`[RAX]` in one callback after checked canonical48 span validation of
+`[RAX,RAX+7]`. Unaligned m64 is allowed under this profile's AC=0 policy. AC=1
+is an admitted negative fixture returning local `Unsupported` before span
+validation and before data access; it leaves CPU state unchanged. A read failure
+also leaves the full CPU state unchanged. The source address is captured from
+old RAX before EAX is written. Success writes EAX and zero-extends RAX.
+
+The binary64 source is truncated toward zero independent of MXCSR.RC, then
+checked against signed i32 range. Masked invalid input produces `0x80000000`
+and sticky IE without adding PE. Valid inexact values set sticky PE. Exact
+`-2^31` is valid despite sharing the invalid-indefinite result bits. Subnormal
+inputs truncate to zero with PE and do not set DE. Existing IE/PE are preserved.
+The bounded profile admits supported MXCSR bits `0xffbf`, requires DAZ=0 and
+IM=PM=1, and preserves all other supported mask/control/sticky bits. PM=0,
+IM=0, DAZ=1 and reserved MXCSR bits are strict schema rejections. x87/MMX
+pending state does not gate or change; XMM and unrelated GPR/RFLAGS state are
+preserved.
+
+The independent oracle parses raw u64 source bits and uses integer
+classification/truncation only; it does not use host floating point or a
+production conversion helper. Focused coverage passed: ISA/decoder 3/3 (one
+decoder and two direct-execution tests), testkit oracle 1/1, runner 1/1, and
+native-local classifier 1/1. The runner matrix checks 18 binary64 vectors
+across all RC settings, flags, RAX aliasing, pending x87 preservation,
+tampering, foreign-field rejection and backend denial. Full suites passed:
+od-isa 1,650; od-testkit 448; od-runner 112 unit + 466 fixture; od-x86-runner
+8 library + 4 binary tests. Workspace all-target check, formatting, diff-check,
+layout and Graphify passed; the graph contains 10,454 nodes, 22,374 edges and
+313 communities. Independent code/schema and documentation/evidence reviews
+are clean; 13 CJ cross-document/component links resolve. Native/JIT/C ABI,
+fragment and generic execution remain closed; no physical x86 acceptance is
+claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CVTTSD2SI` pp. 3-253–3-254; Vol. 1
+§11.5.2.2 and Table 14-21; Vol. 3A §16.1.3/Table 16-1. The instruction entry
+limits its Type 3/Table 2-20 reference to VEX-encoded forms; Table 2-20 itself
+also includes legacy SSE conditions. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37cj--exact-legacy-long64-cvttsd2si-eaxqword-ptr-rax).
