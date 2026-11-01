@@ -3163,7 +3163,7 @@ and [evidence archive](../reports/data/stage3/s3-36d/).
 
 **Готово:** ускорение или его отсутствие установлено для конкретных workloads. Если подтверждённого ускорения целевого прогретого сценария нет, correctness slice может быть принят отдельно, а performance-критерий этапа остаётся незакрытым.
 
-#### S3-36e: resident capacity-one cached checked-memory full-call profile — in progress
+#### S3-36e: resident capacity-one cached checked-memory full-call profile — bounded profile complete
 
 Added opt-in `od-bench two-site-memory-cache` for the same two frozen S3-34a
 sequences (`store_then_load`, `load_then_store`; 1,200 inputs each). This profile
@@ -3179,17 +3179,18 @@ for both sequences at 2,048 repetitions per side, retained 12 attempts per
 sequence, and emitted no scored pairs. Runtime `working_tree_dirty` is unknown
 because the Git status probe timed out; build source tree was clean. All three
 scored runs completed with 20 retained pairs per sequence and all sides above
-the floor. Their raw native/interpreter median ratios were 2.7592, 2.6903, and
-2.7391 for `store_then_load`; and 2.8393, 2.7630, and 2.7306 for
-`load_then_store`. The strata remain separate. This is still a bounded fixture,
-not general memory
+the floor. Across 60 pairs, the median raw native/interpreter ratios were
+2.7223 (range 2.6348–2.8856) for `store_then_load` and 2.7650
+(2.6390–2.9279) for `load_then_store`; the strata remain separate. This is a
+bounded fixture result, not general memory
 or production owner/MMU evidence. Mini checks remain deferred to the end of
 Stage 3. See the [S3-36e report](../reports/STAGE_3_S3-36e_2026-11-01.md),
 [preflight evidence](../reports/data/stage3/s3-36e/preflight-release-run1.json),
 the [calibration evidence](../reports/data/stage3/s3-36e/calibration-run1.json),
 [scored runs 1](../reports/data/stage3/s3-36e/run1.json),
 [2](../reports/data/stage3/s3-36e/run2.json), and
-[3](../reports/data/stage3/s3-36e/run3.json).
+[3](../reports/data/stage3/s3-36e/run3.json), with the independently reviewed
+[suite manifest](../reports/data/stage3/s3-36e/suite-manifest.json).
 
 ### S3-37. Проверить cache churn и ресурсы
 

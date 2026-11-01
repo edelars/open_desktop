@@ -848,8 +848,8 @@ Scored release run 1 completed with 20 retained alternating pairs per
 sequence; every side exceeded the 200 ms floor. The raw
 `native_total_ns/interpreter_total_ns` median and range were 2.7592
 (2.6746–2.8856) for `store_then_load` and 2.8393 (2.7617–2.9279) for
-`load_then_store`. The sequence strata remain separate. This is one bounded
-process only; two more scored runs were required after this first process.
+`load_then_store`. The sequence strata remain separate; later processes are
+reported independently below.
 The point-in-time envelope covered an outer 156.740 s command on M3 Max and
 sampled one-minute load averages from 1.73 to 3.95. Graphify appeared in 7 of
 34 snapshots. A Stage 2 `od-runner` test was visible in 14 of 34 snapshots
@@ -868,8 +868,7 @@ compiles, or publications. The envelope covered 146.600 s, with one-minute
 load averages 1.84–3.29 and a Stage 2 `od-runner` test visible in 22 of 32
 snapshots. Its `rustc` child reached 25.9% and 26.0% CPU in two samples; the
 benchmark's own release `rustc` compile reached 109.6% in one. Graphify was not
-visible. No per-pair timestamps are available. At this point in the evidence
-log, run 3 remained.
+visible. No per-pair timestamps are available.
 
 Scored release run 3 retained 20 alternating pairs per sequence, with every
 side above the 200 ms floor. Median/range was 2.7391 (2.6830–2.7733) for
@@ -882,6 +881,18 @@ tests in 20 of 30. Rustc samples included the benchmark's `od_bench` compile at
 524.3% CPU and Stage 2 `od_testkit`/`od_x86_runner` compiles at 14.9–53.9%.
 Stage 2 was not stopped. These are sparse outer-process samples without
 per-pair timestamps, so they cannot assign load to individual measurements.
+
+Across the three release processes, the median and full range of paired
+`native_total_ns/interpreter_total_ns` ratios were 2.7222892353
+(2.6348242133–2.8855539942) for `store_then_load` and 2.7650079504
+(2.6390215880–2.9278959372) for `load_then_store`. There were 60 pairs per
+sequence; the two strata remain separate. A ratio above one means interpreter
+time was lower on these inputs. This bounded result does not generalize to
+other memory forms or guest workloads.
+
+The [suite manifest](../reports/data/stage3/s3-36e/suite-manifest.json),
+SHA-256 `e643469ccb79ad69ebb9347f657c680f62b90c4a7e9c1d1c29111e4ad5a57c3f`,
+binds 13 preflight, calibration, scored-report, journal, and monitoring files.
 
 Run the release preflight first:
 

@@ -8,10 +8,12 @@
 
 S3-36e implementation is committed. Release preflight passed on Apple M3 Max
 with 2,400 frozen inputs and 4,800 parity trials. Calibration-only passed at
-2,048 repetitions per side with no scored pairs. Runs 1, 2, and 3 each retained
-20 pairs per sequence and passed all floors. See the [S3-36e
-report](STAGE_3_S3-36e_2026-11-01.md) and
-[preflight/calibration evidence](data/stage3/s3-36e/).
+2,048 repetitions per side with no scored pairs. Three scored runs retained 20
+pairs per sequence and passed all floors. Across 60 paired ratios per sequence,
+medians were 2.7223 (`store_then_load`) and 2.7650 (`load_then_store`), with no
+cross-stratum aggregate or general performance claim. See the [S3-36e
+report](STAGE_3_S3-36e_2026-11-01.md) and independently reviewed
+[suite evidence manifest](data/stage3/s3-36e/suite-manifest.json).
 
 Последний report-inclusive локальный harness run:
 
@@ -49,6 +51,7 @@ report](STAGE_3_S3-36e_2026-11-01.md) and
 | S3-29f eager/demand-flags single-block comparison | Три release runs завершили fixed seven-case profile; candidate/eager cross-run paired-ratio medians составили 1.003–1.086 по cases, код candidate был на 40–47% больше. Eager остаётся reference/default; общий performance вывод и policy choice не сделаны. См. [S3-29f](STAGE_3_S3-29f_2026-10-30.md). |
 | VMHost/C ABI | S3-38a register-only V0 ABI integration, S3-38b process-suite evidence, S3-38c sequential cross-thread handle lifecycle | Bounded local slices; persistent cache/full session are not implemented. ISSUE-027 remains open; process suite was not retried without new basis. See [S3-38c](STAGE_3_S3-38c_2026-10-30.md), [S3-38b](STAGE_3_S3-38b_2026-10-30.md), [issue registry](../KNOWN_ISSUES.md) and [diagnostics](ISSUE_027_DIAGNOSTIC_2026-10-30.md). |
 | Harness/replay/reducer | Fixed seeds, repeated corpus, callback-aware comparison, saved-case validation, reducer preservation и negative self-checks | Подтверждает только внесённые профили и локальный ARM64 runner. Полный S3-34 и physical comparison остаются открытыми. См. [S3-34h](STAGE_3_S3-34h_2026-10-30.md). |
+| S3-36e cached checked-memory full-call profile | Three release runs on Apple M3 Max, 20 pairs per sequence/run, all sides passed 200 ms. Across 60 paired raw native/interpreter ratios, medians/ranges were 2.7223 (2.6348–2.8856) for `store_then_load` and 2.7650 (2.6390–2.9279) for `load_then_store`. | Bounded two-sequence fixture only; no cross-stratum or general memory claim. Stage 2/Graphify/compiler snapshots have no per-pair attribution; Mini remains deferred. See [S3-36e](STAGE_3_S3-36e_2026-11-01.md) and [evidence manifest](data/stage3/s3-36e/suite-manifest.json). |
 
 ## Оставшиеся gates
 

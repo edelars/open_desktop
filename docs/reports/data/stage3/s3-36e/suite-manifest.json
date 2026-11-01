@@ -1,0 +1,236 @@
+{
+  "artifacts": [
+    {
+      "path": "preflight-release-run1.json",
+      "role": "release_preflight",
+      "sha256": "8dad1815bb3db94de58e0c1535af5ee9f14ae9e1882e91f0eae906d8ecf330b0"
+    },
+    {
+      "path": "calibration-run1.json",
+      "role": "calibration_report",
+      "sha256": "90485eec84b371e27efcd69cbc1af093caa6538243486b2edf6f9d702153ee66"
+    },
+    {
+      "path": "calibration-run1.json.cache.journal.jsonl",
+      "role": "calibration_journal",
+      "sha256": "64b8b2f34a11cf1441493bee324eeeea9c11705e338ca37fe9fd566197c8edda"
+    },
+    {
+      "path": "calibration-run1.monitoring.json",
+      "role": "calibration_monitoring",
+      "sha256": "40e766f927cc316fe5248a79e1bdca584f55b33097044131810583af2f1eb0e8"
+    },
+    {
+      "path": "run1.json",
+      "role": "scored_report",
+      "sha256": "9c3f9a1dd0ae62a3c7df6d2e25180d047ff1471d1a7863732c3bc7f592e58eba"
+    },
+    {
+      "path": "run1.json.cache.journal.jsonl",
+      "role": "scored_journal",
+      "sha256": "a7bc71d5433050c67c900ede381101c2eec7ef1d820e9deea8894bcd52330012"
+    },
+    {
+      "path": "run1.monitoring.json",
+      "role": "scored_monitoring",
+      "sha256": "39f4817a02194bd8bfca68fdf61b6e756a408d092343630b6aafaedc35480981"
+    },
+    {
+      "path": "run2.json",
+      "role": "scored_report",
+      "sha256": "0d6bd61f12d1b5abbb4062d8e6eeeab053a3a64aea92c9585bc36e76b6ba675d"
+    },
+    {
+      "path": "run2.json.cache.journal.jsonl",
+      "role": "scored_journal",
+      "sha256": "c5df755e9df81d282588199d0320c0d50a599319b402aa43c9902d2243c65e0f"
+    },
+    {
+      "path": "run2.monitoring.json",
+      "role": "scored_monitoring",
+      "sha256": "62855447588a7cd9b601a1a777c63a5ca709317c740cc5ff9c966b8bfbead6ac"
+    },
+    {
+      "path": "run3.json",
+      "role": "scored_report",
+      "sha256": "bf6e9de1625940d6b797aae37d69b11309c00a6f94240f1e3f0bfb2d2dcde9ae"
+    },
+    {
+      "path": "run3.json.cache.journal.jsonl",
+      "role": "scored_journal",
+      "sha256": "8e18bd01ec807ef5c5923582f069368df48106be9c7d565b0e6a9aef29de28bc"
+    },
+    {
+      "path": "run3.monitoring.json",
+      "role": "scored_monitoring",
+      "sha256": "7d3a63f3c1c35c3b3f477d50a3bbc5ab076b95215f74ca394026bf82fa11bcb3"
+    }
+  ],
+  "bounded_cache_prerequisite_commit": "b1a6ccb130844c40a396155a8f84bda656bfa8c3",
+  "calibration": {
+    "calibration_floor_passed": true,
+    "path": "calibration-run1.json",
+    "scored_pairs": 0,
+    "status": "calibration_only_unscored"
+  },
+  "cross_run_summary": [
+    {
+      "median_raw_ratio": 2.722289235319388,
+      "minimum_measured_side_ns": 287647263,
+      "pair_count_across_runs": 60,
+      "per_run": [
+        {
+          "median_raw_ratio": 2.759186989224488,
+          "minimum_measured_side_ns": 287647263,
+          "pair_count": 20,
+          "process_run": 1,
+          "ratio_range": [
+            2.674616500038544,
+            2.8855539941929327
+          ]
+        },
+        {
+          "median_raw_ratio": 2.690255568440442,
+          "minimum_measured_side_ns": 291634006,
+          "pair_count": 20,
+          "process_run": 2,
+          "ratio_range": [
+            2.6348242132668025,
+            2.7647005230883193
+          ]
+        },
+        {
+          "median_raw_ratio": 2.739075235402379,
+          "minimum_measured_side_ns": 291053352,
+          "pair_count": 20,
+          "process_run": 3,
+          "ratio_range": [
+            2.683033968794954,
+            2.773268661753808
+          ]
+        }
+      ],
+      "ratio_range": [
+        2.6348242132668025,
+        2.8855539941929327
+      ],
+      "sequence": "store_then_load"
+    },
+    {
+      "median_raw_ratio": 2.765007950352979,
+      "minimum_measured_side_ns": 277739899,
+      "pair_count_across_runs": 60,
+      "per_run": [
+        {
+          "median_raw_ratio": 2.8392591467054977,
+          "minimum_measured_side_ns": 278869460,
+          "pair_count": 20,
+          "process_run": 1,
+          "ratio_range": [
+            2.7617340494222726,
+            2.9278959371997813
+          ]
+        },
+        {
+          "median_raw_ratio": 2.7630167805347026,
+          "minimum_measured_side_ns": 286667010,
+          "pair_count": 20,
+          "process_run": 2,
+          "ratio_range": [
+            2.73337196183787,
+            2.791296662024026
+          ]
+        },
+        {
+          "median_raw_ratio": 2.730643743154607,
+          "minimum_measured_side_ns": 277739899,
+          "pair_count": 20,
+          "process_run": 3,
+          "ratio_range": [
+            2.6390215879732435,
+            2.835414969646983
+          ]
+        }
+      ],
+      "ratio_range": [
+        2.6390215879732435,
+        2.9278959371997813
+      ],
+      "sequence": "load_then_store"
+    }
+  ],
+  "input_digest": "b09478b556aa91234d8c453f20e70f637222c5de2d7369d305ffe7c78caae540",
+  "measure_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "16e68fb57427f8749447347787666971f49b44e3",
+      "source_sha256": "008ccea1d32c22fc34fdf9c0f642a4b3f6a6190705578626ca89801df362db40",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "16e68fb57427f8749447347787666971f49b44e3",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "preflight": {
+    "parity_trials": 4800,
+    "path": "preflight-release-run1.json",
+    "timing_started": false,
+    "unique_cases": 2400
+  },
+  "profile_id": "s3-36e-two-site-memory-full-cache-call-v1",
+  "runtime_implementation_commit": "490c957d9f5c0ed5143ec2d46e1851e124497714",
+  "schema": 1,
+  "scored_runs": [
+    {
+      "outer_elapsed_seconds": 156.74,
+      "process_run": 1,
+      "repository_revision": "16e68fb57427f8749447347787666971f49b44e3",
+      "sample_floor_passed": true,
+      "status": "scored",
+      "total_elapsed_ns": 93867007666
+    },
+    {
+      "outer_elapsed_seconds": 146.6,
+      "process_run": 2,
+      "repository_revision": "2bd172469014fb27a70ae5875513c6d389a15e38",
+      "sample_floor_passed": true,
+      "status": "scored",
+      "total_elapsed_ns": 94243514209
+    },
+    {
+      "outer_elapsed_seconds": 136.516,
+      "process_run": 3,
+      "repository_revision": "d24865d29646eb5741fbc412fb52f4140ee81943",
+      "sample_floor_passed": true,
+      "status": "scored",
+      "total_elapsed_ns": 94494497166
+    }
+  ],
+  "source_files": [
+    "tools/bench/src/two_site_memory_cached.rs",
+    "tools/bench/src/two_site_memory_warm.rs",
+    "tools/bench/src/two_site_memory_cold.rs",
+    "tools/bench/src/main.rs",
+    "tools/bench/src/lib.rs",
+    "crates/od-jit/src/memory_cache.rs",
+    "crates/od-host/src/lib.rs",
+    "crates/od-jit/src/memory_load_v2.rs",
+    "crates/od-jit/src/translation.rs",
+    "crates/od-jit/src/memory_dispatch.rs",
+    "crates/od-jit/src/block.rs",
+    "crates/od-jit/src/runtime.rs",
+    "crates/od-isa/src/execute.rs",
+    "crates/od-isa/src/state.rs",
+    "crates/od-testkit/src/memory_corpus.rs"
+  ],
+  "source_sha256": "cdc04dc1ca8041c68a44b371f5f6f0aec7829f0466c005eb05deecec6cf6dd0f",
+  "suite_id": "s3-36e-cached-two-site-memory-release-2026-11-01"
+}
