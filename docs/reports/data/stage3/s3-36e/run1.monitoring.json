@@ -1,0 +1,534 @@
+{
+  "schema": 1,
+  "profile": "s3-36e-two-site-memory-full-cache-call-v1",
+  "run_kind": "scored",
+  "process_run": 1,
+  "command": "cargo run --release --offline -p od-bench -- two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+  "process": {
+    "pid": 48468,
+    "started_at_utc": "2026-11-01T07:36:59Z",
+    "completed_by_utc": "2026-11-01T07:39:35Z",
+    "exit_code": 0,
+    "outer_elapsed_seconds": 156.74
+  },
+  "outputs": {
+    "report_path": "work/tmp/stage3/s3-36e/run1.json",
+    "report_sha256": "9c3f9a1dd0ae62a3c7df6d2e25180d047ff1471d1a7863732c3bc7f592e58eba",
+    "log_path": "work/tmp/stage3/s3-36e/run1.log",
+    "log_sha256": "66a6a03cdd50ecb5e2c115761ca350015548ad6323376e386072e8e33b3ba067"
+  },
+  "snapshots": [
+    {
+      "observed_at_utc": "2026-11-01T07:36:59Z",
+      "phase": "immediately_before_launch",
+      "load_average": [
+        2.080078125,
+        2.265625,
+        2.40625
+      ],
+      "benchmark_pid": null,
+      "selected_processes": [
+        "48084 69645       00:25   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --test fixture_v2 cvttss2si_m32_r32_truncates_independent_of_rc_and_zero_extends_rax --offline -- --nocapture",
+        "48433 48084       00:02  32.5 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name od_jit --edition=2024 crates/od-jit/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked --deny=unused_must_use --deny=unsafe_op_in_unsafe_fn --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values()) -C metadata=e3b0b98af03e494c -C extra-filename=-9855e3530d3679a5 --out-dir /Users/senya/projects/open_desktop/target/debug/deps -C incremental=/Users/senya/projects/open_desktop/target/debug/incremental -L dependency=/Users/senya/projects/open_desktop/target/debug/deps --extern od_isa=/Users/senya/projects/open_desktop/target/debug/deps/libod_isa-6a009041e4a6d7d7.rmeta",
+        "48435 48084       00:02  29.8 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name od_testkit --edition=2024 crates/od-testkit/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked --deny=unused_must_use --deny=unsafe_op_in_unsafe_fn --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values()) -C metadata=50eb03f71b26aa00 -C extra-filename=-bca62e33e11dfe78 --out-dir /Users/senya/projects/open_desktop/target/debug/deps -C incremental=/Users/senya/projects/open_desktop/target/debug/incremental -L dependency=/Users/senya/projects/open_desktop/target/debug/deps --extern od_isa=/Users/senya/projects/open_desktop/target/debug/deps/libod_isa-6a009041e4a6d7d7.rmeta --extern serde=/Users/senya/projects/open_desktop/target/debug/deps/libserde-3708aab64d3b570b.rmeta --extern serde_json=/Users/senya/projects/open_desktop/target/debug/deps/libserde_json-b95cb1045e4a234d.rmeta --extern sha2=/Users/senya/projects/open_desktop/target/debug/deps/libsha2-9a34cda2dfd4019d.rmeta",
+        "77034  2041 06-13:21:28   0.6 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:36:59Z",
+      "phase": "early_after_launch",
+      "load_average": [
+        2.080078125,
+        2.265625,
+        2.40625
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48084 69645       00:25   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --test fixture_v2 cvttss2si_m32_r32_truncates_independent_of_rc_and_zero_extends_rax --offline -- --nocapture",
+        "48433 48084       00:02  32.5 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name od_jit --edition=2024 crates/od-jit/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked --deny=unused_must_use --deny=unsafe_op_in_unsafe_fn --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values()) -C metadata=e3b0b98af03e494c -C extra-filename=-9855e3530d3679a5 --out-dir /Users/senya/projects/open_desktop/target/debug/deps -C incremental=/Users/senya/projects/open_desktop/target/debug/incremental -L dependency=/Users/senya/projects/open_desktop/target/debug/deps --extern od_isa=/Users/senya/projects/open_desktop/target/debug/deps/libod_isa-6a009041e4a6d7d7.rmeta",
+        "48435 48084       00:02  29.8 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name od_testkit --edition=2024 crates/od-testkit/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked --deny=unused_must_use --deny=unsafe_op_in_unsafe_fn --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values()) -C metadata=50eb03f71b26aa00 -C extra-filename=-bca62e33e11dfe78 --out-dir /Users/senya/projects/open_desktop/target/debug/deps -C incremental=/Users/senya/projects/open_desktop/target/debug/incremental -L dependency=/Users/senya/projects/open_desktop/target/debug/deps --extern od_isa=/Users/senya/projects/open_desktop/target/debug/deps/libod_isa-6a009041e4a6d7d7.rmeta --extern serde=/Users/senya/projects/open_desktop/target/debug/deps/libserde-3708aab64d3b570b.rmeta --extern serde_json=/Users/senya/projects/open_desktop/target/debug/deps/libserde_json-b95cb1045e4a234d.rmeta --extern sha2=/Users/senya/projects/open_desktop/target/debug/deps/libsha2-9a34cda2dfd4019d.rmeta",
+        "48468 48448       00:00   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo run --release --offline -p od-bench -- two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "77034  2041 06-13:21:28   0.3 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:37:04Z",
+      "phase": "during_run",
+      "load_average": [
+        1.9931640625,
+        2.244140625,
+        2.39794921875
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48084 69645       00:30   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --test fixture_v2 cvttss2si_m32_r32_truncates_independent_of_rc_and_zero_extends_rax --offline -- --nocapture",
+        "48433 48084       00:07  23.1 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name od_jit --edition=2024 crates/od-jit/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked --deny=unused_must_use --deny=unsafe_op_in_unsafe_fn --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values()) -C metadata=e3b0b98af03e494c -C extra-filename=-9855e3530d3679a5 --out-dir /Users/senya/projects/open_desktop/target/debug/deps -C incremental=/Users/senya/projects/open_desktop/target/debug/incremental -L dependency=/Users/senya/projects/open_desktop/target/debug/deps --extern od_isa=/Users/senya/projects/open_desktop/target/debug/deps/libod_isa-6a009041e4a6d7d7.rmeta",
+        "48435 48084       00:07  17.7 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name od_testkit --edition=2024 crates/od-testkit/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked --deny=unused_must_use --deny=unsafe_op_in_unsafe_fn --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values()) -C metadata=50eb03f71b26aa00 -C extra-filename=-bca62e33e11dfe78 --out-dir /Users/senya/projects/open_desktop/target/debug/deps -C incremental=/Users/senya/projects/open_desktop/target/debug/incremental -L dependency=/Users/senya/projects/open_desktop/target/debug/deps --extern od_isa=/Users/senya/projects/open_desktop/target/debug/deps/libod_isa-6a009041e4a6d7d7.rmeta --extern serde=/Users/senya/projects/open_desktop/target/debug/deps/libserde-3708aab64d3b570b.rmeta --extern serde_json=/Users/senya/projects/open_desktop/target/debug/deps/libserde_json-b95cb1045e4a234d.rmeta --extern sha2=/Users/senya/projects/open_desktop/target/debug/deps/libsha2-9a34cda2dfd4019d.rmeta",
+        "48468 48448       00:05   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo run --release --offline -p od-bench -- two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "48470 48468       00:05   0.0 /Users/senya/.co /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/build/od-bench-18183800239eb316/build-script-build",
+        "77034  2041 06-13:21:33   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:37:09Z",
+      "phase": "during_run",
+      "load_average": [
+        2.07373046875,
+        2.25634765625,
+        2.4013671875
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48084 69645       00:35   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --test fixture_v2 cvttss2si_m32_r32_truncates_independent_of_rc_and_zero_extends_rax --offline -- --nocapture",
+        "48468 48448       00:10   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo run --release --offline -p od-bench -- two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "48470 48468       00:10   0.0 /Users/senya/.co /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/build/od-bench-18183800239eb316/build-script-build",
+        "48533 48084       00:03  14.7 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name od_host --edition=2024 crates/od-host/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type rlib --crate-type staticlib --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked --deny=unused_must_use --deny=unsafe_op_in_unsafe_fn --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values()) -C metadata=2c69f5e5d1601c2c -C extra-filename=-5ab2430f07141386 --out-dir /Users/senya/projects/open_desktop/target/debug/deps -C incremental=/Users/senya/projects/open_desktop/target/debug/incremental -L dependency=/Users/senya/projects/open_desktop/target/debug/deps --extern od_isa=/Users/senya/projects/open_desktop/target/debug/deps/libod_isa-6a009041e4a6d7d7.rlib --extern od_jit=/Users/senya/projects/open_desktop/target/debug/deps/libod_jit-9855e3530d3679a5.rlib",
+        "77034  2041 06-13:21:38   0.1 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:37:14Z",
+      "phase": "during_run",
+      "load_average": [
+        2.0673828125,
+        2.251953125,
+        2.39892578125
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48084 69645       00:40   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --test fixture_v2 cvttss2si_m32_r32_truncates_independent_of_rc_and_zero_extends_rax --offline -- --nocapture",
+        "48468 48448       00:15   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo run --release --offline -p od-bench -- two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "48470 48468       00:15   0.0 /Users/senya/.co /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/build/od-bench-18183800239eb316/build-script-build",
+        "48533 48084       00:08  14.5 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name od_host --edition=2024 crates/od-host/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type rlib --crate-type staticlib --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked --deny=unused_must_use --deny=unsafe_op_in_unsafe_fn --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values()) -C metadata=2c69f5e5d1601c2c -C extra-filename=-5ab2430f07141386 --out-dir /Users/senya/projects/open_desktop/target/debug/deps -C incremental=/Users/senya/projects/open_desktop/target/debug/incremental -L dependency=/Users/senya/projects/open_desktop/target/debug/deps --extern od_isa=/Users/senya/projects/open_desktop/target/debug/deps/libod_isa-6a009041e4a6d7d7.rlib --extern od_jit=/Users/senya/projects/open_desktop/target/debug/deps/libod_jit-9855e3530d3679a5.rlib",
+        "77034  2041 06-13:21:43   1.7 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:37:19Z",
+      "phase": "during_run",
+      "load_average": [
+        2.0615234375,
+        2.24755859375,
+        2.396484375
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48084 69645       00:45   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --test fixture_v2 cvttss2si_m32_r32_truncates_independent_of_rc_and_zero_extends_rax --offline -- --nocapture",
+        "48468 48448       00:20   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo run --release --offline -p od-bench -- two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "48470 48468       00:20   0.0 /Users/senya/.co /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/build/od-bench-18183800239eb316/build-script-build",
+        "48533 48084       00:13  30.7 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name od_host --edition=2024 crates/od-host/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type rlib --crate-type staticlib --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked --deny=unused_must_use --deny=unsafe_op_in_unsafe_fn --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values()) -C metadata=2c69f5e5d1601c2c -C extra-filename=-5ab2430f07141386 --out-dir /Users/senya/projects/open_desktop/target/debug/deps -C incremental=/Users/senya/projects/open_desktop/target/debug/incremental -L dependency=/Users/senya/projects/open_desktop/target/debug/deps --extern od_isa=/Users/senya/projects/open_desktop/target/debug/deps/libod_isa-6a009041e4a6d7d7.rlib --extern od_jit=/Users/senya/projects/open_desktop/target/debug/deps/libod_jit-9855e3530d3679a5.rlib",
+        "77034  2041 06-13:21:48   0.1 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:37:24Z",
+      "phase": "during_run",
+      "load_average": [
+        1.97607421875,
+        2.2265625,
+        2.38818359375
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48084 69645       00:50   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --test fixture_v2 cvttss2si_m32_r32_truncates_independent_of_rc_and_zero_extends_rax --offline -- --nocapture",
+        "48468 48448       00:25   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo run --release --offline -p od-bench -- two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "48470 48468       00:25   0.0 /Users/senya/.co /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/build/od-bench-18183800239eb316/build-script-build",
+        "48652 48084       00:04  21.2 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name fixture_v2 --edition=2024 tools/runner/tests/fixture_v2.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked --deny=unused_must_use --deny=unsafe_op_in_unsafe_fn --test --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values()) -C metadata=c45d67ddd07a9d54 -C extra-filename=-256be82b9cd311b3 --out-dir /Users/senya/projects/open_desktop/target/debug/deps -C incremental=/Users/senya/projects/open_desktop/target/debug/incremental -L dependency=/Users/senya/projects/open_desktop/target/debug/deps --extern od_host=/Users/senya/projects/open_desktop/target/debug/deps/libod_host-5ab2430f07141386.rlib --extern od_isa=/Users/senya/projects/open_desktop/target/debug/deps/libod_isa-6a009041e4a6d7d7.rlib --extern od_jit=/Users/senya/projects/open_desktop/target/debug/deps/libod_jit-9855e3530d3679a5.rlib --extern od_testkit=/Users/senya/projects/open_desktop/target/debug/deps/libod_testkit-bca62e33e11dfe78.rlib --extern serde_json=/Users/senya/projects/open_desktop/target/debug/deps/libserde_json-b95cb1045e4a234d.rlib",
+        "48654 48084       00:04  26.5 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name od_runner --edition=2024 tools/runner/src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked --deny=unused_must_use --deny=unsafe_op_in_unsafe_fn --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values()) -C metadata=c3d9cea4d703cf84 -C extra-filename=-0f0a2ab06f82935f --out-dir /Users/senya/projects/open_desktop/target/debug/deps -C incremental=/Users/senya/projects/open_desktop/target/debug/incremental -L dependency=/Users/senya/projects/open_desktop/target/debug/deps --extern od_host=/Users/senya/projects/open_desktop/target/debug/deps/libod_host-5ab2430f07141386.rlib --extern od_isa=/Users/senya/projects/open_desktop/target/debug/deps/libod_isa-6a009041e4a6d7d7.rlib --extern od_jit=/Users/senya/projects/open_desktop/target/debug/deps/libod_jit-9855e3530d3679a5.rlib --extern od_testkit=/Users/senya/projects/open_desktop/target/debug/deps/libod_testkit-bca62e33e11dfe78.rlib --extern serde_json=/Users/senya/projects/open_desktop/target/debug/deps/libserde_json-b95cb1045e4a234d.rlib",
+        "77034  2041 06-13:21:53   2.4 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:37:29Z",
+      "phase": "during_run",
+      "load_average": [
+        1.8974609375,
+        2.2060546875,
+        2.3798828125
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48084 69645       00:55   0.7 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --test fixture_v2 cvttss2si_m32_r32_truncates_independent_of_rc_and_zero_extends_rax --offline -- --nocapture",
+        "48468 48448       00:30   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo run --release --offline -p od-bench -- two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "48470 48468       00:30   0.0 /Users/senya/.co /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/build/od-bench-18183800239eb316/build-script-build",
+        "77034  2041 06-13:21:58   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:37:34Z",
+      "phase": "during_run",
+      "load_average": [
+        2.3056640625,
+        2.28515625,
+        2.40673828125
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48084 69645       01:00   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --test fixture_v2 cvttss2si_m32_r32_truncates_independent_of_rc_and_zero_extends_rax --offline -- --nocapture",
+        "48468 48448       00:35   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo run --release --offline -p od-bench -- two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "48817 48468       00:04 253.2 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name od_bench --edition=2024 tools/bench/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=3 -C embed-bitcode=no --deny=unused_must_use --deny=unsafe_op_in_unsafe_fn --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values()) -C metadata=03fc780a63932e39 -C extra-filename=-2f74967f8eb30eb6 --out-dir /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/deps -C strip=debuginfo -L dependency=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/deps --extern od_host=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/deps/libod_host-0bff09692c629b2e.rlib --extern od_isa=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/deps/libod_isa-75c4ccaaa52a4c93.rmeta --extern od_jit=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/deps/libod_jit-fb2acf8b6f2dfe1e.rmeta --extern od_testkit=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/deps/libod_testkit-cfb8e121bc234d0e.rmeta --extern serde=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/deps/libserde-b40149a0cdb1b629.rmeta --extern serde_json=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/deps/libserde_json-bfdb7965f0a04fa5.rmeta",
+        "77034  2041 06-13:22:03   1.5 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:37:39Z",
+      "phase": "during_run",
+      "load_average": [
+        2.12060546875,
+        2.2470703125,
+        2.392578125
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48084 69645       01:05   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --test fixture_v2 cvttss2si_m32_r32_truncates_independent_of_rc_and_zero_extends_rax --offline -- --nocapture",
+        "48468 48448       00:40   0.0 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "77034  2041 06-13:22:08   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:37:44Z",
+      "phase": "during_run",
+      "load_average": [
+        2.03076171875,
+        2.22607421875,
+        2.38427734375
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48084 69645       01:10   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --test fixture_v2 cvttss2si_m32_r32_truncates_independent_of_rc_and_zero_extends_rax --offline -- --nocapture",
+        "48468 48448       00:45   0.0 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "77034  2041 06-13:22:13   1.3 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:37:49Z",
+      "phase": "during_run",
+      "load_average": [
+        1.86767578125,
+        2.18896484375,
+        2.3701171875
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48084 69645       01:15   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --test fixture_v2 cvttss2si_m32_r32_truncates_independent_of_rc_and_zero_extends_rax --offline -- --nocapture",
+        "48468 48448       00:50   0.0 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "77034  2041 06-13:22:18   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:37:54Z",
+      "phase": "during_run",
+      "load_average": [
+        1.7978515625,
+        2.1689453125,
+        2.36181640625
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48084 69645       01:20   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --test fixture_v2 cvttss2si_m32_r32_truncates_independent_of_rc_and_zero_extends_rax --offline -- --nocapture",
+        "48468 48448       00:55   0.0 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "77034  2041 06-13:22:23   0.7 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:37:59Z",
+      "phase": "during_run",
+      "load_average": [
+        1.73388671875,
+        2.1494140625,
+        2.353515625
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48084 69645       01:25   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --test fixture_v2 cvttss2si_m32_r32_truncates_independent_of_rc_and_zero_extends_rax --offline -- --nocapture",
+        "48468 48448       01:00   0.0 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "77034  2041 06-13:22:28   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:38:04Z",
+      "phase": "during_run",
+      "load_average": [
+        1.9150390625,
+        2.1796875,
+        2.36279296875
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48468 48448       01:05  99.1 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "77034  2041 06-13:22:33   0.4 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:38:09Z",
+      "phase": "during_run",
+      "load_average": [
+        1.92138671875,
+        2.17626953125,
+        2.3603515625
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48468 48448       01:10 100.0 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "77034  2041 06-13:22:38   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:38:14Z",
+      "phase": "during_run",
+      "load_average": [
+        2.08740234375,
+        2.20654296875,
+        2.36962890625
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48468 48448       01:15  98.0 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "77034  2041 06-13:22:43   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:38:19Z",
+      "phase": "during_run",
+      "load_average": [
+        2.16015625,
+        2.21923828125,
+        2.373046875
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48468 48448       01:20  99.1 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "77034  2041 06-13:22:48   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:38:25Z",
+      "phase": "during_run",
+      "load_average": [
+        2.30712890625,
+        2.24853515625,
+        2.38232421875
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48468 48448       01:26 100.0 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "77034  2041 06-13:22:54   0.1 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:38:30Z",
+      "phase": "during_run",
+      "load_average": [
+        2.2822265625,
+        2.244140625,
+        2.3798828125
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48468 48448       01:31 100.0 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "77034  2041 06-13:22:59   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:38:35Z",
+      "phase": "during_run",
+      "load_average": [
+        2.89990234375,
+        2.37255859375,
+        2.42431640625
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48468 48448       01:36  99.1 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "77034  2041 06-13:23:04   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:38:40Z",
+      "phase": "during_run",
+      "load_average": [
+        3.94873046875,
+        2.5986328125,
+        2.50341796875
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48468 48448       01:41  98.6 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "77034  2041 06-13:23:09   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:38:45Z",
+      "phase": "during_run",
+      "load_average": [
+        3.95263671875,
+        2.62158203125,
+        2.51171875
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48468 48448       01:46 100.0 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "77034  2041 06-13:23:14   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:38:50Z",
+      "phase": "during_run",
+      "load_average": [
+        3.8759765625,
+        2.62744140625,
+        2.51416015625
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48468 48448       01:51  98.3 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "77034  2041 06-13:23:19   0.8 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:38:55Z",
+      "phase": "during_run",
+      "load_average": [
+        3.8857421875,
+        2.64990234375,
+        2.5224609375
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48468 48448       01:56 100.0 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "77034  2041 06-13:23:24   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:39:00Z",
+      "phase": "during_run",
+      "load_average": [
+        3.734375,
+        2.638671875,
+        2.51904296875
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48468 48448       02:01  98.6 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "77034  2041 06-13:23:29   0.9 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:39:05Z",
+      "phase": "during_run",
+      "load_average": [
+        3.75537109375,
+        2.6611328125,
+        2.52734375
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48468 48448       02:06  98.8 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "77034  2041 06-13:23:34   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:39:10Z",
+      "phase": "during_run",
+      "load_average": [
+        3.69482421875,
+        2.66650390625,
+        2.52978515625
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48468 48448       02:11 100.0 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "50394 69645       00:03 100.0 /opt/homebrew/Ce /opt/homebrew/Cellar/python@3.14/3.14.8_2/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python -m graphify update .",
+        "77034  2041 06-13:23:39   0.4 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:39:15Z",
+      "phase": "during_run",
+      "load_average": [
+        3.79931640625,
+        2.705078125,
+        2.5439453125
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48468 48448       02:16  98.4 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "50394 69645       00:08  78.1 /opt/homebrew/Ce /opt/homebrew/Cellar/python@3.14/3.14.8_2/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python -m graphify update .",
+        "77034  2041 06-13:23:44   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:39:20Z",
+      "phase": "during_run",
+      "load_average": [
+        3.73486328125,
+        2.7099609375,
+        2.54638671875
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48468 48448       02:21  98.5 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "50394 69645       00:13 100.0 /opt/homebrew/Ce /opt/homebrew/Cellar/python@3.14/3.14.8_2/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python -m graphify update .",
+        "77034  2041 06-13:23:49   0.3 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:39:25Z",
+      "phase": "during_run",
+      "load_average": [
+        3.755859375,
+        2.73095703125,
+        2.5546875
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48468 48448       02:26  98.1 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "50394 69645       00:18  92.0 /opt/homebrew/Ce /opt/homebrew/Cellar/python@3.14/3.14.8_2/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python -m graphify update .",
+        "77034  2041 06-13:23:54   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:39:30Z",
+      "phase": "during_run",
+      "load_average": [
+        3.6953125,
+        2.7353515625,
+        2.55712890625
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "48468 48448       02:31  99.4 target/release/o target/release/od-bench two-site-memory-cache --process-run 1 --output work/tmp/stage3/s3-36e/run1.json",
+        "50394 69645       00:23  92.3 /opt/homebrew/Ce /opt/homebrew/Cellar/python@3.14/3.14.8_2/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python -m graphify update .",
+        "77034  2041 06-13:23:59   0.3 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:39:35Z",
+      "phase": "during_run",
+      "load_average": [
+        3.63916015625,
+        2.7392578125,
+        2.5595703125
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "50394 69645       00:28  86.6 /opt/homebrew/Ce /opt/homebrew/Cellar/python@3.14/3.14.8_2/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python -m graphify update .",
+        "77034  2041 06-13:24:04   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:39:35Z",
+      "phase": "after_completion",
+      "load_average": [
+        3.63916015625,
+        2.7392578125,
+        2.5595703125
+      ],
+      "benchmark_pid": 48468,
+      "selected_processes": [
+        "50394 69645       00:28  86.6 /opt/homebrew/Ce /opt/homebrew/Cellar/python@3.14/3.14.8_2/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python -m graphify update .",
+        "77034  2041 06-13:24:04   0.0 lazygit          lazygit"
+      ]
+    }
+  ]
+}

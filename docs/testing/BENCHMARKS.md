@@ -836,12 +836,27 @@ The calibration-only release run passed the 200 ms floor for both sequences
 at 2,048 repetitions per side, with 12 retained attempts per sequence and no
 scored pairs. The outer `cargo` command envelope was 55.671 s; the report's
 `total_elapsed_ns` was 10.621381750 s. A point-in-time envelope observed
-Graphify in the before/early samples and a Stage 2 `od-runner` test plus
-`rustc` in six later samples. Sampled one-minute load averages ranged from
+Graphify in 4 of 14 snapshots during the before/early portion and a Stage 2
+`od-runner` test in 8 of 14 snapshots; its `rustc` child appeared in six later
+samples. Sampled one-minute load averages ranged from
 2.16 to 2.61; the visible `rustc` samples ranged from 0.0% to 120.3% CPU.
 Stage 2 was not stopped. The envelope has no per-call timestamps, so overlap
-with timed calls cannot be assigned. Three scored runs remain open; no
-performance result is claimed.
+with timed calls cannot be assigned. At the time of calibration, no scored
+result was available.
+
+Scored release run 1 completed with 20 retained alternating pairs per
+sequence; every side exceeded the 200 ms floor. The raw
+`native_total_ns/interpreter_total_ns` median and range were 2.7592
+(2.6746–2.8856) for `store_then_load` and 2.8393 (2.7617–2.9279) for
+`load_then_store`. The sequence strata remain separate. This is one bounded
+process only; two scored runs are still required before a cross-run summary.
+The point-in-time envelope covered an outer 156.740 s command on M3 Max and
+sampled one-minute load averages from 1.73 to 3.95. Graphify appeared in 7 of
+34 snapshots. A Stage 2 `od-runner` test was visible in 14 of 34 snapshots
+during the earlier portion of the envelope; a `rustc` child reached 21.2% CPU
+in one sample. The sparse monitor
+has no per-pair timing, so it cannot attribute overlap to individual samples.
+Stage 2 was not stopped.
 
 Run the release preflight first:
 
@@ -852,11 +867,11 @@ cargo run --release --offline -p od-bench -- two-site-memory-cache \
 ```
 
 The [S3-36e report](../reports/STAGE_3_S3-36e_2026-11-01.md) and
-[preflight artifact](../reports/data/stage3/s3-36e/preflight-release-run1.json)
-and [calibration artifact](../reports/data/stage3/s3-36e/calibration-run1.json)
-record the completed preflight and calibration-only gates. Three sequential
-scored runs will be archived before any conclusion. Mini checks remain deferred
-to the end of Stage 3.
+[preflight artifact](../reports/data/stage3/s3-36e/preflight-release-run1.json),
+[calibration artifact](../reports/data/stage3/s3-36e/calibration-run1.json),
+and [scored run 1](../reports/data/stage3/s3-36e/run1.json) record completed
+gates. Two additional scored runs remain. Mini checks remain deferred to the
+end of Stage 3.
 
 ### S3-37a: bounded production FIFO16 corpus churn observation
 
