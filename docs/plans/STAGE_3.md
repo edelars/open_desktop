@@ -3569,6 +3569,26 @@ checks remain deferred until the end of Stage 3. See the
 [S3-36d](../reports/STAGE_3_S3-36d_2026-11-01.md), and
 [S3-36e](../reports/STAGE_3_S3-36e_2026-11-01.md) source reports.
 
+#### S3-40f: allocator comparison and correctness decision addendum
+
+**Acceptance:** Synthesize S3-30a/b configuration-cost profiles separately
+from S3-30p3/p4 bounded correctness evidence. Preserve fixture and timer
+boundaries; distinguish the existing allocator configuration comparison from
+an algorithm comparison. Record the current decision and next missing gate
+without changing production policy or closing S3-30/S3-40.
+
+**Result:** The register-homes budget4 baseline remains. Diagnostic budget0
+is not an improvement or alternative allocator. S3-30a same-target and S3-30b
+distinct-target measurements are not pooled; p3/p4 cover their named helper
+and pending-flags fixtures only. Existing evidence is insufficient to change
+allocator/default. The next allocator decision gate needs a representative hot
+workload and a motivated alternative compared under the same conditions, with
+correctness, compile cost, code size, and warm execution retained. Broader
+workloads and production owner/MMU integration are outside these results; full
+S3-30 and S3-40 remain open, as do full Stage 3 and Mini/physical gates. No new
+architecture decision or ADR was made. See the
+[S3-40f ledger addendum](../reports/STAGE_3_S3-40f_2026-11-01.md).
+
 ### S3-41. Оформить приёмку этапа
 
 1. Создать STAGE_3_REPORT: exact profiles/forms, native/helper/fallback границы, revision/fingerprint, машины/toolchains, correctness counts, commands/seeds, cold/warm/resource результаты.
