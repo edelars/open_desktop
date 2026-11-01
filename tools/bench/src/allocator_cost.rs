@@ -32,7 +32,7 @@ const PAIRS: usize = 20;
 const MIN_SAMPLE: Duration = Duration::from_millis(200);
 const CHUNK_CALLS: usize = 256;
 const MAX_CALIBRATED_CALLS: usize = 1 << 24;
-const MAX_CALIBRATION_SIDE_WALL: Duration = Duration::from_secs(1);
+const MAX_CALIBRATION_MEASURED_SIDE_WALL: Duration = Duration::from_secs(3);
 const MAX_CALIBRATION_WALL: Duration = Duration::from_secs(180);
 const COMPILE_PAIRS: usize = 20;
 const MAX_COMPILE_CALLS: usize = 1 << 20;
@@ -155,6 +155,11 @@ struct CalibrationCheck {
     interpreter_calls: Option<usize>,
     native_ns: Option<u128>,
     interpreter_ns: Option<u128>,
+    projected_next_repetitions: Option<usize>,
+    projected_native_ns: Option<u128>,
+    projected_interpreter_ns: Option<u128>,
+    projected_next_meets_floor: Option<bool>,
+    projected_next_within_side_ceiling: Option<bool>,
     process_wall_ns: u128,
     sample_floor_met: Option<bool>,
     stop_reason: Option<String>,
@@ -346,9 +351,9 @@ fn build_report(
             },
             minimum_sample_ns: MIN_SAMPLE.as_nanos(),
             maximum_repetitions_per_side: MAX_CALIBRATED_CALLS,
-            maximum_measured_side_ns: MAX_CALIBRATION_SIDE_WALL.as_nanos(),
+            maximum_measured_side_ns: MAX_CALIBRATION_MEASURED_SIDE_WALL.as_nanos(),
             maximum_overall_wall_ns: MAX_CALIBRATION_WALL.as_nanos(),
-            wall_bound_derivation: "Estimated ceiling: 2 budgets × 2 cases × 17 doubled call counts × 2 sides × 1s per side = 136s timed work; 180s overall allows an estimated 44s for state reset, validation, block setup and durable journal writes. The prior failed attempt's individual side durations are unknown, so this is a planning bound, not a measured runtime claim.".into(),
+            wall_bound_derivation: "Measured-side ceiling is 3s; the 16,777,216-call and cooperative 180s post-preflight calibration limits remain active. One observed condition (budget4, equal state) measured 181,908,558ns native at 4,194,304 completed calls and 1,000,016,691ns interpreter at 3,582,464 completed calls before the prior 1s ceiling. Linear projection to 8,388,608 calls is 363,817,116ns native and about 2,341,614,044ns interpreter; both exceed the 200ms floor and fit the 3s ceiling. This is a single-condition feasibility estimate, not a claim about other cases or budgets. The 180s limit is checked at 256-call chunk boundaries and after teardown.".into(),
             total_wall_ns: repetitions.total_wall_ns,
             outcome: repetitions
                 .failure
@@ -897,6 +902,8 @@ fn calibrate_common_repetitions(
             .map_err(|e| fail(format!("calibration publish: {e:?}")))?;
         for (index, case) in cases.iter().enumerate() {
             let mut calls = CHUNK_CALLS;
+            let mut latest_native: Option<(usize, u128)> = None;
+            let mut latest_interpreter: Option<(usize, u128)> = None;
             loop {
                 let native = time_native_batch_bounded(
                     &published,
@@ -924,6 +931,14 @@ fn calibrate_common_repetitions(
                 let process_wall_ns = calibration_started.elapsed().as_nanos();
                 let native_ns = native.elapsed.as_nanos();
                 let interpreter_ns = interpreter.map(|value| value.as_nanos());
+                if native.completed_calls > 0 {
+                    latest_native = Some((native.completed_calls, native_ns));
+                }
+                if let (Some(calls), Some(ns)) = (interpreter_calls, interpreter_ns)
+                    && calls > 0
+                {
+                    latest_interpreter = Some((calls, ns));
+                }
                 let floor_met = interpreter
                     .map(|interpreter| both_samples_meet_floor(native.elapsed, interpreter));
                 let next_calls = if floor_met == Some(true) {
@@ -931,12 +946,32 @@ fn calibrate_common_repetitions(
                 } else {
                     next_calibration_call_count(calls)
                 };
+                let projection = next_calls.filter(|next| *next > calls).and_then(|next| {
+                    match (latest_native, latest_interpreter) {
+                        (
+                            Some((native_calls, native_ns)),
+                            Some((interpreter_calls, interpreter_ns)),
+                        ) => project_calibration_candidate(
+                            next,
+                            native_calls,
+                            native_ns,
+                            interpreter_calls,
+                            interpreter_ns,
+                        ),
+                        _ => None,
+                    }
+                });
                 let stop_reason = native
                     .stop_reason
                     .or(interpreter_stop)
                     .or_else(|| {
                         (process_wall_ns >= MAX_CALIBRATION_WALL.as_nanos())
                             .then(|| "overall_wall_ceiling".into())
+                    })
+                    .or_else(|| {
+                        projection
+                            .is_some_and(|next| !next.within_side_ceiling)
+                            .then(|| "projected_side_ceiling".into())
                     })
                     .or_else(|| {
                         (floor_met != Some(true) && next_calls.is_none())
@@ -951,6 +986,12 @@ fn calibrate_common_repetitions(
                     interpreter_calls,
                     native_ns: Some(native_ns),
                     interpreter_ns,
+                    projected_next_repetitions: projection.map(|next| next.repetitions),
+                    projected_native_ns: projection.map(|next| next.native_ns),
+                    projected_interpreter_ns: projection.map(|next| next.interpreter_ns),
+                    projected_next_meets_floor: projection.map(|next| next.meets_floor),
+                    projected_next_within_side_ceiling: projection
+                        .map(|next| next.within_side_ceiling),
                     process_wall_ns,
                     sample_floor_met: floor_met,
                     stop_reason: stop_reason.clone(),
@@ -1056,6 +1097,11 @@ fn persist_terminal_stop(
         interpreter_calls: None,
         native_ns: None,
         interpreter_ns: None,
+        projected_next_repetitions: None,
+        projected_native_ns: None,
+        projected_interpreter_ns: None,
+        projected_next_meets_floor: None,
+        projected_next_within_side_ceiling: None,
         process_wall_ns,
         sample_floor_met: None,
         stop_reason: None,
@@ -1105,6 +1151,47 @@ fn next_calibration_call_count(calls: usize) -> Option<usize> {
 }
 
 #[derive(Clone, Copy)]
+struct CalibrationProjection {
+    repetitions: usize,
+    native_ns: u128,
+    interpreter_ns: u128,
+    meets_floor: bool,
+    within_side_ceiling: bool,
+}
+
+fn project_calibration_candidate(
+    next_repetitions: usize,
+    native_calls: usize,
+    native_ns: u128,
+    interpreter_calls: usize,
+    interpreter_ns: u128,
+) -> Option<CalibrationProjection> {
+    let native_projected = project_elapsed_ns(native_ns, native_calls, next_repetitions)?;
+    let interpreter_projected =
+        project_elapsed_ns(interpreter_ns, interpreter_calls, next_repetitions)?;
+    Some(CalibrationProjection {
+        repetitions: next_repetitions,
+        native_ns: native_projected,
+        interpreter_ns: interpreter_projected,
+        meets_floor: native_projected >= MIN_SAMPLE.as_nanos()
+            && interpreter_projected >= MIN_SAMPLE.as_nanos(),
+        within_side_ceiling: native_projected <= MAX_CALIBRATION_MEASURED_SIDE_WALL.as_nanos()
+            && interpreter_projected <= MAX_CALIBRATION_MEASURED_SIDE_WALL.as_nanos(),
+    })
+}
+
+fn project_elapsed_ns(sample_ns: u128, sample_calls: usize, target_calls: usize) -> Option<u128> {
+    if sample_calls == 0 {
+        return None;
+    }
+    let numerator = sample_ns.checked_mul(target_calls as u128)?;
+    let denominator = sample_calls as u128;
+    numerator
+        .checked_add(denominator - 1)
+        .map(|rounded| rounded / denominator)
+}
+
+#[derive(Clone, Copy)]
 struct CalibrationLimits {
     deadline: Instant,
 }
@@ -1119,7 +1206,7 @@ fn calibration_stop_reason(limits: Option<CalibrationLimits>, elapsed: Duration)
     let limits = limits?;
     if Instant::now() >= limits.deadline {
         Some("overall_wall_ceiling".into())
-    } else if elapsed >= MAX_CALIBRATION_SIDE_WALL {
+    } else if elapsed >= MAX_CALIBRATION_MEASURED_SIDE_WALL {
         Some("per_side_wall_ceiling".into())
     } else {
         None
@@ -1284,10 +1371,11 @@ fn time_interpreter_batch_bounded(
 mod tests {
     use super::{
         CHUNK_CALLS, CalibrationCheck, CalibrationLimits, MAX_CALIBRATED_CALLS,
-        MAX_CALIBRATION_SIDE_WALL, MAX_CALIBRATION_WALL, MIN_SAMPLE, append_calibration_check,
-        both_samples_meet_floor, calibration_finalization_stop_reason, calibration_stop_reason,
-        collect_scored_samples, next_calibration_call_count, persist_terminal_stop,
-        report_requires_nonzero_exit, reset_calibration_journal, sample_meets_floor,
+        MAX_CALIBRATION_MEASURED_SIDE_WALL, MAX_CALIBRATION_WALL, MIN_SAMPLE,
+        append_calibration_check, both_samples_meet_floor, calibration_finalization_stop_reason,
+        calibration_stop_reason, collect_scored_samples, next_calibration_call_count,
+        persist_terminal_stop, project_calibration_candidate, report_requires_nonzero_exit,
+        reset_calibration_journal, sample_meets_floor,
     };
     use std::fs;
     use std::time::{Duration, Instant};
@@ -1311,7 +1399,7 @@ mod tests {
                 Some(CalibrationLimits {
                     deadline: Instant::now() + Duration::from_secs(1),
                 }),
-                MAX_CALIBRATION_SIDE_WALL,
+                MAX_CALIBRATION_MEASURED_SIDE_WALL,
             )
             .as_deref(),
             Some("per_side_wall_ceiling")
@@ -1339,6 +1427,33 @@ mod tests {
             MIN_SAMPLE - Duration::from_nanos(1)
         ));
         assert!(both_samples_meet_floor(MIN_SAMPLE, MIN_SAMPLE));
+    }
+
+    #[test]
+    fn next_candidate_projection_uses_actual_partial_calls_and_both_sides() {
+        let projection = project_calibration_candidate(
+            8_388_608,
+            4_194_304,
+            181_908_558,
+            3_582_464,
+            1_000_016_691,
+        )
+        .expect("both measured sides have completed calls");
+        assert_eq!(projection.native_ns, 363_817_116);
+        assert_eq!(projection.interpreter_ns, 2_341_614_044);
+        assert!(projection.meets_floor);
+        assert!(projection.within_side_ceiling);
+
+        let infeasible = project_calibration_candidate(
+            8_388_608,
+            4_194_304,
+            200_000_000,
+            4_194_304,
+            1_700_000_000,
+        )
+        .expect("both measured sides have completed calls");
+        assert!(infeasible.meets_floor);
+        assert!(!infeasible.within_side_ceiling);
     }
 
     #[test]
@@ -1395,6 +1510,11 @@ mod tests {
             interpreter_calls: Some(MAX_CALIBRATED_CALLS),
             native_ns: Some(120_000_000),
             interpreter_ns: Some(180_000_000),
+            projected_next_repetitions: None,
+            projected_native_ns: None,
+            projected_interpreter_ns: None,
+            projected_next_meets_floor: None,
+            projected_next_within_side_ceiling: None,
             process_wall_ns: 1_000_000_000,
             sample_floor_met: Some(false),
             stop_reason: Some("repetition_ceiling".into()),
