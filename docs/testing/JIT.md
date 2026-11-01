@@ -108,6 +108,12 @@ partial flag writers, ADC/SBB, memory/helper handoff, physical x86, Mini, or
 performance. Eager remains the reference/default; S3-29 remains open until the
 remaining correctness gates and final performance comparison determine policy.
 
+## S3-30p4: JZ/JNZ pending flags under allocator pressure
+
+Run `cargo test -p od-host --lib --offline tests::demand_flags_candidate_materializes_before_jz_and_jnz_after_preserving_mov -- --exact` on the local ARM64 host. The existing `ADD RAX,RCX → MOV RAX,7 → JZ/JNZ` fixture is tested with `register_homes` 0..4 and four inputs covering taken and non-taken outcomes for both conditions. ADD operands are captured at the ADD and retained until the later materialization helper reads them after RAX is overwritten. The compared block prefix must match eager and interpreter CPU state/accounting for budgets 0..4; allocation evidence covers the block's four temps (all spills at homes0, mixed locations at intermediate budgets, all homes at homes4).
+
+The test also checks the candidate's Jcc-rip HelperCall/AfterHelper PC-map witness and the eager reference's ADD-rip helper site, actual helper counts/operands, zero helper calls at budget0 and entry STOP, STOP-RIP after ADD and immediately before Jcc, and dispatcher continuation after stopped or budget-exhausted prefixes without replay. The non-taken suffix is an admitted flag-preserving MOV RBX,imm64; its state effect distinguishes branch outcomes. This is bounded local correctness evidence for the named W64 profile only. It does not show arbitrary values remain live through helpers, cover every allocator path, select production policy, or establish physical-x86, Mini, or performance results. See the [S3-30p4 report](../reports/STAGE_3_S3-30p4_2026-11-01.md) and [saved test output](../reports/data/stage3/s3-30p4/focused-test.log).
+
 ## S3-29b: uncached multi-block NOP dispatch
 
 Run `cargo test -p od-host --lib native_nop_fallback_demand_flags_candidate_dispatches_uncached_blocks --offline` on macOS ARM64. This executes the explicit opt-in dispatcher with `PublishedBlockExecutor`; its witness requires a candidate `InadmissiblePendingFlags` PC-map range and observes native entries across loop and post-NOP blocks. The eager `run_with_nop_fallback` regression entry remains separately exercised.

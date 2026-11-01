@@ -1,0 +1,7 @@
+$ cargo fmt --all -- --check
+exit status: 0
+(no output)
+
+$ git diff --check
+exit status: 0
+(no output)
