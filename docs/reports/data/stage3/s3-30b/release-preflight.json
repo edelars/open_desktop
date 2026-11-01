@@ -1,0 +1,379 @@
+{
+  "branch_scope": "The first five instructions are unchanged; final JZ +10 selects code_end when taken and the next RIP (code_end-10) when not taken. The admitted MOV RBX,imm64 suffix lies beyond the emitted Jcc-terminated block and is outside the measured native call.",
+  "cache_and_mapping_policy": "No translation-cache lookup or cache entry. One MAP_JIT PublishedCode mapping at a time; publication is separate from repeated execution; each budget mapping is dropped before publishing the other.",
+  "calibration": null,
+  "calibration_only_mode": false,
+  "cases": [
+    {
+      "allocator_pairs": [],
+      "execution_pairs": [],
+      "expected_rip": 4123,
+      "expected_zf": true,
+      "id": "jz-taken",
+      "initial": {
+        "auxiliary_state": "fs_selector=0x0;gs_selector=0x0;gdtr=None;fs_cache=None;gs_cache=None;x87=None",
+        "fs_base": 0,
+        "gpr": [
+          0,
+          34,
+          51,
+          7,
+          4116,
+          4117,
+          4118,
+          4119,
+          4120,
+          4121,
+          4122,
+          4123,
+          4124,
+          4125,
+          4126,
+          4127
+        ],
+        "gs_base": 0,
+        "rflags": 514,
+        "rip": 4096
+      },
+      "interpreter_oracle": {
+        "raw_exit": "InstructionBudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 6,
+        "state": {
+          "auxiliary_state": "fs_selector=0x0;gs_selector=0x0;gdtr=None;fs_cache=None;gs_cache=None;x87=None",
+          "fs_base": 0,
+          "gpr": [
+            7,
+            0,
+            0,
+            7,
+            4116,
+            4117,
+            4118,
+            4119,
+            4120,
+            4121,
+            4122,
+            4123,
+            4124,
+            4125,
+            4126,
+            4127
+          ],
+          "gs_base": 0,
+          "rflags": 582,
+          "rip": 4123
+        }
+      },
+      "preflight_native": [
+        [
+          4,
+          {
+            "raw_exit": "BlockComplete",
+            "remaining_budget": 0,
+            "retired": 6,
+            "state": {
+              "auxiliary_state": "fs_selector=0x0;gs_selector=0x0;gdtr=None;fs_cache=None;gs_cache=None;x87=None",
+              "fs_base": 0,
+              "gpr": [
+                7,
+                0,
+                0,
+                7,
+                4116,
+                4117,
+                4118,
+                4119,
+                4120,
+                4121,
+                4122,
+                4123,
+                4124,
+                4125,
+                4126,
+                4127
+              ],
+              "gs_base": 0,
+              "rflags": 582,
+              "rip": 4123
+            }
+          }
+        ],
+        [
+          0,
+          {
+            "raw_exit": "BlockComplete",
+            "remaining_budget": 0,
+            "retired": 6,
+            "state": {
+              "auxiliary_state": "fs_selector=0x0;gs_selector=0x0;gdtr=None;fs_cache=None;gs_cache=None;x87=None",
+              "fs_base": 0,
+              "gpr": [
+                7,
+                0,
+                0,
+                7,
+                4116,
+                4117,
+                4118,
+                4119,
+                4120,
+                4121,
+                4122,
+                4123,
+                4124,
+                4125,
+                4126,
+                4127
+              ],
+              "gs_base": 0,
+              "rflags": 582,
+              "rip": 4123
+            }
+          }
+        ]
+      ]
+    },
+    {
+      "allocator_pairs": [],
+      "execution_pairs": [],
+      "expected_rip": 4113,
+      "expected_zf": false,
+      "id": "jz-fallthrough",
+      "initial": {
+        "auxiliary_state": "fs_selector=0x0;gs_selector=0x0;gdtr=None;fs_cache=None;gs_cache=None;x87=None",
+        "fs_base": 0,
+        "gpr": [
+          1,
+          34,
+          51,
+          7,
+          4116,
+          4117,
+          4118,
+          4119,
+          4120,
+          4121,
+          4122,
+          4123,
+          4124,
+          4125,
+          4126,
+          4127
+        ],
+        "gs_base": 0,
+        "rflags": 514,
+        "rip": 4096
+      },
+      "interpreter_oracle": {
+        "raw_exit": "InstructionBudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 6,
+        "state": {
+          "auxiliary_state": "fs_selector=0x0;gs_selector=0x0;gdtr=None;fs_cache=None;gs_cache=None;x87=None",
+          "fs_base": 0,
+          "gpr": [
+            9,
+            0,
+            0,
+            7,
+            4116,
+            4117,
+            4118,
+            4119,
+            4120,
+            4121,
+            4122,
+            4123,
+            4124,
+            4125,
+            4126,
+            4127
+          ],
+          "gs_base": 0,
+          "rflags": 514,
+          "rip": 4113
+        }
+      },
+      "preflight_native": [
+        [
+          4,
+          {
+            "raw_exit": "BlockComplete",
+            "remaining_budget": 0,
+            "retired": 6,
+            "state": {
+              "auxiliary_state": "fs_selector=0x0;gs_selector=0x0;gdtr=None;fs_cache=None;gs_cache=None;x87=None",
+              "fs_base": 0,
+              "gpr": [
+                9,
+                0,
+                0,
+                7,
+                4116,
+                4117,
+                4118,
+                4119,
+                4120,
+                4121,
+                4122,
+                4123,
+                4124,
+                4125,
+                4126,
+                4127
+              ],
+              "gs_base": 0,
+              "rflags": 514,
+              "rip": 4113
+            }
+          }
+        ],
+        [
+          0,
+          {
+            "raw_exit": "BlockComplete",
+            "remaining_budget": 0,
+            "retired": 6,
+            "state": {
+              "auxiliary_state": "fs_selector=0x0;gs_selector=0x0;gdtr=None;fs_cache=None;gs_cache=None;x87=None",
+              "fs_base": 0,
+              "gpr": [
+                9,
+                0,
+                0,
+                7,
+                4116,
+                4117,
+                4118,
+                4119,
+                4120,
+                4121,
+                4122,
+                4123,
+                4124,
+                4125,
+                4126,
+                4127
+              ],
+              "gs_base": 0,
+              "rflags": 514,
+              "rip": 4113
+            }
+          }
+        ]
+      ]
+    }
+  ],
+  "code_bytes": [
+    72,
+    3,
+    192,
+    72,
+    43,
+    210,
+    72,
+    3,
+    195,
+    72,
+    43,
+    201,
+    72,
+    59,
+    195,
+    116,
+    10,
+    72,
+    187,
+    17,
+    0,
+    255,
+    238,
+    221,
+    204,
+    187,
+    170
+  ],
+  "compile_calls_per_sample": null,
+  "compile_pairs_ns_per_call": [],
+  "compile_timer_boundary": "compile_block_with_register_homes: block build/decode, lowering, allocation, ARM64 emission, finalization, and destruction of each unpublished CompiledBlock within the timed compile batch; excludes allocator-summary reconstruction, publication, execution, input reset and validation",
+  "execution_timer_boundary": "Repeated PublishedCode::execute_block calls over one published artifact. The timer includes the safe host wrapper/context setup, generated entry call, and result copy/decode; state-vector creation and full-state/exit validation are outside the timer. The interpreter uses the same initial state and code bytes. For distinct-jz-fallthrough, the single compiled block ends at Jcc; no dispatcher traversal or MOV RBX suffix is timed.",
+  "exit_normalization": "Keep native BlockComplete and interpreter InstructionBudgetExhausted tags distinct. Require full LongModeState parity, six retired instructions, zero remaining budget, ZF matching the case, and the case-specific expected RIP (taken code_end; not-taken fallthrough at code_end-10). The native block ends at Jcc; the suffix is not executed or included in timed calls.",
+  "fixture_profile": "distinct-jz-fallthrough",
+  "frozen_code_sha256": "72210fb82b0ffa9f88f10f63697a1051347d07587e3569028947119726fac8c7",
+  "guest_base_rip": 4096,
+  "host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "35da9aaf4234b4673b53605a0e8cb853ad9960dc",
+      "source_sha256": "23ec849569f653f87d630f3488c849836ecff18c0e7db465c3b5a83bf071b824",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "35da9aaf4234b4673b53605a0e8cb853ad9960dc",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "instruction_budget": 6,
+  "process_run": 1,
+  "publication_timer_boundary": "PublishedCode::publish_block and PublishedCode drop are timed and reported separately. The mapping remains live for warmup/timing; drop occurs after execution timing and before the other budget is published. These durations are never added to compile or execution samples.",
+  "sample_floor_passed": null,
+  "sample_floor_policy": "Retain every raw sample. A compile or execution side below 200ms sets sample_floor_passed=false and classifies the full process as diagnostic-only; no samples are trimmed and no comparison result should be scored.",
+  "schema_version": 2,
+  "scope": "One frozen six-instruction register-only multi-helper block with distinct JZ taken/fallthrough RIPs; alternating register-homes budget4 versus diagnostic budget0 allocator-configuration pairs. The admitted fallthrough MOV is outside the measured block. This does not isolate marginal spill cost or choose an allocator algorithm globally.",
+  "timing_started": false,
+  "timing_status": "preflight_only_no_timing",
+  "variants": [
+    {
+      "allocation": {
+        "assigned_register_home_values": 4,
+        "default_api_code_match": true,
+        "emitted_code_bytes": 3052,
+        "frame_bytes": 288,
+        "helper_boundary_count": 5,
+        "helper_capture_slots": 3,
+        "helper_reloads": 3,
+        "helper_saves": 3,
+        "planned_transfer_bytes": 104,
+        "planned_transfer_words": 26,
+        "register_homes_budget": 4,
+        "spilled_temporary_values": 10,
+        "value_spill_loads": 10,
+        "value_spill_slots": 10,
+        "value_spill_stores": 10
+      },
+      "drop_ns": null,
+      "publication_lifetime": "one preflight publication; dropped before next budget",
+      "publication_ns": null
+    },
+    {
+      "allocation": {
+        "assigned_register_home_values": 0,
+        "default_api_code_match": null,
+        "emitted_code_bytes": 3040,
+        "frame_bytes": 288,
+        "helper_boundary_count": 5,
+        "helper_capture_slots": 0,
+        "helper_reloads": 0,
+        "helper_saves": 0,
+        "planned_transfer_bytes": 112,
+        "planned_transfer_words": 28,
+        "register_homes_budget": 0,
+        "spilled_temporary_values": 14,
+        "value_spill_loads": 14,
+        "value_spill_slots": 14,
+        "value_spill_stores": 14
+      },
+      "drop_ns": null,
+      "publication_lifetime": "one preflight publication; dropped before next budget",
+      "publication_ns": null
+    }
+  ]
+}
