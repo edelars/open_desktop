@@ -70,6 +70,7 @@ SELF_TEST_NAMES = (
     "test_s3_34r_cross_thread_idle_handle_gate_is_pinned_once_and_fail_closed",
     "test_s3_34s_memory_event_gates_are_pinned_once_and_fail_closed",
     "test_s3_34t_register_event_gates_are_pinned_once_and_fail_closed",
+    "test_s3_34u_memory_load_and_pc_map_gates_are_pinned_once_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_38d_result_state_validator_rejects_corruption",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
@@ -196,6 +197,22 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_34t_register_event_control_priority", "local_acceptance", "od-jit",
         "dispatch::tests::event_request_obeys_stop_code_end_budget_and_error_priority",
+    ),
+    (
+        "s3_34u_ir_dword_load_admission_provenance", "local_acceptance", "od-jit",
+        "memory_load_v2::tests::ir_dword_load_admits_only_exact_8b03_and_preserves_its_provenance",
+    ),
+    (
+        "s3_34u_ir_dword_load_zero_extend_four_bytes", "local_acceptance", "od-host",
+        "tests::s3_26c_ir_dword_load_zero_extends_and_reads_exactly_four_bytes",
+    ),
+    (
+        "s3_34u_single_site_pc_map_checked_ranges", "local_acceptance", "od-jit",
+        "memory_load_v2::tests::ir_single_site_pc_maps_attribute_all_checked_ranges_and_boundaries",
+    ),
+    (
+        "s3_34u_single_site_pc_map_publication_lifetime", "local_acceptance", "od-host",
+        "published_single_site_pc_maps_match_artifacts_outlive_them_and_republish",
     ),
     (
         "abi_create_execute_stop_destroy", "local_acceptance", "od-host",
@@ -480,6 +497,10 @@ ADDITIONAL_TEST_GATES = (
 RUST_TEST_TARGET_OVERRIDES = {
     (
         "od-host",
+        "published_single_site_pc_maps_match_artifacts_outlive_them_and_republish",
+    ): ("--test", "memory_corpus"),
+    (
+        "od-host",
         "capacity_one_memory_cache_republishes_after_fault_and_backend_error",
     ): ("--test", "memory_corpus"),
 }
@@ -656,6 +677,7 @@ LOCAL_RUST_TEST_SOURCES = (
     "crates/od-host/tests/memory_corpus.rs",
     "crates/od-host/src/lib.rs",
     "crates/od-host/src/tests/native_register_v1_corpus.rs",
+    "crates/od-jit/src/memory_load_v2.rs",
     "crates/od-jit/src/block.rs",
     "crates/od-jit/src/block_emitter.rs",
     "crates/od-jit/src/block_compile.rs",
