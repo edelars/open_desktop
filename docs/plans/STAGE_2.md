@@ -3171,6 +3171,29 @@ zero/cancellation boundaries, and input immutability. Independent review is
 clean; see the [S2-29r report](../reports/S2_29R_X87_UNEQUAL_EXPONENT.md).
 S2-29, S2-28, and ISSUE-019 remain open.
 
+### S2-29s. Exact finite binary80 product with one-round packing (bounded helper)
+
+`round_pack_exact_magnitude(sign, exponent, magnitude, mode)` interprets the
+exact value `(-1)^sign * magnitude * 2^(exponent-127)`, rejects exact zero,
+normalizes the full unsigned `u128` without loss, and rounds once into a normal
+or subnormal binary80 result. Checked-exponent failures and finite-range
+overflow return `None`; a nonzero underflow result rounded to zero retains its
+sign. `multiply_finite_to_binary80` composes the full-`u128`
+`multiply_finite_significands` result with this packer; it rejects zero
+operands and does not narrow the product through the coefficient rounder.
+Existing coefficient rounding remains unchanged. This helper selects no
+architectural zero sign and adds no FMUL decode/execution, control-word/status
+mapping, or guest exception behavior. After exact normalization, the high 64
+bits are the quotient and the low 64 bits form a remainder jammed as
+`r=(lo>>1)|(lo&1)` over `2^63`. This retains zero/nonzero and below/at/above-half
+information; the sticky low bit prevents odd products from being treated as
+exact ties. Tests cover even-magnitude equivalence, odd tails below/at/above
+ties, all rounding modes and signs, normal/subnormal boundaries, signed
+underflow zero, checked exponent/finite overflow, zero products, and input
+immutability. Independent review is clean; see the
+[S2-29s report](../reports/S2_29S_X87_PRODUCT_PACK.md). S2-29, S2-28, and
+ISSUE-019 remain open.
+
 ### S2-30. Основные x87 операции
 
 1. Добавлять отдельными подшагами FLD/FST/FSTP, stack operations/constants, basic arithmetic и comparisons из профиля.

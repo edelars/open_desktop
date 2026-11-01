@@ -3436,6 +3436,31 @@ behavior, exceptions, or physical x86 acceptance is included. See the
 [S2-29r implementation report](../reports/S2_29R_X87_UNEQUAL_EXPONENT.md).
 S2-29, S2-28, and ISSUE-019 remain open.
 
+## Local S2-29s: exact finite binary80 product with one-round packing
+
+`od_isa::x87::round_pack_exact_magnitude(sign, exponent, magnitude, mode)`
+represents `(-1)^sign * magnitude * 2^(exponent-127)`. It rejects exact zero,
+normalizes an unsigned `u128` exactly, and rounds once to a normal or subnormal
+binary80 value. Checked-exponent failures and finite-range overflow return
+`None`; a nonzero result rounded to zero keeps its sign. After exact
+normalization, the high 64 bits provide the quotient and the low 64 bits are
+jammed as `r=(lo>>1)|(lo&1)` over `2^63`. This retains whether the remainder is
+zero and whether it is below, at, or above half; the sticky low bit prevents an
+odd product from being mistaken for an exact tie.
+
+`multiply_finite_to_binary80(lhs, rhs, mode)` composes the existing full-`u128`
+`multiply_finite_significands` result with the new packer and does not narrow
+the product through the signed coefficient helper. Exact zero product is
+rejected; input bytes and source-class metadata are unchanged. Existing
+coefficient rounding and same-exponent composition retain their behavior.
+Tests cover even-magnitude equivalence, odd products/tails around ties, all
+rounding modes/signs, normal and subnormal boundaries, signed underflow zero,
+finite/exponent rejection, zero products, and input immutability. No FMUL
+decode/execution, architectural zero selection, control-word/status semantics,
+exceptions, or physical x86 acceptance is included. See the
+[S2-29s implementation report](../reports/S2_29S_X87_PRODUCT_PACK.md).
+S2-29, S2-28, and ISSUE-019 remain open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.

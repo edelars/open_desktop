@@ -5354,6 +5354,32 @@ there; no layout files changed. No x87 instruction execution or physical x86
 acceptance is claimed. See the [S2-29r report](S2_29R_X87_UNEQUAL_EXPONENT.md).
 ISSUE-019 remains open for broader x87 behavior.
 
+## S2-29s — exact finite binary80 product with one-round packing (bounded helper)
+
+Added `round_pack_exact_magnitude(sign, exponent, magnitude, mode)` for exact
+signed `u128` magnitudes. It normalizes without loss and rounds once into a
+normal or subnormal binary80 result. After normalization the high 64 bits form
+the quotient and the low 64 bits form a remainder jammed as
+`r=(lo>>1)|(lo&1)` over `2^63`. This preserves zero/nonzero and below/at/above-
+half information; the sticky low bit prevents an odd product from being
+mistaken for an exact tie. A nonzero underflow result rounded to zero preserves sign;
+checked-exponent and finite-range overflow remain bounded `None` results.
+`multiply_finite_to_binary80` composes the existing full-`u128`
+`multiply_finite_significands` product with the new packer; it never narrows
+through the signed coefficient rounder. Zero operands, exact zero, and input
+bytes/provenance follow the bounded helper contract; no FMUL instruction or
+guest exception semantics were added.
+
+Focused tests cover even-magnitude equivalence, odd tails below/at/above normal
+ties under all modes/signs, normal carry and minimum-normal/subnormal promotion,
+minimum and half-minimum subnormal, signed underflow zero, checked-exponent and
+finite-range rejection, zero/odd products, and input immutability. Verification
+passed: targeted tests (3/3 and 1/1), all `od-isa` tests (1,689), workspace
+all-target check, formatting, Graphify, and diff check. Independent Sol/high
+review found no issues. No x87 instruction execution or physical x86 acceptance
+is claimed. See the [S2-29s report](S2_29S_X87_PRODUCT_PACK.md). ISSUE-019
+remains open for broader x87 behavior.
+
 ## S2-30i — exact-only FSUB ST(i), ST(0) (bounded local slice)
 
 Added bare `DC E8+i`, `i=0..7`, as `FSUB ST(i), ST(0)`. The operation shares
