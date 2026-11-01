@@ -2370,6 +2370,24 @@ gate.
 
 **Готово:** выбранный способ переходов проверен и измерен. Direct linking необязателен; корректные межблочные переходы обязательны.
 
+#### S3-31a. Bounded warm dispatcher phase harness — implementation only
+
+Для измерения доли dispatcher/lookup добавлен opt-in `warm-dispatch-phases`.
+Он фиксирует S3-17 case-list и trace hashes, а `recorded_multiblock` и
+`self_loop` держит отдельными strata. В каждой stratum cold ordinary prewarm
+создаёт resident FIFO(16) entries, затем ordinary и observed preflight и
+парные samples идут по одному общему прогретому engine/arena. Preflight
+сверяет полное состояние и результат с interpreter oracle; preflight фиксирует
+counter snapshots отдельно для каждого вызова, а измеренный side проверяет
+агрегированный delta по числу visits и sweeps. Подробные frozen input/visit
+identities, hashes, таймеры, фазы, residual и команда находятся в разделе
+[BENCHMARKS S3-31](../testing/BENCHMARKS.md#s3-31-bounded-warm-dispatcher-phase-harness).
+
+**Результат:** ограниченный harness реализован; scored runs и evidence доли
+dispatcher/lookup ещё не получены. S3-31 item 1 остаётся открытым, S3-31 не
+закрыт. Harness не изолирует цену наблюдателя или total lookup и не доказывает
+пользу linking; никаких production решений из его реализации не следует.
+
 ### S3-32. Оценить локальные IR-преобразования
 
 1. Выбрать только подтверждённые профилем возможности: local constant propagation, устранение избыточного state load/store или dead pure temporary.

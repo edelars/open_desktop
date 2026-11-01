@@ -595,6 +595,69 @@ that window; the test was not stopped, and the complete three-run series was
 repeated after it exited. This evidence covers only the frozen register-only
 corpus and does not select an optimization or default.
 
+### S3-31: bounded warm dispatcher phase harness
+
+`od-bench warm-dispatch-phases` is an implementation-only harness for the
+accepted S3-17 frozen case list and dispatch trace. It checks the case-list
+SHA-256 `b9276b52556b3692552de074e83cd8aef0c777f29861bd19ab09c188e41615d3`
+and trace SHA-256
+`bf8d5efe0c52a47cbb4682f67ea73a82e684d463733aff3be60fed0b280bd5b3`
+(1,010 inputs, 1,322 visits). The two strata stay separate:
+
+| Stratum | Frozen input and visits | Fixture SHA-256 |
+|---|---|---|
+| `recorded_multiblock` | case index 9, `gen_v1_000000005eedcafe_00000009`, entry RIPs `[0, 15]` | `bb7f1c493a7d7ef128e87fc0b1b3b10c58f176d292bd8d186adc33a1f9424913` |
+| `self_loop` | case index 1003, `s0_09_sub_jnz_loop`, entry RIPs `[0, 0, 0]` | `720abcca7c3bbc11593b1b6a1a908cb24206eadb7df3d3eeed14b2340091227c` |
+
+Each stratum uses one shared warmed FIFO(16) engine and arena. An ordinary
+cold prewarm compiles and admits the resident entries; then ordinary and
+observed hit-only preflight calls run on that same cache, compare full result
+and state against the interpreter oracle (masking only fixture-declared
+undefined RFLAGS bits), and check per-call counter deltas.
+Calibration and measurements alternate the two paths on the shared runtime.
+Each sample records cumulative cache counter snapshots before and after its
+sweep and the resulting delta; expected hits equal visits per call times
+sweeps, with no misses, compiles, publications, or evictions. Full result/state
+validation is outside each timed call.
+
+For each of three release process runs, the harness collects 20 paired samples
+per stratum. Each side of every pair must reach a 200 ms timer floor; if not,
+the paired series restarts with a larger common sweep count. The `order` field
+records which path ran first. Keep stratum results separate; this bounded
+implementation has not yet produced scored S3-31 evidence.
+
+The full timed interval wraps `Variant::call` or `Variant::call_observed`, so
+it includes adapter setup (CodeView, dependency and control/context setup) as
+well as the complete dispatcher call. State cloning/reset, PhaseRecorder
+construction/reset, full result/state validation, and phase-total extraction
+are outside the interval. Warm active phases are block build/admission,
+`key_snapshot_and_initial_lookup`, and the host execution boundary. The lookup
+phase covers minimum sizing, key construction, initial snapshot validation,
+the first `cache.find`, and its hit/miss update only. A hit performs a second
+`cache.find`, cached-snapshot and code-view revalidation, guards, accounting,
+and other cache bookkeeping outside the phase samples; adapter and recorder
+work is also in the unattributed residual. The host boundary includes backend
+and arena checks, host context, generated entry, and result decoding, so it is
+not pure guest execution time.
+
+Observed/ordinary ratios are the net difference between the two full call
+paths, including recorder work and any generic-instantiation differences;
+they are not a pure observer-cost estimate. The phase split does not isolate
+total lookup cost, pure generated-code host-execution time, or a linking
+benefit. High-water resident counters and capacity-derived available slots
+are not live occupancy. No linking, cache-policy, production-default, or
+performance conclusion follows from the harness alone.
+
+```sh
+for run in 1 2 3; do
+  cargo run --release -p od-bench --offline -- warm-dispatch-phases \
+    --case-list work/tmp/stage3/s3-17/cases.txt \
+    --trace work/tmp/stage3/s3-17/dispatch-trace.json \
+    --process-run "$run" \
+    --output "work/tmp/stage3/s3-31/warm-dispatch-$run.json"
+done
+```
+
 ### S3-35c: cold direct-entry checked-memory comparison
 
 `od-bench two-site-memory-cold` is an opt-in Apple Silicon release profile for
