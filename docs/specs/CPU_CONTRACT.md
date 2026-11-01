@@ -3569,6 +3569,37 @@ verification are recorded in the
 [S2-29x standalone report](../reports/S2_29X_X87_FINITE_REMAINDER.md).
 ISSUE-019 remains open.
 
+## Local S2-29y: exact finite nearest-even binary80 remainder
+
+`od_isa::x87::remainder_finite_nearest_even(lhs, rhs) -> Option<(i32, i128)>`
+returns `(exponent, coefficient)` for the exact value
+`lhs - nearest_integer_ties_even(lhs / rhs) * rhs`, represented as
+`coefficient * 2^(exponent - 63)`. Let `A = lhs.significand`,
+`B = rhs.significand`, and
+`d = i64(lhs.exponent) - i64(rhs.exponent)`. Inputs must have a normalized nonzero
+significand with bit 63 set and Normal, Subnormal, or PseudoDenormal
+provenance. Zero, malformed normalization, and all other provenance classes
+return `None`.
+
+The exponent gap is computed in `i64`. For `d <= -2`, the left operand is
+returned unchanged. At `d == -1`, `A <= B` returns lhs unchanged because the
+ratio magnitude is at most one half and the exact tie rounds to even quotient
+zero; `A > B` returns coefficient `A - 2B` at the lhs exponent. For
+`0 <= d <= 64`, it forms `N = u128(A) << d`, then `Q = N / B` and `R = N % B`.
+The coefficient is `R - B` iff `2R > B` or `2R == B` with odd `Q`; otherwise
+it is `R`. This pair uses the rhs exponent. For `d > 64`, the helper returns
+`None`. It keeps the quotient and doubled remainder in `u128`; the final
+signed coefficient is adjusted by the lhs sign, independently of rhs sign.
+Exact zero is `(rhs.exponent, 0)` and has no architectural signed-zero
+semantics.
+
+This is a mathematical helper contract only. It does not admit or execute
+FPREM1 or another instruction, compute quotient condition flags, change FCW or
+FSW, deliver guest exceptions, or establish physical x86 acceptance. Literal
+coverage and validation are recorded in the
+[S2-29y standalone report](../reports/S2_29Y_X87_FINITE_NEAREST_REMAINDER.md).
+ISSUE-019 remains open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.

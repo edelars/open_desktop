@@ -190,6 +190,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-29u | p64-aware large-gap binary80 finite-addition bridge for normalized operands with exponent gaps >64; classify tails below/at/above half; preserve binary32/64 adapter behavior; no x87 instruction semantics | S2-29t; independent Sol/high review clean |
 | [x] | S2-29v | Pure integer square-root helper for positive nonzero normalized finite binary80 inputs; one-round binary80 packing; no FSQRT/FCW/state/exception semantics | S2-29u; independent Sol/high review clean |
 | [x] | S2-29x | Exact truncated finite binary80 remainder coefficient decomposition for normalized nonzero operands; exact modulo for exponent gaps 0..64, lhs passthrough below, bounded rejection above; no FPREM/FPREM1 semantics | S2-29w; independent Sol/high review clean |
+| [x] | S2-29y | Exact finite nearest-even binary80 remainder coefficient for normalized nonzero operands; d=-1 half-way handling and u128 quotient/remainder for gaps 0..64; helper-only, no FPREM1/ISA or architectural effects | S2-29x; independent Sol/high review clean |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
@@ -3301,6 +3302,38 @@ mathematical modes. This remains helper-only: no FPREM/FPREM1, partial
 reduction/C2, quotient bits, FCW/FSW, guest exceptions, or physical x86
 acceptance. The [standalone S2-29x report](../reports/S2_29X_X87_FINITE_REMAINDER.md)
 records the literal vectors and validation. ISSUE-019 remains open.
+
+### S2-29y. Exact finite nearest-even binary80 remainder decomposition (bounded helper)
+
+`remainder_finite_nearest_even(lhs, rhs) -> Option<(i32, i128)>` returns the
+exact coefficient pair `(exponent, coefficient)` for
+`lhs - nearest_integer_ties_even(lhs / rhs) * rhs`. It accepts only normalized
+nonzero Normal, Subnormal, or PseudoDenormal inputs with significand bit 63
+set. Let `A = lhs.significand`, `B = rhs.significand`, and
+`d = i64(lhs.exponent) - i64(rhs.exponent)`. For `d <= -2`, it returns lhs
+unchanged. For `d == -1`, `A <= B` returns lhs unchanged, including the halfway
+tie whose quotient zero is even; `A > B` returns `A - 2B` at the lhs exponent.
+For `0 <= d <= 64`, it computes `N = u128(A) << d`, `Q = N / B`, and
+`R = N % B`, then uses
+`R - B` exactly when `2R > B` or `2R == B` with odd `Q`; otherwise it uses
+`R`. Apply the lhs sign to each computed signed coefficient, including
+`A - 2B`; rhs sign is irrelevant.
+The result is at the rhs exponent. Gaps above 64, zero, malformed
+normalization, and invalid provenance return `None`. Exact zero is
+`(rhs.exponent, 0)` without a signed architectural zero choice.
+
+Literal vectors cover d=0/1 ties, d=-1 below/at/above half, d=-2, gaps
+63/64/65, quotient widths beyond `u64`, both operand signs, exact `±6 % ±2`
+zero coefficients, normal/subnormal boundaries, raw subnormal `7 % 4`,
+pseudo-denormal equivalence, forged `i32` exponent endpoints, malformed and
+zero operands, immutability, and literal binary80 packing of `-0.5` and
+negative minimum subnormal under all four mathematical rounding modes.
+
+This is exact helper arithmetic only. It adds no FPREM1 or other ISA
+admission, quotient condition flags, FCW/FSW behavior, guest exceptions,
+architectural signed-zero behavior, or physical x86 acceptance. See the
+[standalone S2-29y report](../reports/S2_29Y_X87_FINITE_NEAREST_REMAINDER.md)
+for validation. ISSUE-019 remains open.
 
 ### S2-30. Основные x87 операции
 

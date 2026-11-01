@@ -5508,6 +5508,35 @@ open for architectural x87 behavior and physical acceptance. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-29x-exact-truncated-finite-binary80-remainder-decomposition),
 and [standalone report](S2_29X_X87_FINITE_REMAINDER.md).
 
+## S2-29y — exact finite nearest-even binary80 remainder helper
+
+Added `x87::remainder_finite_nearest_even(lhs, rhs)`, which returns the exact
+coefficient decomposition of
+`lhs - nearest_integer_ties_even(lhs / rhs) * rhs` for normalized nonzero
+Normal, Subnormal, or PseudoDenormal inputs. It uses widened exponent gaps,
+the `d=-1` half-way case, and exact `u128` quotient/remainder arithmetic for
+gaps 0 through 64; gaps above 64 and malformed or zero inputs return `None`.
+Exact zero uses `(rhs.exponent, 0)` without architectural signed-zero
+semantics.
+
+Literal coverage includes the requested gap 0/1/-1/-2/63/64/65 matrix, odd and
+even quotient ties, both operand signs, exact `±6 % ±2` zero coefficients,
+normal and subnormal boundaries, raw subnormal `7 % 4`, pseudo-denormal
+equivalence, forged `i32` exponents, invalid inputs, and immutability.
+Composition checks literal ten-byte binary80 encodings for `-0.5` and negative
+minimum subnormal under all four mathematical rounding modes. The focused
+nearest-even remainder tests passed 4/4; all 1,724 `od-isa` tests passed.
+Formatting, `od-isa` all-target check, workspace all-target check, and
+independent Sol/high code review passed. Graphify was updated after the code
+change.
+
+This is helper-only arithmetic. No FPREM1 or other instruction/ISA admission,
+quotient condition flags, FCW/FSW effects, guest exceptions, architectural
+signed-zero behavior, or physical x86 acceptance is established. ISSUE-019
+remains open. See the [plan](../plans/STAGE_2.md#s2-29y-exact-finite-nearest-even-binary80-remainder-decomposition-bounded-helper),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-29y-exact-finite-nearest-even-binary80-remainder),
+and [standalone report](S2_29Y_X87_FINITE_NEAREST_REMAINDER.md).
+
 ## S2-30i — exact-only FSUB ST(i), ST(0) (bounded local slice)
 
 Added bare `DC E8+i`, `i=0..7`, as `FSUB ST(i), ST(0)`. The operation shares
