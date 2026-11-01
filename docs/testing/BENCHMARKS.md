@@ -1093,6 +1093,56 @@ and [scored runs 1](../reports/data/stage3/s3-36e/run1.json) and
 three-run set is complete for this bounded profile. Mini checks remain deferred
 to the end of Stage 3.
 
+### S3-36f: cached NativeRegisterV1 register recurrence full-call profile
+
+`od-bench cached-native-loop` compares the complete capacity-one cached
+dispatcher call with the interpreter for two fixed helper-free loops. Form A
+is `LEA RAX,[RBX+RCX]; XCHG RAX,RBX; JNZ entry` (3 guest instructions per
+iteration). Form B adds a second `LEA; XCHG` pair (5 instructions per
+iteration). Each form is measured at 1, 64, and 4,096 iterations. The budgets
+are respectively 3/192/12,288 and 5/320/20,480 instructions. These are
+synthetic register recurrences, not guest software or production workloads.
+
+The native timer encloses each complete
+`run_cached_native_register_v1_controlled` call, including validation,
+capacity-one cache lookup, published native execution, and exit. State reset,
+code-view construction, full-state validation, and serialization are outside
+the call timer. The interpreter times the full `run` call on the same bytes,
+state, and budget. Preflight checks zero work, exact full budget, a budget
+boundary one instruction before loop completion, and `StopAddress` after the
+first LEA; it compares full CPU state, flags, RIP, exit, retirement, and
+remaining budget. It also checks the independent wrapping recurrence, one
+publication, cache counters, and emitted/logical resident bytes. Each scored
+native invocation must be hit-only with no miss, compile, publication, or
+eviction. The report records the first full cache-miss dispatch separately;
+that duration includes compile, publication, and execution, and is not a
+compile-only measurement or break-even input.
+
+Run the release preflight, then three separate release processes:
+
+```sh
+cargo run --release --offline -p od-bench -- cached-native-loop \
+  --preflight-only --output work/tmp/stage3/s3-36f/preflight.json
+for run in 1 2 3; do
+  cargo run --release --offline -p od-bench -- cached-native-loop \
+    --process-run "$run" --output "work/tmp/stage3/s3-36f/run-$run.json"
+done
+```
+
+Each process retains 20 alternating pairs per stratum, with a 200 ms minimum
+for every side and calibrated common call counts. Across the three M3 Max
+release runs all six strata passed the floor and accounting checks. The
+60-pair median native/interpreter ratios were 4.7661 (`a_1`), 4.8890
+(`a_64`), 4.8938 (`a_4096`), 3.7205 (`b_1`), 3.8092 (`b_64`), and 3.7805
+(`b_4096`); every paired ratio was above parity. Interpreter was faster on
+these inputs, so this profile supplies no useful native target scenario and
+does not support a cache or runtime default change. It does not close S3-36 or
+general Stage 3 performance acceptance. Runtime `working_tree_dirty` is
+unknown because the two-second Git status probe timed out, although the build
+source tree was clean at the recorded commit. Mini checks remain deferred to
+the end of Stage 3. See the [S3-36f report](../reports/STAGE_3_S3-36f_2026-11-01.md)
+and [suite manifest](../reports/data/stage3/s3-36f-20261101/suite-manifest.json).
+
 ### S3-37a: bounded production FIFO16 corpus churn observation
 
 `od-bench cache-churn` is an opt-in Apple Silicon macOS release command. It

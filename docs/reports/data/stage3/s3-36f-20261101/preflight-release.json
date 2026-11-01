@@ -1,0 +1,838 @@
+{
+  "measure_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "a5b368eab1d1cdfa3e47a28d0d7c1263b12978c7",
+      "source_sha256": "b38e9516cc90c36e4e358899f3d7d417ccf666fae5d0c532c30ff8c55efaab66",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "a5b368eab1d1cdfa3e47a28d0d7c1263b12978c7",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "profile_id": "s3-36f-native-register-v1-cached-register-loop-v1",
+  "schema": 1,
+  "source_fingerprints": [
+    [
+      "tools/bench/src/cached_native_loop.rs",
+      "e2ee0738531b72ff3e47ffe89b0ce6a84a86404157f7244c6b38e56c1050db91"
+    ],
+    [
+      "tools/bench/src/main.rs",
+      "f053b64946e603791a2d9dab8fd8ce816437a42fed3cf3c716fd4a0c30e6fc43"
+    ],
+    [
+      "tools/bench/src/lib.rs",
+      "8f524964adf949256237c7d4c22c4343c0b47820d183693cc103f58aaa6b511f"
+    ],
+    [
+      "crates/od-jit/src/dispatch.rs",
+      "d0df81783bfe8720606d88e54af19d21b26dc0099af48f9a74fc5bd604806a6c"
+    ],
+    [
+      "crates/od-jit/src/block_compile.rs",
+      "49818cf3032862772410be002bc46abb1536c640e0eb65d10c9a758b55dbd68b"
+    ],
+    [
+      "crates/od-isa/src/execute.rs",
+      "0307eb7469b50484658c7740b983ce5e24414d49a3f9db3d6a1bdf63ec2fbbd9"
+    ]
+  ],
+  "strata": [
+    {
+      "boundary_checked": true,
+      "budget": 3,
+      "cached_dispatch": {
+        "exit": "BudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 3,
+        "state": {
+          "gpr": [
+            6173026271151342951,
+            5429181089882602517,
+            0,
+            11602207361033945468,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4096
+        }
+      },
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "final_cache_counts": {
+        "compiles": 1,
+        "evictions": 0,
+        "hits": 34,
+        "misses": 1,
+        "publications": 1
+      },
+      "id": "a_1",
+      "interpreter": {
+        "exit": "InstructionBudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 3,
+        "state": {
+          "gpr": [
+            6173026271151342951,
+            5429181089882602517,
+            0,
+            11602207361033945468,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4096
+        }
+      },
+      "iterations": 1,
+      "mid_loop_budget": {
+        "exit": "BudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 2,
+        "state": {
+          "gpr": [
+            6173026271151342951,
+            5429181089882602517,
+            0,
+            11602207361033945468,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4103
+        }
+      },
+      "mid_loop_budget_checked": true,
+      "mid_loop_stop": {
+        "exit": "Runtime(StopAddress)",
+        "remaining_budget": 2,
+        "retired": 1,
+        "state": {
+          "gpr": [
+            11602207361033945468,
+            5429181089882602517,
+            0,
+            6173026271151342951,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4100
+        }
+      },
+      "mid_loop_stop_checked": true,
+      "recurrence_checked": true,
+      "resident_code_bytes": 1408,
+      "resident_entries": 1,
+      "resident_logical_bytes": 7193,
+      "seed": 3538945,
+      "zero_work_checked": true
+    },
+    {
+      "boundary_checked": true,
+      "budget": 192,
+      "cached_dispatch": {
+        "exit": "BudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 192,
+        "state": {
+          "gpr": [
+            15743946691236565031,
+            4251195832571594048,
+            0,
+            1548398450098607463,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4096
+        }
+      },
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "final_cache_counts": {
+        "compiles": 1,
+        "evictions": 0,
+        "hits": 2176,
+        "misses": 1,
+        "publications": 1
+      },
+      "id": "a_64",
+      "interpreter": {
+        "exit": "InstructionBudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 192,
+        "state": {
+          "gpr": [
+            15743946691236565031,
+            4251195832571594048,
+            0,
+            1548398450098607463,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4096
+        }
+      },
+      "iterations": 64,
+      "mid_loop_budget": {
+        "exit": "BudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 191,
+        "state": {
+          "gpr": [
+            15743946691236565031,
+            4251195832571594048,
+            0,
+            1548398450098607463,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4103
+        }
+      },
+      "mid_loop_budget_checked": true,
+      "mid_loop_stop": {
+        "exit": "Runtime(StopAddress)",
+        "remaining_budget": 191,
+        "retired": 1,
+        "state": {
+          "gpr": [
+            10424222103731456679,
+            4251195832571594048,
+            0,
+            6173026271159862631,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4100
+        }
+      },
+      "mid_loop_stop_checked": true,
+      "recurrence_checked": true,
+      "resident_code_bytes": 1408,
+      "resident_entries": 1,
+      "resident_logical_bytes": 7193,
+      "seed": 3539008,
+      "zero_work_checked": true
+    },
+    {
+      "boundary_checked": true,
+      "budget": 12288,
+      "cached_dispatch": {
+        "exit": "BudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 12288,
+        "state": {
+          "gpr": [
+            17872880678215087463,
+            2647115659505258496,
+            0,
+            2073252264010794343,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4096
+        }
+      },
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "final_cache_counts": {
+        "compiles": 1,
+        "evictions": 0,
+        "hits": 139264,
+        "misses": 1,
+        "publications": 1
+      },
+      "id": "a_4096",
+      "interpreter": {
+        "exit": "InstructionBudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 12288,
+        "state": {
+          "gpr": [
+            17872880678215087463,
+            2647115659505258496,
+            0,
+            2073252264010794343,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4096
+        }
+      },
+      "iterations": 4096,
+      "mid_loop_budget": {
+        "exit": "BudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 12287,
+        "state": {
+          "gpr": [
+            17872880678215087463,
+            2647115659505258496,
+            0,
+            2073252264010794343,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4103
+        }
+      },
+      "mid_loop_budget_checked": true,
+      "mid_loop_stop": {
+        "exit": "Runtime(StopAddress)",
+        "remaining_budget": 12287,
+        "retired": 1,
+        "state": {
+          "gpr": [
+            8820141931193603431,
+            2647115659505258496,
+            0,
+            6173026271688344935,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4100
+        }
+      },
+      "mid_loop_stop_checked": true,
+      "recurrence_checked": true,
+      "resident_code_bytes": 1408,
+      "resident_entries": 1,
+      "resident_logical_bytes": 7193,
+      "seed": 3543040,
+      "zero_work_checked": true
+    },
+    {
+      "boundary_checked": true,
+      "budget": 5,
+      "cached_dispatch": {
+        "exit": "BudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 5,
+        "state": {
+          "gpr": [
+            11602207361033945468,
+            5429181089882602517,
+            0,
+            17031388450916547985,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4096
+        }
+      },
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "final_cache_counts": {
+        "compiles": 1,
+        "evictions": 0,
+        "hits": 34,
+        "misses": 1,
+        "publications": 1
+      },
+      "id": "b_1",
+      "interpreter": {
+        "exit": "InstructionBudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 5,
+        "state": {
+          "gpr": [
+            11602207361033945468,
+            5429181089882602517,
+            0,
+            17031388450916547985,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4096
+        }
+      },
+      "iterations": 1,
+      "mid_loop_budget": {
+        "exit": "BudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 4,
+        "state": {
+          "gpr": [
+            11602207361033945468,
+            5429181089882602517,
+            0,
+            17031388450916547985,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4110
+        }
+      },
+      "mid_loop_budget_checked": true,
+      "mid_loop_stop": {
+        "exit": "Runtime(StopAddress)",
+        "remaining_budget": 4,
+        "retired": 1,
+        "state": {
+          "gpr": [
+            11602207361033945468,
+            5429181089882602517,
+            0,
+            6173026271151342951,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4100
+        }
+      },
+      "mid_loop_stop_checked": true,
+      "recurrence_checked": true,
+      "resident_code_bytes": 2188,
+      "resident_entries": 1,
+      "resident_logical_bytes": 10552,
+      "seed": 3538945,
+      "zero_work_checked": true
+    },
+    {
+      "boundary_checked": true,
+      "budget": 320,
+      "cached_dispatch": {
+        "exit": "BudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 320,
+        "state": {
+          "gpr": [
+            11119318870175309863,
+            4251195832571594048,
+            0,
+            15370514702746903911,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4096
+        }
+      },
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "final_cache_counts": {
+        "compiles": 1,
+        "evictions": 0,
+        "hits": 2176,
+        "misses": 1,
+        "publications": 1
+      },
+      "id": "b_64",
+      "interpreter": {
+        "exit": "InstructionBudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 320,
+        "state": {
+          "gpr": [
+            11119318870175309863,
+            4251195832571594048,
+            0,
+            15370514702746903911,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4096
+        }
+      },
+      "iterations": 64,
+      "mid_loop_budget": {
+        "exit": "BudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 319,
+        "state": {
+          "gpr": [
+            11119318870175309863,
+            4251195832571594048,
+            0,
+            15370514702746903911,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4110
+        }
+      },
+      "mid_loop_budget_checked": true,
+      "mid_loop_stop": {
+        "exit": "Runtime(StopAddress)",
+        "remaining_budget": 319,
+        "retired": 1,
+        "state": {
+          "gpr": [
+            10424222103731456679,
+            4251195832571594048,
+            0,
+            6173026271159862631,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4100
+        }
+      },
+      "mid_loop_stop_checked": true,
+      "recurrence_checked": true,
+      "resident_code_bytes": 2188,
+      "resident_entries": 1,
+      "resident_logical_bytes": 10552,
+      "seed": 3539008,
+      "zero_work_checked": true
+    },
+    {
+      "boundary_checked": true,
+      "budget": 20480,
+      "cached_dispatch": {
+        "exit": "BudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 20480,
+        "state": {
+          "gpr": [
+            13773106670537536871,
+            2647115659505258496,
+            0,
+            16420222330042795367,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4096
+        }
+      },
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "final_cache_counts": {
+        "compiles": 1,
+        "evictions": 0,
+        "hits": 139264,
+        "misses": 1,
+        "publications": 1
+      },
+      "id": "b_4096",
+      "interpreter": {
+        "exit": "InstructionBudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 20480,
+        "state": {
+          "gpr": [
+            13773106670537536871,
+            2647115659505258496,
+            0,
+            16420222330042795367,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4096
+        }
+      },
+      "iterations": 4096,
+      "mid_loop_budget": {
+        "exit": "BudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 20479,
+        "state": {
+          "gpr": [
+            13773106670537536871,
+            2647115659505258496,
+            0,
+            16420222330042795367,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4110
+        }
+      },
+      "mid_loop_budget_checked": true,
+      "mid_loop_stop": {
+        "exit": "Runtime(StopAddress)",
+        "remaining_budget": 20479,
+        "retired": 1,
+        "state": {
+          "gpr": [
+            8820141931193603431,
+            2647115659505258496,
+            0,
+            6173026271688344935,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "rflags": 514,
+          "rip": 4100
+        }
+      },
+      "mid_loop_stop_checked": true,
+      "recurrence_checked": true,
+      "resident_code_bytes": 2188,
+      "resident_entries": 1,
+      "resident_logical_bytes": 10552,
+      "seed": 3543040,
+      "zero_work_checked": true
+    }
+  ],
+  "timing_started": false
+}

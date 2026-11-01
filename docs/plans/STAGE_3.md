@@ -3346,6 +3346,46 @@ the [calibration evidence](../reports/data/stage3/s3-36e/calibration-run1.json),
 [3](../reports/data/stage3/s3-36e/run3.json), with the independently reviewed
 [suite manifest](../reports/data/stage3/s3-36e/suite-manifest.json).
 
+#### S3-36f: cached dispatcher register recurrence comparison — bounded profile complete
+
+Added the opt-in `od-bench cached-native-loop` profile for two fixed
+helper-free `NativeRegisterV1` recurrences: three instructions per iteration
+(`LEA; XCHG; JNZ`) and five instructions per iteration (two `LEA; XCHG`
+pairs plus `JNZ`), each at 1, 64, and 4,096 iterations. Release preflight
+passed all six strata on Apple M3 Max/aarch64/macOS 26.7.1; it checked zero
+work, exact budget, the final in-loop instruction budget boundary, internal
+`StopAddress`, full CPU/flags/RIP/retirement parity, the independent wrapping
+recurrence, a single resident publication, and code/logical cache sizes.
+Preflight did not time samples. Three independent release processes retained
+20 alternating pairs per stratum each, with every side above 200 ms. Across 60
+pairs, native/interpreter median ratios and full paired ranges were:
+
+| Stratum | Median ratio | Full range |
+|---|---:|---:|
+| `a_1` | 4.7661 | 4.4800–5.1930 |
+| `a_64` | 4.8890 | 4.4135–5.1931 |
+| `a_4096` | 4.8938 | 4.6885–5.2546 |
+| `b_1` | 3.7205 | 3.5583–3.9703 |
+| `b_64` | 3.8092 | 3.2670–4.0133 |
+| `b_4096` | 3.7805 | 3.4622–4.0340 |
+
+Every observed ratio was above parity, so the interpreter was faster on this
+synthetic register workload. The profile does not establish that native JIT
+execution is useful for a real guest workload, does not justify changing the
+cache or runtime default, and does not close S3-36/S3-40/S3-41. The report
+records first full dispatch (including compile/publication/execution) and
+resident code/logical bytes separately; these values are not decomposed into
+compile-only cost and are not used to infer break-even. The build source tree
+was clean at revision `a5b368eab1d1cdfa3e47a28d0d7c1263b12978c7`; runtime Git
+dirty status is `null` because the two-second status probe timed out. Stage 2
+activity did not gate the runs. Mini checks remain deferred to the end of
+Stage 3. See the [S3-36f report](../reports/STAGE_3_S3-36f_2026-11-01.md),
+[release preflight](../reports/data/stage3/s3-36f-20261101/preflight-release.json),
+[process 1](../reports/data/stage3/s3-36f-20261101/process-1.json),
+[process 2](../reports/data/stage3/s3-36f-20261101/process-2.json),
+[process 3](../reports/data/stage3/s3-36f-20261101/process-3.json), and the
+[suite manifest](../reports/data/stage3/s3-36f-20261101/suite-manifest.json).
+
 ### S3-37. Проверить cache churn и ресурсы
 
 #### S3-37a: bounded FIFO16 corpus churn observation path
@@ -3789,6 +3829,19 @@ blocker, and Mini checks remain deferred to the end of Stage 3. See the
 [S3-40g addendum](../reports/STAGE_3_S3-40g_2026-11-01.md), the
 [S3-32a source report](../reports/STAGE_3_S3-32a_2026-11-01.md), and its
 [suite manifest](../reports/data/stage3/s3-32a/suite-manifest.json).
+
+#### S3-40h: cached register recurrence performance addendum
+
+Added the S3-36f full cached-dispatch versus interpreter measurement to the
+provisional decision ledger. Three release processes retained 60 pairs per
+stratum across six fixed synthetic recurrence strata; every ratio range was
+above 1, so the interpreter was faster in all six. This confirms no useful
+native target scenario in this synthetic fixture and supports no cache/runtime
+policy change. It does not generalize to guest software or close S3-36, S3-40,
+or S3-41. First-dispatch cost and code/logical cache sizes remain separate
+measurements; no break-even inference is made. Mini remains deferred. See the
+[S3-40h addendum](../reports/STAGE_3_S3-40h_2026-11-01.md) and
+[S3-36f report](../reports/STAGE_3_S3-36f_2026-11-01.md).
 
 ### S3-41. Оформить приёмку этапа
 
