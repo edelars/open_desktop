@@ -2,6 +2,8 @@ use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::time::Instant;
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use od_bench::calibration_report::calibration_only_report_succeeded;
 use od_bench::{
     BenchmarkConfig, BenchmarkRunMetadata, BenchmarkSuite, HostMetadata, LookupQuery,
     RecordedTrace, ScenarioWorkload, benchmark_execution_context, run_suite_with_metadata,
@@ -461,6 +463,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
+        "allocator-cost-s3-32a" => {
+            let output = output.ok_or("allocator-cost-s3-32a requires --output PATH")?;
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                if let Some(parent) = output.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let value = if preflight_only {
+                    serde_json::to_value(od_bench::allocator_cost::preflight_s3_32a(process_run)?)?
+                } else if calibration_only {
+                    serde_json::to_value(od_bench::allocator_cost::calibration_only_s3_32a(
+                        process_run,
+                    )?)?
+                } else {
+                    serde_json::to_value(od_bench::allocator_cost::run_s3_32a(process_run)?)?
+                };
+                od_bench::dispatch_cache::write_atomic(&output, &value)?;
+                if calibration_only && !calibration_only_report_succeeded(&value) {
+                    return Err(format!(
+                        "allocator-cost-s3-32a wrote an unscored or failed calibration report: {}",
+                        output.display(),
+                    )
+                    .into());
+                }
+                if od_bench::allocator_cost::report_requires_nonzero_exit(&value) {
+                    return Err(format!(
+                        "allocator-cost-s3-32a wrote a diagnostic-only report: {}",
+                        output.display(),
+                    )
+                    .into());
+                }
+            }
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                let _ = (output, process_run, preflight_only, calibration_only);
+                return Err(
+                    "allocator-cost-s3-32a requires native Apple Silicon macOS execution".into(),
+                );
+            }
+        }
         "two-site-memory-cold" => {
             let output = output.ok_or("two-site-memory-cold requires --output PATH")?;
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -640,7 +682,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {
             print_usage();
             return Err(
-                "expected record, measure, synthetic, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, warm-dispatch-phases, warm-native-fallback, two-site-memory-cold, two-site-memory-warm, two-site-memory-cache, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, cached-flags-compare, cached-native-flags-compare, allocator-cost, or allocator-cost-branch-routing".into(),
+                "expected record, measure, synthetic, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, warm-dispatch-phases, warm-native-fallback, two-site-memory-cold, two-site-memory-warm, two-site-memory-cache, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, cached-flags-compare, cached-native-flags-compare, allocator-cost, allocator-cost-branch-routing, or allocator-cost-s3-32a".into(),
             );
         }
     }
@@ -695,6 +737,7 @@ fn print_usage() {
   od-bench cached-native-flags-compare --corpus observations.json [--preflight-only] --process-run 1..3 --output report.json\n\
   od-bench allocator-cost [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
   od-bench allocator-cost-branch-routing [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
+  od-bench allocator-cost-s3-32a [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
   od-bench two-site-memory-cold [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
   od-bench two-site-memory-warm [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
   od-bench two-site-memory-cache [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
@@ -710,12 +753,13 @@ fn validate_mode_flags(
     if calibration_only
         && mode != "allocator-cost"
         && mode != "allocator-cost-branch-routing"
+        && mode != "allocator-cost-s3-32a"
         && mode != "two-site-memory-cold"
         && mode != "two-site-memory-warm"
         && mode != "two-site-memory-cache"
     {
         return Err(
-            "--calibration-only is only valid for allocator-cost, allocator-cost-branch-routing, two-site-memory-cold, two-site-memory-warm, or two-site-memory-cache",
+            "--calibration-only is only valid for allocator-cost, allocator-cost-branch-routing, allocator-cost-s3-32a, two-site-memory-cold, two-site-memory-warm, or two-site-memory-cache",
         );
     }
     if preflight_only && calibration_only {
@@ -724,55 +768,27 @@ fn validate_mode_flags(
     Ok(())
 }
 
-fn calibration_only_report_succeeded(value: &serde_json::Value) -> bool {
-    let sequences = value.get("sequences").and_then(serde_json::Value::as_array);
-    let calibration_passed = value
-        .get("calibration_floor_passed")
-        .and_then(serde_json::Value::as_bool)
-        == Some(true)
-        || sequences.is_some_and(|items| {
-            !items.is_empty()
-                && items.iter().all(|item| {
-                    item.get("calibration_floor_passed")
-                        .and_then(serde_json::Value::as_bool)
-                        == Some(true)
-                })
-        });
-    let no_samples = value
-        .get("sample_pairs")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(Vec::is_empty)
-        || sequences.is_some_and(|items| {
-            !items.is_empty()
-                && items.iter().all(|item| {
-                    item.get("sample_pairs")
-                        .and_then(serde_json::Value::as_array)
-                        .is_some_and(Vec::is_empty)
-                })
-        });
-    value.get("status").and_then(serde_json::Value::as_str) == Some("calibration_only_unscored")
-        && calibration_passed
-        && no_samples
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        calibration_only_report_succeeded, two_site_memory_cache_journal_path,
-        two_site_memory_cold_journal_path, two_site_memory_warm_journal_path, validate_mode_flags,
+        two_site_memory_cache_journal_path, two_site_memory_cold_journal_path,
+        two_site_memory_warm_journal_path, validate_mode_flags,
     };
+    use od_bench::calibration_report::calibration_only_report_succeeded;
     use std::path::PathBuf;
 
     #[test]
     fn calibration_only_is_rejected_for_other_commands() {
         assert!(validate_mode_flags("allocator-cost", false, true).is_ok());
         assert!(validate_mode_flags("allocator-cost-branch-routing", false, true).is_ok());
+        assert!(validate_mode_flags("allocator-cost-s3-32a", false, true).is_ok());
         assert!(validate_mode_flags("two-site-memory-cold", false, true).is_ok());
         assert!(validate_mode_flags("two-site-memory-warm", false, true).is_ok());
         assert!(validate_mode_flags("two-site-memory-cache", false, true).is_ok());
         assert!(validate_mode_flags("cached-flags-compare", false, true).is_err());
         assert!(validate_mode_flags("allocator-cost", true, true).is_err());
         assert!(validate_mode_flags("allocator-cost-branch-routing", true, true).is_err());
+        assert!(validate_mode_flags("allocator-cost-s3-32a", true, true).is_err());
     }
 
     #[test]
@@ -793,6 +809,18 @@ mod tests {
         });
         assert!(calibration_only_report_succeeded(&warm_success));
 
+        let s3_32a_success = serde_json::json!({
+            "timing_status": "calibration_only_unscored",
+            "experiment": "s3-32a-aliased-add-rax-rax-baseline-vs-candidate",
+            "calibration_floor_passed": true,
+            "compile_pairs": [],
+            "cases": [
+                {"native_pairs": []},
+                {"native_pairs": []}
+            ]
+        });
+        assert!(calibration_only_report_succeeded(&s3_32a_success));
+
         for diagnostic in [
             serde_json::json!({
                 "status": "diagnostic_only_calibration_floor_failed",
@@ -803,6 +831,20 @@ mod tests {
                 "status": "calibration_only_unscored",
                 "calibration_floor_passed": true,
                 "sample_pairs": [{"pair_index": 0}]
+            }),
+            serde_json::json!({
+                "status": "calibration_only_unscored",
+                "experiment": "s3-32a-aliased-add-rax-rax-baseline-vs-candidate",
+                "calibration_floor_passed": true,
+                "compile_pairs": [{"pair_index": 0}],
+                "cases": [{"native_pairs": []}]
+            }),
+            serde_json::json!({
+                "status": "calibration_only_unscored",
+                "experiment": "s3-32a-aliased-add-rax-rax-baseline-vs-candidate",
+                "calibration_floor_passed": true,
+                "compile_pairs": [],
+                "cases": [{"native_pairs": [{"pair_index": 0}]}]
             }),
             serde_json::json!({
                 "status": "scored",

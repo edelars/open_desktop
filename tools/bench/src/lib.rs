@@ -25,6 +25,8 @@ use od_jit::translation::{
 use od_jit::translation::{CodeDependencySpan, TranslationKey};
 use serde::{Deserialize, Serialize};
 
+pub mod calibration_report;
+
 pub const MAX_INPUTS: usize = 1_010;
 pub const MAX_CODE_BYTES_PER_INPUT: usize = 4 * 1024;
 pub const MAX_INPUT_JSON_BYTES: usize = 64 * 1024;

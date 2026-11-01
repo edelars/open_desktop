@@ -57,8 +57,13 @@ pub fn lower(outcome: &BuildOutcome) -> Result<LoweringOutcome, LoweringError> {
     )
 }
 
-/// Candidate-only lowering for the exact admitted aliased `ADD RAX,RAX`.
-pub(crate) fn lower_for_s3_32a_add_rax_rax_candidate(
+/// Diagnostic-only lowering for the exact admitted aliased `ADD RAX,RAX`.
+///
+/// This exposes the verified candidate IR for the S3-32a cost comparison. It
+/// does not publish code, alter cache admission, or select a runtime default.
+/// Callers must pair the immutable `BuildOutcome` and exact-byte admission
+/// derived from the same source `CodeView`.
+pub fn lower_for_s3_32a_add_rax_rax_candidate(
     outcome: &BuildOutcome,
     admission: &block::S3_32aAddRaxRaxAdmission,
 ) -> Result<LoweringOutcome, LoweringError> {

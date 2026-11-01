@@ -14,13 +14,15 @@ use od_isa::LongModeState;
 use od_isa::execute::{RunConfig, RunExit, RunResult, run as interpreter_run};
 use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
 use od_jit::allocator::AllocatorConfig;
-use od_jit::block::{BlockLimits, BuildOutcome, CodeView, build_block};
+use od_jit::block::{BlockLimits, BuildOutcome, CodeView, S3_32aAddRaxRaxAdmission, build_block};
 use od_jit::block_compile::{
     BlockCompileOutcome, CompiledBlock, RUNTIME_FRAME_PREFIX_BYTES, allocate_lowered_block,
-    compile_block, compile_block_with_register_homes,
+    compile_block, compile_block_for_s3_32a_add_rax_rax_candidate,
+    compile_block_with_register_homes,
 };
+use od_jit::block_emitter::emit_runtime_block;
 use od_jit::ir::Operation;
-use od_jit::lowering::{LoweringOutcome, lower};
+use od_jit::lowering::{LoweringOutcome, lower, lower_for_s3_32a_add_rax_rax_candidate};
 use od_jit::runtime::RuntimeExitTag;
 use serde::Serialize;
 
@@ -262,6 +264,115 @@ pub struct Report {
     cases: Vec<CaseReport>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct S3_32aReport {
+    schema_version: u32,
+    experiment: String,
+    process_run: u8,
+    host: crate::HostMetadata,
+    timing_status: String,
+    preflight_passed: bool,
+    sample_floor_passed: Option<bool>,
+    calibration_floor_passed: Option<bool>,
+    source_fixture_sha256: String,
+    code_bytes: Vec<u8>,
+    guest_base_rip: u64,
+    instruction_budget: u64,
+    register_homes: u8,
+    eager_flags: bool,
+    cache_policy: String,
+    compile_timer_boundary: String,
+    publication_timer_boundary: String,
+    native_timer_boundary: String,
+    sample_floor_ns: u128,
+    warmups_per_publication: usize,
+    pairs_per_stratum: usize,
+    common_compile_calls_per_side: Option<usize>,
+    common_native_calls_per_side: Option<usize>,
+    calibration_total_wall_ns: Option<u128>,
+    calibration_deadline_ns: u128,
+    calibration_side_ceiling_ns: u128,
+    calibration_chunk_calls: usize,
+    calibration_stop_reason: Option<String>,
+    compile_calibration: Vec<S3_32aCalibrationSample>,
+    native_calibration: Vec<S3_32aCalibrationSample>,
+    variant_profiles: Vec<S3_32aVariantProfile>,
+    compile_pairs: Vec<S3_32aCompilePair>,
+    cases: Vec<S3_32aCaseReport>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct S3_32aVariantProfile {
+    variant: String,
+    register_homes: u8,
+    ir_read_gpr_operations: usize,
+    ir_integer_operations: usize,
+    ir_temporary_definitions: usize,
+    assigned_register_home_values: u32,
+    spilled_temporary_values: u32,
+    value_spill_slots: u32,
+    helper_capture_slots: u32,
+    helper_saves: u32,
+    helper_reloads: u32,
+    frame_bytes: u32,
+    emitted_code_bytes: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct S3_32aCalibrationSample {
+    variant: String,
+    case_id: Option<String>,
+    order: String,
+    calls: usize,
+    completed_calls: usize,
+    elapsed_ns: u128,
+    process_wall_ns: u128,
+    process_deadline_ns: u128,
+    side_ceiling_ns: u128,
+    minimum_sample_met: bool,
+    stop_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct S3_32aCompilePair {
+    pair_index: usize,
+    order: String,
+    calls_per_side: usize,
+    baseline_total_ns: u128,
+    candidate_total_ns: u128,
+    baseline_ns_per_compile: u128,
+    candidate_ns_per_compile: u128,
+    candidate_over_baseline: f64,
+    minimum_sample_met: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct S3_32aNativePair {
+    pair_index: usize,
+    order: String,
+    calls_per_side: usize,
+    baseline_total_ns: u128,
+    candidate_total_ns: u128,
+    baseline_ns_per_call: u128,
+    candidate_ns_per_call: u128,
+    candidate_over_baseline: f64,
+    baseline_publication_ns: u128,
+    baseline_drop_ns: u128,
+    candidate_publication_ns: u128,
+    candidate_drop_ns: u128,
+    minimum_sample_met: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct S3_32aCaseReport {
+    id: String,
+    initial: StateSnapshot,
+    interpreter_oracle: Observation,
+    baseline_preflight: Observation,
+    candidate_preflight: Observation,
+    native_pairs: Vec<S3_32aNativePair>,
+}
+
 #[derive(Debug)]
 struct CostError(String);
 
@@ -383,6 +494,789 @@ pub fn calibration_only_distinct_branch(
         Some(calibration_journal),
         DISTINCT_BRANCH_PROFILE,
     )
+}
+
+/// Preflight the exact baseline versus S3-32a candidate on the frozen
+/// distinct-branch fixture. This performs correctness checks without timing.
+pub fn preflight_s3_32a(process_run: u8) -> Result<S3_32aReport, Box<dyn std::error::Error>> {
+    build_s3_32a_report(process_run, true, false)
+}
+
+pub fn run_s3_32a(process_run: u8) -> Result<S3_32aReport, Box<dyn std::error::Error>> {
+    build_s3_32a_report(process_run, false, false)
+}
+
+pub fn calibration_only_s3_32a(
+    process_run: u8,
+) -> Result<S3_32aReport, Box<dyn std::error::Error>> {
+    build_s3_32a_report(process_run, false, true)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum S3_32aVariant {
+    Baseline,
+    Candidate,
+}
+
+impl S3_32aVariant {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Baseline => "baseline",
+            Self::Candidate => "s3_32a_candidate",
+        }
+    }
+}
+
+struct S3_32aPreparedVariant {
+    compiled: CompiledBlock,
+    profile: S3_32aVariantProfile,
+}
+
+fn build_s3_32a_report(
+    process_run: u8,
+    preflight_only: bool,
+    calibration_only: bool,
+) -> Result<S3_32aReport, Box<dyn std::error::Error>> {
+    if !(1..=3).contains(&process_run) {
+        return Err(fail("process-run must be 1..=3").into());
+    }
+    let digest = od_testkit::sha256_hex(DISTINCT_BRANCH_PROFILE.code);
+    if digest != DISTINCT_BRANCH_CODE_SHA256 {
+        return Err(fail("frozen distinct branch fixture digest mismatch").into());
+    }
+    let view = CodeView::new(BASE_RIP, DISTINCT_BRANCH_PROFILE.code)
+        .map_err(|error| fail(format!("code view: {error:?}")))?;
+    let admission = S3_32aAddRaxRaxAdmission::from_code(view)
+        .map_err(|error| fail(format!("S3-32a candidate admission: {error:?}")))?;
+    let baseline = prepare_s3_32a_variant(S3_32aVariant::Baseline, view, &admission)?;
+    let candidate = prepare_s3_32a_variant(S3_32aVariant::Candidate, view, &admission)?;
+    if baseline.profile.ir_read_gpr_operations != candidate.profile.ir_read_gpr_operations + 1 {
+        return Err(fail(format!(
+            "exact fixture should remove one ReadGpr: baseline={}, candidate={}",
+            baseline.profile.ir_read_gpr_operations, candidate.profile.ir_read_gpr_operations
+        ))
+        .into());
+    }
+
+    let cases = cases(DISTINCT_BRANCH_PROFILE);
+    let interpreters = cases
+        .iter()
+        .map(interpreter_observation)
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut preflight_observations: Vec<Vec<(S3_32aVariant, Observation)>> =
+        (0..cases.len()).map(|_| Vec::new()).collect();
+    for (variant, compiled) in [
+        (S3_32aVariant::Baseline, &baseline.compiled),
+        (S3_32aVariant::Candidate, &candidate.compiled),
+    ] {
+        let published = PublishedCode::publish_block(compiled.emitted())
+            .map_err(|error| fail(format!("preflight publish {}: {error:?}", variant.name())))?;
+        for (index, (case, oracle)) in cases.iter().zip(&interpreters).enumerate() {
+            let native = native_observation(&published, case)?;
+            validate_pair(case, &native, oracle)?;
+            preflight_observations[index].push((variant, native));
+        }
+        drop(published);
+    }
+    let mut case_reports = cases
+        .iter()
+        .zip(&interpreters)
+        .zip(preflight_observations)
+        .map(|((case, oracle), observations)| {
+            let baseline_preflight = observations
+                .iter()
+                .find(|(variant, _)| *variant == S3_32aVariant::Baseline)
+                .map(|(_, observation)| observation.clone())
+                .ok_or_else(|| fail("missing baseline preflight observation"))?;
+            let candidate_preflight = observations
+                .iter()
+                .find(|(variant, _)| *variant == S3_32aVariant::Candidate)
+                .map(|(_, observation)| observation.clone())
+                .ok_or_else(|| fail("missing candidate preflight observation"))?;
+            Ok::<_, CostError>(S3_32aCaseReport {
+                id: case.id.into(),
+                initial: snapshot(&case.initial),
+                interpreter_oracle: oracle.clone(),
+                baseline_preflight,
+                candidate_preflight,
+                native_pairs: Vec::new(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut compile_calibration = Vec::new();
+    let mut native_calibration = Vec::new();
+    let mut compile_calls = None;
+    let mut native_calls = None;
+    let mut compile_pairs = Vec::new();
+    let mut calibration_floor_passed = None;
+    let mut calibration_total_wall_ns = None;
+    let mut calibration_stop_reason = None;
+    if !preflight_only {
+        let calibration_started = Instant::now();
+        let limits = CalibrationLimits {
+            deadline: calibration_started + MAX_CALIBRATION_WALL,
+        };
+        let (calls, samples, stop_reason) =
+            calibrate_s3_32a_compile(process_run, view, &admission, calibration_started, limits)?;
+        compile_calls = calls;
+        compile_calibration = samples;
+        calibration_stop_reason = stop_reason;
+
+        if compile_calls.is_some() && calibration_stop_reason.is_none() {
+            let (calls, samples, stop_reason) = calibrate_s3_32a_native(
+                process_run,
+                &cases,
+                &interpreters,
+                &[&baseline.compiled, &candidate.compiled],
+                calibration_started,
+                limits,
+            )?;
+            native_calls = calls;
+            native_calibration = samples;
+            calibration_stop_reason = stop_reason;
+        }
+
+        if calibration_stop_reason.is_none() {
+            calibration_stop_reason =
+                calibration_finalization_stop_reason(false, calibration_started.elapsed())
+                    .map(str::to_owned);
+        }
+        if calibration_stop_reason.is_some() {
+            compile_calls = None;
+            native_calls = None;
+        }
+        calibration_total_wall_ns = Some(calibration_started.elapsed().as_nanos());
+        calibration_floor_passed = Some(
+            compile_calls.is_some() && native_calls.is_some() && calibration_stop_reason.is_none(),
+        );
+
+        if compile_calls.is_some() && native_calls.is_some() && !calibration_only {
+            let calls = compile_calls.unwrap();
+            compile_pairs = collect_s3_32a_compile_pairs(process_run, view, &admission, calls)?;
+            let calls = native_calls.unwrap();
+            for (case_index, (case, oracle)) in cases.iter().zip(&interpreters).enumerate() {
+                case_reports[case_index].native_pairs = collect_s3_32a_native_pairs(
+                    process_run,
+                    case_index,
+                    case,
+                    oracle,
+                    [&baseline.compiled, &candidate.compiled],
+                    calls,
+                )?;
+            }
+        }
+    }
+
+    let sample_floor_passed =
+        if preflight_only || calibration_only || calibration_floor_passed == Some(false) {
+            None
+        } else {
+            Some(
+                compile_pairs
+                    .iter()
+                    .all(|sample: &S3_32aCompilePair| sample.minimum_sample_met)
+                    && case_reports
+                        .iter()
+                        .flat_map(|case| &case.native_pairs)
+                        .all(|sample| sample.minimum_sample_met),
+            )
+        };
+    let timing_status = if preflight_only {
+        "preflight_only_no_timing"
+    } else if calibration_only && calibration_floor_passed == Some(true) {
+        "calibration_only_unscored"
+    } else if calibration_only {
+        "calibration_only_failed_unscored"
+    } else if calibration_floor_passed == Some(false) {
+        "diagnostic_only_calibration_failed_no_scored_comparison"
+    } else if sample_floor_passed == Some(true) {
+        "sample_floor_passed_bounded_diagnostic"
+    } else {
+        "diagnostic_only_sample_floor_failed_no_scored_comparison"
+    };
+    Ok(S3_32aReport {
+        schema_version: 1,
+        experiment: "s3-32a-aliased-add-rax-rax-baseline-vs-candidate".into(),
+        process_run,
+        host: crate::HostMetadata::current(),
+        timing_status: timing_status.into(),
+        preflight_passed: true,
+        sample_floor_passed,
+        calibration_floor_passed,
+        source_fixture_sha256: digest,
+        code_bytes: DISTINCT_BRANCH_PROFILE.code.to_vec(),
+        guest_base_rip: BASE_RIP,
+        instruction_budget: INSTRUCTION_BUDGET,
+        register_homes: HOME_BUDGET,
+        eager_flags: true,
+        cache_policy: "uncached compile and one PublishedCode mapping at a time; no shared cache lookup/admission/key changes".into(),
+        compile_timer_boundary: "Each side calls the named baseline or exact S3-32a compiler; block build, decode, verified lowering/transform, allocation, emission, finalization and destruction of the unpublished CompiledBlock are timed. Admission is prepared once before timing. Diagnostic lowering/allocation and summary collection are outside the timer.".into(),
+        publication_timer_boundary: "PublishedCode::publish_block and PublishedCode drop are recorded separately for every native side; the prior mapping is dropped before the next publication.".into(),
+        native_timer_boundary: "Repeated PublishedCode::execute_block calls with the existing safe host wrapper and result collection. State-vector construction and validation are outside the timer; result validation occurs after each timed batch.".into(),
+        sample_floor_ns: MIN_SAMPLE.as_nanos(),
+        warmups_per_publication: WARMUP_CALLS,
+        pairs_per_stratum: PAIRS,
+        common_compile_calls_per_side: compile_calls,
+        common_native_calls_per_side: native_calls,
+        calibration_total_wall_ns,
+        calibration_deadline_ns: MAX_CALIBRATION_WALL.as_nanos(),
+        calibration_side_ceiling_ns: MAX_CALIBRATION_MEASURED_SIDE_WALL.as_nanos(),
+        calibration_chunk_calls: CHUNK_CALLS,
+        calibration_stop_reason,
+        compile_calibration,
+        native_calibration,
+        variant_profiles: vec![baseline.profile, candidate.profile],
+        compile_pairs,
+        cases: case_reports,
+    })
+}
+
+fn prepare_s3_32a_variant(
+    variant: S3_32aVariant,
+    view: CodeView<'_>,
+    admission: &S3_32aAddRaxRaxAdmission,
+) -> Result<S3_32aPreparedVariant, CostError> {
+    let built = build_block(
+        view,
+        BASE_RIP,
+        AccessContext::default(),
+        BlockLimits::default(),
+    )
+    .map_err(|error| fail(format!("{} diagnostic build: {error:?}", variant.name())))?;
+    let lowered = match variant {
+        S3_32aVariant::Baseline => lower(&built),
+        S3_32aVariant::Candidate => lower_for_s3_32a_add_rax_rax_candidate(&built, admission),
+    }
+    .map_err(|error| fail(format!("{} diagnostic lowering: {error:?}", variant.name())))?;
+    let lowered = match lowered {
+        LoweringOutcome::Program(lowered) => lowered,
+        LoweringOutcome::NoNativePrefix { .. } => {
+            return Err(fail(format!("{} has no native prefix", variant.name())));
+        }
+    };
+    let allocation = allocate_lowered_block(
+        &lowered,
+        AllocatorConfig {
+            register_homes: HOME_BUDGET,
+            reserved_prefix_bytes: RUNTIME_FRAME_PREFIX_BYTES,
+        },
+    )
+    .map_err(|error| {
+        fail(format!(
+            "{} diagnostic allocation: {error:?}",
+            variant.name()
+        ))
+    })?;
+    let diagnostic_emitted = emit_runtime_block(&lowered.program, &allocation)
+        .map_err(|error| fail(format!("{} diagnostic emit: {error:?}", variant.name())))?;
+    let compiled = compile_s3_32a_variant(variant, view, admission)?;
+    let diagnostic_bytes = diagnostic_emitted
+        .to_le_bytes()
+        .map_err(|error| fail(format!("{} diagnostic bytes: {error:?}", variant.name())))?;
+    let compiled_bytes = compiled
+        .emitted()
+        .to_le_bytes()
+        .map_err(|error| fail(format!("{} compiled bytes: {error:?}", variant.name())))?;
+    if diagnostic_bytes != compiled_bytes
+        || diagnostic_emitted.pc_map() != compiled.emitted().pc_map()
+    {
+        return Err(fail(format!(
+            "{} diagnostic lowering/allocation/emitter differs from exact compile output",
+            variant.name()
+        )));
+    }
+    let locations = allocation.location_counts();
+    let counters = allocation.counters();
+    let frame = allocation.frame();
+    let profile = S3_32aVariantProfile {
+        variant: variant.name().into(),
+        register_homes: HOME_BUDGET,
+        ir_read_gpr_operations: lowered
+            .program
+            .operations
+            .iter()
+            .filter(|operation| matches!(operation, Operation::ReadGpr { .. }))
+            .count(),
+        ir_integer_operations: lowered
+            .program
+            .operations
+            .iter()
+            .filter(|operation| matches!(operation, Operation::Integer { .. }))
+            .count(),
+        ir_temporary_definitions: (locations.register_homes + locations.spill_values) as usize,
+        assigned_register_home_values: locations.register_homes,
+        spilled_temporary_values: locations.spill_values,
+        value_spill_slots: counters.value_spill_slots,
+        helper_capture_slots: counters.helper_capture_slots,
+        helper_saves: counters.helper_saves,
+        helper_reloads: counters.helper_reloads,
+        frame_bytes: frame.frame_bytes,
+        emitted_code_bytes: compiled_bytes.len(),
+    };
+    Ok(S3_32aPreparedVariant { compiled, profile })
+}
+
+fn compile_s3_32a_variant(
+    variant: S3_32aVariant,
+    view: CodeView<'_>,
+    admission: &S3_32aAddRaxRaxAdmission,
+) -> Result<CompiledBlock, CostError> {
+    let outcome = match variant {
+        S3_32aVariant::Baseline => compile_block(view, BASE_RIP),
+        S3_32aVariant::Candidate => {
+            compile_block_for_s3_32a_add_rax_rax_candidate(view, BASE_RIP, admission)
+        }
+    }
+    .map_err(|error| fail(format!("{} compile: {error:?}", variant.name())))?;
+    match outcome {
+        BlockCompileOutcome::Compiled(compiled) => Ok(compiled),
+        BlockCompileOutcome::NoNativePrefix { .. } => Err(fail(format!(
+            "{} compile produced no native prefix",
+            variant.name()
+        ))),
+    }
+}
+
+fn calibrate_s3_32a_compile(
+    process_run: u8,
+    view: CodeView<'_>,
+    admission: &S3_32aAddRaxRaxAdmission,
+    process_started: Instant,
+    limits: CalibrationLimits,
+) -> Result<(Option<usize>, Vec<S3_32aCalibrationSample>, Option<String>), CostError> {
+    let mut calls = 256usize;
+    let mut samples = Vec::new();
+    let mut calibration_pair = 0usize;
+    loop {
+        let reverse = (calibration_pair + usize::from(process_run)) % 2 != 0;
+        let (baseline, candidate) = if reverse {
+            let candidate = time_s3_32a_compile_batch_bounded(
+                S3_32aVariant::Candidate,
+                view,
+                admission,
+                calls,
+                limits,
+            )?;
+            let baseline = if candidate.stop_reason.is_none() {
+                time_s3_32a_compile_batch_bounded(
+                    S3_32aVariant::Baseline,
+                    view,
+                    admission,
+                    calls,
+                    limits,
+                )?
+            } else {
+                skipped_calibration_batch("skipped_after_candidate_calibration_stop")
+            };
+            (baseline, candidate)
+        } else {
+            let baseline = time_s3_32a_compile_batch_bounded(
+                S3_32aVariant::Baseline,
+                view,
+                admission,
+                calls,
+                limits,
+            )?;
+            let candidate = if baseline.stop_reason.is_none() {
+                time_s3_32a_compile_batch_bounded(
+                    S3_32aVariant::Candidate,
+                    view,
+                    admission,
+                    calls,
+                    limits,
+                )?
+            } else {
+                skipped_calibration_batch("skipped_after_baseline_calibration_stop")
+            };
+            (baseline, candidate)
+        };
+        let ordered = if reverse {
+            [
+                (S3_32aVariant::Candidate, candidate.clone()),
+                (S3_32aVariant::Baseline, baseline.clone()),
+            ]
+        } else {
+            [
+                (S3_32aVariant::Baseline, baseline.clone()),
+                (S3_32aVariant::Candidate, candidate.clone()),
+            ]
+        };
+        for (variant, timing) in ordered {
+            samples.push(s3_32a_calibration_sample(
+                variant,
+                None,
+                if reverse {
+                    "candidate_then_baseline"
+                } else {
+                    "baseline_then_candidate"
+                },
+                calls,
+                timing,
+                process_started,
+                limits,
+            ));
+        }
+        if let Some(reason) = first_compile_calibration_stop_reason(reverse, &baseline, &candidate)
+        {
+            return Ok((None, samples, Some(reason)));
+        }
+        if baseline.elapsed >= MIN_SAMPLE && candidate.elapsed >= MIN_SAMPLE {
+            if Instant::now() >= limits.deadline {
+                return Ok((
+                    None,
+                    samples,
+                    Some("overall_wall_ceiling_after_compile_calibration_finalization".into()),
+                ));
+            }
+            return Ok((Some(calls), samples, None));
+        }
+        let Some(next) = calls
+            .checked_mul(2)
+            .filter(|next| *next <= MAX_COMPILE_CALLS)
+        else {
+            return Ok((
+                None,
+                samples,
+                Some("compile_repetition_ceiling_before_sample_floor".into()),
+            ));
+        };
+        if Instant::now() >= limits.deadline {
+            return Ok((None, samples, Some("overall_wall_ceiling".into())));
+        }
+        calls = next;
+        calibration_pair += 1;
+    }
+}
+
+fn time_s3_32a_compile_batch(
+    variant: S3_32aVariant,
+    view: CodeView<'_>,
+    admission: &S3_32aAddRaxRaxAdmission,
+    calls: usize,
+) -> Result<Duration, CostError> {
+    let started = Instant::now();
+    for _ in 0..calls {
+        let compiled = compile_s3_32a_variant(variant, view, admission)?;
+        std::hint::black_box(compiled.emitted().pc_map().code_len());
+        drop(compiled);
+    }
+    Ok(started.elapsed())
+}
+
+fn time_s3_32a_compile_batch_bounded(
+    variant: S3_32aVariant,
+    view: CodeView<'_>,
+    admission: &S3_32aAddRaxRaxAdmission,
+    calls: usize,
+    limits: CalibrationLimits,
+) -> Result<TimedBatch, CostError> {
+    let mut elapsed = Duration::ZERO;
+    let mut completed_calls = 0;
+    while completed_calls < calls {
+        if let Some(stop_reason) = calibration_stop_reason(Some(limits), elapsed) {
+            return Ok(TimedBatch {
+                elapsed,
+                completed_calls,
+                stop_reason: Some(stop_reason),
+            });
+        }
+        let chunk = (calls - completed_calls).min(CHUNK_CALLS);
+        let started = Instant::now();
+        for _ in 0..chunk {
+            let compiled = compile_s3_32a_variant(variant, view, admission)?;
+            std::hint::black_box(compiled.emitted().pc_map().code_len());
+            drop(compiled);
+            completed_calls += 1;
+        }
+        elapsed += started.elapsed();
+        if let Some(stop_reason) = calibration_stop_reason(Some(limits), elapsed) {
+            return Ok(TimedBatch {
+                elapsed,
+                completed_calls,
+                stop_reason: Some(stop_reason),
+            });
+        }
+    }
+    Ok(TimedBatch {
+        elapsed,
+        completed_calls,
+        stop_reason: None,
+    })
+}
+
+fn skipped_calibration_batch(reason: &str) -> TimedBatch {
+    TimedBatch {
+        elapsed: Duration::ZERO,
+        completed_calls: 0,
+        stop_reason: Some(reason.into()),
+    }
+}
+
+fn s3_32a_calibration_sample(
+    variant: S3_32aVariant,
+    case_id: Option<&str>,
+    order: &str,
+    requested_calls: usize,
+    timing: TimedBatch,
+    process_started: Instant,
+    limits: CalibrationLimits,
+) -> S3_32aCalibrationSample {
+    let process_wall_ns = process_started.elapsed().as_nanos();
+    let mut stop_reason = timing.stop_reason;
+    if stop_reason.is_none() && Instant::now() >= limits.deadline {
+        stop_reason = Some("overall_wall_ceiling_after_side_finalization".into());
+    }
+    S3_32aCalibrationSample {
+        variant: variant.name().into(),
+        case_id: case_id.map(str::to_owned),
+        order: order.into(),
+        calls: requested_calls,
+        completed_calls: timing.completed_calls,
+        elapsed_ns: timing.elapsed.as_nanos(),
+        process_wall_ns,
+        process_deadline_ns: MAX_CALIBRATION_WALL.as_nanos(),
+        side_ceiling_ns: MAX_CALIBRATION_MEASURED_SIDE_WALL.as_nanos(),
+        minimum_sample_met: timing.completed_calls == requested_calls
+            && timing.elapsed >= MIN_SAMPLE
+            && stop_reason.is_none(),
+        stop_reason,
+    }
+}
+
+fn calibrate_s3_32a_native(
+    process_run: u8,
+    cases: &[Case],
+    interpreters: &[Observation],
+    compiled: &[&CompiledBlock; 2],
+    process_started: Instant,
+    limits: CalibrationLimits,
+) -> Result<(Option<usize>, Vec<S3_32aCalibrationSample>, Option<String>), CostError> {
+    let mut calls = CHUNK_CALLS;
+    let mut samples = Vec::new();
+    let mut calibration_pair = 0usize;
+    loop {
+        let mut current = Vec::with_capacity(cases.len() * 2);
+        for (case_index, (case, oracle)) in cases.iter().zip(interpreters).enumerate() {
+            let reverse = (calibration_pair + usize::from(process_run) + case_index) % 2 != 0;
+            let ordered = if reverse {
+                [S3_32aVariant::Candidate, S3_32aVariant::Baseline]
+            } else {
+                [S3_32aVariant::Baseline, S3_32aVariant::Candidate]
+            };
+            for (side_index, variant) in ordered.into_iter().enumerate() {
+                let variant_index = match variant {
+                    S3_32aVariant::Baseline => 0,
+                    S3_32aVariant::Candidate => 1,
+                };
+                let timing = if side_index > 0
+                    && current
+                        .iter()
+                        .any(|sample: &S3_32aCalibrationSample| sample.stop_reason.is_some())
+                {
+                    skipped_calibration_batch("skipped_after_prior_calibration_stop")
+                } else {
+                    time_s3_32a_native_side_bounded(
+                        compiled[variant_index],
+                        case,
+                        oracle,
+                        calls,
+                        limits,
+                    )?
+                };
+                current.push(s3_32a_calibration_sample(
+                    variant,
+                    Some(case.id),
+                    if reverse {
+                        "candidate_then_baseline"
+                    } else {
+                        "baseline_then_candidate"
+                    },
+                    calls,
+                    timing,
+                    process_started,
+                    limits,
+                ));
+            }
+        }
+        let all_met = current.iter().all(|sample| sample.minimum_sample_met);
+        let stop_reason = current.iter().find_map(|sample| sample.stop_reason.clone());
+        samples.extend(current);
+        if let Some(reason) = stop_reason {
+            return Ok((None, samples, Some(reason)));
+        }
+        if all_met {
+            if Instant::now() >= limits.deadline {
+                return Ok((
+                    None,
+                    samples,
+                    Some("overall_wall_ceiling_after_native_calibration_finalization".into()),
+                ));
+            }
+            return Ok((Some(calls), samples, None));
+        }
+        let Some(next) = calls
+            .checked_mul(2)
+            .filter(|next| *next <= MAX_CALIBRATED_CALLS)
+        else {
+            return Ok((
+                None,
+                samples,
+                Some("native_repetition_ceiling_before_sample_floor".into()),
+            ));
+        };
+        if Instant::now() >= limits.deadline {
+            return Ok((None, samples, Some("overall_wall_ceiling".into())));
+        }
+        calls = next;
+        calibration_pair += 1;
+    }
+}
+
+fn time_s3_32a_native_side_bounded(
+    compiled: &CompiledBlock,
+    case: &Case,
+    oracle: &Observation,
+    calls: usize,
+    limits: CalibrationLimits,
+) -> Result<TimedBatch, CostError> {
+    if Instant::now() >= limits.deadline {
+        return Ok(skipped_calibration_batch(
+            "overall_wall_ceiling_before_publish",
+        ));
+    }
+    let published = PublishedCode::publish_block(compiled.emitted())
+        .map_err(|error| fail(format!("S3-32a calibration publish: {error:?}")))?;
+    for _ in 0..WARMUP_CALLS {
+        if Instant::now() >= limits.deadline {
+            drop(published);
+            return Ok(skipped_calibration_batch(
+                "overall_wall_ceiling_during_warmup",
+            ));
+        }
+        let native = native_observation(&published, case)?;
+        validate_pair(case, &native, oracle)?;
+    }
+    let mut timing = time_native_batch_bounded(&published, case, oracle, calls, Some(limits))?;
+    drop(published);
+    if timing.stop_reason.is_none() && Instant::now() >= limits.deadline {
+        timing.stop_reason = Some("overall_wall_ceiling_after_native_teardown".into());
+    }
+    Ok(timing)
+}
+
+fn time_s3_32a_native_side(
+    compiled: &CompiledBlock,
+    case: &Case,
+    oracle: &Observation,
+    calls: usize,
+) -> Result<(Duration, u128, u128), CostError> {
+    let publication_started = Instant::now();
+    let published = PublishedCode::publish_block(compiled.emitted())
+        .map_err(|error| fail(format!("S3-32a publish: {error:?}")))?;
+    let publication_ns = publication_started.elapsed().as_nanos();
+    for _ in 0..WARMUP_CALLS {
+        let native = native_observation(&published, case)?;
+        validate_pair(case, &native, oracle)?;
+    }
+    let elapsed = time_native_batch(&published, case, oracle, calls)?;
+    let drop_started = Instant::now();
+    drop(published);
+    let drop_ns = drop_started.elapsed().as_nanos();
+    Ok((elapsed, publication_ns, drop_ns))
+}
+
+fn collect_s3_32a_compile_pairs(
+    process_run: u8,
+    view: CodeView<'_>,
+    admission: &S3_32aAddRaxRaxAdmission,
+    calls: usize,
+) -> Result<Vec<S3_32aCompilePair>, CostError> {
+    let mut samples = Vec::with_capacity(COMPILE_PAIRS);
+    for pair_index in 0..COMPILE_PAIRS {
+        let reverse = (pair_index + usize::from(process_run)) % 2 != 0;
+        let (baseline, candidate) = if reverse {
+            let candidate =
+                time_s3_32a_compile_batch(S3_32aVariant::Candidate, view, admission, calls)?;
+            let baseline =
+                time_s3_32a_compile_batch(S3_32aVariant::Baseline, view, admission, calls)?;
+            (baseline, candidate)
+        } else {
+            let baseline =
+                time_s3_32a_compile_batch(S3_32aVariant::Baseline, view, admission, calls)?;
+            let candidate =
+                time_s3_32a_compile_batch(S3_32aVariant::Candidate, view, admission, calls)?;
+            (baseline, candidate)
+        };
+        samples.push(S3_32aCompilePair {
+            pair_index,
+            order: if reverse {
+                "candidate_then_baseline".into()
+            } else {
+                "baseline_then_candidate".into()
+            },
+            calls_per_side: calls,
+            baseline_total_ns: baseline.as_nanos(),
+            candidate_total_ns: candidate.as_nanos(),
+            baseline_ns_per_compile: baseline.as_nanos() / calls as u128,
+            candidate_ns_per_compile: candidate.as_nanos() / calls as u128,
+            candidate_over_baseline: candidate.as_nanos() as f64
+                / baseline.as_nanos().max(1) as f64,
+            minimum_sample_met: baseline >= MIN_SAMPLE && candidate >= MIN_SAMPLE,
+        });
+    }
+    Ok(samples)
+}
+
+fn collect_s3_32a_native_pairs(
+    process_run: u8,
+    case_index: usize,
+    case: &Case,
+    oracle: &Observation,
+    compiled: [&CompiledBlock; 2],
+    calls: usize,
+) -> Result<Vec<S3_32aNativePair>, CostError> {
+    let mut samples = Vec::with_capacity(PAIRS);
+    for pair_index in 0..PAIRS {
+        let reverse = (pair_index + usize::from(process_run) + case_index) % 2 != 0;
+        let run_side = |variant| {
+            let index = match variant {
+                S3_32aVariant::Baseline => 0,
+                S3_32aVariant::Candidate => 1,
+            };
+            time_s3_32a_native_side(compiled[index], case, oracle, calls)
+        };
+        let (baseline, candidate) = if reverse {
+            let candidate = run_side(S3_32aVariant::Candidate)?;
+            let baseline = run_side(S3_32aVariant::Baseline)?;
+            (baseline, candidate)
+        } else {
+            let baseline = run_side(S3_32aVariant::Baseline)?;
+            let candidate = run_side(S3_32aVariant::Candidate)?;
+            (baseline, candidate)
+        };
+        samples.push(S3_32aNativePair {
+            pair_index,
+            order: if reverse {
+                "candidate_then_baseline_sequential_publications".into()
+            } else {
+                "baseline_then_candidate_sequential_publications".into()
+            },
+            calls_per_side: calls,
+            baseline_total_ns: baseline.0.as_nanos(),
+            candidate_total_ns: candidate.0.as_nanos(),
+            baseline_ns_per_call: baseline.0.as_nanos() / calls as u128,
+            candidate_ns_per_call: candidate.0.as_nanos() / calls as u128,
+            candidate_over_baseline: candidate.0.as_nanos() as f64
+                / baseline.0.as_nanos().max(1) as f64,
+            baseline_publication_ns: baseline.1,
+            baseline_drop_ns: baseline.2,
+            candidate_publication_ns: candidate.1,
+            candidate_drop_ns: candidate.2,
+            minimum_sample_met: baseline.0 >= MIN_SAMPLE && candidate.0 >= MIN_SAMPLE,
+        });
+    }
+    Ok(samples)
 }
 
 fn build_report(
@@ -1454,10 +2348,26 @@ struct CalibrationLimits {
     deadline: Instant,
 }
 
+#[derive(Clone)]
 struct TimedBatch {
     elapsed: Duration,
     completed_calls: usize,
     stop_reason: Option<String>,
+}
+
+fn first_compile_calibration_stop_reason(
+    candidate_first: bool,
+    baseline: &TimedBatch,
+    candidate: &TimedBatch,
+) -> Option<String> {
+    let ordered = if candidate_first {
+        [candidate, baseline]
+    } else {
+        [baseline, candidate]
+    };
+    ordered
+        .into_iter()
+        .find_map(|batch| batch.stop_reason.clone())
 }
 
 fn calibration_stop_reason(limits: Option<CalibrationLimits>, elapsed: Duration) -> Option<String> {
@@ -1629,13 +2539,18 @@ fn time_interpreter_batch_bounded(
 mod tests {
     use super::{
         BASE_RIP, CHUNK_CALLS, CODE, CalibrationCheck, CalibrationLimits, DISTINCT_BRANCH_CODE,
-        DISTINCT_BRANCH_CODE_SHA256, DISTINCT_BRANCH_PROFILE, MAX_CALIBRATED_CALLS,
-        MAX_CALIBRATION_MEASURED_SIDE_WALL, MAX_CALIBRATION_WALL, MIN_SAMPLE,
-        append_calibration_check, both_samples_meet_floor, calibration_finalization_stop_reason,
-        calibration_stop_reason, cases, collect_scored_samples, next_calibration_call_count,
-        persist_terminal_stop, project_calibration_candidate, report_requires_nonzero_exit,
-        reset_calibration_journal, sample_meets_floor,
+        DISTINCT_BRANCH_CODE_SHA256, DISTINCT_BRANCH_PROFILE, HOME_BUDGET, INSTRUCTION_BUDGET,
+        MAX_CALIBRATED_CALLS, MAX_CALIBRATION_MEASURED_SIDE_WALL, MAX_CALIBRATION_WALL, MIN_SAMPLE,
+        Observation, PAIRS, S3_32aCaseReport, S3_32aReport, S3_32aVariant, StateSnapshot,
+        TimedBatch, WARMUP_CALLS, append_calibration_check, both_samples_meet_floor,
+        calibration_finalization_stop_reason, calibration_stop_reason, cases,
+        collect_scored_samples, compile_s3_32a_variant, first_compile_calibration_stop_reason,
+        interpreter_observation, next_calibration_call_count, persist_terminal_stop,
+        project_calibration_candidate, report_requires_nonzero_exit, reset_calibration_journal,
+        s3_32a_calibration_sample, sample_meets_floor, time_s3_32a_compile_batch_bounded,
+        time_s3_32a_native_side_bounded,
     };
+    use crate::calibration_report::calibration_only_report_succeeded;
     use std::fs;
     use std::time::{Duration, Instant};
 
@@ -1658,6 +2573,171 @@ mod tests {
         assert_eq!(branch_cases[0].expected_rip, BASE_RIP + 27);
         assert_eq!(branch_cases[1].expected_zf, false);
         assert_eq!(branch_cases[1].expected_rip, BASE_RIP + 17);
+
+        assert_eq!(HOME_BUDGET, 4);
+        assert_eq!(PAIRS, 20);
+        assert_eq!(WARMUP_CALLS, 64);
+    }
+
+    #[test]
+    fn s3_32a_calibration_only_validator_accepts_actual_serialized_report_shape() {
+        let state = StateSnapshot {
+            gpr: [0; 16],
+            rip: BASE_RIP,
+            rflags: 0x202,
+            fs_base: 0,
+            gs_base: 0,
+            auxiliary_state: String::new(),
+        };
+        let observation = Observation {
+            state: state.clone(),
+            raw_exit: "BlockComplete".into(),
+            retired: INSTRUCTION_BUDGET,
+            remaining_budget: 0,
+        };
+        let report = S3_32aReport {
+            schema_version: 1,
+            experiment: "s3-32a-aliased-add-rax-rax-baseline-vs-candidate".into(),
+            process_run: 1,
+            host: crate::HostMetadata::current(),
+            timing_status: "calibration_only_unscored".into(),
+            preflight_passed: true,
+            sample_floor_passed: None,
+            calibration_floor_passed: Some(true),
+            source_fixture_sha256: DISTINCT_BRANCH_CODE_SHA256.into(),
+            code_bytes: DISTINCT_BRANCH_CODE.to_vec(),
+            guest_base_rip: BASE_RIP,
+            instruction_budget: INSTRUCTION_BUDGET,
+            register_homes: HOME_BUDGET,
+            eager_flags: true,
+            cache_policy: "uncached".into(),
+            compile_timer_boundary: "compile and drop".into(),
+            publication_timer_boundary: "publish and drop separately".into(),
+            native_timer_boundary: "repeated native calls".into(),
+            sample_floor_ns: MIN_SAMPLE.as_nanos(),
+            warmups_per_publication: WARMUP_CALLS,
+            pairs_per_stratum: PAIRS,
+            common_compile_calls_per_side: Some(1),
+            common_native_calls_per_side: Some(1),
+            calibration_total_wall_ns: Some(1),
+            calibration_deadline_ns: MAX_CALIBRATION_WALL.as_nanos(),
+            calibration_side_ceiling_ns: MAX_CALIBRATION_MEASURED_SIDE_WALL.as_nanos(),
+            calibration_chunk_calls: CHUNK_CALLS,
+            calibration_stop_reason: None,
+            compile_calibration: Vec::new(),
+            native_calibration: Vec::new(),
+            variant_profiles: Vec::new(),
+            compile_pairs: Vec::new(),
+            cases: vec![S3_32aCaseReport {
+                id: "jz-taken".into(),
+                initial: state,
+                interpreter_oracle: observation.clone(),
+                baseline_preflight: observation.clone(),
+                candidate_preflight: observation,
+                native_pairs: Vec::new(),
+            }],
+        };
+        let encoded = serde_json::to_value(&report).expect("serialize S3-32a report");
+        assert!(encoded.get("status").is_none());
+        assert_eq!(encoded["timing_status"], "calibration_only_unscored");
+        assert_eq!(
+            encoded["calibration_deadline_ns"],
+            serde_json::json!(MAX_CALIBRATION_WALL.as_nanos())
+        );
+        assert_eq!(
+            encoded["calibration_side_ceiling_ns"],
+            serde_json::json!(MAX_CALIBRATION_MEASURED_SIDE_WALL.as_nanos())
+        );
+        assert_eq!(encoded["calibration_chunk_calls"], CHUNK_CALLS);
+        assert_eq!(encoded["calibration_stop_reason"], serde_json::Value::Null);
+        assert!(calibration_only_report_succeeded(&encoded));
+
+        let mut compile_samples = encoded.clone();
+        compile_samples["compile_pairs"] = serde_json::json!([{"pair_index": 0}]);
+        assert!(!calibration_only_report_succeeded(&compile_samples));
+
+        let mut native_samples = encoded.clone();
+        native_samples["cases"][0]["native_pairs"] = serde_json::json!([{"pair_index": 0}]);
+        assert!(!calibration_only_report_succeeded(&native_samples));
+
+        let mut failed = encoded;
+        failed["calibration_floor_passed"] = serde_json::json!(false);
+        failed["timing_status"] = serde_json::json!("calibration_only_failed_unscored");
+        assert!(!calibration_only_report_succeeded(&failed));
+    }
+
+    #[test]
+    fn s3_32a_shared_deadline_stops_compile_and_native_calibration_before_work() {
+        let view = od_jit::block::CodeView::new(BASE_RIP, &DISTINCT_BRANCH_CODE).unwrap();
+        let admission = od_jit::block::S3_32aAddRaxRaxAdmission::from_code(view).unwrap();
+        let process_started = Instant::now();
+        let limits = CalibrationLimits {
+            deadline: process_started - Duration::from_nanos(1),
+        };
+
+        let compile = time_s3_32a_compile_batch_bounded(
+            S3_32aVariant::Baseline,
+            view,
+            &admission,
+            CHUNK_CALLS,
+            limits,
+        )
+        .unwrap();
+        assert_eq!(compile.completed_calls, 0);
+        assert_eq!(compile.stop_reason.as_deref(), Some("overall_wall_ceiling"));
+        let compile_sample = s3_32a_calibration_sample(
+            S3_32aVariant::Baseline,
+            None,
+            "baseline_then_candidate",
+            CHUNK_CALLS,
+            compile,
+            process_started,
+            limits,
+        );
+        assert!(!compile_sample.minimum_sample_met);
+        assert_eq!(
+            compile_sample.process_deadline_ns,
+            MAX_CALIBRATION_WALL.as_nanos()
+        );
+        assert_eq!(
+            compile_sample.side_ceiling_ns,
+            MAX_CALIBRATION_MEASURED_SIDE_WALL.as_nanos()
+        );
+        assert_eq!(
+            compile_sample.stop_reason.as_deref(),
+            Some("overall_wall_ceiling")
+        );
+
+        let compiled = compile_s3_32a_variant(S3_32aVariant::Baseline, view, &admission).unwrap();
+        let case = cases(DISTINCT_BRANCH_PROFILE).remove(0);
+        let oracle = interpreter_observation(&case).unwrap();
+        let native =
+            time_s3_32a_native_side_bounded(&compiled, &case, &oracle, CHUNK_CALLS, limits)
+                .unwrap();
+        assert_eq!(native.completed_calls, 0);
+        assert_eq!(
+            native.stop_reason.as_deref(),
+            Some("overall_wall_ceiling_before_publish")
+        );
+    }
+
+    #[test]
+    fn candidate_first_compile_stop_reports_the_executed_candidate_failure() {
+        let baseline = TimedBatch {
+            elapsed: Duration::ZERO,
+            completed_calls: 0,
+            stop_reason: Some("skipped_after_candidate_calibration_stop".into()),
+        };
+        let candidate = TimedBatch {
+            elapsed: Duration::ZERO,
+            completed_calls: 0,
+            stop_reason: Some("overall_wall_ceiling".into()),
+        };
+
+        assert_eq!(
+            first_compile_calibration_stop_reason(true, &baseline, &candidate).as_deref(),
+            Some("overall_wall_ceiling")
+        );
     }
 
     #[test]
@@ -1837,6 +2917,11 @@ mod tests {
             "timing_status": "diagnostic_only_calibration_failed_no_scored_comparison"
         });
         assert!(report_requires_nonzero_exit(&report));
+        let sample_floor_report = serde_json::json!({
+            "sample_floor_passed": false,
+            "timing_status": "diagnostic_only_sample_floor_failed_no_scored_comparison"
+        });
+        assert!(report_requires_nonzero_exit(&sample_floor_report));
         fs::remove_file(path).expect("remove temporary journal");
     }
 }
