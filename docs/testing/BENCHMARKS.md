@@ -584,6 +584,56 @@ in the [S3-36b report](../reports/STAGE_3_S3-36b_2026-10-30.md). This is
 bounded branch/helper evidence; it does not cover memory, fallback or
 invalidation workloads and does not complete S3-36.
 
+### S3-36c: resident warm NOP-fallback comparison
+
+`od-bench warm-native-fallback` selects 19 seed/index identities from the
+frozen S3-34p NativeRegisterV1 corpus. The preflight recomputes all 1,200
+interpreter observations, binds the exact corpus bytes and input digest, and
+checks both seed and index for the selected set. It rejects a selected input
+unless it reaches `BudgetExhausted`, consumes one interpreter-retired trailing
+NOP after either two or three native instructions, and its eager repeat
+dispatch performs exactly one cache hit with zero misses, compiles,
+publications, or replacements. The ten two-native cases and nine three-native
+cases remain separate strata.
+
+For each input in turn, the release runner creates one capacity-one cache,
+executes and validates one untimed prewarm, and retains that single executable
+mapping throughout calibration and measurement. It drops the mapping before
+moving to the next case. Twenty interpreter/cached pairs alternate order for
+each case; a shared repetition count is calibrated to at least 200 ms per
+side, with the whole series restarted if a pair falls below the floor. The
+timed intervals cover the complete eager dispatcher or interpreter execution;
+state reset, `CodeView`/control setup, validation, and cache-counter checks are
+outside timing. Every timed cached dispatch must add one hit and no other cache
+activity. Reports retain per-case raw pairs, ratios and spread, retirement
+strata, prewarm counters, resident high-water sizes, and host/source metadata.
+
+Run a non-scored preflight first:
+
+```sh
+cargo run --release --offline -p od-bench -- warm-native-fallback \
+  --corpus work/stage3-native-register-v1/manual/native-register-v1-observations.json \
+  --preflight-only --output work/tmp/stage3/s3-36c/preflight.json
+```
+
+After the implementation commit and independent source review, collect three
+release processes sequentially with distinct report paths. A Stage 2 test
+launch by itself is not a stop condition; record actual process/load snapshots
+and keep or repeat a run based on observed impact and paired spread. Do not
+trim pairs after seeing results. No scored S3-36c result is recorded yet. This
+profile measures only the frozen warm native-plus-NOP-fallback budget-exit
+inputs; it does not establish general fallback, memory, physical x86, Mac mini,
+or full Stage 3 performance behavior.
+
+```sh
+for run in 1 2 3; do
+  cargo run --release --offline -p od-bench -- warm-native-fallback \
+    --corpus work/stage3-native-register-v1/manual/native-register-v1-observations.json \
+    --process-run "$run" \
+    --output "work/tmp/stage3/s3-36c/warm-native-fallback-$run.json"
+done
+```
+
 ### S3-37a: bounded production FIFO16 corpus churn observation
 
 `od-bench cache-churn` is an opt-in Apple Silicon macOS release command. It

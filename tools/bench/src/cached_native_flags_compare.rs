@@ -52,6 +52,8 @@ const STATE_SOURCE: &[u8] = include_bytes!("../../../crates/od-isa/src/state.rs"
 const CORPUS_SOURCE: &[u8] =
     include_bytes!("../../../crates/od-host/src/tests/native_register_v1_corpus.rs");
 
+pub mod warm_fallback;
+
 #[derive(Debug)]
 struct BenchError(String);
 impl std::fmt::Display for BenchError {

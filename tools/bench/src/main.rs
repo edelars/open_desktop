@@ -360,10 +360,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
+        "warm-native-fallback" => {
+            let corpus = corpus_path.ok_or("warm-native-fallback requires --corpus PATH")?;
+            let output = output.ok_or("warm-native-fallback requires --output PATH")?;
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                let value = if preflight_only {
+                    serde_json::to_value(
+                        od_bench::cached_native_flags_compare::warm_fallback::preflight(&corpus)?,
+                    )?
+                } else {
+                    serde_json::to_value(
+                        od_bench::cached_native_flags_compare::warm_fallback::run(
+                            &corpus,
+                            process_run,
+                        )?,
+                    )?
+                };
+                od_bench::dispatch_cache::write_atomic(&output, &value)?;
+            }
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                let _ = (corpus, output, process_run, preflight_only);
+                return Err(
+                    "warm-native-fallback requires native Apple Silicon macOS execution".into(),
+                );
+            }
+        }
         _ => {
             print_usage();
             return Err(
-                "expected record, measure, synthetic, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, cached-flags-compare, or cached-native-flags-compare".into(),
+                "expected record, measure, synthetic, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, warm-native-fallback, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, cached-flags-compare, or cached-native-flags-compare".into(),
             );
         }
     }
@@ -389,6 +416,7 @@ fn print_usage() {
   od-bench cold-phases --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench warm-first-run --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench warm-branch-helper --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
+  od-bench warm-native-fallback --corpus observations.json [--preflight-only] --process-run 1..3 --output report.json\n\
   od-bench cache-churn --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench cache-lifecycle --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench cache-lifecycle-stress-calibrate --case-list PATH --trace PATH --output calibration.json\n\

@@ -3043,6 +3043,24 @@ branch/helper evidence only and does not cover memory workloads or close the
 full S3-36 matrix. See the
 [S3-36b report](../reports/STAGE_3_S3-36b_2026-10-30.md).
 
+#### S3-36c: resident warm NOP-fallback comparison
+
+Added opt-in `od-bench warm-native-fallback` for 19 exact seed/index inputs
+from the frozen S3-34p corpus. Selection is fixed before timing and verified
+again by requiring `BudgetExhausted`, one interpreter-retired trailing NOP,
+two or three native retirements, and exactly one eager repeat cache hit with
+zero misses, compiles, publications, or replacements. The profile separates
+the ten two-native-plus-fallback cases from the nine three-native-plus-fallback
+cases. Each case retains one capacity-one eager cache from one untimed prewarm
+through calibrated alternating interpreter/cached samples, then drops that
+mapping before the next case. Every timed cached call must add exactly one hit
+and no other cache activity; state, exit, budget, and retirement parity are
+checked outside each timed interval. Implementation and CLI wiring are in
+place; release preflight and three scored runs are pending after source review.
+This is a narrow warm NOP-fallback profile and says nothing about memory
+workloads or general fallback frequency. S3-36 and S3-41 remain open. See
+[`BENCHMARKS.md`](../testing/BENCHMARKS.md#s3-36c-resident-warm-nop-fallback-comparison).
+
 1. Прогреть cache вне timed samples и подтвердить hit/compile counters. Повторять одинаковую гостевую работу с корректным reset initial state.
 2. Измерять полный steady-state runtime path с lookup/dispatcher/helpers/flags и exits, а не только одну ARM64 arithmetic instruction.
 3. Чередовать варианты, применять повторные calibrated samples, сохранять raw elapsed/work counts, median и разброс; при пересекающемся шуме не утверждать speedup.
