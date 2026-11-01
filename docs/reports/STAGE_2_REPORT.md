@@ -5537,6 +5537,24 @@ remains open. See the [plan](../plans/STAGE_2.md#s2-29y-exact-finite-nearest-eve
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-29y-exact-finite-nearest-even-binary80-remainder),
 and [standalone report](S2_29Y_X87_FINITE_NEAREST_REMAINDER.md).
 
+## S2-29z — exact quotient metadata for bounded finite binary80 remainders
+
+Added metadata-returning truncating and nearest-even remainder helpers. Results
+preserve the exact remainder pair and expose the integer quotient as a `u128`
+magnitude plus separate sign; zero quotient is positive. Nearest-even metadata
+reports the rounded integer quotient, while truncation reports the truncated
+quotient. The original helpers are projections with unchanged accepted-input
+domains and remainder results. Literal tests cover quotient values beyond
+`u64`, signed operands, positive zero quotient, both nearest-even tie parities,
+exact multiples, negative and maximum positive accepted gaps, malformed and
+endpoint exponent inputs, and legacy-wrapper projection/rejection equivalence.
+
+This remains helper-only; it does not add FPREM/FPREM1, quotient condition
+flags, FCW/FSW or guest exception semantics, decoder/execution/native/JIT/C ABI
+admission, physical acceptance, or a performance claim. ISSUE-019 remains
+open. Checks and review status are detailed in the
+[standalone S2-29z report](S2_29Z_X87_REMAINDER_QUOTIENT.md).
+
 ## S2-30i — exact-only FSUB ST(i), ST(0) (bounded local slice)
 
 Added bare `DC E8+i`, `i=0..7`, as `FSUB ST(i), ST(0)`. The operation shares

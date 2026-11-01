@@ -58,6 +58,39 @@ pub struct X87FiniteQuotient {
     denominator: u64,
 }
 
+/// Exact result of a bounded finite binary80 remainder decomposition.
+///
+/// `remainder_coefficient * 2^(remainder_exponent - 63)` is the remainder.
+/// `quotient_sign` is kept separate from `quotient_magnitude`; a zero quotient
+/// always has a positive sign. The quotient is the truncating integer quotient
+/// for [`remainder_finite_trunc_with_quotient`] and the nearest-even rounded
+/// integer quotient for [`remainder_finite_nearest_even_with_quotient`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct X87FiniteRemainder {
+    remainder_exponent: i32,
+    remainder_coefficient: i128,
+    quotient_magnitude: u128,
+    quotient_sign: bool,
+}
+
+impl X87FiniteRemainder {
+    pub const fn remainder_exponent(self) -> i32 {
+        self.remainder_exponent
+    }
+
+    pub const fn remainder_coefficient(self) -> i128 {
+        self.remainder_coefficient
+    }
+
+    pub const fn quotient_magnitude(self) -> u128 {
+        self.quotient_magnitude
+    }
+
+    pub const fn quotient_sign(self) -> bool {
+        self.quotient_sign
+    }
+}
+
 impl X87FiniteQuotient {
     pub const fn sign(self) -> bool {
         self.sign
@@ -289,101 +322,107 @@ pub fn sqrt_finite_to_binary80(
     pack_normal_rounded_significand(false, exponent, rounded_significand, 64)
 }
 
-/// Return the exact truncated finite remainder coefficient and exponent for
-/// normalized nonzero binary80 values.
+/// Return the exact finite truncating remainder and integer quotient.
 ///
-/// The returned pair `(exponent, coefficient)` represents
-/// `coefficient * 2^(exponent - 63)`. For exponent gaps from zero through 64,
-/// the helper computes the remainder of `(lhs.significand << gap)` divided by
-/// `rhs.significand`. A negative gap returns the left operand unchanged. Gaps
-/// above 64 are outside this bounded helper and return `None`. Only normal,
-/// subnormal, and pseudo-denormal provenance with a normalized significand is
-/// accepted. This is exact integer arithmetic only: it does not implement an
-/// x87 remainder instruction, remainder rounding variant, status flags,
-/// exceptions, or state changes.
-pub fn remainder_finite_trunc(lhs: X87Finite, rhs: X87Finite) -> Option<(i32, i128)> {
-    let valid = |value: X87Finite| {
-        matches!(
-            value.source_class,
-            X87Binary80Class::Normal
-                | X87Binary80Class::Subnormal
-                | X87Binary80Class::PseudoDenormal
-        ) && value.significand & (1_u64 << 63) != 0
-    };
-    if !valid(lhs) || !valid(rhs) {
+/// The remainder pair represents `coefficient * 2^(exponent - 63)`. The
+/// quotient is the exact magnitude of `trunc(lhs/rhs)`, with its sign stored
+/// separately (zero is always positive). Only normalized nonzero Normal,
+/// Subnormal, or PseudoDenormal values with significand bit 63 set are
+/// accepted. Negative exponent gaps yield quotient zero and the unchanged
+/// lhs remainder; gaps 0 through 64 use exact `u128` division. Larger gaps
+/// return `None`. This helper defines no x87 instruction, status, exception,
+/// or architectural signed-zero behavior.
+pub fn remainder_finite_trunc_with_quotient(
+    lhs: X87Finite,
+    rhs: X87Finite,
+) -> Option<X87FiniteRemainder> {
+    if !valid_remainder_operand(lhs) || !valid_remainder_operand(rhs) {
         return None;
     }
 
-    let signed = |magnitude: u64, sign: bool| {
-        let magnitude = i128::from(magnitude);
-        if sign { -magnitude } else { magnitude }
-    };
     let gap = i64::from(lhs.exponent) - i64::from(rhs.exponent);
     if gap < 0 {
-        return Some((lhs.exponent, signed(lhs.significand, lhs.sign)));
+        return Some(X87FiniteRemainder {
+            remainder_exponent: lhs.exponent,
+            remainder_coefficient: signed_significand(lhs),
+            quotient_magnitude: 0,
+            quotient_sign: false,
+        });
     }
     if gap > 64 {
         return None;
     }
 
-    // `lhs.significand` has at most 64 bits, so shifting by at most 64 keeps
-    // the exact numerator within u128. The remainder is strictly below the
-    // 64-bit divisor and therefore safely representable as a signed i128.
+    // The complete shifted numerator, including its quotient, fits in u128.
     let numerator = u128::from(lhs.significand) << (gap as u32);
-    let remainder = (numerator % u128::from(rhs.significand)) as u64;
-    Some((rhs.exponent, signed(remainder, lhs.sign)))
+    let denominator = u128::from(rhs.significand);
+    let quotient_magnitude = numerator / denominator;
+    let remainder = (numerator % denominator) as u64;
+    Some(X87FiniteRemainder {
+        remainder_exponent: rhs.exponent,
+        remainder_coefficient: signed_magnitude(i128::from(remainder), lhs.sign),
+        quotient_magnitude,
+        quotient_sign: quotient_magnitude != 0 && lhs.sign != rhs.sign,
+    })
 }
 
-/// Return the exact finite nearest-even remainder coefficient and exponent.
+/// Preserve the original truncated-remainder API as the remainder projection
+/// of [`remainder_finite_trunc_with_quotient`]. Its rejection domain is
+/// identical to the metadata-returning helper.
+pub fn remainder_finite_trunc(lhs: X87Finite, rhs: X87Finite) -> Option<(i32, i128)> {
+    remainder_finite_trunc_with_quotient(lhs, rhs)
+        .map(|result| (result.remainder_exponent, result.remainder_coefficient))
+}
+
+/// Return the exact nearest-even finite remainder and rounded integer quotient.
 ///
-/// The returned pair `(exponent, coefficient)` represents
-/// `coefficient * 2^(exponent - 63)` and equals
-/// `lhs - nearest_integer_ties_even(lhs / rhs) * rhs`. Only normalized
-/// nonzero Normal, Subnormal, and PseudoDenormal inputs are accepted. The
-/// bounded integer decomposition handles exponent gaps from -1 through 64;
-/// smaller-magnitude lhs values are returned unchanged and larger gaps are
-/// rejected. This helper does not implement FPREM1 or any x87 instruction,
-/// status, exception, or quotient-bit behavior.
-pub fn remainder_finite_nearest_even(lhs: X87Finite, rhs: X87Finite) -> Option<(i32, i128)> {
-    let valid = |value: X87Finite| {
-        matches!(
-            value.source_class,
-            X87Binary80Class::Normal
-                | X87Binary80Class::Subnormal
-                | X87Binary80Class::PseudoDenormal
-        ) && value.significand & (1_u64 << 63) != 0
-    };
-    if !valid(lhs) || !valid(rhs) {
+/// The remainder pair represents `coefficient * 2^(exponent - 63)` and equals
+/// `lhs - round_ties_even(lhs/rhs) * rhs`. The quotient magnitude is unsigned
+/// and the quotient sign is separate; a rounded zero is always positive. Only
+/// normalized nonzero Normal, Subnormal, or PseudoDenormal operands with
+/// significand bit 63 set are accepted. Gaps from -1 through 64 are handled;
+/// smaller lhs magnitudes yield quotient zero and larger gaps are rejected.
+/// This helper does not implement FPREM1 or any x87 instruction/status effects.
+pub fn remainder_finite_nearest_even_with_quotient(
+    lhs: X87Finite,
+    rhs: X87Finite,
+) -> Option<X87FiniteRemainder> {
+    if !valid_remainder_operand(lhs) || !valid_remainder_operand(rhs) {
         return None;
     }
 
-    let apply_sign = |coefficient: i128, sign: bool| {
-        if sign { -coefficient } else { coefficient }
-    };
     let gap = i64::from(lhs.exponent) - i64::from(rhs.exponent);
     if gap <= -2 {
-        return Some((
-            lhs.exponent,
-            apply_sign(i128::from(lhs.significand), lhs.sign),
-        ));
+        return Some(X87FiniteRemainder {
+            remainder_exponent: lhs.exponent,
+            remainder_coefficient: signed_significand(lhs),
+            quotient_magnitude: 0,
+            quotient_sign: false,
+        });
     }
     if gap == -1 {
         if lhs.significand <= rhs.significand {
-            // The ratio is at most one half; at equality, zero is even.
-            return Some((
-                lhs.exponent,
-                apply_sign(i128::from(lhs.significand), lhs.sign),
-            ));
+            // At equality, the quotient is exactly 1/2 and rounds to even 0.
+            return Some(X87FiniteRemainder {
+                remainder_exponent: lhs.exponent,
+                remainder_coefficient: signed_significand(lhs),
+                quotient_magnitude: 0,
+                quotient_sign: false,
+            });
         }
         let coefficient = i128::from(lhs.significand) - (i128::from(rhs.significand) << 1);
-        return Some((lhs.exponent, apply_sign(coefficient, lhs.sign)));
+        return Some(X87FiniteRemainder {
+            remainder_exponent: lhs.exponent,
+            remainder_coefficient: if lhs.sign { -coefficient } else { coefficient },
+            quotient_magnitude: 1,
+            quotient_sign: lhs.sign != rhs.sign,
+        });
     }
     if gap > 64 {
         return None;
     }
 
-    // With a gap no larger than 64, the exact numerator fits in u128. Keep
-    // both quotient and doubled remainder wide through the tie decision.
+    // With a gap no larger than 64, numerator and quotient fit in u128.
     let numerator = u128::from(lhs.significand) << (gap as u32);
     let denominator = u128::from(rhs.significand);
     let quotient = numerator / denominator;
@@ -391,12 +430,33 @@ pub fn remainder_finite_nearest_even(lhs: X87Finite, rhs: X87Finite) -> Option<(
     let twice_remainder = remainder * 2;
     let increment =
         twice_remainder > denominator || (twice_remainder == denominator && quotient & 1 != 0);
+    let quotient_magnitude = quotient + u128::from(increment);
     let coefficient = if increment {
         i128::try_from(remainder).ok()? - i128::from(rhs.significand)
     } else {
         i128::try_from(remainder).ok()?
     };
-    Some((rhs.exponent, apply_sign(coefficient, lhs.sign)))
+    Some(X87FiniteRemainder {
+        remainder_exponent: rhs.exponent,
+        remainder_coefficient: if lhs.sign { -coefficient } else { coefficient },
+        quotient_magnitude,
+        quotient_sign: quotient_magnitude != 0 && lhs.sign != rhs.sign,
+    })
+}
+
+/// Preserve the original nearest-even-remainder API as the remainder
+/// projection of [`remainder_finite_nearest_even_with_quotient`]. Its rejection
+/// domain is identical to the metadata-returning helper.
+pub fn remainder_finite_nearest_even(lhs: X87Finite, rhs: X87Finite) -> Option<(i32, i128)> {
+    remainder_finite_nearest_even_with_quotient(lhs, rhs)
+        .map(|result| (result.remainder_exponent, result.remainder_coefficient))
+}
+
+fn valid_remainder_operand(value: X87Finite) -> bool {
+    matches!(
+        value.source_class,
+        X87Binary80Class::Normal | X87Binary80Class::Subnormal | X87Binary80Class::PseudoDenormal
+    ) && value.significand & (1_u64 << 63) != 0
 }
 
 /// Round an exact normalized quotient directly into the binary80 subnormal
@@ -822,12 +882,11 @@ pub fn normalize_exact_magnitude(
 }
 
 fn signed_significand(value: X87Finite) -> i128 {
-    let significand = value.significand as i128;
-    if value.sign {
-        -significand
-    } else {
-        significand
-    }
+    signed_magnitude(i128::from(value.significand), value.sign)
+}
+
+fn signed_magnitude(magnitude: i128, sign: bool) -> i128 {
+    if sign { -magnitude } else { magnitude }
 }
 
 /// Align two finite values to a shared exponent without changing their order
@@ -1027,12 +1086,13 @@ impl X87Binary80 {
 #[cfg(test)]
 mod tests {
     use super::{
-        RationalRoundingMode, X87Binary80, X87Binary80Class, X87Finite, X87Grs,
+        RationalRoundingMode, X87Binary80, X87Binary80Class, X87Finite, X87FiniteRemainder, X87Grs,
         add_finite_same_exponent, add_finite_same_exponent_to_binary80, add_finite_to_binary80,
         add_finite_unequal_exponents, align_finite_pair, divide_finite_significands,
         divide_finite_to_binary80, multiply_finite_significands, multiply_finite_to_binary80,
         normalize_exact_coefficient, normalize_exact_magnitude, pack_normal_rounded_significand,
-        remainder_finite_nearest_even, remainder_finite_trunc, round_pack_exact_coefficient,
+        remainder_finite_nearest_even, remainder_finite_nearest_even_with_quotient,
+        remainder_finite_trunc, remainder_finite_trunc_with_quotient, round_pack_exact_coefficient,
         round_pack_exact_magnitude, round_pack_subnormal_quotient, round_quotient_magnitude,
         round_quotient_ties_even, round_quotient_to_precision, scale_finite_to_binary80,
         shift_right_jam, shift_right_jam_u128, sqrt_finite_to_binary80,
@@ -2987,6 +3047,205 @@ mod tests {
         let before = (lhs, rhs);
         let _ = remainder_finite_nearest_even(lhs, rhs);
         assert_eq!((lhs, rhs), before);
+    }
+
+    #[test]
+    fn finite_remainder_metadata_reports_exact_signed_truncating_quotients() {
+        let normal = X87Binary80Class::Normal;
+        let high = 0x8000_0000_0000_0000;
+        let cases = [
+            // At gap 0, quotient is exactly one and the remainder is 1/2.
+            (
+                0,
+                0xc000_0000_0000_0000,
+                high,
+                false,
+                false,
+                1_u128,
+                false,
+                0x4000_0000_0000_0000_i128,
+            ),
+            (
+                0,
+                0xc000_0000_0000_0000,
+                high,
+                true,
+                false,
+                1,
+                true,
+                -0x4000_0000_0000_0000_i128,
+            ),
+            // A negative gap proves quotient zero, whose sign is canonical positive.
+            (-1, high, high, true, false, 0, false, -i128::from(high)),
+            // Gap 64 exercises the widest accepted quotient, beyond u64.
+            (64, u64::MAX, high, false, true, (1_u128 << 65) - 2, true, 0),
+        ];
+        for (gap, lhs_sig, rhs_sig, lhs_sign, rhs_sign, q, q_sign, rem) in cases {
+            let lhs = finite(gap, lhs_sig, lhs_sign, normal);
+            let rhs = finite(0, rhs_sig, rhs_sign, normal);
+            let result = remainder_finite_trunc_with_quotient(lhs, rhs).unwrap();
+            assert_eq!(result.quotient_magnitude(), q);
+            assert_eq!(result.quotient_sign(), q_sign);
+            assert_eq!(result.remainder_coefficient(), rem);
+            assert_eq!(
+                (result.remainder_exponent(), result.remainder_coefficient()),
+                remainder_finite_trunc(lhs, rhs).unwrap()
+            );
+        }
+        assert_eq!(
+            remainder_finite_trunc_with_quotient(
+                finite(65, high, false, normal),
+                finite(0, high, false, normal),
+            ),
+            None
+        );
+
+        for lhs_sign in [false, true] {
+            for rhs_sign in [false, true] {
+                let exact_multiple = remainder_finite_trunc_with_quotient(
+                    finite(2, 0xc000_0000_0000_0000, lhs_sign, normal),
+                    finite(1, high, rhs_sign, normal),
+                )
+                .unwrap();
+                assert_eq!(exact_multiple.quotient_magnitude(), 3);
+                assert_eq!(exact_multiple.quotient_sign(), lhs_sign != rhs_sign);
+                assert_eq!(exact_multiple.remainder_coefficient(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn finite_remainder_metadata_reports_nearest_even_rounded_quotients() {
+        let normal = X87Binary80Class::Normal;
+        let high = 0x8000_0000_0000_0000;
+        let cases = [
+            // 1.5 ties from odd q=1 to even q=2.
+            (
+                0,
+                0xc000_0000_0000_0000,
+                high,
+                false,
+                false,
+                2_u128,
+                false,
+                -0x4000_0000_0000_0000_i128,
+            ),
+            // 2.5 ties from even q=2 to q=2.
+            (
+                1,
+                0xa000_0000_0000_0000,
+                high,
+                false,
+                false,
+                2,
+                false,
+                0x4000_0000_0000_0000_i128,
+            ),
+            // Below/at half rounds to zero; zero quotient sign stays positive.
+            (-1, high, high + 1, true, false, 0, false, -i128::from(high)),
+            (-1, high, high, true, false, 0, false, -i128::from(high)),
+            // Just above half rounds to one and uses quotient sign lhs XOR rhs.
+            (
+                -1,
+                high + 1,
+                high,
+                true,
+                false,
+                1,
+                true,
+                i128::from(1_u64 << 63) - 1,
+            ),
+            // Gap 64 quotient is wider than u64 and remains exact.
+            (64, u64::MAX, high, false, true, (1_u128 << 65) - 2, true, 0),
+        ];
+        for (gap, lhs_sig, rhs_sig, lhs_sign, rhs_sign, q, q_sign, rem) in cases {
+            let lhs = finite(gap, lhs_sig, lhs_sign, normal);
+            let rhs = finite(0, rhs_sig, rhs_sign, normal);
+            let result = remainder_finite_nearest_even_with_quotient(lhs, rhs).unwrap();
+            assert_eq!(result.quotient_magnitude(), q);
+            assert_eq!(result.quotient_sign(), q_sign);
+            assert_eq!(result.remainder_coefficient(), rem);
+            assert_eq!(
+                (result.remainder_exponent(), result.remainder_coefficient()),
+                remainder_finite_nearest_even(lhs, rhs).unwrap()
+            );
+        }
+        assert_eq!(
+            remainder_finite_nearest_even_with_quotient(
+                finite(65, high, false, normal),
+                finite(0, high, false, normal),
+            ),
+            None
+        );
+        assert_eq!(
+            remainder_finite_nearest_even_with_quotient(
+                finite(-2, high, true, normal),
+                finite(0, high, false, normal),
+            )
+            .unwrap()
+            .quotient_sign(),
+            false
+        );
+
+        for lhs_sign in [false, true] {
+            for rhs_sign in [false, true] {
+                let exact_multiple = remainder_finite_nearest_even_with_quotient(
+                    finite(2, 0xc000_0000_0000_0000, lhs_sign, normal),
+                    finite(1, high, rhs_sign, normal),
+                )
+                .unwrap();
+                assert_eq!(exact_multiple.quotient_magnitude(), 3);
+                assert_eq!(exact_multiple.quotient_sign(), lhs_sign != rhs_sign);
+                assert_eq!(exact_multiple.remainder_coefficient(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn finite_remainder_metadata_preserves_legacy_projection_and_rejections() {
+        let normal = X87Binary80Class::Normal;
+        let high = 0x8000_0000_0000_0000;
+        let valid = finite(0, high, false, normal);
+        let values = [
+            valid,
+            finite(64, u64::MAX, true, X87Binary80Class::Subnormal),
+            finite(i32::MIN, high, true, X87Binary80Class::PseudoDenormal),
+            finite(i32::MAX, high, false, normal),
+            finite(0, high - 1, false, normal),
+            finite(0, 0, false, normal),
+            finite(0, high, false, X87Binary80Class::Zero),
+            finite(0, high, false, X87Binary80Class::Infinity),
+        ];
+
+        for lhs in values {
+            for rhs in values {
+                let trunc = remainder_finite_trunc_with_quotient(lhs, rhs);
+                let trunc_projection =
+                    trunc.map(|r| (r.remainder_exponent(), r.remainder_coefficient()));
+                assert_eq!(remainder_finite_trunc(lhs, rhs), trunc_projection);
+                let nearest = remainder_finite_nearest_even_with_quotient(lhs, rhs);
+                let nearest_projection =
+                    nearest.map(|r| (r.remainder_exponent(), r.remainder_coefficient()));
+                assert_eq!(remainder_finite_nearest_even(lhs, rhs), nearest_projection);
+            }
+        }
+
+        // The exponent extremes stay rejection-equivalent after widening.
+        assert_eq!(
+            remainder_finite_trunc_with_quotient(
+                finite(i32::MAX, high, false, normal),
+                finite(i32::MIN, high, false, normal),
+            ),
+            None
+        );
+        assert_eq!(
+            remainder_finite_nearest_even_with_quotient(
+                finite(i32::MAX, high, false, normal),
+                finite(i32::MIN, high, false, normal),
+            ),
+            None
+        );
+        let _: Option<X87FiniteRemainder> = remainder_finite_trunc_with_quotient(valid, valid);
     }
 
     #[test]

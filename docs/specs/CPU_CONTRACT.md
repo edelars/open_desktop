@@ -3600,6 +3600,35 @@ coverage and validation are recorded in the
 [S2-29y standalone report](../reports/S2_29Y_X87_FINITE_NEAREST_REMAINDER.md).
 ISSUE-019 remains open.
 
+## Local S2-29z: exact quotient metadata for bounded finite remainders
+
+`od_isa::x87::remainder_finite_trunc_with_quotient(lhs, rhs)` and
+`remainder_finite_nearest_even_with_quotient(lhs, rhs)` return
+`Option<X87FiniteRemainder>`. Its remainder accessors preserve the S2-29x/y
+coefficient decomposition. `quotient_magnitude()` returns an unsigned `u128`;
+`quotient_sign()` gives its sign separately, with zero always represented as
+positive. The trunc helper reports the magnitude of `trunc(lhs/rhs)` and the
+nearest-even helper reports the magnitude of the integer quotient rounded to
+nearest, ties to even.
+
+Both APIs preserve the prior operand acceptance and rejection domains exactly:
+nonzero normalized significands with bit 63 set, Normal/Subnormal/
+PseudoDenormal provenance, widened exponent-gap arithmetic, and no accepted
+gap above 64. The truncating helper accepts all negative gaps, which return a
+zero quotient; nearest-even accepts gaps down to -1 and also returns a zero
+quotient for the exact half tie. For nonnegative gaps, the full shifted
+numerator and quotient fit in `u128`. The existing `remainder_finite_trunc` and
+`remainder_finite_nearest_even` APIs remain projections of these helpers and
+retain identical remainder values and `None` domains.
+
+This is exact helper arithmetic only. It adds no FPREM/FPREM1, quotient
+condition flags, FCW/FSW effects, x87 state changes, guest exceptions,
+architectural zero-sign choice, decoder/execution, native/JIT/C ABI admission,
+physical x86 acceptance, or performance claim. Literal vectors and validation
+are recorded in the
+[S2-29z standalone report](../reports/S2_29Z_X87_REMAINDER_QUOTIENT.md).
+ISSUE-019 remains open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.

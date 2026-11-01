@@ -297,6 +297,25 @@
   [CPU contract](specs/CPU_CONTRACT.md#local-s2-29y-exact-finite-nearest-even-binary80-remainder),
   and [report](reports/STAGE_2_REPORT.md#s2-29y--exact-finite-nearest-even-binary80-remainder-helper).
 
+- **S2-29z finite remainder quotient metadata — bounded helper complete:** the
+  truncating and nearest-even metadata APIs return the existing exact remainder
+  plus unsigned `u128` quotient magnitude and separate sign; zero quotient is
+  positive, and nearest-even reports the ties-to-even rounded integer quotient.
+  The legacy helpers project these results and preserve their acceptance and
+  rejection domains. Literal vectors cover values above `u64`, signed operands,
+  zero quotient, exact multiples, odd/even ties, gaps through the accepted
+  boundary, malformed/provenance rejects, `i32` exponent endpoints, and wrapper
+  projection equivalence. The 13 focused remainder tests, all 1,741 `od-isa`
+  tests, format check, component/workspace checks, and Graphify update passed.
+  Layout check remains unavailable in this worktree for the pre-existing
+  ISSUE-023 `.git` pointer and missing ignored oracle manifests. Independent
+  review is pending separately. This adds no FPREM/FPREM1, quotient flags,
+  FCW/FSW or guest exception behavior, decoder/execution/native/JIT/C ABI
+  admission, physical x86 acceptance, or performance claim. ISSUE-019 remains
+  open. See [plan](plans/STAGE_2.md#s2-29z-exact-quotient-metadata-for-bounded-finite-binary80-remainders),
+  [CPU contract](specs/CPU_CONTRACT.md#local-s2-29z-exact-quotient-metadata-for-bounded-finite-remainders),
+  and [report](reports/STAGE_2_REPORT.md#s2-29z--exact-quotient-metadata-for-bounded-finite-binary80-remainders).
+
 - **FCHS/FABS stale rejection assertions — resolved:** `fabs_rejects_missing_or_invalid_source_and_boundaries_atomically` and `fchs_rejects_invalid_source_and_execution_boundaries_atomically` now use standalone SF (`FSW=0x0040`) in the rejection vectors; IE|SF (`0x0041`) remains accepted as specified by S2-30bi. The existing tests continue to assert atomic state preservation, and the forbidden-status matrix passes. Validation: focused FABS/FCHS tests and the S2-30bi forbidden-status test pass; full `cargo test -p od-isa --offline` passes 739/739, `cargo test -p od-testkit --offline` 189/189, and `cargo test -p od-jit --offline` 5/5. No CPU semantics changed. Reference: [S2-30bi CPU contract](specs/CPU_CONTRACT.md#local-s2-30bi-historical-stack-fault-status-through-bounded-fchs-fabs); [S2-30bi report](reports/STAGE_2_REPORT.md#s2-30bi--historical-sf-only-with-ie-through-bounded-fchs-fabs).
 - **S2-30ci historical FCMOVNU extent:** original exact bare `DB D9` coverage is superseded by indexed S2-30cj. The indexed local Long64 interpreter admits `DB D8..DF`; it checks TOP and `(TOP+i)&7` before PF for `i>0`, checks only TOP for self-index, and copies raw bytes/tag only for PF=0. Under FCW `0x037f` and `FSW & 0x82ff == 0`, used participants must be Valid canonical Normal or Zero exact signed zero. Local evidence: 363,520 success snapshots (358,400 indexed plus 5,120 self), 161,280 invalid class/tag snapshots (150,528 indexed plus 10,752 self), 18-stream schema, literal rows, complete producer/complement snapshots and JIT denial. Native/JIT execution, x87 exception and unordered/Special semantics, and physical x86 validation remain open; no Mac mini or SSH run was made. Next step remains the shared final batched host/physical acceptance. See [CPU contract](specs/CPU_CONTRACT.md#local-s2-30cj-bounded-indexed-fcmovnu-st0-sti-db-d8df), [plan](plans/STAGE_2.md#s2-30cj-indexed-bare-fcmovnu-st0-sti-db-d8df), [report](reports/STAGE_2_REPORT.md#s2-30cj--indexed-bare-fcmovnu-st0-sti), and [fixture notes](../tests/fixtures/x86/stage2/README.md#s2-30cj-indexed-bare-fcmovnu-st0-sti-db-d8df).
 

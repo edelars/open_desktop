@@ -3346,6 +3346,32 @@ architectural signed-zero behavior, or physical x86 acceptance. See the
 [standalone S2-29y report](../reports/S2_29Y_X87_FINITE_NEAREST_REMAINDER.md)
 for validation. ISSUE-019 remains open.
 
+### S2-29z. Exact quotient metadata for bounded finite binary80 remainders
+
+Add metadata-returning companions for the S2-29x truncating and S2-29y
+nearest-even finite remainder helpers. Each result carries the same exact
+remainder exponent/coefficient plus an unsigned `u128` quotient magnitude and
+separate quotient sign; a zero quotient is always positive. Truncation reports
+the exact truncated integer quotient. Nearest-even reports the rounded
+ties-to-even integer quotient, including both quotient-tie parity directions.
+Keep the existing helpers as projections with identical result and rejection
+domains. Preserve the existing Normal/Subnormal/PseudoDenormal provenance,
+integer-bit, nonzero-input, and bounded exponent-gap rules.
+
+Add independent literal integer vectors for quotient magnitudes above `u64`,
+both quotient signs, canonical positive zero quotient, exact multiples, ties
+from odd and even integers, exponent-gap endpoints, malformed/provenance
+rejections, exponent extremes, and wrapper projection/domain equivalence. This
+remains helper-only: no FPREM/FPREM1, condition flags, x87 state/control/status,
+decoder/execution, native/JIT/C ABI admission, physical x86 acceptance, or
+performance claim. See the [standalone S2-29z report](../reports/S2_29Z_X87_REMAINDER_QUOTIENT.md).
+
+**Результат:** helper and literal coverage are implemented. Focused remainder
+tests (13), full `od-isa` tests (1,741), formatting, and component/workspace
+checks pass; Graphify was updated. Layout validation reports only the known
+isolated-worktree failures tracked by ISSUE-023. Independent review is pending
+separately. ISSUE-019 remains open.
+
 ### S2-30. Основные x87 операции
 
 1. Добавлять отдельными подшагами FLD/FST/FSTP, stack operations/constants, basic arithmetic и comparisons из профиля.
