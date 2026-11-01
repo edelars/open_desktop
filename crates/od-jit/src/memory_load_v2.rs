@@ -1975,9 +1975,7 @@ mod tests {
                 let matching: Vec<_> = map
                     .ranges()
                     .iter()
-                    .filter(|range| {
-                        range.instruction_index == Some(index) && range.phase == phase
-                    })
+                    .filter(|range| range.instruction_index == Some(index) && range.phase == phase)
                     .collect();
                 if matching.len() != 1
                     || matching[0].guest_rip != GuestRipSource::Fixed(expected_rip)
@@ -2272,7 +2270,10 @@ mod tests {
                 operations
             );
             let map = block.pc_map();
-            assert_eq!(map.code_len() as usize, block.code().to_le_bytes().unwrap().len());
+            assert_eq!(
+                map.code_len() as usize,
+                block.code().to_le_bytes().unwrap().len()
+            );
             assert!(matches_two_site_pc_map_contract(map, entry_rip, operations));
 
             for range in map.ranges() {
