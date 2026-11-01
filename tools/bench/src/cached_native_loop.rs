@@ -26,7 +26,7 @@ use serde::Serialize;
 use crate::{HostMetadata, MAX_RUN_TIME};
 
 const PROFILE_ID: &str = "s3-36f-native-register-v1-cached-register-loop-v1";
-const BASE_RIP: u64 = 0x1000;
+pub(crate) const BASE_RIP: u64 = 0x1000;
 const PAIRS: usize = 20;
 const CALIBRATION_CALLS: u64 = 64;
 const MIN_SAMPLE: Duration = Duration::from_millis(200);
@@ -52,12 +52,12 @@ fn err(message: impl Into<String>) -> BenchError {
 }
 
 #[derive(Clone, Copy)]
-struct Stratum {
-    id: &'static str,
-    code: &'static [u8],
-    instructions_per_iteration: u64,
-    iterations: u64,
-    seed: u64,
+pub(crate) struct Stratum {
+    pub(crate) id: &'static str,
+    pub(crate) code: &'static [u8],
+    pub(crate) instructions_per_iteration: u64,
+    pub(crate) iterations: u64,
+    pub(crate) seed: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -598,7 +598,7 @@ fn measure_stratum(case: &Prepared, run_started: Instant) -> Result<StratumRepor
     })
 }
 
-fn strata() -> Vec<Stratum> {
+pub(crate) fn strata() -> Vec<Stratum> {
     const A: &[u8] = &[0x48, 0x8D, 0x04, 0x0B, 0x48, 0x87, 0xD8, 0x75, 0xF7];
     const B: &[u8] = &[
         0x48, 0x8D, 0x04, 0x0B, 0x48, 0x87, 0xD8, 0x48, 0x8D, 0x04, 0x0B, 0x48, 0x87, 0xD8, 0x75,
@@ -708,7 +708,7 @@ fn prepare(s: Stratum) -> Result<Prepared, BenchError> {
     })
 }
 
-fn initial_state(seed: u64) -> LongModeState {
+pub(crate) fn initial_state(seed: u64) -> LongModeState {
     let mut s = LongModeState::default();
     s.rip = BASE_RIP;
     s.rflags = 0x202; // reserved bit plus ZF clear
@@ -718,7 +718,7 @@ fn initial_state(seed: u64) -> LongModeState {
     s
 }
 
-fn padded_code(code: &[u8]) -> Vec<u8> {
+pub(crate) fn padded_code(code: &[u8]) -> Vec<u8> {
     let mut bytes = vec![0; BASE_RIP as usize];
     bytes.extend_from_slice(code);
     bytes

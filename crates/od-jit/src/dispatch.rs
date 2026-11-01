@@ -1031,6 +1031,7 @@ pub fn run_cached_native_register_v1_controlled<B: CachedBlockBackend>(
     cache: &mut SingleEntryBlockCache<B::Published>,
     backend: &mut B,
 ) -> Result<FallbackDispatchResult, DispatchError<B::Error>> {
+    let mut observer = NoopObserver;
     run_cached_native_register_v1_strategy_controlled(
         code,
         admission,
@@ -1041,6 +1042,37 @@ pub fn run_cached_native_register_v1_controlled<B: CachedBlockBackend>(
         control,
         cache,
         backend,
+        &mut observer,
+        NativeRegisterV1CacheStrategy::Eager,
+    )
+}
+
+/// Explicit benchmark-only eager NativeRegisterV1 path with dispatcher phase
+/// timings. The default entrypoint retains its no-op observer path.
+#[cfg(feature = "phase-observation")]
+pub fn run_cached_native_register_v1_controlled_observed<B: CachedBlockBackend>(
+    code: CodeView<'_>,
+    admission: &NativeRegisterV1Admission,
+    execution_context: ExecutionContextSnapshot,
+    dependencies: &[CodeDependencySpan],
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    cache: &mut SingleEntryBlockCache<B::Published>,
+    backend: &mut B,
+    observer: &mut crate::phase_observation::PhaseRecorder,
+) -> Result<FallbackDispatchResult, DispatchError<B::Error>> {
+    run_cached_native_register_v1_strategy_controlled(
+        code,
+        admission,
+        execution_context,
+        dependencies,
+        state,
+        total_budget,
+        control,
+        cache,
+        backend,
+        observer,
         NativeRegisterV1CacheStrategy::Eager,
     )
 }
@@ -1059,6 +1091,7 @@ pub fn run_cached_native_register_v1_demand_flags_candidate_controlled<B: Cached
     cache: &mut SingleEntryBlockCache<B::Published>,
     backend: &mut B,
 ) -> Result<FallbackDispatchResult, DispatchError<B::Error>> {
+    let mut observer = NoopObserver;
     run_cached_native_register_v1_strategy_controlled(
         code,
         admission,
@@ -1069,6 +1102,7 @@ pub fn run_cached_native_register_v1_demand_flags_candidate_controlled<B: Cached
         control,
         cache,
         backend,
+        &mut observer,
         NativeRegisterV1CacheStrategy::DemandFlagsCandidate,
     )
 }
@@ -1079,7 +1113,7 @@ enum NativeRegisterV1CacheStrategy {
     DemandFlagsCandidate,
 }
 
-fn run_cached_native_register_v1_strategy_controlled<B: CachedBlockBackend>(
+fn run_cached_native_register_v1_strategy_controlled<B: CachedBlockBackend, O: PhaseObserver>(
     code: CodeView<'_>,
     admission: &NativeRegisterV1Admission,
     execution_context: ExecutionContextSnapshot,
@@ -1089,6 +1123,7 @@ fn run_cached_native_register_v1_strategy_controlled<B: CachedBlockBackend>(
     control: DispatchControl<'_>,
     cache: &mut SingleEntryBlockCache<B::Published>,
     backend: &mut B,
+    observer: &mut O,
     strategy: NativeRegisterV1CacheStrategy,
 ) -> Result<FallbackDispatchResult, DispatchError<B::Error>> {
     if execution_context.profile != ExecutionProfile::NATIVE_REGISTER_V1_LONG64_CANONICAL48 {
@@ -1169,12 +1204,14 @@ fn run_cached_native_register_v1_strategy_controlled<B: CachedBlockBackend>(
             continue;
         }
 
-        let built = crate::block::build_block_for_native_register_v1(
-            code,
-            state.rip,
-            AccessContext::default(),
-            crate::block::BlockLimits::default(),
-        )
+        let built = measure(observer, DispatchPhase::BlockBuildAndAdmission, || {
+            crate::block::build_block_for_native_register_v1(
+                code,
+                state.rip,
+                AccessContext::default(),
+                crate::block::BlockLimits::default(),
+            )
+        })
         .map_err(|error| DispatchError::Compile(BlockCompileError::Build(error)))?;
         let guest_block = match built {
             crate::block::BuildOutcome::Block(block) => block,
@@ -1182,29 +1219,34 @@ fn run_cached_native_register_v1_strategy_controlled<B: CachedBlockBackend>(
                 return Err(DispatchError::NoNativePrefix { rip: state.rip });
             }
         };
-        let minimum = minimum_cache_key_size::<B::Published>(code, dependencies, &guest_block)
-            .ok_or(DispatchError::Cache(CacheError::SizeOverflow))?;
-        cache.check_minimum(minimum).map_err(DispatchError::Cache)?;
-        let key = TranslationKey::for_block(
-            code,
-            &guest_block,
-            match strategy {
-                NativeRegisterV1CacheStrategy::Eager => CompileFlavor::S3_38bNativeRegisterV1Cached,
-                NativeRegisterV1CacheStrategy::DemandFlagsCandidate => {
-                    CompileFlavor::S3_38cNativeRegisterV1DemandFlagsCachedCandidate
-                }
-            },
-            execution_context,
-            dependencies,
-        )
-        .map_err(DispatchError::TranslationKey)?;
-        validate_cached_snapshot(&key, code, dependencies)?;
-        let hit_index = cache.find(&key);
-        if let Some(index) = hit_index {
-            cache.record_hit(index).map_err(DispatchError::Cache)?;
-        } else {
-            cache.record_miss().map_err(DispatchError::Cache)?;
-        }
+        let (key, hit_index) = measure(observer, DispatchPhase::KeySnapshotAndLookup, || {
+            let minimum = minimum_cache_key_size::<B::Published>(code, dependencies, &guest_block)
+                .ok_or(DispatchError::Cache(CacheError::SizeOverflow))?;
+            cache.check_minimum(minimum).map_err(DispatchError::Cache)?;
+            let key = TranslationKey::for_block(
+                code,
+                &guest_block,
+                match strategy {
+                    NativeRegisterV1CacheStrategy::Eager => {
+                        CompileFlavor::S3_38bNativeRegisterV1Cached
+                    }
+                    NativeRegisterV1CacheStrategy::DemandFlagsCandidate => {
+                        CompileFlavor::S3_38cNativeRegisterV1DemandFlagsCachedCandidate
+                    }
+                },
+                execution_context,
+                dependencies,
+            )
+            .map_err(DispatchError::TranslationKey)?;
+            validate_cached_snapshot(&key, code, dependencies)?;
+            let hit_index = cache.find(&key);
+            if let Some(index) = hit_index {
+                cache.record_hit(index).map_err(DispatchError::Cache)?;
+            } else {
+                cache.record_miss().map_err(DispatchError::Cache)?;
+            }
+            Ok::<_, DispatchError<B::Error>>((key, hit_index))
+        })?;
         let cached_index = if hit_index.is_some() {
             hit_index.expect("hit index exists")
         } else {
@@ -1233,9 +1275,10 @@ fn run_cached_native_register_v1_strategy_controlled<B: CachedBlockBackend>(
                 .prepare_install(code_bytes, logical_bytes)
                 .map_err(DispatchError::Cache)?;
             validate_cached_snapshot(&key, code, dependencies)?;
-            let published = backend
-                .publish_cached_block(&compiled)
-                .map_err(DispatchError::CachePublish)?;
+            let published = measure(observer, DispatchPhase::Publication, || {
+                backend.publish_cached_block(&compiled)
+            })
+            .map_err(DispatchError::CachePublish)?;
             cache
                 .record_publish(code_bytes)
                 .map_err(DispatchError::Cache)?;
@@ -1281,13 +1324,15 @@ fn run_cached_native_register_v1_strategy_controlled<B: CachedBlockBackend>(
                 blocks_executed,
             );
         }
-        let execution = backend.execute_cached_block(
-            &cached.published,
-            &cached.block,
-            state,
-            remaining,
-            control,
-        );
+        let execution = measure(observer, DispatchPhase::HostExecutionBoundary, || {
+            backend.execute_cached_block(
+                &cached.published,
+                &cached.block,
+                state,
+                remaining,
+                control,
+            )
+        });
         let report = match execution {
             Ok(report) => report,
             Err(error) => {
