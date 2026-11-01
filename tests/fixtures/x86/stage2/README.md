@@ -7614,3 +7614,21 @@ local-only classification is checked, with no physical x86 claim. See the
 [plan](../../../../docs/plans/STAGE_2.md#s2-37cp--exact-legacy-long64-ucomisd-xmm0qword-ptr-rax),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cp--bounded-long64-ucomisd-xmm0qword-ptr-rax-m64-memory-profile), and
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cp--ucomisd-xmm0m64).
+
+### S2-37cq — COMISS XMM0,m32
+
+`s2_37cq_comiss_m32_qnan_subnormal_priority.case.json` is the literal exact
+legacy `0F 2F 00` profile. XMM0.low32 is a QNaN and `[RAX]` contains the
+minimum positive binary32 subnormal. COMISS sets unordered flags CF|PF|ZF and
+adds sticky IE, while NaN priority suppresses new DE. The literal includes
+pending-x87 and unrelated-RFLAGS canaries.
+
+The runner matrix covers seven relation/class cases across four RC values,
+two FTZ settings, and four prior IE/DE histories (224 raw-bit comparisons).
+Shared compare-path regressions passed: direct ISA 4/4, COMISD runner 1/1
+(192), and UCOMISD runner 1/1 (224).
+The direct relation test covers CPL0–3; direct gate/refusal/span/read-failure
+probes and the runner fixture use Ring0. Native-local-only classification is
+checked; full suites passed: ISA 1,671; testkit 452; runner 112+473;
+x86-runner 8+4; workspace all-target check passed. The profile has no native
+execution or physical x86 acceptance claim. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37cq--exact-legacy-long64-comiss-xmm0dword-ptr-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cq--bounded-long64-comiss-xmm0dword-ptr-rax-m32-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cq--comiss-xmm0m32).

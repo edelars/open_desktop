@@ -411,3 +411,17 @@ are covered by the shared CO direct preflight tests. The runner matrix uses
 Ring0; direct numeric checks cover CPL0–3 while other direct probes use Ring0.
 Native/JIT/C/fragment/generic execution remains closed. See the [CPU
 contract](../../docs/specs/CPU_CONTRACT.md#s2-37cp--bounded-long64-ucomisd-xmm0qword-ptr-rax-m64-memory-profile).
+
+### S2-37cq — COMISS XMM0,m32
+
+The runner accepts the separate profile `s2-long-comiss-memory-rax-v1` only
+for exact legacy `0F 2F 00`. Its independent raw-binary32 oracle checks one
+four-byte source read, relation flags, COMISS IE for QNaN/SNaN, NaN-before-DE
+priority, sticky MXCSR status, and remaining state. The focused fixture passed
+1/1 with 224 matrix comparisons across relation/class pairs, RC/FTZ settings,
+and prior IE/DE histories. Shared COMISD/UCOMISD-path regressions passed: the
+COMISD runner 1/1 (192 comparisons) and UCOMISD runner 1/1 (224). AC=1
+refusal, foreign-control rejection, and JIT denial are covered; checked-span faults and read-failure atomicity are covered
+by direct ISA tests. The full runner suite passed 112 unit tests and 473
+fixtures. Native/JIT/C/fragment/generic execution remains closed; this
+host-side result is not physical x86 evidence. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cq--bounded-long64-comiss-xmm0dword-ptr-rax-m32-memory-profile).

@@ -20472,3 +20472,30 @@ The instruction entry scopes its Type 3/Table 2-20 reference to VEX forms;
 Table 2-20 itself also contains legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37cp--exact-legacy-long64-ucomisd-xmm0qword-ptr-rax),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37cp--bounded-long64-ucomisd-xmm0qword-ptr-rax-m64-memory-profile), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cp--ucomisd-xmm0m64).
+
+## S2-37cq — COMISS XMM0,m32
+
+The separate strict profile `s2-long-comiss-memory-rax-v1` admits exact legacy
+`0F 2F 00`: three-byte fetch, one four-byte read at `[RAX]`, checked
+canonical48 span, and local AC=0 admission. It compares XMM0.low32 against the
+m32 source using raw binary32 bits. The result preserves the remaining CPU
+state and defines the six arithmetic comparison flags. QNaN/SNaN add IE; any
+NaN suppresses new DE; a subnormal with no NaN adds DE.
+
+Focused evidence: decoder 1/1; direct ISA 2/2; independent testkit oracle 1/1;
+runner fixture 1/1 with 224 matrix comparisons over seven relation/class
+pairs, four RC values, both FTZ settings, and four incoming IE/DE histories.
+The direct relation matrix covers CPL0–3; direct gate/refusal/span/read-failure
+probes and runner evidence use Ring0. The shared COMISD/UCOMISD path regressions
+passed: direct ISA 4/4, COMISD runner 1/1 (192), and UCOMISD runner 1/1 (224).
+The runner checks a valid-baseline foreign-field rejection and JIT denial; the
+native-local-only classifier passed 1/1. Full suites passed: ISA 1,671; testkit 452; runner 112 unit + 473 fixtures;
+x86-runner 8+4. Workspace all-target check, formatting, layout, Graphify
+(10,578 nodes / 22,693 edges / 311 communities), and diff check passed. Final
+independent code/docs and final evidence reviews passed. Native/JIT/C/fragment/generic
+execution remains closed; no physical x86 acceptance is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `COMISS` pp. 3-201–3-202; Vol. 1
+§4.9.2, §§11.5.2.2/11.5.3, Tables D-6/D-7; Vol. 3A §16.1.3/Table 16-1.
+The operand table and operation specify `xmm/m32` and bits [31:0], establishing
+the four-byte source width for this bounded form. See the [plan](../plans/STAGE_2.md#s2-37cq--exact-legacy-long64-comiss-xmm0dword-ptr-rax), [CPU contract](../specs/CPU_CONTRACT.md#s2-37cq--bounded-long64-comiss-xmm0dword-ptr-rax-m32-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cq--comiss-xmm0m32).

@@ -15275,3 +15275,38 @@ The instruction entry scopes its Type 3/Table 2-20 reference to VEX forms;
 Table 2-20 itself also includes legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37cp--exact-legacy-long64-ucomisd-xmm0qword-ptr-rax),
 [report](../reports/STAGE_2_REPORT.md#s2-37cp--ucomisd-xmm0m64), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cp--ucomisd-xmm0m64).
+
+## S2-37cq — bounded Long64 COMISS XMM0,dword ptr [RAX] m32 memory profile
+
+This strict schema-v2 profile admits only exact legacy `0F 2F 00`, fetch length
+3, one instruction, and stop RIP at entry+3. It compares XMM0.low32 with one
+little-endian four-byte source read from checked canonical48 span `[RAX,RAX+3]`.
+The callback runs exactly once after preflight; read failure and all pre-read
+refusals leave CPU state unchanged. AC=0 admits unaligned source addresses;
+AC=1 is a local `Unsupported` refusal before span validation/read.
+
+COMISS compares raw binary32 encodings. Greater/less/equal/unordered set the
+comparison flag bits to `0`, CF, ZF, and CF|PF|ZF; OF/SF/AF are cleared and
+unrelated RFLAGS are preserved. QNaN and SNaN add sticky IE. If either operand
+is NaN, no new DE is raised even when the other operand is subnormal. Without
+a NaN, a subnormal operand adds sticky DE. Prior MXCSR status is preserved.
+The profile requires SSE CPUID bit 25, MXCSR mask `0xffbf`, DAZ=0, IM=DM=1;
+PM may be clear, and RC/FTZ do not affect this comparison. EM=1 or OSFXSR=0
+causes local `#UD` before TS=`#NM`. Native/JIT/C/fragment/generic execution
+remain closed.
+
+Focused evidence: decoder 1/1, direct ISA 2/2, testkit raw-bit oracle 1/1,
+runner fixture 1/1 with 224 comparisons. Shared COMISD/UCOMISD-path regressions
+passed: ISA 4/4, COMISD runner 1/1 (192), UCOMISD runner 1/1 (224). The native
+local-only classifier passed 1/1. The direct relation loop covers CPL0–3;
+direct gate/refusal/span/read-failure probes and the runner matrix use Ring0.
+Full suites passed: ISA 1,671; testkit 452; runner 112 unit + 473 fixtures;
+x86-runner 8+4. Workspace all-target check, formatting, layout, Graphify
+(10,578 nodes / 22,693 edges / 311 communities), and diff check passed. Final
+independent code/docs and final evidence reviews passed. No physical x86
+acceptance is claimed.
+
+Source: Intel SDM Rev. 093 Vol. 2A `COMISS` pp. 3-201–3-202; Vol. 1 §4.9.2,
+§§11.5.2.2/11.5.3, Tables D-6/D-7; Vol. 3A §16.1.3/Table 16-1. The
+operand table and operation specify `xmm/m32` and bits [31:0], so this profile
+reads four bytes. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37cq--exact-legacy-long64-comiss-xmm0dword-ptr-rax), [report](../reports/STAGE_2_REPORT.md#s2-37cq--comiss-xmm0m32), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cq--comiss-xmm0m32).

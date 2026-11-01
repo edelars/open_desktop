@@ -440,6 +440,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 comisd_ucomisd_controls: input.fixture.comisd_ucomisd_controls,
                 comisd_memory_rax_controls: input.fixture.comisd_memory_rax_controls,
                 ucomisd_memory_rax_controls: input.fixture.ucomisd_memory_rax_controls,
+                comiss_memory_rax_controls: input.fixture.comiss_memory_rax_controls,
                 cvtsi2sd_r32_controls: input.fixture.cvtsi2sd_r32_controls,
                 cvtsi2sd_r32_memory_controls: input.fixture.cvtsi2sd_r32_memory_controls,
                 cvtsi2ss_r32_memory_controls: input.fixture.cvtsi2ss_r32_memory_controls,
@@ -526,6 +527,57 @@ fn ucomisd_m64_oracle_keeps_qnan_ie_and_de_clear_and_preserves_x87() {
         .unwrap()
         .status_word = HexU64(0x0080);
     assert!(tampered.validate_for(&loaded).is_err());
+}
+
+#[test]
+fn comiss_m32_oracle_raises_ie_for_qnan_before_subnormal_and_preserves_x87() {
+    let loaded = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_37cq_comiss_m32_qnan_subnormal_priority.case.json"
+    ))
+    .unwrap();
+    for (lhs, rhs, flags, mxcsr) in [
+        (0x7fc1_2345u32, 1u32, 0x0247u64, 0x0181u64), // QNaN + subnormal: IE, no DE
+        (0x7f81_2345u32, 1u32, 0x0247u64, 0x0181u64), // SNaN + subnormal: IE, no DE
+        (1u32, 0x3f80_0000u32, 0x0203u64, 0x0182u64), // subnormal + finite: DE
+    ] {
+        let mut case = loaded.clone();
+        case.fixture.initial_state.sse.as_mut().unwrap().xmm[0] = format!(
+            "{}{}",
+            lhs.to_le_bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+            "010000000000f07f01000000"
+        );
+        case.fixture.memory[1].initial_bytes_hex = rhs
+            .to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let mut expected = result(&case);
+        let output = snapshot(&mut expected);
+        output.state.rflags = HexU64(flags);
+        output.state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        let validation = expected.validate_for(&case);
+        assert!(
+            validation.is_ok(),
+            "unexpected oracle rejection: {validation:?}"
+        );
+
+        for wrong_status in [0x0180, 0x0183] {
+            let mut tampered = expected.clone();
+            snapshot(&mut tampered).state.sse.as_mut().unwrap().mxcsr = HexU64(wrong_status);
+            assert!(tampered.validate_for(&case).is_err());
+        }
+        let mut tampered = expected;
+        snapshot(&mut tampered)
+            .state
+            .x87
+            .as_mut()
+            .unwrap()
+            .status_word = HexU64(0x0080);
+        assert!(tampered.validate_for(&case).is_err());
+    }
 }
 
 fn snapshot(result: &mut RunResult) -> &mut Snapshot {
