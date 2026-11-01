@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.cs.allow-jit</key><true/></dict></plist>
+
+--- stderr ---
+Executable=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-171119-079a5752d7/artifacts/od-vmhost-smoke
+warning: Specifying ':' in the path is deprecated and will not work in a future release

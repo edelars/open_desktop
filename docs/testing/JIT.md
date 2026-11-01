@@ -78,6 +78,27 @@ candidate is opt-in and experimental; these checks establish correctness and
 cache reuse only. Eager remains the default. Mini, physical x86, Stage 2,
 owner/MMU, and performance suites are not covered by this slice.
 
+## S3-38d: full VMHost RESULT state transport smoke
+
+The accepted bounded local run selected only `vmhost-result-state`: 14 steps
+passed, 0 failed, and 139 were not run. It exercised raw control-protocol V0
+RESULT frames and the launcher's JSON projection for the fixed loop
+`48 B8 01 00 00 00 00 00 00 00 75 F4` at budgets 0 through 4. Raw results
+were checked as exactly 64 bytes (`<6QIIQ>`), including all six u64 values,
+reason, zero reserved field, and exact nonzero request IDs. The raw VMHost
+started with RFLAGS `0x202`; the launcher projection uses its fixed initial
+RFLAGS value `2`. STOP ordering was `RUN_ACK`, `STOP_ACK`, `RESULT`; the
+immediate case retired zero instructions and is classified as early stop with
+no observed guest progress, while the delayed case observed 19,404 retired
+instructions before STOP.
+
+This is RESULT transport and lifecycle correctness evidence, not timing or
+performance evidence. The full VMHost process suite, physical x86, Mini,
+performance, owner-backed, Stage 2, and ISSUE-027 were not run. Mini remains
+deferred until Stage 3 ends. S3-38 and Stage 3 remain open. The accepted-run
+receipts, logs, binary hash bindings, and five failed preflight receipts are in
+the [S3-38d report](../reports/STAGE_3_S3-38d-local_2026-11-01.md).
+
 ## S3-29a: bounded demand-driven flags correctness candidate
 
 Run `cargo test -p od-jit --lib demand_flags_candidate --offline` and

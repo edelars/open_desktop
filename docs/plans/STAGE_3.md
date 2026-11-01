@@ -3593,6 +3593,21 @@ state parity. This is experimental correctness/reuse evidence only; eager
 remains the default and Mini/performance checks remain deferred.
 Implementation evidence: [S3-38c report](../reports/STAGE_3_S3-38c_NATIVE_REGISTER_CACHE_CANDIDATE_2026-10-30.md).
 
+#### S3-38d. Полный RESULT state через VMHost control transport
+
+Локальный bounded-срез подтвердил полный 64-байтовый V0 RESULT для цикла
+`48 B8 01 00 00 00 00 00 00 00 75 F4` при бюджетах 0–4, включая регистры,
+RIP, RFLAGS, reason, reserved и retired; launcher JSON projection сверена
+отдельно с его фиксированным начальным RFLAGS. STOP проверен с порядком
+`RUN_ACK → STOP_ACK → RESULT`: immediate STOP не показывает прогресс гостя,
+delayed STOP вернул 19 404 retired-инструкции. Это transport/lifecycle
+correctness evidence, не измерение производительности и не полная проверка
+VMHost process suite. Принят только финальный прогон, 14/14 шагов; пять
+предварительных отказов и их исправления сохранены в отчёте для трассировки.
+Полный набор VMHost process, physical x86, Mini, performance, owner-backed,
+Stage 2 и ISSUE-027 не запускался; Mini остаётся отложенным до конца Stage 3.
+S3-38 и Stage 3 остаются открытыми. См. [S3-38d report](../reports/STAGE_3_S3-38d-local_2026-11-01.md).
+
 ### S3-39. Повторить ARM64 smoke на M1 Pro
 
 1. Зафиксировать реально доступные OS/toolchain, способ сборки/передачи собственного artifact и выбранную ad-hoc/Hardened Runtime конфигурацию.
