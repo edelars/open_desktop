@@ -32,6 +32,26 @@ This is fixture-level identity/invalidation and redispatch evidence. It does
 not claim physical Intel/AMD self-modifying-code behavior, arbitrary code
 rewrites, production MMU/writer integration, or completion of S3-24.
 
+## S3-18e: bounded checked-memory cache
+
+Run the focused `od-jit` memory-cache unit tests and, on macOS ARM64, the two
+`od-host` `memory_corpus` tests named
+`capacity_one_memory_cache_matches_uncached_dispatch_for_frozen_profiles`
+and `capacity_one_memory_cache_preserves_control_and_committed_prefix_behavior`.
+They cover capacity-one same-key reuse, dependency/context key changes,
+replacement/drop ordering, failed publication, entry guards, executor-error
+cleanup, and parity with uncached execution for the two frozen profiles. The
+host corpus checks full state/memory and control behavior, including committed
+prefix and fault outcomes.
+
+This opt-in fixture cache retains one executable handle across synchronous
+calls, while CPU state, RAM, access context, budget, STOP and event controls
+remain invocation-local. The test coverage does not establish production
+owner/MMU or SMC/DMA invalidation, concurrent/asynchronous execution, other
+memory profiles, Mini support, physical-x86 equivalence, or performance.
+See the [implementation report](../reports/STAGE_3_S3-18e_2026-11-01.md) and
+[ADR-0004](../decisions/ADR-0004-capacity-one-memory-cache.md).
+
 ## S3-38b: cached eager NativeRegisterV1 fixture
 
 Run the three pinned `s3_38b_native_register_v1_*` gates in

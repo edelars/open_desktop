@@ -859,6 +859,26 @@ collected on 2026-10-30. See [S3-18d1 measurement report](../reports/STAGE_3_S3-
 The bounded fixture measurement does not establish a cache-policy/default or
 product speed conclusion. S3-18 remains open; S3-22/23/25 remain separate work.
 
+**S3-18e checked-memory cache partial:** Commit
+`b1a6ccb130844c40a396155a8f84bda656bfa8c3` adds an opt-in capacity-one
+`MemoryPairCache` for only the frozen `StoreThenLoad` and `LoadThenStore`
+profiles. Its key covers the complete immutable source view, entry RIP,
+validated executable dependency identities/generations/permissions, profile,
+and caller-owned execution-context generation. It limits dependency spans
+before key allocation and applies a 512 KiB logical bound. Same-key use
+revalidates the key; clear or replacement releases the previous inactive
+published handle before new publication. The retained `od-host` handle contains
+code and immutable artifact metadata only; CPU/RAM/access context/budget/STOP
+and event controls are supplied anew for each synchronous execution. Focused
+unit and native host tests cover reuse, replacement, failure cleanup, guards,
+control-flow and full-state/memory parity against uncached dispatch. This is
+fixture-only evidence under private synchronous ordinary-RAM assumptions; it
+does not implement production owner/MMU/SMC/DMA lifecycle or establish a
+performance/default-policy conclusion. See the
+[S3-18e implementation report](../reports/STAGE_3_S3-18e_2026-11-01.md) and
+[JIT test scope](../testing/JIT.md#s3-18e-bounded-checked-memory-cache).
+S3-18 remains open.
+
 ### S3-19. Подключить checked memory bridge
 
 1. Использовать существующий GuestMemory/AccessContext и подтверждённые fault outcomes этапа 2 через узкий generated helper ABI.

@@ -992,11 +992,11 @@ end-to-end repeat measurement must compare FIFO with LRU for 16-key and full
 execution workloads before selecting a final policy/capacity. S3-18 remains
 open; S3-22/23/25 and physical S3-14/15 acceptance remain separate work.
 
-### S3-18e: capacity-one checked-memory cache architecture prerequisite
+### S3-18e: capacity-one checked-memory cache fixture partial
 
-The bounded S3-18e fixture design is a separate opt-in cache path for only the
-two frozen S3-34a profiles: `StoreThenLoad` and `LoadThenStore`. Its typed
-memory profile is distinct from S0_09 and register-only cache profiles. The
+The implemented bounded S3-18e fixture is a separate opt-in cache path for
+only the two frozen S3-34a profiles: `StoreThenLoad` and `LoadThenStore`. Its
+typed memory profile is distinct from S0_09 and register-only cache profiles. The
 complete key includes the selected memory profile, exact full source bytes and
 CodeView base/end/entry RIP, validated executable dependency spans (address
 space, mapping and backing identities, their nonzero generations/versions and
@@ -1015,7 +1015,7 @@ not retain pointers to invocation-local CPU state, RAM, helper context, STOP or
 event controls. Each call supplies fresh state, memory and controls, and the
 backend borrows them only for that synchronous execution and result validation.
 `MemoryBlockExecutor` and `PublishedMemoryBlockExecutor` keep their existing
-release-before-return contract for uncached dispatch. The opt-in cache must use
+release-before-return contract for uncached dispatch. The opt-in cache uses
 a separate typed backend/handle contract rather than weakening those one-shot
 semantics. Its private synchronous ordinary-RAM safety preconditions continue
 to apply on every call: code bytes do not alias mutable data RAM; there is no
@@ -1024,14 +1024,16 @@ all-or-nothing. Retaining a code mapping does not relax those requirements.
 Publish or execution errors are terminal and do not replay committed memory
 effects.
 
-This section records an architecture prerequisite, not production memory
+This section records the bounded fixture implementation, not production memory
 ownership or completed invalidation. The bounded fixture generations let
 tests prove source/dependency/context changes miss or invalidate; they do not
 provide an MMU, live-owner mutation protocol, SMC/DMA coherence, asynchronous
 compilation, multi-entry policy, or active-code retirement. The implementation
-must use the existing typed two-site publish/execute APIs and must not route
-through S0_09. No benchmark, default-policy, or performance conclusion follows.
-See [ADR-0004](../decisions/ADR-0004-capacity-one-memory-cache.md). S3-18 and
+uses the existing typed two-site publish/execute APIs and does not route through
+S0_09. Focused implementation evidence is in the
+[S3-18e report](../reports/STAGE_3_S3-18e_2026-11-01.md). No benchmark,
+default-policy, or performance conclusion follows. See
+[ADR-0004](../decisions/ADR-0004-capacity-one-memory-cache.md). S3-18 and
 S3-22/23/25 remain open.
 
 ### S3-25a: synchronous published-entry lifetime partial

@@ -1,8 +1,8 @@
 # ADR-0004: Bounded checked-memory cache handle and lifetime
 
 - **Date:** 2026-11-01.
-- **Status:** proposed for the bounded S3-18e fixture.
-- **Related documents:** [JIT contract](../specs/JIT_CONTRACT.md#s3-18e-capacity-one-checked-memory-cache-architecture-prerequisite), [Stage 3 plan](../plans/STAGE_3.md).
+- **Status:** accepted for the bounded S3-18e fixture.
+- **Related documents:** [JIT contract](../specs/JIT_CONTRACT.md#s3-18e-capacity-one-checked-memory-cache-fixture-partial), [Stage 3 plan](../plans/STAGE_3.md), [implementation report](../reports/STAGE_3_S3-18e_2026-11-01.md).
 
 ## Question
 
