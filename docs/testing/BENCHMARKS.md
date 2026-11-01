@@ -623,8 +623,9 @@ validation is outside each timed call.
 For each of three release process runs, the harness collects 20 paired samples
 per stratum. Each side of every pair must reach a 200 ms timer floor; if not,
 the paired series restarts with a larger common sweep count. The `order` field
-records which path ran first. Keep stratum results separate; this bounded
-implementation has not yet produced scored S3-31 evidence.
+records which path ran first. Keep stratum results separate. Bounded Run 1
+evidence is available in the [S3-31 report](../reports/STAGE_3_S3-31_2026-11-01.md);
+runs 2/3 and broad S3-31 acceptance remain open.
 
 The full timed interval wraps `Variant::call` or `Variant::call_observed`, so
 it includes adapter setup (CodeView, dependency and control/context setup) as

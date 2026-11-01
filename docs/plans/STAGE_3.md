@@ -2383,10 +2383,11 @@ counter snapshots отдельно для каждого вызова, а изм
 identities, hashes, таймеры, фазы, residual и команда находятся в разделе
 [BENCHMARKS S3-31](../testing/BENCHMARKS.md#s3-31-bounded-warm-dispatcher-phase-harness).
 
-**Результат:** ограниченный harness реализован; scored runs и evidence доли
-dispatcher/lookup ещё не получены. S3-31 item 1 остаётся открытым, S3-31 не
-закрыт. Harness не изолирует цену наблюдателя или total lookup и не доказывает
-пользу linking; никаких production решений из его реализации не следует.
+**Результат:** ограниченный harness реализован; доступно только bounded Run 1
+evidence ([отчёт S3-31](../reports/STAGE_3_S3-31_2026-11-01.md)). Runs 2/3 и
+широкая приёмка S3-31 остаются открытыми; S3-31 не закрыт. Harness не
+изолирует цену наблюдателя или total lookup и не доказывает пользу linking;
+никаких production решений из этого среза не следует.
 
 ### S3-32. Оценить локальные IR-преобразования
 
