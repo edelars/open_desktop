@@ -1,0 +1,121 @@
+{
+  "schema": 1,
+  "suite_id": "s3-31c-native-register-v1-run-local-prepared-key-reuse-2026-11-01",
+  "record_type": "s3-31c_scored_suite_manifest",
+  "classification": "bounded synthetic NativeRegisterV1 run-local key-reuse profile; no broad workload or production policy conclusion",
+  "profile_id": "s3-31c-native-register-v1-run-local-prepared-key-reuse-v1",
+  "source_revision": "dcd1bfe5db813a2647c100c4c64a008dca9bd21c",
+  "source_sha256": "68c08c7ff7f91f3fffea8eab3ba7c85e2094725e6cadc23c1eab42c5a5cb696c",
+  "source_tree_dirty": false,
+  "runtime_working_tree_dirty": null,
+  "runtime_working_tree_status_note": "Runtime working-tree cleanliness is unknown because the recorded field is null; this is distinct from the clean build source-tree fingerprint.",
+  "measure_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "dcd1bfe5db813a2647c100c4c64a008dca9bd21c",
+      "source_sha256": "68c08c7ff7f91f3fffea8eab3ba7c85e2094725e6cadc23c1eab42c5a5cb696c",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "dcd1bfe5db813a2647c100c4c64a008dca9bd21c",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "source_fingerprints": [
+    {"label": "profile", "sha256": "26f2754e17463742be81dd0b6d337e03963b1b47887d6d666ec40e1896f0e6f6"},
+    {"label": "cli", "sha256": "47f1cb26659df6e2d9ca1a440db4bde37175a2cecb79a80a47fc3edfb3ef2140"},
+    {"label": "lib", "sha256": "1ddd0fa26fd399d75aca1f3594db5e1f7f8019ebacb475f8bb3c84507323f7ce"},
+    {"label": "dispatch", "sha256": "853bd584fdbaa9252a2866ca5277adc24585623a23c55a072bf02f9c4eb28f0a"},
+    {"label": "block", "sha256": "a910ba720ecb0f5286c26531014417b65d1d53ff302bf90a2cb3f750ada7aa78"},
+    {"label": "host", "sha256": "d4138880dbae0c090641d4b5cc361f8e5925f23ab6e79ecd967b48d2eb56cf6d"},
+    {"label": "frozen_fixture", "sha256": "09faa149db18ec66f2d11961ab18196ccb938c669fdc795c94d791f6bcfe079b"}
+  ],
+  "archive_provenance": {
+    "process_1_2_3": "Copied byte-identically from work/stage3/s3-31c/process-1.json, process-2.json, and process-3.json.",
+    "preflight": "Copied byte-identically from work/stage3/s3-31c/preflight-release.json and archived as preflight-release-final.json.",
+    "process_3_retry": "An earlier process-3 attempt timed out and was discarded; archived process-3.json is the completed rerun."
+  },
+  "preflight": {
+    "path": "preflight-release-final.json",
+    "sha256": "a972cd0e6a09571002f98d54fed8ccf9c24005af7d62a812db2e50ff66f7b781",
+    "source_revision": "ed4c7cbab388c4b879dec6f0189d448423d1fbf9",
+    "source_sha256": "ad4af85007323569916af44bed41bfdc8aa3adbb8aee18b61a5e611c04013610",
+    "source_tree_dirty": true,
+    "timing_started": false,
+    "strata_count": 6,
+    "all_main_paths_match_state_retirement_budget": true,
+    "api_exit_labels_may_differ": true,
+    "all_strata_hit_only": true,
+    "candidate_prepared_key_rule": "one prepared key per run; reused_keys = iterations - 1 on the main path",
+    "partial_control_ids": [
+      "later_iteration_after_lea",
+      "later_iteration_after_xchg",
+      "later_iteration_before_jnz",
+      "stop_address_before_xchg",
+      "stop_address_at_jnz",
+      "wrapping_operand_later_iteration"
+    ],
+    "all_partial_controls_match_state_retirement_budget": true,
+    "strata": [
+      {"id": "a_1", "iterations": 1, "prepared_keys": 1, "reused_keys": 0, "timed_cache_hit_only": true},
+      {"id": "a_64", "iterations": 64, "prepared_keys": 1, "reused_keys": 63, "timed_cache_hit_only": true},
+      {"id": "a_4096", "iterations": 4096, "prepared_keys": 1, "reused_keys": 4095, "timed_cache_hit_only": true},
+      {"id": "b_1", "iterations": 1, "prepared_keys": 1, "reused_keys": 0, "timed_cache_hit_only": true},
+      {"id": "b_64", "iterations": 64, "prepared_keys": 1, "reused_keys": 63, "timed_cache_hit_only": true},
+      {"id": "b_4096", "iterations": 4096, "prepared_keys": 1, "reused_keys": 4095, "timed_cache_hit_only": true}
+    ],
+    "scope_note": "Correctness-only preflight from a pre-commit dirty source tree; not timing evidence for the committed revision."
+  },
+  "sampling": {
+    "process_runs": 3,
+    "pairs_per_stratum_per_run": 20,
+    "pairs_per_stratum_across_runs": 60,
+    "strata_count": 6,
+    "paired_triples_total": 360,
+    "measured_side_count": 1080,
+    "measured_side_floor_ns": 200000000,
+    "minimum_measured_side_ns": 223746544,
+    "all_measured_sides_passed_floor": true,
+    "discarded_pair_restarts": 0,
+    "timed_scope": "full synchronous interpreter call, ordinary cached dispatcher call, or prepared-key candidate call; state reset and CodeView/control setup are outside each interval; candidate memo setup/use/drop is inside the dispatcher call",
+    "ratio_definition": "candidate elapsed_ns divided by baseline or interpreter elapsed_ns for each paired sample; below 1 means candidate elapsed time was lower",
+    "ratio_summary_definition": "Median and raw min/max of 60 retained pair ratios per stratum across three processes; no trimming.",
+    "calibrated_calls_per_side": {"a_1": 2097152, "a_64": 32768, "a_4096": 512, "b_1": 1048576, "b_64": 16384, "b_4096": 256}
+  },
+  "cross_run_summary": [
+    {"stratum": "a_1", "iterations": 1, "seed": 3538945, "guest_work_per_call": 3, "code_hex": "488d040b4887d875f7", "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2", "resident_entries": 1, "resident_code_bytes": 1408, "resident_logical_bytes": 7193, "pair_count": 60, "candidate_over_baseline_median": 1.1997592381431161, "candidate_over_baseline_range": [0.882050873574221, 1.3680422780468195], "candidate_over_interpreter_median": 4.764040874188867, "candidate_over_interpreter_range": [3.5392743240633604, 5.014687612720377], "minimum_measured_side_ns": 320990671, "per_process": [{"run": 1, "candidate_over_baseline_median": 1.1997592381431161, "candidate_over_baseline_range": [1.1761491090075762, 1.2363309827296212], "candidate_over_interpreter_median": 4.764040874188867, "candidate_over_interpreter_range": [4.635005770732406, 4.904462319338675], "minimum_measured_side_ns": 328647685, "calls_per_side": 2097152}, {"run": 2, "candidate_over_baseline_median": 1.2012123481764045, "candidate_over_baseline_range": [1.1674769132329164, 1.2368557892009266], "candidate_over_interpreter_median": 4.771126215537508, "candidate_over_interpreter_range": [4.556885664074567, 5.014687612720377], "minimum_measured_side_ns": 320990671, "calls_per_side": 2097152}, {"run": 3, "candidate_over_baseline_median": 1.1945747710593535, "candidate_over_baseline_range": [0.882050873574221, 1.3680422780468195], "candidate_over_interpreter_median": 4.738452231516864, "candidate_over_interpreter_range": [3.5392743240633604, 4.872434652270918], "minimum_measured_side_ns": 322925621, "calls_per_side": 2097152}]},
+    {"stratum": "a_64", "iterations": 64, "seed": 3539008, "guest_work_per_call": 192, "code_hex": "488d040b4887d875f7", "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2", "resident_entries": 1, "resident_code_bytes": 1408, "resident_logical_bytes": 7193, "pair_count": 60, "candidate_over_baseline_median": 0.3531538113680879, "candidate_over_baseline_range": [0.22572360576558048, 0.5166276671711546], "candidate_over_interpreter_median": 1.4813550705662508, "candidate_over_interpreter_range": [1.0262570698509157, 2.268070243696621], "minimum_measured_side_ns": 301340870, "per_process": [{"run": 1, "candidate_over_baseline_median": 0.3537137179674636, "candidate_over_baseline_range": [0.34007341804781827, 0.3689103163128942], "candidate_over_interpreter_median": 1.4877351781168497, "candidate_over_interpreter_range": [1.3322108655795877, 1.5426329948291653], "minimum_measured_side_ns": 305549212, "calls_per_side": 32768}, {"run": 2, "candidate_over_baseline_median": 0.3529535123389167, "candidate_over_baseline_range": [0.3412275799949066, 0.3748774209710432], "candidate_over_interpreter_median": 1.4790394980623245, "candidate_over_interpreter_range": [1.4474373990441234, 1.588804374379944], "minimum_measured_side_ns": 305485368, "calls_per_side": 32768}, {"run": 3, "candidate_over_baseline_median": 0.35209313539635984, "candidate_over_baseline_range": [0.22572360576558048, 0.5166276671711546], "candidate_over_interpreter_median": 1.481102905804946, "candidate_over_interpreter_range": [1.0262570698509157, 2.268070243696621], "minimum_measured_side_ns": 301340870, "calls_per_side": 32768}]},
+    {"stratum": "a_4096", "iterations": 4096, "seed": 3543040, "guest_work_per_call": 12288, "code_hex": "488d040b4887d875f7", "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2", "resident_entries": 1, "resident_code_bytes": 1408, "resident_logical_bytes": 7193, "pair_count": 60, "candidate_over_baseline_median": 0.34161829292119694, "candidate_over_baseline_range": [0.3309693718766638, 0.3520303031316364], "candidate_over_interpreter_median": 1.4329829006637975, "candidate_over_interpreter_range": [1.3094013180591255, 1.523677756333831], "minimum_measured_side_ns": 293281420, "per_process": [{"run": 1, "candidate_over_baseline_median": 0.3397573396436664, "candidate_over_baseline_range": [0.3323885880875015, 0.34586553987396706], "candidate_over_interpreter_median": 1.4254216586892379, "candidate_over_interpreter_range": [1.3807744865585165, 1.4569645165177234], "minimum_measured_side_ns": 300252717, "calls_per_side": 512}, {"run": 2, "candidate_over_baseline_median": 0.34313567823131574, "candidate_over_baseline_range": [0.3312664486775805, 0.3515120049061564], "candidate_over_interpreter_median": 1.4356504628775877, "candidate_over_interpreter_range": [1.404269628696648, 1.489654753188006], "minimum_measured_side_ns": 295649198, "calls_per_side": 512}, {"run": 3, "candidate_over_baseline_median": 0.34235437746352154, "candidate_over_baseline_range": [0.3309693718766638, 0.3520303031316364], "candidate_over_interpreter_median": 1.446846677007339, "candidate_over_interpreter_range": [1.3094013180591255, 1.523677756333831], "minimum_measured_side_ns": 293281420, "calls_per_side": 512}]},
+    {"stratum": "b_1", "iterations": 1, "seed": 3538945, "guest_work_per_call": 5, "code_hex": "488d040b4887d8488d040b4887d875f0", "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b", "resident_entries": 1, "resident_code_bytes": 2188, "resident_logical_bytes": 10552, "pair_count": 60, "candidate_over_baseline_median": 1.1352061975688794, "candidate_over_baseline_range": [1.008201122221032, 1.1870184382775657], "candidate_over_interpreter_median": 3.706571770343234, "candidate_over_interpreter_range": [3.0947879022789087, 4.665400948297651], "minimum_measured_side_ns": 270549052, "per_process": [{"run": 1, "candidate_over_baseline_median": 1.1352061975688794, "candidate_over_baseline_range": [1.1139161732153995, 1.160481927760911], "candidate_over_interpreter_median": 3.703170749240206, "candidate_over_interpreter_range": [3.5611225409118763, 3.803021751162935], "minimum_measured_side_ns": 288703584, "calls_per_side": 1048576}, {"run": 2, "candidate_over_baseline_median": 1.1346667180982966, "candidate_over_baseline_range": [1.0857397708036376, 1.1870184382775657], "candidate_over_interpreter_median": 3.6938126092812773, "candidate_over_interpreter_range": [3.5699267549014353, 3.834601102206043], "minimum_measured_side_ns": 270549052, "calls_per_side": 1048576}, {"run": 3, "candidate_over_baseline_median": 1.1340286352064597, "candidate_over_baseline_range": [1.008201122221032, 1.1746765331188544], "candidate_over_interpreter_median": 3.7174213028537384, "candidate_over_interpreter_range": [3.0947879022789087, 4.665400948297651], "minimum_measured_side_ns": 282616034, "calls_per_side": 1048576}]},
+    {"stratum": "b_64", "iterations": 64, "seed": 3539008, "guest_work_per_call": 320, "code_hex": "488d040b4887d8488d040b4887d875f0", "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b", "resident_entries": 1, "resident_code_bytes": 2188, "resident_logical_bytes": 10552, "pair_count": 60, "candidate_over_baseline_median": 0.27272169152987746, "candidate_over_baseline_range": [0.2549095214166228, 0.2875582272371528], "candidate_over_interpreter_median": 0.9184375954061934, "candidate_over_interpreter_range": [0.8491037519227991, 0.974893997986815], "minimum_measured_side_ns": 237204299, "per_process": [{"run": 1, "candidate_over_baseline_median": 0.27100065944689955, "candidate_over_baseline_range": [0.2549095214166228, 0.286250160508553], "candidate_over_interpreter_median": 0.9174717026967034, "candidate_over_interpreter_range": [0.892335436545707, 0.9298967137626919], "minimum_measured_side_ns": 247161523, "calls_per_side": 16384}, {"run": 2, "candidate_over_baseline_median": 0.27460816229317686, "candidate_over_baseline_range": [0.2608653812495205, 0.2875582272371528], "candidate_over_interpreter_median": 0.9252028568251097, "candidate_over_interpreter_range": [0.8491037519227991, 0.974893997986815], "minimum_measured_side_ns": 240793565, "calls_per_side": 16384}, {"run": 3, "candidate_over_baseline_median": 0.2736077687968328, "candidate_over_baseline_range": [0.2643968058744349, 0.28406987335620676], "candidate_over_interpreter_median": 0.9182307384563968, "candidate_over_interpreter_range": [0.8879385570913051, 0.974447128208598], "minimum_measured_side_ns": 237204299, "calls_per_side": 16384}]},
+    {"stratum": "b_4096", "iterations": 4096, "seed": 3543040, "guest_work_per_call": 20480, "code_hex": "488d040b4887d8488d040b4887d875f0", "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b", "resident_entries": 1, "resident_code_bytes": 2188, "resident_logical_bytes": 10552, "pair_count": 60, "candidate_over_baseline_median": 0.2591382474497528, "candidate_over_baseline_range": [0.24284753118149033, 0.2759646570915592], "candidate_over_interpreter_median": 0.8741277084063597, "candidate_over_interpreter_range": [0.8216875766929396, 0.9217314606819931], "minimum_measured_side_ns": 223746544, "per_process": [{"run": 1, "candidate_over_baseline_median": 0.25691648220149493, "candidate_over_baseline_range": [0.24284753118149033, 0.26109016373385774], "candidate_over_interpreter_median": 0.8741277084063597, "candidate_over_interpreter_range": [0.8319055730240227, 0.8936607246754782], "minimum_measured_side_ns": 230683958, "calls_per_side": 256}, {"run": 2, "candidate_over_baseline_median": 0.2595601939624207, "candidate_over_baseline_range": [0.252404421532322, 0.2759646570915592], "candidate_over_interpreter_median": 0.8789918817639497, "candidate_over_interpreter_range": [0.8216875766929396, 0.9185660551400647], "minimum_measured_side_ns": 224520291, "calls_per_side": 256}, {"run": 3, "candidate_over_baseline_median": 0.25939684721385836, "candidate_over_baseline_range": [0.2495933423202159, 0.2756506491173353], "candidate_over_interpreter_median": 0.8621591906200632, "candidate_over_interpreter_range": [0.842961611999121, 0.9217314606819931], "minimum_measured_side_ns": 223746544, "calls_per_side": 256}]}
+  ],
+  "interpretation": {
+    "median_slower_than_baseline": ["a_1", "b_1"],
+    "a_1_candidate_baseline_range_crosses_parity": true,
+    "faster_than_baseline_at_64_and_4096_in_both_forms": true,
+    "slower_than_interpreter": ["a_1", "a_64", "a_4096", "b_1"],
+    "candidate_interpreter_ranges_below_one": ["b_64", "b_4096"],
+    "default_or_policy_changed": false,
+    "candidate_remains_opt_in": true,
+    "broad_workload_speedup_claim": false,
+    "broad_stage3_acceptance": false,
+    "mini_checked": false
+  },
+  "artifacts": {
+    "raw_files": [
+      {"path": "preflight-release-final.json", "sha256": "a972cd0e6a09571002f98d54fed8ccf9c24005af7d62a812db2e50ff66f7b781", "bytes": 113038},
+      {"path": "process-1.json", "sha256": "d479d4c2a9b5f7ec23d9ecc25c7fc02751409de51b273e062aaccb8723fe97d2", "bytes": 184126},
+      {"path": "process-2.json", "sha256": "ae04f7bb97d52b60ed1e0b38c6ca7b031df7e78f4ff54577c6617f252d57ea46", "bytes": 184119},
+      {"path": "process-3.json", "sha256": "96f993f459878d07caef17973614d2ea80eff56c327e8b5b03924ae475b1756b", "bytes": 184119}
+    ],
+    "report": {"path": "../../../STAGE_3_S3-31c_2026-11-01.md", "sha256": "35fcae0f34544d08da00725b07a1fcef60360110524ddebf73fe23345046afb4"}
+  }
+}

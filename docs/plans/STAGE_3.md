@@ -2472,6 +2472,42 @@ processes [1](../reports/data/stage3/s3-31b-20261101/process-1.json),
 [3](../reports/data/stage3/s3-31b-20261101/process-3.json), and the
 [suite manifest](../reports/data/stage3/s3-31b-20261101/suite-manifest.json).
 
+#### S3-31c. Run-local prepared-key reuse — bounded opt-in profile
+
+Commit `dcd1bfe5db813a2647c100c4c64a008dca9bd21c` adds the prepared-key reuse
+candidate. A correctness-only release preflight checks six synthetic loop
+strata against the ordinary dispatcher and interpreter, including exact guest
+state, retirement, and remaining-budget parity; six partial/control cases
+cover later-iteration boundaries, STOP before XCHG, STOP at JNZ, and wrapping
+operand reuse. Each main-path candidate case prepares one key and reuses it
+`iterations - 1` times. The archived preflight is from a pre-commit dirty tree
+and has no timing; the timed processes below use the clean committed source
+revision.
+
+Three release processes recorded 20 paired baseline/candidate/interpreter
+triples per stratum, 60 triples per stratum overall. All 1,080 measured sides
+passed the 200 ms floor; minimum was 223,746,544 ns. The measured path includes
+candidate memo setup/use/drop, but excludes state reset and CodeView/control
+setup. Candidate/baseline and candidate/interpreter ratio medians [ranges]:
+
+| Stratum | Candidate / baseline | Candidate / interpreter |
+|---|---:|---:|
+| `a_1` | 1.1998 [0.8821, 1.3680] | 4.7640 [3.5393, 5.0147] |
+| `a_64` | 0.3532 [0.2257, 0.5166] | 1.4814 [1.0263, 2.2681] |
+| `a_4096` | 0.3416 [0.3310, 0.3520] | 1.4330 [1.3094, 1.5237] |
+| `b_1` | 1.1352 [1.0082, 1.1870] | 3.7066 [3.0948, 4.6654] |
+| `b_64` | 0.2727 [0.2549, 0.2876] | 0.9184 [0.8491, 0.9749] |
+| `b_4096` | 0.2591 [0.2428, 0.2760] | 0.8741 [0.8217, 0.9217] |
+
+The candidate remains slower than the interpreter for all `a` strata and
+`b_1`; only `b_64` and `b_4096` have candidate/interpreter ranges below 1.
+These synthetic results do not establish broad workload speedup or justify a
+runtime/default-policy change; the candidate remains opt-in and S3-31 remains
+open. See [S3-31c report](../reports/STAGE_3_S3-31c_2026-11-01.md),
+[preflight](../reports/data/stage3/s3-31c-20261101/preflight-release-final.json),
+[process runs](../reports/data/stage3/s3-31c-20261101/), and the
+[suite manifest](../reports/data/stage3/s3-31c-20261101/suite-manifest.json).
+
 ### S3-32. Оценить локальные IR-преобразования
 
 1. Выбрать только подтверждённые профилем возможности: local constant propagation, устранение избыточного state load/store или dead pure temporary.

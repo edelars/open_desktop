@@ -1198,6 +1198,45 @@ revision. Mini checks remain deferred. See the
 [S3-31b report](../reports/STAGE_3_S3-31b_2026-11-01.md) and
 [suite manifest](../reports/data/stage3/s3-31b-20261101/suite-manifest.json).
 
+### S3-31c: run-local prepared-key reuse candidate
+
+`od-bench cached-native-loop-reuse` compares the ordinary cached NativeRegisterV1
+dispatcher, an opt-in prepared-key reuse candidate, and the synchronous
+interpreter on the two fixed S3-36f recurrence kernels at 1, 64, and 4,096
+iterations. The candidate prepares one key for each invocation and records
+subsequent reuse within that invocation. Each preflight stratum checks full
+guest-state, retired-instruction, and budget parity; the six partial/control
+cases cover continuation after LEA/XCHG, before JNZ, STOP before XCHG, STOP at
+JNZ, and wrapping operand reuse.
+
+Run the release preflight, followed by three independent timing processes:
+
+```sh
+cargo run --release --offline -p od-bench -- cached-native-loop-reuse \
+  --preflight-only --output work/tmp/stage3/s3-31c/preflight.json
+for run in 1 2 3; do
+  cargo run --release --offline -p od-bench -- cached-native-loop-reuse \
+    --process-run "$run" --output "work/tmp/stage3/s3-31c/process-$run.json"
+done
+```
+
+Each timing process retains 20 paired triples per stratum (baseline, candidate,
+interpreter), with order rotated across the six permutations and a 200 ms floor
+for every measured side. State reset and CodeView/control setup are outside the
+timed interval; candidate memo setup/use/drop are inside its dispatcher call.
+The completed profile retained 60 triples per stratum and all 1,080 sides
+passed the floor (minimum 223,746,544 ns). Ratios are candidate elapsed time
+divided by baseline or interpreter elapsed time; below 1 is lower elapsed time.
+Results apply only to these synthetic recurrences. At one iteration the
+candidate/baseline medians are above 1; at 64 and 4,096 iterations they are
+below 1 in both forms. Candidate/interpreter medians are above 1 for all `a`
+strata and `b_1`, below 1 only for `b_64` and `b_4096`. No broad workload
+speedup or default/policy change follows; the candidate remains opt-in and
+S3-31 remains open. The archived preflight is correctness-only, from a dirty
+pre-commit source tree; the timed process artifacts share clean revision
+`dcd1bfe5db813a2647c100c4c64a008dca9bd21c`. See the [S3-31c report](../reports/STAGE_3_S3-31c_2026-11-01.md) and
+[suite manifest](../reports/data/stage3/s3-31c-20261101/suite-manifest.json).
+
 ### S3-37a: bounded production FIFO16 corpus churn observation
 
 `od-bench cache-churn` is an opt-in Apple Silicon macOS release command. It

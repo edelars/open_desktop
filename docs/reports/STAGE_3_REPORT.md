@@ -6,7 +6,7 @@
 
 | Статус | Текущее состояние |
 |---|---|
-| Bounded local evidence | Подтверждены только перечисленные ниже fixture/profile slices: checked-memory cache correctness (S3-18e), cold direct-entry (S3-35c), warm direct-entry (S3-36d), cached full-call (S3-36e), cached dispatcher register recurrence (S3-36f), cached-dispatch phase attribution on those six synthetic strata (S3-31b), warm dispatcher phase attribution on two selected S3-17 strata (S3-31a; no linking conclusion), FIFO16 lifecycle/counters (S3-37d), separate VMHost/C ABI lifecycle and RESULT-state slices (S3-38a/c/d), current-source VMHost process-only regression (S3-38b), current full-local harness summary (S3-41a; independent evidence review passed), and an M1 Pro ARM64 smoke (S3-39). |
+| Bounded local evidence | Подтверждены только перечисленные ниже fixture/profile slices: checked-memory cache correctness (S3-18e), cold direct-entry (S3-35c), warm direct-entry (S3-36d), cached full-call (S3-36e), cached dispatcher register recurrence (S3-36f), cached-dispatch phase attribution on those six synthetic strata (S3-31b), run-local prepared-key reuse comparison on six synthetic strata (S3-31c), warm dispatcher phase attribution on two selected S3-17 strata (S3-31a; no linking conclusion), FIFO16 lifecycle/counters (S3-37d), separate VMHost/C ABI lifecycle and RESULT-state slices (S3-38a/c/d), current-source VMHost process-only regression (S3-38b), current full-local harness summary (S3-41a; independent evidence review passed), and an M1 Pro ARM64 smoke (S3-39). |
 | Broad Stage 3 conditions | Не доказаны: full dispatcher/workload and memory matrix, general cold/warm usefulness, wider resource/lifecycle behavior, or final production policy. These conditions remain open. |
 | Physical hardware gate | S3-21 remains deferred until the end-of-Stage-3 Mac mini checks; local Apple Silicon evidence does not replace the physical x86 comparison. |
 | Production owner/MMU | Outside the current fixture scope; no production RAM/backing/mapping/MMU owner or committed-writer integration is claimed here. |
@@ -52,6 +52,19 @@ labels do not measure total lookup cost or pure generated-code time, and they
 do not establish a linking benefit or production policy change. See the
 [S3-31b report](STAGE_3_S3-31b_2026-11-01.md) and
 [suite manifest](data/stage3/s3-31b-20261101/suite-manifest.json).
+
+S3-31c compared an opt-in run-local prepared-key candidate against the
+ordinary cached NativeRegisterV1 dispatcher and interpreter on six synthetic
+recurrence strata. Three release processes retained 60 paired triples per
+stratum; all 1,080 measured sides passed the 200 ms floor. At 64 and 4,096
+iterations, candidate/baseline median ratios were below 1 in both forms, but
+candidate/interpreter medians were below 1 only for `b_64` and `b_4096`.
+These bounded results do not establish broad workload speedup or justify a
+runtime/default-policy change. The candidate remains opt-in. The timed
+processes share a clean committed source revision; the correctness-only
+preflight is separately identified as a pre-commit dirty-tree record. See the
+[S3-31c report](STAGE_3_S3-31c_2026-11-01.md) and
+[suite manifest](data/stage3/s3-31c-20261101/suite-manifest.json).
 
 Последний report-inclusive локальный harness run (30 октября baseline):
 
@@ -121,6 +134,7 @@ no findings; the summary does not close S3-41 or Stage 3. See the
 | S3-36e cached checked-memory full-call profile | Three release runs on Apple M3 Max, 20 pairs per sequence/run, all sides passed 200 ms. Across 60 paired raw native/interpreter ratios, medians/ranges were 2.7223 (2.6348–2.8856) for `store_then_load` and 2.7650 (2.6390–2.9279) for `load_then_store`. | Ratios above 1 mean native full-call time exceeded interpreter time on these bounded fixtures; a useful target scenario is not yet proven. No cross-stratum or general memory claim. Monitoring has no per-pair attribution; Mini remains deferred. See [S3-36e](STAGE_3_S3-36e_2026-11-01.md) and [evidence manifest](data/stage3/s3-36e/suite-manifest.json). |
 | S3-36f cached register recurrence full-call profile | Three release runs on Apple M3 Max; 20 pairs per stratum/run across six fixed strata, all sides passed 200 ms. Across 60 paired ratios per stratum, native/interpreter medians were 4.7661 (`a_1`), 4.8890 (`a_64`), 4.8938 (`a_4096`), 3.7205 (`b_1`), 3.8092 (`b_64`), and 3.7805 (`b_4096`); every observed paired ratio exceeded 1. | Interpreter was faster on this synthetic recurrence; no useful native target scenario, broad guest claim, or runtime/cache policy change follows. First dispatch includes compile/publication/execution and is not decomposed into compile-only cost. Runtime `working_tree_dirty` is unknown because the probe timed out; Mini remains deferred. See [S3-36f](STAGE_3_S3-36f_2026-11-01.md) and [evidence manifest](data/stage3/s3-36f-20261101/suite-manifest.json). |
 | S3-31b cached NativeRegisterV1 phase attribution | Three release runs, 20 alternating pairs per six S3-36f strata/run; all 720 sides passed 200 ms. Median observed/ordinary ratios ranged 1.0900–1.1182; the `b_64` paired range crossed parity. Median observed-path phase shares: block build 21–22% / 32–33%, key/snapshot/first lookup 43–44% / 39%, host execution boundary 4–5% / 5–6% for forms A / B. | Synthetic recurrence only. Shares include instrumentation and do not represent production phase proportions; `KeySnapshotAndLookup` excludes repeated validation and `HostExecutionBoundary` includes the wrapper. Net paired delta is not isolated observer cost. No linking benefit/default change or broad S3-31 closure. Runtime dirty status unknown; Mini remains deferred. See [S3-31b](STAGE_3_S3-31b_2026-11-01.md) and [manifest](data/stage3/s3-31b-20261101/suite-manifest.json). |
+| S3-31c run-local prepared-key reuse | Three release processes, 20 paired triples in each of six synthetic strata per process; all 1,080 timed sides passed 200 ms. Candidate/baseline median ratios were 0.2591–0.3532 at 64/4,096 iterations and 1.1352–1.1998 at one iteration. Candidate/interpreter medians were below 1 only for `b_64` and `b_4096`. | Synthetic recurrence only. No broad workload speedup, runtime/default-policy change, or broad S3-31 closure; candidate remains opt-in. Timed source tree is clean at the recorded revision, runtime working-tree status is unknown, preflight was correctness-only on a pre-commit dirty tree, and Mini remains deferred. See [S3-31c](STAGE_3_S3-31c_2026-11-01.md) and [manifest](data/stage3/s3-31c-20261101/suite-manifest.json). |
 
 ## Оставшиеся gates
 
@@ -159,6 +173,8 @@ no findings; the summary does not close S3-41 or Stage 3. See the
 - [JIT contract](../specs/JIT_CONTRACT.md) и [JIT testing](../testing/JIT.md).
 - [S3-27d direct V2 PC maps](STAGE_3_S3-27d_2026-10-30.md),
   [S3-27e two-site V2 PC-map attribution](STAGE_3_S3-27e_2026-11-01.md),
+  [S3-31c run-local prepared-key reuse](STAGE_3_S3-31c_2026-11-01.md),
+  [S3-31c suite manifest](data/stage3/s3-31c-20261101/suite-manifest.json),
   [S3-30a allocator cost diagnostic](STAGE_3_S3-30a_2026-11-01.md),
   [S3-30b distinct-branch allocator configuration cost](STAGE_3_S3-30b_2026-11-01.md),
   [S3-30b raw-pair suite manifest](data/stage3/s3-30b/suite-manifest.json),
