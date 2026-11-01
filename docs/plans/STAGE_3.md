@@ -3821,6 +3821,24 @@ Stage 2 runs/activity сами по себе не являются blocker и н
 без нового основания не запускаем. Изменение документационное, runtime не
 менялся.
 
+**Обновление, 1 ноября 2026 года:** принятый summary текущего full-local run
+`stage3-20261101-190932-58293bb642` фиксирует 120 passed, 0 failed и 33
+`not_run`; source revision `020f79d74566ad6abdc8d2fa4ad8d6e0bfaf65ea`,
+fingerprint начала и конца
+`8dfe432b2903d5b62c7de353665b0efd51597280a6cf86ca7223f7e18e8175f9`. Stage 1
+child проверил локальное согласование interpreter/JIT-dispatch для 10 manual и
+1 000 generated inputs, два повтора (2 020 результатов); `stage1_dispatch`
+остался `local_only`. Другие suites — VMHost process, physical x86, Mini,
+performance, owner-backed и Stage 2 — не запускались. Предшествующий запуск
+`stage3-20261101-182017-d88d51f20b` остановился после 106 passed из-за
+`FileExistsError` при создании уже существовавшего run-scoped `artifacts`
+каталога; commit `020f79d` безопасно переиспользует настоящий каталог и
+отклоняет symlink. Неудачный summary и manifest сохранены рядом с принятым
+evidence. Независимая проверка evidence/bindings прошла без замечаний; S3-41
+и Stage 3 открыты.
+См. [датированный S3-41a report](../reports/STAGE_3_S3-41a-current-local_2026-11-01.md)
+и [evidence bundle](../reports/data/stage3/s3-41a-local-20261101/).
+
 ## 10. Матрица приёмки
 
 | Область | Обязательное доказательство | Что не засчитывается |

@@ -1,0 +1,4 @@
+   Compiling od-isa v0.1.0 (/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/crates/od-isa)
+   Compiling od-jit v0.1.0 (/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/crates/od-jit)
+   Compiling od-host v0.1.0 (/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/crates/od-host)
+    Finished `release` profile [optimized] target(s) in 3.54s

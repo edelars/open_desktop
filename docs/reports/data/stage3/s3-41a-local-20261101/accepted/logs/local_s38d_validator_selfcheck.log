@@ -1,0 +1,8 @@
+
+--- stderr ---
+test_s3_38d_result_state_validator_rejects_corruption (__main__.Stage3HarnessValidationTests.test_s3_38d_result_state_validator_rejects_corruption) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.002s
+
+OK

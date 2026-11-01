@@ -6,7 +6,7 @@
 
 | Статус | Текущее состояние |
 |---|---|
-| Bounded local evidence | Подтверждены только перечисленные ниже fixture/profile slices: checked-memory cache correctness (S3-18e), cold direct-entry (S3-35c), warm direct-entry (S3-36d), cached full-call (S3-36e), warm dispatcher phase attribution on two selected S3-17 strata (S3-31; no linking conclusion), FIFO16 lifecycle/counters (S3-37d), separate VMHost/C ABI lifecycle and RESULT-state slices (S3-38a/c/d), current-source VMHost process-only regression (S3-38b), and an M1 Pro ARM64 smoke (S3-39). |
+| Bounded local evidence | Подтверждены только перечисленные ниже fixture/profile slices: checked-memory cache correctness (S3-18e), cold direct-entry (S3-35c), warm direct-entry (S3-36d), cached full-call (S3-36e), warm dispatcher phase attribution on two selected S3-17 strata (S3-31; no linking conclusion), FIFO16 lifecycle/counters (S3-37d), separate VMHost/C ABI lifecycle and RESULT-state slices (S3-38a/c/d), current-source VMHost process-only regression (S3-38b), current full-local harness summary (S3-41a; independent evidence review passed), and an M1 Pro ARM64 smoke (S3-39). |
 | Broad Stage 3 conditions | Не доказаны: full dispatcher/workload and memory matrix, general cold/warm usefulness, wider resource/lifecycle behavior, or final production policy. These conditions remain open. |
 | Physical hardware gate | S3-21 remains deferred until the end-of-Stage-3 Mac mini checks; local Apple Silicon evidence does not replace the physical x86 comparison. |
 | Production owner/MMU | Outside the current fixture scope; no production RAM/backing/mapping/MMU owner or committed-writer integration is claimed here. |
@@ -60,6 +60,22 @@ This bounded integration evidence neither resolves ISSUE-027 nor replaces the
 separate S3-38d RESULT-state evidence. See the [S3-38b current-source
 addendum](STAGE_3_S3-38b-current-source_2026-11-01.md) and its
 [committed evidence bundle](data/stage3/s3-38b-20261101/).
+
+The current full-local harness invocation is a separate record from that
+process-only run. Its summary records 120 passed, 0 failed, and 33 `not_run`;
+local lifecycle, local acceptance, memory corpus, and RESULT-state suites
+passed, while Stage 1 dispatch was `local_only`. The Stage 1 child ran 10 manual
+and 1,000 generated inputs twice, producing 2,020 local results. The earlier
+attempt stopped with `FileExistsError` after 106 passed because the run's
+`artifacts` directory already existed and contained files. Commit `020f79d`
+added safe reuse of a real directory and a self-check rejecting symlinks; the
+accepted retry records the updated harness self-check and completes the
+selected local suites. The failure receipt is preserved beside the accepted
+evidence. Process-only, physical x86, Mac mini, performance, owner-backed, and
+Stage 2 suites remain unrun. Independent evidence/binding review passed with
+no findings; the summary does not close S3-41 or Stage 3. See the
+[current S3-41a report](STAGE_3_S3-41a-current-local_2026-11-01.md) and its
+[evidence bundle](data/stage3/s3-41a-local-20261101/).
 
 ## Карта требований и границ
 
