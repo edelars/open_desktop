@@ -49,6 +49,7 @@ MEMORY_ALLOWED_IGNORED_TESTS = {
     "reduce_saved_case_from_environment",
 }
 SELF_TEST_NAMES = (
+    "test_run_scoped_artifacts_reuse_real_directory_and_reject_symlink",
     "test_source_fingerprint_mismatch_is_rejected",
     "test_input_manifest_digest_mismatch_is_rejected",
     "test_partial_run_cannot_be_reported_as_local_only",
@@ -1199,6 +1200,17 @@ def vmhost_process_paths(run_root: Path) -> dict[str, Path]:
         "app_bundle": artifacts / "OpenDesktop-Stage0-Smoke.app",
         "entitlements": ROOT / "apps/vmhost/Configuration/vmhost-smoke.entitlements",
     }
+
+
+def ensure_real_directory(path: Path, purpose: str) -> None:
+    if path.is_symlink():
+        raise HarnessError(f"{purpose} must be a real directory: {path}")
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise HarnessError(f"{purpose} is not a directory: {path}") from error
+    if path.is_symlink() or not path.is_dir():
+        raise HarnessError(f"{purpose} must be a real directory: {path}")
 
 
 def vmhost_process_commands(
@@ -2399,7 +2411,7 @@ def run_local_vmhost_result_state(
     host_target, _ = rust_host()
     require_local_arm64_backend(host_target)
     paths = vmhost_process_paths(run_root)
-    paths["artifacts"].mkdir(parents=True, exist_ok=False)
+    ensure_real_directory(paths["artifacts"], "local VMHost artifacts directory")
     paths["swift_modules"].mkdir(parents=True, exist_ok=False)
     (run_root / "logs" / "local_s38d_result_state_children").mkdir()
 

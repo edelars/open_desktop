@@ -291,6 +291,32 @@ def replace_step_log_output(step, output: str):
 
 
 class Stage3HarnessValidationTests(unittest.TestCase):
+    def test_run_scoped_artifacts_reuse_real_directory_and_reject_symlink(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifacts = root / "artifacts"
+            existing_evidence = artifacts / "native-register-v1" / "sentinel.json"
+            existing_evidence.parent.mkdir(parents=True)
+            existing_evidence.write_text('{"preserved":true}\n')
+
+            harness.ensure_real_directory(artifacts, "test artifacts")
+
+            self.assertEqual(existing_evidence.read_text(), '{"preserved":true}\n')
+
+            external = root / "external-artifacts"
+            external.mkdir()
+            linked_artifacts = root / "linked-artifacts"
+            linked_artifacts.symlink_to(external, target_is_directory=True)
+            with self.assertRaisesRegex(harness.HarnessError, "real directory"):
+                harness.ensure_real_directory(linked_artifacts, "test artifacts")
+
+            missing_target = root / "missing-artifacts-target"
+            dangling_artifacts = root / "dangling-artifacts"
+            dangling_artifacts.symlink_to(missing_target, target_is_directory=True)
+            with self.assertRaisesRegex(harness.HarnessError, "real directory"):
+                harness.ensure_real_directory(dangling_artifacts, "test artifacts")
+            self.assertFalse(missing_target.exists())
+
     def test_source_fingerprint_mismatch_is_rejected(self):
         with self.assertRaisesRegex(harness.HarnessError, "source fingerprint changed"):
             harness.validate_fingerprint("a" * 64, "b" * 64)
