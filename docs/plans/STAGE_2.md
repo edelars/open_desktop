@@ -188,6 +188,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-29m | Bounded packing of already-rounded nonzero normal finite significands with one carry and finite normal exponent range; no subnormal/special packing or architectural effects | S2-29l |
 | [x] | S2-29p | Round an exact signed `i128` coefficient once to finite binary80 through lossless normalization and direct normal/subnormal packing; no x87 architectural effects | S2-29e, S2-29f, S2-29k–n |
 | [x] | S2-29u | p64-aware large-gap binary80 finite-addition bridge for normalized operands with exponent gaps >64; classify tails below/at/above half; preserve binary32/64 adapter behavior; no x87 instruction semantics | S2-29t; independent Sol/high review clean |
+| [x] | S2-29v | Pure integer square-root helper for positive nonzero normalized finite binary80 inputs; one-round binary80 packing; no FSQRT/FCW/state/exception semantics | S2-29u; independent Sol/high review clean |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
@@ -3219,6 +3220,32 @@ max-finite with signed minimum subnormals, gap-64 compatibility, zero,
 cancellation, and input immutability. No x87 instruction semantics, control
 word, architectural flags/exceptions, or physical x86 acceptance are added.
 Focused tests and full validation are recorded in the [S2-29u report](../reports/S2_29U_X87_LARGE_GAP_BRIDGE.md). S2-29, S2-28, and ISSUE-019 remain open.
+
+### S2-29v. Pure finite x87 square root to binary80 (bounded helper)
+
+`sqrt_finite_to_binary80(value, mode)` accepts a positive, nonzero normalized
+`X87Finite` and returns a normal finite binary80 result rounded to 64 bits.
+For `x = S * 2^(e-63)`, the integer decomposition uses `E=floor(e/2)`,
+`b=e.rem_euclid(2)`, `N=S << (63+b)`, `q=floor(sqrt(N))`, and exact `u128`
+remainder `R=N-q²`. Nearest rounding increments iff `R>q` (an exact midpoint
+is impossible); toward-positive increments iff `R!=0`; toward-zero and
+toward-negative do not increment for this positive input. The rounded
+significand is widened to `u128`, preserving the `u64::MAX + 1` carry for the
+existing normal packer. Negative, zero, and malformed non-normalized inputs
+return `None`.
+
+The shared `integer_sqrt_u128` and finite square-root decomposition now live
+in `finite_arithmetic`; binary32/binary64 retain their previous exact/nonzero
+tail bridge and are protected by their existing literal raw tests. Literal
+binary80 tests cover all four modes, six decomposition vectors, exponent
+boundaries `-1`, `-3`, `-16445`, `16383`, pseudo-denormal equivalence, rejected
+zero/negative inputs, and deterministic square-root floor invariants.
+
+This is a mathematical helper only: no FSQRT decoding/execution, FCW mapping,
+x87 state mutation, architectural flags/exceptions, or physical x86 acceptance
+is added. `cargo fmt --all -- --check`, `cargo test -p od-isa --offline`
+(1706 passed), and `cargo check -p od-isa --all-targets --offline` passed;
+independent Sol/high review found no remaining issues. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-29v-pure-finite-x87-square-root-helper), [implementation report](../reports/STAGE_2_REPORT.md#s2-29v--pure-finite-x87-square-root-helper), and [standalone report](../reports/S2_29V_X87_FINITE_SQRT_BINARY80.md). S2-29, S2-28, and ISSUE-019 remain open.
 
 ### S2-30. Основные x87 операции
 

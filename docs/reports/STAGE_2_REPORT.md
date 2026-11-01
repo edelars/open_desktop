@@ -5409,6 +5409,36 @@ workspace all-target check, formatting, diff check, and Graphify update passed.
 Independent Sol/high review completed cleanly. No x87 instruction execution or
 physical x86 acceptance is claimed. See the [standalone S2-29u report](S2_29U_X87_LARGE_GAP_BRIDGE.md). ISSUE-019 remains open for broader x87 behavior and physical acceptance.
 
+## S2-29v — pure finite x87 square root helper
+
+Added `x87::sqrt_finite_to_binary80(value, mode)` for positive, nonzero
+normalized `X87Finite` inputs. It computes `E=floor(e/2)`, Euclidean parity
+`b=e.rem_euclid(2)`, `N=S << (63+b)`, `q=floor(sqrt(N))`, and exact `u128`
+remainder `R=N-q²` for input `x=S*2^(e-63)`. Nearest rounding increments iff
+`R>q`; an exact midpoint is impossible. Toward-positive increments iff `R!=0`;
+toward-zero and toward-negative do not increment. The rounded significand uses
+`u128`, preserving the carry from `u64::MAX` to `2^64` for the existing normal
+binary80 packer. Zero, negative and malformed non-normalized values return
+`None`.
+
+The reusable `integer_sqrt_u128` and finite sqrt decomposition moved to
+`finite_arithmetic.rs`; binary32/binary64 continue to pass the same
+exact/nonzero tail representation to their existing packers. Literal raw
+10-byte vectors cover the six reviewed `(S,e,E,q,R)` cases in all four modes,
+plus exponents `-1`, `-3`, `-16445`, and `16383`, pseudo-denormal equivalence,
+zero/negative rejection and deterministic root invariants. Existing literal
+binary32 and binary64 sqrt tests remain as regression protection.
+
+Verification: `cargo fmt --all -- --check`; `cargo test -p od-isa --offline`
+(1,706 passed, 0 failed); `cargo check -p od-isa --all-targets --offline`;
+`git diff --check`; Graphify update. Independent `gpt-6.1-sol` high-reasoning
+review completed cleanly. The standalone [S2-29v report](S2_29V_X87_FINITE_SQRT_BINARY80.md)
+records the exact raw vectors and derivation. Intel SDM revision 093, Vol. 1
+§4.2.2/Table 4-3 is the binary80 format reference. This is helper evidence
+only: no FSQRT execution, FCW mapping, x87 state mutation, architectural status
+or exception behavior, or physical x86 acceptance is claimed. S2-29, S2-28,
+and ISSUE-019 remain open.
+
 ## S2-30i — exact-only FSUB ST(i), ST(0) (bounded local slice)
 
 Added bare `DC E8+i`, `i=0..7`, as `FSUB ST(i), ST(0)`. The operation shares

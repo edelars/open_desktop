@@ -3483,6 +3483,41 @@ and immutability. This is a mathematical helper only: no guest x87 instruction,
 control-word mapping, architectural status/exception behavior, or physical x86
 acceptance is established. See the [S2-29u report](../reports/S2_29U_X87_LARGE_GAP_BRIDGE.md). S2-29, S2-28, and ISSUE-019 remain open.
 
+## Local S2-29v: pure finite x87 square root helper
+
+`od_isa::x87::sqrt_finite_to_binary80(value: X87Finite, mode:
+RationalRoundingMode) -> Option<X87Binary80>` is an integer-only mathematical
+helper for positive, nonzero normalized finite inputs. It rejects negative
+values, either zero, and malformed significands below `2^63`. For
+`x=S*2^(e-63)`, the shared finite arithmetic decomposes
+`E=floor(e/2)`, `b=e.rem_euclid(2)`, `N=S << (63+b)`,
+`q=floor(sqrt(N))`, and exact `u128` remainder `R=N-q²`; the result represents
+`sqrt(N)*2^(E-63)`. Nearest-ties-even increments iff `R>q`, because an exact
+halfway root cannot occur for integer `N` and `q`; toward-positive increments
+iff `R!=0`; toward-zero and toward-negative do not increment for a positive
+input. The incremented significand is widened to `u128`, so a carry from
+`u64::MAX` to `2^64` is normalized by the existing normal packer without
+overflow.
+
+The helper returns a finite normal encoding for valid normalized binary80
+inputs. Its `None` result is only bounded-helper rejection; it is not an x87
+exception. No FSQRT decode or execution, FCW read/mapping, x87 state update,
+architectural status/exception behavior, or physical x86 acceptance is part of
+this contract. Existing binary32/binary64 square-root paths retain their
+previous exact/nonzero-tail packing behavior after relocation of the shared
+integer root and decomposition helpers.
+
+Literal result vectors exercise all four modes, exact and inexact roots,
+nearest increments, directed increments, `R==q`, and carry at `q=u64::MAX`.
+Further vectors cover exponent boundaries `-1`, `-3`, `-16445`, and `16383`,
+pseudo-denormal equivalence, zero/negative rejection, and deterministic floor
+invariants. See the [S2-29v plan](../plans/STAGE_2.md#s2-29v-pure-finite-x87-square-root-to-binary80-bounded-helper), [implementation report](../reports/STAGE_2_REPORT.md#s2-29v--pure-finite-x87-square-root-helper), and [standalone report](../reports/S2_29V_X87_FINITE_SQRT_BINARY80.md).
+
+Source for the binary80 storage format: Intel SDM revision 093, Vol. 1
+§4.2.2/Table 4-3 ([Intel SDM](https://cdrdv2.intel.com/v1/dl/getContent/671436)).
+The square-root rounding rules above are the explicit integer-helper contract,
+not an assertion about an executed x87 instruction.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.

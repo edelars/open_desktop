@@ -239,6 +239,22 @@
   [CPU contract](specs/CPU_CONTRACT.md#local-s2-29u-p64-aware-binary80-large-gap-addition),
   and [report](reports/STAGE_2_REPORT.md#s2-29u--p64-aware-large-gap-binary80-addition-bridge).
 
+- **S2-29v finite square-root helper — bounded helper complete:**
+  `sqrt_finite_to_binary80` computes positive nonzero normalized finite binary80
+  square roots with integer arithmetic and one 64-bit significand rounding.
+  The exact remainder remains `u128`; literal ten-byte vectors cover all four
+  rounding modes, the nearest threshold and `u64::MAX` carry, exponent
+  boundaries, pseudo-denormal equivalence, and rejected zero/negative inputs.
+  The relocated shared root/decomposition helpers preserve binary32/binary64
+  paths, whose existing literal sqrt tests pass. Full `od-isa` tests (1706),
+  component all-target check, formatting and Graphify update passed; independent
+  Sol/high review was clean. This remains helper-only: no FSQRT execution, FCW,
+  x87 state/status/exception semantics, or physical x86 acceptance is claimed.
+  ISSUE-019 remains open for broader x87 behavior and physical acceptance. See
+  the [plan](plans/STAGE_2.md#s2-29v-pure-finite-x87-square-root-to-binary80-bounded-helper),
+  [CPU contract](specs/CPU_CONTRACT.md#local-s2-29v-pure-finite-x87-square-root-helper),
+  and [report](reports/STAGE_2_REPORT.md#s2-29v--pure-finite-x87-square-root-helper).
+
 - **FCHS/FABS stale rejection assertions — resolved:** `fabs_rejects_missing_or_invalid_source_and_boundaries_atomically` and `fchs_rejects_invalid_source_and_execution_boundaries_atomically` now use standalone SF (`FSW=0x0040`) in the rejection vectors; IE|SF (`0x0041`) remains accepted as specified by S2-30bi. The existing tests continue to assert atomic state preservation, and the forbidden-status matrix passes. Validation: focused FABS/FCHS tests and the S2-30bi forbidden-status test pass; full `cargo test -p od-isa --offline` passes 739/739, `cargo test -p od-testkit --offline` 189/189, and `cargo test -p od-jit --offline` 5/5. No CPU semantics changed. Reference: [S2-30bi CPU contract](specs/CPU_CONTRACT.md#local-s2-30bi-historical-stack-fault-status-through-bounded-fchs-fabs); [S2-30bi report](reports/STAGE_2_REPORT.md#s2-30bi--historical-sf-only-with-ie-through-bounded-fchs-fabs).
 - **S2-30ci historical FCMOVNU extent:** original exact bare `DB D9` coverage is superseded by indexed S2-30cj. The indexed local Long64 interpreter admits `DB D8..DF`; it checks TOP and `(TOP+i)&7` before PF for `i>0`, checks only TOP for self-index, and copies raw bytes/tag only for PF=0. Under FCW `0x037f` and `FSW & 0x82ff == 0`, used participants must be Valid canonical Normal or Zero exact signed zero. Local evidence: 363,520 success snapshots (358,400 indexed plus 5,120 self), 161,280 invalid class/tag snapshots (150,528 indexed plus 10,752 self), 18-stream schema, literal rows, complete producer/complement snapshots and JIT denial. Native/JIT execution, x87 exception and unordered/Special semantics, and physical x86 validation remain open; no Mac mini or SSH run was made. Next step remains the shared final batched host/physical acceptance. See [CPU contract](specs/CPU_CONTRACT.md#local-s2-30cj-bounded-indexed-fcmovnu-st0-sti-db-d8df), [plan](plans/STAGE_2.md#s2-30cj-indexed-bare-fcmovnu-st0-sti-db-d8df), [report](reports/STAGE_2_REPORT.md#s2-30cj--indexed-bare-fcmovnu-st0-sti), and [fixture notes](../tests/fixtures/x86/stage2/README.md#s2-30cj-indexed-bare-fcmovnu-st0-sti-db-d8df).
 
