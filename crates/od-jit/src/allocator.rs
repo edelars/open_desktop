@@ -639,6 +639,24 @@ mod tests {
         }
     }
 
+    fn single_instruction_program(body: Vec<Operation>) -> Program {
+        let mut operations = vec![Operation::BeginInstruction { index: 0 }];
+        operations.extend(body);
+        operations.push(Operation::CommitInstruction { index: 0 });
+        operations.push(Operation::Exit {
+            kind: ExitKind::BlockComplete,
+            target_rip: 0x1001,
+        });
+        Program {
+            guest_instructions: vec![GuestInstruction {
+                guest_rip: 0x1000,
+                next_rip: 0x1001,
+            }],
+            operations,
+            code_end: 0x1001,
+        }
+    }
+
     #[test]
     fn checked_store_declares_an_empty_helper_boundary() {
         let program = Program {
@@ -854,6 +872,521 @@ mod tests {
         assert_eq!(allocation.counters().helper_capture_slots, 1);
         assert_eq!(allocation.counters().helper_saves, 2);
         assert_eq!(allocation.counters().helper_reloads, 2);
+    }
+
+    #[test]
+    fn table_driven_definition_use_and_helper_boundary_liveness_matrix() {
+        struct BoundaryExpectation {
+            position: HelperBoundaryPosition,
+            live: &'static [u32],
+            captures: &'static [(u32, u8, u32, u32)],
+        }
+
+        struct SpillExpectation {
+            temp: u32,
+            index: u32,
+            byte_offset: u32,
+        }
+
+        struct MatrixCase {
+            name: &'static str,
+            program: Program,
+            register_homes: u8,
+            reserved_prefix_bytes: u32,
+            boundaries: Vec<BoundaryExpectation>,
+            spills: &'static [SpillExpectation],
+            allocator_bytes: u32,
+            value_spill_loads: u32,
+            helper_capture_slots: u32,
+            helper_saves: u32,
+        }
+
+        let int = |lhs, rhs, result| Operation::Integer {
+            kind: crate::ir::IntegerKind::Add,
+            lhs: TempId(lhs),
+            rhs: TempId(rhs),
+            result: Some(TempId(result)),
+            width: IntWidth::W64,
+            flags: crate::ir::FlagEffect::Arithmetic,
+        };
+        let constant = |dst| Operation::Constant {
+            dst: TempId(dst),
+            width: IntWidth::W64,
+            value: u64::from(dst),
+        };
+
+        let checked_load_program = Program {
+            guest_instructions: vec![
+                GuestInstruction {
+                    guest_rip: 0x2000,
+                    next_rip: 0x2003,
+                },
+                GuestInstruction {
+                    guest_rip: 0x2003,
+                    next_rip: 0x2006,
+                },
+            ],
+            operations: vec![
+                Operation::BeginInstruction { index: 0 },
+                Operation::ReadGpr {
+                    dst: TempId(5),
+                    register: GuestGpr(0),
+                    width: IntWidth::W64,
+                },
+                Operation::CheckedLoad {
+                    dst: TempId(9),
+                    operand: od_isa::long_decode::MemoryOperand {
+                        base: od_isa::long_decode::AddressBase::Register(od_isa::Register::Rax),
+                        index: None,
+                        scale: 1,
+                        displacement: 0,
+                        address_size: od_isa::OperandSize::Qword,
+                        size: od_isa::OperandSize::Qword,
+                    },
+                },
+                Operation::WriteGpr {
+                    register: GuestGpr(0),
+                    src: TempId(9),
+                    width: IntWidth::W64,
+                },
+                Operation::CommitInstruction { index: 0 },
+                Operation::BeginInstruction { index: 1 },
+                int(5, 9, 13),
+                Operation::WriteGpr {
+                    register: GuestGpr(1),
+                    src: TempId(13),
+                    width: IntWidth::W64,
+                },
+                Operation::CommitInstruction { index: 1 },
+                Operation::Exit {
+                    kind: ExitKind::BlockComplete,
+                    target_rip: 0x2006,
+                },
+            ],
+            code_end: 0x2006,
+        };
+
+        let compare_program = single_instruction_program(vec![
+            constant(1),
+            Operation::Integer {
+                kind: crate::ir::IntegerKind::Compare,
+                lhs: TempId(1),
+                rhs: TempId(1),
+                result: None,
+                width: IntWidth::W64,
+                flags: crate::ir::FlagEffect::Arithmetic,
+            },
+            Operation::WriteGpr {
+                register: GuestGpr(0),
+                src: TempId(1),
+                width: IntWidth::W64,
+            },
+        ]);
+
+        let pressure_program = single_instruction_program(vec![
+            constant(10),
+            constant(20),
+            constant(30),
+            constant(40),
+            int(10, 20, 50),
+            int(30, 50, 60),
+            int(40, 60, 70),
+            Operation::WriteGpr {
+                register: GuestGpr(0),
+                src: TempId(70),
+                width: IntWidth::W64,
+            },
+        ]);
+
+        let cases = vec![
+            MatrixCase {
+                name: "constant/read definitions, integer inputs/result, and final GPR use",
+                program: single_instruction_program(vec![
+                    constant(10),
+                    Operation::ReadGpr {
+                        dst: TempId(20),
+                        register: GuestGpr(1),
+                        width: IntWidth::W64,
+                    },
+                    int(10, 20, 30),
+                    Operation::WriteGpr {
+                        register: GuestGpr(0),
+                        src: TempId(30),
+                        width: IntWidth::W64,
+                    },
+                ]),
+                register_homes: 4,
+                reserved_prefix_bytes: 0,
+                boundaries: vec![
+                    BoundaryExpectation {
+                        position: HelperBoundaryPosition::BeforeOperation(1),
+                        live: &[],
+                        captures: &[],
+                    },
+                    BoundaryExpectation {
+                        position: HelperBoundaryPosition::BeforeOperation(2),
+                        live: &[10],
+                        captures: &[(10, 9, 0, 0)],
+                    },
+                    BoundaryExpectation {
+                        position: HelperBoundaryPosition::BeforeOperation(3),
+                        live: &[10, 20],
+                        captures: &[(10, 9, 0, 0), (20, 10, 1, 8)],
+                    },
+                    BoundaryExpectation {
+                        position: HelperBoundaryPosition::AfterOperation(3),
+                        live: &[30],
+                        captures: &[(30, 11, 2, 16)],
+                    },
+                    BoundaryExpectation {
+                        position: HelperBoundaryPosition::AfterOperation(4),
+                        live: &[],
+                        captures: &[],
+                    },
+                ],
+                spills: &[],
+                allocator_bytes: 24,
+                value_spill_loads: 0,
+                helper_capture_slots: 3,
+                helper_saves: 4,
+            },
+            MatrixCase {
+                name: "same-input compare is one live value and defines no result",
+                program: compare_program,
+                register_homes: 1,
+                reserved_prefix_bytes: 8,
+                boundaries: vec![
+                    BoundaryExpectation {
+                        position: HelperBoundaryPosition::BeforeOperation(2),
+                        live: &[1],
+                        captures: &[(1, 9, 0, 8)],
+                    },
+                    BoundaryExpectation {
+                        position: HelperBoundaryPosition::AfterOperation(2),
+                        live: &[1],
+                        captures: &[(1, 9, 0, 8)],
+                    },
+                    BoundaryExpectation {
+                        position: HelperBoundaryPosition::AfterOperation(3),
+                        live: &[],
+                        captures: &[],
+                    },
+                ],
+                spills: &[],
+                allocator_bytes: 8,
+                value_spill_loads: 0,
+                helper_capture_slots: 1,
+                helper_saves: 2,
+            },
+            MatrixCase {
+                name: "budget four: four register homes cross a helper while later values spill",
+                program: pressure_program.clone(),
+                register_homes: 4,
+                reserved_prefix_bytes: 16,
+                boundaries: vec![
+                    BoundaryExpectation {
+                        position: HelperBoundaryPosition::BeforeOperation(5),
+                        live: &[10, 20, 30, 40],
+                        captures: &[
+                            (10, 9, 3, 40),
+                            (20, 10, 4, 48),
+                            (30, 11, 5, 56),
+                            (40, 12, 6, 64),
+                        ],
+                    },
+                    BoundaryExpectation {
+                        position: HelperBoundaryPosition::AfterOperation(5),
+                        live: &[30, 40, 50],
+                        captures: &[(30, 11, 5, 56), (40, 12, 6, 64)],
+                    },
+                    BoundaryExpectation {
+                        position: HelperBoundaryPosition::AfterOperation(6),
+                        live: &[40, 60],
+                        captures: &[(40, 12, 6, 64)],
+                    },
+                    BoundaryExpectation {
+                        position: HelperBoundaryPosition::AfterOperation(7),
+                        live: &[70],
+                        captures: &[],
+                    },
+                    BoundaryExpectation {
+                        position: HelperBoundaryPosition::AfterOperation(8),
+                        live: &[],
+                        captures: &[],
+                    },
+                ],
+                spills: &[
+                    SpillExpectation {
+                        temp: 50,
+                        index: 0,
+                        byte_offset: 16,
+                    },
+                    SpillExpectation {
+                        temp: 60,
+                        index: 1,
+                        byte_offset: 24,
+                    },
+                    SpillExpectation {
+                        temp: 70,
+                        index: 2,
+                        byte_offset: 32,
+                    },
+                ],
+                allocator_bytes: 56,
+                value_spill_loads: 3,
+                helper_capture_slots: 4,
+                helper_saves: 7,
+            },
+            MatrixCase {
+                name: "budget three: register homes and spills both cross a helper",
+                program: pressure_program.clone(),
+                register_homes: 3,
+                reserved_prefix_bytes: 16,
+                boundaries: vec![
+                    BoundaryExpectation {
+                        position: HelperBoundaryPosition::BeforeOperation(5),
+                        live: &[10, 20, 30, 40],
+                        captures: &[(10, 9, 4, 48), (20, 10, 5, 56), (30, 11, 6, 64)],
+                    },
+                    BoundaryExpectation {
+                        position: HelperBoundaryPosition::AfterOperation(5),
+                        live: &[30, 40, 50],
+                        captures: &[(30, 11, 6, 64)],
+                    },
+                ],
+                spills: &[
+                    SpillExpectation {
+                        temp: 40,
+                        index: 0,
+                        byte_offset: 16,
+                    },
+                    SpillExpectation {
+                        temp: 50,
+                        index: 1,
+                        byte_offset: 24,
+                    },
+                    SpillExpectation {
+                        temp: 60,
+                        index: 2,
+                        byte_offset: 32,
+                    },
+                    SpillExpectation {
+                        temp: 70,
+                        index: 3,
+                        byte_offset: 40,
+                    },
+                ],
+                allocator_bytes: 56,
+                value_spill_loads: 4,
+                helper_capture_slots: 3,
+                helper_saves: 4,
+            },
+            MatrixCase {
+                name: "budget zero: spilled values stay live through helpers without captures",
+                program: pressure_program.clone(),
+                register_homes: 0,
+                reserved_prefix_bytes: 16,
+                boundaries: vec![
+                    BoundaryExpectation {
+                        position: HelperBoundaryPosition::BeforeOperation(5),
+                        live: &[10, 20, 30, 40],
+                        captures: &[],
+                    },
+                    BoundaryExpectation {
+                        position: HelperBoundaryPosition::AfterOperation(5),
+                        live: &[30, 40, 50],
+                        captures: &[],
+                    },
+                ],
+                spills: &[
+                    SpillExpectation {
+                        temp: 10,
+                        index: 0,
+                        byte_offset: 16,
+                    },
+                    SpillExpectation {
+                        temp: 20,
+                        index: 1,
+                        byte_offset: 24,
+                    },
+                    SpillExpectation {
+                        temp: 30,
+                        index: 2,
+                        byte_offset: 32,
+                    },
+                    SpillExpectation {
+                        temp: 40,
+                        index: 3,
+                        byte_offset: 40,
+                    },
+                    SpillExpectation {
+                        temp: 50,
+                        index: 4,
+                        byte_offset: 48,
+                    },
+                    SpillExpectation {
+                        temp: 60,
+                        index: 5,
+                        byte_offset: 56,
+                    },
+                    SpillExpectation {
+                        temp: 70,
+                        index: 6,
+                        byte_offset: 64,
+                    },
+                ],
+                allocator_bytes: 56,
+                value_spill_loads: 7,
+                helper_capture_slots: 0,
+                helper_saves: 0,
+            },
+            MatrixCase {
+                name: "checked-load definition survives write and a later guest instruction",
+                program: checked_load_program,
+                register_homes: 2,
+                reserved_prefix_bytes: 16,
+                boundaries: vec![
+                    BoundaryExpectation {
+                        position: HelperBoundaryPosition::BeforeOperation(2),
+                        live: &[5],
+                        captures: &[(5, 9, 1, 24)],
+                    },
+                    BoundaryExpectation {
+                        position: HelperBoundaryPosition::BeforeOperation(3),
+                        live: &[5, 9],
+                        captures: &[(5, 9, 1, 24), (9, 10, 2, 32)],
+                    },
+                    BoundaryExpectation {
+                        position: HelperBoundaryPosition::BeforeOperation(6),
+                        live: &[5, 9],
+                        captures: &[(5, 9, 1, 24), (9, 10, 2, 32)],
+                    },
+                    BoundaryExpectation {
+                        position: HelperBoundaryPosition::AfterOperation(6),
+                        live: &[13],
+                        captures: &[],
+                    },
+                ],
+                spills: &[SpillExpectation {
+                    temp: 13,
+                    index: 0,
+                    byte_offset: 16,
+                }],
+                allocator_bytes: 24,
+                value_spill_loads: 1,
+                helper_capture_slots: 2,
+                helper_saves: 5,
+            },
+        ];
+
+        for case in cases {
+            let positions: Vec<_> = case
+                .boundaries
+                .iter()
+                .map(|expected| expected.position)
+                .collect();
+            let allocation = Allocation::build(
+                &case.program,
+                AllocatorConfig {
+                    register_homes: case.register_homes,
+                    reserved_prefix_bytes: case.reserved_prefix_bytes,
+                },
+                &positions,
+            )
+            .unwrap_or_else(|error| panic!("{}: {error:?}", case.name));
+
+            for expected in &case.boundaries {
+                let boundary = allocation
+                    .helper_boundary(expected.position)
+                    .unwrap_or_else(|error| panic!("{}: {error:?}", case.name));
+                assert_eq!(
+                    boundary
+                        .live_through
+                        .iter()
+                        .map(|temp| temp.0)
+                        .collect::<Vec<_>>(),
+                    expected.live,
+                    "{} at {:?}",
+                    case.name,
+                    expected.position
+                );
+                assert_eq!(
+                    boundary
+                        .captures
+                        .iter()
+                        .map(|capture| (
+                            capture.temp.0,
+                            capture.home.number(),
+                            capture.slot.index(),
+                            capture.slot.byte_offset(),
+                        ))
+                        .collect::<Vec<_>>(),
+                    expected.captures,
+                    "{} at {:?}",
+                    case.name,
+                    expected.position
+                );
+            }
+
+            for expected in case.spills {
+                assert_eq!(
+                    allocation.location(TempId(expected.temp)),
+                    Ok(ValueLocation::Spill(
+                        make_slot(expected.index, case.reserved_prefix_bytes,).unwrap()
+                    )),
+                    "{} temp {}",
+                    case.name,
+                    expected.temp
+                );
+                assert_eq!(
+                    make_slot(expected.index, case.reserved_prefix_bytes)
+                        .unwrap()
+                        .byte_offset(),
+                    expected.byte_offset,
+                    "{} temp {} slot offset",
+                    case.name,
+                    expected.temp
+                );
+            }
+
+            let counters = allocation.counters();
+            assert_eq!(
+                counters.value_spill_slots,
+                case.spills.len() as u32,
+                "{}",
+                case.name
+            );
+            assert_eq!(
+                counters.value_spill_loads, case.value_spill_loads,
+                "{}",
+                case.name
+            );
+            assert_eq!(
+                counters.value_spill_stores,
+                case.spills.len() as u32,
+                "{}",
+                case.name
+            );
+            assert_eq!(
+                counters.helper_capture_slots, case.helper_capture_slots,
+                "{}",
+                case.name
+            );
+            assert_eq!(counters.helper_saves, case.helper_saves, "{}", case.name);
+            assert_eq!(counters.helper_reloads, case.helper_saves, "{}", case.name);
+            assert_eq!(
+                allocation.frame().allocator_bytes,
+                case.allocator_bytes,
+                "{}",
+                case.name
+            );
+            assert_eq!(
+                allocation.frame().frame_bytes % allocation.frame().alignment,
+                0,
+                "{} frame alignment",
+                case.name
+            );
+        }
     }
 
     #[test]
