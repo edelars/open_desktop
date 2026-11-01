@@ -102,8 +102,8 @@ pub enum Operation {
         dst: TempId,
         operand: MemoryOperand,
     },
-    /// One checked qword write from the canonical guest GPR. The store has
-    /// no temporary result and must be followed immediately by its commit.
+    /// One checked qword or exact-profile dword write from a canonical guest
+    /// GPR. The store has no temporary result and must be followed by commit.
     CheckedStore {
         src: GuestGpr,
         operand: MemoryOperand,
@@ -429,12 +429,12 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                 } else {
                     validate_gpr(*src, operation_index)?;
                 }
-                if operand.size != od_isa::OperandSize::Qword
-                    || !is_checked_memory_address(
-                        operand,
-                        instruction_length(program, active_instruction),
-                    )
-                {
+                let length = instruction_length(program, active_instruction);
+                let qword_profile = operand.size == od_isa::OperandSize::Qword
+                    && is_checked_memory_address(operand, length);
+                let dword_rbx_profile =
+                    src.0 == 0 && is_checked_dword_rbx_store_address(operand, length);
+                if !qword_profile && !dword_rbx_profile {
                     return Err(VerifyError::InvalidCheckedStoreDescriptor {
                         operation: operation_index,
                     });
@@ -1065,6 +1065,19 @@ fn is_checked_memory_address(
 }
 
 fn is_checked_dword_rbx_load_address(
+    operand: &od_isa::long_decode::MemoryOperand,
+    instruction_length: u64,
+) -> bool {
+    instruction_length == 2
+        && operand.size == od_isa::OperandSize::Dword
+        && operand.address_size == od_isa::OperandSize::Qword
+        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+        && operand.index.is_none()
+        && operand.scale == 1
+        && operand.displacement == 0
+}
+
+fn is_checked_dword_rbx_store_address(
     operand: &od_isa::long_decode::MemoryOperand,
     instruction_length: u64,
 ) -> bool {

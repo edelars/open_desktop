@@ -624,11 +624,13 @@ fn lower_with_admission_and_lea_s32a(
         block::is_checked_qword_load_form(instruction.decoded)
             || block::is_checked_dword_rbx_load_form(instruction.decoded)
             || block::is_checked_qword_store_form(instruction.decoded)
+            || block::is_checked_dword_rbx_store_form(instruction.decoded)
     });
     let single_memory = block.instructions.len() == 1
         && (block::is_checked_qword_load_form(block.instructions[0].decoded)
             || block::is_checked_dword_rbx_load_form(block.instructions[0].decoded)
-            || block::is_checked_qword_store_form(block.instructions[0].decoded));
+            || block::is_checked_qword_store_form(block.instructions[0].decoded)
+            || block::is_checked_dword_rbx_store_form(block.instructions[0].decoded));
     let exact_memory_pair = exact_checked_memory_pair(block);
     if has_memory && !single_memory && !exact_memory_pair {
         return Err(LoweringError::InvalidDecodedForm {
@@ -905,6 +907,7 @@ fn lower_with_admission_and_lea_s32a(
             && !block::is_checked_qword_load_form(instruction.decoded)
             && !block::is_checked_dword_rbx_load_form(instruction.decoded)
             && !block::is_checked_qword_store_form(instruction.decoded)
+            && !block::is_checked_dword_rbx_store_form(instruction.decoded)
         {
             return Err(LoweringError::InvalidDecodedForm {
                 guest_rip: instruction.guest_rip,
@@ -1889,7 +1892,9 @@ fn lower_instruction(
         DecodedOperation::Mov {
             dst: Operand::Memory(operand),
             src: Operand::Register(source),
-        } if block::is_checked_qword_store_form(instruction.decoded) => {
+        } if block::is_checked_qword_store_form(instruction.decoded)
+            || block::is_checked_dword_rbx_store_form(instruction.decoded) =>
+        {
             operations.push(Operation::CheckedStore {
                 src: guest_memory_data_gpr(source, instruction.decoded).ok_or_else(invalid)?,
                 operand,
@@ -1996,7 +2001,8 @@ fn guest_memory_data_gpr(register: RegisterView, instruction: Instruction) -> Op
     let number = register.register() as u8;
     (register.size() == od_isa::OperandSize::Dword
         && number == 0
-        && block::is_checked_dword_rbx_load_form(instruction)
+        && (block::is_checked_dword_rbx_load_form(instruction)
+            || block::is_checked_dword_rbx_store_form(instruction))
         || register.size() == od_isa::OperandSize::Qword
             && (number < 4
                 || number == 4
