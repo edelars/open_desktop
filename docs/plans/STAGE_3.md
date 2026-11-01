@@ -266,7 +266,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-34k | Exact local gates for S3-33i XCHG RAX,RBX | S3-34j, S3-33i; full S3-34 gates remain open |
 | [partial] | S3-34l | Exact local gates for S3-33j LEA RAX,[RBX+disp8] | S3-34k, S3-33j; full S3-34 gates remain open |
 | [partial] | S3-34p | Cached NativeRegisterV1 corpus and versioned replay | S3-34n, S3-38b/c; full S3-34 gates remain open |
-| [partial] | S3-34u | Exact local harness gates for committed dword-load and single-site PC-map tests | Four exact Rust test identities; integration target and source fingerprints pinned; corpus/reducer and full S3-34 remain open |
+| [partial] | S3-34u | Exact local harness gates for committed dword-load and single-site PC-map tests | Four exact Rust test identities; integration target and source fingerprints pinned; corpus/reducer and full S3-34 remain open. See [report](../reports/STAGE_3_S3-34u_2026-11-01.md) |
 | [partial] | S3-35 | Измерить холодное исполнение | S3-01, S3-34 |
 | [ ] | S3-36 | Измерить прогретое исполнение | S3-35 |
 | [ ] | S3-37 | Cache churn и ресурсы | S3-25, S3-34 |
