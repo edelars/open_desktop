@@ -2333,6 +2333,12 @@ gate.
 
 **Готово:** выбран простой allocator, удовлетворяющий измеренным требованиям; решение воспроизводимо. Наличие сложного allocator не является критерием успеха само по себе.
 
+#### S3-30a. Расширить correctness coverage allocator liveness
+
+Выполнен только correctness-coverage срез, без изменения allocator algorithm или runtime compiler behavior. Table-driven matrix в [`allocator.rs`](../../crates/od-jit/src/allocator.rs) проверяет определения и использования `Constant`, `ReadGpr`, `Integer`, `Compare`, `CheckedLoad` и `WriteGpr`; helper boundaries до/после definitions и uses; одновременную живость register homes и spills; повторное использование capture slots; бюджеты 0..=4. Сохранённый native helper-clobber probe прошёл как ограниченная transport/ABI smoke-проверка, без утверждения, что его sum-only assertion проверяет значения по отдельности.
+
+Проверки: `cargo fmt --all -- --check`, `cargo check -p od-jit --all-targets --offline`, `cargo test -p od-jit --offline` (275/275), targeted `od-host` helper-clobber probe (1/1), `git diff --check`; Graphify обновлён, независимое Sol/high review чистое. ISSUE-022 закрывает только названный пробел def/use/helper-boundary coverage; pending-flags и прочие не проверенные paths остаются вне доказанного результата. Это не allocator comparison, performance evidence или выбор реализации; измерительная часть S3-30 остаётся открытой.
+
 ### S3-31. Оценить прямые связи блоков
 
 1. Сначала измерить долю dispatcher/lookup в representative multi-block workload. Переходы через dispatcher уже должны корректно работать.

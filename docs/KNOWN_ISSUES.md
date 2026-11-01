@@ -70,10 +70,10 @@
 
 - **Дата обнаружения:** 2026-10-26.
 - **Компонент:** `od-jit::allocator` (S3-09).
-- **Статус:** открыта; S3-10 добавила unit vector с `ReadGpr` temp, двумя `Integer` uses и двумя helper boundaries, проверяя повторное capture того же register home/slot. S3-11 emitter snapshots temp/GPR outputs при определении, поэтому диагностика не зависит от allocator home, которое helper мог clobber-нуть после последнего use. Это закрывает lifetime конкретного output path, но не исчерпывает все комбинации allocator liveness.
+- **Статус:** частично устранена в S3-30a по покрытию def/use/helper-boundary: table-driven matrix проверяет budgets 0..=4, одновременные live register homes и spills, capture-slot reuse, а также границы до `Constant`, `ReadGpr` и `CheckedLoad` definitions. Ранее добавленные S3-10/S3-11 проверки остаются. Это не подтверждает все allocator paths, pending-flags combinations или runtime correctness вне проверенных fixtures; подтверждённого runtime-дефекта нет.
 - **Суть и последствия:** allocator опирается на first/last-use в linear IR; непокрытое сочетание может ошибочно посчитать временное значение мёртвым или сохранить неверный набор register homes. Подтверждённого runtime-дефекта нет.
-- **Основание:** независимое ревью S3-09 выявило отсутствие отдельных unit vectors для перечисленных liveness сочетаний; native ARM64 probe подтверждает transport для четырёх register homes и двух spills через один helper.
-- **Следующий шаг:** при последующих allocator changes добавить table-driven def/use и boundary combinations, особенно несколько register homes одновременно live-through. Сохранить native helper-clobber probe; до этого считать покрытие базовым, не исчерпывающим.
+- **Основание:** независимое ревью S3-09 выявило отсутствие отдельных unit vectors для перечисленных liveness сочетаний. S3-30a добавила `table_driven_definition_use_and_helper_boundary_liveness_matrix`; `cargo test -p od-jit --offline` прошёл (275/275), а сохранённый native helper-clobber probe прошёл (1/1). Probe с суммарным значением 21 является ограниченной transport/ABI smoke-проверкой и не обнаруживает перестановку индивидуальных значений. Независимое Sol/high review подтвердило ожидаемые liveness, spill/capture slots и counters.
+- **Следующий шаг:** при изменениях allocator добавлять проверки для конкретно изменяемых путей. Отдельно расширить correctness coverage для pending-flags и прочих не представленных здесь путей, если они войдут в scope; сохранить native helper-clobber probe. Allocator comparison и выбор реализации остаются задачей S3-30 и требуют отдельного измерительного среза.
 
 ### ISSUE-021 — Ограничение одной MAP_JIT region и незавершённая multi-block интеграция
 
