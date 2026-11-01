@@ -15,6 +15,9 @@ use serde::Serialize;
 use crate::HostMetadata;
 use crate::two_site_memory_cold as cold;
 
+#[path = "two_site_memory_cached.rs"]
+mod cached;
+
 const PROFILE_ID: &str = "s3-36d-two-site-memory-warm-direct-v1";
 const PREFLIGHT_TRIALS: usize = 2;
 const WARMUP_SWEEPS: u32 = 1;
@@ -308,6 +311,26 @@ pub fn calibration_only(
     journal_path: &Path,
 ) -> Result<Report, Box<dyn std::error::Error>> {
     run_profile(process_run, journal_path, true)
+}
+
+pub fn cached_preflight(
+    process_run: u8,
+) -> Result<cached::PreflightReport, Box<dyn std::error::Error>> {
+    cached::preflight(process_run)
+}
+
+pub fn cached_run(
+    process_run: u8,
+    journal_path: &Path,
+) -> Result<cached::Report, Box<dyn std::error::Error>> {
+    cached::run(process_run, journal_path)
+}
+
+pub fn cached_calibration_only(
+    process_run: u8,
+    journal_path: &Path,
+) -> Result<cached::Report, Box<dyn std::error::Error>> {
+    cached::calibration_only(process_run, journal_path)
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

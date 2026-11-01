@@ -495,6 +495,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
+        "two-site-memory-cache" => {
+            let output = output.ok_or("two-site-memory-cache requires --output PATH")?;
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                if let Some(parent) = output.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let journal = two_site_memory_cache_journal_path(&output);
+                let value = if preflight_only {
+                    serde_json::to_value(od_bench::two_site_memory_warm::cached_preflight(
+                        process_run,
+                    )?)?
+                } else if calibration_only {
+                    serde_json::to_value(od_bench::two_site_memory_warm::cached_calibration_only(
+                        process_run,
+                        &journal,
+                    )?)?
+                } else {
+                    serde_json::to_value(od_bench::two_site_memory_warm::cached_run(
+                        process_run,
+                        &journal,
+                    )?)?
+                };
+                od_bench::dispatch_cache::write_atomic(&output, &value)?;
+                let successful_calibration_only =
+                    calibration_only && calibration_only_report_succeeded(&value);
+                if !successful_calibration_only
+                    && (value
+                        .get("status")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|status| status != "scored")
+                        || value
+                            .get("sample_floor_passed")
+                            .and_then(serde_json::Value::as_bool)
+                            == Some(false))
+                {
+                    return Err(format!(
+                        "two-site-memory-cache wrote a diagnostic-only report: {}",
+                        output.display(),
+                    )
+                    .into());
+                }
+            }
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                let _ = (output, process_run, preflight_only, calibration_only);
+                return Err(
+                    "two-site-memory-cache requires native Apple Silicon macOS execution".into(),
+                );
+            }
+        }
         "warm-native-fallback" => {
             let corpus = corpus_path.ok_or("warm-native-fallback requires --corpus PATH")?;
             let output = output.ok_or("warm-native-fallback requires --output PATH")?;
@@ -525,7 +576,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {
             print_usage();
             return Err(
-                "expected record, measure, synthetic, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, warm-native-fallback, two-site-memory-cold, two-site-memory-warm, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, cached-flags-compare, cached-native-flags-compare, or allocator-cost".into(),
+                "expected record, measure, synthetic, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, warm-native-fallback, two-site-memory-cold, two-site-memory-warm, two-site-memory-cache, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, cached-flags-compare, cached-native-flags-compare, or allocator-cost".into(),
             );
         }
     }
@@ -557,6 +608,12 @@ fn two_site_memory_warm_journal_path(output: &PathBuf) -> PathBuf {
     PathBuf::from(journal)
 }
 
+fn two_site_memory_cache_journal_path(output: &PathBuf) -> PathBuf {
+    let mut journal = output.as_os_str().to_os_string();
+    journal.push(".cache.journal.jsonl");
+    PathBuf::from(journal)
+}
+
 fn print_usage() {
     eprintln!(
         "Usage:\n  od-bench record --case-list PATH [--output trace.json]\n  od-bench measure --trace trace.json [--process-run 1..3] [--output report.json]\n  od-bench synthetic [--process-run 1..3] [--output report.json]\n  od-bench dispatch-cache --case-list PATH --trace trace.json --process-run 1..3 --output report.json\n  od-bench cold-first-run --case-list PATH --trace trace.json --process-run 1..3 --output report.json\n\
@@ -574,6 +631,7 @@ fn print_usage() {
   od-bench allocator-cost [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
   od-bench two-site-memory-cold [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
   od-bench two-site-memory-warm [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
+  od-bench two-site-memory-cache [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
          `record` requires macOS ARM64. `measure` rebuilds all keys before timing."
     );
 }
@@ -587,9 +645,10 @@ fn validate_mode_flags(
         && mode != "allocator-cost"
         && mode != "two-site-memory-cold"
         && mode != "two-site-memory-warm"
+        && mode != "two-site-memory-cache"
     {
         return Err(
-            "--calibration-only is only valid for allocator-cost, two-site-memory-cold, or two-site-memory-warm",
+            "--calibration-only is only valid for allocator-cost, two-site-memory-cold, two-site-memory-warm, or two-site-memory-cache",
         );
     }
     if preflight_only && calibration_only {
@@ -632,8 +691,8 @@ fn calibration_only_report_succeeded(value: &serde_json::Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        calibration_only_report_succeeded, two_site_memory_cold_journal_path,
-        two_site_memory_warm_journal_path, validate_mode_flags,
+        calibration_only_report_succeeded, two_site_memory_cache_journal_path,
+        two_site_memory_cold_journal_path, two_site_memory_warm_journal_path, validate_mode_flags,
     };
     use std::path::PathBuf;
 
@@ -642,6 +701,7 @@ mod tests {
         assert!(validate_mode_flags("allocator-cost", false, true).is_ok());
         assert!(validate_mode_flags("two-site-memory-cold", false, true).is_ok());
         assert!(validate_mode_flags("two-site-memory-warm", false, true).is_ok());
+        assert!(validate_mode_flags("two-site-memory-cache", false, true).is_ok());
         assert!(validate_mode_flags("cached-flags-compare", false, true).is_err());
         assert!(validate_mode_flags("allocator-cost", true, true).is_err());
     }
@@ -711,6 +771,17 @@ mod tests {
         assert_eq!(
             journal,
             PathBuf::from("work/reports/report.jsonl.warm.journal.jsonl")
+        );
+    }
+
+    #[test]
+    fn cached_memory_journal_path_is_distinct_from_report_path() {
+        let output = PathBuf::from("work/reports/report.jsonl");
+        let journal = two_site_memory_cache_journal_path(&output);
+        assert_ne!(journal, output);
+        assert_eq!(
+            journal,
+            PathBuf::from("work/reports/report.jsonl.cache.journal.jsonl")
         );
     }
 }
