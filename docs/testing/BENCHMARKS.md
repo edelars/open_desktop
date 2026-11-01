@@ -1143,6 +1143,61 @@ source tree was clean at the recorded commit. Mini checks remain deferred to
 the end of Stage 3. See the [S3-36f report](../reports/STAGE_3_S3-36f_2026-11-01.md)
 and [suite manifest](../reports/data/stage3/s3-36f-20261101/suite-manifest.json).
 
+### S3-31b: cached NativeRegisterV1 phase attribution on S3-36f loops
+
+`od-bench cached-native-loop-phases` runs the same two fixed kernels and six
+strata as S3-36f: `a`/`b` at 1, 64, and 4,096 loop iterations. It compares the
+ordinary cached dispatcher with an explicit observed entry using the same
+capacity-one cache and published block. It records separate ordinary and
+observed full-call elapsed time, raw paired ratio and signed full-path delta,
+phase totals/counts for observed calls, signed residual, and cache counters.
+The delta is observed-minus-ordinary for the complete measured paths; it
+includes observer instrumentation and timing/path noise and is not an isolated
+observer cost or a correction.
+
+Three non-overlapping phases are recorded: `BlockBuildAndAdmission` wraps
+only the block builder; `KeySnapshotAndLookup` wraps minimum cache sizing and
+capacity, key construction, first snapshot validation, first cache lookup and
+counter update; `HostExecutionBoundary` wraps only
+`backend.execute_cached_block`, including its host wrapper/result decoding.
+The repeated snapshot validation and `matches_code_view`, run guards,
+stop/event/budget checks, fallback, retirement aggregation, post-call
+validation, and observer hook overhead remain outside the measured phases and
+are represented in the residual. The key phase is not total lookup/validation
+cost and the execution boundary is not pure generated-code time. Warm
+`IrLowering`, `Allocation`, `EmissionAndFinalization`, and `Publication` phase
+counts are zero; cache counters separately require one initial compile and
+publication only.
+
+Preflight requires full interpreter/ordinary/observed state and accounting
+parity, one resident entry, hit-only warm calls, and phase counts equal to
+visits (`calls × loop iterations`). It checks zero work, entry STOP, event,
+and pre-admission code mismatch; errors inside measured phases are untested.
+Run the release preflight followed by three independent processes:
+
+```sh
+cargo run --release --offline -p od-bench -- cached-native-loop-phases \
+  --preflight-only --output work/tmp/stage3/s3-31b/preflight.json
+for run in 1 2 3; do
+  cargo run --release --offline -p od-bench -- cached-native-loop-phases \
+    --process-run "$run" --output "work/tmp/stage3/s3-31b/run-$run.json"
+done
+```
+
+Each process keeps 20 alternating pairs per stratum, calibrates equal calls
+within the pair, and requires every side to exceed 200 ms. All 720 sides
+passed. The six 60-pair median observed/ordinary ratios ranged from 1.0900 to
+1.1182; the `b_64` range crossed parity. Median observed-path shares were
+21–22% build, 43–44% key/snapshot/first lookup, and 4–5% execution boundary
+for form `a`, and 32–33%, 39%, and 5–6% for form `b`. These are descriptive
+shares for this synthetic workload, not exact production runtime shares.
+They do not establish a linking benefit or justify a cache/runtime policy
+change. Runtime `working_tree_dirty` is unknown because the two-second Git
+status probe timed out, although build source tree was clean at the recorded
+revision. Mini checks remain deferred. See the
+[S3-31b report](../reports/STAGE_3_S3-31b_2026-11-01.md) and
+[suite manifest](../reports/data/stage3/s3-31b-20261101/suite-manifest.json).
+
 ### S3-37a: bounded production FIFO16 corpus churn observation
 
 `od-bench cache-churn` is an opt-in Apple Silicon macOS release command. It

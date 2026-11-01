@@ -2408,6 +2408,49 @@ identities, hashes, таймеры, фазы, residual и команда нах�
 наблюдателя или total lookup и не доказывает пользу linking; никаких
 production решений из этого среза не следует.
 
+#### S3-31b. Phase attribution на frozen S3-36f recurrence — bounded diagnostic complete
+
+Добавлен explicit-observer entry и opt-in `cached-native-loop-phases` для тех
+же двух S3-36f kernels и шести strata. Release preflight подтвердил полное
+состояние ordinary/observed/interpreter, retirement, cache accounting и
+`C × I` вызовов каждой из трёх фаз; zero-work, entry STOP, event и
+pre-admission code mismatch не зарегистрировали фаз. Сами phase totals
+содержат только `BlockBuildAndAdmission` (вызов block builder),
+`KeySnapshotAndLookup` (minimum size/capacity, key construction, первый
+snapshot validation, find/counter) и `HostExecutionBoundary` (вызов backend
+execution wrapper). Повторная snapshot validation и `matches_code_view`,
+RUN guards, stop/event/budget, fallback, post-call counter/retirement checks
+и observer begin/end остаются в residual.
+
+Три release processes собрали 60 alternating pairs в каждой stratum; все
+720 sides прошли 200 ms floor. Median observed/ordinary full-call ratios и
+медианные phase shares observed call:
+
+| Stratum | Observed/ordinary, median [range] | Build share | Key/snapshot/lookup share | Execution-boundary share | Residual share |
+|---|---:|---:|---:|---:|---:|
+| `a_1` | 1.1174 [1.0434, 1.2720] | 21.01% | 42.72% | 4.42% | 31.85% |
+| `a_64` | 1.1182 [1.0914, 1.2488] | 21.73% | 44.09% | 4.53% | 29.71% |
+| `a_4096` | 1.1163 [1.0885, 1.1635] | 21.75% | 44.09% | 4.54% | 29.67% |
+| `b_1` | 1.0900 [1.0173, 1.1276] | 32.54% | 38.64% | 5.49% | 23.30% |
+| `b_64` | 1.0967 [0.9970, 1.1858] | 33.22% | 39.35% | 5.62% | 21.76% |
+| `b_4096` | 1.0983 [1.0728, 1.1437] | 33.20% | 39.41% | 5.60% | 21.76% |
+
+Это diagnostic breakdown на синтетических register kernels. Phase shares
+включают timer-observer perturbation и не являются точными production shares;
+observed/ordinary delta — net full-path difference, не isolated observer cost.
+В `b_64` ratio range пересекает parity. `HostExecutionBoundary` включает
+wrapper/result decoding и не равен чистому generated-code execution;
+`KeySnapshotAndLookup` не включает повторную snapshot/key validation.
+Результат не обосновывает direct linking или изменение runtime/cache policy.
+Широкая S3-31 и S3-36 остаются открытыми. Измеренная обработка ошибок
+ограничена pre-admission mismatch; errors внутри instrumented phases не
+проверялись. См. [S3-31b report](../reports/STAGE_3_S3-31b_2026-11-01.md),
+[release preflight](../reports/data/stage3/s3-31b-20261101/preflight-release.json),
+processes [1](../reports/data/stage3/s3-31b-20261101/process-1.json),
+[2](../reports/data/stage3/s3-31b-20261101/process-2.json),
+[3](../reports/data/stage3/s3-31b-20261101/process-3.json), and the
+[suite manifest](../reports/data/stage3/s3-31b-20261101/suite-manifest.json).
+
 ### S3-32. Оценить локальные IR-преобразования
 
 1. Выбрать только подтверждённые профилем возможности: local constant propagation, устранение избыточного state load/store или dead pure temporary.
@@ -3842,6 +3885,19 @@ or S3-41. First-dispatch cost and code/logical cache sizes remain separate
 measurements; no break-even inference is made. Mini remains deferred. See the
 [S3-40h addendum](../reports/STAGE_3_S3-40h_2026-11-01.md) and
 [S3-36f report](../reports/STAGE_3_S3-36f_2026-11-01.md).
+
+#### S3-40i: cached dispatcher phase attribution addendum
+
+Added the S3-31b ordinary/observed phase measurements to the provisional
+ledger. The three measured phase shares are bounded to the S3-36f synthetic
+recurrence kernels; they include observation perturbation and leave repeated
+validation/control work in a residual. The paired observed/ordinary delta is
+not isolated observer cost, and `b_64` crosses parity. These data do not
+establish total lookup cost for representative guest workloads, a linking
+benefit, or any runtime/cache policy change. S3-31, S3-36, S3-40, and S3-41
+remain open; Mini remains deferred. See the
+[S3-40i addendum](../reports/STAGE_3_S3-40i_2026-11-01.md) and
+[S3-31b report](../reports/STAGE_3_S3-31b_2026-11-01.md).
 
 ### S3-41. Оформить приёмку этапа
 
