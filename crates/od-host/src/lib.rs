@@ -34139,74 +34139,415 @@ mod tests {
         let base_rip = 0x7B00;
         let stop = AtomicU8::new(0);
 
+        fn interpret(
+            code: &[u8],
+            base: u64,
+            state: &mut od_isa::LongModeState,
+            budget: u64,
+        ) -> u64 {
+            use od_isa::memory::{AccessKind, GuestMemory};
+
+            struct CodeOnly<'a> {
+                base: u64,
+                code: &'a [u8],
+            }
+            impl GuestMemory for CodeOnly<'_> {
+                fn fetch(
+                    &mut self,
+                    address: u64,
+                    _: od_isa::memory::AccessContext,
+                ) -> Result<u8, MemoryError> {
+                    address
+                        .checked_sub(self.base)
+                        .and_then(|offset| self.code.get(offset as usize))
+                        .copied()
+                        .ok_or(MemoryError::Unmapped {
+                            address,
+                            access: AccessKind::Fetch,
+                        })
+                }
+                fn read(
+                    &mut self,
+                    address: u64,
+                    _: od_isa::memory::AccessContext,
+                    _: &mut [u8],
+                ) -> Result<(), MemoryError> {
+                    Err(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Read,
+                    })
+                }
+                fn write(
+                    &mut self,
+                    address: u64,
+                    _: od_isa::memory::AccessContext,
+                    _: &[u8],
+                ) -> Result<(), MemoryError> {
+                    Err(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Write,
+                    })
+                }
+                fn atomic_exchange_integer(
+                    &mut self,
+                    address: u64,
+                    _: od_isa::memory::AccessContext,
+                    _: od_isa::OperandSize,
+                    _: u64,
+                ) -> Result<u64, MemoryError> {
+                    Err(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Read,
+                    })
+                }
+                fn atomic_fetch_add_integer(
+                    &mut self,
+                    address: u64,
+                    _: od_isa::memory::AccessContext,
+                    _: od_isa::OperandSize,
+                    _: u64,
+                ) -> Result<u64, MemoryError> {
+                    Err(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Read,
+                    })
+                }
+                fn atomic_compare_exchange_integer(
+                    &mut self,
+                    address: u64,
+                    _: od_isa::memory::AccessContext,
+                    _: od_isa::OperandSize,
+                    _: u64,
+                    _: u64,
+                ) -> Result<u64, MemoryError> {
+                    Err(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Read,
+                    })
+                }
+                fn mfence(&mut self, _: od_isa::memory::AccessContext) -> Result<(), MemoryError> {
+                    Ok(())
+                }
+            }
+
+            let mut memory = CodeOnly { base, code };
+            let mut retired = 0;
+            while retired < budget && state.rip < base + code.len() as u64 {
+                assert!(matches!(
+                    od_isa::execute::step(
+                        state,
+                        &mut memory,
+                        od_isa::memory::AccessContext::default(),
+                    )
+                    .unwrap(),
+                    od_isa::execute::StepOutcome::Advanced | od_isa::execute::StepOutcome::Branched
+                ));
+                retired += 1;
+            }
+            retired
+        }
+
+        fn invoke_candidate(
+            block: &od_jit::block_emitter::EmittedRuntimeBlock,
+            state: &mut od_isa::LongModeState,
+            budget: u64,
+            stop_rip: Option<u64>,
+            stop_requested: &AtomicU8,
+        ) -> (u32, u64, u64) {
+            let published = PublishedCode::publish_block(block).unwrap();
+            let mut context = RuntimeContextV1 {
+                state,
+                initial_budget: budget,
+                stop_rip_enabled: u32::from(stop_rip.is_some()),
+                reserved: 0,
+                stop_rip: stop_rip.unwrap_or(0),
+                stop_requested: (stop_requested as *const AtomicU8).cast(),
+                remaining_budget: u64::MAX,
+                retired_instructions: u64::MAX,
+            };
+            // SAFETY: this test emits the block with its instrumented scalar
+            // helper and invokes it directly because safe execution correctly
+            // rejects test-helper provenance.
+            let entry: BlockEntry = unsafe { std::mem::transmute(published.as_ptr()) };
+            // SAFETY: the published mapping and RuntimeContextV1 remain live
+            // through the generated call; the test helper obeys the ABI.
+            let raw = unsafe { entry(&mut context) };
+            (raw, context.remaining_budget, context.retired_instructions)
+        }
+
+        fn allocator_locations(code: &[u8], base: u64, register_homes: u8) -> Vec<ValueLocation> {
+            let view = CodeView::new(base, code).unwrap();
+            let built =
+                block::build_block(view, base, AccessContext::default(), BlockLimits::default())
+                    .unwrap();
+            let LoweringOutcome::Program(lowered) = lowering::lower(&built).unwrap() else {
+                panic!("JZ/JNZ fixture must lower to a program");
+            };
+            let allocation = Allocation::build(
+                &lowered.program,
+                AllocatorConfig {
+                    register_homes,
+                    reserved_prefix_bytes: od_jit::block_emitter::DEMAND_FLAGS_FRAME_PREFIX_BYTES,
+                },
+                &[],
+            )
+            .unwrap();
+            let definitions: Vec<_> = lowered
+                .program
+                .operations
+                .iter()
+                .filter_map(|operation| match operation {
+                    Operation::Constant { dst, .. }
+                    | Operation::ReadGpr { dst, .. }
+                    | Operation::CheckedLoad { dst, .. } => Some(*dst),
+                    Operation::Integer {
+                        result: Some(dst), ..
+                    } => Some(*dst),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(definitions.len(), 4);
+            let counts = allocation.location_counts();
+            assert_eq!(counts.register_homes, u32::from(register_homes));
+            assert_eq!(counts.spill_values, 4 - u32::from(register_homes));
+            definitions
+                .iter()
+                .enumerate()
+                .map(|(index, temp)| {
+                    let location = allocation.location(*temp).unwrap();
+                    assert_eq!(
+                        matches!(location, ValueLocation::Register(_)),
+                        index < usize::from(register_homes)
+                    );
+                    location
+                })
+                .collect()
+        }
+
         for (branch_opcode, lhs, rhs, branch_taken) in [
-            (0x74, 0, 0, true),
-            (0x74, 1, 1, false),
+            (0x74, 0_u64, 0_u64, true),
+            (0x74, 1, u64::MAX - 6, false),
             (0x75, 0, 0, false),
-            (0x75, 1, 1, true),
+            (0x75, 1, u64::MAX - 6, true),
         ] {
             let mut bytes = vec![0x48, 0x03, 0xC1]; // ADD RAX, RCX
             bytes.extend_from_slice(&[0x48, 0xB8]); // MOV RAX, 7 (preserves flags)
             bytes.extend_from_slice(&7_u64.to_le_bytes());
-            bytes.extend_from_slice(&[branch_opcode, 3]); // JZ/JNZ to code end
-            bytes.extend_from_slice(&[0x48, 0x89, 0xF0]); // fallthrough-only MOV
-            let eager_block = emit_runtime_block_for_code(&bytes, base_rip, 4);
+            bytes.extend_from_slice(&[branch_opcode, 10]); // JZ/JNZ over the fallthrough MOV
+            bytes.extend_from_slice(&[0x48, 0xBB]); // fallthrough-only MOV RBX, imm64
+            bytes.extend_from_slice(&0xAABB_CCDD_EEFF_0011_u64.to_le_bytes());
             let mut initial = od_isa::LongModeState::default();
             initial.rip = base_rip;
             initial.rflags = 0xA5A5_F0F0_5A5A_0A0A;
             initial.gpr[0] = lhs;
             initial.gpr[1] = rhs;
             initial.gpr[2] = 0x1234;
+            initial.gpr[3] = 0x1111_2222_3333_4444;
+            initial.gpr[6] = 0x9876_5432_10FE_DCBA;
 
-            RUNTIME_HELPER_CALLS.store(0, Ordering::Relaxed);
-            *RUNTIME_HELPER_LAST_CALL.lock().unwrap() = None;
-            let block = unsafe {
-                emit_runtime_block_for_code_demand_flags_candidate_with_helper(
-                    &bytes,
-                    base_rip,
-                    1,
-                    runtime_test_helper,
-                )
-            };
-            let mut candidate_state = initial.clone();
-            let candidate_raw = {
-                let published = PublishedCode::publish_block(&block).unwrap();
-                let mut context = RuntimeContextV1 {
-                    state: &mut candidate_state,
-                    initial_budget: 10,
-                    stop_rip_enabled: 0,
-                    reserved: 0,
-                    stop_rip: 0,
-                    stop_requested: (&stop as *const AtomicU8).cast(),
-                    remaining_budget: u64::MAX,
-                    retired_instructions: u64::MAX,
+            let view = CodeView::new(base_rip, &bytes).unwrap();
+            let admission = od_jit::block::NativeRegisterV1Admission::from_code(view).unwrap();
+            let mut full_oracle = initial.clone();
+            let full_retired = interpret(&bytes, base_rip, &mut full_oracle, 8);
+            assert_eq!(full_retired, if branch_taken { 3 } else { 4 });
+            assert_eq!(full_oracle.rip, base_rip + 25);
+            assert_eq!(
+                full_oracle.gpr[3],
+                if branch_taken {
+                    initial.gpr[3]
+                } else {
+                    0xAABB_CCDD_EEFF_0011
+                }
+            );
+
+            for register_homes in 0..=4 {
+                let locations = allocator_locations(&bytes, base_rip, register_homes);
+                assert_eq!(locations.len(), 4);
+                if register_homes == 0 {
+                    assert!(
+                        locations
+                            .iter()
+                            .all(|location| matches!(location, ValueLocation::Spill(_)))
+                    );
+                } else if register_homes < 4 {
+                    assert!(
+                        locations
+                            .iter()
+                            .any(|location| matches!(location, ValueLocation::Register(_)))
+                    );
+                    assert!(
+                        locations
+                            .iter()
+                            .any(|location| matches!(location, ValueLocation::Spill(_)))
+                    );
+                }
+
+                let eager_block = emit_runtime_block_for_code(&bytes, base_rip, register_homes);
+                let block = unsafe {
+                    emit_runtime_block_for_code_demand_flags_candidate_with_helper(
+                        &bytes,
+                        base_rip,
+                        register_homes,
+                        runtime_test_helper,
+                    )
                 };
-                let entry: BlockEntry = unsafe { std::mem::transmute(published.as_ptr()) };
-                // SAFETY: the injected helper obeys its scalar ABI contract.
-                unsafe { entry(&mut context) }
-            };
-            let eager = PublishedCode::publish_block(&eager_block).unwrap();
-            let mut eager_state = initial;
-            let eager_result = eager
-                .execute_block(&mut eager_state, 10, None, &stop)
-                .unwrap();
+                for (candidate_block, helper_rip) in
+                    [(&eager_block, base_rip), (&block, base_rip + 13)]
+                {
+                    let branch_site = od_jit::statepoints::GuestRipSource::Fixed(helper_rip);
+                    assert!(candidate_block.pc_map().ranges().iter().any(|range| {
+                        range.phase == od_jit::statepoints::StatePhase::HelperCall
+                            && range.guest_rip == branch_site
+                    }));
+                    assert!(candidate_block.pc_map().ranges().iter().any(|range| {
+                        range.phase == od_jit::statepoints::StatePhase::AfterHelper
+                            && range.guest_rip == branch_site
+                    }));
+                }
 
-            assert_eq!(candidate_raw, eager_result.exit as u32);
-            assert_eq!(candidate_state, eager_state);
-            assert_eq!(
-                candidate_state.rip,
-                base_rip + if branch_taken { 18 } else { 15 }
-            );
-            assert_eq!(RUNTIME_HELPER_CALLS.load(Ordering::Relaxed), 1);
-            assert_eq!(
-                *RUNTIME_HELPER_LAST_CALL.lock().unwrap(),
-                Some((
-                    HelperOperationTag::Add as u32,
-                    lhs,
-                    rhs,
-                    0xA5A5_F0F0_5A5A_0A0A,
-                ))
-            );
+                for budget in 0..=4 {
+                    RUNTIME_HELPER_CALLS.store(0, Ordering::Relaxed);
+                    *RUNTIME_HELPER_LAST_CALL.lock().unwrap() = None;
+                    let mut candidate_state = initial.clone();
+                    let (candidate_raw, candidate_remaining, candidate_retired) =
+                        invoke_candidate(&block, &mut candidate_state, budget, None, &stop);
+                    let mut eager_state = initial.clone();
+                    let eager_result = {
+                        let eager = PublishedCode::publish_block(&eager_block).unwrap();
+                        eager
+                            .execute_block(&mut eager_state, budget, None, &stop)
+                            .unwrap()
+                    };
+                    let mut interpreter_state = initial.clone();
+                    let expected_retired =
+                        interpret(&bytes, base_rip, &mut interpreter_state, budget.min(3));
+
+                    assert_eq!(candidate_raw, eager_result.exit as u32);
+                    assert_eq!(candidate_state, eager_state);
+                    assert_eq!(candidate_state, interpreter_state);
+                    assert_eq!(candidate_remaining, eager_result.remaining_budget);
+                    assert_eq!(candidate_retired, eager_result.retired_instructions);
+                    assert_eq!(candidate_retired, expected_retired);
+                    assert_eq!(candidate_remaining, budget - expected_retired);
+
+                    // Continue budget-exhausted prefixes and the conditional
+                    // branch's fallthrough boundary through the dispatcher.
+                    if candidate_state.rip < base_rip + 25 {
+                        let mut resumed = candidate_state.clone();
+                        let resume_budget = if candidate_remaining == 0 {
+                            8 - expected_retired
+                        } else {
+                            candidate_remaining
+                        };
+                        let resume_result =
+                            od_jit::dispatch::run_with_native_register_v1_demand_flags_candidate(
+                                view,
+                                &admission,
+                                &mut resumed,
+                                resume_budget,
+                                od_jit::dispatch::DispatchControl {
+                                    stop_rip: None,
+                                    stop_requested: &stop,
+                                    event_requested: None,
+                                },
+                                &mut PublishedBlockExecutor,
+                            )
+                            .unwrap();
+                        assert_eq!(resumed, full_oracle);
+                        assert_eq!(
+                            expected_retired
+                                + resume_result.retired_native
+                                + resume_result.retired_interpreter,
+                            full_retired,
+                            "dispatcher continuation must not repeat the retired prefix"
+                        );
+                    }
+                    assert_eq!(
+                        RUNTIME_HELPER_CALLS.load(Ordering::Relaxed),
+                        usize::from(budget != 0)
+                    );
+                    if budget == 0 {
+                        assert_eq!(*RUNTIME_HELPER_LAST_CALL.lock().unwrap(), None);
+                    } else {
+                        assert_eq!(
+                            *RUNTIME_HELPER_LAST_CALL.lock().unwrap(),
+                            Some((HelperOperationTag::Add as u32, lhs, rhs, initial.rflags,))
+                        );
+                    }
+                }
+
+                for (stop_rip, retired_before_stop) in [(base_rip + 3, 1), (base_rip + 13, 2)] {
+                    RUNTIME_HELPER_CALLS.store(0, Ordering::Relaxed);
+                    *RUNTIME_HELPER_LAST_CALL.lock().unwrap() = None;
+                    let mut candidate_state = initial.clone();
+                    let (candidate_raw, candidate_remaining, candidate_retired) =
+                        invoke_candidate(&block, &mut candidate_state, 8, Some(stop_rip), &stop);
+                    let mut eager_state = initial.clone();
+                    let eager_result = {
+                        let eager = PublishedCode::publish_block(&eager_block).unwrap();
+                        eager
+                            .execute_block(&mut eager_state, 8, Some(stop_rip), &stop)
+                            .unwrap()
+                    };
+                    let mut interpreter_state = initial.clone();
+                    assert_eq!(
+                        interpret(
+                            &bytes,
+                            base_rip,
+                            &mut interpreter_state,
+                            retired_before_stop
+                        ),
+                        retired_before_stop
+                    );
+                    assert_eq!(candidate_raw, eager_result.exit as u32);
+                    assert_eq!(candidate_state, eager_state);
+                    assert_eq!(candidate_state, interpreter_state);
+                    assert_eq!(candidate_state.rip, stop_rip);
+                    assert_eq!(candidate_retired, retired_before_stop);
+                    assert_eq!(candidate_remaining, eager_result.remaining_budget);
+                    assert_eq!(RUNTIME_HELPER_CALLS.load(Ordering::Relaxed), 1);
+                    assert_eq!(
+                        *RUNTIME_HELPER_LAST_CALL.lock().unwrap(),
+                        Some((HelperOperationTag::Add as u32, lhs, rhs, initial.rflags,))
+                    );
+
+                    let mut resumed = candidate_state;
+                    let resume_result =
+                        od_jit::dispatch::run_with_native_register_v1_demand_flags_candidate(
+                            view,
+                            &admission,
+                            &mut resumed,
+                            8 - retired_before_stop,
+                            od_jit::dispatch::DispatchControl {
+                                stop_rip: None,
+                                stop_requested: &stop,
+                                event_requested: None,
+                            },
+                            &mut PublishedBlockExecutor,
+                        )
+                        .unwrap();
+                    assert_eq!(resumed, full_oracle);
+                    assert_eq!(
+                        retired_before_stop
+                            + resume_result.retired_native
+                            + resume_result.retired_interpreter,
+                        full_retired,
+                        "resumed dispatcher must not repeat the retired prefix"
+                    );
+                }
+
+                // An entry stop returns before the helper site is reached.
+                RUNTIME_HELPER_CALLS.store(0, Ordering::Relaxed);
+                *RUNTIME_HELPER_LAST_CALL.lock().unwrap() = None;
+                let mut entry_stopped = initial.clone();
+                let (raw, remaining, retired) =
+                    invoke_candidate(&block, &mut entry_stopped, 10, Some(base_rip), &stop);
+                assert_eq!(raw, RuntimeExitTag::StopAddress as u32);
+                assert_eq!(entry_stopped, initial);
+                assert_eq!((remaining, retired), (10, 0));
+                assert_eq!(RUNTIME_HELPER_CALLS.load(Ordering::Relaxed), 0);
+                assert_eq!(*RUNTIME_HELPER_LAST_CALL.lock().unwrap(), None);
+            }
         }
     }
 
