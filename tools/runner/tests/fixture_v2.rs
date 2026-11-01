@@ -51,6 +51,9 @@ const MAXSD_M64_MEMORY_RAX: &[u8] = include_bytes!(
 const MAXPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37cz_maxpd_m128_qnan_and_other_lane_denormal.case.json"
 );
+const MINPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37dc_minps_m128_qnan_and_other_lane_denormal.case.json"
+);
 const MINPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37db_minpd_m128_qnan_and_other_lane_denormal.case.json"
 );
@@ -36580,6 +36583,226 @@ fn maxpd_m128_memory_matches_literal_lane_oracle_and_remains_backend_denied() {
     let mut bad = fixture;
     bad.memory[1].length = 8;
     assert!(bad.validate().is_err());
+}
+
+#[test]
+fn minps_m128_memory_matches_literal_four_lane_oracle_and_remains_backend_denied() {
+    fn nan(x: u32) -> bool {
+        x & 0x7f80_0000 == 0x7f80_0000 && x & 0x007f_ffff != 0
+    }
+    fn sub(x: u32) -> bool {
+        x & 0x7f80_0000 == 0 && x & 0x007f_ffff != 0
+    }
+    fn order(x: u32) -> u32 {
+        if x >> 31 != 0 { !x } else { x | 0x8000_0000 }
+    }
+    fn min_raw(a: u32, b: u32) -> (u32, bool, bool) {
+        let ie = nan(a) || nan(b);
+        let zero = a & 0x7fff_ffff == 0 && b & 0x7fff_ffff == 0;
+        (
+            if ie || zero || order(a) >= order(b) {
+                b
+            } else {
+                a
+            },
+            ie,
+            !ie && (sub(a) || sub(b)),
+        )
+    }
+    fn bytes(xs: [u32; 4]) -> String {
+        xs.into_iter()
+            .flat_map(u32::to_le_bytes)
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+    let base = Fixture::from_json(MINPS_M128_MEMORY_RAX).unwrap().fixture;
+    assert_eq!(base.profile, od_testkit::v2::Profile::LongMinpsMemoryRaxV1);
+    assert_eq!(base.memory[0].initial_bytes_hex, "0f5d00");
+    assert_eq!(base.minps_memory_rax_controls.unwrap().sse_available, true);
+    assert_eq!(
+        base.minps_memory_rax_controls.unwrap().sse2_available,
+        false
+    );
+    let mut vectors: Vec<([u32; 4], [u32; 4])> = vec![
+        // No new exceptions; includes both signed-zero tie directions, infinities, and ordering.
+        (
+            [0x0000_0000, 0x8000_0000, 0xff80_0000, 0x7f80_0000],
+            [0x8000_0000, 0x0000_0000, 0x7f80_0000, 0x7f80_0000],
+        ),
+        // Sole QNaN in RHS: IE only.
+        (
+            [0x3f80_0000, 0x4000_0000, 0x4040_0000, 0x4080_0000],
+            [0x4000_0000, 0x7fc1_2345, 0x4000_0000, 0x40a0_0000],
+        ),
+        // Sole SNaN in RHS: IE only and RHS payload remains raw.
+        (
+            [0x3f80_0000, 0x4000_0000, 0x4040_0000, 0x4080_0000],
+            [0x4000_0000, 0x4000_0000, 0xff81_2345, 0x4040_0000],
+        ),
+        // Subnormal with no NaNs: DE only.
+        (
+            [0x3f80_0000, 0x0000_0001, 0x4040_0000, 0x4080_0000],
+            [0x4000_0000, 0x4000_0000, 0x4040_0000, 0x40a0_0000],
+        ),
+        // IE in lane 0 and DE in lane 3.
+        (
+            [0x7fc1_2345, 0x4000_0000, 0x4040_0000, 0x0000_0001],
+            [0x3f80_0000, 0x4040_0000, 0x4080_0000, 0x4000_0000],
+        ),
+        // Reverse lane order: DE in lane 0 and IE in lane 3.
+        (
+            [0x0000_0001, 0x4000_0000, 0x4040_0000, 0xff81_4321],
+            [0x4000_0000, 0x4040_0000, 0x4080_0000, 0x3f80_0000],
+        ),
+    ];
+    // Isolate NaN+subnormal in one lane in both source orders. The other lanes
+    // stay normal so an erroneous same-lane DE cannot be hidden by a true DE.
+    vectors.extend([
+        (
+            [0x7fc1_2345, 0x4000_0000, 0x4040_0000, 0x4080_0000],
+            [0x0000_0001, 0x4040_0000, 0x4080_0000, 0x40a0_0000],
+        ),
+        (
+            [0x0000_0001, 0x4000_0000, 0x4040_0000, 0x4080_0000],
+            [0xff81_2345, 0x4040_0000, 0x4080_0000, 0x40a0_0000],
+        ),
+    ]);
+    // Product of the four raw lane classes in lane 0 × lane 1. I+D is
+    // represented by a NaN paired with a subnormal in the same lane; its
+    // effective status is IE only, which keeps the matrix lane-local.
+    let classes = [
+        (0x3f80_0000, 0x4000_0000), // none
+        (0x3f80_0000, 0x7fc1_2345), // I, QNaN selected from RHS
+        (0x0000_0001, 0x4000_0000), // D
+        (0x0000_0001, 0x7fc1_2345), // I+D, same lane
+    ];
+    for left_class in classes {
+        for right_class in classes {
+            vectors.push((
+                [left_class.0, right_class.0, 0x4040_0000, 0x4080_0000],
+                [left_class.1, right_class.1, 0x4080_0000, 0x40a0_0000],
+            ));
+        }
+    }
+    let mut comparisons = 0;
+    for (vi, (lhs, rhs)) in vectors.into_iter().enumerate() {
+        for rc in 0..4u64 {
+            for sticky in 0..64u64 {
+                let mut case = base.clone();
+                case.case_id = format!("s2_37dc_v{vi}_rc{rc}_sticky{sticky}");
+                case.initial_state.sse.as_mut().unwrap().xmm[0] = bytes(lhs);
+                case.memory[1].initial_bytes_hex = bytes(rhs);
+                case.initial_state.sse.as_mut().unwrap().mxcsr =
+                    HexU64(0x1f80 | (rc << 13) | sticky);
+                if vi & 1 == 0 {
+                    case.initial_state.rflags = HexU64(case.initial_state.rflags.get() | (1 << 18));
+                }
+                let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                od_testkit::v2::compare(&input, &result, &result).unwrap();
+                let snap = match &result.snapshot {
+                    Observation::Available { value } => value,
+                    _ => panic!("snapshot unavailable"),
+                };
+                let expected: Vec<u32> = (0..4).map(|i| min_raw(lhs[i], rhs[i]).0).collect();
+                assert_eq!(
+                    snap.state.sse.as_ref().unwrap().xmm[0],
+                    bytes([expected[0], expected[1], expected[2], expected[3]])
+                );
+                let mut flags = sticky;
+                for i in 0..4 {
+                    let (_, ie, de) = min_raw(lhs[i], rhs[i]);
+                    flags |= u64::from(ie) | (u64::from(de) << 1);
+                }
+                assert_eq!(
+                    snap.state.sse.as_ref().unwrap().mxcsr,
+                    HexU64(0x1f80 | (rc << 13) | flags)
+                );
+                assert_eq!(snap.state.rflags, case.initial_state.rflags);
+                assert_eq!(snap.state.gpr, case.initial_state.gpr);
+                assert_eq!(snap.state.x87, case.initial_state.x87);
+                assert_eq!(snap.memory[1].bytes_hex, case.memory[1].initial_bytes_hex);
+                assert_eq!(
+                    result.instructions_executed,
+                    Observation::Available { value: HexU64(1) }
+                );
+                comparisons += 1;
+            }
+        }
+    }
+    assert_eq!(comparisons, 6144);
+    let (_, baseline) = run(MINPS_M128_MEMORY_RAX, "interpreter", 0);
+    assert!(matches!(
+        run(MINPS_M128_MEMORY_RAX, "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    assert!(matches!(
+        run(MINPS_M128_MEMORY_RAX, "native", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    let mut tampered = baseline.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value
+            .minps_memory_rax_controls
+            .as_mut()
+            .unwrap()
+            .sse2_available = true;
+    }
+    assert!(
+        od_testkit::v2::compare(
+            &Fixture::from_json(MINPS_M128_MEMORY_RAX).unwrap(),
+            &baseline,
+            &tampered
+        )
+        .is_err()
+    );
+    let mut foreign = Fixture::from_json(CMPPS_REGISTER_PAIRS).unwrap().fixture;
+    foreign.minps_memory_rax_controls = base.minps_memory_rax_controls;
+    assert!(foreign.validate().is_err());
+    let mut missing = base.clone();
+    missing.minps_memory_rax_controls = None;
+    assert!(missing.validate().is_err());
+    let mut unknown: serde_json::Value = serde_json::from_slice(MINPS_M128_MEMORY_RAX).unwrap();
+    unknown["minps_memory_rax_controls"]["unexpected"] = serde_json::json!(true);
+    assert!(Fixture::from_json(&serde_json::to_vec(&unknown).unwrap()).is_err());
+    for mxcsr in [0x1f00u64, 0x1fc0, 0x9f80, 0x0001_1f80] {
+        let mut invalid = base.clone();
+        invalid.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(invalid.validate().is_err(), "MXCSR={mxcsr:#x}");
+    }
+    let mut maxps = base.clone();
+    maxps.case_id = "s2_37dc_cross_profile_maxps_result_controls".into();
+    maxps.profile = od_testkit::v2::Profile::LongMaxpsMemoryRaxV1;
+    maxps.memory[0].initial_bytes_hex = "0f5f00".into();
+    maxps.minps_memory_rax_controls = None;
+    maxps.maxps_memory_rax_controls = Some(od_testkit::v2::MaxpsMemoryRaxControlSnapshot {
+        sse_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+    });
+    let (maxps_input, maxps_result) = run(&maxps.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&maxps_input, &maxps_result, &maxps_result).unwrap();
+    let mut foreign_snapshot_control = maxps_result.clone();
+    if let Observation::Available { value } = &mut foreign_snapshot_control.snapshot {
+        value.minps_memory_rax_controls = base.minps_memory_rax_controls;
+    }
+    assert!(
+        od_testkit::v2::compare(&maxps_input, &maxps_result, &foreign_snapshot_control).is_err()
+    );
+    for ac in [false, true] {
+        let mut bad = base.clone();
+        bad.case_id = format!("s2_37dc_misaligned_ac{ac}");
+        bad.initial_state.gpr[0] = HexU64(0x2008);
+        bad.memory[1].guest_address = bad.initial_state.gpr[0];
+        bad.initial_state.rflags = HexU64(if ac { (1 << 18) | 2 } else { 2 });
+        bad.expected_exit = ExpectedExit::Exception;
+        let (input, out) = run(&bad.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &out, &out).unwrap();
+        assert!(matches!(out.outcome, Outcome::Exception {}));
+    }
+    let mut wrong = base;
+    wrong.memory[0].initial_bytes_hex = "660f5d00".into();
+    assert!(wrong.validate().is_err());
 }
 
 #[test]

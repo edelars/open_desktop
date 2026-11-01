@@ -4452,6 +4452,17 @@ mod tests {
     }
 
     #[test]
+    fn minps_memory_profile_is_explicitly_native_unsupported() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_37dc_minps_m128_qnan_and_other_lane_denormal.case.json"
+        ))
+        .unwrap();
+        let result = execute(&loaded);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+    }
+
+    #[test]
     fn movaps_movapd_register_profiles_are_explicitly_native_unsupported() {
         for bytes in [
             &include_bytes!(

@@ -30,13 +30,13 @@ use od_isa::execute::{
     run_with_cvttsd2si_registers_controls, run_with_cvttss2si_registers_controls,
     run_with_divpd_register_controls, run_with_divps_register_controls,
     run_with_divsd_register_controls, run_with_divss_register_controls,
-    run_with_maxps_memory_rax_controls, run_with_mulpd_register_controls,
-    run_with_mulps_register_controls, run_with_mulsd_register_controls,
-    run_with_mulss_register_controls, run_with_sqrtpd_register_controls,
-    run_with_sqrtps_register_controls, run_with_sqrtsd_register_controls,
-    run_with_sqrtss_register_controls, run_with_subpd_register_controls,
-    run_with_subps_register_controls, run_with_subsd_register_controls,
-    run_with_subss_register_controls,
+    run_with_maxps_memory_rax_controls, run_with_minps_memory_rax_controls,
+    run_with_mulpd_register_controls, run_with_mulps_register_controls,
+    run_with_mulsd_register_controls, run_with_mulss_register_controls,
+    run_with_sqrtpd_register_controls, run_with_sqrtps_register_controls,
+    run_with_sqrtsd_register_controls, run_with_sqrtss_register_controls,
+    run_with_subpd_register_controls, run_with_subps_register_controls,
+    run_with_subsd_register_controls, run_with_subss_register_controls,
 };
 use od_isa::{CpuState, ExecutionResult, interpret};
 use od_testkit::case::{Fixture, LoadedFixture};
@@ -543,6 +543,7 @@ fn expected_native_xorpd_oracle(
                 minsd_unmasked_controls: None,
                 maxsd_unmasked_controls: None,
                 minpd_unmasked_controls: None,
+                minps_memory_rax_controls: None,
                 minps_unmasked_controls: None,
                 maxps_unmasked_controls: None,
                 maxpd_unmasked_controls: None,
@@ -2448,6 +2449,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongMinpsMemoryRaxV1 {
+        let controls = loaded
+            .fixture
+            .minps_memory_rax_controls
+            .expect("validated MINPS m128 controls");
+        run_with_minps_memory_rax_controls(
+            &mut state,
+            memory,
+            config,
+            od_isa::execute::MinpsMemoryRaxControls {
+                sse_available: controls.sse_available,
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongMaxpdMemoryRaxV1 {
         let controls = loaded
             .fixture
@@ -3393,6 +3412,7 @@ fn execute_fixture_v2(
                 maxss_memory_rax_controls: loaded.fixture.maxss_memory_rax_controls,
                 maxsd_memory_rax_controls: loaded.fixture.maxsd_memory_rax_controls,
                 minpd_memory_rax_controls: loaded.fixture.minpd_memory_rax_controls,
+                minps_memory_rax_controls: loaded.fixture.minps_memory_rax_controls,
                 maxpd_memory_rax_controls: loaded.fixture.maxpd_memory_rax_controls,
                 maxps_memory_rax_controls: loaded.fixture.maxps_memory_rax_controls,
                 cvtsi2sd_r32_controls: loaded.fixture.cvtsi2sd_r32_controls,
@@ -4643,6 +4663,7 @@ mod tests {
                     maxss_memory_rax_controls: input.fixture.maxss_memory_rax_controls,
                     maxsd_memory_rax_controls: input.fixture.maxsd_memory_rax_controls,
                     minpd_memory_rax_controls: input.fixture.minpd_memory_rax_controls,
+                    minps_memory_rax_controls: input.fixture.minps_memory_rax_controls,
                     maxpd_memory_rax_controls: input.fixture.maxpd_memory_rax_controls,
                     maxps_memory_rax_controls: input.fixture.maxps_memory_rax_controls,
                     cvtsi2sd_r32_controls: input.fixture.cvtsi2sd_r32_controls,
