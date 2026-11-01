@@ -71,6 +71,8 @@ const CVTPD2PI_MM0_MEMORY_RAX: &[u8] =
 const CVTPI2PD_XMM0_MM1: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37bm_cvtpi2pd_xmm0_mm1_register.case.json"
 );
+const CVTSD2SI_R32_MEMORY_RAX: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_37cg_cvtsd2si_m64_i32_min.case.json");
 const CVTPI2PS_XMM0_MM1: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37bn_cvtpi2ps_xmm0_mm1_register.case.json"
 );
@@ -33677,5 +33679,170 @@ fn cvtsi2ss_m64_rounds_i64_directly_and_preserves_high96_and_x87() {
         panic!("snapshot unavailable")
     };
     value.state.sse.as_mut().unwrap().xmm[0].replace_range(..2, "ff");
+    assert!(od_testkit::v2::compare(&literal_input, &literal, &tampered).is_err());
+}
+
+#[test]
+fn cvtsd2si_m64_r32_rounds_before_range_check_and_zero_extends_rax() {
+    let mut fixture = Fixture::from_json(CVTSD2SI_R32_MEMORY_RAX).unwrap().fixture;
+    assert_eq!(
+        fixture.profile,
+        od_testkit::v2::Profile::LongCvtsd2siR32MemoryRaxV1
+    );
+    let controls = fixture.cvtsd2si_r32_memory_controls.unwrap();
+    // A pending x87 status word is an unchanged canary: this SSE2 profile has no x87 gate.
+    let x87_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_25a_read_cpl0.case.json");
+    let x87_fixture = Fixture::from_json(&fs::read(x87_path).unwrap()).unwrap();
+    let mut x87 = x87_fixture.fixture.initial_state.x87.unwrap();
+    x87.status_word = HexU64(x87.status_word.get() | 0x80);
+    fixture.initial_state.x87 = Some(x87);
+
+    let cases: [(u64, [u32; 4], [bool; 4], [bool; 4]); 7] = [
+        // raw binary64, rounded i32 per RC [nearest, down, up, zero], new IE, new PE
+        (
+            0x41df_ffff_ffe0_0000,
+            [0x8000_0000, 0x7fff_ffff, 0x8000_0000, 0x7fff_ffff],
+            [true, false, true, false],
+            [false, true, false, true],
+        ),
+        (
+            0xc1e0_0000_0010_0000,
+            [0x8000_0000; 4],
+            [false, true, false, false],
+            [true, false, true, true],
+        ),
+        (
+            0xc1e0_0000_0000_0000,
+            [0x8000_0000; 4],
+            [false; 4],
+            [false; 4],
+        ),
+        (
+            0x41e0_0000_0000_0000,
+            [0x8000_0000; 4],
+            [true; 4],
+            [false; 4],
+        ),
+        (0x3ff8_0000_0000_0000, [2, 1, 2, 1], [false; 4], [true; 4]),
+        (0x0000_0000_0000_0001, [0, 0, 1, 0], [false; 4], [true; 4]),
+        (
+            0x8000_0000_0000_0001,
+            [0, 0xffff_ffff, 0, 0],
+            [false; 4],
+            [true; 4],
+        ),
+    ];
+    for (raw, expected, new_ie, new_pe) in cases {
+        for rc in 0..4u64 {
+            let mut case = fixture.clone();
+            case.memory[1].initial_bytes_hex = raw
+                .to_le_bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            let initial_rax = case.initial_state.gpr[0].get();
+            let mxcsr = 0x1080 | (rc << 13);
+            case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+            let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+            assert_eq!(result.outcome, Outcome::StopAddress {});
+            let actual = snapshot(&result);
+            assert_eq!(
+                actual.state.gpr[0],
+                HexU64(u64::from(expected[rc as usize]))
+            );
+            assert_eq!(
+                actual.state.sse.as_ref().unwrap().mxcsr,
+                HexU64(
+                    mxcsr | u64::from(new_ie[rc as usize]) | (u64::from(new_pe[rc as usize]) << 5)
+                )
+            );
+            assert_eq!(actual.state.x87, case.initial_state.x87);
+            assert_eq!(actual.state.gpr[1..], case.initial_state.gpr[1..]);
+            assert_eq!(
+                actual.memory,
+                input
+                    .fixture
+                    .memory
+                    .iter()
+                    .map(|region| {
+                        MemoryRegionSnapshot {
+                            region_id: region.region_id.clone(),
+                            guest_address: region.guest_address,
+                            bytes_hex: region.initial_bytes_hex.clone(),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(initial_rax, input.fixture.initial_state.gpr[0].get());
+        }
+    }
+
+    for (flags, expected_flags) in [(0, 0), (1, 1), (0x20, 0x20), (0x21, 0x21)] {
+        let mut case = fixture.clone();
+        case.memory[1].initial_bytes_hex = "000000000000f03f".into(); // +1.0 exact
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1080 | flags);
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        assert_eq!(
+            snapshot(&result).state.sse.as_ref().unwrap().mxcsr,
+            HexU64(0x1080 | expected_flags)
+        );
+    }
+
+    let source = fixture.to_json().unwrap();
+    let (literal_input, literal) = run(&source, "interpreter", 0);
+    for backend in ["jit", "native"] {
+        let (_, result) = run(&source, backend, 4);
+        assert!(
+            matches!(result.outcome, Outcome::Unsupported { .. }),
+            "{backend}"
+        );
+    }
+
+    let mut ac = fixture.clone();
+    ac.initial_state.rflags = HexU64(ac.initial_state.rflags.get() | (1 << 18));
+    ac.expected_exit = ExpectedExit::Unsupported;
+    let (_, result) = run(&ac.to_json().unwrap(), "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(snapshot(&result).state, ac.initial_state);
+
+    // The local AC refusal precedes checked span validation, even for a noncanonical base.
+    let mut ac_noncanonical = fixture.clone();
+    let noncanonical = 0x0000_8000_0000_0000;
+    ac_noncanonical.initial_state.gpr[0] = HexU64(noncanonical);
+    ac_noncanonical.memory[1].guest_address = HexU64(noncanonical);
+    ac_noncanonical.initial_state.rflags =
+        HexU64(ac_noncanonical.initial_state.rflags.get() | (1 << 18));
+    ac_noncanonical.expected_exit = ExpectedExit::Unsupported;
+    let (_, result) = run(&ac_noncanonical.to_json().unwrap(), "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(snapshot(&result).state, ac_noncanonical.initial_state);
+
+    for which in 0..4 {
+        let mut gate = fixture.clone();
+        let controls = gate.cvtsd2si_r32_memory_controls.as_mut().unwrap();
+        match which {
+            0 => controls.sse2_available = false,
+            1 => controls.cr0_em = true,
+            2 => controls.cr4_osfxsr = false,
+            _ => controls.cr0_ts = true,
+        }
+        gate.expected_exit = ExpectedExit::Exception;
+        let (input, result) = run(&gate.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        assert!(matches!(result.outcome, Outcome::Exception {}));
+    }
+
+    let mut foreign = fixture.clone();
+    foreign.cvtsd2si_controls = Some(controls);
+    assert!(foreign.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
+    let mut tampered = literal.clone();
+    let Observation::Available { value } = &mut tampered.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.state.gpr[0] = HexU64(value.state.gpr[0].get() ^ 1);
     assert!(od_testkit::v2::compare(&literal_input, &literal, &tampered).is_err());
 }

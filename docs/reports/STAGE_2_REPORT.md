@@ -20086,3 +20086,47 @@ See the [plan](../plans/STAGE_2.md#s2-37cf--exact-legacy-long64-cvtsi2ss-xmm0qwo
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SS pp. 3-238–3-239; Vol. 1
 §4.8.4, §11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. Type
 3/Table 2-20 is VEX-only and is not legacy evidence.
+
+## S2-37cg — CVTSD2SI EAX,qword ptr [RAX] m64-to-r32 memory profile
+
+Implemented exact legacy `F2 0F 2D 00` with schema-v2 profile
+`s2-long-cvtsd2si-r32-memory-rax-v1`. The instruction fetches all four bytes,
+checks bounded SSE2/EM/OSFXSR and TS gates, validates canonical48 `[RAX,RAX+7]`,
+and performs one 8-byte source read. Unaligned access is allowed under local
+AC=0. EAX aliases the source base: execution captures the original RAX, commits
+only after the read, and zero-extends the 32-bit result into RAX. Read failure
+and pre-read refusal preserve the full state.
+
+Conversion rounds binary64 according to MXCSR.RC before signed-i32 range
+checking. Invalid masked input returns `0x80000000` and sets sticky IE only; a
+valid inexact lane sets sticky PE. Existing status flags are preserved and
+subnormal input does not set DE. Exact -2^31 is valid although its result bits
+match the invalid sentinel. No x87/MMX gate or transition is modeled. The
+profile requires MXCSR mask `0xffbf`, DAZ=0, IM=PM=1; all RC/FTZ settings, other
+supported masks and prior sticky flags are accepted. AC=1 is a negative
+`Unsupported` fixture; malformed PM=0/IM=0/DAZ/reserved values are rejected by
+strict schema admission. The testkit oracle reads raw m64 from fixture memory
+and uses independent integer rounding/range logic. Native/JIT/C ABI/fragment and
+generic paths remain closed.
+
+Focused verification: `cargo test -p od-isa cvtsd2si_ --offline -- --nocapture`
+passed 6/6; focused runner
+`cvtsd2si_m64_r32_rounds_before_range_check_and_zero_extends_rax` passed 1/1;
+focused independent testkit oracle passed 1/1; portable native-local-only
+classifier passed 1/1. Full suites passed: od-isa 1,641 tests; od-testkit 447;
+od-runner 112 unit + 463 fixture tests; od-x86-runner 8 library + 4 main tests.
+`cargo check --workspace --all-targets --offline` passed; `cargo fmt --all --
+--check`, `git diff --check`, and `python3 tools/check_layout.py` passed. The 13
+new S2-37cg cross-document heading links resolve. Graphify update completed
+without topology changes (10,404 nodes, 22,239 edges, 296 communities). Code
+and document/evidence review are complete. Physical x86
+acceptance was not run.
+
+See the [plan](../plans/STAGE_2.md#s2-37cg--exact-legacy-long64-cvtsd2si-eaxqword-ptr-rax),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37cg--bounded-long64-cvtsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cg--cvtsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile).
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CVTSD2SI` pp. 3-232–3-233; Vol. 1
+§3.4.1.1, §11.5.2.2, Table D-13 and Table 14-21; Vol. 3A §16.1.3 and Table 16-1
+([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)). Unmasked
+SIMD-vs-memory exception priority and physical x86 behavior are not claimed.

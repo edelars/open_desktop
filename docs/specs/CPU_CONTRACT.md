@@ -14810,3 +14810,43 @@ evidence only; physical x86 acceptance was not run. See the [plan](../plans/STAG
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SS pp. 3-238–3-239; Vol. 1
 §4.8.4, §11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. Type
 3/Table 2-20 is VEX-only and is not used as legacy evidence.
+
+## S2-37cg — bounded Long64 CVTSD2SI EAX,qword ptr [RAX] m64-to-r32 memory profile
+
+The schema-v2 interpreter-only profile `s2-long-cvtsd2si-r32-memory-rax-v1`
+admits only exact legacy bytes `F2 0F 2D 00`. It fetches all four bytes before
+the bounded SSE2 bit-26/CR0.EM/CR4.OSFXSR `#UD` and CR0.TS `#NM` gates; the
+local order is not a universal exception-priority claim. CPL0–3 are admitted.
+The profile has no x87/MMX prerequisite or transition.
+
+After checked canonical48 validation of `[RAX,RAX+7]`, it performs exactly one
+8-byte little-endian read. Unaligned access is admitted at local RFLAGS.AC=0.
+The source address is saved from the pre-execution RAX; the read succeeds before
+any state write. A successful EAX destination write zero-extends to RAX, including
+masked-invalid `0x80000000`; read errors and all pre-read failures preserve the
+complete state.
+
+Each signed binary64 value is rounded according to MXCSR.RC before checking the
+signed-i32 range. Masked invalid input yields the indefinite integer
+`0x80000000` with IE; valid inexact conversion contributes PE; invalid input
+does not contribute PE. Existing sticky IE/PE are retained. Exact `-2^31` is
+valid despite matching the invalid sentinel bits. Subnormal input does not raise
+DE for this instruction. The bounded admission requires supported MXCSR mask
+`0xffbf`, DAZ=0, IM=PM=1; other supported masks, RC/FTZ and prior status bits
+are accepted. Unmasked exception delivery remains outside the profile.
+
+AC=1 is an admitted negative fixture for local `Unsupported`, with no data read
+or CPU mutation; noncanonical spans produce `#GP(0)` when prior gates and local
+AC policy allow span evaluation. The independent testkit oracle reads raw fixture
+m64 bytes and computes conversion with integer bit logic, without host floating
+point or a production conversion helper. Native/JIT/C ABI/fragment/generic
+execution remain closed. Native classifier/runner denial is closure evidence
+only; physical x86 acceptance was not run.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CVTSD2SI` pp. 3-232–3-233; Vol. 1
+§3.4.1.1, §11.5.2.2, Table D-13 and Table 14-21; Vol. 3A §16.1.3 and Table 16-1
+([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)). The cited
+source does not establish unmasked memory-vs-SIMD exception priority. See the
+[plan](../plans/STAGE_2.md#s2-37cg--exact-legacy-long64-cvtsd2si-eaxqword-ptr-rax),
+[report](../reports/STAGE_2_REPORT.md#s2-37cg--cvtsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cg--cvtsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile).

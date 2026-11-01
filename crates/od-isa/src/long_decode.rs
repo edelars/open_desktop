@@ -1218,6 +1218,8 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only legacy `F2 0F 2D 00` CVTSD2SI EAX, m64 form.
+    Cvtsd2siR32MemoryRax,
     /// Local-only legacy `F2 REX.W 0F 2D /r` signed binary64-to-r64 conversion.
     Cvtsd2siR64Register {
         destination: u8,
@@ -5079,12 +5081,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Escape0f, 0x2d) if cvtsd2si_r32_register => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if modrm == 0x00 && rex == 0 {
+                    Operation::Cvtsd2siR32MemoryRax
+                } else if modrm >> 6 != 3 {
                     return Err(self.unsupported(opcode));
-                }
-                Operation::Cvtsd2siR32Register {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                } else {
+                    Operation::Cvtsd2siR32Register {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x2d) if cvtsd2si_r64_register => {
@@ -21045,12 +21050,21 @@ mod tests {
                 }
             }
         }
+        let memory = Memory::new(&[0xf2, 0x0f, 0x2d, 0x00]).decode().unwrap();
+        assert_eq!(memory.operation, Operation::Cvtsd2siR32MemoryRax);
+        assert_eq!(memory.length, 4);
         for bytes in [
             &[0xf2, 0x40, 0x0f, 0x2d, 0xc0][..],
             &[0xf2, 0x42, 0x0f, 0x2d, 0xc0],
             &[0xf2, 0xf2, 0x0f, 0x2d, 0xc0],
             &[0x48, 0xf2, 0x0f, 0x2d, 0xc0],
-            &[0xf2, 0x0f, 0x2d, 0x00],
+            &[0xf2, 0x0f, 0x2d, 0x01],
+            &[0xf2, 0x0f, 0x2d, 0x08],
+            &[0xf2, 0x0f, 0x2d, 0x40, 0x00],
+            &[0xf2, 0x0f, 0x2d, 0x04, 0x00],
+            &[0xf2, 0x41, 0x0f, 0x2d, 0x00],
+            &[0xf2, 0x44, 0x0f, 0x2d, 0x00],
+            &[0xf2, 0x45, 0x0f, 0x2d, 0x00],
             &[0xc5, 0xfb, 0x2d, 0xc0],
             &[0x62, 0xf1, 0xff, 0x08, 0x2d, 0xc0],
         ] {

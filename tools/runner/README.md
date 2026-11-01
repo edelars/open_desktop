@@ -310,3 +310,14 @@ histories. The independent oracle observes direct-to-binary32 rounding,
 high96/x87 preservation, gates, schema/tamper rejection, AC refusal, and JIT/
 native denial. The literal is the double-rounding guard value
 `0x0040000040000001`. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cf--bounded-long64-cvtsi2ss-xmm0qword-ptr-rax-m64-memory-profile).
+
+### S2-37cg — CVTSD2SI EAX,m64
+
+The runner dispatches exact `F2 0F 2D 00` fixtures to the local schema-v2
+interpreter profile. It reads the eight-byte source at original RAX, rounds to
+signed i32 using MXCSR.RC before range checking, and verifies EAX zero-extension
+back to RAX. Its independent oracle reads fixture memory directly and uses raw
+binary64 bit decomposition. The runner matrix validates RC/boundary/flags,
+subnormal no-DE, x87 preservation, gates, AC refusal, AC plus a noncanonical
+span, strict schema and backend closure. JIT/native results are expected
+Unsupported; no physical x86 execution is claimed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cg--bounded-long64-cvtsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile).

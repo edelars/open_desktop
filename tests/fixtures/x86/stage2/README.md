@@ -7422,3 +7422,28 @@ and classifier tests do not claim physical x86 execution. See the [plan](../../.
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SS pp. 3-238–3-239; Vol. 1
 §4.8.4, §11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. Type
 3/Table 2-20 is VEX-only and is not used as legacy evidence.
+
+### S2-37cg — CVTSD2SI EAX,qword ptr [RAX] m64-to-r32 memory profile
+
+`s2_37cg_cvtsd2si_m64_i32_min.case.json` is a literal exact legacy
+`F2 0F 2D 00` case with an unaligned m64 source containing exact -2^31. The
+result bits are `0x80000000`, but the lane is valid and does not set IE. The
+profile captures the original RAX source address, reads exactly eight bytes,
+then writes EAX and zero-extends RAX. Its independent oracle reads raw memory
+bits and rounds according to MXCSR.RC before checking i32 range.
+
+The runner matrix covers positive/negative halfway range boundaries, exact
+INT32_MIN versus invalid indefinite, ±minimum subnormals, an inexact finite
+value, all four RC settings, old IE/PE histories, unaligned m64 access, RAX
+aliasing, and optional pending x87 canaries. Direct ISA tests cover CPL0–3 gate
+priority, missing SSE state, unsupported MXCSR controls, AC refusal including
+AC plus noncanonical source, canonical-span failures, read rollback and exact
+one-read width. Runner validation checks gate/exception metadata, source/result
+state, memory echo, retirement, foreign controls, tampering, and JIT/native
+closure. Strict schema rejects PM=0, IM=0, DAZ=1, and reserved MXCSR bits; AC=1
+is a valid runtime `Unsupported` fixture. Native classifier and backend denial
+are closure evidence only, not physical x86 execution. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37cg--exact-legacy-long64-cvtsd2si-eaxqword-ptr-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cg--bounded-long64-cvtsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cg--cvtsd2si-eaxqword-ptr-rax-m64-to-r32-memory-profile).
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CVTSD2SI` pp. 3-232–3-233; Vol. 1
+§3.4.1.1, §11.5.2.2, Table D-13 and Table 14-21; Vol. 3A §16.1.3 and Table 16-1
+([official SDM](https://cdrdv2.intel.com/v1/dl/getContent/671199)).

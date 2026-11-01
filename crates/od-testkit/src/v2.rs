@@ -25,6 +25,7 @@ pub const PROFILE_CVTSI2SS_MEMORY64: &str = "s2-long-cvtsi2ss-memory64-rax-v1";
 pub const PROFILE_CVTSS2SI_REGISTERS: &str = "s2-long-cvtss2si-registers-v1";
 pub const PROFILE_CVTTSS2SI_REGISTERS: &str = "s2-long-cvttss2si-registers-v1";
 pub const PROFILE_CVTSD2SI_REGISTERS: &str = "s2-long-cvtsd2si-registers-v1";
+pub const PROFILE_CVTSD2SI_R32_MEMORY_RAX: &str = "s2-long-cvtsd2si-r32-memory-rax-v1";
 pub const PROFILE_CVTTSD2SI_REGISTERS: &str = "s2-long-cvttsd2si-registers-v1";
 pub const PROFILE_FS_BASE: &str = "s2-long-fs-base-v1";
 pub const PROFILE_GS_BASE: &str = "s2-long-gs-base-v1";
@@ -398,6 +399,8 @@ pub enum Profile {
     LongCvttss2siRegistersV1,
     #[serde(rename = "s2-long-cvtsd2si-registers-v1")]
     LongCvtsd2siRegistersV1,
+    #[serde(rename = "s2-long-cvtsd2si-r32-memory-rax-v1")]
+    LongCvtsd2siR32MemoryRaxV1,
     #[serde(rename = "s2-long-cvttsd2si-registers-v1")]
     LongCvttsd2siRegistersV1,
     #[serde(rename = "s2-long-native-xorpd-xmm0-xmm1-v1")]
@@ -1378,7 +1381,8 @@ impl IntegerState {
                     | Profile::LongCvtsi2sdMemory32RaxV1
                     | Profile::LongCvtsi2ssMemory32RaxV1
                     | Profile::LongCvtsi2ssMemory64RaxV1
-                    | Profile::LongCvtsi2sdMemory64RaxV1,
+                    | Profile::LongCvtsi2sdMemory64RaxV1
+                    | Profile::LongCvtsd2siR32MemoryRaxV1,
                     Some(x87),
                 ) => Some(x87.to_cpu()?),
                 _ => None,
@@ -1481,6 +1485,7 @@ impl IntegerState {
                     | Profile::LongCvtsi2ssMemory32RaxV1
                     | Profile::LongCvtsi2ssMemory64RaxV1
                     | Profile::LongCvtsi2sdMemory64RaxV1
+                    | Profile::LongCvtsd2siR32MemoryRaxV1
                     | Profile::LongCvtsi2sdR64ExactV1
                     | Profile::LongCvtsi2sdRegistersV1
                     | Profile::LongCvtsi2ssRegistersV1
@@ -1679,6 +1684,7 @@ impl IntegerState {
                 | Profile::LongCvtsi2ssMemory32RaxV1
                 | Profile::LongCvtsi2ssMemory64RaxV1
                 | Profile::LongCvtsi2sdMemory64RaxV1
+                | Profile::LongCvtsd2siR32MemoryRaxV1
                 | Profile::LongCvtps2dqRegistersV1
                 | Profile::LongCvtps2dqMemoryRaxV1
                 | Profile::LongCvttps2dqRegistersV1
@@ -1938,6 +1944,7 @@ impl IntegerState {
                 | Profile::LongCvtsi2ssMemory32RaxV1
                 | Profile::LongCvtsi2ssMemory64RaxV1
                 | Profile::LongCvtsi2sdMemory64RaxV1
+                | Profile::LongCvtsd2siR32MemoryRaxV1
                 | Profile::LongCvtsi2sdR64ExactV1
                 | Profile::LongCvtsi2sdRegistersV1
                 | Profile::LongCvtsi2ssRegistersV1
@@ -2481,6 +2488,7 @@ impl IntegerState {
                 | Profile::LongCvtsi2ssMemory32RaxV1
                 | Profile::LongCvtsi2ssMemory64RaxV1
                 | Profile::LongCvtsi2sdMemory64RaxV1
+                | Profile::LongCvtsd2siR32MemoryRaxV1
                 | Profile::LongCvtpd2dqRegistersV1
                 | Profile::LongCvttpd2dqRegistersV1
                 | Profile::LongSqrtssRegistersV1
@@ -2660,6 +2668,7 @@ impl IntegerState {
                 | Profile::LongCvtsi2ssMemory32RaxV1
                 | Profile::LongCvtsi2ssMemory64RaxV1
                 | Profile::LongCvtsi2sdMemory64RaxV1
+                | Profile::LongCvtsd2siR32MemoryRaxV1
                 | Profile::LongX87SelectorsStateV1
                 | Profile::LongEferRdmsrV1
                 | Profile::LongCr0FpInitV1
@@ -2890,6 +2899,7 @@ impl IntegerState {
                 | Profile::LongCvtsi2ssMemory32RaxV1
                 | Profile::LongCvtsi2ssMemory64RaxV1
                 | Profile::LongCvtsi2sdMemory64RaxV1
+                | Profile::LongCvtsd2siR32MemoryRaxV1
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
@@ -3128,6 +3138,7 @@ impl IntegerState {
                 | Profile::LongCvtsi2ssMemory32RaxV1
                 | Profile::LongCvtsi2ssMemory64RaxV1
                 | Profile::LongCvtsi2sdMemory64RaxV1
+                | Profile::LongCvtsd2siR32MemoryRaxV1
                 | Profile::LongX87StateV1
                 | Profile::LongX87SseStateV1
                 | Profile::LongX87SelectorsStateV1
@@ -3607,6 +3618,7 @@ impl IntegerState {
                 | Profile::LongCvtsi2ssMemory32RaxV1
                 | Profile::LongCvtsi2ssMemory64RaxV1
                 | Profile::LongCvtsi2sdMemory64RaxV1
+                | Profile::LongCvtsd2siR32MemoryRaxV1
         ) {
             1 << 18 // AC is an explicit input to these memory profile admissions.
         } else {
@@ -3875,7 +3887,8 @@ impl IntegerState {
                 | Profile::LongCvtsi2sdMemory32RaxV1
                 | Profile::LongCvtsi2ssMemory32RaxV1
                 | Profile::LongCvtsi2ssMemory64RaxV1
-                | Profile::LongCvtsi2sdMemory64RaxV1,
+                | Profile::LongCvtsi2sdMemory64RaxV1
+                | Profile::LongCvtsd2siR32MemoryRaxV1,
                 Some(x87),
             ) => x87.validate()?,
             (
@@ -4139,6 +4152,7 @@ impl IntegerState {
                 | Profile::LongCvtsi2ssMemory32RaxV1
                 | Profile::LongCvtsi2ssMemory64RaxV1
                 | Profile::LongCvtsi2sdMemory64RaxV1
+                | Profile::LongCvtsd2siR32MemoryRaxV1
                 | Profile::LongCvtsi2sdR64ExactV1
                 | Profile::LongCvtsi2sdRegistersV1
                 | Profile::LongCvtsi2ssRegistersV1
@@ -4334,6 +4348,7 @@ impl IntegerState {
                 | Profile::LongCvtsi2ssMemory32RaxV1
                 | Profile::LongCvtsi2ssMemory64RaxV1
                 | Profile::LongCvtsi2sdMemory64RaxV1
+                | Profile::LongCvtsd2siR32MemoryRaxV1
                 | Profile::LongCvtsi2sdR64ExactV1
                 | Profile::LongCvtsi2sdRegistersV1
                 | Profile::LongCvtsi2ssRegistersV1
@@ -4721,6 +4736,9 @@ pub struct Fixture {
     pub cvtss2si_controls: Option<Cvtss2siControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtsd2si_controls: Option<Cvtsd2siControlSnapshot>,
+    /// Immutable SSE2 gates for the exact S2-37cg CVTSD2SI EAX,m64 profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cvtsd2si_r32_memory_controls: Option<Cvtsd2siControlSnapshot>,
     /// Explicit CR0 inputs required only by the exact S2-39f FXSAVE64 profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fxsave64_cr0_controls: Option<Fxsave64Cr0Snapshot>,
@@ -10565,6 +10583,92 @@ impl Fixture {
                 "only valid for CVTSD2SI register-space profile",
             ));
         }
+        if self.profile == Profile::LongCvtsd2siR32MemoryRaxV1 {
+            let controls = self.cvtsd2si_r32_memory_controls.ok_or_else(|| {
+                invalid(
+                    "cvtsd2si_r32_memory_controls",
+                    "required by CVTSD2SI m64-to-r32 memory profile",
+                )
+            })?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by CVTSD2SI memory profile"))?;
+            let data = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "data")
+                .ok_or_else(|| invalid("memory.data", "required by CVTSD2SI memory profile"))?;
+            let start = self.initial_state.rip.get();
+            let source = self.initial_state.gpr[0].get();
+            if self.cvtsd2si_controls.is_some()
+                || code.guest_address.get() != start
+                || code.length != 4
+                || !code.permissions.execute
+                || !code.initial_bytes_hex.eq_ignore_ascii_case("f20f2d00")
+                || self.memory.len() != 2
+                || data.guest_address.get() != source
+                || data.length != 8
+                || !data.permissions.read
+                || data.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(4)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress | ExpectedExit::Unsupported
+                )
+            {
+                return Err(invalid(
+                    "memory",
+                    "CVTSD2SI m64-to-r32 requires exact F2 0F 2D 00, one code and one eight-byte data mapping at RAX, budget 1, and stop RIP entry+4",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| invalid("state.sse", "required by CVTSD2SI memory profile"))?
+                .mxcsr
+                .get();
+            if mxcsr & !0x0000_ffbf != 0
+                || mxcsr & (1 << 6) != 0
+                || mxcsr & (1 << 7) == 0
+                || mxcsr & (1 << 12) == 0
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "CVTSD2SI m64-to-r32 requires supported MXCSR bits, DAZ=0, and IM=PM=1",
+                ));
+            }
+            let gate_fault = !controls.sse2_available
+                || controls.cr0_em
+                || !controls.cr4_osfxsr
+                || controls.cr0_ts;
+            let address = source;
+            let span_fault = address
+                .checked_add(7)
+                .is_none_or(|last| !canonical48(address) || !canonical48(last));
+            let local_refusal = !gate_fault && self.initial_state.rflags.get() & (1 << 18) != 0;
+            let expected = if gate_fault || (!local_refusal && span_fault) {
+                ExpectedExit::Exception
+            } else if local_refusal {
+                ExpectedExit::Unsupported
+            } else {
+                ExpectedExit::StopAddress
+            };
+            if self.expected_exit != expected {
+                return Err(invalid(
+                    "expected_exit",
+                    "must reflect CVTSD2SI memory prerequisite gates then the local AC policy",
+                ));
+            }
+        } else if self.cvtsd2si_r32_memory_controls.is_some() {
+            return Err(invalid(
+                "cvtsd2si_r32_memory_controls",
+                "only valid for CVTSD2SI m64-to-r32 memory profile",
+            ));
+        }
         if self.profile == Profile::LongCvtsi2sdRegistersV1 {
             let r32 = self.cvtsi2sd_r32_controls.ok_or_else(|| {
                 invalid(
@@ -13111,6 +13215,7 @@ impl Fixture {
             cvtsi2ss_controls: None,
             cvtss2si_controls: None,
             cvtsd2si_controls: None,
+            cvtsd2si_r32_memory_controls: None,
             fxsave64_cr0_controls: None,
             fxrstor64_cr0_controls: None,
             rdtsc_controls: None,
@@ -13338,6 +13443,8 @@ pub struct Snapshot {
     pub cvtss2si_controls: Option<Cvtss2siControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtsd2si_controls: Option<Cvtsd2siControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cvtsd2si_r32_memory_controls: Option<Cvtsd2siControlSnapshot>,
     /// Immutable FXSAVE64 CR0 gate inputs, echoed only for S2-39f.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fxsave64_cr0_controls: Option<Fxsave64Cr0Snapshot>,
@@ -14435,6 +14542,19 @@ impl RunResult {
                 "only valid for CVTSD2SI profile",
             ));
         }
+        if self.profile == Profile::LongCvtsd2siR32MemoryRaxV1 {
+            if snapshot.cvtsd2si_r32_memory_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.cvtsd2si_r32_memory_controls",
+                    "required by CVTSD2SI m64-to-r32 memory profile",
+                ));
+            }
+        } else if snapshot.cvtsd2si_r32_memory_controls.is_some() {
+            return Err(invalid(
+                "snapshot.cvtsd2si_r32_memory_controls",
+                "only valid for CVTSD2SI m64-to-r32 memory profile",
+            ));
+        }
         if self.profile == Profile::LongMaxssUnmaskedDenormalV1 {
             if snapshot.maxss_unmasked_controls.is_none() {
                 return Err(invalid(
@@ -14463,6 +14583,7 @@ impl RunResult {
                     | Profile::LongCvtpd2psMemoryRaxV1
                     | Profile::LongCvtsd2ssMemoryRaxV1
                     | Profile::LongCvtsi2sdMemory64RaxV1
+                    | Profile::LongCvtsd2siR32MemoryRaxV1
                     | Profile::LongCvtsi2ssMemory64RaxV1
             ) {
                 1 << 18
@@ -15700,6 +15821,24 @@ impl RunResult {
                 Profile::LongCvtsd2siRegistersV1 | Profile::LongCvttsd2siRegistersV1
             ) {
                 validate_cvtsd2si_registers_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.cvtsd2si_r32_memory_controls,
+                value.cvtsd2si_r32_memory_controls,
+            ) {
+                (Profile::LongCvtsd2siR32MemoryRaxV1, Some(input), Some(output))
+                    if input == output => {}
+                (Profile::LongCvtsd2siR32MemoryRaxV1, _, _) => {
+                    return Err(FormatError::CaseMismatch("cvtsd2si_r32_memory_controls"));
+                }
+                (_, None, None) => {}
+                _ => {
+                    return Err(FormatError::CaseMismatch("cvtsd2si_r32_memory_controls"));
+                }
+            }
+            if loaded.fixture.profile == Profile::LongCvtsd2siR32MemoryRaxV1 {
+                validate_cvtsd2si_r32_memory_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
@@ -25669,6 +25808,141 @@ fn validate_cvtsd2si_registers_result(
             && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
         (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
         _ => return Err(FormatError::CaseMismatch("CVTSD2SI outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_cvtsd2si_r32_memory_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .cvtsd2si_r32_memory_controls
+        .ok_or(FormatError::CaseMismatch("cvtsd2si_r32_memory_controls"))?;
+    let data = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "data")
+        .ok_or(FormatError::CaseMismatch("memory.data"))?;
+    let source = decode_bytes(&data.initial_bytes_hex)?;
+    let raw = u64::from_le_bytes(
+        source
+            .as_slice()
+            .try_into()
+            .map_err(|_| FormatError::CaseMismatch("CVTSD2SI m64 source width"))?,
+    );
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let mxcsr = initial_sse.mxcsr.get() as u32;
+    let (integer_bits, invalid, inexact) =
+        independent_binary64_to_integer(raw, (mxcsr >> 13) & 3, false);
+    let gate_vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let address = fixture.initial_state.gpr[0].get();
+    let span_fault = address
+        .checked_add(7)
+        .is_none_or(|last| !canonical48(address) || !canonical48(last));
+    let unsupported = gate_vector.is_none()
+        && (fixture.initial_state.rflags.get() & (1 << 18) != 0
+            || mxcsr & !0x0000_ffbf != 0
+            || mxcsr & (1 << 6) != 0
+            || mxcsr & ((1 << 7) | (1 << 12)) != ((1 << 7) | (1 << 12)));
+    let fault_vector = gate_vector.or_else(|| (!unsupported && span_fault).then_some(13));
+    if (fault_vector.is_some() && fixture.expected_exit != ExpectedExit::Exception)
+        || (fault_vector.is_none()
+            && unsupported
+            && fixture.expected_exit != ExpectedExit::Unsupported)
+        || (fault_vector.is_none()
+            && !unsupported
+            && fixture.expected_exit != ExpectedExit::StopAddress)
+    {
+        return Err(FormatError::CaseMismatch(
+            "CVTSD2SI m64-to-r32 expected exit",
+        ));
+    }
+    let mut expected = fixture.initial_state.clone();
+    if fault_vector.is_none() && !unsupported {
+        let sse = expected
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        sse.mxcsr = HexU64(u64::from(
+            mxcsr | u32::from(invalid) | (u32::from(!invalid && inexact) << 5),
+        ));
+        // EAX aliases the source base: the source bytes above come from the pre-execution RAX.
+        expected.gpr[0] = HexU64(u64::from(integer_bits as u32));
+        expected.rip = HexU64(fixture.initial_state.rip.get().checked_add(4).ok_or(
+            FormatError::CaseMismatch("CVTSD2SI m64-to-r32 RIP overflow"),
+        )?);
+    }
+    let expected_memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != expected_memory
+    {
+        return Err(FormatError::CaseMismatch(
+            "CVTSD2SI m64-to-r32 output state",
+        ));
+    }
+    let retired = fault_vector.is_none() && !unsupported;
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(u64::from(retired)),
+        })
+    {
+        return Err(FormatError::CaseMismatch(
+            "CVTSD2SI m64-to-r32 retirement count",
+        ));
+    }
+    match (
+        fault_vector,
+        unsupported,
+        &result.outcome,
+        &snapshot.exception,
+    ) {
+        (
+            Some(vector),
+            _,
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == if vector == 13 {
+                    Observation::Available { value: HexU64(0) }
+                } else {
+                    Observation::Unavailable {
+                        reason: "exception has no architectural error code".into(),
+                    }
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, true, Outcome::Unsupported { .. }, Observation::Available { value: None }) => {}
+        (None, false, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => {
+            return Err(FormatError::CaseMismatch(
+                "CVTSD2SI m64-to-r32 outcome/exception",
+            ));
+        }
     }
     Ok(())
 }
