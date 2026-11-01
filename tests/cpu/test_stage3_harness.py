@@ -262,6 +262,12 @@ def passing_final_summary(run_id: str, log_dir: Path):
         "test_outcomes": {},
         "s3_34h_exact_gate": steps[gate_name],
     }
+    for name in harness.LOCAL_VMHOST_RESULT_STEPS:
+        steps[name] = {"status": "passed"}
+    suites[harness.LOCAL_VMHOST_RESULT_SUITE] = {
+        "status": "passed",
+        "steps": list(harness.LOCAL_VMHOST_RESULT_STEPS),
+    }
     suites[harness.PROCESS_SUITE_NAME] = {"status": "not_run"}
     for name in harness.PROCESS_SUITE_STEPS:
         steps[name] = {"status": "not_run"}
@@ -792,7 +798,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             self.assertEqual(identities.count(identity), 1)
         self.assertEqual(sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 92)
         self.assertEqual(sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 10)
-        self.assertEqual(len(harness.LOCAL_STEPS), 106)
+        self.assertEqual(len(harness.LOCAL_STEPS), 120)
         self.assertEqual(
             [gate["step"] for gate in manifest if gate["step"].startswith("s3_32a_")],
             [gate[0] for gate in expected],
@@ -949,7 +955,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         self.assertEqual(len({gate["step"] for gate in manifest}), 102)
         self.assertEqual(sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 92)
         self.assertEqual(sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 10)
-        self.assertEqual(len(harness.LOCAL_STEPS), 106)
+        self.assertEqual(len(harness.LOCAL_STEPS), 120)
         self.assertEqual(harness.rust_test_argv(package, identity), [
             "cargo", "test", "--offline", "-p", package, "--test", "memory_corpus",
             identity, "--", "--exact", "--test-threads=1",
@@ -1353,8 +1359,9 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 manifest_raw = harness.write_json_create(manifest_path, harness.input_manifest())
                 summary["input_manifest_sha256"] = harness.sha256_bytes(manifest_raw)
                 summary["steps"]["s3_34n_native_register_v1_corpus"].pop("corpus_evidence")
-                with self.assertRaisesRegex(harness.HarnessError, "summary evidence is missing"):
-                    harness.validate_final_summary(summary, manifest_path)
+                with mock.patch.object(harness, "validate_local_vmhost_result_state"):
+                    with self.assertRaisesRegex(harness.HarnessError, "summary evidence is missing"):
+                        harness.validate_final_summary(summary, manifest_path)
         finally:
             shutil.rmtree(harness_run, ignore_errors=True)
 
@@ -1621,7 +1628,10 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 manifest_raw = harness.write_json_create(manifest_path, harness.input_manifest())
                 summary["input_manifest_sha256"] = harness.sha256_bytes(manifest_raw)
                 with mock.patch.object(harness, "source_fingerprint", return_value="a" * 64):
-                    with mock.patch.object(harness, "validate_native_register_v1_artifacts"):
+                    with (
+                        mock.patch.object(harness, "validate_local_vmhost_result_state"),
+                        mock.patch.object(harness, "validate_native_register_v1_artifacts"),
+                    ):
                         with self.assertRaisesRegex(harness.HarnessError, "suite membership"):
                             harness.validate_final_summary(summary, manifest_path)
             finally:
@@ -1774,7 +1784,10 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 manifest_raw = harness.write_json_create(manifest_path, harness.input_manifest())
                 summary["input_manifest_sha256"] = harness.sha256_bytes(manifest_raw)
                 with mock.patch.object(harness, "source_fingerprint", return_value="a" * 64):
-                    with mock.patch.object(harness, "validate_native_register_v1_artifacts"):
+                    with (
+                        mock.patch.object(harness, "validate_local_vmhost_result_state"),
+                        mock.patch.object(harness, "validate_native_register_v1_artifacts"),
+                    ):
                         with self.assertRaisesRegex(harness.HarnessError, "suite membership"):
                             harness.validate_final_summary(summary, manifest_path)
             finally:
@@ -2143,16 +2156,18 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             expected_log.unlink()
             expected_log.symlink_to(external_log)
             try:
-                with self.assertRaisesRegex(harness.HarnessError, "log path differs"):
-                    harness.validate_final_summary(summary, manifest_path)
+                with mock.patch.object(harness, "validate_local_vmhost_result_state"):
+                    with self.assertRaisesRegex(harness.HarnessError, "log path differs"):
+                        harness.validate_final_summary(summary, manifest_path)
 
                 expected_log.unlink()
                 expected_log.write_text(output)
                 summary["steps"][step_name]["log"] = external_log.relative_to(
                     harness.ROOT
                 ).as_posix()
-                with self.assertRaisesRegex(harness.HarnessError, "log path differs"):
-                    harness.validate_final_summary(summary, manifest_path)
+                with mock.patch.object(harness, "validate_local_vmhost_result_state"):
+                    with self.assertRaisesRegex(harness.HarnessError, "log path differs"):
+                        harness.validate_final_summary(summary, manifest_path)
             finally:
                 expected_log.unlink(missing_ok=True)
                 shutil.rmtree(run_dir)
