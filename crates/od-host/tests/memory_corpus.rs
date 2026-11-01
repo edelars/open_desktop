@@ -222,6 +222,7 @@ struct Observation {
     ram: [u8; RAM_LEN],
     callbacks: Vec<&'static str>,
     memory_accesses: Vec<String>,
+    memory_error: Option<MemoryError>,
     status: String,
     remaining_budget: u64,
     retired: u64,
@@ -235,6 +236,7 @@ struct Ram {
     memory_accesses: Vec<String>,
     fail_read: Option<(usize, MemoryError)>,
     fail_write: Option<(usize, MemoryError)>,
+    memory_error: Option<MemoryError>,
     event_on_access: Option<Arc<AtomicBool>>,
 }
 
@@ -272,7 +274,9 @@ impl GuestMemory for Ram {
             .as_ref()
             .is_some_and(|(site, _)| *site == read_site)
         {
-            return Err(self.fail_read.take().unwrap().1);
+            let error = self.fail_read.take().unwrap().1;
+            self.memory_error = Some(error.clone());
+            return Err(error);
         }
         let start = usize::try_from(address).map_err(|_| MemoryError::Unmapped {
             address,
@@ -305,7 +309,9 @@ impl GuestMemory for Ram {
             .as_ref()
             .is_some_and(|(site, _)| *site == write_site)
         {
-            return Err(self.fail_write.take().unwrap().1);
+            let error = self.fail_write.take().unwrap().1;
+            self.memory_error = Some(error.clone());
+            return Err(error);
         }
         let start = usize::try_from(address).map_err(|_| MemoryError::Unmapped {
             address,
@@ -617,6 +623,7 @@ fn initial_ram(input: &CorpusInput) -> Ram {
         memory_accesses: Vec::new(),
         fail_read: None,
         fail_write: None,
+        memory_error: None,
         event_on_access: None,
     }
 }
@@ -646,6 +653,7 @@ fn outcome(
         ram: ram.bytes,
         callbacks: ram.callbacks,
         memory_accesses: ram.memory_accesses,
+        memory_error: ram.memory_error,
         status,
         remaining_budget,
         retired,
@@ -769,6 +777,35 @@ fn cached_dispatch_run(
     event: Option<&Arc<AtomicBool>>,
     fault: Option<(u8, MemoryError)>,
 ) -> Observation {
+    cached_dispatch_run_with_dependency_version(
+        cache,
+        backend,
+        profile,
+        context_generation,
+        1,
+        input,
+        budget,
+        stop_requested,
+        stop_rip,
+        event,
+        fault,
+    )
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn cached_dispatch_run_with_dependency_version(
+    cache: &mut od_jit::memory_cache::MemoryPairCache<od_host::PublishedMemoryPairHandle>,
+    backend: &mut CachedPublishedMemoryPairBackend,
+    profile: od_jit::memory_cache::MemoryPairProfile,
+    context_generation: u64,
+    dependency_version: u64,
+    input: &CorpusInput,
+    budget: u64,
+    stop_requested: bool,
+    stop_rip: Option<u64>,
+    event: Option<&Arc<AtomicBool>>,
+    fault: Option<(u8, MemoryError)>,
+) -> Observation {
     use std::num::NonZeroU64;
 
     use od_jit::{
@@ -787,9 +824,9 @@ fn cached_dispatch_run(
         identity: CodeIdentity {
             address_space: AddressSpaceId::new(NonZeroU64::new(1).unwrap()),
             mapping: MappingId::new(NonZeroU64::new(1).unwrap()),
-            mapping_version: MappingVersion::new(NonZeroU64::new(1).unwrap()),
+            mapping_version: MappingVersion::new(NonZeroU64::new(dependency_version).unwrap()),
             backing: BackingId::new(NonZeroU64::new(1).unwrap()),
-            backing_version: BackingVersion::new(NonZeroU64::new(1).unwrap()),
+            backing_version: BackingVersion::new(NonZeroU64::new(dependency_version).unwrap()),
             executable: true,
         },
     }];
@@ -1162,6 +1199,7 @@ fn sample_report(
         ram: input.ram,
         callbacks: Vec::new(),
         memory_accesses: Vec::new(),
+        memory_error: None,
         status: "SavedInput".into(),
         remaining_budget: envelope.protocol.budget,
         retired: 0,
@@ -1586,6 +1624,7 @@ fn reducer_load_pair_site_test_run(envelope: &CaseEnvelope) -> Result<ReducerRun
             format!("read@{:#x}", input.first_address),
             format!("read@{:#x}", input.first_address),
         ],
+        memory_error: None,
         status: "GuestFault(ArchitecturalFault { vector: 14 })".into(),
         remaining_budget: 1,
         retired: 1,
@@ -2140,6 +2179,404 @@ fn capacity_one_memory_cache_preserves_control_and_committed_prefix_behavior() {
     cache.clear();
 }
 
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn capacity_one_memory_cache_republishes_after_fault_and_backend_error() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap();
+    use od_jit::memory_cache::MemoryPairProfile;
+
+    let store_first = generated_input(0x5333_3745_0000_0001, 1, Some(Sequence::StoreThenLoad));
+    let store_second = generated_input(0x5333_3745_0000_0002, 7, Some(Sequence::StoreThenLoad));
+    let load_store = generated_input(0x5333_3745_0000_0003, 2, Some(Sequence::LoadThenStore));
+    let fresh_store = generated_input(0x5333_3745_0000_0004, 9, Some(Sequence::StoreThenLoad));
+    assert_ne!(store_first.gpr, store_second.gpr);
+    assert_ne!(store_first.ram, store_second.ram);
+
+    // Build all uncached/interpreter references before retaining a mapping.
+    // Each uncached call drops its one-shot mapping on return.
+    let store_first_uncached = uncached_dispatch_run(&store_first, 2, false, None, None, None);
+    let store_first_interpreter = interpreter_run(&store_first, 2, None, false, None);
+    let store_second_uncached = uncached_dispatch_run(&store_second, 2, false, None, None, None);
+    let store_second_interpreter = interpreter_run(&store_second, 2, None, false, None);
+
+    let stop_uncached =
+        uncached_dispatch_run(&store_first, 2, false, Some(ENTRY_RIP + 3), None, None);
+    let stop_interpreter = interpreter_run(&store_first, 2, Some(ENTRY_RIP + 3), false, None);
+
+    let architectural_fault = MemoryError::Architectural(ArchitecturalFault {
+        vector: 14,
+        error_code: Some(2),
+        linear_address: Some(store_first.first_address),
+    });
+    let fault_uncached = uncached_dispatch_run(
+        &store_first,
+        2,
+        false,
+        None,
+        None,
+        Some((1, architectural_fault.clone())),
+    );
+    let fault_interpreter = interpreter_run(
+        &store_first,
+        2,
+        None,
+        false,
+        Some((1, architectural_fault.clone())),
+    );
+
+    let backend_error = MemoryError::Backend("S3-37e second-site write failure".into());
+    let backend_error_uncached = uncached_dispatch_run(
+        &load_store,
+        2,
+        false,
+        None,
+        None,
+        Some((1, backend_error.clone())),
+    );
+    assert!(backend_error_uncached.status.contains("error"));
+    let load_store_uncached = uncached_dispatch_run(&load_store, 2, false, None, None, None);
+    let load_store_interpreter = interpreter_run(&load_store, 2, None, false, None);
+    let fresh_store_uncached = uncached_dispatch_run(&fresh_store, 2, false, None, None, None);
+    let fresh_store_interpreter = interpreter_run(&fresh_store, 2, None, false, None);
+
+    let mut cache = od_jit::memory_cache::MemoryPairCache::new();
+    let mut backend = CachedPublishedMemoryPairBackend;
+
+    let cold_store = cached_dispatch_run(
+        &mut cache,
+        &mut backend,
+        MemoryPairProfile::StoreThenLoad,
+        1,
+        &store_first,
+        2,
+        false,
+        None,
+        None,
+        None,
+    );
+    assert_eq!(
+        compare_observations(&cold_store, &store_first_uncached),
+        Ok(())
+    );
+    assert_eq!(
+        compare_observations(&cold_store, &store_first_interpreter),
+        Ok(())
+    );
+    assert_eq!(cold_store.status, "Complete");
+    assert_eq!(cold_store.callbacks, expected_order(store_first.sequence));
+    assert_eq!(cold_store.memory_accesses, expected_accesses(&store_first));
+    assert_eq!(cache.resident_entries(), 1);
+    assert_eq!(cache.counters().hits, 0);
+    assert_eq!(cache.counters().misses, 1);
+    assert_eq!(cache.counters().successful_compiles, 1);
+    assert_eq!(cache.counters().successful_publications, 1);
+    assert_eq!(cache.counters().replacements, 0);
+
+    // The same immutable key is invoked with different CPU/RAM and newly
+    // created stop-control objects; the retained handle must not capture them.
+    let same_key_hit = cached_dispatch_run(
+        &mut cache,
+        &mut backend,
+        MemoryPairProfile::StoreThenLoad,
+        1,
+        &store_second,
+        2,
+        false,
+        None,
+        None,
+        None,
+    );
+    assert_eq!(
+        compare_observations(&same_key_hit, &store_second_uncached),
+        Ok(())
+    );
+    assert_eq!(
+        compare_observations(&same_key_hit, &store_second_interpreter),
+        Ok(())
+    );
+    assert_eq!(
+        same_key_hit.callbacks,
+        expected_order(store_second.sequence)
+    );
+    assert_eq!(
+        same_key_hit.memory_accesses,
+        expected_accesses(&store_second)
+    );
+    assert_eq!(cache.counters().hits, 1);
+    assert_eq!(cache.counters().misses, 1);
+    assert_eq!(cache.counters().replacements, 0);
+    assert_eq!(cache.resident_entries(), 1);
+
+    let stopped_after_commit = cached_dispatch_run(
+        &mut cache,
+        &mut backend,
+        MemoryPairProfile::StoreThenLoad,
+        1,
+        &store_first,
+        2,
+        false,
+        Some(ENTRY_RIP + 3),
+        None,
+        None,
+    );
+    assert_eq!(
+        compare_observations(&stopped_after_commit, &stop_uncached),
+        Ok(())
+    );
+    assert_eq!(
+        compare_observations(&stopped_after_commit, &stop_interpreter),
+        Ok(())
+    );
+    assert_eq!(stopped_after_commit.status, "StopAddress");
+    assert_eq!(stopped_after_commit.retired, 1);
+    assert_eq!(stopped_after_commit.state.rip, ENTRY_RIP + 3);
+    assert_eq!(stopped_after_commit.callbacks, ["write"]);
+    assert_eq!(cache.resident_entries(), 1);
+    assert_eq!(cache.counters().hits, 2);
+    assert_eq!(cache.counters().misses, 1);
+    assert_eq!(cache.counters().successful_compiles, 1);
+    assert_eq!(cache.counters().successful_publications, 1);
+    assert_eq!(cache.counters().replacements, 0);
+
+    let architectural_fault_result = cached_dispatch_run(
+        &mut cache,
+        &mut backend,
+        MemoryPairProfile::StoreThenLoad,
+        1,
+        &store_first,
+        2,
+        false,
+        None,
+        None,
+        Some((1, architectural_fault)),
+    );
+    assert_eq!(
+        compare_observations(&architectural_fault_result, &fault_uncached),
+        Ok(())
+    );
+    assert_eq!(
+        compare_observations(&architectural_fault_result, &fault_interpreter),
+        Ok(())
+    );
+    assert!(architectural_fault_result.status.contains("GuestFault"));
+    assert_eq!(architectural_fault_result.retired, 1);
+    assert_eq!(architectural_fault_result.state.rip, ENTRY_RIP + 3);
+    assert_eq!(architectural_fault_result.callbacks, ["write", "read"]);
+    assert_eq!(
+        architectural_fault_result.memory_accesses,
+        expected_accesses(&store_first)
+    );
+    assert_eq!(cache.resident_entries(), 1);
+    assert_eq!(cache.counters().hits, 3);
+    assert_eq!(cache.counters().misses, 1);
+    assert_eq!(cache.counters().successful_publications, 1);
+    assert_eq!(cache.counters().replacements, 0);
+
+    // The same profile and context generation with a new executable
+    // dependency version changes the key while the old mapping is resident.
+    // ensure_entry must release it before publishing and running the new one.
+    let replacement = cached_dispatch_run_with_dependency_version(
+        &mut cache,
+        &mut backend,
+        MemoryPairProfile::StoreThenLoad,
+        1,
+        2,
+        &store_second,
+        2,
+        false,
+        None,
+        None,
+        None,
+    );
+    assert_eq!(
+        compare_observations(&replacement, &store_second_uncached),
+        Ok(())
+    );
+    assert_eq!(
+        compare_observations(&replacement, &store_second_interpreter),
+        Ok(())
+    );
+    assert_eq!(replacement.callbacks, expected_order(store_second.sequence));
+    assert_eq!(
+        replacement.memory_accesses,
+        expected_accesses(&store_second)
+    );
+    assert_eq!(cache.resident_entries(), 1);
+    assert_eq!(cache.counters().hits, 3);
+    assert_eq!(cache.counters().misses, 2);
+    assert_eq!(cache.counters().successful_compiles, 2);
+    assert_eq!(cache.counters().successful_publications, 2);
+    assert_eq!(cache.counters().replacements, 1);
+
+    // STOP and the architectural fault both retained an entry above. The
+    // explicit clear releases the replacement mapping before a context switch.
+    cache.clear();
+    assert_eq!(cache.resident_entries(), 0);
+    assert_eq!(cache.counters().replacements, 1);
+
+    let other_profile = cached_dispatch_run(
+        &mut cache,
+        &mut backend,
+        MemoryPairProfile::LoadThenStore,
+        2,
+        &load_store,
+        2,
+        false,
+        None,
+        None,
+        None,
+    );
+    assert_eq!(
+        compare_observations(&other_profile, &load_store_uncached),
+        Ok(())
+    );
+    assert_eq!(
+        compare_observations(&other_profile, &load_store_interpreter),
+        Ok(())
+    );
+    assert_eq!(other_profile.callbacks, expected_order(load_store.sequence));
+    assert_eq!(
+        other_profile.memory_accesses,
+        expected_accesses(&load_store)
+    );
+    assert_eq!(cache.resident_entries(), 1);
+    assert_eq!(cache.counters().misses, 3);
+    assert_eq!(cache.counters().successful_compiles, 3);
+    assert_eq!(cache.counters().successful_publications, 3);
+    assert_eq!(cache.counters().replacements, 1);
+
+    let failed_second_site = cached_dispatch_run(
+        &mut cache,
+        &mut backend,
+        MemoryPairProfile::LoadThenStore,
+        2,
+        &load_store,
+        2,
+        false,
+        None,
+        None,
+        Some((1, backend_error.clone())),
+    );
+    assert!(failed_second_site.status.contains("error"));
+    assert!(failed_second_site.status.contains("Backend"));
+    assert!(failed_second_site.status.contains("MemoryError"));
+    let backend_error_payload = format!(
+        "kind: {}, address: 0, length: 0",
+        od_jit::memory_bridge::MEMORY_ERROR_BACKEND
+    );
+    assert!(
+        failed_second_site.status.contains(&backend_error_payload),
+        "cached backend error payload: {}",
+        failed_second_site.status
+    );
+    assert!(backend_error_uncached.status.contains("MemoryError"));
+    assert!(
+        backend_error_uncached
+            .status
+            .contains(&backend_error_payload)
+    );
+    assert!(backend_error_uncached.status.contains("error"));
+    assert_eq!(failed_second_site.memory_error, Some(backend_error.clone()));
+    assert_eq!(backend_error_uncached.memory_error, Some(backend_error));
+
+    let mut normalized_cached_error = failed_second_site.clone();
+    let mut normalized_uncached_error = backend_error_uncached.clone();
+    normalized_cached_error.status = "BackendError".into();
+    normalized_uncached_error.status = "BackendError".into();
+    assert_eq!(
+        compare_observations(&normalized_cached_error, &normalized_uncached_error),
+        Ok(())
+    );
+    assert_eq!(failed_second_site.state.rip, ENTRY_RIP + 3);
+    assert_eq!(
+        failed_second_site.callbacks,
+        expected_order(load_store.sequence)
+    );
+    assert_eq!(
+        failed_second_site.memory_accesses,
+        expected_accesses(&load_store)
+    );
+    assert_eq!(failed_second_site.ram, load_store.ram);
+    assert_eq!(cache.resident_entries(), 0);
+    assert_eq!(cache.counters().hits, 4);
+    assert_eq!(cache.counters().misses, 3);
+    assert_eq!(cache.counters().successful_compiles, 3);
+    assert_eq!(cache.counters().successful_publications, 3);
+    assert_eq!(cache.counters().replacements, 1);
+
+    // A new entry publishes and executes immediately after the backend error;
+    // successful publication proves the previous MAP_JIT lease was released.
+    let after_error = cached_dispatch_run(
+        &mut cache,
+        &mut backend,
+        MemoryPairProfile::LoadThenStore,
+        2,
+        &load_store,
+        2,
+        false,
+        None,
+        None,
+        None,
+    );
+    assert_eq!(
+        compare_observations(&after_error, &load_store_uncached),
+        Ok(())
+    );
+    assert_eq!(
+        compare_observations(&after_error, &load_store_interpreter),
+        Ok(())
+    );
+    assert_eq!(cache.resident_entries(), 1);
+    assert_eq!(cache.counters().hits, 4);
+    assert_eq!(cache.counters().misses, 4);
+    assert_eq!(cache.counters().successful_compiles, 4);
+    assert_eq!(cache.counters().successful_publications, 4);
+    assert_eq!(cache.counters().replacements, 1);
+
+    // Dropping the cache releases the retained mapping; a fresh cache instance
+    // can publish and execute a different invocation without stale pointers.
+    assert_eq!(cache.counters().replacements, 1);
+    drop(cache);
+    let mut fresh_cache = od_jit::memory_cache::MemoryPairCache::new();
+    let fresh_backend = &mut backend;
+    let fresh_instance = cached_dispatch_run(
+        &mut fresh_cache,
+        fresh_backend,
+        MemoryPairProfile::StoreThenLoad,
+        1,
+        &fresh_store,
+        2,
+        false,
+        None,
+        None,
+        None,
+    );
+    assert_eq!(
+        compare_observations(&fresh_instance, &fresh_store_uncached),
+        Ok(())
+    );
+    assert_eq!(
+        compare_observations(&fresh_instance, &fresh_store_interpreter),
+        Ok(())
+    );
+    assert_eq!(
+        fresh_instance.callbacks,
+        expected_order(fresh_store.sequence)
+    );
+    assert_eq!(
+        fresh_instance.memory_accesses,
+        expected_accesses(&fresh_store)
+    );
+    assert_eq!(fresh_cache.resident_entries(), 1);
+    assert_eq!(fresh_cache.counters().hits, 0);
+    assert_eq!(fresh_cache.counters().misses, 1);
+    assert_eq!(fresh_cache.counters().successful_compiles, 1);
+    assert_eq!(fresh_cache.counters().successful_publications, 1);
+    assert_eq!(fresh_cache.counters().replacements, 0);
+    fresh_cache.clear();
+    assert_eq!(fresh_cache.resident_entries(), 0);
+}
+
 fn expected_order(sequence: Sequence) -> Vec<&'static str> {
     match sequence {
         Sequence::StoreThenLoad => vec!["write", "read"],
@@ -2332,6 +2769,7 @@ fn comparator_rejects_corruption_and_serializes_named_diagnostics() {
         ram: input.ram,
         callbacks: expected_order(input.sequence),
         memory_accesses: expected_accesses(&input),
+        memory_error: None,
         status: "Complete".into(),
         remaining_budget: 0,
         retired: 2,
@@ -2375,6 +2813,7 @@ fn comparator_rejects_corruption_and_serializes_named_diagnostics() {
             format!("read@{:#x}", load_then_load.first_address),
             format!("read@{:#x}", load_then_load.first_address),
         ],
+        memory_error: None,
         status: "Complete".into(),
         remaining_budget: 0,
         retired: 2,
@@ -2406,6 +2845,7 @@ fn comparator_rejects_corruption_and_serializes_named_diagnostics() {
         ram: input.ram,
         callbacks: vec!["read"],
         memory_accesses: vec![format!("read@{:#x}", input.first_address)],
+        memory_error: None,
         status: "BudgetExhausted".into(),
         remaining_budget: 0,
         retired: 1,
@@ -2512,6 +2952,7 @@ fn phase_moving_test_probe(envelope: &CaseEnvelope) -> Result<ReducerRun, String
             ram: input.ram,
             callbacks: Vec::new(),
             memory_accesses: Vec::new(),
+            memory_error: None,
             status: "Complete".into(),
             remaining_budget: 0,
             retired: 1,
@@ -3278,6 +3719,7 @@ fn saved_mismatch_report_replays_and_preserves_original_classes() {
             ram: input.ram.clone(),
             callbacks: expected_order(sequence),
             memory_accesses: expected_accesses(&input),
+            memory_error: None,
             status: "Complete".into(),
             remaining_budget: 0,
             retired: 2,

@@ -55,6 +55,7 @@ SELF_TEST_NAMES = (
     "test_unselected_suites_must_remain_not_run",
     "test_required_memory_test_must_be_present_and_non_ignored",
     "test_s3_34h_exact_gate_requires_exact_identity_and_argv",
+    "test_s3_37e_memory_cache_gate_is_pinned_once_and_fail_closed",
     "test_allowed_environment_replay_tests_do_not_hide_unexpected_ignored_tests",
     "test_self_test_output_validator_rejects_zero_match_and_all_skipped",
     "test_stage1_child_fingerprint_and_both_builds_are_pinned",
@@ -469,7 +470,17 @@ ADDITIONAL_TEST_GATES = (
         "s3_32a_candidate_interpreter_edges_and_resume", "local_acceptance", "od-host",
         "tests::s3_32a_candidate_matches_interpreter_edges_and_budget_resume",
     ),
+    (
+        "s3_37e_memory_cache_lifecycle_republishes", "local_acceptance", "od-host",
+        "capacity_one_memory_cache_republishes_after_fault_and_backend_error",
+    ),
 )
+RUST_TEST_TARGET_OVERRIDES = {
+    (
+        "od-host",
+        "capacity_one_memory_cache_republishes_after_fault_and_backend_error",
+    ): ("--test", "memory_corpus"),
+}
 RUST_TEST_GATES = (
     *(
         (name, "local_lifecycle", "od-host", f"tests::{name}")
@@ -674,8 +685,9 @@ def validate_required_steps(
 
 
 def rust_test_argv(package: str, identity: str) -> list[str]:
+    target = RUST_TEST_TARGET_OVERRIDES.get((package, identity), ("--lib",))
     return [
-        "cargo", "test", "--offline", "-p", package, "--lib", identity,
+        "cargo", "test", "--offline", "-p", package, *target, identity,
         "--", "--exact", "--test-threads=1",
     ]
 
