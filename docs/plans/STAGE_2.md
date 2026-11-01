@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последний завершённый срез S2-37cm — exact legacy `CVTTSS2SI RAX,dword ptr [RAX]` (`F3 48 0F 2C 00`): один read(4), TowardZero независимо от MXCSR.RC до signed-i64 range check, masked IE/PE и запись полного RAX. Полные suites, workspace all-target check, Graphify, форматирование/layout/13 links и независимые code/schema/docs reviews завершены. Отдельный schema-v2 interpreter-only профиль; native/JIT/C ABI закрыты. S2-37cj — binary64 memory-to-i32 truncation; предыдущие профили перечислены ниже. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последний завершённый срез S2-37cn — exact legacy `CVTTSD2SI RAX,qword ptr [RAX]` (`F2 48 0F 2C 00`): один read(8), TowardZero независимо от MXCSR.RC до signed-i64 range check, masked IE/PE и запись полного RAX. Полные suites, workspace all-target check, Graphify, форматирование/layout/anchors и независимые code/docs reviews завершены; physical x86 acceptance не заявляется. Отдельный schema-v2 interpreter-only профиль; native/JIT/C ABI закрыты. S2-37cm — binary32 memory-to-i64 truncation; предыдущие профили перечислены ниже. Локальные проверки не закрывают общий S2-37 и CPUID admission. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -517,6 +517,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37ck | Local-only legacy Long64 CVTSD2SI RAX,qword ptr [RAX] exact m64→r64 profile; MXCSR.RC rounding before range-check, sticky IE/PE, full RAX result; SSE2 gates; native/JIT closed | Full suites passed: ISA 1,653; testkit 448; runner 112 unit + 467 fixture; x86-runner 8+4; workspace all-target check, fmt, layout, Graphify, 16 links and independent reviews passed; physical x86 acceptance not run |
 | [x] | S2-37cl | Local-only legacy Long64 CVTSS2SI RAX,dword ptr [RAX] exact m32→r64 profile; MXCSR.RC rounding before i64 range-check, sticky IE/PE, full RAX result; SSE-bit25 gates; native/JIT closed | Full suites passed: ISA 1,656; testkit 448; runner 112 unit + 468 fixtures; x86-runner 8+4; workspace check, fmt, layout, Graphify and independent reviews passed; physical x86 acceptance not run |
 | [x] | S2-37cm | Local-only legacy Long64 CVTTSS2SI RAX,dword ptr [RAX] exact m32→r64 profile; TowardZero independent of MXCSR.RC, sticky IE/PE, full RAX result; SSE-bit25 gates; native/JIT closed | Full suites passed: ISA 1,659; testkit 449; runner 112 unit + 469 fixtures; x86-runner 8+4; workspace all-target check, fmt, layout, Graphify, 13 links and independent reviews passed; physical x86 acceptance not run |
+| [x] | S2-37cn | Local-only legacy Long64 CVTTSD2SI RAX,qword ptr [RAX] exact m64→r64 profile; TowardZero independent of MXCSR.RC, sticky IE/PE, full RAX result; SSE2-bit26 gates; native/JIT closed | Full suites passed: ISA 1,662; testkit 449; runner 112 unit + 470 fixtures; x86-runner 8+4; workspace all-target check, fmt, layout, Graphify, CN anchors and independent reviews passed; physical x86 acceptance not run |
 | [x] | S2-37t | Local-only canonical Long64 CVTSS2SD XMM register-pair profile; raw binary32 widening with sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37u | Local-only canonical Long64 CVTPS2PD XMM register-pair profile; two-lane raw widening with aggregate sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-37t, S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37v | Local-only canonical Long64 COMISS/UCOMISS XMM register-pair profile; NaN-priority IE/DE, unordered flags, unmasked atomic flag exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
@@ -6837,6 +6838,7 @@ inventory.
 | CVTSS2SD | `F3 0F 5A /r` | SSE2 | XMM, m32; f32 → low f64 | 3-240 | S2-37t register pairs; S2-37bz exact `[RAX]` m32 memory |
 | CVTSS2SI | `F3 0F 2D /r`; `F3 REX.W 0F 2D /r` | SSE | m32 → r32 / r64 | 3-242 | S2-37ab bounded register forms; S2-37ch exact m32 `[RAX]`→EAX and S2-37cl exact REX.W m32 `[RAX]`→RAX memory forms |
 | CVTTSS2SI | `F3 0F 2C /r`; `F3 REX.W 0F 2C /r` | SSE | m32 → r32 / r64 | 3-255 | S2-37ad bounded register forms; S2-37ci exact `F3 0F 2C 00` m32 `[RAX]`→EAX and S2-37cm exact `F3 48 0F 2C 00` m32 `[RAX]`→RAX memory forms |
+| CVTTSD2SI | `F2 0F 2C /r`; `F2 REX.W 0F 2C /r` | SSE2 | m64 → r32 / r64 | 3-253–3-254 | S2-37cn exact `F2 48 0F 2C 00` m64 `[RAX]`→RAX; bounded local profile |
 | CVTTPD2DQ | `66 0F E6 /r` | SSE2 | XMM, m128; 2×f64 → low 2×i32 | 3-244 | S2-37ai registers; S2-37bw exact `[RAX]` memory |
 | CVTTPD2PI | `66 0F 2C /r` | SSE2 | XMM, m128 → mm; 2×f64 → 2×i32 | 3-248 | S2-37bl, exact masked `66 0F 2C C1` register-source; S2-37bq, aligned m128 `[RAX]` memory profile |
 | CVTTPS2DQ | `F3 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-249 | S2-37ag register; S2-37bu exact `[RAX]` memory profile |
@@ -15528,3 +15530,40 @@ instruction entry refers to Table 2-20 without a VEX-only qualifier; Table
 contract](../specs/CPU_CONTRACT.md#s2-37cm--bounded-long64-cvttss2si-raxdword-ptr-rax-m32-to-r64-memory-profile),
 [report](../reports/STAGE_2_REPORT.md#s2-37cm--cvttss2si-raxdword-ptr-rax-m32-to-r64-memory-profile), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cm--cvttss2si-raxm32).
+
+#### S2-37cn — exact legacy Long64 CVTTSD2SI RAX,qword ptr [RAX]
+
+The exact five-byte encoding is `F2 48 0F 2C 00`. The strict schema-v2
+interpreter profile captures original RAX, validates the canonical48 source
+span `[RAX,RAX+7]`, and performs exactly one eight-byte little-endian read
+before changing CPU state. Unaligned m64 is admitted with local AC=0; AC=1 is
+a valid negative fixture that returns local `Unsupported` before span/read.
+Read failure leaves the state unchanged. Success writes the full 64-bit result
+to RAX after the source address has been captured.
+
+The binary64 source truncates toward zero independently of MXCSR.RC, then is
+checked against signed-i64 range. Masked invalid input writes
+`0x8000000000000000` and sets sticky IE. Valid inexact input sets sticky PE;
+invalid input does not add PE. Exact `-2^63` is valid despite sharing the
+indefinite result bits. Nonzero subnormals add PE and do not raise DE; FTZ does
+not affect conversion. The profile requires SSE2 feature bit 26, supported
+MXCSR mask `0xffbf`, DAZ=0 and IM=PM=1; all RC and FTZ values are admitted. XMM,
+x87, unrelated GPRs, RFLAGS, and other MXCSR state are preserved. Native/JIT/C/
+fragment/generic execution remains closed.
+
+The oracle uses raw binary64 bits and integer-only conversion. Focused runner
+passed 1/1 with 304 R64 oracle comparisons in Ring0; focused testkit filter
+passed 1/1 for the neighboring R32 oracle helper (not a standalone R64 oracle
+test); native-local-only classifier passed 1/1. Focused decoder/direct ISA
+tests passed 3/3. Full suites passed: ISA 1,662; testkit 449; runner 112 unit
++ 470 fixtures; x86-runner 8+4. Workspace all-target check, formatting, layout,
+Graphify, diff check, CN cross-document anchors and independent reviews passed.
+No physical x86 acceptance is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CVTTSD2SI` pp. 3-253–3-254; Vol. 1
+§11.5.2.2 and Table 14-21; Vol. 3A §16.1.3/Table 16-1. The instruction
+entry scopes its Type 3/Table 2-20 reference to VEX forms; Table 2-20 itself
+also contains legacy SSE conditions. See the [CPU
+contract](../specs/CPU_CONTRACT.md#s2-37cn--bounded-long64-cvttsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile),
+[report](../reports/STAGE_2_REPORT.md#s2-37cn--cvttsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cn--cvttsd2si-raxm64).

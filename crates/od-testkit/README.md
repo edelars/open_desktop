@@ -420,3 +420,11 @@ range, and validates sticky IE/PE plus full RAX output without host FP or a
 production conversion helper. The runner exercises 20 raw values × 4 RC modes ×
 4 sticky histories (320 comparisons); the focused raw-integer anchor test passed
 1/1.
+
+### S2-37cn — CVTTSD2SI RAX,m64 memory oracle
+
+The strict schema-v2 profile carries a dedicated control echo and independent
+oracle. It parses the source as raw u64 binary64, truncates toward zero, checks
+signed-i64 range and sticky IE/PE, and validates full RAX aliasing and state
+preservation without host FP or production conversion helpers. The runner
+exercises 19 source values × 4 RC values × 4 sticky histories (304 comparisons).

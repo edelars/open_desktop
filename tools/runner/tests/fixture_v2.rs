@@ -76,6 +76,9 @@ const CVTSD2SI_R32_MEMORY_RAX: &[u8] =
 const CVTTSD2SI_R32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37cj_cvttsd2si_m64_i32_rc_independence.case.json"
 );
+const CVTTSD2SI_R64_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37cn_cvttsd2si_m64_i64_truncation.case.json"
+);
 const CVTSD2SI_R64_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37ck_cvtsd2si_m64_i64_rc_rounding.case.json"
 );
@@ -34128,6 +34131,142 @@ fn cvttsd2si_m64_r32_truncates_independent_of_rc_and_zero_extends_rax() {
         cr4_osfxsr: true,
         cr4_osxmmexcpt: false,
     });
+    assert!(foreign.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
+    let mut tampered = literal.clone();
+    let Observation::Available { value } = &mut tampered.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.state.gpr[0] = HexU64(value.state.gpr[0].get() ^ 1);
+    assert!(od_testkit::v2::compare(&literal_input, &literal, &tampered).is_err());
+}
+
+#[test]
+fn cvttsd2si_m64_r64_truncates_independent_of_rc_and_writes_full_rax() {
+    let mut fixture = Fixture::from_json(CVTTSD2SI_R64_MEMORY_RAX)
+        .unwrap()
+        .fixture;
+    assert_eq!(
+        fixture.profile,
+        od_testkit::v2::Profile::LongCvttsd2siR64MemoryRaxV1
+    );
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "f2480f2c00");
+    assert_eq!(fixture.memory[1].length, 8);
+    assert_eq!(fixture.initial_state.gpr[0].get() >> 32, 1);
+    let x87_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_25a_read_cpl0.case.json");
+    let x87_fixture = Fixture::from_json(&fs::read(x87_path).unwrap()).unwrap();
+    let mut x87 = x87_fixture.fixture.initial_state.x87.unwrap();
+    x87.status_word = HexU64(x87.status_word.get() | 0x80);
+    fixture.initial_state.x87 = Some(x87);
+
+    // Each row is raw binary64, full RAX result, and newly generated IE/PE.
+    let cases: [(u64, u64, u64); 19] = [
+        (0x43df_ffff_ffff_ffff, 0x7fff_ffff_ffff_fc00, 0), // below +2^63
+        (0x43e0_0000_0000_0000, 0x8000_0000_0000_0000, 1), // +2^63 invalid
+        (0xc3df_ffff_ffff_ffff, 0x8000_0000_0000_0400, 0), // -2^63 + 1024
+        (0xc3e0_0000_0000_0000, 0x8000_0000_0000_0000, 0), // exact INT64_MIN
+        (0xc3e0_0000_0000_0001, 0x8000_0000_0000_0000, 1), // below INT64_MIN
+        (0xc1e0_0000_0000_0000, 0xffff_ffff_8000_0000, 0), // -2^31 width proof
+        (0x41f0_0000_0000_0000, 0x0000_0001_0000_0000, 0), // +2^32 width proof
+        (0x0000_0000_0000_0000, 0, 0),
+        (0x8000_0000_0000_0000, 0, 0),
+        (0x3ff8_0000_0000_0000, 1, 0x20),
+        (0xbff8_0000_0000_0000, u64::MAX, 0x20),
+        (0x4004_0000_0000_0000, 2, 0x20),
+        (0xc004_0000_0000_0000, u64::MAX - 1, 0x20),
+        (0x0000_0000_0000_0001, 0, 0x20), // subnormal does not add DE
+        (0x8000_0000_0000_0001, 0, 0x20),
+        (0x7ff8_0000_0000_0001, 0x8000_0000_0000_0000, 1), // QNaN
+        (0x7ff0_0000_0000_0001, 0x8000_0000_0000_0000, 1), // SNaN
+        (0x7ff0_0000_0000_0000, 0x8000_0000_0000_0000, 1), // +infinity
+        (0xfff0_0000_0000_0000, 0x8000_0000_0000_0000, 1), // -infinity
+    ];
+    for (raw, expected_rax, new_flags) in cases {
+        let mut outputs = Vec::new();
+        for rc in 0..4u64 {
+            for old_flags in [0, 1, 0x20, 0x21] {
+                let mut case = fixture.clone();
+                case.memory[1].initial_bytes_hex = raw
+                    .to_le_bytes()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
+                let mxcsr = 0x1080u64 | (rc << 13) | old_flags;
+                case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+                let source_rax = case.initial_state.gpr[0].get();
+                let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                od_testkit::v2::compare(&input, &result, &result).unwrap();
+                assert_eq!(result.outcome, Outcome::StopAddress {});
+                let actual = snapshot(&result);
+                assert_eq!(actual.state.gpr[0], HexU64(expected_rax));
+                assert_eq!(actual.state.rip, HexU64(0x0010_0005));
+                assert_eq!(
+                    actual.state.sse.as_ref().unwrap().mxcsr,
+                    HexU64(mxcsr | new_flags)
+                );
+                assert_eq!(
+                    actual.state.sse.as_ref().unwrap().xmm,
+                    case.initial_state.sse.as_ref().unwrap().xmm
+                );
+                assert_eq!(actual.state.x87, case.initial_state.x87);
+                assert_eq!(actual.state.gpr[1..], case.initial_state.gpr[1..]);
+                assert_eq!(input.fixture.initial_state.gpr[0].get(), source_rax);
+                assert_eq!(actual.memory[1].bytes_hex, case.memory[1].initial_bytes_hex);
+                outputs.push((
+                    actual.state.gpr[0],
+                    actual.state.sse.as_ref().unwrap().mxcsr,
+                ));
+            }
+        }
+        for (history_index, _) in [0, 1, 0x20, 0x21].into_iter().enumerate() {
+            let first = outputs[history_index];
+            for rc in 1..4 {
+                assert_eq!(
+                    outputs[rc * 4 + history_index].0,
+                    first.0,
+                    "raw={raw:#018x}"
+                );
+                assert_eq!(
+                    outputs[rc * 4 + history_index].1.get() & 0x3f,
+                    first.1.get() & 0x3f,
+                    "raw={raw:#018x}"
+                );
+            }
+        }
+    }
+
+    for mxcsr in [0x0000_1000, 0x0000_0080, 0x0000_10c0, 0x0040_1080] {
+        let mut malformed = fixture.clone();
+        malformed.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(malformed.validate().is_err(), "MXCSR={mxcsr:#010x}");
+        assert!(Fixture::from_json(&serde_json::to_vec(&malformed).unwrap()).is_err());
+    }
+
+    let source = fixture.to_json().unwrap();
+    let (literal_input, literal) = run(&source, "interpreter", 0);
+    assert_eq!(snapshot(&literal).state.gpr[0], HexU64(u64::MAX));
+    assert_eq!(
+        snapshot(&literal).state.sse.as_ref().unwrap().mxcsr,
+        HexU64(0x30a0)
+    );
+    for backend in ["jit", "native"] {
+        let (_, result) = run(&source, backend, 4);
+        assert!(
+            matches!(result.outcome, Outcome::Unsupported { .. }),
+            "{backend}"
+        );
+    }
+    let mut foreign = Fixture::from_json(CVTTSD2SI_R32_MEMORY_RAX)
+        .unwrap()
+        .fixture;
+    foreign.cvttsd2si_r64_memory_controls =
+        Some(od_testkit::v2::Cvttsd2siR64MemoryControlSnapshot {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+        });
     assert!(foreign.validate().is_err());
     assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
     let mut tampered = literal.clone();

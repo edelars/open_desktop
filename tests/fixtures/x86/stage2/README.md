@@ -7563,3 +7563,18 @@ numerical comparisons and direct ISA gate/span/read-failure tests exercise
 Ring0 only; no physical-x86 acceptance is claimed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37cm--exact-legacy-long64-cvttss2si-raxdword-ptr-rax),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cm--bounded-long64-cvttss2si-raxdword-ptr-rax-m32-to-r64-memory-profile), and
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cm--cvttss2si-raxdword-ptr-rax-m32-to-r64-memory-profile).
+
+### S2-37cn — CVTTSD2SI RAX,m64
+
+`s2_37cn_cvttsd2si_m64_i64_truncation.case.json` is the literal exact legacy
+`F2 48 0F 2C 00` schema-v2 profile. Its binary64 source is -1.5 with MXCSR
+round-down (`0x3080`); truncation still writes full RAX=`0xffffffffffffffff`
+and sets PE. This distinguishes TowardZero from ordinary CVT rounding and
+confirms the 64-bit destination width. The runner checks raw values across all
+RC settings and sticky IE/PE histories (304 comparisons), plus x87 preservation,
+tampering, and backend denial. Direct ISA tests cover gates, canonical spans,
+and read-failure atomicity. The runner matrix uses Ring0; direct numerical and
+gate matrices cover CPL0–3, while span/read-failure probes have no CPL loop.
+No physical x86 acceptance is claimed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37cn--exact-legacy-long64-cvttsd2si-raxqword-ptr-rax),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cn--bounded-long64-cvttsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile), and
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cn--cvttsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile).

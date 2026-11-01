@@ -788,3 +788,11 @@ signed-i64 range, and writes full RAX. Invalid inputs set sticky IE; valid
 inexact inputs set PE. The profile uses SSE bit 25, requires IM=PM=1 and DAZ=0,
 and keeps generic/JIT/native/C routes closed. Focused ISA checks passed 2/2
 execution tests and 1/1 decoder test; no physical x86 acceptance is claimed.
+
+### S2-37cn — CVTTSD2SI RAX,m64 memory profile
+
+Exact legacy `F2 48 0F 2C 00` is a separate interpreter-only profile. It reads
+one qword from captured RAX, truncates binary64 toward zero, checks signed-i64
+range, then writes full RAX. Masked invalid adds sticky IE; valid inexact adds
+PE. SSE2 bit 26, IM=PM=1, and DAZ=0 are local admission requirements. Native,
+JIT, C, and generic execution remain closed.

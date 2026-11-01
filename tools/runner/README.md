@@ -372,3 +372,13 @@ comparisons across raw values, all RC values, and incoming IE/PE histories;
 malformed/foreign controls, AC refusal, tampering, and JIT/native denial are
 checked. This is Ring0 fixture evidence, not physical-x86 acceptance. See the
 [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cm--bounded-long64-cvttss2si-raxdword-ptr-rax-m32-to-r64-memory-profile).
+
+### S2-37cn — CVTTSD2SI RAX,m64
+
+The runner has a separate strict interpreter profile for exact legacy
+`F2 48 0F 2C 00`. Its integer-only binary64 oracle truncates toward zero,
+checks signed-i64 range, preserves sticky flags, and verifies full-width RAX
+output. The Ring0 matrix covers 304 comparisons across raw values, RC modes,
+and incoming IE/PE histories; malformed/foreign controls, tampering, and
+backend denial are also checked. AC=1 refusal is covered by direct ISA tests.
+No physical x86 acceptance is claimed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cn--bounded-long64-cvttsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile).

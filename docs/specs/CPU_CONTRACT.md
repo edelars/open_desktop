@@ -15139,3 +15139,46 @@ instruction entry refers to Type 3/Table 2-20 without a VEX-only qualifier;
 Table 2-20 includes legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37cm--exact-legacy-long64-cvttss2si-raxdword-ptr-rax),
 [report](../reports/STAGE_2_REPORT.md#s2-37cm--cvttss2si-raxdword-ptr-rax-m32-to-r64-memory-profile), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cm--cvttss2si-raxm32).
+
+## S2-37cn — bounded Long64 CVTTSD2SI RAX,qword ptr [RAX] m64-to-r64 memory profile
+
+The strict schema-v2 profile `s2-long-cvttsd2si-r64-memory-rax-v1` admits only
+legacy `F2 48 0F 2C 00`. It fetches five bytes and executes one instruction.
+SSE2 feature bit 26 is required; CR0.EM=1 or CR4.OSFXSR=0 produces local
+`#UD`, then CR0.TS=1 produces `#NM` under the bounded local ordering. This is
+not a universal SDM fault-priority claim. Missing SSE state is refused after
+these gates.
+
+Execution captures original RAX, validates canonical48 `[RAX,RAX+7]`, and
+performs exactly one eight-byte little-endian read before committing CPU
+state. Unaligned m64 is allowed at local RFLAGS.AC=0. AC=1 is a valid negative
+fixture that returns local `Unsupported` before span checking or memory
+access. A failed read is atomic. Success writes full RAX, using the captured
+source address rather than the updated destination.
+
+The binary64 source truncates toward zero regardless of MXCSR.RC, then is
+range-checked as signed i64. Masked invalid returns
+`0x8000000000000000` and adds sticky IE; valid inexact input adds sticky PE;
+invalid input does not add PE. Exact `-2^63` is valid with no IE despite
+matching the indefinite bits. Nonzero subnormals add PE but no DE, and FTZ is
+irrelevant. The profile uses supported MXCSR mask `0xffbf`, DAZ=0 and IM=PM=1;
+all RC and FTZ settings are admitted. XMM, x87, unrelated GPRs, RFLAGS, and
+other MXCSR state are preserved. Native/JIT/C/fragment/generic paths remain
+closed.
+
+The independent oracle consumes raw binary64 bits and uses integer
+classification/conversion only. The runner passed 1/1 with 304 oracle
+comparisons in Ring0. The focused testkit filter passed the neighboring R32
+oracle helper (1/1), not a standalone R64 oracle test; native-local classifier
+passed 1/1. Focused decoder/direct ISA tests passed 3/3. Formatting, layout,
+diff check, Graphify update, CN cross-document anchors and independent
+code/docs reviews passed. Full suites passed: ISA 1,662; testkit 449; runner
+112 unit + 470 fixtures; x86-runner 8+4. Workspace all-target check passed.
+No physical x86 acceptance is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CVTTSD2SI` pp. 3-253–3-254; Vol. 1
+§11.5.2.2 and Table 14-21; Vol. 3A §16.1.3/Table 16-1. The instruction
+entry scopes its Type 3/Table 2-20 reference to VEX forms; Table 2-20 itself
+also contains legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37cn--exact-legacy-long64-cvttsd2si-raxqword-ptr-rax),
+[report](../reports/STAGE_2_REPORT.md#s2-37cn--cvttsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cn--cvttsd2si-raxm64).

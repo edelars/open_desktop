@@ -20361,3 +20361,38 @@ instruction entry refers to Type 3/Table 2-20 without a VEX-only qualifier;
 Table 2-20 includes legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37cm--exact-legacy-long64-cvttss2si-raxdword-ptr-rax),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37cm--bounded-long64-cvttss2si-raxdword-ptr-rax-m32-to-r64-memory-profile), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cm--cvttss2si-raxm32).
+
+## S2-37cn — CVTTSD2SI RAX,qword ptr [RAX] m64-to-r64 memory profile
+
+Implemented as the separate strict schema-v2 interpreter-only profile
+`s2-long-cvttsd2si-r64-memory-rax-v1` for exact legacy `F2 48 0F 2C 00`. It
+fetches five bytes, captures original RAX, validates canonical48
+`[RAX,RAX+7]`, performs one eight-byte read, and commits full RAX only after
+the read succeeds. Unaligned m64 is allowed with local AC=0; AC=1 is a valid
+negative fixture returning local `Unsupported` before span/read. Read errors
+preserve CPU state.
+
+Raw binary64 truncates toward zero independently of MXCSR.RC before the signed
+i64 range check. Masked invalid values produce i64 indefinite plus sticky IE;
+valid inexact values add sticky PE, and invalid values do not add PE. Exact
+`-2^63` is valid without IE. Subnormals add PE but no DE; FTZ is irrelevant.
+SSE2 bit 26, MXCSR mask `0xffbf`, DAZ=0, and IM=PM=1 are local profile
+requirements. All RC/FTZ settings are admitted; XMM/x87/unrelated state is
+preserved. Native/JIT/C/fragment/generic routes remain closed.
+
+Focused verification: runner 1/1 with 304 independent integer-oracle
+comparisons in Ring0; focused testkit filter 1/1 for the neighboring R32
+oracle helper (not a standalone R64 oracle test); native-local-only classifier
+1/1. Focused decoder/direct ISA tests passed 3/3. Full suites passed: ISA
+1,662; testkit 449; runner 112 unit + 470 fixtures; x86-runner 8+4. Workspace
+all-target check passed. Formatting, layout, diff check and CN cross-document
+anchors passed; Graphify reports 10,519 nodes, 22,550 edges, and 301
+communities. Independent code/docs reviews passed. No physical x86 acceptance
+is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CVTTSD2SI` pp. 3-253–3-254; Vol. 1
+§11.5.2.2 and Table 14-21; Vol. 3A §16.1.3/Table 16-1. The instruction
+entry scopes its Type 3/Table 2-20 reference to VEX forms; Table 2-20 itself
+also contains legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37cn--exact-legacy-long64-cvttsd2si-raxqword-ptr-rax),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37cn--bounded-long64-cvttsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cn--cvttsd2si-raxm64).
