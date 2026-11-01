@@ -511,3 +511,8 @@ physical x86 acceptance claim. Full validation passed: 112 runner unit + 478
 fixture tests, plus od-isa 1,692, od-testkit 453, and od-x86-runner 8+4;
 workspace all-target check passed. Independent code/schema and final
 docs/evidence reviews are complete. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cv--bounded-long64-cmpps-xmm0m128-raximm8-memory-profile).
+
+
+### S2-37cw — MINSD XMM0,m64 [RAX]
+
+The runner accepts the strict local-only `s2-long-minsd-memory-rax-v1` profile for exact `F2 0F 5D 00`. The raw-u64 oracle matrix contains 144 checks across operand classes, RC values, and prior IE/DE stickies. Additional runner checks cover AC=1 local refusal (including AC-before-bad-span), output tampering, foreign-control rejection, and JIT/native denial. The numerical matrix runs at Ring0. Direct ISA tests cover gates, span and read rollback. The native-local-only classifier passed 1/1. Full fetch and gates precede span validation/read. Full suites passed: od-isa 1,697; od-testkit 453; od-runner 112 unit + 479 fixture tests; od-x86-runner 8+4. Workspace all-target check, fmt, layout, diff check, and 16 links passed; Graphify refreshed to 10,711/23,033/308. Independent code/schema and final docs/evidence reviews are complete. No physical x86 acceptance is claimed. See [plan](../../docs/plans/STAGE_2.md#s2-37cw--exact-legacy-long64-minsd-xmm0m64-rax), [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cw--bounded-long64-minsd-xmm0m64-rax-memory-profile), [report](../../docs/reports/STAGE_2_REPORT.md#s2-37cw--minsd-xmm0m64-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cw--minsd-xmm0m64-rax).

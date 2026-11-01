@@ -610,6 +610,7 @@ fn expected_native_xorpd_oracle(
                 cmpsd_memory_rax_controls: None,
                 cmppd_memory_rax_controls: None,
                 cmpps_memory_rax_controls: None,
+                minsd_memory_rax_controls: None,
                 cvtsi2sd_r32_controls: None,
                 cvtsi2sd_r32_memory_controls: None,
                 cvtsi2ss_r32_memory_controls: None,
@@ -1121,9 +1122,10 @@ fn execute_fixture_v2(
         Cvtss2siRegistersControls, Cvttsd2siMemoryR32Controls, Cvttsd2siMemoryR64Controls,
         Cvttss2siMemoryR32Controls, Cvttss2siMemoryR64Controls, Fxrstor64Cr0Controls,
         Fxsave64Cr0Controls, MaxpdUnmaskedControls, MaxpsUnmaskedControls, MaxsdUnmaskedControls,
-        MaxssUnmaskedControls, MinpdUnmaskedControls, MinpsUnmaskedControls, MinsdUnmaskedControls,
-        MinssInvalidControls, RdtscControls, RunConfig, RunExit, XorpdPrerequisiteState, run,
-        run_with_cli_profile, run_with_cmppd_memory_rax_controls, run_with_cmppd_register_controls,
+        MaxssUnmaskedControls, MinpdUnmaskedControls, MinpsUnmaskedControls,
+        MinsdMemoryRaxControls, MinsdUnmaskedControls, MinssInvalidControls, RdtscControls,
+        RunConfig, RunExit, XorpdPrerequisiteState, run, run_with_cli_profile,
+        run_with_cmppd_memory_rax_controls, run_with_cmppd_register_controls,
         run_with_cmpps_memory_rax_controls, run_with_cmpps_register_controls,
         run_with_cmpsd_memory_rax_controls, run_with_cmpsd_register_controls,
         run_with_cmpss_memory_rax_controls, run_with_cmpss_register_controls,
@@ -1147,11 +1149,12 @@ fn execute_fixture_v2(
         run_with_maxpd_unmasked_controls, run_with_maxps_unmasked_controls,
         run_with_maxsd_unmasked_controls, run_with_maxss_unmasked_controls,
         run_with_minpd_unmasked_controls, run_with_minps_unmasked_controls,
-        run_with_minsd_unmasked_controls, run_with_minss_invalid_controls,
-        run_with_minss_unmasked_denormal_controls, run_with_msr_profile, run_with_rdtsc_source,
-        run_with_rep_continuation, run_with_sep_profile, run_with_sti_profile,
-        run_with_swapgs_profile, run_with_ucomisd_memory_rax_controls,
-        run_with_ucomiss_memory_rax_controls, run_with_xorpd_prerequisites,
+        run_with_minsd_memory_rax_controls, run_with_minsd_unmasked_controls,
+        run_with_minss_invalid_controls, run_with_minss_unmasked_denormal_controls,
+        run_with_msr_profile, run_with_rdtsc_source, run_with_rep_continuation,
+        run_with_sep_profile, run_with_sti_profile, run_with_swapgs_profile,
+        run_with_ucomisd_memory_rax_controls, run_with_ucomiss_memory_rax_controls,
+        run_with_xorpd_prerequisites,
     };
     use od_testkit::v2;
     use std::time::{Duration, Instant};
@@ -2368,6 +2371,23 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongMinsdMemoryRaxV1 {
+        let controls = loaded
+            .fixture
+            .minsd_memory_rax_controls
+            .expect("validated MINSD m64 controls");
+        run_with_minsd_memory_rax_controls(
+            &mut state,
+            memory,
+            config,
+            MinsdMemoryRaxControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongCmppsMemoryRaxV1 {
         let controls = loaded
             .fixture
@@ -3275,6 +3295,7 @@ fn execute_fixture_v2(
                 cmpsd_memory_rax_controls: loaded.fixture.cmpsd_memory_rax_controls,
                 cmppd_memory_rax_controls: loaded.fixture.cmppd_memory_rax_controls,
                 cmpps_memory_rax_controls: loaded.fixture.cmpps_memory_rax_controls,
+                minsd_memory_rax_controls: loaded.fixture.minsd_memory_rax_controls,
                 cvtsi2sd_r32_controls: loaded.fixture.cvtsi2sd_r32_controls,
                 cvtsi2sd_r32_memory_controls: loaded.fixture.cvtsi2sd_r32_memory_controls,
                 cvtsi2ss_r32_memory_controls: loaded.fixture.cvtsi2ss_r32_memory_controls,
@@ -4519,6 +4540,7 @@ mod tests {
                     cmpsd_memory_rax_controls: input.fixture.cmpsd_memory_rax_controls,
                     cmppd_memory_rax_controls: input.fixture.cmppd_memory_rax_controls,
                     cmpps_memory_rax_controls: input.fixture.cmpps_memory_rax_controls,
+                    minsd_memory_rax_controls: input.fixture.minsd_memory_rax_controls,
                     cvtsi2sd_r32_controls: input.fixture.cvtsi2sd_r32_controls,
                     cvtsi2sd_r32_memory_controls: input.fixture.cvtsi2sd_r32_memory_controls,
                     cvtsi2ss_r32_memory_controls: input.fixture.cvtsi2ss_r32_memory_controls,
