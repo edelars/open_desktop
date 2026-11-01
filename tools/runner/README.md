@@ -357,3 +357,8 @@ schema-v2 interpreter profile. The oracle reads raw binary64 memory bits,
 rounds using MXCSR.RC, checks signed-i64 range, and validates full RAX output,
 sticky status, and source aliasing without host FP. Focused runner validation
 passed 1/1; JIT/native backends remain denied. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ck--bounded-long64-cvtsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile).
+
+
+### S2-37cl — CVTSS2SI RAX,m32
+
+The fixture runner supports only exact `F3 48 0F 2D 00` through a separate strict interpreter profile. The testkit oracle covers 20 source vectors × 4 RC modes × 4 IE/PE histories (320 comparisons); AC=1, malformed controls, tampering, and backend denial are also checked.

@@ -20291,3 +20291,39 @@ instruction entry scopes its Type 3/Table 2-20 reference to VEX-encoded forms;
 Table 2-20 itself also contains legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37ck--exact-legacy-long64-cvtsd2si-raxqword-ptr-rax),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37ck--bounded-long64-cvtsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ck--cvtsd2si-raxm64).
+
+
+## S2-37cl — CVTSS2SI RAX,dword ptr [RAX] m32-to-r64 memory profile
+
+Implemented the exact legacy `F3 48 0F 2D 00` encoding as a separate strict
+schema-v2 interpreter-only profile. It captures source RAX, validates the
+canonical48 span `[RAX,RAX+3]`, and issues exactly one four-byte read before
+commit. The full RAX receives the result. AC=0 permits unaligned m32; AC=1 is
+a valid negative fixture that returns local `Unsupported` before span/read.
+Failed reads preserve CPU state.
+
+Binary32 rounds with MXCSR.RC before signed-i64 range checking. Masked invalid
+input returns the i64 indefinite value and adds IE; valid inexact input adds PE;
+invalid input does not add PE. Exact `-2^63` shares indefinite bits without IE.
+The profile requires SSE bit 25, MXCSR supported mask `0xffbf`, DAZ=0 and
+IM=PM=1; all RC and FTZ values are admitted. XMM/x87 and unrelated state are
+preserved, with no x87/MMX gate. Native/JIT/C/fragment/generic paths remain
+closed.
+
+Focused checks passed: decoder 1/1, direct ISA 2/2, runner 1/1, independent
+testkit oracle 1/1, and native-local classifier main target 1/1. The runner
+invokes the raw-bit independent oracle for 20 binary32 vectors × 4 RC modes × 4
+incoming IE/PE histories (320 comparisons). Direct ISA coverage supplies gate,
+span, missing-SSE and read-rollback evidence. Both numerical and direct ISA
+checks exercise Ring0 only. Full suites passed: od-isa 1,656; od-testkit 448;
+od-runner 112 unit + 468 fixtures; od-x86-runner 8 library + 4 binary.
+Workspace all-target check, fmt, layout and diff checks passed. Graphify contains
+10,485 nodes, 22,459 edges and 304 communities. Independent code/schema and final evidence reviews are complete. No physical x86 acceptance is
+claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CVTSS2SI` pp. 3-242–3-243; Vol. 1
+§4.8.4, §11.5.2.2, §3.4.1.1 and Table 14-21; Vol. 3A §16.1.3/Table 16-1.
+The instruction entry scopes its Type 3/Table 2-20 reference to VEX forms;
+Table 2-20 itself also contains legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37cl--exact-legacy-long64-cvtss2si-raxdword-ptr-rax),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37cl--bounded-long64-cvtss2si-raxdword-ptr-rax-m32-to-r64-memory-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cl--cvtss2si-raxm32).

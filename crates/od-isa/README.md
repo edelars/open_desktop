@@ -774,3 +774,8 @@ with MXCSR.RC, and checks signed-i64 range before committing full-width RAX.
 The local profile requires IM=PM=1 and DAZ=0, preserves sticky flags, permits
 unaligned m64 only under AC=0, and remains closed to native/JIT/C ABI paths.
 See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ck--bounded-long64-cvtsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile).
+
+
+### S2-37cl — CVTSS2SI RAX,m32 memory profile
+
+Exact `F3 48 0F 2D 00` is interpreter-only. It reads one dword at captured RAX, rounds binary32 under MXCSR.RC, range-checks signed i64, and writes full RAX; masked invalid adds IE, valid inexact adds PE. It requires SSE bit 25 and local IM=PM=1/DAZ=0 admission, and leaves native/JIT/generic routes closed.

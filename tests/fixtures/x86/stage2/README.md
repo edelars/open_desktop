@@ -7532,3 +7532,20 @@ scopes its Type 3/Table 2-20 reference to VEX forms; Table 2-20 itself also
 contains legacy SSE conditions. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37ck--exact-legacy-long64-cvtsd2si-raxqword-ptr-rax),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ck--bounded-long64-cvtsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile), and
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ck--cvtsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile).
+
+
+### S2-37cl — CVTSS2SI RAX,m32
+
+`s2_37cl_cvtss2si_m32_i64_rc_rounding.case.json` is the literal exact legacy
+`F3 48 0F 2D 00` form. The source address is the original RAX and the fixture
+performs one four-byte read; successful execution writes the full signed-i64
+result to RAX. The literal uses binary32 −1.5 and round-up (`MXCSR=0x5080`),
+expecting `RAX=0xffffffffffffffff` plus PE. It distinguishes the full RAX
+result from a 32-bit destination write. The runner matrix covers RC modes,
+signed i64 boundaries, exact/inexact values, invalid inputs, sticky histories,
+pending-x87 preservation, tampering, and backend denial. The independent oracle
+uses raw binary32 bits and integer logic only. Runner numerical comparisons and
+direct ISA gate/span/read-failure tests exercise Ring0; they are not physical-x86
+acceptance. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37cl--exact-legacy-long64-cvtss2si-raxdword-ptr-rax),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cl--bounded-long64-cvtss2si-raxdword-ptr-rax-m32-to-r64-memory-profile), and
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cl--cvtss2si-raxdword-ptr-rax-m32-to-r64-memory-profile).

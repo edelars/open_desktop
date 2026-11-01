@@ -614,6 +614,7 @@ fn expected_native_xorpd_oracle(
                 cvtsd2si_r64_memory_controls: None,
                 cvttsd2si_r32_memory_controls: None,
                 cvtss2si_r32_memory_controls: None,
+                cvtss2si_r64_memory_controls: None,
                 cvttss2si_r32_memory_controls: None,
                 fxsave64_cr0_controls: None,
                 fxrstor64_cr0_controls: None,
@@ -1104,15 +1105,15 @@ fn execute_fixture_v2(
         Cvtsd2siRegistersControls, Cvtsi2sdR32Controls, Cvtsi2sdR64Controls,
         Cvtsi2sdR64MemoryControls, Cvtsi2ssR32MemoryControls, Cvtsi2ssR64MemoryControls,
         Cvtsi2ssRegistersControls, Cvtss2sdControls, Cvtss2siMemoryR32Controls,
-        Cvtss2siRegistersControls, Cvttsd2siMemoryR32Controls, Cvttss2siMemoryR32Controls,
-        Fxrstor64Cr0Controls, Fxsave64Cr0Controls, MaxpdUnmaskedControls, MaxpsUnmaskedControls,
-        MaxsdUnmaskedControls, MaxssUnmaskedControls, MinpdUnmaskedControls, MinpsUnmaskedControls,
-        MinsdUnmaskedControls, MinssInvalidControls, RdtscControls, RunConfig, RunExit,
-        XorpdPrerequisiteState, run, run_with_cli_profile, run_with_cmppd_register_controls,
-        run_with_cmpps_register_controls, run_with_cmpsd_register_controls,
-        run_with_cmpss_register_controls, run_with_comisd_ucomisd_register_controls,
-        run_with_comiss_ucomiss_register_controls, run_with_cr0_profile,
-        run_with_cvtdq2pd_controls, run_with_cvtdq2pd_memory_controls,
+        Cvtss2siMemoryR64Controls, Cvtss2siRegistersControls, Cvttsd2siMemoryR32Controls,
+        Cvttss2siMemoryR32Controls, Fxrstor64Cr0Controls, Fxsave64Cr0Controls,
+        MaxpdUnmaskedControls, MaxpsUnmaskedControls, MaxsdUnmaskedControls, MaxssUnmaskedControls,
+        MinpdUnmaskedControls, MinpsUnmaskedControls, MinsdUnmaskedControls, MinssInvalidControls,
+        RdtscControls, RunConfig, RunExit, XorpdPrerequisiteState, run, run_with_cli_profile,
+        run_with_cmppd_register_controls, run_with_cmpps_register_controls,
+        run_with_cmpsd_register_controls, run_with_cmpss_register_controls,
+        run_with_comisd_ucomisd_register_controls, run_with_comiss_ucomiss_register_controls,
+        run_with_cr0_profile, run_with_cvtdq2pd_controls, run_with_cvtdq2pd_memory_controls,
         run_with_cvtdq2pd_register_controls, run_with_cvtdq2ps_memory_controls,
         run_with_cvtdq2ps_register_controls, run_with_cvtps2dq_register_controls,
         run_with_cvtps2pd_register_controls, run_with_cvtsd2si_r32_memory_controls,
@@ -1122,17 +1123,17 @@ fn execute_fixture_v2(
         run_with_cvtsi2sd_registers_controls, run_with_cvtsi2ss_r32_memory_controls,
         run_with_cvtsi2ss_r64_memory_controls, run_with_cvtsi2ss_registers_controls,
         run_with_cvtss2sd_register_controls, run_with_cvtss2si_r32_memory_controls,
-        run_with_cvtss2si_registers_controls, run_with_cvttsd2si_r32_memory_controls,
-        run_with_cvttss2si_r32_memory_controls, run_with_efer_rdmsr_profile,
-        run_with_fxrstor64_cr0_controls, run_with_fxsave64_cr0_controls, run_with_halt_profile,
-        run_with_kernel_gs_base_profile, run_with_maxpd_unmasked_controls,
-        run_with_maxps_unmasked_controls, run_with_maxsd_unmasked_controls,
-        run_with_maxss_unmasked_controls, run_with_minpd_unmasked_controls,
-        run_with_minps_unmasked_controls, run_with_minsd_unmasked_controls,
-        run_with_minss_invalid_controls, run_with_minss_unmasked_denormal_controls,
-        run_with_msr_profile, run_with_rdtsc_source, run_with_rep_continuation,
-        run_with_sep_profile, run_with_sti_profile, run_with_swapgs_profile,
-        run_with_xorpd_prerequisites,
+        run_with_cvtss2si_r64_memory_controls, run_with_cvtss2si_registers_controls,
+        run_with_cvttsd2si_r32_memory_controls, run_with_cvttss2si_r32_memory_controls,
+        run_with_efer_rdmsr_profile, run_with_fxrstor64_cr0_controls,
+        run_with_fxsave64_cr0_controls, run_with_halt_profile, run_with_kernel_gs_base_profile,
+        run_with_maxpd_unmasked_controls, run_with_maxps_unmasked_controls,
+        run_with_maxsd_unmasked_controls, run_with_maxss_unmasked_controls,
+        run_with_minpd_unmasked_controls, run_with_minps_unmasked_controls,
+        run_with_minsd_unmasked_controls, run_with_minss_invalid_controls,
+        run_with_minss_unmasked_denormal_controls, run_with_msr_profile, run_with_rdtsc_source,
+        run_with_rep_continuation, run_with_sep_profile, run_with_sti_profile,
+        run_with_swapgs_profile, run_with_xorpd_prerequisites,
     };
     use od_testkit::v2;
     use std::time::{Duration, Instant};
@@ -2871,6 +2872,23 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongCvtss2siR64MemoryRaxV1 {
+        let controls = loaded
+            .fixture
+            .cvtss2si_r64_memory_controls
+            .expect("validated CVTSS2SI m32-to-r64 controls");
+        run_with_cvtss2si_r64_memory_controls(
+            &mut state,
+            memory,
+            config,
+            Cvtss2siMemoryR64Controls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongCvttss2siR32MemoryRaxV1 {
         let controls = loaded
             .fixture
@@ -3074,6 +3092,7 @@ fn execute_fixture_v2(
                 cvtsd2si_r64_memory_controls: loaded.fixture.cvtsd2si_r64_memory_controls,
                 cvttsd2si_r32_memory_controls: loaded.fixture.cvttsd2si_r32_memory_controls,
                 cvtss2si_r32_memory_controls: loaded.fixture.cvtss2si_r32_memory_controls,
+                cvtss2si_r64_memory_controls: loaded.fixture.cvtss2si_r64_memory_controls,
                 cvttss2si_r32_memory_controls: loaded.fixture.cvttss2si_r32_memory_controls,
                 fxsave64_cr0_controls: loaded.fixture.fxsave64_cr0_controls,
                 fxrstor64_cr0_controls: loaded.fixture.fxrstor64_cr0_controls,
@@ -4307,6 +4326,7 @@ mod tests {
                     cvtsd2si_r64_memory_controls: input.fixture.cvtsd2si_r64_memory_controls,
                     cvttsd2si_r32_memory_controls: input.fixture.cvttsd2si_r32_memory_controls,
                     cvtss2si_r32_memory_controls: input.fixture.cvtss2si_r32_memory_controls,
+                    cvtss2si_r64_memory_controls: input.fixture.cvtss2si_r64_memory_controls,
                     cvttss2si_r32_memory_controls: input.fixture.cvttss2si_r32_memory_controls,
                     fxsave64_cr0_controls: input.fixture.fxsave64_cr0_controls,
                     fxrstor64_cr0_controls: input.fixture.fxrstor64_cr0_controls,

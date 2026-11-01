@@ -405,3 +405,8 @@ binary64 rounding plus signed-i64 range checking using integer bit operations.
 It checks full-width RAX output/aliasing, sticky IE/PE, read atomicity, and
 state preservation without host FP or the production conversion helper. See
 the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ck--bounded-long64-cvtsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile).
+
+
+### S2-37cl — CVTSS2SI RAX,m32 memory oracle
+
+The separate schema-v2 profile parses raw binary32 memory bits and uses integer classification, MXCSR rounding, and signed-i64 range checks. It validates full RAX aliasing, sticky IE/PE, exception metadata, and state preservation without host FP or production conversion helpers.

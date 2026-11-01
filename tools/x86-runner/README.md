@@ -92,3 +92,6 @@ are closure evidence only; no physical x86 execution or acceptance is claimed.
 S2-37ck CVTSD2SI RAX,m64 is also classified local-only. Its classifier and
 runner denial checks establish backend closure only; no physical x86 execution
 or acceptance is claimed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ck--bounded-long64-cvtsd2si-raxqword-ptr-rax-m64-to-r64-memory-profile).
+
+
+S2-37cl CVTSS2SI RAX,m32 is classified local-only. Portable classifier and runner denial evidence establishes backend closure only, not physical x86 execution or acceptance.
