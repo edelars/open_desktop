@@ -992,6 +992,48 @@ end-to-end repeat measurement must compare FIFO with LRU for 16-key and full
 execution workloads before selecting a final policy/capacity. S3-18 remains
 open; S3-22/23/25 and physical S3-14/15 acceptance remain separate work.
 
+### S3-18e: capacity-one checked-memory cache architecture prerequisite
+
+The bounded S3-18e fixture design is a separate opt-in cache path for only the
+two frozen S3-34a profiles: `StoreThenLoad` and `LoadThenStore`. Its typed
+memory profile is distinct from S0_09 and register-only cache profiles. The
+complete key includes the selected memory profile, exact full source bytes and
+CodeView base/end/entry RIP, validated executable dependency spans (address
+space, mapping and backing identities, their nonzero generations/versions and
+permissions), and a nonzero execution-context generation plus the explicit
+fixture profile. The caller holds the immutable source/dependency/context
+snapshot for the entire synchronous lookup, compile, publication and execution
+call; runtime CPU state, budget and invocation-local STOP/event controls are not
+key inputs.
+
+The cache retains at most one compiled artifact and one opaque typed published
+handle. A hit revalidates the complete key before entry. A miss or explicit
+clear drops the prior inactive handle before publishing its successor; the
+retained handle remains alive through native execution and result validation.
+The handle owns only executable code and immutable artifact metadata: it must
+not retain pointers to invocation-local CPU state, RAM, helper context, STOP or
+event controls. Each call supplies fresh state, memory and controls, and the
+backend borrows them only for that synchronous execution and result validation.
+`MemoryBlockExecutor` and `PublishedMemoryBlockExecutor` keep their existing
+release-before-return contract for uncached dispatch. The opt-in cache must use
+a separate typed backend/handle contract rather than weakening those one-shot
+semantics. Its private synchronous ordinary-RAM safety preconditions continue
+to apply on every call: code bytes do not alias mutable data RAM; there is no
+MMIO, DMA, concurrency, re-entry or unwind through the helper; and writes are
+all-or-nothing. Retaining a code mapping does not relax those requirements.
+Publish or execution errors are terminal and do not replay committed memory
+effects.
+
+This section records an architecture prerequisite, not production memory
+ownership or completed invalidation. The bounded fixture generations let
+tests prove source/dependency/context changes miss or invalidate; they do not
+provide an MMU, live-owner mutation protocol, SMC/DMA coherence, asynchronous
+compilation, multi-entry policy, or active-code retirement. The implementation
+must use the existing typed two-site publish/execute APIs and must not route
+through S0_09. No benchmark, default-policy, or performance conclusion follows.
+See [ADR-0004](../decisions/ADR-0004-capacity-one-memory-cache.md). S3-18 and
+S3-22/23/25 remain open.
+
 ### S3-25a: synchronous published-entry lifetime partial
 
 For the bounded single-vCPU fixture path, the cache entry's compiled metadata
