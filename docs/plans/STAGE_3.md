@@ -2417,7 +2417,7 @@ production решений из этого среза не следует.
 
 **Готово:** внедрены только полезные и корректные преобразования либо сохранён baseline с результатами сравнения. «Меньше IR operations» не заменяет измеренную пользу.
 
-#### S3-32a. Одно чтение для точного aliased W64 ADD — candidate implemented; performance measurement pending
+#### S3-32a. Одно чтение для точного aliased W64 ADD — bounded diagnostic A/B complete; no speedup claim
 
 Commit `30febb1` добавил opt-in uncached correctness candidate только для
 точной bare формы `48 03 C0` (`ADD RAX,RAX`, W64), закреплённой отдельной
@@ -2453,30 +2453,45 @@ exit 0. Точные receipts приведены в отчёте.
 [S3-32a report](../reports/STAGE_3_S3-32a_2026-11-01.md).
 
 Commit `cefd59c` добавил и прошёл review изолированный benchmark harness
-`allocator-cost-s3-32a`. Release binary для этого профиля не собран;
-calibration и scored A/B runs не выполнялись, поэтому измерительное evidence
-отсутствует.
+`allocator-cost-s3-32a`. Три последовательных release process runs завершили
+preflight, shared calibration и paired baseline/candidate A/B на frozen
+S3-30b `distinct-jz-fallthrough` fixture (27 bytes; SHA-256
+`72210fb82b0ffa9f88f10f63697a1051347d07587e3569028947119726fac8c7`). Каждый
+run содержал 20 compile pairs и 20 native pairs на каждую branch stratum;
+pooled данные: 60 pairs на set. Общие calls/side: 32,768 compile, 8,388,608
+native; 64 warmup calls/publication. Все 360 timed sides прошли 200 ms floor;
+minimum — 283,092,167 ns. Fixture preflights совпали, calibration bounds
+пройдены; независимый raw audit проверил 3,074 assertions.
 
-**Performance measurement pending:** после correctness preflight сравнить
-baseline и candidate на
-зафиксированном S3-30b `distinct-jz-fallthrough` workload и неизменном frozen
-fixture (27-byte input, SHA-256
-`72210fb82b0ffa9f88f10f63697a1051347d07587e3569028947119726fac8c7`): compile
-cost, emitted bytes, allocation/frame statistics и repeated native timing в
-отдельных JZ-taken/fallthrough strata. Использовать три последовательных
-release process runs; в каждом — 20 alternating baseline/candidate pairs на
-stratum, с общим recalibrated native call count для обеих сторон, вариантов и
-strata и 64 warmup calls per publication. Каждая измеренная сторона должна
-достичь 200 ms; иначе весь process run — diagnostic-only. Сохранять raw
-totals, sample order, counts и candidate/baseline ratios, вычисленные из raw
-totals. Отдельные timer boundaries: compile включает candidate transform и
-artifact drop; publication и published-code drop измеряются отдельно; native
-timer не включает создание или validation state vectors. Держать один
-MAP_JIT mapping одновременно и не смешивать strata или timers. Frozen fixture
-и его timing границы зафиксированы в
-[S3-30b report](../reports/STAGE_3_S3-30b_2026-11-01.md). Без корректных
-повторных измерений не заявлять speedup и не включать candidate по умолчанию.
-S3-32 и Stage 3 остаются открытыми.
+Candidate/baseline ratios рассчитаны из raw paired totals. Все диапазоны
+пересекают 1, поэтому результат фиксирует только более низкие pooled medians
+candidate на этом fixture, без подтверждённого speedup или default change:
+
+| Set, n=60 | Candidate/baseline median (range) |
+|---|---:|
+| Compile | 0.9832762133712801 (0.9488835862269013–1.062649364816329) |
+| JZ taken | 0.9878736671103938 (0.9749361861693031–1.0766848438450791) |
+| JZ fallthrough | 0.9975100869584979 (0.9322534409534861–1.0375123643358157) |
+
+Обе стороны использовали `register_homes=4`. Baseline/candidate: code 3,052 /
+3,032 bytes, frame 288 / 272 bytes, `ReadGpr` 10 / 9, temps 14 / 13,
+spills 10 / 9; helper capture/save/reload остались 3 / 3 / 3. Compile timer
+включал candidate transform и artifact drop; publication/drop измерялись
+отдельно; native timer исключал создание и validation state vectors. Все raw
+reports, command/exit bindings, preflight/calibration/build and executable
+receipt SHA-256s закреплены в
+[S3-32a suite manifest](../reports/data/stage3/s3-32a/suite-manifest.json).
+Сборка использовала source revision `958be7edf97dd0e421454630285dc4d6e711b2a7`
+и SHA `97d0130cb448f4834840fcbbeadb449067c6b05a0d664c4d99d03e7f1a4898c3`;
+build source tree был чистым. Runtime `working_tree_dirty=null` из-за git
+status timeout в 2s; чистота runtime не подтверждена. Подробности и границы —
+в [S3-32a report](../reports/STAGE_3_S3-32a_2026-11-01.md) и
+[S3-30b report](../reports/STAGE_3_S3-30b_2026-11-01.md).
+
+Эти данные относятся только к названному fixture, не к general workload,
+allocator winner или production default. Mini checks отложены до конца Stage 3.
+Stage 2 suite в этом срезе не запускался; параллельная активность Stage 2 не
+является blocker. S3-32 и Stage 3 остаются открытыми.
 
 ### S3-33. Расширять lowering по готовности interpreter
 
