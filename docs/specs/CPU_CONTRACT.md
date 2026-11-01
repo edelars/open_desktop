@@ -3414,6 +3414,28 @@ This helper does not implement FADD/FSUB decode or execution, stack behavior,
 x87 control-word mapping, flags, exceptions, special values, or architectural
 zero selection. S2-29, S2-28, and ISSUE-019 remain open.
 
+## Local S2-29r: exact unequal-exponent finite binary80 addition
+
+`od_isa::x87::add_finite_unequal_exponents(lhs, rhs)` accepts two normalized,
+nonzero `X87Finite` operands whose exponent gap is 1 through 62. It orders the
+operands by exponent and returns the exact signed coefficient
+`(signed_sig_hi << gap) + signed_sig_lo` at the lower exponent as `i128`.
+Equal exponents, zero operands, and gaps above 62 return `None`; the helper
+does not jam, round, or mutate the inputs. The gap bound keeps the exact
+coefficient within the signed `i128` range.
+
+`add_finite_to_binary80(lhs, rhs, mode)` composes the existing same-exponent
+path and this unequal-exponent path, then calls `round_pack_exact_coefficient`
+once. One zero operand is neutral in either position. Two zeros, exact
+cancellation, and results outside finite binary80 range return `None` because
+no architectural zero sign or guest exception is selected here. Existing
+same-exponent APIs are unchanged. Tests cover both orders/signs, gaps 1/62/63,
+directed rounding, finite overflow, zero/cancellation boundaries, and input
+immutability. No FADD/FSUB decode or execution, stack/control-word/status
+behavior, exceptions, or physical x86 acceptance is included. See the
+[S2-29r implementation report](../reports/S2_29R_X87_UNEQUAL_EXPONENT.md).
+S2-29, S2-28, and ISSUE-019 remain open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.

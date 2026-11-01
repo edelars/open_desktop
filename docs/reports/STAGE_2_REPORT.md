@@ -5332,6 +5332,28 @@ parser warning for `include/open_desktop/host_abi.h` (tracked by ISSUE-010).
 `.serena/` directory, which was left untouched. No physical Mac mini check is
 required for this integer helper. S2-29 and S2-28 remain open under ISSUE-019.
 
+## S2-29r — exact unequal-exponent finite binary80 addition (bounded helper)
+
+Added `add_finite_unequal_exponents(lhs, rhs)` for normalized, nonzero
+`X87Finite` operands whose exponent gap is 1 through 62. The helper orders the
+operands, forms the exact signed `i128` coefficient at the lower exponent, and
+does not round, jam, or mutate its inputs. The higher-level
+`add_finite_to_binary80` composes this path with same-exponent addition and
+calls `round_pack_exact_coefficient` once. Existing same-exponent APIs remain
+unchanged. Zero/sign selection, cancellation, and finite overflow remain
+bounded helper rejections rather than guest exception behavior.
+
+The focused cases cover both operand orders and signs, gaps 1/62/63, normal
+results and directed rounding, zero/cancellation and finite-overflow rejection,
+and input immutability. Verification passed: targeted unequal-exponent tests
+(3/3), all `od-isa` tests (1,682), workspace all-target check, formatting,
+Graphify update, and diff check. Independent Sol/high review found no issues.
+The layout checker could not validate the isolated worktree because its `.git`
+indirection is unmapped and two links point to local oracle manifests absent
+there; no layout files changed. No x87 instruction execution or physical x86
+acceptance is claimed. See the [S2-29r report](S2_29R_X87_UNEQUAL_EXPONENT.md).
+ISSUE-019 remains open for broader x87 behavior.
+
 ## S2-30i — exact-only FSUB ST(i), ST(0) (bounded local slice)
 
 Added bare `DC E8+i`, `i=0..7`, as `FSUB ST(i), ST(0)`. The operation shares

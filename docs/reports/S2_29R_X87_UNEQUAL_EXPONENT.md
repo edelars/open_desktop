@@ -36,7 +36,7 @@ tests), `cargo test -p od-isa --offline` passed (1,682 tests),
 tools/check_layout.py` could not validate this isolated Git worktree: it treats
 the worktree's `.git` indirection file as unmapped and reports two existing
 links in `STAGE_2_REPORT.md` whose local oracle manifests are absent here. No
-layout files were changed. Independent review and final integration with the
-shared Stage 2 documents remain pending. No x87 instruction decode/execution,
-control-word/status behavior, guest exceptions, or physical x86 acceptance is
-included. ISSUE-019 remains open.
+layout files were changed. Independent Sol/high review found no issues. The
+slice is recorded in the shared Stage 2 plan, CPU contract, and report. No x87
+instruction decode/execution, control-word/status behavior, guest exceptions,
+or physical x86 acceptance is included. ISSUE-019 remains open.

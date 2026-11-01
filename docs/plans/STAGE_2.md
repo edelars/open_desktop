@@ -3152,6 +3152,23 @@ This does not implement FADD/FSUB decoding or execution, stack/control-word,
 flags, exceptions, or architectural zero selection. S2-29, S2-28, and ISSUE-019
 remain open.
 
+### S2-29r. Exact unequal-exponent finite binary80 addition (bounded helper)
+
+`add_finite_unequal_exponents(lhs, rhs)` accepts two normalized, nonzero
+`X87Finite` values with exponent gap 1 through 62. It orders them by exponent
+and forms the exact signed `i128` coefficient `(signed_sig_hi << gap) +
+signed_sig_lo` at the lower exponent, without rounding, jamming, or mutating
+inputs. Equal exponents, zero operands, and gaps above 62 return `None`.
+`add_finite_to_binary80` composes the same- and unequal-exponent paths with one
+call to `round_pack_exact_coefficient`; one zero remains neutral, while two
+zeros, cancellation, and finite-range overflow remain helper rejection. This
+does not add FADD/FSUB execution, architectural zero selection, stack state,
+control-word mapping, status flags, or exceptions. Focused coverage includes
+both operand orders and signs, gaps 1/62/63, directed rounding, overflow,
+zero/cancellation boundaries, and input immutability. Independent review is
+clean; see the [S2-29r report](../reports/S2_29R_X87_UNEQUAL_EXPONENT.md).
+S2-29, S2-28, and ISSUE-019 remain open.
+
 ### S2-30. Основные x87 операции
 
 1. Добавлять отдельными подшагами FLD/FST/FSTP, stack operations/constants, basic arithmetic и comparisons из профиля.
