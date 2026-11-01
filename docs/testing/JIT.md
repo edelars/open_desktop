@@ -757,6 +757,27 @@ Mini, physical x86, performance, Stage 2 and owner/MMU remain deferred or
 outside this local slice. See the
 [S3-34p report](../reports/STAGE_3_S3-34p_2026-10-31.md).
 
+### S3-34p3 exact gate for the allocator helper-clobber probe
+
+The local harness inventory includes the exact `od-host` unit test
+`tests::allocated_register_and_spill_values_survive_helper_clobbers` once, with
+the exact command:
+
+```sh
+cargo test --offline -p od-host --lib tests::allocated_register_and_spill_values_survive_helper_clobbers -- --exact --test-threads=1
+```
+
+The gate requires one matching passing test output
+and rejects missing, ignored/zero-match, mismatched identity/argv/log binding,
+or forged success evidence. The p4 gate remains present exactly once. Harness
+self-checks cover these negative cases. In bounded run
+`stage3-20261101-111248-72db14afde`, the local suite passed 102 steps with no
+failures; p3 passed 1/1. This only makes the existing test mandatory in the
+local harness. It does not expand the correctness claim beyond the S3-30p3
+probe or complete S3-34/Stage 3; Mini, physical x86, performance, VMHost
+process and owner-backed checks remain outside this run. See the
+[S3-34p3 report](../reports/STAGE_3_S3-34p3_2026-11-01.md).
+
 Каждая новая строка support matrix получает literal positive/negative cases,
 точный сравниваемый state и внешний prerequisite. В отчёте сохранять git
 revision, build fingerprint, host/OS/toolchain, fixtures/corpus fingerprint,

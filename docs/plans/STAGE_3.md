@@ -3018,6 +3018,23 @@ performance, Stage 2 and owner/MMU remain deferred/outside the slice.
 
 Implementation and final local evidence: [S3-34p report](../reports/STAGE_3_S3-34p_2026-10-31.md).
 
+#### S3-34p3. Обязательный local gate для S3-30p3
+
+В обязательную inventory local harness добавлен один exact gate для уже
+существующего test-only probe `tests::allocated_register_and_spill_values_survive_helper_clobbers`.
+Проверены точные identity/argv/log binding и fail-closed реакции на отсутствие
+gate, zero-match, ignored, подмену identity/argv/log и forged success; p4 gate
+остался без изменений и встречается ровно один раз. В run
+`stage3-20261101-111248-72db14afde` команда harness с `--suite local`
+завершилась с exit 0: 102 шага
+passed, failures — 0; обязательный Rust inventory содержит 98 gates. P3 exact
+test прошёл 1/1. Source fingerprint до и после run одинаковый:
+`8843203a2470cccc21b22c6590f95ec14432364eb369c5853d04de9a87f9c878`.
+Это только bounded local harness acceptance; Mini, physical x86, VMHost
+process, performance, owner-backed и Stage 2 в этом run — `not_run`. S3-34 и
+Stage 3 остаются открытыми. Факты и локальные artifact bindings приведены в
+[S3-34p3 report](../reports/STAGE_3_S3-34p3_2026-11-01.md).
+
 ### S3-35. Измерить холодное исполнение
 
 #### S3-35a: first full-corpus interpreter/FIFO comparison path
