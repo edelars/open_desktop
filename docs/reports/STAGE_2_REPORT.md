@@ -5380,6 +5380,35 @@ review found no issues. No x87 instruction execution or physical x86 acceptance
 is claimed. See the [S2-29s report](S2_29S_X87_PRODUCT_PACK.md). ISSUE-019
 remains open for broader x87 behavior.
 
+## S2-29u — p64-aware large-gap binary80 addition bridge
+
+Extended the composed `x87::add_finite_to_binary80` path for normalized,
+nonzero operands whose exponent gaps exceed 64. Gaps through 64 retain the exact
+`u128` alignment and one-round magnitude packer from S2-29t. Larger gaps use a
+p=64-specific bridge that returns a normalized 64-bit quotient and classifies
+the nonzero tail as below, exactly at, or above half. Compact representatives
+1/4, 1/2, and 3/4 feed the existing rounder. Same-sign addition is below half;
+for opposite signs, a dominant significand above `2^63` is above half after
+subtracting a retained unit. At exactly `2^63`, gap 65 is a tie only if the
+smaller significand is exactly `2^63`; a larger smaller significand moves below
+half. Gaps 66 and above move above half.
+
+The classifier is specific to p=64. Binary32/binary64 retain their prior results
+and diagnostics through the `BinaryFinite` adapter. Tests cover both signs and
+operand orders across every rounding mode, dominant significands above `2^63`,
+gaps 65/66/127/128/32828, the old gap-65 coefficient-helper refusal,
+max-finite with signed minimum subnormals, gap-64 compatibility, zero,
+cancellation, and input immutability.
+
+Focused verification passed: `large_gap_bridge_classifies_binary80_half_tails`
+(1), `large_gap_addition_rounds_binary80_tail_categories_in_all_modes` (1),
+`finite_aligned_result_large_gap` (2),
+`aligned_addition_packs_exact_gaps_ties_boundaries_and_overflow` (1), and
+`finite_addition` (6). Full `cargo test -p od-isa --offline` passed 1,699 tests;
+workspace all-target check, formatting, diff check, and Graphify update passed.
+Independent Sol/high review completed cleanly. No x87 instruction execution or
+physical x86 acceptance is claimed. See the [standalone S2-29u report](S2_29U_X87_LARGE_GAP_BRIDGE.md). ISSUE-019 remains open for broader x87 behavior and physical acceptance.
+
 ## S2-30i — exact-only FSUB ST(i), ST(0) (bounded local slice)
 
 Added bare `DC E8+i`, `i=0..7`, as `FSUB ST(i), ST(0)`. The operation shares

@@ -187,6 +187,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-29c | Generic `u128` right-shift-jam preserving 64-bit significands plus three low GRS bits; literal boundary and normalized-finite bridge vectors; no rounding or arithmetic | S2-29b |
 | [x] | S2-29m | Bounded packing of already-rounded nonzero normal finite significands with one carry and finite normal exponent range; no subnormal/special packing or architectural effects | S2-29l |
 | [x] | S2-29p | Round an exact signed `i128` coefficient once to finite binary80 through lossless normalization and direct normal/subnormal packing; no x87 architectural effects | S2-29e, S2-29f, S2-29k–n |
+| [x] | S2-29u | p64-aware large-gap binary80 finite-addition bridge for normalized operands with exponent gaps >64; classify tails below/at/above half; preserve binary32/64 adapter behavior; no x87 instruction semantics | S2-29t; independent Sol/high review clean |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
@@ -3195,6 +3196,29 @@ underflow zero, checked exponent/finite overflow, zero products, and input
 immutability. Independent review is clean; see the
 [S2-29s report](../reports/S2_29S_X87_PRODUCT_PACK.md). S2-29, S2-28, and
 ISSUE-019 remain open.
+
+### S2-29u. P64-aware large-gap binary80 addition bridge (bounded helper)
+
+Extend `add_finite_to_binary80` for normalized nonzero operands with exponent
+gaps greater than 64. Gaps through 64 retain the exact `u128` alignment and
+one-round magnitude packer from S2-29t. For larger gaps, a p=64-specific bridge
+returns the normalized 64-bit quotient and classifies the nonzero tail as below,
+exactly at, or above half; compact representatives 1/4, 1/2, and 3/4 then feed
+the existing rounder. Same-sign addition has a below-half tail. For opposite
+signs, a dominant significand above `2^63` gives an above-half tail after
+subtracting one retained unit. At exactly `2^63`, a gap-65 subtraction is an
+exact tie only when the smaller significand is exactly `2^63`; a larger smaller
+significand moves below half. Gaps 66 and above have an above-half tail.
+
+This classification is specific to p=64. The existing binary32/binary64
+`BinaryFinite` adapter continues to treat the representative as a nonzero tail
+and retains its previous results and diagnostics. Tests cover both signs and
+operand orders across all rounding modes, gaps 65/66/127/128/32828, dominant
+significands above `2^63`, the old gap-65 coefficient-helper refusal,
+max-finite with signed minimum subnormals, gap-64 compatibility, zero,
+cancellation, and input immutability. No x87 instruction semantics, control
+word, architectural flags/exceptions, or physical x86 acceptance are added.
+Focused tests and full validation are recorded in the [S2-29u report](../reports/S2_29U_X87_LARGE_GAP_BRIDGE.md). S2-29, S2-28, and ISSUE-019 remain open.
 
 ### S2-30. Основные x87 операции
 

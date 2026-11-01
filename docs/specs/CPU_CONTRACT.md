@@ -3461,6 +3461,28 @@ exceptions, or physical x86 acceptance is included. See the
 [S2-29s implementation report](../reports/S2_29S_X87_PRODUCT_PACK.md).
 S2-29, S2-28, and ISSUE-019 remain open.
 
+## Local S2-29u: p64-aware binary80 large-gap addition bridge
+
+The composed `add_finite_to_binary80` path now accepts normalized, nonzero
+binary80 operands with exponent gaps above 64. Gaps through 64 continue through
+the existing exact alignment and one-round magnitude packer. For larger gaps,
+a p=64-only bridge returns a normalized 64-bit quotient and a below/at/above-
+half tail class, represented to the rounder by 1/4, 1/2, or 3/4. Same-sign
+addition is below half. For opposite signs, a dominant significand greater than
+`2^63` is above half after subtraction of a retained unit; at `2^63`, gap 65
+is an exact tie only when the smaller significand also equals `2^63`, while a
+larger smaller significand is below half. Opposite-sign gaps 66 and above are
+above half.
+
+The bridge is specific to 64-bit binary80 precision. Binary32/binary64 behavior
+and diagnostics remain unchanged through their `BinaryFinite` adapter, whose
+precision does not require p=64 tail distinctions. Literal tests cover all
+rounding modes/signs and operand orders, gaps through 32828, gap-64 exact-path
+compatibility, max-finite plus signed minimum subnormals, zero/cancellation,
+and immutability. This is a mathematical helper only: no guest x87 instruction,
+control-word mapping, architectural status/exception behavior, or physical x86
+acceptance is established. See the [S2-29u report](../reports/S2_29U_X87_LARGE_GAP_BRIDGE.md). S2-29, S2-28, and ISSUE-019 remain open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.
