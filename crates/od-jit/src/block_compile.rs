@@ -22,7 +22,7 @@ use crate::lowering::{self, LoweredProgram, LoweringError, LoweringOutcome};
 use crate::phase_observation::{DispatchPhase, NoopObserver, PhaseObserver, measure};
 
 pub const MAX_EMITTED_BLOCK_BYTES: usize = 4096;
-const RUNTIME_FRAME_PREFIX_BYTES: u32 = 176;
+pub const RUNTIME_FRAME_PREFIX_BYTES: u32 = 176;
 const DEMAND_FLAGS_RUNTIME_FRAME_PREFIX_BYTES: u32 = 192;
 const CHECKED_LOAD_FRAME_PREFIX_BYTES_V2: u32 = 176;
 const CHECKED_STORE_FRAME_PREFIX_BYTES_V2: u32 = 176;
@@ -93,6 +93,25 @@ pub fn compile_block(
         None,
         None,
         crate::block_emitter::FlagMaterializationStrategy::Eager,
+    )
+}
+
+/// Compile one uncached block with an explicit register-home count for
+/// allocator cost experiments. Production and cache paths continue to use the
+/// default four-home profile.
+pub fn compile_block_with_register_homes(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    register_homes: u8,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    compile_block_inner_with_register_homes(
+        code,
+        entry_rip,
+        None,
+        None,
+        None,
+        crate::block_emitter::FlagMaterializationStrategy::Eager,
+        register_homes,
     )
 }
 
@@ -1474,6 +1493,26 @@ fn compile_block_inner(
     nop_inc_rax_admission: Option<&S0_09NopIncRaxAdmission>,
     flag_strategy: crate::block_emitter::FlagMaterializationStrategy,
 ) -> Result<BlockCompileOutcome, BlockCompileError> {
+    compile_block_inner_with_register_homes(
+        code,
+        entry_rip,
+        admission,
+        nop_admission,
+        nop_inc_rax_admission,
+        flag_strategy,
+        REGISTER_HOME_BUDGET,
+    )
+}
+
+fn compile_block_inner_with_register_homes(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    admission: Option<&AdmittedInstructionBoundaries>,
+    nop_admission: Option<&S0_09NopAdmission>,
+    nop_inc_rax_admission: Option<&S0_09NopIncRaxAdmission>,
+    flag_strategy: crate::block_emitter::FlagMaterializationStrategy,
+    register_homes: u8,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
     let built = block::build_block(
         code,
         entry_rip,
@@ -1516,7 +1555,7 @@ fn compile_block_inner(
         }
         LoweringOutcome::Program(lowered) => lowered,
     };
-    compile_lowered(code.code_end(), lowered, flag_strategy)
+    compile_lowered_with_register_homes(code.code_end(), lowered, flag_strategy, register_homes)
 }
 
 fn compile_lowered(
@@ -1525,13 +1564,51 @@ fn compile_lowered(
     flag_strategy: crate::block_emitter::FlagMaterializationStrategy,
 ) -> Result<BlockCompileOutcome, BlockCompileError> {
     let mut observer = NoopObserver;
-    compile_lowered_observed(code_end, lowered, flag_strategy, &mut observer)
+    compile_lowered_observed_with_register_homes(
+        code_end,
+        lowered,
+        flag_strategy,
+        REGISTER_HOME_BUDGET,
+        &mut observer,
+    )
+}
+
+fn compile_lowered_with_register_homes(
+    code_end: u64,
+    lowered: LoweredProgram,
+    flag_strategy: crate::block_emitter::FlagMaterializationStrategy,
+    register_homes: u8,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    let mut observer = NoopObserver;
+    compile_lowered_observed_with_register_homes(
+        code_end,
+        lowered,
+        flag_strategy,
+        register_homes,
+        &mut observer,
+    )
 }
 
 fn compile_lowered_observed<O: PhaseObserver>(
     code_end: u64,
     lowered: LoweredProgram,
     flag_strategy: crate::block_emitter::FlagMaterializationStrategy,
+    observer: &mut O,
+) -> Result<BlockCompileOutcome, BlockCompileError> {
+    compile_lowered_observed_with_register_homes(
+        code_end,
+        lowered,
+        flag_strategy,
+        REGISTER_HOME_BUDGET,
+        observer,
+    )
+}
+
+fn compile_lowered_observed_with_register_homes<O: PhaseObserver>(
+    code_end: u64,
+    lowered: LoweredProgram,
+    flag_strategy: crate::block_emitter::FlagMaterializationStrategy,
+    register_homes: u8,
     observer: &mut O,
 ) -> Result<BlockCompileOutcome, BlockCompileError> {
     let frame_prefix = match flag_strategy {
@@ -1541,7 +1618,13 @@ fn compile_lowered_observed<O: PhaseObserver>(
         }
     };
     let allocation = measure(observer, DispatchPhase::Allocation, || {
-        allocate_block(&lowered, frame_prefix)
+        allocate_lowered_block(
+            &lowered,
+            AllocatorConfig {
+                register_homes,
+                reserved_prefix_bytes: frame_prefix,
+            },
+        )
     })?;
     let (emitted, actual) = measure(observer, DispatchPhase::EmissionAndFinalization, || {
         let emitted = match flag_strategy {
@@ -1579,6 +1662,22 @@ fn allocate_block(
     lowered: &LoweredProgram,
     reserved_prefix_bytes: u32,
 ) -> Result<Allocation<'_>, BlockCompileError> {
+    allocate_lowered_block(
+        lowered,
+        AllocatorConfig {
+            register_homes: REGISTER_HOME_BUDGET,
+            reserved_prefix_bytes,
+        },
+    )
+}
+
+/// Build the production helper-boundary plan and allocation for a lowered
+/// block. Exposed so the opt-in allocator cost probe can report the same
+/// mapping and counters consumed by emission.
+pub fn allocate_lowered_block(
+    lowered: &LoweredProgram,
+    config: AllocatorConfig,
+) -> Result<Allocation<'_>, BlockCompileError> {
     let helper_boundaries: Vec<_> = lowered
         .program
         .operations
@@ -1594,15 +1693,8 @@ fn allocate_block(
             .then_some(HelperBoundaryPosition::BeforeOperation(index))
         })
         .collect();
-    let allocation = Allocation::build(
-        &lowered.program,
-        AllocatorConfig {
-            register_homes: REGISTER_HOME_BUDGET,
-            reserved_prefix_bytes,
-        },
-        &helper_boundaries,
-    )
-    .map_err(BlockCompileError::Allocation)?;
+    let allocation = Allocation::build(&lowered.program, config, &helper_boundaries)
+        .map_err(BlockCompileError::Allocation)?;
     Ok(allocation)
 }
 

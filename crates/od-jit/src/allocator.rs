@@ -96,6 +96,12 @@ pub struct FrameLayout {
     pub alignment: u32,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AllocationLocationCounts {
+    pub register_homes: u32,
+    pub spill_values: u32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AllocatorError {
     InvalidProgram(VerifyError),
@@ -362,6 +368,17 @@ impl<'program> Allocation<'program> {
 
     pub const fn counters(&self) -> AllocationCounters {
         self.counters
+    }
+
+    pub fn location_counts(&self) -> AllocationLocationCounts {
+        let mut counts = AllocationLocationCounts::default();
+        for location in self.locations.values() {
+            match location {
+                ValueLocation::Register(_) => counts.register_homes += 1,
+                ValueLocation::Spill(_) => counts.spill_values += 1,
+            }
+        }
+        counts
     }
 
     /// Load a temporary into the dedicated x13..x15 scratch set.
