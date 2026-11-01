@@ -17976,7 +17976,7 @@ checks were not independently rerun during review. Local/macOS execution is not
 physical hardware acceptance; that validation remains deferred to the final
 combined stage.
 
-Normative sources: Intel SDM Rev. 093 Vol. 2A CMPPD pp. 3-168–3-174, Table 3-7
+Normative sources: Intel SDM Rev. 093 Vol. 2A CMPPD pp. 3-168–3-174, Table 3-8
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 1
 Table 11-1, §4.9.2 and §§11.5.2.1–2/11.5.3
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)). See the
@@ -20628,3 +20628,41 @@ Type 3 reference is scoped to VEX forms; Table 2-20 itself also contains
 legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37ct--exact-legacy-long64-cmpsd-xmm0m64-raximm8),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37ct--bounded-long64-cmpsd-xmm0m64-raximm8-memory-profile), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ct--cmpsd-xmm0m64imm8).
+
+## S2-37cu — CMPPD XMM0,m128,imm8
+
+Implemented strict interpreter-only profile `s2-long-cmppd-memory-rax-v1` for
+exact legacy `66 0F C2 00 pp`, where `pp=0..7`. All five instruction bytes are
+fetched before gates or memory access. `pp>7` is a local unsupported-profile
+result after fetch, not an architectural `#UD`. Valid predicates require SSE2
+CPUID bit 26; EM=1 or OSFXSR=0 yields `#UD` before TS=1 yields `#NM`. The
+profile checks canonical48 `[RAX,RAX+15]` and reads one aligned 16-byte m128.
+Misalignment yields `#GP(0)` before the callback at any CPL or AC setting;
+aligned access allows AC=0 or AC=1. Failed reads leave the full CPU state
+unchanged.
+
+Each binary64 lane compares independently and writes an all-ones or zero mask;
+the whole XMM0 is replaced. RFLAGS and their definedness, XMM1–XMM15, GPRs,
+x87 state, and memory are preserved. SNaN adds sticky IE for all predicates;
+QNaN adds IE for predicates 1/2/5/6. NaN suppresses new DE only in the same
+lane, so a subnormal in the other lane still adds DE. Old IE/DE stickies remain
+set. Local MXCSR admission requires supported mask `0xffbf`, DAZ=0, and
+IM=DM=1; PM, RC, and FTZ are accepted. Native/JIT/C/fragment/generic execution
+remains closed.
+
+Focused verification passed: decoder/direct ISA filter 4/4 (one decoder and
+three execution tests); fixture runner 1/1 with 1,040 raw-bit oracle
+comparisons—1,024 predicate/relation/RC/FTZ/sticky cases plus 16 explicit
+QNaN/subnormal lane-order checks—and AC/alignment, pp8, foreign-control,
+tamper, and JIT/native-denial probes. `cargo check -p od-testkit --tests
+--offline` and `cargo check -p od-runner --tests --offline` passed. The
+native-local-only classifier passed 1/1. Runner matrix uses Ring0; direct
+predicate/relation/alignment cases cover CPL0–3; gate/span/read-failure tests
+use Ring0. Full suites passed: od-isa 1,686; od-testkit 453; od-runner 112 unit + 477 fixtures; od-x86-runner 8+4. Workspace all-target check passed. Graphify update (10,660 nodes / 22,910 edges / 311 communities), layout, formatting, diff check, and 13 anchors passed. Independent code/schema, docs/source, and final evidence reviews are complete. No physical x86 acceptance is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CMPPD` pp. 3-168–3-174 and Table 3-8
+p. 3-169 and Type 2/Table 2-19 p. 2-27 for aligned-memory #GP; Vol. 1 §4.9.2 and Table 14-21; Vol. 3A §16.1.3/Table 16-1. The
+instruction entry scopes its Type 3 reference to VEX forms; Table 2-20 itself
+also includes legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37cu--exact-legacy-long64-cmppd-xmm0m128-raximm8),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37cu--bounded-long64-cmppd-xmm0m128-raximm8-memory-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cu--cmppd-xmm0m128imm8).

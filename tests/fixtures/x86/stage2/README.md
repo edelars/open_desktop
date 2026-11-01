@@ -7705,3 +7705,25 @@ claimed. See the
 [plan](../../../../docs/plans/STAGE_2.md#s2-37ct--exact-legacy-long64-cmpsd-xmm0m64-raximm8),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ct--bounded-long64-cmpsd-xmm0m64-raximm8-memory-profile), and
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ct--cmpsd-xmm0m64imm8).
+
+### S2-37cu — CMPPD XMM0,m128,imm8
+
+`s2_37cu_cmppd_m128_qnan_subnormal_independent_lanes.case.json` is the
+literal legacy `66 0F C2 00 03` profile. XMM0 lane 0 is a QNaN and lane 1 is
+the minimum positive binary64 subnormal; the memory lanes are 1.0 and zero.
+The unordered predicate produces all ones in lane 0 and zero in lane 1. The
+QNaN raises no IE for predicate 3, while the subnormal in the other lane adds
+DE. A pending x87 canary and unrelated RFLAGS are preserved; both XMM0 lanes
+are replaced by the instruction result.
+
+The runner matrix checks all eight predicates, four relation pairs, four RC
+values, both FTZ settings, and four incoming IE/DE histories (1,024 raw-bit
+oracle comparisons). Sixteen additional comparisons put a QNaN and subnormal
+in opposite lanes in both orders, checking independent DE and QNaN IE
+predicate policy. It also checks aligned AC=1 success, misaligned AC=1
+`#GP(0)`, pp8 local refusal, foreign-control rejection, output tampering, and
+JIT/native denial. Runner evidence uses Ring0. Direct predicate/relation and
+alignment checks cover CPL0–3; direct gate/span/read-failure probes use
+Ring0. Full suites passed: od-isa 1,686, od-testkit 453, od-runner 112+477, and od-x86-runner 8+4; workspace all-target check passed. Graphify update (10,660/22,910/311), formatting, layout, diff check, and 13 anchors passed. Independent code/schema, docs/source, and final evidence reviews are complete. No physical x86 result is claimed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37cu--exact-legacy-long64-cmppd-xmm0m128-raximm8),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cu--bounded-long64-cmppd-xmm0m128-raximm8-memory-profile), and
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cu--cmppd-xmm0m128imm8).

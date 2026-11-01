@@ -36,6 +36,9 @@ const CMPSD_REGISTER_PAIRS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37y_cmpsd_registers.case.json");
 const CMPPD_REGISTER_PAIRS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37z_cmppd_registers.case.json");
+const CMPPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37cu_cmppd_m128_qnan_subnormal_independent_lanes.case.json"
+);
 const CMPPS_REGISTER_PAIRS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37aa_cmpps_registers.case.json");
 const ADDSD_REGISTER_PAIR: &[u8] =
@@ -35696,6 +35699,205 @@ fn cmpsd_m64_memory_covers_predicates_nan_priority_and_denials() {
     assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
     assert!(matches!(
         run(CMPSD_M64_MEMORY_RAX, "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+}
+
+#[test]
+fn cmppd_m128_memory_covers_predicates_lanes_and_independent_exceptions() {
+    let fixture = Fixture::from_json(CMPPD_M128_MEMORY_RAX).unwrap().fixture;
+    let truth = [
+        [false, false, true, false],
+        [false, true, false, false],
+        [false, true, true, false],
+        [false, false, false, true],
+        [true, true, false, true],
+        [true, false, true, true],
+        [true, false, false, true],
+        [true, true, true, false],
+    ];
+    let relations = [
+        (0x4000_0000_0000_0000u64, 0x3ff0_0000_0000_0000u64),
+        (0x3ff0_0000_0000_0000, 0x4000_0000_0000_0000),
+        (0, 0x8000_0000_0000_0000),
+        (0x7ff8_1234_5678_9abc, 0x3ff0_0000_0000_0000),
+    ];
+    let encode = |value: u64| {
+        value
+            .to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let decode_lanes = |hex: &str| {
+        [0, 1].map(|lane| {
+            let bytes = (0..8)
+                .map(|index| {
+                    u8::from_str_radix(&hex[lane * 16 + index * 2..lane * 16 + index * 2 + 2], 16)
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            u64::from_le_bytes(bytes.try_into().unwrap())
+        })
+    };
+    let is_nan = |bits: u64| {
+        bits & 0x7ff0_0000_0000_0000 == 0x7ff0_0000_0000_0000 && bits & 0x000f_ffff_ffff_ffff != 0
+    };
+    let is_snan = |bits: u64| is_nan(bits) && bits & 0x0008_0000_0000_0000 == 0;
+    let is_subnormal =
+        |bits: u64| bits & 0x7ff0_0000_0000_0000 == 0 && bits & 0x000f_ffff_ffff_ffff != 0;
+    let mut comparisons = 0usize;
+    for predicate in 0u8..8 {
+        for relation in 0usize..4 {
+            for rc in 0..4u32 {
+                for ftz in [false, true] {
+                    for old in [0u64, 1, 2, 3] {
+                        let second = (relation + 2) % 4;
+                        let (left0, right0) = relations[relation];
+                        let (left1, right1) = relations[second];
+                        let mut case = fixture.clone();
+                        case.case_id =
+                            format!("s2_37cu_p{predicate}_r{relation}_rc{rc}_ftz{ftz}_old{old}");
+                        case.memory[0].initial_bytes_hex = format!("660fc200{predicate:02x}");
+                        case.memory[0].comparison_mask_hex = "ff".repeat(5);
+                        case.initial_state.sse.as_mut().unwrap().xmm[0] =
+                            format!("{}{}", encode(left0), encode(left1));
+                        case.memory[1].initial_bytes_hex =
+                            format!("{}{}", encode(right0), encode(right1));
+                        case.initial_state.sse.as_mut().unwrap().mxcsr =
+                            HexU64(0x0180 | old | (u64::from(rc) << 13) | (u64::from(ftz) << 15));
+                        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                        od_testkit::v2::compare(&input, &result, &result).unwrap();
+                        let snapshot = match &result.snapshot {
+                            Observation::Available { value } => value,
+                            other => panic!("unexpected CMPPD snapshot: {other:?}"),
+                        };
+                        let output = decode_lanes(&snapshot.state.sse.as_ref().unwrap().xmm[0]);
+                        assert_eq!(
+                            output,
+                            [
+                                if truth[usize::from(predicate)][relation] {
+                                    u64::MAX
+                                } else {
+                                    0
+                                },
+                                if truth[usize::from(predicate)][second] {
+                                    u64::MAX
+                                } else {
+                                    0
+                                },
+                            ]
+                        );
+                        let mut raised = 0u64;
+                        for (left, right) in [(left0, right0), (left1, right1)] {
+                            let nan = is_nan(left) || is_nan(right);
+                            let snan = is_snan(left) || is_snan(right);
+                            let qnan = (is_nan(left) && !is_snan(left))
+                                || (is_nan(right) && !is_snan(right));
+                            let lane_relation = if nan {
+                                3
+                            } else if left == right {
+                                2
+                            } else if left & (1 << 63) != 0 {
+                                1
+                            } else {
+                                0
+                            };
+                            if snan || (qnan && matches!(predicate, 1 | 2 | 5 | 6)) {
+                                raised |= 1;
+                            }
+                            if !nan && (is_subnormal(left) || is_subnormal(right)) {
+                                raised |= 2;
+                            }
+                            let _ = lane_relation;
+                        }
+                        assert_eq!(
+                            snapshot.state.sse.as_ref().unwrap().mxcsr.get(),
+                            0x0180 | old | raised | (u64::from(rc) << 13) | (u64::from(ftz) << 15)
+                        );
+                        assert_eq!(snapshot.state.rflags, case.initial_state.rflags);
+                        assert_eq!(snapshot.state.x87, case.initial_state.x87);
+                        assert_eq!(snapshot.state.gpr, case.initial_state.gpr);
+                        comparisons += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(comparisons, 1024);
+
+    // QNaN in one lane must not hide denormal status from the other lane,
+    // regardless of lane order or which predicate yields the unordered mask.
+    for predicate in 0u8..8 {
+        for (qnan_lane0, left) in [
+            (true, [0x7ff8_1234_5678_9abcu64, 1]),
+            (false, [1, 0x7ff8_1234_5678_9abc]),
+        ] {
+            let mut case = fixture.clone();
+            case.case_id = format!("s2_37cu_independent_de_p{predicate}_q0{qnan_lane0}");
+            case.memory[0].initial_bytes_hex = format!("660fc200{predicate:02x}");
+            case.memory[0].comparison_mask_hex = "ff".repeat(5);
+            case.initial_state.sse.as_mut().unwrap().xmm[0] =
+                format!("{}{}", encode(left[0]), encode(left[1]));
+            case.memory[1].initial_bytes_hex = format!("{}{}", encode(0), encode(1));
+            case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x0180);
+            let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+            let snapshot = match &result.snapshot {
+                Observation::Available { value } => value,
+                other => panic!("unexpected CMPPD priority snapshot: {other:?}"),
+            };
+            assert_eq!(
+                snapshot.state.sse.as_ref().unwrap().mxcsr.get(),
+                0x0182 | u64::from(matches!(predicate, 1 | 2 | 5 | 6))
+            );
+        }
+    }
+
+    let mut aligned_ac = fixture.clone();
+    aligned_ac.case_id = "s2_37cu_aligned_ac1_admitted".into();
+    aligned_ac.initial_state.rflags = HexU64(aligned_ac.initial_state.rflags.get() | (1 << 18));
+    let (input, result) = run(&aligned_ac.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+
+    let mut misaligned = fixture.clone();
+    misaligned.case_id = "s2_37cu_misaligned_ac1_gp0".into();
+    misaligned.memory[1].guest_address = HexU64(0x2001);
+    misaligned.initial_state.gpr[0] = HexU64(0x2001);
+    misaligned.initial_state.rflags = HexU64(misaligned.initial_state.rflags.get() | (1 << 18));
+    misaligned.expected_exit = ExpectedExit::Exception;
+    let (input, result) = run(&misaligned.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    assert!(matches!(result.outcome, Outcome::Exception {}));
+
+    let mut pp8 = fixture.clone();
+    pp8.case_id = "s2_37cu_pp8_local_unsupported".into();
+    pp8.memory[0].initial_bytes_hex = "660fc20008".into();
+    pp8.memory[0].comparison_mask_hex = "ff".repeat(5);
+    pp8.expected_exit = ExpectedExit::Unsupported;
+    assert!(matches!(
+        run(&pp8.to_json().unwrap(), "interpreter", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+
+    let (input, baseline) = run(CMPPD_M128_MEMORY_RAX, "interpreter", 0);
+    let mut tampered = baseline.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(..16, "0000000000000000");
+    }
+    assert!(od_testkit::v2::compare(&input, &tampered, &baseline).is_err());
+    let mut foreign = Fixture::from_json(CMPPD_REGISTER_PAIRS).unwrap().fixture;
+    assert!(foreign.validate().is_ok());
+    foreign.cmppd_memory_rax_controls = fixture.cmppd_memory_rax_controls;
+    assert!(foreign.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
+    assert!(matches!(
+        run(CMPPD_M128_MEMORY_RAX, "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    assert!(matches!(
+        run(CMPPD_M128_MEMORY_RAX, "native", 4).1.outcome,
         Outcome::Unsupported { .. }
     ));
 }

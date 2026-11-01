@@ -483,3 +483,16 @@ and the workspace all-target check. Formatting, layout, Graphify
 final docs/source/evidence reviews passed. Native/JIT/C/fragment/generic
 execution remains closed; no physical x86 acceptance is claimed. See the
 [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ct--bounded-long64-cmpsd-xmm0m64-raximm8-memory-profile).
+
+### S2-37cu — CMPPD XMM0,m128,imm8
+
+The fixture runner admits the exact local-only `s2-long-cmppd-memory-rax-v1`
+profile. Its independent raw-bit oracle checked 1,040 packed-lane cases: 1,024
+predicate/relation/RC/FTZ/sticky-history comparisons plus 16 QNaN/subnormal
+lane-order checks. The literal verifies QNaN in one lane does not suppress DE
+from a subnormal in the other. Aligned AC=1 is admitted; misaligned AC=1
+produces `#GP(0)`. The runner also checks pp8 local refusal, foreign-control
+rejection, output tampering, and JIT/native denial. Runner cases use Ring0; direct ISA tests cover predicate/relation/alignment
+across CPL0–3, with Ring0-only gate/span/read-failure probes. Full suites
+passed: 112 runner unit + 477 fixture tests; native execution and physical
+x86 acceptance are not claimed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cu--bounded-long64-cmppd-xmm0m128-raximm8-memory-profile).
