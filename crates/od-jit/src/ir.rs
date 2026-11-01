@@ -330,12 +330,15 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
             }
             Operation::CheckedLoad { dst, operand } => {
                 require_active(active_instruction, operation_index)?;
-                if operand.size != od_isa::OperandSize::Qword
-                    || !is_checked_memory_address(
-                        operand,
-                        instruction_length(program, active_instruction),
-                    )
-                {
+                let length = instruction_length(program, active_instruction);
+                let qword_profile = operand.size == od_isa::OperandSize::Qword
+                    && is_checked_memory_address(operand, length);
+                let dword_rbx_profile = is_checked_dword_rbx_load_address(operand, length)
+                    && matches!(
+                        program.operations.get(operation_index + 1),
+                        Some(Operation::WriteGpr { register: GuestGpr(0), src, width: IntWidth::W64 }) if *src == *dst
+                    );
+                if !qword_profile && !dword_rbx_profile {
                     return Err(VerifyError::InvalidCheckedLoadDescriptor {
                         operation: operation_index,
                     });
@@ -1059,6 +1062,19 @@ fn is_checked_memory_address(
                 )
             || indexed_no_base_rbp_sib_disp32
             || indexed_no_base_rsi_rdi_sib_disp32)
+}
+
+fn is_checked_dword_rbx_load_address(
+    operand: &od_isa::long_decode::MemoryOperand,
+    instruction_length: u64,
+) -> bool {
+    instruction_length == 2
+        && operand.size == od_isa::OperandSize::Dword
+        && operand.address_size == od_isa::OperandSize::Qword
+        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+        && operand.index.is_none()
+        && operand.scale == 1
+        && operand.displacement == 0
 }
 
 fn validate_gpr(register: GuestGpr, operation: usize) -> Result<(), VerifyError> {

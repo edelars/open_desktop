@@ -622,10 +622,12 @@ fn lower_with_admission_and_lea_s32a(
     let deferred = deferred_error(&block.stop_reason);
     let has_memory = block.instructions.iter().any(|instruction| {
         block::is_checked_qword_load_form(instruction.decoded)
+            || block::is_checked_dword_rbx_load_form(instruction.decoded)
             || block::is_checked_qword_store_form(instruction.decoded)
     });
     let single_memory = block.instructions.len() == 1
         && (block::is_checked_qword_load_form(block.instructions[0].decoded)
+            || block::is_checked_dword_rbx_load_form(block.instructions[0].decoded)
             || block::is_checked_qword_store_form(block.instructions[0].decoded));
     let exact_memory_pair = exact_checked_memory_pair(block);
     if has_memory && !single_memory && !exact_memory_pair {
@@ -901,6 +903,7 @@ fn lower_with_admission_and_lea_s32a(
             && union_native.is_none()
             && !block::is_s0_09_form(instruction.decoded)
             && !block::is_checked_qword_load_form(instruction.decoded)
+            && !block::is_checked_dword_rbx_load_form(instruction.decoded)
             && !block::is_checked_qword_store_form(instruction.decoded)
         {
             return Err(LoweringError::InvalidDecodedForm {
@@ -1867,7 +1870,9 @@ fn lower_instruction(
         DecodedOperation::Mov {
             dst: Operand::Register(destination),
             src: Operand::Memory(operand),
-        } if block::is_checked_qword_load_form(instruction.decoded) => {
+        } if block::is_checked_qword_load_form(instruction.decoded)
+            || block::is_checked_dword_rbx_load_form(instruction.decoded) =>
+        {
             let destination =
                 guest_memory_data_gpr(destination, instruction.decoded).ok_or_else(invalid)?;
             let value = allocate_temp(next_temp);
@@ -1989,17 +1994,20 @@ fn guest_gpr(register: RegisterView) -> Option<GuestGpr> {
 
 fn guest_memory_data_gpr(register: RegisterView, instruction: Instruction) -> Option<GuestGpr> {
     let number = register.register() as u8;
-    (register.size() == od_isa::OperandSize::Qword
-        && (number < 4
-            || number == 4
-                && (block::is_checked_qword_load_form(instruction)
-                    || block::is_checked_qword_store_form(instruction))
-            || number == 5
-                && (block::is_checked_qword_load_form(instruction)
-                    || block::is_checked_qword_store_form(instruction))
-            || matches!(number, 6 | 7)
-                && (block::is_checked_qword_load_form(instruction)
-                    || block::is_checked_qword_store_form(instruction))))
+    (register.size() == od_isa::OperandSize::Dword
+        && number == 0
+        && block::is_checked_dword_rbx_load_form(instruction)
+        || register.size() == od_isa::OperandSize::Qword
+            && (number < 4
+                || number == 4
+                    && (block::is_checked_qword_load_form(instruction)
+                        || block::is_checked_qword_store_form(instruction))
+                || number == 5
+                    && (block::is_checked_qword_load_form(instruction)
+                        || block::is_checked_qword_store_form(instruction))
+                || matches!(number, 6 | 7)
+                    && (block::is_checked_qword_load_form(instruction)
+                        || block::is_checked_qword_store_form(instruction))))
     .then_some(GuestGpr(number))
 }
 

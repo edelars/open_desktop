@@ -516,6 +516,23 @@ impl MemorySiteV2 {
             Some(length) => length,
             None => return false,
         };
+        if self.operation == MemorySiteOperationV2::Load
+            && self.instruction_index == expected_index
+            && length == 2
+            && self.destination == Some(0)
+            && self.source.is_none()
+            && self.operand.address_size == od_isa::OperandSize::Qword
+            && self.operand.size == od_isa::OperandSize::Dword
+            && matches!(
+                self.operand.base,
+                od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+            )
+            && self.operand.index.is_none()
+            && self.operand.scale == 1
+            && self.operand.displacement == 0
+        {
+            return true;
+        }
         let data_register = match self.operation {
             MemorySiteOperationV2::Load => self.destination,
             MemorySiteOperationV2::Store => self.source,
@@ -1486,6 +1503,22 @@ impl MemorySiteV2 {
             || self.operation != expected_operation
         {
             return false;
+        }
+        if source == [0x8b, 0x03] {
+            return expected_operation == MemorySiteOperationV2::Load
+                && self.instruction_index == expected_index
+                && self.next_rip.checked_sub(self.guest_rip) == Some(2)
+                && self.destination == Some(0)
+                && self.source.is_none()
+                && self.operand.size == od_isa::OperandSize::Dword
+                && self.operand.address_size == od_isa::OperandSize::Qword
+                && matches!(
+                    self.operand.base,
+                    od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+                )
+                && self.operand.index.is_none()
+                && self.operand.scale == 1
+                && self.operand.displacement == 0;
         }
         let opcode = match expected_operation {
             MemorySiteOperationV2::Load => 0x8b,
@@ -2591,15 +2624,20 @@ unsafe fn memory_site_helper_v2_impl(
     };
 
     let mut bytes = [0_u8; 8];
-    let operation = match site.operation {
-        MemorySiteOperationV2::Load => MEMORY_OP_READ,
-        MemorySiteOperationV2::Store => {
+    let (operation, access_width) = match (site.operation, site.operand.size) {
+        (MemorySiteOperationV2::Load, od_isa::OperandSize::Dword) => (MEMORY_OP_READ, 4),
+        (MemorySiteOperationV2::Load, od_isa::OperandSize::Qword) => (MEMORY_OP_READ, 8),
+        (MemorySiteOperationV2::Store, od_isa::OperandSize::Qword) => {
             let Some(source) = site.source else {
                 context.last_memory_site = site_index;
                 return MEMORY_HELPER_INVALID_ARGUMENT;
             };
             bytes.copy_from_slice(&state.gpr[source as usize].to_le_bytes());
-            MEMORY_OP_WRITE
+            (MEMORY_OP_WRITE, 8)
+        }
+        _ => {
+            context.last_memory_site = site_index;
+            return MEMORY_HELPER_INVALID_ARGUMENT;
         }
     };
     // SAFETY: the adapter and outcome belong to this live invocation; bytes is
@@ -2609,7 +2647,7 @@ unsafe fn memory_site_helper_v2_impl(
             context.memory_adapter,
             operation,
             address,
-            8,
+            access_width,
             bytes.as_mut_ptr(),
             &mut context.memory_outcome,
         )

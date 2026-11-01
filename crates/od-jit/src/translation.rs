@@ -174,6 +174,8 @@ pub enum CompileFlavor {
     S3_19bMemoryLoadV2,
     /// Shared typed-IR/allocator V2 checked qword-load entry.
     S3_26aIrMemoryLoadV2,
+    /// Shared typed-IR/allocator V2 exact `MOV EAX,[RBX]` dword-load entry.
+    S3_26cIrDwordMemoryLoadV2,
     /// Shared typed-IR/allocator V2 checked qword-store entry.
     S3_26bIrMemoryStoreV2,
     /// One of the two exact checked qword two-site IR entries.

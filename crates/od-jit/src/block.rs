@@ -31,6 +31,7 @@ enum BlockBuildProfile {
     S0_09NativeMovRaxImm32,
     S0_09NativeRegisterV1,
     CheckedQwordLoad,
+    CheckedDwordRbxLoad,
     CheckedQwordStore,
     CheckedQwordMemoryPair,
 }
@@ -2602,6 +2603,22 @@ pub(crate) fn build_checked_qword_load_block(
     )
 }
 
+/// Build only the exact unprefixed `8B 03` `MOV EAX,[RBX]` checked-load form.
+pub(crate) fn build_checked_dword_rbx_load_block(
+    code: CodeView<'_>,
+    entry_rip: u64,
+    context: AccessContext,
+    limits: BlockLimits,
+) -> Result<BuildOutcome, BuildError> {
+    build_block_with_profile(
+        code,
+        entry_rip,
+        context,
+        limits,
+        BlockBuildProfile::CheckedDwordRbxLoad,
+    )
+}
+
 /// Build exactly one checked qword store candidate. This remains opt-in and
 /// separate from the ordinary block profile.
 pub(crate) fn build_checked_qword_store_block(
@@ -3000,6 +3017,11 @@ fn build_block_with_profile(
                         decoded.length,
                         0x89,
                     ))
+        } else if profile == BlockBuildProfile::CheckedDwordRbxLoad {
+            instructions.is_empty()
+                && is_checked_dword_rbx_load_form(decoded)
+                && code.bytes.get(guest_offset..guest_offset.saturating_add(2))
+                    == Some(&[0x8b, 0x03][..])
         } else if profile == BlockBuildProfile::CheckedQwordLoad {
             instructions.is_empty()
                 && is_checked_qword_load_form(decoded)
@@ -3305,7 +3327,9 @@ fn build_block_with_profile(
 
         let complete_bounded_profile = match profile {
             BlockBuildProfile::CheckedQwordMemoryPair => instructions.len() == 2,
-            BlockBuildProfile::CheckedQwordLoad | BlockBuildProfile::CheckedQwordStore => true,
+            BlockBuildProfile::CheckedQwordLoad
+            | BlockBuildProfile::CheckedDwordRbxLoad
+            | BlockBuildProfile::CheckedQwordStore => true,
             BlockBuildProfile::S0_09
             | BlockBuildProfile::S0_09NativeIncRax
             | BlockBuildProfile::S0_09NativeDecRax
@@ -4691,6 +4715,34 @@ pub(crate) fn is_checked_qword_load_form(instruction: Instruction) -> bool {
         && destination.size() == OperandSize::Qword
         && operand.size == OperandSize::Qword
         && is_checked_qword_memory_address(instruction, operand)
+}
+
+pub(crate) fn is_checked_dword_rbx_load_form(instruction: Instruction) -> bool {
+    let exact_prefix = instruction.prefixes.group1.is_none()
+        && instruction.prefixes.segment.is_none()
+        && !instruction.prefixes.operand_override
+        && instruction.prefixes.rex.is_none();
+    let Operation::Mov {
+        dst: Operand::Register(destination),
+        src: Operand::Memory(operand),
+    } = instruction.operation
+    else {
+        return false;
+    };
+    exact_prefix
+        && instruction.opcode.map == OpcodeMap::Primary
+        && instruction.opcode.byte == 0x8b
+        && instruction.operand_size == OperandSize::Dword
+        && instruction.address_size == OperandSize::Qword
+        && instruction.length == 2
+        && destination.register() == od_isa::Register::Rax
+        && destination.size() == OperandSize::Dword
+        && operand.size == OperandSize::Dword
+        && operand.address_size == OperandSize::Qword
+        && operand.base == AddressBase::Register(od_isa::Register::Rbx)
+        && operand.index.is_none()
+        && operand.scale == 1
+        && operand.displacement == 0
 }
 
 pub(crate) fn is_checked_qword_store_form(instruction: Instruction) -> bool {
