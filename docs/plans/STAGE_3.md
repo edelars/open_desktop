@@ -3177,17 +3177,19 @@ by 2,399 hits per sequence and one resident entry. No timing started during
 preflight. A separate calibration-only release run passed the 200 ms floor
 for both sequences at 2,048 repetitions per side, retained 12 attempts per
 sequence, and emitted no scored pairs. Runtime `working_tree_dirty` is unknown
-because the Git status probe timed out; build source tree was clean. Runs 1 and
-2 each completed with 20 retained pairs per sequence and all sides above the
-floor. Their raw native/interpreter median ratios were 2.7592 and 2.6903 for
-`store_then_load`, and 2.8393 and 2.7630 for `load_then_store`; strata remain
-separate. One scored run remains. This is still a bounded fixture, not general memory
+because the Git status probe timed out; build source tree was clean. All three
+scored runs completed with 20 retained pairs per sequence and all sides above
+the floor. Their raw native/interpreter median ratios were 2.7592, 2.6903, and
+2.7391 for `store_then_load`; and 2.8393, 2.7630, and 2.7306 for
+`load_then_store`. The strata remain separate. This is still a bounded fixture,
+not general memory
 or production owner/MMU evidence. Mini checks remain deferred to the end of
 Stage 3. See the [S3-36e report](../reports/STAGE_3_S3-36e_2026-11-01.md),
 [preflight evidence](../reports/data/stage3/s3-36e/preflight-release-run1.json),
 the [calibration evidence](../reports/data/stage3/s3-36e/calibration-run1.json),
-[scored run 1](../reports/data/stage3/s3-36e/run1.json), and
-[scored run 2](../reports/data/stage3/s3-36e/run2.json).
+[scored runs 1](../reports/data/stage3/s3-36e/run1.json),
+[2](../reports/data/stage3/s3-36e/run2.json), and
+[3](../reports/data/stage3/s3-36e/run3.json).
 
 ### S3-37. Проверить cache churn и ресурсы
 

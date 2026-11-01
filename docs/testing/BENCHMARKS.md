@@ -868,7 +868,20 @@ compiles, or publications. The envelope covered 146.600 s, with one-minute
 load averages 1.84–3.29 and a Stage 2 `od-runner` test visible in 22 of 32
 snapshots. Its `rustc` child reached 25.9% and 26.0% CPU in two samples; the
 benchmark's own release `rustc` compile reached 109.6% in one. Graphify was not
-visible. No per-pair timestamps are available; one scored run remains.
+visible. No per-pair timestamps are available. At this point in the evidence
+log, run 3 remained.
+
+Scored release run 3 retained 20 alternating pairs per sequence, with every
+side above the 200 ms floor. Median/range was 2.7391 (2.6830–2.7733) for
+`store_then_load` and 2.7306 (2.6390–2.8354) for `load_then_store`; keep the
+strata separate. Scored counters again showed 49,152,000 hits per sequence and
+no misses, replacements, compiles, or publications. The 136.516 s outer
+envelope sampled load averages from 2.13 to 7.85, with Graphify absent. Stage 2
+`od-runner` cargo tests appeared in 9 of 30 snapshots and `od-x86-runner` cargo
+tests in 20 of 30. Rustc samples included the benchmark's `od_bench` compile at
+524.3% CPU and Stage 2 `od_testkit`/`od_x86_runner` compiles at 14.9–53.9%.
+Stage 2 was not stopped. These are sparse outer-process samples without
+per-pair timestamps, so they cannot assign load to individual measurements.
 
 Run the release preflight first:
 
@@ -882,9 +895,10 @@ The [S3-36e report](../reports/STAGE_3_S3-36e_2026-11-01.md) and
 [preflight artifact](../reports/data/stage3/s3-36e/preflight-release-run1.json),
 [calibration artifact](../reports/data/stage3/s3-36e/calibration-run1.json),
 and [scored runs 1](../reports/data/stage3/s3-36e/run1.json) and
-[2](../reports/data/stage3/s3-36e/run2.json) record completed gates. One
-scored run remains. Mini checks remain deferred to the
-end of Stage 3.
+[2](../reports/data/stage3/s3-36e/run2.json) and
+[3](../reports/data/stage3/s3-36e/run3.json) record completed gates. The
+three-run set is complete for this bounded profile. Mini checks remain deferred
+to the end of Stage 3.
 
 ### S3-37a: bounded production FIFO16 corpus churn observation
 
