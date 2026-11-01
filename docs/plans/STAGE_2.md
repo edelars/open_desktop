@@ -15874,11 +15874,10 @@ od-isa 1,686; od-testkit 453; od-runner 112 unit + 477 fixtures; od-x86-runner
 8+4. Workspace all-target check passed. Graphify update (10,660 nodes / 22,910
 edges / 311 communities), fmt, layout, diff check, and 13 anchors passed.
 Independent code/schema and docs/source reviews are clean; final evidence
-recheck is pending. No physical x86 acceptance is claimed.
+recheck is complete. No physical x86 acceptance is claimed.
 
 Sources: Intel SDM Rev. 093 Vol. 2A `CMPPD` pp. 3-168–3-174 and Table 3-8
-p. 3-169 and Type 2/Table 2-19 p. 2-27 for aligned-memory #GP; Vol. 1 §4.9.2 and Table 14-21; Vol. 3A §16.1.3/Table 16-1. The
-instruction entry's Type 3 reference is scoped to VEX forms; Table 2-20 itself
-also contains legacy SSE conditions. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37cu--bounded-long64-cmppd-xmm0m128-raximm8-memory-profile),
+p. 3-169 and Type 2/Table 2-19 p. 2-27 for aligned-memory #GP; Vol. 1 §4.9.2
+and Table 14-21; Vol. 3A §16.1.3/Table 16-1. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37cu--bounded-long64-cmppd-xmm0m128-raximm8-memory-profile),
 [report](../reports/STAGE_2_REPORT.md#s2-37cu--cmppd-xmm0m128imm8), and [fixture
 notes](../../tests/fixtures/x86/stage2/README.md#s2-37cu--cmppd-xmm0m128imm8).
