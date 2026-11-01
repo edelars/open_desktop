@@ -2417,6 +2417,54 @@ production решений из этого среза не следует.
 
 **Готово:** внедрены только полезные и корректные преобразования либо сохранён baseline с результатами сравнения. «Меньше IR operations» не заменяет измеренную пользу.
 
+#### S3-32a. Одно чтение для точного aliased W64 ADD — experiment pending
+
+Проверить только точную bare форму `48 03 C0` (`ADD RAX,RAX`, W64). Сейчас
+`lower_instruction` в arithmetic arm
+[`lowering.rs`](../../crates/od-jit/src/lowering.rs) независимо эмитит два
+`ReadGpr` для decoded destination и source (arm начинается на строке 1822);
+candidate может прочитать общий aliased register один раз и подать тот же
+temporary на оба входа `Integer`. Сохранить `Integer`/arithmetic-flags
+materialization, вычисление результата, `WriteGpr`, guest commit, guards и
+retirement без изменений.
+
+Изолировать candidate в opt-in uncached compiler path. И baseline, и candidate
+используют allocator `register_homes=4`; diagnostic budget0 из S3-30b не
+является candidate для этого сравнения. Не менять default compiler,
+eager-flags default, cache admission или key, и production policy. Не
+распространять read reuse через соседние
+guest instructions, helper, memory effect или commit; не редактировать
+allocation/PC-map metadata вручную. Другие alias patterns не входят в этот
+срез.
+
+**Acceptance:** structural test требует ровно один `ReadGpr` для точной
+aliased W64 формы и сохраняет существующие отрицательные/prefix/width и
+non-alias случаи без расширения admission. Interpreter, baseline и candidate
+сравниваются по полному state и flags, RIP/exit, remaining budget и retirement
+на арифметических edge values, а также для STOP, budget exits и continuation
+без повторного commit уже retired prefix. Отдельно проверить allocation и
+PC-map consistency, не объявляя сохранность не наблюдавшихся live values.
+
+Только после correctness preflight сравнить baseline и candidate на
+зафиксированном S3-30b `distinct-jz-fallthrough` workload и неизменном frozen
+fixture (27-byte input, SHA-256
+`72210fb82b0ffa9f88f10f63697a1051347d07587e3569028947119726fac8c7`): compile
+cost, emitted bytes, allocation/frame statistics и repeated native timing в
+отдельных JZ-taken/fallthrough strata. Использовать три последовательных
+release process runs; в каждом — 20 alternating baseline/candidate pairs на
+stratum, с общим recalibrated native call count для обеих сторон, вариантов и
+strata и 64 warmup calls per publication. Каждая измеренная сторона должна
+достичь 200 ms; иначе весь process run — diagnostic-only. Сохранять raw
+totals, sample order, counts и candidate/baseline ratios, вычисленные из raw
+totals. Отдельные timer boundaries: compile включает candidate transform и
+artifact drop; publication и published-code drop измеряются отдельно; native
+timer не включает создание или validation state vectors. Держать один
+MAP_JIT mapping одновременно и не смешивать strata или timers. Frozen fixture
+и его timing границы зафиксированы в
+[S3-30b report](../reports/STAGE_3_S3-30b_2026-11-01.md). Без корректных
+повторных измерений не заявлять speedup и не включать candidate по умолчанию.
+S3-32 и Stage 3 остаются открытыми.
+
 ### S3-33. Расширять lowering по готовности interpreter
 
 1. По таблице S3-00 выбирать следующую готовую integer/branch/memory форму. Отдельно подтверждать widths, flags, faults и helper effects.
