@@ -1895,6 +1895,182 @@ mod tests {
     use od_isa::Register;
     use od_isa::long_decode::AddressBase;
 
+    fn matches_two_site_pc_map_contract(
+        map: &crate::statepoints::PcMap,
+        entry_rip: u64,
+        operations: [MemorySiteOperationV2; 2],
+    ) -> bool {
+        use crate::statepoints::{
+            GuestRipBoundary, GuestRipSource, SnapshotAdmissibility, StatePhase,
+        };
+
+        let code_len = map.code_len();
+        if map.instruction_count() != 2
+            || code_len == 0
+            || code_len % 4 != 0
+            || map.ranges().is_empty()
+        {
+            return false;
+        }
+
+        let mut cursor = 0;
+        for (index, range) in map.ranges().iter().enumerate() {
+            if range.range.start() != cursor
+                || range.range.start() >= range.range.end()
+                || range.range.start() % 4 != 0
+                || range.range.end() % 4 != 0
+                || range.range.end() > code_len
+                || map.lookup(range.range.start()) != Some(range)
+            {
+                return false;
+            }
+            if index + 1 < map.ranges().len()
+                && map.lookup(range.range.end()) != map.ranges().get(index + 1)
+            {
+                return false;
+            }
+            cursor = range.range.end();
+        }
+        if cursor != code_len
+            || map.lookup(code_len).is_some()
+            || map.snapshot_admissibility_at(code_len).is_some()
+        {
+            return false;
+        }
+
+        for index in 0..2u32 {
+            let guest_rip = entry_rip + u64::from(index) * 3;
+            for (phase, snapshot, expected_rip) in [
+                (
+                    StatePhase::BeforeInstruction,
+                    SnapshotAdmissibility::CanonicalBoundary,
+                    guest_rip,
+                ),
+                (
+                    StatePhase::PendingEffects,
+                    SnapshotAdmissibility::ReplayCurrentInstruction,
+                    guest_rip,
+                ),
+                (
+                    StatePhase::HelperCall,
+                    SnapshotAdmissibility::InadmissibleAfterEffect,
+                    guest_rip,
+                ),
+                (
+                    StatePhase::AfterHelper,
+                    SnapshotAdmissibility::InadmissibleAfterEffect,
+                    guest_rip,
+                ),
+                (
+                    StatePhase::CommitInProgress,
+                    SnapshotAdmissibility::InadmissibleDuringCommit,
+                    guest_rip,
+                ),
+                (
+                    StatePhase::Committed,
+                    SnapshotAdmissibility::CanonicalBoundary,
+                    guest_rip + 3,
+                ),
+            ] {
+                let matching: Vec<_> = map
+                    .ranges()
+                    .iter()
+                    .filter(|range| {
+                        range.instruction_index == Some(index) && range.phase == phase
+                    })
+                    .collect();
+                if matching.len() != 1
+                    || matching[0].guest_rip != GuestRipSource::Fixed(expected_rip)
+                    || matching[0].snapshot != snapshot
+                {
+                    return false;
+                }
+            }
+
+            let failed_helper: Vec<_> = map
+                .ranges()
+                .iter()
+                .filter(|range| {
+                    range.instruction_index == Some(index)
+                        && range.phase == StatePhase::Exit
+                        && range.guest_rip == GuestRipSource::Fixed(guest_rip)
+                        && range.snapshot == SnapshotAdmissibility::ReplayCurrentInstruction
+                })
+                .collect();
+            if failed_helper.len() != 1 {
+                return false;
+            }
+        }
+
+        let shared_service: Vec<_> = map
+            .ranges()
+            .iter()
+            .filter(|range| range.phase == StatePhase::Service)
+            .collect();
+        if shared_service.len() != 2
+            || shared_service.iter().any(|range| {
+                range.guest_rip != GuestRipSource::CanonicalState
+                    || range.instruction_index.is_some()
+                    || range.snapshot != SnapshotAdmissibility::CanonicalBoundary
+            })
+        {
+            return false;
+        }
+
+        let shared_entry_exit: Vec<_> = map
+            .ranges()
+            .iter()
+            .filter(|range| range.phase == StatePhase::Exit && range.instruction_index.is_none())
+            .collect();
+        if shared_entry_exit.len() != 1
+            || shared_entry_exit[0].guest_rip != GuestRipSource::Fixed(entry_rip)
+            || shared_entry_exit[0].snapshot != SnapshotAdmissibility::CanonicalBoundary
+        {
+            return false;
+        }
+
+        let boundaries = map.boundaries();
+        if boundaries.len() != 2
+            || boundaries[0].rip != GuestRipBoundary::Fixed(entry_rip + 3)
+            || boundaries[0].instruction_index != 0
+            || boundaries[0].committed_instructions != 1
+            || boundaries[0].phase != StatePhase::Committed
+            || boundaries[0].snapshot != SnapshotAdmissibility::CanonicalBoundary
+            || boundaries[1].rip != GuestRipBoundary::Fixed(entry_rip + 6)
+            || boundaries[1].instruction_index != 1
+            || boundaries[1].committed_instructions != 2
+            || boundaries[1].phase != StatePhase::Committed
+            || boundaries[1].snapshot != SnapshotAdmissibility::CanonicalBoundary
+        {
+            return false;
+        }
+        for boundary in boundaries {
+            let Some(range) = map.lookup(boundary.host_offset) else {
+                return false;
+            };
+            if range.phase != StatePhase::Committed
+                || range.instruction_index != Some(boundary.instruction_index)
+                || map.snapshot_admissibility_at(boundary.host_offset)
+                    != Some(SnapshotAdmissibility::CanonicalBoundary)
+            {
+                return false;
+            }
+        }
+
+        let Some(store_index) = operations
+            .iter()
+            .position(|operation| *operation == MemorySiteOperationV2::Store)
+        else {
+            return true;
+        };
+        let store_index = store_index as u32;
+        !map.ranges().iter().any(|range| {
+            range.instruction_index == Some(store_index)
+                && range.phase == StatePhase::HelperCall
+                && range.snapshot == SnapshotAdmissibility::ReplayCurrentInstruction
+        })
+    }
+
     #[test]
     fn ir_store_then_load_is_one_typed_two_site_entry() {
         let bytes = [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b];
@@ -2059,6 +2235,157 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn ir_two_site_pc_maps_attribute_all_checked_ranges_and_boundaries() {
+        use crate::statepoints::{GuestRipSource, SnapshotAdmissibility, StatePhase};
+
+        let cases = [
+            (
+                [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b],
+                crate::runtime::MemoryPairSequenceV2::StoreThenLoad,
+                [MemorySiteOperationV2::Store, MemorySiteOperationV2::Load],
+            ),
+            (
+                [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02],
+                crate::runtime::MemoryPairSequenceV2::LoadThenStore,
+                [MemorySiteOperationV2::Load, MemorySiteOperationV2::Store],
+            ),
+            (
+                [0x48, 0x8b, 0x03, 0x48, 0x8b, 0x0b],
+                crate::runtime::MemoryPairSequenceV2::LoadThenLoad,
+                [MemorySiteOperationV2::Load, MemorySiteOperationV2::Load],
+            ),
+        ];
+
+        for (bytes, sequence, operations) in cases {
+            let entry_rip = 0x6000;
+            let block = compile_ir_memory_two_site_block_v2(
+                CodeView::new(entry_rip, &bytes).unwrap(),
+                entry_rip,
+            )
+            .unwrap();
+            assert_eq!(block.sequence(), sequence);
+            assert_eq!(
+                [block.sites()[0].operation(), block.sites()[1].operation()],
+                operations
+            );
+            let map = block.pc_map();
+            assert_eq!(map.code_len() as usize, block.code().to_le_bytes().unwrap().len());
+            assert!(matches_two_site_pc_map_contract(map, entry_rip, operations));
+
+            for range in map.ranges() {
+                assert_eq!(map.lookup(range.range.start()), Some(range));
+                if range.range.end() < map.code_len() {
+                    let following = map.lookup(range.range.end()).unwrap();
+                    assert_eq!(following.range.start(), range.range.end());
+                }
+            }
+            for index in 0..2u32 {
+                let commit = map
+                    .ranges()
+                    .iter()
+                    .find(|range| {
+                        range.instruction_index == Some(index)
+                            && range.phase == StatePhase::CommitInProgress
+                    })
+                    .unwrap();
+                assert_eq!(
+                    commit.snapshot,
+                    SnapshotAdmissibility::InadmissibleDuringCommit
+                );
+                assert_eq!(
+                    commit.guest_rip,
+                    GuestRipSource::Fixed(entry_rip + u64::from(index) * 3)
+                );
+            }
+        }
+
+        // The comparator must reject independently plausible maps with a bad
+        // site, guest RIP, retirement boundary, or replay classification.
+        let bytes = [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b];
+        let entry_rip = 0x7000;
+        let block = compile_ir_memory_two_site_block_v2(
+            CodeView::new(entry_rip, &bytes).unwrap(),
+            entry_rip,
+        )
+        .unwrap();
+        let original = block.pc_map();
+        let operations = [MemorySiteOperationV2::Store, MemorySiteOperationV2::Load];
+        let rebuild = |ranges, boundaries| {
+            crate::statepoints::PcMap::new(
+                original.code_len() as usize,
+                original.instruction_count() as usize,
+                ranges,
+                boundaries,
+            )
+            .unwrap()
+        };
+
+        let mut ranges = original.ranges().to_vec();
+        let helper = ranges
+            .iter_mut()
+            .find(|range| {
+                range.instruction_index == Some(0) && range.phase == StatePhase::HelperCall
+            })
+            .unwrap();
+        helper.instruction_index = Some(1);
+        assert!(!matches_two_site_pc_map_contract(
+            &rebuild(ranges, original.boundaries().to_vec()),
+            entry_rip,
+            operations,
+        ));
+
+        let mut ranges = original.ranges().to_vec();
+        let epilogue = ranges
+            .iter_mut()
+            .filter(|range| range.phase == StatePhase::Service)
+            .last()
+            .unwrap();
+        epilogue.guest_rip = GuestRipSource::Fixed(entry_rip);
+        epilogue.instruction_index = Some(0);
+        assert!(!matches_two_site_pc_map_contract(
+            &rebuild(ranges, original.boundaries().to_vec()),
+            entry_rip,
+            operations,
+        ));
+
+        let mut ranges = original.ranges().to_vec();
+        let helper = ranges
+            .iter_mut()
+            .find(|range| {
+                range.instruction_index == Some(0) && range.phase == StatePhase::HelperCall
+            })
+            .unwrap();
+        helper.guest_rip = GuestRipSource::Fixed(entry_rip + 3);
+        assert!(!matches_two_site_pc_map_contract(
+            &rebuild(ranges, original.boundaries().to_vec()),
+            entry_rip,
+            operations,
+        ));
+
+        let mut boundaries = original.boundaries().to_vec();
+        boundaries[0].committed_instructions = 2;
+        assert!(!matches_two_site_pc_map_contract(
+            &rebuild(original.ranges().to_vec(), boundaries),
+            entry_rip,
+            operations,
+        ));
+
+        let mut ranges = original.ranges().to_vec();
+        let after_store = ranges
+            .iter_mut()
+            .find(|range| {
+                range.instruction_index == Some(0) && range.phase == StatePhase::AfterHelper
+            })
+            .unwrap();
+        after_store.snapshot = SnapshotAdmissibility::ReplayCurrentInstruction;
+        assert!(!matches_two_site_pc_map_contract(
+            &rebuild(ranges, original.boundaries().to_vec()),
+            entry_rip,
+            operations,
+        ));
     }
 
     #[test]

@@ -3811,3 +3811,42 @@ fn reduce_saved_case_from_environment() {
         );
     }
 }
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn published_two_site_pc_map_matches_artifact_and_outlives_artifact() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap();
+    for (sequence_index, sequence) in SEQUENCES.into_iter().enumerate() {
+        let source = sequence.bytes();
+        let artifact = od_jit::memory_load_v2::compile_ir_memory_two_site_block_v2(
+            od_jit::block::CodeView::new(ENTRY_RIP, &source).unwrap(),
+            ENTRY_RIP,
+        )
+        .unwrap();
+        let expected_map = artifact.pc_map().clone();
+        let published = PublishedCode::publish_ir_memory_two_site_v2(&artifact).unwrap();
+        assert_eq!(published.pc_map(), Some(&expected_map));
+        drop(artifact);
+        assert_eq!(published.pc_map(), Some(&expected_map));
+
+        // Releasing one published mapping must leave publication of another
+        // compiler-issued artifact valid and associated with its own map.
+        drop(published);
+        let replacement_sequence = SEQUENCES[(sequence_index + 1) % SEQUENCES.len()];
+        let replacement_source = replacement_sequence.bytes();
+        let replacement_entry_rip = ENTRY_RIP + (sequence_index as u64 + 1) * 0x10;
+        let replacement = od_jit::memory_load_v2::compile_ir_memory_two_site_block_v2(
+            od_jit::block::CodeView::new(replacement_entry_rip, &replacement_source).unwrap(),
+            replacement_entry_rip,
+        )
+        .unwrap();
+        let replacement_map = replacement.pc_map().clone();
+        assert_ne!(replacement_map, expected_map);
+        let replacement_published =
+            PublishedCode::publish_ir_memory_two_site_v2(&replacement).unwrap();
+        assert_eq!(replacement_published.pc_map(), Some(&replacement_map));
+        drop(replacement);
+        assert_eq!(replacement_published.pc_map(), Some(&replacement_map));
+        drop(replacement_published);
+    }
+}
