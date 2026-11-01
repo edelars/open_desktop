@@ -1,0 +1,1 @@
+VMHost isolation smoke passed: one active helper received SIGSEGV; the other returned its own state after STOP

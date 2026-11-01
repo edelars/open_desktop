@@ -1,0 +1,13 @@
+/private/tmp/open-desktop-stage0-app.Vlir9h/OpenDesktop-Stage0-Smoke.app/Contents/Info.plist: OK
+vmhost_app_bundle_path=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-180016-5fb4c7afec/artifacts/OpenDesktop-Stage0-Smoke.app
+{"gpr":[0,1,0,0],"instructions_executed":6,"reason":0,"rflags":70,"rip":5}
+vmhost_app_bundle_status=passed
+
+--- stderr ---
+/private/tmp/open-desktop-stage0-app.Vlir9h/OpenDesktop-Stage0-Smoke.app/Contents/MacOS/od-vmhost-smoke: replacing existing signature
+/private/tmp/open-desktop-stage0-app.Vlir9h/OpenDesktop-Stage0-Smoke.app/Contents/MacOS/OpenDesktopLauncher: replacing existing signature
+/private/tmp/open-desktop-stage0-app.Vlir9h/OpenDesktop-Stage0-Smoke.app: replacing existing signature
+--prepared:/private/tmp/open-desktop-stage0-app.Vlir9h/OpenDesktop-Stage0-Smoke.app/Contents/MacOS/od-vmhost-smoke
+--validated:/private/tmp/open-desktop-stage0-app.Vlir9h/OpenDesktop-Stage0-Smoke.app/Contents/MacOS/od-vmhost-smoke
+/private/tmp/open-desktop-stage0-app.Vlir9h/OpenDesktop-Stage0-Smoke.app: valid on disk
+/private/tmp/open-desktop-stage0-app.Vlir9h/OpenDesktop-Stage0-Smoke.app: satisfies its Designated Requirement

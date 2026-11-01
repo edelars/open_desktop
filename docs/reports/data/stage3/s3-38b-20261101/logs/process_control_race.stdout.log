@@ -1,0 +1,1 @@
+VMHost control smoke passed: stop races, chunked frames (seeds 0/1/0x5eed), partial header/payload, malformed frames, and disconnect

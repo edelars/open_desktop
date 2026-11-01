@@ -3548,6 +3548,19 @@ Stage 1, memory corpus, physical x86, Mini, performance, owner-backed and Stage 
 remain separate and `not_run` in process-only evidence. See the
 [S3-38b report](../reports/STAGE_3_S3-38b_2026-10-30.md).
 
+**Current-source regression addendum, 1 November 2026:** a separate
+`vmhost_process_only` run on local macOS ARM64 records 33 process steps passed,
+0 failed, and 120 `not_run`; ten other suites, including Stage 2 and Mini,
+remain unrun. Before it, one separate 40-check harness self-check had six
+stale-fixture failures; after the fixture-only correction in `621e805`, the
+self-check passed 40/40. Keep that self-check result distinct from the process
+suite. Independent evidence review passed for the summary/manifest, selected
+argv and logs, hashes, signatures/entitlements, process-group cleanup, and
+artifact bindings. This does not resolve or close ISSUE-027 and does not
+replace S3-38d RESULT-state coverage.
+See the [current-source S3-38b addendum](../reports/STAGE_3_S3-38b-current-source_2026-11-01.md)
+and its [committed evidence bundle](../reports/data/stage3/s3-38b-20261101/).
+
 This bounded process suite does not establish persistent cache reuse across
 requests, a whole VM session, general memory execution through the C ABI,
 owner/MMU integration, Mini support, or performance benefit.
