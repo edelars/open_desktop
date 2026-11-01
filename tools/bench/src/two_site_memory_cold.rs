@@ -63,6 +63,7 @@ pub struct Report {
     process_run: u8,
     status: &'static str,
     stop_reason: Option<String>,
+    calibration_only: bool,
     timing_started: bool,
     case_count: usize,
     input_digest: String,
@@ -77,6 +78,7 @@ pub struct Report {
     frozen_seed_values: [u64; 3],
     sequence_counts: [usize; 2],
     repetitions_per_side: u32,
+    calibration_floor_passed: bool,
     calibration_attempts: Vec<CalibrationAttempt>,
     sample_pairs: Vec<SamplePair>,
     minimum_side_time_ns: u128,
@@ -318,12 +320,30 @@ pub fn run(process_run: u8, journal_path: &Path) -> Result<Report, Box<dyn std::
         Err("two-site-memory-cold requires native Apple Silicon macOS execution".into())
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    run_native(process_run, journal_path)
+    run_native(process_run, journal_path, false)
+        .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
+}
+
+pub fn calibration_only(
+    process_run: u8,
+    journal_path: &Path,
+) -> Result<Report, Box<dyn std::error::Error>> {
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        let _ = (process_run, journal_path);
+        Err("two-site-memory-cold requires native Apple Silicon macOS execution".into())
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    run_native(process_run, journal_path, true)
         .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn run_native(process_run: u8, journal_path: &Path) -> Result<Report, BenchError> {
+fn run_native(
+    process_run: u8,
+    journal_path: &Path,
+    calibration_only: bool,
+) -> Result<Report, BenchError> {
     use std::fs::OpenOptions;
     use std::io::Write;
 
@@ -347,9 +367,13 @@ fn run_native(process_run: u8, journal_path: &Path) -> Result<Report, BenchError
     let (repetitions, calibration_attempts, calibration_floor_passed, mut stop_reason) =
         calibrate(&cases, started, &mut journal)?;
     let mut sample_pairs = Vec::with_capacity(MAX_SAMPLE_PAIRS);
-    let mut sample_floor_passed = calibration_floor_passed;
+    let mut sample_floor_passed = !calibration_only && calibration_floor_passed;
 
-    for pair_index in 0..if calibration_floor_passed && stop_reason.is_none() {
+    for pair_index in 0..if should_collect_sample_pairs(
+        calibration_only,
+        calibration_floor_passed,
+        stop_reason.is_some(),
+    ) {
         MAX_SAMPLE_PAIRS
     } else {
         0
@@ -418,6 +442,7 @@ fn run_native(process_run: u8, journal_path: &Path) -> Result<Report, BenchError
     drop(cases);
     let total_elapsed_ns = started.elapsed().as_nanos();
     let (status, stop_reason, sample_floor_passed) = classify_final_status(
+        calibration_only,
         calibration_floor_passed,
         sample_floor_passed,
         stop_reason,
@@ -429,6 +454,7 @@ fn run_native(process_run: u8, journal_path: &Path) -> Result<Report, BenchError
         process_run,
         status,
         stop_reason,
+        calibration_only,
         timing_started: true,
         case_count,
         input_digest,
@@ -443,6 +469,7 @@ fn run_native(process_run: u8, journal_path: &Path) -> Result<Report, BenchError
         frozen_seed_values: S3_34A_SEEDS,
         sequence_counts,
         repetitions_per_side: repetitions,
+        calibration_floor_passed,
         calibration_attempts,
         sample_pairs,
         minimum_side_time_ns: MIN_SIDE_TIME.as_nanos(),
@@ -1037,6 +1064,7 @@ fn wall_limit_exceeded(elapsed_ns: u128) -> bool {
 }
 
 fn classify_final_status(
+    calibration_only: bool,
     calibration_floor_passed: bool,
     mut sample_floor_passed: bool,
     mut stop_reason: Option<String>,
@@ -1048,6 +1076,8 @@ fn classify_final_status(
     }
     let status = if stop_reason.is_some() {
         "diagnostic_only_overall_deadline"
+    } else if calibration_only && calibration_floor_passed {
+        "calibration_only_unscored"
     } else if sample_floor_passed {
         "scored"
     } else if !calibration_floor_passed {
@@ -1058,13 +1088,22 @@ fn classify_final_status(
     (status, stop_reason, sample_floor_passed)
 }
 
+fn should_collect_sample_pairs(
+    calibration_only: bool,
+    calibration_floor_passed: bool,
+    stop_requested: bool,
+) -> bool {
+    !calibration_only && calibration_floor_passed && !stop_requested
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         EXPECTED_CASES, FixtureMemory, MAX_REPETITIONS, MIN_SIDE_TIME, MemoryCorpusSequence,
         MemoryEvent, MemoryOperation, Outcome, PREFLIGHT_REPETITIONS_PER_CASE,
         append_record_with_sync, classify_final_status, expected_memory_events,
-        preflight_execution_count, repeat_outcomes_equal, wall_limit_exceeded,
+        preflight_execution_count, repeat_outcomes_equal, should_collect_sample_pairs,
+        wall_limit_exceeded,
     };
     use od_testkit::memory_corpus::{S3_34A_CASES_PER_SEED, S3_34A_SEEDS, S3_34A_SEQUENCES};
 
@@ -1167,11 +1206,12 @@ mod tests {
     fn post_sync_deadline_overrides_a_previously_scored_status() {
         let limit = std::time::Duration::from_secs(30 * 60).as_nanos();
         assert_eq!(
-            classify_final_status(true, true, None, limit - 1),
+            classify_final_status(false, true, true, None, limit - 1),
             ("scored", None, true)
         );
         for elapsed in [limit, limit + 1] {
-            let (status, reason, floor_passed) = classify_final_status(true, true, None, elapsed);
+            let (status, reason, floor_passed) =
+                classify_final_status(false, true, true, None, elapsed);
             assert_eq!(status, "diagnostic_only_overall_deadline");
             assert_eq!(
                 reason.as_deref(),
@@ -1179,6 +1219,35 @@ mod tests {
             );
             assert!(!floor_passed);
         }
+    }
+
+    #[test]
+    fn calibration_only_finishes_unscored_before_sample_path() {
+        assert!(!should_collect_sample_pairs(true, true, false));
+        assert!(!should_collect_sample_pairs(true, false, false));
+        assert!(!should_collect_sample_pairs(true, true, true));
+        assert!(should_collect_sample_pairs(false, true, false));
+        assert!(!should_collect_sample_pairs(false, false, false));
+
+        assert_eq!(
+            classify_final_status(true, true, false, None, 0),
+            ("calibration_only_unscored", None, false)
+        );
+        assert_eq!(
+            classify_final_status(true, false, false, None, 0).0,
+            "diagnostic_only_calibration_floor_failed"
+        );
+        assert_eq!(
+            classify_final_status(
+                true,
+                true,
+                false,
+                Some("overall_wall_time_ceiling_during_calibration".into()),
+                0
+            )
+            .0,
+            "diagnostic_only_overall_deadline"
+        );
     }
 
     #[test]

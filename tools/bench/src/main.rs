@@ -407,6 +407,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let journal = two_site_memory_cold_journal_path(&output);
                 let value = if preflight_only {
                     serde_json::to_value(od_bench::two_site_memory_cold::preflight(process_run)?)?
+                } else if calibration_only {
+                    serde_json::to_value(od_bench::two_site_memory_cold::calibration_only(
+                        process_run,
+                        &journal,
+                    )?)?
                 } else {
                     serde_json::to_value(od_bench::two_site_memory_cold::run(
                         process_run,
@@ -414,14 +419,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )?)?
                 };
                 od_bench::dispatch_cache::write_atomic(&output, &value)?;
-                if value
-                    .get("status")
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|status| status != "scored")
-                    || value
-                        .get("sample_floor_passed")
-                        .and_then(serde_json::Value::as_bool)
-                        == Some(false)
+                let successful_calibration_only =
+                    calibration_only && calibration_only_report_succeeded(&value);
+                if !successful_calibration_only
+                    && (value
+                        .get("status")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|status| status != "scored")
+                        || value
+                            .get("sample_floor_passed")
+                            .and_then(serde_json::Value::as_bool)
+                            == Some(false))
                 {
                     return Err(format!(
                         "two-site-memory-cold wrote a diagnostic-only report: {}",
@@ -509,7 +517,7 @@ fn print_usage() {
   od-bench cached-flags-compare [--preflight-only] --process-run 1..3 --output report.json\n\
   od-bench cached-native-flags-compare --corpus observations.json [--preflight-only] --process-run 1..3 --output report.json\n\
   od-bench allocator-cost [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
-  od-bench two-site-memory-cold [--preflight-only] --process-run 1..3 --output report.json\n\
+  od-bench two-site-memory-cold [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
          `record` requires macOS ARM64. `measure` rebuilds all keys before timing."
     );
 }
@@ -519,8 +527,8 @@ fn validate_mode_flags(
     preflight_only: bool,
     calibration_only: bool,
 ) -> Result<(), &'static str> {
-    if calibration_only && mode != "allocator-cost" {
-        return Err("--calibration-only is only valid for allocator-cost");
+    if calibration_only && mode != "allocator-cost" && mode != "two-site-memory-cold" {
+        return Err("--calibration-only is only valid for allocator-cost or two-site-memory-cold");
     }
     if preflight_only && calibration_only {
         return Err("--preflight-only and --calibration-only are mutually exclusive");
@@ -528,16 +536,61 @@ fn validate_mode_flags(
     Ok(())
 }
 
+fn calibration_only_report_succeeded(value: &serde_json::Value) -> bool {
+    value.get("status").and_then(serde_json::Value::as_str) == Some("calibration_only_unscored")
+        && value
+            .get("calibration_floor_passed")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        && value
+            .get("sample_pairs")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(Vec::is_empty)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{two_site_memory_cold_journal_path, validate_mode_flags};
+    use super::{
+        calibration_only_report_succeeded, two_site_memory_cold_journal_path, validate_mode_flags,
+    };
     use std::path::PathBuf;
 
     #[test]
     fn calibration_only_is_rejected_for_other_commands() {
         assert!(validate_mode_flags("allocator-cost", false, true).is_ok());
+        assert!(validate_mode_flags("two-site-memory-cold", false, true).is_ok());
         assert!(validate_mode_flags("cached-flags-compare", false, true).is_err());
         assert!(validate_mode_flags("allocator-cost", true, true).is_err());
+    }
+
+    #[test]
+    fn calibration_only_exit_success_requires_floor_and_no_samples() {
+        let success = serde_json::json!({
+            "status": "calibration_only_unscored",
+            "calibration_floor_passed": true,
+            "sample_pairs": []
+        });
+        assert!(calibration_only_report_succeeded(&success));
+
+        for diagnostic in [
+            serde_json::json!({
+                "status": "diagnostic_only_calibration_floor_failed",
+                "calibration_floor_passed": false,
+                "sample_pairs": []
+            }),
+            serde_json::json!({
+                "status": "calibration_only_unscored",
+                "calibration_floor_passed": true,
+                "sample_pairs": [{"pair_index": 0}]
+            }),
+            serde_json::json!({
+                "status": "scored",
+                "calibration_floor_passed": true,
+                "sample_pairs": []
+            }),
+        ] {
+            assert!(!calibration_only_report_succeeded(&diagnostic));
+        }
     }
 
     #[test]
