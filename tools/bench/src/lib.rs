@@ -1413,6 +1413,8 @@ pub mod cached_native_loop;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod cached_native_loop_phases;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub mod cached_native_loop_reuse;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod dispatch_cache;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod flags_compare;

@@ -1032,7 +1032,7 @@ pub fn run_cached_native_register_v1_controlled<B: CachedBlockBackend>(
     backend: &mut B,
 ) -> Result<FallbackDispatchResult, DispatchError<B::Error>> {
     let mut observer = NoopObserver;
-    run_cached_native_register_v1_strategy_controlled(
+    run_cached_native_register_v1_strategy_controlled::<false, false, _, _>(
         code,
         admission,
         execution_context,
@@ -1044,6 +1044,7 @@ pub fn run_cached_native_register_v1_controlled<B: CachedBlockBackend>(
         backend,
         &mut observer,
         NativeRegisterV1CacheStrategy::Eager,
+        None,
     )
 }
 
@@ -1062,7 +1063,7 @@ pub fn run_cached_native_register_v1_controlled_observed<B: CachedBlockBackend>(
     backend: &mut B,
     observer: &mut crate::phase_observation::PhaseRecorder,
 ) -> Result<FallbackDispatchResult, DispatchError<B::Error>> {
-    run_cached_native_register_v1_strategy_controlled(
+    run_cached_native_register_v1_strategy_controlled::<false, false, _, _>(
         code,
         admission,
         execution_context,
@@ -1074,6 +1075,7 @@ pub fn run_cached_native_register_v1_controlled_observed<B: CachedBlockBackend>(
         backend,
         observer,
         NativeRegisterV1CacheStrategy::Eager,
+        None,
     )
 }
 
@@ -1092,7 +1094,7 @@ pub fn run_cached_native_register_v1_demand_flags_candidate_controlled<B: Cached
     backend: &mut B,
 ) -> Result<FallbackDispatchResult, DispatchError<B::Error>> {
     let mut observer = NoopObserver;
-    run_cached_native_register_v1_strategy_controlled(
+    run_cached_native_register_v1_strategy_controlled::<false, false, _, _>(
         code,
         admission,
         execution_context,
@@ -1104,16 +1106,100 @@ pub fn run_cached_native_register_v1_demand_flags_candidate_controlled<B: Cached
         backend,
         &mut observer,
         NativeRegisterV1CacheStrategy::DemandFlagsCandidate,
+        None,
     )
+}
+
+/// Run the eager NativeRegisterV1 cache path with a single last-RIP prepared
+/// block/key memo scoped to this call. The cache lookup and all snapshot
+/// validation still run on every iteration; this only skips rebuilding the
+/// same native block and constructing its TranslationKey again.
+pub fn run_cached_native_register_v1_prepared_key_candidate_controlled<B: CachedBlockBackend>(
+    code: CodeView<'_>,
+    admission: &NativeRegisterV1Admission,
+    execution_context: ExecutionContextSnapshot,
+    dependencies: &[CodeDependencySpan],
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    cache: &mut SingleEntryBlockCache<B::Published>,
+    backend: &mut B,
+) -> Result<FallbackDispatchResult, DispatchError<B::Error>> {
+    let mut observer = NoopObserver;
+    run_cached_native_register_v1_strategy_controlled::<true, false, _, _>(
+        code,
+        admission,
+        execution_context,
+        dependencies,
+        state,
+        total_budget,
+        control,
+        cache,
+        backend,
+        &mut observer,
+        NativeRegisterV1CacheStrategy::PreparedKeyReuseCandidate,
+        None,
+    )
+}
+
+/// Instrumented counterpart for untimed candidate preflight only. Do not use
+/// this entrypoint for scored samples.
+pub fn run_cached_native_register_v1_prepared_key_candidate_controlled_counted<
+    B: CachedBlockBackend,
+>(
+    code: CodeView<'_>,
+    admission: &NativeRegisterV1Admission,
+    execution_context: ExecutionContextSnapshot,
+    dependencies: &[CodeDependencySpan],
+    state: &mut LongModeState,
+    total_budget: u64,
+    control: DispatchControl<'_>,
+    cache: &mut SingleEntryBlockCache<B::Published>,
+    backend: &mut B,
+    counts: &mut PreparedKeyReuseCounts,
+) -> Result<FallbackDispatchResult, DispatchError<B::Error>> {
+    let mut observer = NoopObserver;
+    run_cached_native_register_v1_strategy_controlled::<true, true, _, _>(
+        code,
+        admission,
+        execution_context,
+        dependencies,
+        state,
+        total_budget,
+        control,
+        cache,
+        backend,
+        &mut observer,
+        NativeRegisterV1CacheStrategy::PreparedKeyReuseCandidate,
+        Some(counts),
+    )
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PreparedKeyReuseCounts {
+    pub prepared_keys: u64,
+    pub reused_keys: u64,
+}
+
+struct PreparedNativeRegisterKey {
+    rip: u64,
+    block: crate::block::BasicBlock,
+    key: TranslationKey,
 }
 
 #[derive(Clone, Copy)]
 enum NativeRegisterV1CacheStrategy {
     Eager,
     DemandFlagsCandidate,
+    PreparedKeyReuseCandidate,
 }
 
-fn run_cached_native_register_v1_strategy_controlled<B: CachedBlockBackend, O: PhaseObserver>(
+fn run_cached_native_register_v1_strategy_controlled<
+    const REUSE_PREPARED_KEY: bool,
+    const TRACK_REUSE_COUNTS: bool,
+    B: CachedBlockBackend,
+    O: PhaseObserver,
+>(
     code: CodeView<'_>,
     admission: &NativeRegisterV1Admission,
     execution_context: ExecutionContextSnapshot,
@@ -1125,6 +1211,7 @@ fn run_cached_native_register_v1_strategy_controlled<B: CachedBlockBackend, O: P
     backend: &mut B,
     observer: &mut O,
     strategy: NativeRegisterV1CacheStrategy,
+    mut reuse_counts: Option<&mut PreparedKeyReuseCounts>,
 ) -> Result<FallbackDispatchResult, DispatchError<B::Error>> {
     if execution_context.profile != ExecutionProfile::NATIVE_REGISTER_V1_LONG64_CANONICAL48 {
         return Err(DispatchError::ExecutionContext(
@@ -1151,6 +1238,7 @@ fn run_cached_native_register_v1_strategy_controlled<B: CachedBlockBackend, O: P
     let mut retired_native = 0u64;
     let mut retired_interpreter = 0u64;
     let mut blocks_executed = 0u64;
+    let mut prepared_key: Option<PreparedNativeRegisterKey> = None;
     loop {
         if let Some(exit) = control_exit(state.rip, code.code_end(), remaining, control) {
             return fallback_result(
@@ -1176,6 +1264,7 @@ fn run_cached_native_register_v1_strategy_controlled<B: CachedBlockBackend, O: P
             );
         }
         if admission.admits_nop(state.rip) {
+            prepared_key = None;
             if let Some(exit) = step_admitted_fallback::<B::Error>(
                 code,
                 FallbackAdmission::NativeRegisterV1(admission),
@@ -1204,49 +1293,111 @@ fn run_cached_native_register_v1_strategy_controlled<B: CachedBlockBackend, O: P
             continue;
         }
 
-        let built = measure(observer, DispatchPhase::BlockBuildAndAdmission, || {
-            crate::block::build_block_for_native_register_v1(
-                code,
-                state.rip,
-                AccessContext::default(),
-                crate::block::BlockLimits::default(),
-            )
-        })
-        .map_err(|error| DispatchError::Compile(BlockCompileError::Build(error)))?;
-        let guest_block = match built {
-            crate::block::BuildOutcome::Block(block) => block,
-            crate::block::BuildOutcome::NoBlock(_) => {
-                return Err(DispatchError::NoNativePrefix { rip: state.rip });
-            }
+        let reuse_candidate = REUSE_PREPARED_KEY;
+        let reuse_hit = reuse_candidate
+            && prepared_key
+                .as_ref()
+                .is_some_and(|prepared| prepared.rip == state.rip);
+        if !reuse_hit {
+            prepared_key = None;
+        }
+        let guest_block = if reuse_hit {
+            None
+        } else {
+            let built = measure(observer, DispatchPhase::BlockBuildAndAdmission, || {
+                crate::block::build_block_for_native_register_v1(
+                    code,
+                    state.rip,
+                    AccessContext::default(),
+                    crate::block::BlockLimits::default(),
+                )
+            })
+            .map_err(|error| DispatchError::Compile(BlockCompileError::Build(error)))?;
+            let block = match built {
+                crate::block::BuildOutcome::Block(block) => block,
+                crate::block::BuildOutcome::NoBlock(_) => {
+                    return Err(DispatchError::NoNativePrefix { rip: state.rip });
+                }
+            };
+            Some(block)
         };
+        if reuse_hit {
+            if TRACK_REUSE_COUNTS {
+                let counts = reuse_counts
+                    .as_deref_mut()
+                    .expect("counted candidate has a counter receiver");
+                counts.reused_keys = counts
+                    .reused_keys
+                    .checked_add(1)
+                    .ok_or(DispatchError::AggregateOverflow)?;
+            }
+        }
         let (key, hit_index) = measure(observer, DispatchPhase::KeySnapshotAndLookup, || {
-            let minimum = minimum_cache_key_size::<B::Published>(code, dependencies, &guest_block)
+            let block = guest_block
+                .as_ref()
+                .or_else(|| prepared_key.as_ref().map(|prepared| &prepared.block))
+                .expect("block or prepared memo exists");
+            let minimum = minimum_cache_key_size::<B::Published>(code, dependencies, block)
                 .ok_or(DispatchError::Cache(CacheError::SizeOverflow))?;
             cache.check_minimum(minimum).map_err(DispatchError::Cache)?;
-            let key = TranslationKey::for_block(
-                code,
-                &guest_block,
-                match strategy {
-                    NativeRegisterV1CacheStrategy::Eager => {
-                        CompileFlavor::S3_38bNativeRegisterV1Cached
-                    }
-                    NativeRegisterV1CacheStrategy::DemandFlagsCandidate => {
-                        CompileFlavor::S3_38cNativeRegisterV1DemandFlagsCachedCandidate
-                    }
-                },
-                execution_context,
-                dependencies,
-            )
-            .map_err(DispatchError::TranslationKey)?;
-            validate_cached_snapshot(&key, code, dependencies)?;
-            let hit_index = cache.find(&key);
-            if let Some(index) = hit_index {
-                cache.record_hit(index).map_err(DispatchError::Cache)?;
+            if reuse_hit {
+                let key = &prepared_key.as_ref().expect("memo exists").key;
+                validate_cached_snapshot(key, code, dependencies)?;
+                let hit_index = cache.find(key);
+                if let Some(index) = hit_index {
+                    cache.record_hit(index).map_err(DispatchError::Cache)?;
+                } else {
+                    cache.record_miss().map_err(DispatchError::Cache)?;
+                }
+                Ok::<_, DispatchError<B::Error>>((None, hit_index))
             } else {
-                cache.record_miss().map_err(DispatchError::Cache)?;
+                let block = guest_block.as_ref().expect("new block exists");
+                let key = TranslationKey::for_block(
+                    code,
+                    block,
+                    match strategy {
+                        NativeRegisterV1CacheStrategy::Eager
+                        | NativeRegisterV1CacheStrategy::PreparedKeyReuseCandidate => {
+                            CompileFlavor::S3_38bNativeRegisterV1Cached
+                        }
+                        NativeRegisterV1CacheStrategy::DemandFlagsCandidate => {
+                            CompileFlavor::S3_38cNativeRegisterV1DemandFlagsCachedCandidate
+                        }
+                    },
+                    execution_context,
+                    dependencies,
+                )
+                .map_err(DispatchError::TranslationKey)?;
+                validate_cached_snapshot(&key, code, dependencies)?;
+                let hit_index = cache.find(&key);
+                if let Some(index) = hit_index {
+                    cache.record_hit(index).map_err(DispatchError::Cache)?;
+                } else {
+                    cache.record_miss().map_err(DispatchError::Cache)?;
+                }
+                if reuse_candidate {
+                    prepared_key = Some(PreparedNativeRegisterKey {
+                        rip: state.rip,
+                        block: block.clone(),
+                        key: key.clone(),
+                    });
+                    if TRACK_REUSE_COUNTS {
+                        let counts = reuse_counts
+                            .as_deref_mut()
+                            .expect("counted candidate has a counter receiver");
+                        counts.prepared_keys = counts
+                            .prepared_keys
+                            .checked_add(1)
+                            .ok_or(DispatchError::AggregateOverflow)?;
+                    }
+                }
+                Ok((Some(key), hit_index))
             }
-            Ok::<_, DispatchError<B::Error>>((key, hit_index))
         })?;
+        let key = key
+            .as_ref()
+            .or_else(|| prepared_key.as_ref().map(|prepared| &prepared.key))
+            .expect("key or prepared memo exists");
         let cached_index = if hit_index.is_some() {
             hit_index.expect("hit index exists")
         } else {
@@ -1259,6 +1410,9 @@ fn run_cached_native_register_v1_strategy_controlled<B: CachedBlockBackend, O: P
                         code, state.rip, admission,
                     )
                 }
+                NativeRegisterV1CacheStrategy::PreparedKeyReuseCandidate => {
+                    compile_block_for_native_register_v1(code, state.rip, admission)
+                }
             };
             let compiled = match compilation.map_err(DispatchError::Compile)? {
                 BlockCompileOutcome::Compiled(block) => block,
@@ -1268,13 +1422,13 @@ fn run_cached_native_register_v1_strategy_controlled<B: CachedBlockBackend, O: P
             };
             cache.record_compile().map_err(DispatchError::Cache)?;
             let logical_bytes = cache
-                .size_for_candidate(&key, &compiled)
+                .size_for_candidate(key, &compiled)
                 .map_err(DispatchError::Cache)?;
             let code_bytes = emitted_code_bytes(&compiled).map_err(DispatchError::Cache)?;
             cache
                 .prepare_install(code_bytes, logical_bytes)
                 .map_err(DispatchError::Cache)?;
-            validate_cached_snapshot(&key, code, dependencies)?;
+            validate_cached_snapshot(key, code, dependencies)?;
             let published = measure(observer, DispatchPhase::Publication, || {
                 backend.publish_cached_block(&compiled)
             })
@@ -1282,11 +1436,11 @@ fn run_cached_native_register_v1_strategy_controlled<B: CachedBlockBackend, O: P
             cache
                 .record_publish(code_bytes)
                 .map_err(DispatchError::Cache)?;
-            let published = validate_published_candidate(&key, code, dependencies, published)?;
+            let published = validate_published_candidate(key, code, dependencies, published)?;
             CachedEntryStore::install(
                 cache,
                 CachedEntry {
-                    key,
+                    key: key.clone(),
                     block: compiled,
                     published,
                     logical_bytes,
@@ -1294,13 +1448,20 @@ fn run_cached_native_register_v1_strategy_controlled<B: CachedBlockBackend, O: P
             )
             .map_err(DispatchError::Cache)?
         };
+        if reuse_candidate && hit_index.is_none() {
+            // A cold install may replace the cache resident; never retain a
+            // prepared memo across that replacement boundary.
+            prepared_key = None;
+        }
         let cached_key = &cache.entry(cached_index).expect("cache index valid").key;
         if let Err(error) = validate_cached_snapshot(cached_key, code, dependencies) {
             cache.remove(cached_index).map_err(DispatchError::Cache)?;
+            drop(prepared_key.take());
             return Err(error);
         }
         if !cached_key.matches_code_view(code) {
             cache.remove(cached_index).map_err(DispatchError::Cache)?;
+            drop(prepared_key.take());
             return Err(DispatchError::StaleDependencySnapshot);
         }
         let cached = cache.entry(cached_index).expect("cache index valid");
@@ -1337,6 +1498,7 @@ fn run_cached_native_register_v1_strategy_controlled<B: CachedBlockBackend, O: P
             Ok(report) => report,
             Err(error) => {
                 cache.remove(cached_index).map_err(DispatchError::Cache)?;
+                drop(prepared_key.take());
                 return Err(DispatchError::CacheExecutor(error));
             }
         };
@@ -1360,6 +1522,7 @@ fn run_cached_native_register_v1_strategy_controlled<B: CachedBlockBackend, O: P
         )?;
         match report.exit {
             RuntimeExitTag::NeedInterpreter => {
+                prepared_key = None;
                 let Some(exit) = step_admitted_fallback::<B::Error>(
                     code,
                     FallbackAdmission::NativeRegisterV1(admission),
@@ -3937,6 +4100,7 @@ mod tests {
         loop_to_entry: bool,
         request_stop_once: bool,
         request_event_once: bool,
+        scripted_replies: Vec<(u64, RuntimeExitTag, u64)>,
         stop_on_publish: Option<Rc<AtomicU8>>,
         event_on_publish: Option<Rc<AtomicBool>>,
         allow_multiple_live: bool,
@@ -3994,7 +4158,13 @@ mod tests {
             incoming_budget: u64,
             control: DispatchControl<'_>,
         ) -> Result<BlockExecutionReport, Self::Error> {
-            let (loop_to_entry, request_stop_once, request_event_once, fail_execute_once) = {
+            let (
+                loop_to_entry,
+                request_stop_once,
+                request_event_once,
+                fail_execute_once,
+                scripted_reply,
+            ) = {
                 let mut tracker = self.0.borrow_mut();
                 tracker.executions += 1;
                 tracker.executed_ids.push(published.1);
@@ -4006,11 +4176,17 @@ mod tests {
                 tracker.request_event_once = false;
                 let fail_execute = tracker.fail_execute_once;
                 tracker.fail_execute_once = false;
+                let scripted_reply = if tracker.scripted_replies.is_empty() {
+                    None
+                } else {
+                    Some(tracker.scripted_replies.remove(0))
+                };
                 (
                     tracker.loop_to_entry,
                     request_stop,
                     request_event,
                     fail_execute,
+                    scripted_reply,
                 )
             };
             if request_stop_once {
@@ -4024,6 +4200,10 @@ mod tests {
             }
             if fail_execute_once {
                 return Err("execution failed");
+            }
+            if let Some((next_rip, exit, retired)) = scripted_reply {
+                state.rip = next_rip;
+                return Ok(report(exit, incoming_budget - retired, retired));
             }
             state.rip = if loop_to_entry {
                 block.emitted().entry_rip()
@@ -4100,6 +4280,7 @@ mod tests {
         let mut expected_published_code_bytes = 0u64;
         for (candidate, expected) in [(false, 1), (true, 2), (true, 2), (false, 3)] {
             state.rip = base;
+            #[cfg(feature = "phase-observation")]
             let publications_before = cache.counters().successful_publications;
             if candidate {
                 run_cached_native_register_v1_demand_flags_candidate_controlled(
@@ -4150,6 +4331,308 @@ mod tests {
         assert_eq!((cache.counters().misses, cache.counters().hits), (3, 1));
         assert_eq!(cache.resident_entries(), 1);
         assert_eq!(tracker.borrow().publishes, 3);
+    }
+
+    #[test]
+    fn native_cached_prepared_key_candidate_reuses_only_within_each_run() {
+        let code = [0x48, 0x83, 0xC0, 0x01];
+        let base = 0x7A60;
+        let view = CodeView::new(base, &code).unwrap();
+        let admission = native_admission(view);
+        let dependencies = dependency(view, 1);
+        let context = native_test_context_with_generation(1);
+        let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let mut backend = mock_cached_backend(tracker.clone());
+        let stop = AtomicU8::new(0);
+        let control = DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let mut state = LongModeState {
+            rip: base,
+            ..LongModeState::default()
+        };
+
+        run_cached_native_register_v1_controlled(
+            view,
+            &admission,
+            context,
+            &dependencies,
+            &mut state,
+            1,
+            control,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+
+        tracker.borrow_mut().loop_to_entry = true;
+        let initial = LongModeState {
+            rip: base,
+            ..LongModeState::default()
+        };
+        let mut baseline_state = initial.clone();
+        let baseline = run_cached_native_register_v1_controlled(
+            view,
+            &admission,
+            context,
+            &dependencies,
+            &mut baseline_state,
+            4,
+            control,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        let mut candidate_state = initial;
+        let mut first_counts = PreparedKeyReuseCounts::default();
+        let candidate = run_cached_native_register_v1_prepared_key_candidate_controlled_counted(
+            view,
+            &admission,
+            context,
+            &dependencies,
+            &mut candidate_state,
+            4,
+            control,
+            &mut cache,
+            &mut backend,
+            &mut first_counts,
+        )
+        .unwrap();
+        assert_eq!(candidate_state, baseline_state);
+        assert_eq!(candidate, baseline);
+        assert_eq!(
+            (first_counts.prepared_keys, first_counts.reused_keys),
+            (1, 3)
+        );
+        assert_eq!(candidate.retired_native, 4);
+        assert_eq!(candidate.remaining_budget, 0);
+
+        let mut second_state = LongModeState {
+            rip: base,
+            ..LongModeState::default()
+        };
+        let mut second_counts = PreparedKeyReuseCounts::default();
+        run_cached_native_register_v1_prepared_key_candidate_controlled_counted(
+            view,
+            &admission,
+            context,
+            &dependencies,
+            &mut second_state,
+            4,
+            control,
+            &mut cache,
+            &mut backend,
+            &mut second_counts,
+        )
+        .unwrap();
+        assert_eq!(
+            (second_counts.prepared_keys, second_counts.reused_keys),
+            (1, 3)
+        );
+        assert_eq!((cache.counters().misses, cache.counters().hits), (1, 12));
+
+        tracker.borrow_mut().fail_execute_once = true;
+        let mut error_state = LongModeState {
+            rip: base,
+            ..LongModeState::default()
+        };
+        let mut error_counts = PreparedKeyReuseCounts::default();
+        assert!(matches!(
+            run_cached_native_register_v1_prepared_key_candidate_controlled_counted(
+                view,
+                &admission,
+                context,
+                &dependencies,
+                &mut error_state,
+                4,
+                control,
+                &mut cache,
+                &mut backend,
+                &mut error_counts,
+            ),
+            Err(DispatchError::CacheExecutor("execution failed"))
+        ));
+        assert_eq!(
+            cache.resident_entries(),
+            0,
+            "executor error removes resident"
+        );
+        assert_eq!(
+            (error_counts.prepared_keys, error_counts.reused_keys),
+            (1, 0)
+        );
+
+        // A new call has no memo from the failed invocation. Warm its cache
+        // first, then verify the candidate prepares once for this RUN.
+        state.rip = base;
+        run_cached_native_register_v1_controlled(
+            view,
+            &admission,
+            context,
+            &dependencies,
+            &mut state,
+            1,
+            control,
+            &mut cache,
+            &mut backend,
+        )
+        .unwrap();
+        let mut post_error_state = LongModeState {
+            rip: base,
+            ..LongModeState::default()
+        };
+        let mut post_error_counts = PreparedKeyReuseCounts::default();
+        run_cached_native_register_v1_prepared_key_candidate_controlled_counted(
+            view,
+            &admission,
+            context,
+            &dependencies,
+            &mut post_error_state,
+            4,
+            control,
+            &mut cache,
+            &mut backend,
+            &mut post_error_counts,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                post_error_counts.prepared_keys,
+                post_error_counts.reused_keys
+            ),
+            (1, 3)
+        );
+    }
+
+    #[test]
+    fn native_cached_prepared_key_candidate_rebuilds_after_need_interpreter_nop_and_new_rip() {
+        let code = [
+            0x48, 0x83, 0xC0, 0x01, // ADD RAX, 1
+            0x90, // admitted NOP fallback
+            0x48, 0x83, 0xC0, 0x01, // second native entry
+        ];
+        let base = 0x7A90;
+        let view = CodeView::new(base, &code).unwrap();
+        let admission = native_admission(view);
+        let dependencies = dependency(view, 1);
+        let context = native_test_context_with_generation(1);
+        let script = || {
+            vec![
+                (base, RuntimeExitTag::DispatchCandidate, 1),
+                (base + 4, RuntimeExitTag::NeedInterpreter, 0),
+                (view.code_end(), RuntimeExitTag::BlockComplete, 1),
+            ]
+        };
+        let stop = AtomicU8::new(0);
+        let control = DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+        let initial = LongModeState {
+            rip: base,
+            rflags: 0x202,
+            ..LongModeState::default()
+        };
+
+        let baseline_tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let mut baseline_backend = mock_cached_backend(baseline_tracker.clone());
+        let mut baseline_cache =
+            SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let mut baseline_warm_state = initial.clone();
+        run_cached_native_register_v1_controlled(
+            view,
+            &admission,
+            context,
+            &dependencies,
+            &mut baseline_warm_state,
+            1,
+            control,
+            &mut baseline_cache,
+            &mut baseline_backend,
+        )
+        .unwrap();
+        baseline_tracker.borrow_mut().scripted_replies = script();
+        let mut baseline_state = initial.clone();
+        let baseline = run_cached_native_register_v1_controlled(
+            view,
+            &admission,
+            context,
+            &dependencies,
+            &mut baseline_state,
+            6,
+            control,
+            &mut baseline_cache,
+            &mut baseline_backend,
+        )
+        .unwrap();
+
+        let candidate_tracker = Rc::new(RefCell::new(PublishedTracker::default()));
+        let mut candidate_backend = mock_cached_backend(candidate_tracker.clone());
+        let mut candidate_cache =
+            SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
+        let mut candidate_warm_state = initial.clone();
+        run_cached_native_register_v1_controlled(
+            view,
+            &admission,
+            context,
+            &dependencies,
+            &mut candidate_warm_state,
+            1,
+            control,
+            &mut candidate_cache,
+            &mut candidate_backend,
+        )
+        .unwrap();
+        candidate_tracker.borrow_mut().scripted_replies = script();
+        let mut candidate_state = initial;
+        let mut counts = PreparedKeyReuseCounts::default();
+        let candidate = run_cached_native_register_v1_prepared_key_candidate_controlled_counted(
+            view,
+            &admission,
+            context,
+            &dependencies,
+            &mut candidate_state,
+            6,
+            control,
+            &mut candidate_cache,
+            &mut candidate_backend,
+            &mut counts,
+        )
+        .unwrap();
+
+        assert_eq!(candidate_state, baseline_state);
+        assert_eq!(candidate, baseline);
+        assert_eq!(candidate.exit, DispatchExit::CodeEnd);
+        assert_eq!(candidate.retired_native, 2);
+        assert_eq!(candidate.retired_interpreter, 1);
+        assert_eq!(candidate.remaining_budget, 3);
+        assert_eq!(candidate.blocks_executed, 3);
+        assert_eq!((counts.prepared_keys, counts.reused_keys), (2, 1));
+        assert_eq!(
+            (
+                candidate_cache.counters().misses,
+                candidate_cache.counters().hits,
+                candidate_cache.counters().successful_compiles,
+                candidate_cache.counters().successful_publications,
+                candidate_cache.counters().replacements,
+            ),
+            (2, 2, 2, 2, 1)
+        );
+        assert_eq!(
+            (
+                baseline_cache.counters().misses,
+                baseline_cache.counters().hits,
+                baseline_cache.counters().successful_compiles,
+                baseline_cache.counters().successful_publications,
+                baseline_cache.counters().replacements,
+            ),
+            (2, 2, 2, 2, 1)
+        );
+        assert_eq!(candidate_tracker.borrow().executions, 4);
     }
 
     #[test]

@@ -426,6 +426,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
+        "cached-native-loop-reuse" => {
+            let output = output.ok_or("cached-native-loop-reuse requires --output PATH")?;
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                let value = if preflight_only {
+                    serde_json::to_value(od_bench::cached_native_loop_reuse::preflight()?)?
+                } else {
+                    serde_json::to_value(od_bench::cached_native_loop_reuse::run(process_run)?)?
+                };
+                od_bench::dispatch_cache::write_atomic(&output, &value)?;
+            }
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                let _ = (output, process_run, preflight_only);
+                return Err(
+                    "cached-native-loop-reuse requires native Apple Silicon macOS execution".into(),
+                );
+            }
+        }
         "allocator-cost" => {
             let output = output.ok_or("allocator-cost requires --output PATH")?;
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -721,7 +740,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {
             print_usage();
             return Err(
-                "expected record, measure, synthetic, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, warm-dispatch-phases, warm-native-fallback, two-site-memory-cold, two-site-memory-warm, two-site-memory-cache, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, cached-flags-compare, cached-native-flags-compare, cached-native-loop, cached-native-loop-phases, allocator-cost, allocator-cost-branch-routing, or allocator-cost-s3-32a".into(),
+                "expected record, measure, synthetic, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, warm-dispatch-phases, warm-native-fallback, two-site-memory-cold, two-site-memory-warm, two-site-memory-cache, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, cached-flags-compare, cached-native-flags-compare, cached-native-loop, cached-native-loop-phases, cached-native-loop-reuse, allocator-cost, allocator-cost-branch-routing, or allocator-cost-s3-32a".into(),
             );
         }
     }
@@ -776,6 +795,7 @@ fn print_usage() {
   od-bench cached-native-flags-compare --corpus observations.json [--preflight-only] --process-run 1..3 --output report.json\n\
   od-bench cached-native-loop [--preflight-only] --process-run 1..3 --output report.json\n\
   od-bench cached-native-loop-phases [--preflight-only] --process-run 1..3 --output report.json\n\
+  od-bench cached-native-loop-reuse [--preflight-only] --process-run 1..3 --output report.json\n\
   od-bench allocator-cost [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
   od-bench allocator-cost-branch-routing [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
   od-bench allocator-cost-s3-32a [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
