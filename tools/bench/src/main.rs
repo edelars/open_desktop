@@ -29,6 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut epochs = None::<usize>;
     let mut process_run = 1u8;
     let mut preflight_only = false;
+    let mut calibration_only = false;
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--case-list" => {
@@ -60,12 +61,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .parse()?;
             }
             "--preflight-only" => preflight_only = true,
+            "--calibration-only" => calibration_only = true,
             "--help" | "-h" => {
                 print_usage();
                 return Ok(());
             }
             other => return Err(format!("unknown argument: {other}").into()),
         }
+    }
+    if preflight_only && calibration_only {
+        return Err("--preflight-only and --calibration-only are mutually exclusive".into());
     }
 
     match mode.as_str() {
@@ -364,27 +369,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let output = output.ok_or("allocator-cost requires --output PATH")?;
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             {
+                if let Some(parent) = output.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let journal = output.with_extension("calibration.jsonl");
                 let value = if preflight_only {
                     serde_json::to_value(od_bench::allocator_cost::preflight(process_run)?)?
+                } else if calibration_only {
+                    serde_json::to_value(od_bench::allocator_cost::calibration_only(
+                        process_run,
+                        &journal,
+                    )?)?
                 } else {
-                    serde_json::to_value(od_bench::allocator_cost::run(process_run)?)?
+                    serde_json::to_value(od_bench::allocator_cost::run(process_run, &journal)?)?
                 };
                 od_bench::dispatch_cache::write_atomic(&output, &value)?;
-                if value
-                    .get("sample_floor_passed")
-                    .and_then(serde_json::Value::as_bool)
-                    == Some(false)
-                {
+                if od_bench::allocator_cost::report_requires_nonzero_exit(&value) {
                     return Err(format!(
-                        "allocator-cost wrote a diagnostic-only report (sample floor failed): {}",
-                        output.display()
+                        "allocator-cost wrote an unscored diagnostic report: {}",
+                        output.display(),
                     )
                     .into());
                 }
             }
             #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
             {
-                let _ = (output, process_run, preflight_only);
+                let _ = (output, process_run, preflight_only, calibration_only);
                 return Err("allocator-cost requires native Apple Silicon macOS execution".into());
             }
         }
@@ -452,7 +462,7 @@ fn print_usage() {
   od-bench flags-compare --process-run 1..3 --output report.json\n\
   od-bench cached-flags-compare [--preflight-only] --process-run 1..3 --output report.json\n\
   od-bench cached-native-flags-compare --corpus observations.json [--preflight-only] --process-run 1..3 --output report.json\n\
-  od-bench allocator-cost [--preflight-only] --process-run 1..3 --output report.json\n\
+  od-bench allocator-cost [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
          `record` requires macOS ARM64. `measure` rebuilds all keys before timing."
     );
 }

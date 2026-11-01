@@ -3,6 +3,9 @@
 //! This is a single-block diagnostic. It uses no translation cache and retains
 //! only one MAP_JIT publication at a time.
 
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::Path;
 use std::sync::atomic::AtomicU8;
 use std::time::{Duration, Instant};
 
@@ -28,7 +31,9 @@ const SPILL_ONLY_BUDGET: u8 = 0;
 const PAIRS: usize = 20;
 const MIN_SAMPLE: Duration = Duration::from_millis(200);
 const CHUNK_CALLS: usize = 256;
-const MAX_CALIBRATED_CALLS: usize = 1 << 22;
+const MAX_CALIBRATED_CALLS: usize = 1 << 24;
+const MAX_CALIBRATION_SIDE_WALL: Duration = Duration::from_secs(1);
+const MAX_CALIBRATION_WALL: Duration = Duration::from_secs(180);
 const COMPILE_PAIRS: usize = 20;
 const MAX_COMPILE_CALLS: usize = 1 << 20;
 const WARMUP_CALLS: usize = 64;
@@ -127,17 +132,46 @@ struct VariantReport {
 
 #[derive(Clone, Debug, Serialize)]
 struct CalibrationReport {
-    common_repetitions_per_case_and_side: usize,
+    common_repetitions_per_case_and_side: Option<usize>,
     warmup_calls_per_case: usize,
     sample_pairs: usize,
     minimum_sample_ns: u128,
-    calibration_checks_ns: Vec<(u8, String, u128, u128)>,
+    maximum_repetitions_per_side: usize,
+    maximum_measured_side_ns: u128,
+    maximum_overall_wall_ns: u128,
+    wall_bound_derivation: String,
+    total_wall_ns: u128,
+    outcome: String,
+    calibration_checks: Vec<CalibrationCheck>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct CalibrationCheck {
+    budget: u8,
+    case_id: String,
+    requested_repetitions: usize,
+    native_calls: usize,
+    interpreter_calls: Option<usize>,
+    native_ns: Option<u128>,
+    interpreter_ns: Option<u128>,
+    process_wall_ns: u128,
+    sample_floor_met: Option<bool>,
+    stop_reason: Option<String>,
+}
+
+#[derive(Debug)]
+struct CalibrationRun {
+    common_repetitions: Option<usize>,
+    checks: Vec<CalibrationCheck>,
+    total_wall_ns: u128,
+    failure: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Report {
     schema_version: u32,
     timing_started: bool,
+    calibration_only_mode: bool,
     sample_floor_passed: Option<bool>,
     timing_status: String,
     sample_floor_policy: String,
@@ -206,16 +240,28 @@ fn cases() -> Vec<Case> {
 }
 
 pub fn preflight(process_run: u8) -> Result<Report, Box<dyn std::error::Error>> {
-    build_report(process_run, true)
+    build_report(process_run, true, false, None)
 }
 
-pub fn run(process_run: u8) -> Result<Report, Box<dyn std::error::Error>> {
-    build_report(process_run, false)
+pub fn run(
+    process_run: u8,
+    calibration_journal: &Path,
+) -> Result<Report, Box<dyn std::error::Error>> {
+    build_report(process_run, false, false, Some(calibration_journal))
+}
+
+pub fn calibration_only(
+    process_run: u8,
+    calibration_journal: &Path,
+) -> Result<Report, Box<dyn std::error::Error>> {
+    build_report(process_run, false, true, Some(calibration_journal))
 }
 
 fn build_report(
     process_run: u8,
     preflight_only: bool,
+    calibration_only: bool,
+    calibration_journal: Option<&Path>,
 ) -> Result<Report, Box<dyn std::error::Error>> {
     if !(1..=3).contains(&process_run) {
         return Err(fail("process-run must be 1..=3").into());
@@ -245,6 +291,7 @@ fn build_report(
         .collect::<Vec<_>>();
 
     let mut calibration = None;
+    let mut calibration_failed = false;
     let mut compile_calls_per_sample = None;
     let mut compile_pairs_ns_per_call = Vec::new();
     let mut budgets = vec![HOME_BUDGET, SPILL_ONLY_BUDGET];
@@ -274,101 +321,129 @@ fn build_report(
     }
 
     if !preflight_only {
-        let (compile_calls, compile_pairs) = measure_compile_pairs(process_run)?;
-        compile_calls_per_sample = Some(compile_calls);
-        compile_pairs_ns_per_call = compile_pairs;
-        let repetitions = calibrate_common_repetitions(&cases, &interpreters, &budgets)?;
-        let calibration_checks = repetitions.1;
-        let common_repetitions = repetitions.0;
+        let calibration_started = Instant::now();
+        let repetitions = calibrate_common_repetitions(
+            &cases,
+            &interpreters,
+            &budgets,
+            calibration_journal.ok_or_else(|| fail("calibration journal path is required"))?,
+            calibration_started,
+        )?;
+        calibration_failed = repetitions.failure.is_some();
+        let common_repetitions = repetitions.common_repetitions.unwrap_or(0);
+        calibration = Some(CalibrationReport {
+            common_repetitions_per_case_and_side: repetitions.common_repetitions,
+            warmup_calls_per_case: if calibration_only { 0 } else { WARMUP_CALLS },
+            sample_pairs: if calibration_only { 0 } else { PAIRS },
+            minimum_sample_ns: MIN_SAMPLE.as_nanos(),
+            maximum_repetitions_per_side: MAX_CALIBRATED_CALLS,
+            maximum_measured_side_ns: MAX_CALIBRATION_SIDE_WALL.as_nanos(),
+            maximum_overall_wall_ns: MAX_CALIBRATION_WALL.as_nanos(),
+            wall_bound_derivation: "Estimated ceiling: 2 budgets × 2 cases × 17 doubled call counts × 2 sides × 1s per side = 136s timed work; 180s overall allows an estimated 44s for state reset, validation, block setup and durable journal writes. The prior failed attempt's individual side durations are unknown, so this is a planning bound, not a measured runtime claim.".into(),
+            total_wall_ns: repetitions.total_wall_ns,
+            outcome: repetitions
+                .failure
+                .clone()
+                .unwrap_or_else(|| "floor_met_for_every_case_and_side".into()),
+            calibration_checks: repetitions.checks,
+        });
 
-        for (variant_index, &budget) in budgets.iter().enumerate() {
-            let (compiled, allocation) = compile_variant(budget)?;
-            validate_allocation(&allocation)?;
-            if allocation != variant_reports[variant_index].allocation {
-                return Err(fail(format!(
-                    "allocator summary changed after preflight for budget {budget}"
-                ))
-                .into());
-            }
-            let publication_started = Instant::now();
-            let published = PublishedCode::publish_block(compiled.emitted())
-                .map_err(|error| fail(format!("publish budget {budget}: {error:?}")))?;
-            let publication_ns = publication_started.elapsed().as_nanos();
+        if collect_scored_samples(calibration_only, calibration_failed) {
+            let (compile_calls, compile_pairs) = measure_compile_pairs(process_run)?;
+            compile_calls_per_sample = Some(compile_calls);
+            compile_pairs_ns_per_call = compile_pairs;
+        }
 
-            for case in &cases {
-                for _ in 0..WARMUP_CALLS {
-                    let native = native_observation(&published, case)?;
-                    let expected =
-                        &interpreters[cases.iter().position(|item| item.id == case.id).unwrap()];
-                    validate_pair(case, &native, expected)?;
+        if collect_scored_samples(calibration_only, calibration_failed) {
+            for (variant_index, &budget) in budgets.iter().enumerate() {
+                let (compiled, allocation) = compile_variant(budget)?;
+                validate_allocation(&allocation)?;
+                if allocation != variant_reports[variant_index].allocation {
+                    return Err(fail(format!(
+                        "allocator summary changed after preflight for budget {budget}"
+                    ))
+                    .into());
                 }
-            }
+                let publication_started = Instant::now();
+                let published = PublishedCode::publish_block(compiled.emitted())
+                    .map_err(|error| fail(format!("publish budget {budget}: {error:?}")))?;
+                let publication_ns = publication_started.elapsed().as_nanos();
 
-            for (index, case) in cases.iter().enumerate() {
-                let mut samples = Vec::with_capacity(PAIRS);
-                for pair in 0..PAIRS {
-                    let interpreter_first = (pair + usize::from(process_run) + index) % 2 == 0;
-                    let (interpreter_ns, native_ns) = if interpreter_first {
-                        let interpreter_ns =
-                            time_interpreter_batch(case, &interpreters[index], common_repetitions)?;
-                        let native_ns = time_native_batch(
-                            &published,
-                            case,
-                            &interpreters[index],
-                            common_repetitions,
-                        )?;
-                        (interpreter_ns, native_ns)
-                    } else {
-                        let native_ns = time_native_batch(
-                            &published,
-                            case,
-                            &interpreters[index],
-                            common_repetitions,
-                        )?;
-                        let interpreter_ns =
-                            time_interpreter_batch(case, &interpreters[index], common_repetitions)?;
-                        (interpreter_ns, native_ns)
-                    };
-                    let interpreter_per_call =
-                        interpreter_ns.as_nanos() / common_repetitions as u128;
-                    let native_per_call = native_ns.as_nanos() / common_repetitions as u128;
-                    samples.push(PairSample {
-                        order: if interpreter_first {
-                            "interpreter_then_published_native".into()
+                for case in &cases {
+                    for _ in 0..WARMUP_CALLS {
+                        let native = native_observation(&published, case)?;
+                        let expected = &interpreters
+                            [cases.iter().position(|item| item.id == case.id).unwrap()];
+                        validate_pair(case, &native, expected)?;
+                    }
+                }
+
+                for (index, case) in cases.iter().enumerate() {
+                    let mut samples = Vec::with_capacity(PAIRS);
+                    for pair in 0..PAIRS {
+                        let interpreter_first = (pair + usize::from(process_run) + index) % 2 == 0;
+                        let (interpreter_ns, native_ns) = if interpreter_first {
+                            let interpreter_ns = time_interpreter_batch(
+                                case,
+                                &interpreters[index],
+                                common_repetitions,
+                            )?;
+                            let native_ns = time_native_batch(
+                                &published,
+                                case,
+                                &interpreters[index],
+                                common_repetitions,
+                            )?;
+                            (interpreter_ns, native_ns)
                         } else {
-                            "published_native_then_interpreter".into()
-                        },
-                        interpreter_total_ns: interpreter_ns.as_nanos(),
-                        native_total_ns: native_ns.as_nanos(),
-                        interpreter_ns_per_call: interpreter_per_call,
-                        native_ns_per_call: native_per_call,
-                        native_over_interpreter: native_ns.as_nanos() as f64
-                            / interpreter_ns.as_nanos().max(1) as f64,
-                        minimum_sample_met: interpreter_ns >= MIN_SAMPLE && native_ns >= MIN_SAMPLE,
-                    });
+                            let native_ns = time_native_batch(
+                                &published,
+                                case,
+                                &interpreters[index],
+                                common_repetitions,
+                            )?;
+                            let interpreter_ns = time_interpreter_batch(
+                                case,
+                                &interpreters[index],
+                                common_repetitions,
+                            )?;
+                            (interpreter_ns, native_ns)
+                        };
+                        let interpreter_per_call =
+                            interpreter_ns.as_nanos() / common_repetitions as u128;
+                        let native_per_call = native_ns.as_nanos() / common_repetitions as u128;
+                        samples.push(PairSample {
+                            order: if interpreter_first {
+                                "interpreter_then_published_native".into()
+                            } else {
+                                "published_native_then_interpreter".into()
+                            },
+                            interpreter_total_ns: interpreter_ns.as_nanos(),
+                            native_total_ns: native_ns.as_nanos(),
+                            interpreter_ns_per_call: interpreter_per_call,
+                            native_ns_per_call: native_per_call,
+                            native_over_interpreter: native_ns.as_nanos() as f64
+                                / interpreter_ns.as_nanos().max(1) as f64,
+                            minimum_sample_met: interpreter_ns >= MIN_SAMPLE
+                                && native_ns >= MIN_SAMPLE,
+                        });
+                    }
+                    case_reports[index].execution_pairs.push((budget, samples));
                 }
-                case_reports[index].execution_pairs.push((budget, samples));
-            }
 
-            let drop_started = Instant::now();
-            drop(published);
-            let drop_ns = drop_started.elapsed().as_nanos();
-            variant_reports[variant_index].publication_ns = Some(publication_ns);
-            variant_reports[variant_index].drop_ns = Some(drop_ns);
-            variant_reports[variant_index].publication_lifetime =
+                let drop_started = Instant::now();
+                drop(published);
+                let drop_ns = drop_started.elapsed().as_nanos();
+                variant_reports[variant_index].publication_ns = Some(publication_ns);
+                variant_reports[variant_index].drop_ns = Some(drop_ns);
+                variant_reports[variant_index].publication_lifetime =
                 "published once; retained for warmup and both cases; dropped before next budget"
                     .into();
+            }
         }
-        calibration = Some(CalibrationReport {
-            common_repetitions_per_case_and_side: common_repetitions,
-            warmup_calls_per_case: WARMUP_CALLS,
-            sample_pairs: PAIRS,
-            minimum_sample_ns: MIN_SAMPLE.as_nanos(),
-            calibration_checks_ns: calibration_checks,
-        });
     }
 
-    let sample_floor_passed = if preflight_only {
+    let sample_floor_passed = if preflight_only || calibration_only || calibration_failed {
         None
     } else {
         Some(
@@ -382,15 +457,26 @@ fn build_report(
                     .all(|sample| sample.minimum_sample_met),
         )
     };
-    let timing_status = match sample_floor_passed {
-        None => "preflight_only_no_timing".into(),
-        Some(true) => "sample_floor_passed_bounded_diagnostic".into(),
-        Some(false) => "diagnostic_only_sample_floor_failed_no_scored_comparison".into(),
+    let timing_status = if preflight_only {
+        "preflight_only_no_timing".into()
+    } else if calibration_only && calibration_failed {
+        "calibration_only_failed_unscored".into()
+    } else if calibration_only {
+        "calibration_only_unscored".into()
+    } else if calibration_failed {
+        "diagnostic_only_calibration_failed_no_scored_comparison".into()
+    } else {
+        match sample_floor_passed {
+            Some(true) => "sample_floor_passed_bounded_diagnostic".into(),
+            Some(false) => "diagnostic_only_sample_floor_failed_no_scored_comparison".into(),
+            None => "preflight_only_no_timing".into(),
+        }
     };
 
     Ok(Report {
         schema_version: 1,
         timing_started: !preflight_only,
+        calibration_only_mode: calibration_only,
         sample_floor_passed,
         timing_status,
         process_run,
@@ -786,9 +872,16 @@ fn calibrate_common_repetitions(
     cases: &[Case],
     interpreters: &[Observation],
     budgets: &[u8],
-) -> Result<(usize, Vec<(u8, String, u128, u128)>), CostError> {
+    journal_path: &Path,
+    calibration_started: Instant,
+) -> Result<CalibrationRun, CostError> {
     let mut common = CHUNK_CALLS;
-    let mut report = Vec::new();
+    let mut checks = Vec::new();
+    let limits = CalibrationLimits {
+        deadline: calibration_started + MAX_CALIBRATION_WALL,
+    };
+    let mut failure = None;
+    reset_calibration_journal(journal_path)?;
     for budget in budgets {
         let (compiled, _) = compile_variant(*budget).map_err(|e| fail(e.to_string()))?;
         let published = PublishedCode::publish_block(compiled.emitted())
@@ -796,27 +889,182 @@ fn calibrate_common_repetitions(
         for (index, case) in cases.iter().enumerate() {
             let mut calls = CHUNK_CALLS;
             loop {
-                let native = time_native_batch(&published, case, &interpreters[index], calls)?;
-                let interpreter = time_interpreter_batch(case, &interpreters[index], calls)?;
-                report.push((
-                    *budget,
-                    case.id.into(),
-                    native.as_nanos(),
-                    interpreter.as_nanos(),
-                ));
-                if native >= MIN_SAMPLE && interpreter >= MIN_SAMPLE {
+                let native = time_native_batch_bounded(
+                    &published,
+                    case,
+                    &interpreters[index],
+                    calls,
+                    Some(limits),
+                )?;
+                let (interpreter, interpreter_stop, interpreter_calls) =
+                    if native.stop_reason.is_some() {
+                        (None, None, None)
+                    } else {
+                        let timed = time_interpreter_batch_bounded(
+                            case,
+                            &interpreters[index],
+                            calls,
+                            Some(limits),
+                        )?;
+                        (
+                            Some(timed.elapsed),
+                            timed.stop_reason,
+                            Some(timed.completed_calls),
+                        )
+                    };
+                let process_wall_ns = calibration_started.elapsed().as_nanos();
+                let native_ns = native.elapsed.as_nanos();
+                let interpreter_ns = interpreter.map(|value| value.as_nanos());
+                let floor_met = interpreter
+                    .map(|interpreter| both_samples_meet_floor(native.elapsed, interpreter));
+                let next_calls = if floor_met == Some(true) {
+                    Some(calls)
+                } else {
+                    next_calibration_call_count(calls)
+                };
+                let stop_reason = native
+                    .stop_reason
+                    .or(interpreter_stop)
+                    .or_else(|| {
+                        (process_wall_ns >= MAX_CALIBRATION_WALL.as_nanos())
+                            .then(|| "overall_wall_ceiling".into())
+                    })
+                    .or_else(|| {
+                        (floor_met != Some(true) && next_calls.is_none())
+                            .then(|| "repetition_ceiling".into())
+                    });
+                let check = CalibrationCheck {
+                    budget: *budget,
+                    case_id: case.id.into(),
+                    requested_repetitions: calls,
+                    native_calls: native.completed_calls,
+                    interpreter_calls,
+                    native_ns: Some(native_ns),
+                    interpreter_ns,
+                    process_wall_ns,
+                    sample_floor_met: floor_met,
+                    stop_reason: stop_reason.clone(),
+                };
+                append_calibration_check(journal_path, &check)?;
+                checks.push(check);
+
+                if calibration_started.elapsed() >= MAX_CALIBRATION_WALL && stop_reason.is_none() {
+                    failure = Some(format!(
+                        "calibration exceeded overall wall ceiling after durable attempt: budget={budget}, case={}, repetitions={calls}, process_wall_ns={}",
+                        case.id,
+                        calibration_started.elapsed().as_nanos()
+                    ));
+                    break;
+                }
+
+                if let Some(reason) = stop_reason {
+                    failure = Some(format!(
+                        "calibration stopped: {reason}; budget={budget}, case={}, repetitions={calls}, native_ns={native_ns}, interpreter_ns={interpreter_ns:?}, process_wall_ns={process_wall_ns}",
+                        case.id
+                    ));
+                    break;
+                }
+                if floor_met == Some(true) {
                     common = common.max(calls);
                     break;
                 }
-                calls = calls
-                    .checked_mul(2)
-                    .filter(|n| *n <= MAX_CALIBRATED_CALLS)
-                    .ok_or_else(|| fail("execution calibration exceeded safety bound"))?;
+                calls = next_calls.ok_or_else(|| fail("missing next calibration call count"))?;
+            }
+            if failure.is_some() {
+                break;
             }
         }
         drop(published);
+        if failure.is_some() {
+            break;
+        }
     }
-    Ok((common, report))
+    Ok(CalibrationRun {
+        common_repetitions: failure.is_none().then_some(common),
+        checks,
+        total_wall_ns: calibration_started.elapsed().as_nanos(),
+        failure,
+    })
+}
+
+fn reset_calibration_journal(path: &Path) -> Result<(), CostError> {
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|error| fail(format!("create calibration journal: {error}")))?;
+    file.sync_data()
+        .map_err(|error| fail(format!("sync calibration journal initialization: {error}")))?;
+    Ok(())
+}
+
+fn append_calibration_check(path: &Path, check: &CalibrationCheck) -> Result<(), CostError> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|error| fail(format!("open calibration journal: {error}")))?;
+    let mut encoded = serde_json::to_vec(check)
+        .map_err(|error| fail(format!("serialize calibration check: {error}")))?;
+    encoded.push(b'\n');
+    file.write_all(&encoded)
+        .map_err(|error| fail(format!("append calibration journal: {error}")))?;
+    file.sync_data()
+        .map_err(|error| fail(format!("sync calibration journal: {error}")))?;
+    Ok(())
+}
+
+fn sample_meets_floor(sample: Duration) -> bool {
+    sample >= MIN_SAMPLE
+}
+
+fn both_samples_meet_floor(first: Duration, second: Duration) -> bool {
+    sample_meets_floor(first) && sample_meets_floor(second)
+}
+
+fn collect_scored_samples(calibration_only: bool, calibration_failed: bool) -> bool {
+    !calibration_only && !calibration_failed
+}
+
+pub fn report_requires_nonzero_exit(report: &serde_json::Value) -> bool {
+    let floor_failed = report
+        .get("sample_floor_passed")
+        .and_then(serde_json::Value::as_bool)
+        == Some(false);
+    let calibration_failed = report
+        .get("timing_status")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|status| status.contains("calibration") && status.contains("failed"));
+    floor_failed || calibration_failed
+}
+
+fn next_calibration_call_count(calls: usize) -> Option<usize> {
+    calls
+        .checked_mul(2)
+        .filter(|next| *next <= MAX_CALIBRATED_CALLS)
+}
+
+#[derive(Clone, Copy)]
+struct CalibrationLimits {
+    deadline: Instant,
+}
+
+struct TimedBatch {
+    elapsed: Duration,
+    completed_calls: usize,
+    stop_reason: Option<String>,
+}
+
+fn calibration_stop_reason(limits: Option<CalibrationLimits>, elapsed: Duration) -> Option<String> {
+    let limits = limits?;
+    if Instant::now() >= limits.deadline {
+        Some("overall_wall_ceiling".into())
+    } else if elapsed >= MAX_CALIBRATION_SIDE_WALL {
+        Some("per_side_wall_ceiling".into())
+    } else {
+        None
+    }
 }
 
 fn time_native_batch(
@@ -825,9 +1073,28 @@ fn time_native_batch(
     oracle: &Observation,
     calls: usize,
 ) -> Result<Duration, CostError> {
+    let timed = time_native_batch_bounded(published, case, oracle, calls, None)?;
+    Ok(timed.elapsed)
+}
+
+fn time_native_batch_bounded(
+    published: &PublishedCode,
+    case: &Case,
+    oracle: &Observation,
+    calls: usize,
+    limits: Option<CalibrationLimits>,
+) -> Result<TimedBatch, CostError> {
     let mut elapsed = Duration::ZERO;
+    let mut completed_calls = 0;
     let mut remaining = calls;
     while remaining > 0 {
+        if let Some(stop_reason) = calibration_stop_reason(limits, elapsed) {
+            return Ok(TimedBatch {
+                elapsed,
+                completed_calls,
+                stop_reason: Some(stop_reason),
+            });
+        }
         let count = remaining.min(CHUNK_CALLS);
         let mut states = vec![case.initial.clone(); count];
         let mut results = Vec::with_capacity(count);
@@ -853,8 +1120,20 @@ fn time_native_batch(
             }
         }
         remaining -= count;
+        completed_calls += count;
+        if let Some(stop_reason) = calibration_stop_reason(limits, elapsed) {
+            return Ok(TimedBatch {
+                elapsed,
+                completed_calls,
+                stop_reason: Some(stop_reason),
+            });
+        }
     }
-    Ok(elapsed)
+    Ok(TimedBatch {
+        elapsed,
+        completed_calls,
+        stop_reason: None,
+    })
 }
 
 fn time_interpreter_batch(
@@ -862,9 +1141,27 @@ fn time_interpreter_batch(
     oracle: &Observation,
     calls: usize,
 ) -> Result<Duration, CostError> {
+    let timed = time_interpreter_batch_bounded(case, oracle, calls, None)?;
+    Ok(timed.elapsed)
+}
+
+fn time_interpreter_batch_bounded(
+    case: &Case,
+    oracle: &Observation,
+    calls: usize,
+    limits: Option<CalibrationLimits>,
+) -> Result<TimedBatch, CostError> {
     let mut elapsed = Duration::ZERO;
+    let mut completed_calls = 0;
     let mut remaining = calls;
     while remaining > 0 {
+        if let Some(stop_reason) = calibration_stop_reason(limits, elapsed) {
+            return Ok(TimedBatch {
+                elapsed,
+                completed_calls,
+                stop_reason: Some(stop_reason),
+            });
+        }
         let count = remaining.min(CHUNK_CALLS);
         let mut states = vec![case.initial.clone(); count];
         let mut results = Vec::with_capacity(count);
@@ -900,6 +1197,132 @@ fn time_interpreter_batch(
             }
         }
         remaining -= count;
+        completed_calls += count;
+        if let Some(stop_reason) = calibration_stop_reason(limits, elapsed) {
+            return Ok(TimedBatch {
+                elapsed,
+                completed_calls,
+                stop_reason: Some(stop_reason),
+            });
+        }
     }
-    Ok(elapsed)
+    Ok(TimedBatch {
+        elapsed,
+        completed_calls,
+        stop_reason: None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CHUNK_CALLS, CalibrationCheck, CalibrationLimits, MAX_CALIBRATED_CALLS,
+        MAX_CALIBRATION_SIDE_WALL, MIN_SAMPLE, append_calibration_check, both_samples_meet_floor,
+        calibration_stop_reason, collect_scored_samples, next_calibration_call_count,
+        report_requires_nonzero_exit, reset_calibration_journal, sample_meets_floor,
+    };
+    use std::fs;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn calibration_floor_and_doubling_boundaries_are_exact() {
+        assert!(!sample_meets_floor(MIN_SAMPLE - Duration::from_nanos(1)));
+        assert!(sample_meets_floor(MIN_SAMPLE));
+        assert!(sample_meets_floor(MIN_SAMPLE + Duration::from_nanos(1)));
+
+        assert_eq!(next_calibration_call_count(256), Some(512));
+        assert_eq!(
+            next_calibration_call_count(MAX_CALIBRATED_CALLS / 2),
+            Some(MAX_CALIBRATED_CALLS)
+        );
+        assert_eq!(next_calibration_call_count(MAX_CALIBRATED_CALLS), None);
+
+        assert_eq!(MAX_CALIBRATED_CALLS / CHUNK_CALLS, 1 << 16);
+        assert_eq!(
+            calibration_stop_reason(
+                Some(CalibrationLimits {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                }),
+                MAX_CALIBRATION_SIDE_WALL,
+            )
+            .as_deref(),
+            Some("per_side_wall_ceiling")
+        );
+        assert_eq!(
+            calibration_stop_reason(
+                Some(CalibrationLimits {
+                    deadline: Instant::now(),
+                }),
+                Duration::ZERO,
+            )
+            .as_deref(),
+            Some("overall_wall_ceiling")
+        );
+    }
+
+    #[test]
+    fn calibration_success_requires_both_sides_to_meet_floor() {
+        assert!(!both_samples_meet_floor(
+            MIN_SAMPLE - Duration::from_nanos(1),
+            MIN_SAMPLE
+        ));
+        assert!(!both_samples_meet_floor(
+            MIN_SAMPLE,
+            MIN_SAMPLE - Duration::from_nanos(1)
+        ));
+        assert!(both_samples_meet_floor(MIN_SAMPLE, MIN_SAMPLE));
+    }
+
+    #[test]
+    fn calibration_only_and_failed_calibration_never_collect_scores() {
+        assert!(!collect_scored_samples(true, false));
+        assert!(!collect_scored_samples(true, true));
+        assert!(!collect_scored_samples(false, true));
+        assert!(collect_scored_samples(false, false));
+    }
+
+    #[test]
+    fn failed_calibration_attempt_is_durable_and_requires_nonzero_exit() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time is after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "od-bench-calibration-{}-{unique}.jsonl",
+            std::process::id()
+        ));
+        reset_calibration_journal(&path).expect("initialize journal");
+        append_calibration_check(
+            &path,
+            &CalibrationCheck {
+                budget: 0,
+                case_id: "frozen-case".into(),
+                requested_repetitions: MAX_CALIBRATED_CALLS,
+                native_calls: MAX_CALIBRATED_CALLS,
+                interpreter_calls: Some(MAX_CALIBRATED_CALLS),
+                native_ns: Some(120_000_000),
+                interpreter_ns: Some(180_000_000),
+                process_wall_ns: 1_000_000_000,
+                sample_floor_met: Some(false),
+                stop_reason: Some("repetition_ceiling".into()),
+            },
+        )
+        .expect("append diagnostic attempt");
+        let encoded = fs::read_to_string(&path).expect("read durable journal");
+        let saved: serde_json::Value =
+            serde_json::from_str(encoded.trim()).expect("journal line is complete JSON");
+        assert_eq!(saved["requested_repetitions"], MAX_CALIBRATED_CALLS);
+        assert_eq!(saved["native_calls"], MAX_CALIBRATED_CALLS);
+        assert_eq!(saved["interpreter_calls"], MAX_CALIBRATED_CALLS);
+        assert_eq!(saved["native_ns"], 120_000_000u64);
+        assert_eq!(saved["interpreter_ns"], 180_000_000u64);
+        assert_eq!(saved["stop_reason"], "repetition_ceiling");
+
+        let report = serde_json::json!({
+            "sample_floor_passed": null,
+            "timing_status": "calibration_only_failed_unscored"
+        });
+        assert!(report_requires_nonzero_exit(&report));
+        fs::remove_file(path).expect("remove temporary journal");
+    }
 }
