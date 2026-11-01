@@ -58,3 +58,10 @@ S2-30by adds five exact `s2-long-x87-state-v1` FCMOVE streams with budgets
 Operand and environment rejection cases are restricted to bare `dac9`; prefixed
 and neighboring DA encodings remain outside the schema. This is fixture-format
 coverage only and does not claim native or physical x86 behavior.
+
+`memory_corpus` provides the deterministic seed/index generator shared by the
+S3-34a host correctness corpus and its bounded benchmark subset. The fixed
+S3-34a constants name exactly two original sequences, three seeds, and 400
+inputs per sequence/seed; the later load-then-load extension remains available
+to the host correctness corpus through the same generator but is not part of
+`S3_34A_SEQUENCES`.

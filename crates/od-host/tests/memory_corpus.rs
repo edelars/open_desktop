@@ -9,36 +9,26 @@ use std::sync::atomic::AtomicU8;
 use od_host::{MemoryOperationExecutionResultV2, PublishedCode};
 use od_isa::memory::{AccessContext, AccessKind, ArchitecturalFault, GuestMemory, MemoryError};
 use od_isa::{LongModeState, OperandSize};
+use od_testkit::memory_corpus::{
+    MEMORY_CORPUS_RAM_LEN, MEMORY_CORPUS_SEQUENCES, MemoryCorpusInput, MemoryCorpusSequence,
+    S3_34A_CASES_PER_SEED, S3_34A_SEEDS, generate_memory_corpus_input,
+};
 use serde::{Deserialize, Serialize};
 
 const ENTRY_RIP: u64 = 0x9e00;
-const RAM_LEN: usize = 128;
+const RAM_LEN: usize = MEMORY_CORPUS_RAM_LEN;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-const CASES_PER_SEED: usize = 400;
+const CASES_PER_SEED: usize = S3_34A_CASES_PER_SEED;
 const REPORT_VERSION: u32 = 1;
 const ENVELOPE_VERSION: u32 = 1;
 const CASE_PROFILE: &str = "s3-20j-two-site-qword-mov-v1";
 const MAX_REDUCER_ATTEMPTS: usize = 512;
-const SEEDS: [u64; 3] = [
-    0x5343_3441_0000_0001,
-    0x5343_3441_0000_0002,
-    0x5343_3441_0000_0003,
-];
-const SEQUENCES: [Sequence; 3] = [
-    Sequence::StoreThenLoad,
-    Sequence::LoadThenStore,
-    Sequence::LoadThenLoad,
-];
+const SEEDS: [u64; 3] = S3_34A_SEEDS;
+const SEQUENCES: [Sequence; 3] = MEMORY_CORPUS_SEQUENCES;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 static JIT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum Sequence {
-    StoreThenLoad,
-    LoadThenStore,
-    LoadThenLoad,
-}
+type Sequence = MemoryCorpusSequence;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -196,15 +186,11 @@ struct ReductionReport {
     stop_reason: String,
 }
 
-impl Sequence {
-    fn bytes(self) -> [u8; 6] {
-        match self {
-            Self::StoreThenLoad => [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b],
-            Self::LoadThenStore => [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02],
-            Self::LoadThenLoad => [0x48, 0x8b, 0x03, 0x48, 0x8b, 0x0b],
-        }
-    }
+trait SequenceSiteOperation {
+    fn site_operation(self, site_index: u8) -> MemoryAccess;
+}
 
+impl SequenceSiteOperation for Sequence {
     fn site_operation(self, site_index: u8) -> MemoryAccess {
         match (self, site_index) {
             (Self::StoreThenLoad, 0) | (Self::LoadThenStore, 1) => MemoryAccess::Write,
@@ -361,85 +347,20 @@ impl GuestMemory for Ram {
     }
 }
 
-#[derive(Clone, Copy)]
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
+fn generated_input(seed: u64, index: usize, forced_sequence: Option<Sequence>) -> CorpusInput {
+    generate_memory_corpus_input(seed, index, forced_sequence).into()
 }
 
-fn generated_input(seed: u64, index: usize, forced_sequence: Option<Sequence>) -> CorpusInput {
-    let mut rng = Rng(seed ^ (index as u64).wrapping_mul(0xd6e8_feb8_6659_fd93));
-    let generated_sequence = if rng.next() & 1 == 0 {
-        Sequence::StoreThenLoad
-    } else {
-        Sequence::LoadThenStore
-    };
-    let sequence = forced_sequence.unwrap_or(generated_sequence);
-    let mut ram = [0; RAM_LEN];
-    for chunk in ram.chunks_mut(8) {
-        let bytes = rng.next().to_le_bytes();
-        chunk.copy_from_slice(&bytes[..chunk.len()]);
-    }
-
-    let mut first_address = 16 + (rng.next() % 88);
-    if sequence == Sequence::LoadThenLoad {
-        // Exercise the full fixture boundary plus unaligned qword addresses.
-        first_address = [0, 1, 7, 111, 112, 120][index % 6];
-    }
-    let mode = index % 3;
-    let second_address = match mode {
-        0 => first_address,
-        1 => {
-            let candidate = 16 + (rng.next() % 87);
-            if candidate >= first_address {
-                candidate + 1
-            } else {
-                candidate
-            }
+impl From<MemoryCorpusInput> for CorpusInput {
+    fn from(input: MemoryCorpusInput) -> Self {
+        Self {
+            sequence: input.sequence,
+            gpr: input.gpr,
+            flags: input.flags,
+            first_address: input.first_address,
+            second_address: input.second_address,
+            ram: input.ram,
         }
-        _ => {
-            let distance = (rng.next() % 7 + 1) as i64;
-            let delta = if first_address <= 22 {
-                distance
-            } else if first_address >= 97 || rng.next() & 1 == 0 {
-                -distance
-            } else {
-                distance
-            };
-            (first_address as i64 + delta) as u64
-        }
-    };
-    let mut gpr = [0; 16];
-    for value in &mut gpr {
-        *value = rng.next();
-    }
-    // All sequences use RBX for the first address. LoadThenStore alone uses RDX
-    // for its second address; LoadThenLoad reads the same RBX range twice.
-    gpr[3] = first_address;
-    gpr[2] = if sequence == Sequence::LoadThenStore {
-        second_address
-    } else {
-        rng.next()
-    };
-
-    CorpusInput {
-        sequence,
-        gpr,
-        flags: rng.next() & 0x8d5,
-        first_address,
-        second_address: if sequence == Sequence::LoadThenStore {
-            second_address
-        } else {
-            first_address
-        },
-        ram,
     }
 }
 

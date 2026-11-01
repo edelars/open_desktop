@@ -8,6 +8,7 @@ mod error;
 pub mod generate;
 mod hex_u64;
 pub mod memory;
+pub mod memory_corpus;
 pub mod minimize;
 pub mod result;
 pub mod v2;
