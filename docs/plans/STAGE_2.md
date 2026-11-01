@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последний завершённый срез S2-37cu — exact legacy `CMPPD XMM0,m128 [RAX],imm8` (`66 0F C2 00 pp`): восемь predicates, aligned read(16), независимая IE/DE аккумуляция по lanes и полная запись XMM0. Полные suites прошли (od-isa 1,686; od-testkit 453; od-runner 112 unit + 477 fixtures; od-x86-runner 8+4), как и workspace all-target check, fmt, layout, Graphify 10,660/22,910/311, diff и 13 anchors. Независимые code/schema и docs/source reviews чистые; финальная evidence recheck завершена. Физическая x86-проверка не заявляется. Профиль только для interpreter; native/JIT/C ABI закрыты. Предыдущие профили перечислены ниже. Локальные проверки не закрывают общий S2-37 и CPUID admission. Аппаратная проверка остаётся в совместном final substage. S2-19t добавил REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавил REPE SCASB на точные
+Последний завершённый срез S2-37cv — exact legacy `CMPPS XMM0,m128 [RAX],imm8` (`0F C2 00 pp`): четыре binary32 lanes, восемь predicates, aligned read(16), независимая IE/DE аккумуляция и полная запись XMM0. Полные suites прошли (od-isa 1,692; od-testkit 453; od-runner 112 unit + 478 fixtures; od-x86-runner 8+4), как и workspace all-target check, fmt, layout, Graphify 10,684/22,976/303, diff и 13 anchors. Независимые code/schema и docs/evidence reviews чистые; финальная evidence recheck завершена. Физическая x86-проверка не заявляется. Профиль только для interpreter; native/JIT/C ABI закрыты. Предыдущие профили перечислены ниже. Локальные проверки не закрывают общий S2-37 и CPUID admission. Аппаратная проверка остаётся в совместном final substage. S2-19t добавил REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавил REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -532,6 +532,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37y | Local-only canonical Long64 CMPSD XMM register-pair profile; all eight predicates, raw binary64, bounded IE/DE and unmasked destination suppression; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean after denial-test correction |
 | [x] | S2-37z | Local-only canonical Long64 CMPPD XMM register pairs; all eight predicates, packed binary64 lanes, independent IE/DE accumulation and atomic destination suppression; JIT/native closed | Independent Sol-medium review clean; final combined physical stage remains outstanding |
 | [x] | S2-37cu | Local-only legacy Long64 CMPPD XMM0,m128 `[RAX]`,imm8 exact packed memory profile; eight predicates, aligned one-read m128, independent per-lane NaN/DE and XMM0 mask results; native/JIT closed | Full suites passed: od-isa 1,686; od-testkit 453; od-runner 112+477; od-x86-runner 8+4; workspace check, formatting, layout, Graphify 10,660/22,910/311, diff, and 13 anchors passed; independent code/schema and docs/source review clean; final evidence recheck complete |
+| [x] | S2-37cv | Local-only legacy Long64 CMPPS XMM0,m128 `[RAX]`,imm8 exact packed memory profile; eight predicates, aligned one-read m128, four binary32 lanes, independent NaN/DE aggregation; native/JIT closed | Focused decoder/direct ISA 3/3, runner 1/1 with 448 raw-bit oracle comparisons, native-local-only classifier 1/1; full suites passed: od-isa 1,692; od-testkit 453; od-runner 112+478; od-x86-runner 8+4; workspace all-target check, Graphify 10,684/22,976/303, fmt/layout/diff, 13 anchors, and independent code/schema/docs/evidence reviews complete; no physical x86 acceptance |
 | [x] | S2-37aa | Local-only canonical Long64 CMPPS XMM register pairs; all eight predicates, four binary32 lanes, independent IE/DE accumulation and atomic destination suppression; JIT/native closed | Independent Sol-medium review clean after binary64-oracle regression fix; final combined physical stage remains outstanding |
 | [x] | S2-37ab | Local-only canonical Long64 CVTSS2SI register forms; r32/r64 conversion using MXCSR.RC, IE/PE only and atomic unmasked exit; JIT/native closed | Independent Sol-medium review clean after runtime-admission and coverage fixes |
 | [x] | S2-37ac | Local-only canonical Long64 CVTSD2SI register forms; r32/r64 binary64 conversion using MXCSR.RC, IE/PE only and atomic unmasked exit; JIT/native closed | Independent Sol-medium review clean after DM/IM test corrections; physical checks remain in final stage |
@@ -6840,7 +6841,7 @@ inventory.
 | ADDSD | `F2 0F 58 /r` | SSE2 | XMM, m64; low f64 | 3-22 | S2-37bb, bounded register-only |
 | ADDSS | `F3 0F 58 /r` | SSE | XMM, m32; low f32 | 3-24 | S2-37bc, bounded register-only |
 | CMPPD | `66 0F C2 /r ib` | SSE2 | XMM, m128; 2×64-bit masks | 3-168 | S2-37z register pairs; S2-37cu exact `66 0F C2 00 pp` aligned m128 `[RAX]` memory profile |
-| CMPPS | `NP 0F C2 /r ib` | SSE | XMM, m128; 4×32-bit masks | 3-175 | S2-37aa, bounded register-only |
+| CMPPS | `NP 0F C2 /r ib` | SSE | XMM, m128; 4×32-bit masks | 3-175 | S2-37aa register pairs; S2-37cv exact `0F C2 00 pp` aligned m128 `[RAX]` memory profile |
 | CMPSD | `F2 0F C2 /r ib` | SSE2 | XMM, m64; low 64-bit mask | 3-185 | S2-37y register pairs; S2-37ct exact `F2 0F C2 00 pp` m64 `[RAX]` memory profile |
 | CMPSS | `F3 0F C2 /r ib` | SSE | XMM, m32; low 32-bit mask | 3-189 | S2-37x, bounded register-only |
 | COMISD | `66 0F 2F /r` | SSE2 | XMM, m64; EFLAGS | 3-199 | S2-37w register pairs; S2-37co exact `66 0F 2F 00` m64 `[RAX]` memory profile |
@@ -15881,3 +15882,42 @@ p. 3-169 and Type 2/Table 2-19 p. 2-27 for aligned-memory #GP; Vol. 1 §4.9.2
 and Table 14-21; Vol. 3A §16.1.3/Table 16-1. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37cu--bounded-long64-cmppd-xmm0m128-raximm8-memory-profile),
 [report](../reports/STAGE_2_REPORT.md#s2-37cu--cmppd-xmm0m128imm8), and [fixture
 notes](../../tests/fixtures/x86/stage2/README.md#s2-37cu--cmppd-xmm0m128imm8).
+
+#### S2-37cv — exact legacy Long64 CMPPS XMM0,m128 [RAX],imm8
+
+The separate strict schema-v2 profile `s2-long-cmpps-memory-rax-v1` admits
+exact legacy `0F C2 00 pp` for `pp=0..7`. All four bytes are fetched before
+local predicate refusal, SSE gates, or data access; `pp>7` returns local
+`Unsupported` before feature gates. Valid predicates require SSE CPUID leaf 1
+EDX bit 25; EM=1 or OSFXSR=0 produces `#UD` before TS=1 produces `#NM`.
+The profile checks canonical48 `[RAX,RAX+15]` and performs one 16-byte read.
+The m128 source must be 16-byte aligned; misalignment raises `#GP(0)` before
+the read callback at every CPL and AC setting. Aligned access permits AC=0/1.
+
+Each of four binary32 lanes compares independently and writes an all-ones or
+zero 32-bit mask, replacing all of XMM0. RFLAGS and definedness, other XMM
+registers, GPRs, x87 state, and memory remain unchanged. SNaN adds sticky IE
+for all predicates; QNaN adds IE for predicates 1, 2, 5, and 6. NaN suppresses
+DE only in its own lane; a subnormal in another lane still contributes DE.
+Incoming IE/DE remain sticky. The supported MXCSR mask is `0xffbf`; the local
+profile requires DAZ=0 and IM=DM=1 while PM, RC, and FTZ may vary. Native/JIT/C/
+fragment/generic execution remains closed.
+
+Focused verification: exact decoder and direct ISA filter 3/3 (one decoder,
+two direct execution tests); runner fixture 1/1 with 448 raw-bit oracle
+comparisons (256 predicate/RC/FTZ/sticky cases and 192 NaN/subnormal lane
+priority cases), plus aligned-AC=1, pp8 local-refusal, foreign-control,
+tamper, and JIT/native-denial probes. `cargo check -p od-testkit --tests
+--offline` and the native-local-only classifier (1/1) passed. Full suites
+passed: od-isa 1,692, od-testkit 453, od-runner 112 unit + 478 fixtures, and
+od-x86-runner 8+4; workspace all-target check passed. Graphify update
+(10,684 nodes / 22,976 edges / 303 communities), fmt, layout, diff check, and
+13 links passed. Independent code/schema and final docs/evidence reviews are
+complete. No physical x86 acceptance is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CMPPS` pp. 3-175–3-180, Table 3-8
+p. 3-169 for predicates, Type 2/Table 2-15 p. 2-23, and Table 2-19 p. 2-27
+for legacy memory behavior; Vol. 1 §4.9.2/Table 14-21; Vol. 3A §16.1.3/
+Table 16-1. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37cv--bounded-long64-cmpps-xmm0m128-raximm8-memory-profile),
+[report](../reports/STAGE_2_REPORT.md#s2-37cv--cmpps-xmm0m128imm8), and [fixture
+notes](../../tests/fixtures/x86/stage2/README.md#s2-37cv--cmpps-xmm0m128imm8).

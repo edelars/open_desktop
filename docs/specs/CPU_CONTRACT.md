@@ -15492,3 +15492,43 @@ p. 3-169 and Type 2/Table 2-19 p. 2-27 for aligned-memory #GP; Vol. 1 §4.9.2
 and Table 14-21; Vol. 3A §16.1.3/Table 16-1. See the [plan](../plans/STAGE_2.md#s2-37cu--exact-legacy-long64-cmppd-xmm0m128-raximm8),
 [report](../reports/STAGE_2_REPORT.md#s2-37cu--cmppd-xmm0m128imm8), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cu--cmppd-xmm0m128imm8).
+
+## S2-37cv — bounded Long64 CMPPS XMM0,m128 [RAX],imm8 memory profile
+
+The strict profile `s2-long-cmpps-memory-rax-v1` admits exact legacy
+`0F C2 00 pp`, with `pp=0..7`. It fetches the complete four-byte instruction
+before local predicate refusal, prerequisite gates, or data access. Values
+above seven are local `Unsupported` profile results, not architectural
+`#UD`, and take precedence over feature gates. Valid predicates require SSE
+CPUID bit 25; EM=1 or OSFXSR=0 produces `#UD` before TS=1 produces `#NM`.
+After the gates, it validates canonical48 `[RAX,RAX+15]` and performs exactly
+one 16-byte read. The source must be 16-byte aligned: misalignment produces
+`#GP(0)` before the callback regardless of CPL or AC. Aligned reads allow
+either AC value. CPU state is unchanged until the complete read succeeds.
+
+The operation compares four independent binary32 lanes from XMM0 and m128,
+then writes an all-ones or zero mask to each lane and replaces all of XMM0.
+It preserves RFLAGS and their definedness, other XMM/GPR state, x87 state, and
+memory. SNaN adds sticky IE for every predicate; QNaN adds IE only for
+predicates 1, 2, 5, and 6. NaN suppresses DE in its own lane only, so another
+lane's subnormal still adds DE. Incoming IE/DE stickies remain set. The local
+MXCSR policy accepts supported mask `0xffbf`, requires DAZ=0 and IM=DM=1, and
+allows PM, RC, and FTZ to vary. Native/JIT/C/fragment/generic execution is
+closed.
+
+Focused verification passed: decoder/direct ISA filter 3/3 (one decoder and
+two execution tests); runner fixture 1/1 with 448 raw-bit oracle comparisons
+(256 predicate/RC/FTZ/sticky cases and 192 NaN/subnormal lane-priority cases),
+plus aligned-AC=1, pp8, foreign-control, tamper, and JIT/native-denial probes.
+`cargo check -p od-testkit --tests --offline` and the native-local-only
+classifier (1/1) passed. Full suites passed: od-isa 1,692, od-testkit 453,
+od-runner 112 unit + 478 fixtures, and od-x86-runner 8+4. Workspace all-target
+check, Graphify update (10,684 nodes / 22,976 edges / 303 communities), fmt,
+layout, diff check, and 13 links passed. Independent code/schema and final
+docs/evidence reviews are complete. No physical x86 acceptance is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CMPPS` pp. 3-175–3-180, Table 3-8
+p. 3-169, Type 2/Table 2-15 p. 2-23, and Table 2-19 p. 2-27; Vol. 1 §4.9.2/
+Table 14-21; Vol. 3A §16.1.3/Table 16-1. See the [plan](../plans/STAGE_2.md#s2-37cv--exact-legacy-long64-cmpps-xmm0m128-raximm8),
+[report](../reports/STAGE_2_REPORT.md#s2-37cv--cmpps-xmm0m128imm8), and [fixture
+notes](../../tests/fixtures/x86/stage2/README.md#s2-37cv--cmpps-xmm0m128imm8).

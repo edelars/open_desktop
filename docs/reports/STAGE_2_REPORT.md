@@ -20665,3 +20665,39 @@ p. 3-169 and Type 2/Table 2-19 p. 2-27 for aligned-memory #GP; Vol. 1 §4.9.2
 and Table 14-21; Vol. 3A §16.1.3/Table 16-1. See the [plan](../plans/STAGE_2.md#s2-37cu--exact-legacy-long64-cmppd-xmm0m128-raximm8),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37cu--bounded-long64-cmppd-xmm0m128-raximm8-memory-profile), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cu--cmppd-xmm0m128imm8).
+
+### S2-37cv — CMPPS XMM0,m128,imm8
+
+Implemented the strict interpreter-only profile `s2-long-cmpps-memory-rax-v1`
+for exact legacy `0F C2 00 pp`, with predicate byte values 0–7. The complete
+four-byte instruction is fetched before local pp refusal and feature gates;
+pp>7 is local `Unsupported`, not architectural `#UD`. In-range forms require
+SSE bit 25; EM=1 or OSFXSR=0 causes `#UD` before TS=1 causes `#NM`. The
+canonical48 source span is `[RAX,RAX+15]`; the aligned m128 source is read
+once before architectural state changes. Misalignment raises `#GP(0)` before
+the callback regardless of CPL/AC; aligned operands allow AC=0/1.
+
+All four binary32 lanes are evaluated independently and XMM0 is fully
+replaced with per-lane all-ones/zero predicate masks. RFLAGS and definedness,
+other XMM/GPR/x87 state, and memory are preserved. SNaN adds IE for every
+predicate; QNaN adds IE for pp1/2/5/6. NaN suppresses DE only in its own lane,
+so subnormal input in another lane can still set DE. Existing IE/DE remain
+sticky. Local MXCSR policy is supported mask `0xffbf`, DAZ=0, IM=DM=1, with
+PM/RC/FTZ accepted. Native/JIT/C/fragment/generic paths remain closed.
+
+Focused validation: decoder and direct ISA filter 3/3 (one decoder test and
+two direct tests); runner fixture 1/1 with 448 raw-bit oracle comparisons
+(256 predicate/RC/FTZ/sticky cases and 192 NaN/subnormal lane-priority cases),
+plus aligned-AC, pp8, foreign-control, tamper, and backend-denial checks.
+Testkit test-target check and native-local-only classifier 1/1 passed. Full
+suites passed: od-isa 1,692, od-testkit 453, od-runner 112 unit + 478
+fixtures, and od-x86-runner 8+4. Workspace all-target check, Graphify update
+(10,684 nodes / 22,976 edges / 303 communities), fmt, layout, diff check, and
+13 links passed. Independent code/schema and final docs/evidence reviews are
+complete. No physical x86 acceptance is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CMPPS` pp. 3-175–3-180, Table 3-8
+p. 3-169, Type 2/Table 2-15 p. 2-23, and Table 2-19 p. 2-27; Vol. 1 §4.9.2/
+Table 14-21; Vol. 3A §16.1.3/Table 16-1. See the [plan](../plans/STAGE_2.md#s2-37cv--exact-legacy-long64-cmpps-xmm0m128-raximm8),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37cv--bounded-long64-cmpps-xmm0m128-raximm8-memory-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cv--cmpps-xmm0m128imm8).

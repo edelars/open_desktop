@@ -496,3 +496,18 @@ rejection, output tampering, and JIT/native denial. Runner cases use Ring0; dire
 across CPL0–3, with Ring0-only gate/span/read-failure probes. Full suites
 passed: 112 runner unit + 477 fixture tests; native execution and physical
 x86 acceptance are not claimed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cu--bounded-long64-cmppd-xmm0m128-raximm8-memory-profile).
+
+### S2-37cv — CMPPS XMM0,m128,imm8
+
+The runner admits the strict interpreter-only `s2-long-cmpps-memory-rax-v1`
+profile for exact `0F C2 00 pp`, pp=0..7. Its independent raw-binary32
+oracle checks 448 cases: 256 predicate/RC/FTZ/sticky-history cases and 192
+QNaN/SNaN/subnormal lane-priority cases. Additional probes cover aligned
+AC=1, pp8 local Unsupported, foreign-control rejection, output tampering,
+and JIT/native denial. The runner matrix uses Ring0; direct relation and
+alignment tests cover CPL0–3, while direct gate, fetch, span, and read-failure
+probes use Ring0. Full fetch precedes local pp refusal and gates. There is no
+physical x86 acceptance claim. Full validation passed: 112 runner unit + 478
+fixture tests, plus od-isa 1,692, od-testkit 453, and od-x86-runner 8+4;
+workspace all-target check passed. Independent code/schema and final
+docs/evidence reviews are complete. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cv--bounded-long64-cmpps-xmm0m128-raximm8-memory-profile).

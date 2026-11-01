@@ -7727,3 +7727,31 @@ alignment checks cover CPL0–3; direct gate/span/read-failure probes use
 Ring0. Full suites passed: od-isa 1,686, od-testkit 453, od-runner 112+477, and od-x86-runner 8+4; workspace all-target check passed. Graphify update (10,660/22,910/311), formatting, layout, diff check, and 13 anchors passed. Independent code/schema, docs/source, and final evidence reviews are complete. No physical x86 result is claimed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37cu--exact-legacy-long64-cmppd-xmm0m128-raximm8),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cu--bounded-long64-cmppd-xmm0m128-raximm8-memory-profile), and
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cu--cmppd-xmm0m128imm8).
+
+### S2-37cv — CMPPS XMM0,m128,imm8
+
+`s2_37cv_cmpps_m128_lane_ie_de_aggregate.case.json` is a literal exact
+legacy `0F C2 00 03` case. XMM0
+contains a QNaN, a normal value, an SNaN, and the minimum positive subnormal;
+the aligned m128 source makes the QNaN/SNaN lanes unordered, one lane equal,
+and the subnormal lane ordered against zero. The result masks are
+`ffffffff, 00000000, ffffffff, 00000000`; IE and DE both become sticky.
+RFLAGS, pending x87, and unrelated XMM/GPR state are preserved.
+
+The fixture runner checks 448 raw-bit oracle comparisons: 256 cases across
+eight predicates, four RC values, two FTZ settings, and four incoming IE/DE
+histories; plus 192 QNaN/SNaN and subnormal lane-priority cases in both lane
+orders and across all predicates/histories. It also checks aligned AC=1,
+pp8 local refusal, foreign-control rejection, output tampering, and JIT/native
+denial. The runner uses Ring0; direct predicate/relation and alignment tests
+cover CPL0–3, while direct gate, fetch, span, and read-failure probes use
+Ring0. Focused decoder/direct ISA passed 3/3 and the runner passed 1/1;
+testkit test-target check and native-local-only classifier 1/1 passed. Full
+suites passed: od-isa 1,692, od-testkit 453, od-runner 112+478, and
+od-x86-runner 8+4; workspace all-target check passed. Graphify update
+(10,684/22,976/303), fmt, layout, diff check, and 13 links passed. Independent
+code/schema and final docs/evidence reviews are complete. No physical x86
+acceptance is claimed. See
+the [plan](../../../../docs/plans/STAGE_2.md#s2-37cv--exact-legacy-long64-cmpps-xmm0m128-raximm8),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cv--bounded-long64-cmpps-xmm0m128-raximm8-memory-profile), and
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cv--cmpps-xmm0m128imm8).

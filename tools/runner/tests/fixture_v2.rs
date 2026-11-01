@@ -39,6 +39,9 @@ const CMPPD_REGISTER_PAIRS: &[u8] =
 const CMPPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37cu_cmppd_m128_qnan_subnormal_independent_lanes.case.json"
 );
+const CMPPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37cv_cmpps_m128_lane_ie_de_aggregate.case.json"
+);
 const CMPPS_REGISTER_PAIRS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37aa_cmpps_registers.case.json");
 const ADDSD_REGISTER_PAIR: &[u8] =
@@ -35898,6 +35901,175 @@ fn cmppd_m128_memory_covers_predicates_lanes_and_independent_exceptions() {
     ));
     assert!(matches!(
         run(CMPPD_M128_MEMORY_RAX, "native", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+}
+
+#[test]
+fn cmpps_m128_memory_covers_predicates_lanes_and_independent_exceptions() {
+    let fixture = Fixture::from_json(CMPPS_M128_MEMORY_RAX).unwrap().fixture;
+    let truth = [
+        [false, false, true, false],
+        [false, true, false, false],
+        [false, true, true, false],
+        [false, false, false, true],
+        [true, true, false, true],
+        [true, false, true, true],
+        [true, false, false, true],
+        [true, true, true, false],
+    ];
+    let relations = [
+        (0x4000_0000u32, 0x3f80_0000u32),
+        (0x3f80_0000, 0x4000_0000),
+        (0x0000_0000, 0x8000_0000),
+        (0x7fc1_2345, 0x3f80_0000),
+    ];
+    let encode = |value: u32| {
+        value
+            .to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let decode_lanes = |hex: &str| {
+        [0, 1, 2, 3].map(|lane| {
+            let bytes = (0..4)
+                .map(|index| {
+                    u8::from_str_radix(&hex[lane * 8 + index * 2..lane * 8 + index * 2 + 2], 16)
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            u32::from_le_bytes(bytes.try_into().unwrap())
+        })
+    };
+    let mut comparisons = 0usize;
+    for predicate in 0u8..8 {
+        for rc in 0..4u32 {
+            for ftz in [false, true] {
+                for old in [0u64, 1, 2, 3] {
+                    let mut case = fixture.clone();
+                    case.case_id = format!("s2_37cv_p{predicate}_rc{rc}_ftz{ftz}_old{old}");
+                    case.memory[0].initial_bytes_hex = format!("0fc200{predicate:02x}");
+                    case.initial_state.sse.as_mut().unwrap().xmm[0] = relations
+                        .iter()
+                        .map(|(left, _)| encode(*left))
+                        .collect::<String>();
+                    case.memory[1].initial_bytes_hex = relations
+                        .iter()
+                        .map(|(_, right)| encode(*right))
+                        .collect::<String>();
+                    case.initial_state.sse.as_mut().unwrap().mxcsr =
+                        HexU64(0x0180 | old | (u64::from(rc) << 13) | (u64::from(ftz) << 15));
+                    let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                    od_testkit::v2::compare(&input, &result, &result).unwrap();
+                    let snapshot = match &result.snapshot {
+                        Observation::Available { value } => value,
+                        other => panic!("unexpected CMPPS snapshot: {other:?}"),
+                    };
+                    let output = decode_lanes(&snapshot.state.sse.as_ref().unwrap().xmm[0]);
+                    assert_eq!(
+                        output,
+                        [0, 1, 2, 3].map(|lane| {
+                            if truth[usize::from(predicate)][lane] {
+                                u32::MAX
+                            } else {
+                                0
+                            }
+                        })
+                    );
+                    let raised_ie = u64::from(matches!(predicate, 1 | 2 | 5 | 6));
+                    assert_eq!(
+                        snapshot.state.sse.as_ref().unwrap().mxcsr.get(),
+                        0x0180 | old | raised_ie | (u64::from(rc) << 13) | (u64::from(ftz) << 15)
+                    );
+                    assert_eq!(snapshot.state.rflags, case.initial_state.rflags);
+                    assert_eq!(snapshot.state.x87, case.initial_state.x87);
+                    assert_eq!(snapshot.state.gpr, case.initial_state.gpr);
+                    comparisons += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(comparisons, 256);
+
+    // A NaN suppresses DE only in its own lane; a second subnormal lane still raises DE.
+    let priority_pairs = [
+        (0x7fc1_2345u32, 0x0000_0001u32),
+        (0x0000_0001, 0x7fc1_2345),
+        (0x7f81_2345, 0x0000_0001),
+        (0x0000_0001, 0x7f81_2345),
+        (0x7fc1_2345, 0x7f81_2345),
+        (0x7f81_2345, 0x7fc1_2345),
+    ];
+    for predicate in 0u8..8 {
+        for (pair, (left, right)) in priority_pairs.iter().copied().enumerate() {
+            for old in [0u64, 1, 2, 3] {
+                let mut case = fixture.clone();
+                case.case_id = format!("s2_37cv_priority_p{predicate}_pair{pair}_old{old}");
+                case.memory[0].initial_bytes_hex = format!("0fc200{predicate:02x}");
+                let lanes = [left, 0, right, 0];
+                case.initial_state.sse.as_mut().unwrap().xmm[0] =
+                    lanes.iter().map(|lane| encode(*lane)).collect::<String>();
+                case.memory[1].initial_bytes_hex = "00000000000000000000000000000000".into();
+                case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x0180 | old);
+                let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                od_testkit::v2::compare(&input, &result, &result).unwrap();
+                let snapshot = match &result.snapshot {
+                    Observation::Available { value } => value,
+                    other => panic!("unexpected CMPPS priority snapshot: {other:?}"),
+                };
+                let has_qnan = [left, right]
+                    .iter()
+                    .any(|bits| bits & 0x7fff_ffff == 0x7fc1_2345);
+                let has_snan = [left, right]
+                    .iter()
+                    .any(|bits| bits & 0x7fff_ffff == 0x7f81_2345);
+                let raised_ie = has_snan || (has_qnan && matches!(predicate, 1 | 2 | 5 | 6));
+                let raised_de = pair < 4;
+                assert_eq!(
+                    snapshot.state.sse.as_ref().unwrap().mxcsr.get(),
+                    0x0180 | old | u64::from(raised_ie) | (u64::from(raised_de) << 1)
+                );
+                comparisons += 1;
+            }
+        }
+    }
+    assert_eq!(comparisons, 448);
+
+    let mut aligned_ac = fixture.clone();
+    aligned_ac.case_id = "s2_37cv_aligned_ac1_admitted".into();
+    aligned_ac.initial_state.rflags = HexU64(aligned_ac.initial_state.rflags.get() | (1 << 18));
+    let (input, result) = run(&aligned_ac.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+
+    let mut pp8 = fixture.clone();
+    pp8.case_id = "s2_37cv_pp8_local_unsupported".into();
+    pp8.memory[0].initial_bytes_hex = "0fc20008".into();
+    pp8.memory[0].comparison_mask_hex = "ff".repeat(4);
+    pp8.expected_exit = ExpectedExit::Unsupported;
+    assert!(matches!(
+        run(&pp8.to_json().unwrap(), "interpreter", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+
+    let (input, baseline) = run(CMPPS_M128_MEMORY_RAX, "interpreter", 0);
+    let mut tampered = baseline.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(..8, "00000000");
+    }
+    assert!(od_testkit::v2::compare(&input, &tampered, &baseline).is_err());
+    let mut foreign = Fixture::from_json(CMPPS_REGISTER_PAIRS).unwrap().fixture;
+    assert!(foreign.validate().is_ok());
+    foreign.cmpps_memory_rax_controls = fixture.cmpps_memory_rax_controls;
+    assert!(foreign.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
+    assert!(matches!(
+        run(CMPPS_M128_MEMORY_RAX, "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    assert!(matches!(
+        run(CMPPS_M128_MEMORY_RAX, "native", 4).1.outcome,
         Outcome::Unsupported { .. }
     ));
 }

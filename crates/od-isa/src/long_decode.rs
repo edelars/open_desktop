@@ -1170,6 +1170,10 @@ pub enum Operation {
     CmppdMemoryRax {
         predicate: u8,
     },
+    /// Local-only legacy `0F C2 00 ib` packed single comparison at RAX.
+    CmppsMemoryRax {
+        predicate: u8,
+    },
     /// Local-only legacy `0F C2 /r ib` packed single comparison.
     CmppsRegister {
         predicate: u8,
@@ -5031,17 +5035,22 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Escape0f, 0xc2) if cmpps_register => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if modrm == 0 && prefixes.rex.is_none() {
+                    Operation::CmppsMemoryRax {
+                        predicate: self.byte()?,
+                    }
+                } else if modrm >> 6 != 3 {
                     return Err(self.unsupported(opcode));
-                }
-                let predicate = self.byte()?;
-                if predicate > 7 {
-                    return Err(self.unsupported(opcode));
-                }
-                Operation::CmppsRegister {
-                    predicate,
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                } else {
+                    let predicate = self.byte()?;
+                    if predicate > 7 {
+                        return Err(self.unsupported(opcode));
+                    }
+                    Operation::CmppsRegister {
+                        predicate,
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x5a) if cvtss2sd_register => {
@@ -22806,6 +22815,56 @@ mod tests {
             );
         }
         for bytes in [&[0x66, 0x0f, 0xc2, 0x00][..], &[0x66, 0x0f, 0xc2][..]] {
+            assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn cmpps_memory_rax_decodes_all_immediates_and_keeps_neighbors() {
+        for predicate in 0u8..=u8::MAX {
+            let bytes = [0x0f, 0xc2, 0x00, predicate];
+            let decoded = Memory::new(&bytes).decode().unwrap();
+            assert_eq!(decoded.length, 4);
+            assert_eq!(
+                decoded.operation,
+                Operation::CmppsMemoryRax { predicate },
+                "{bytes:02x?}"
+            );
+        }
+        assert_eq!(
+            Memory::new(&[0x0f, 0xc2, 0xc1, 1])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::CmppsRegister {
+                predicate: 1,
+                destination: 0,
+                source: 1,
+            }
+        );
+        for bytes in [
+            &[0x0f, 0xc2, 0x01, 0][..],                // [RCX]
+            &[0x0f, 0xc2, 0x04, 0, 0][..],             // SIB
+            &[0x41, 0x0f, 0xc2, 0x00, 0][..],          // REX.B
+            &[0x44, 0x0f, 0xc2, 0x00, 0][..],          // REX.R
+            &[0x66, 0x0f, 0xc2, 0x00, 0][..],          // CMPPD
+            &[0xf3, 0x0f, 0xc2, 0x00, 0][..],          // CMPSS
+            &[0xf2, 0x0f, 0xc2, 0x00, 0][..],          // CMPSD
+            &[0x66, 0x0f, 0xc2, 0xc1, 1][..],          // prefixed register neighbor
+            &[0xc5, 0xf8, 0xc2, 0x00, 0][..],          // VEX
+            &[0x62, 0xf1, 0x7c, 0x08, 0xc2, 0, 0][..], // EVEX
+        ] {
+            assert!(
+                Memory::new(bytes)
+                    .decode()
+                    .map_or(true, |instruction| !matches!(
+                        instruction.operation,
+                        Operation::CmppsMemoryRax { .. }
+                    )),
+                "{bytes:02x?}"
+            );
+        }
+        for bytes in [&[0x0f, 0xc2, 0x00][..], &[0x0f, 0xc2][..]] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }
     }
