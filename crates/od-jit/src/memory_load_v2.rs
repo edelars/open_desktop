@@ -2170,6 +2170,189 @@ mod tests {
         })
     }
 
+    fn matches_single_site_pc_map_contract(
+        map: &crate::statepoints::PcMap,
+        entry_rip: u64,
+        operation: MemorySiteOperationV2,
+    ) -> bool {
+        use crate::statepoints::{
+            GuestRipBoundary, GuestRipSource, SnapshotAdmissibility, StatePhase,
+        };
+
+        let expected_helper_snapshot = match operation {
+            MemorySiteOperationV2::Load => SnapshotAdmissibility::ReplayCurrentInstruction,
+            MemorySiteOperationV2::Store => SnapshotAdmissibility::InadmissibleAfterEffect,
+        };
+        let expected_after_helper_snapshot = expected_helper_snapshot;
+        let next_rip = entry_rip + 3;
+        let code_len = map.code_len();
+        if map.instruction_count() != 1
+            || code_len == 0
+            || code_len % 4 != 0
+            || map.ranges().is_empty()
+        {
+            return false;
+        }
+
+        let mut cursor = 0;
+        for (index, range) in map.ranges().iter().enumerate() {
+            let attribution_is_valid = if range.phase == StatePhase::Service {
+                range.instruction_index.is_none()
+                    && (range.guest_rip == GuestRipSource::Fixed(entry_rip)
+                        || range.guest_rip == GuestRipSource::CanonicalState)
+            } else {
+                range.instruction_index == Some(0)
+            };
+            if range.range.start() != cursor
+                || range.range.start() >= range.range.end()
+                || range.range.start() % 4 != 0
+                || range.range.end() % 4 != 0
+                || range.range.end() > code_len
+                || map.lookup(range.range.start()) != Some(range)
+                || !attribution_is_valid
+            {
+                return false;
+            }
+            if index + 1 < map.ranges().len()
+                && map.lookup(range.range.end()) != map.ranges().get(index + 1)
+            {
+                return false;
+            }
+            cursor = range.range.end();
+        }
+        if cursor != code_len
+            || map.lookup(code_len).is_some()
+            || map.snapshot_admissibility_at(code_len).is_some()
+        {
+            return false;
+        }
+
+        let exactly_one = |phase, guest_rip, snapshot| {
+            let matching = map
+                .ranges()
+                .iter()
+                .filter(|range| range.instruction_index == Some(0) && range.phase == phase)
+                .collect::<Vec<_>>();
+            matching.len() == 1
+                && matching[0].guest_rip == GuestRipSource::Fixed(guest_rip)
+                && matching[0].snapshot == snapshot
+        };
+        if !exactly_one(
+            StatePhase::BeforeInstruction,
+            entry_rip,
+            SnapshotAdmissibility::CanonicalBoundary,
+        ) || !exactly_one(StatePhase::HelperCall, entry_rip, expected_helper_snapshot)
+            || !exactly_one(
+                StatePhase::AfterHelper,
+                entry_rip,
+                expected_after_helper_snapshot,
+            )
+            || !exactly_one(
+                StatePhase::CommitInProgress,
+                entry_rip,
+                SnapshotAdmissibility::InadmissibleDuringCommit,
+            )
+        {
+            return false;
+        }
+
+        let pending = map
+            .ranges()
+            .iter()
+            .filter(|range| {
+                range.instruction_index == Some(0) && range.phase == StatePhase::PendingEffects
+            })
+            .collect::<Vec<_>>();
+        if pending.is_empty()
+            || pending.iter().any(|range| {
+                range.guest_rip != GuestRipSource::Fixed(entry_rip)
+                    || range.snapshot != SnapshotAdmissibility::ReplayCurrentInstruction
+            })
+        {
+            return false;
+        }
+
+        let services = map
+            .ranges()
+            .iter()
+            .filter(|range| range.phase == StatePhase::Service)
+            .collect::<Vec<_>>();
+        if services.len() != 2
+            || services[0].guest_rip != GuestRipSource::Fixed(entry_rip)
+            || services[0].instruction_index.is_some()
+            || services[0].snapshot != SnapshotAdmissibility::CanonicalBoundary
+            || services[1].guest_rip != GuestRipSource::CanonicalState
+            || services[1].instruction_index.is_some()
+            || services[1].snapshot != SnapshotAdmissibility::CanonicalBoundary
+        {
+            return false;
+        }
+
+        let exits = map
+            .ranges()
+            .iter()
+            .filter(|range| range.phase == StatePhase::Exit)
+            .collect::<Vec<_>>();
+        let failed_helper_exit = exits.iter().any(|range| {
+            range.instruction_index == Some(0)
+                && range.guest_rip == GuestRipSource::Fixed(entry_rip)
+                // The failure edge is taken only when GuestMemory::write
+                // returned an error; its contract guarantees no RAM change.
+                && range.snapshot == SnapshotAdmissibility::ReplayCurrentInstruction
+        });
+        let committed_exit = exits.iter().any(|range| {
+            range.guest_rip == GuestRipSource::Fixed(next_rip)
+                && range.snapshot == SnapshotAdmissibility::CanonicalBoundary
+        });
+        let exits_are_attributed = exits.iter().all(|range| {
+            range.instruction_index == Some(0)
+                && match range.guest_rip {
+                    GuestRipSource::Fixed(rip) if rip == entry_rip => {
+                        range.snapshot == SnapshotAdmissibility::CanonicalBoundary
+                            || range.snapshot == SnapshotAdmissibility::ReplayCurrentInstruction
+                    }
+                    GuestRipSource::Fixed(rip) if rip == next_rip => {
+                        range.snapshot == SnapshotAdmissibility::CanonicalBoundary
+                    }
+                    GuestRipSource::CanonicalState => {
+                        operation == MemorySiteOperationV2::Load
+                            && range.snapshot == SnapshotAdmissibility::CanonicalBoundary
+                    }
+                    _ => false,
+                }
+        });
+        let canonical_block_complete_exit_count = exits
+            .iter()
+            .filter(|range| {
+                range.guest_rip == GuestRipSource::CanonicalState
+                    && range.instruction_index == Some(0)
+                    && range.snapshot == SnapshotAdmissibility::CanonicalBoundary
+            })
+            .count();
+        let expected_canonical_block_complete_exit_count =
+            usize::from(operation == MemorySiteOperationV2::Load);
+        if !failed_helper_exit
+            || !committed_exit
+            || !exits_are_attributed
+            || canonical_block_complete_exit_count != expected_canonical_block_complete_exit_count
+        {
+            return false;
+        }
+
+        let boundaries = map.boundaries();
+        boundaries.len() == 1
+            && boundaries[0].rip == GuestRipBoundary::Fixed(next_rip)
+            && boundaries[0].instruction_index == 0
+            && boundaries[0].committed_instructions == 1
+            && boundaries[0].phase == StatePhase::Committed
+            && boundaries[0].snapshot == SnapshotAdmissibility::CanonicalBoundary
+            && map.lookup(boundaries[0].host_offset).is_some_and(|range| {
+                matches!(range.phase, StatePhase::Committed | StatePhase::Exit)
+                    && range.guest_rip == GuestRipSource::Fixed(next_rip)
+                    && range.snapshot == SnapshotAdmissibility::CanonicalBoundary
+            })
+    }
+
     #[test]
     fn ir_dword_load_admits_only_exact_8b03_and_preserves_its_provenance() {
         let entry = 0x8100;
@@ -2565,6 +2748,209 @@ mod tests {
             &rebuild(ranges, original.boundaries().to_vec()),
             entry_rip,
             operations,
+        ));
+    }
+
+    #[test]
+    fn ir_single_site_pc_maps_attribute_all_checked_ranges_and_boundaries() {
+        use crate::statepoints::{GuestRipSource, SnapshotAdmissibility, StatePhase};
+
+        let cases = [
+            ([0x48, 0x8b, 0x03], MemorySiteOperationV2::Load),
+            ([0x48, 0x89, 0x03], MemorySiteOperationV2::Store),
+        ];
+        for (bytes, operation) in cases {
+            let entry_rip = 0x8000;
+            let code = CodeView::new(entry_rip, &bytes).unwrap();
+            let (map, code_len, site) = match operation {
+                MemorySiteOperationV2::Load => {
+                    let block = compile_ir_memory_load_block_v2(code, entry_rip).unwrap();
+                    assert_eq!(block.site().operation(), operation);
+                    let map = block.pc_map().clone();
+                    let code_len = block.code().to_le_bytes().unwrap().len();
+                    assert!(matches_single_site_pc_map_contract(
+                        &map, entry_rip, operation
+                    ));
+                    (map, code_len, block.site().clone())
+                }
+                MemorySiteOperationV2::Store => {
+                    let block = compile_ir_memory_store_block_v2(code, entry_rip).unwrap();
+                    assert_eq!(block.site().operation(), operation);
+                    let map = block.pc_map().clone();
+                    let code_len = block.code().to_le_bytes().unwrap().len();
+                    assert!(matches_single_site_pc_map_contract(
+                        &map, entry_rip, operation
+                    ));
+                    (map, code_len, block.site().clone())
+                }
+            };
+            assert_eq!(map.code_len() as usize, code_len);
+            assert_eq!(map.instruction_count(), 1);
+            assert_eq!(site.instruction_index(), 0);
+            assert_eq!(site.guest_rip(), entry_rip);
+            assert_eq!(site.next_rip(), entry_rip + 3);
+            for range in map.ranges() {
+                assert_eq!(map.lookup(range.range.start()), Some(range));
+                if range.range.end() < map.code_len() {
+                    let next = map.lookup(range.range.end()).unwrap();
+                    assert_eq!(next.range.start(), range.range.end());
+                }
+            }
+            assert!(map.lookup(map.code_len()).is_none());
+            assert!(map.snapshot_admissibility_at(map.code_len()).is_none());
+            let commit = map
+                .ranges()
+                .iter()
+                .find(|range| {
+                    range.instruction_index == Some(0)
+                        && range.phase == StatePhase::CommitInProgress
+                })
+                .unwrap();
+            assert_eq!(commit.guest_rip, GuestRipSource::Fixed(entry_rip));
+            assert_eq!(
+                commit.snapshot,
+                SnapshotAdmissibility::InadmissibleDuringCommit
+            );
+            let helper = map
+                .ranges()
+                .iter()
+                .find(|range| {
+                    range.instruction_index == Some(0) && range.phase == StatePhase::HelperCall
+                })
+                .unwrap();
+            let after_helper = map
+                .ranges()
+                .iter()
+                .find(|range| {
+                    range.instruction_index == Some(0) && range.phase == StatePhase::AfterHelper
+                })
+                .unwrap();
+            assert_eq!(helper.guest_rip, GuestRipSource::Fixed(entry_rip));
+            assert_eq!(after_helper.guest_rip, GuestRipSource::Fixed(entry_rip));
+            assert_eq!(
+                after_helper.snapshot,
+                if operation == MemorySiteOperationV2::Load {
+                    SnapshotAdmissibility::ReplayCurrentInstruction
+                } else {
+                    SnapshotAdmissibility::InadmissibleAfterEffect
+                }
+            );
+        }
+
+        // The comparator rejects validly reconstructed maps with wrong index,
+        // RIP, shared-exit attribution, commit boundary, or replay safety.
+        let entry_rip = 0x8100;
+        let store_bytes = [0x48, 0x89, 0x03];
+        let block = compile_ir_memory_store_block_v2(
+            CodeView::new(entry_rip, &store_bytes).unwrap(),
+            entry_rip,
+        )
+        .unwrap();
+        let original = block.pc_map();
+        let rebuild = |ranges, boundaries| {
+            crate::statepoints::PcMap::new(
+                original.code_len() as usize,
+                original.instruction_count() as usize,
+                ranges,
+                boundaries,
+            )
+            .unwrap()
+        };
+
+        let mut ranges = original.ranges().to_vec();
+        ranges
+            .iter_mut()
+            .find(|range| range.phase == StatePhase::HelperCall)
+            .unwrap()
+            .instruction_index = None;
+        assert!(!matches_single_site_pc_map_contract(
+            &rebuild(ranges, original.boundaries().to_vec()),
+            entry_rip,
+            MemorySiteOperationV2::Store,
+        ));
+
+        let mut ranges = original.ranges().to_vec();
+        ranges
+            .iter_mut()
+            .find(|range| range.phase == StatePhase::HelperCall)
+            .unwrap()
+            .guest_rip = GuestRipSource::Fixed(entry_rip + 3);
+        assert!(!matches_single_site_pc_map_contract(
+            &rebuild(ranges, original.boundaries().to_vec()),
+            entry_rip,
+            MemorySiteOperationV2::Store,
+        ));
+
+        let mut ranges = original.ranges().to_vec();
+        ranges
+            .iter_mut()
+            .find(|range| range.phase == StatePhase::PendingEffects)
+            .unwrap()
+            .instruction_index = None;
+        assert!(!matches_single_site_pc_map_contract(
+            &rebuild(ranges, original.boundaries().to_vec()),
+            entry_rip,
+            MemorySiteOperationV2::Store,
+        ));
+
+        let mut ranges = original.ranges().to_vec();
+        ranges
+            .iter_mut()
+            .filter(|range| range.phase == StatePhase::Service)
+            .last()
+            .unwrap()
+            .guest_rip = GuestRipSource::Fixed(entry_rip);
+        assert!(!matches_single_site_pc_map_contract(
+            &rebuild(ranges, original.boundaries().to_vec()),
+            entry_rip,
+            MemorySiteOperationV2::Store,
+        ));
+
+        let mut boundaries = original.boundaries().to_vec();
+        boundaries[0].committed_instructions = 0;
+        assert!(!matches_single_site_pc_map_contract(
+            &rebuild(original.ranges().to_vec(), boundaries),
+            entry_rip,
+            MemorySiteOperationV2::Store,
+        ));
+
+        let mut ranges = original.ranges().to_vec();
+        ranges
+            .iter_mut()
+            .find(|range| range.phase == StatePhase::AfterHelper)
+            .unwrap()
+            .snapshot = SnapshotAdmissibility::ReplayCurrentInstruction;
+        assert!(!matches_single_site_pc_map_contract(
+            &rebuild(ranges, original.boundaries().to_vec()),
+            entry_rip,
+            MemorySiteOperationV2::Store,
+        ));
+
+        let mut ranges = original.ranges().to_vec();
+        ranges
+            .iter_mut()
+            .find(|range| range.phase == StatePhase::CommitInProgress)
+            .unwrap()
+            .snapshot = SnapshotAdmissibility::ReplayCurrentInstruction;
+        assert!(!matches_single_site_pc_map_contract(
+            &rebuild(ranges, original.boundaries().to_vec()),
+            entry_rip,
+            MemorySiteOperationV2::Store,
+        ));
+
+        let mut ranges = original.ranges().to_vec();
+        ranges
+            .iter_mut()
+            .find(|range| {
+                range.phase == StatePhase::Exit
+                    && range.guest_rip == GuestRipSource::Fixed(entry_rip)
+            })
+            .unwrap()
+            .snapshot = SnapshotAdmissibility::CanonicalBoundary;
+        assert!(!matches_single_site_pc_map_contract(
+            &rebuild(ranges, original.boundaries().to_vec()),
+            entry_rip,
+            MemorySiteOperationV2::Store,
         ));
     }
 

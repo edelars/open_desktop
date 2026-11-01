@@ -3850,3 +3850,82 @@ fn published_two_site_pc_map_matches_artifact_and_outlives_artifact() {
         drop(replacement_published);
     }
 }
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn published_single_site_pc_maps_match_artifacts_outlive_them_and_republish() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap();
+    use od_jit::runtime::MemorySiteOperationV2::{Load, Store};
+
+    for (sequence_index, operation) in [Load, Store].into_iter().enumerate() {
+        let entry_rip = ENTRY_RIP + sequence_index as u64 * 0x10;
+        let (source, expected_map, published) = match operation {
+            Load => {
+                let source = [0x48, 0x8b, 0x03];
+                let artifact = od_jit::memory_load_v2::compile_ir_memory_load_block_v2(
+                    od_jit::block::CodeView::new(entry_rip, &source).unwrap(),
+                    entry_rip,
+                )
+                .unwrap();
+                let expected_map = artifact.pc_map().clone();
+                let published = PublishedCode::publish_ir_memory_load_v2(&artifact).unwrap();
+                (source, expected_map, published)
+            }
+            Store => {
+                let source = [0x48, 0x89, 0x03];
+                let artifact = od_jit::memory_load_v2::compile_ir_memory_store_block_v2(
+                    od_jit::block::CodeView::new(entry_rip, &source).unwrap(),
+                    entry_rip,
+                )
+                .unwrap();
+                let expected_map = artifact.pc_map().clone();
+                let published = PublishedCode::publish_ir_memory_store_v2(&artifact).unwrap();
+                (source, expected_map, published)
+            }
+        };
+        assert_eq!(published.pc_map(), Some(&expected_map));
+        // The compiler artifact was dropped at the end of the match arm.
+        assert_eq!(published.pc_map(), Some(&expected_map));
+        drop(published);
+
+        let replacement_operation = match operation {
+            Load => Store,
+            Store => Load,
+        };
+        let replacement_entry_rip = entry_rip + 0x100;
+        let replacement_source = match replacement_operation {
+            Load => [0x48, 0x8b, 0x03],
+            Store => [0x48, 0x89, 0x03],
+        };
+        assert_ne!(source, replacement_source);
+        let (replacement_map, replacement_published) = match replacement_operation {
+            Load => {
+                let artifact = od_jit::memory_load_v2::compile_ir_memory_load_block_v2(
+                    od_jit::block::CodeView::new(replacement_entry_rip, &replacement_source)
+                        .unwrap(),
+                    replacement_entry_rip,
+                )
+                .unwrap();
+                let map = artifact.pc_map().clone();
+                let published = PublishedCode::publish_ir_memory_load_v2(&artifact).unwrap();
+                (map, published)
+            }
+            Store => {
+                let artifact = od_jit::memory_load_v2::compile_ir_memory_store_block_v2(
+                    od_jit::block::CodeView::new(replacement_entry_rip, &replacement_source)
+                        .unwrap(),
+                    replacement_entry_rip,
+                )
+                .unwrap();
+                let map = artifact.pc_map().clone();
+                let published = PublishedCode::publish_ir_memory_store_v2(&artifact).unwrap();
+                (map, published)
+            }
+        };
+        assert_ne!(replacement_map, expected_map);
+        assert_eq!(replacement_published.pc_map(), Some(&replacement_map));
+        // The replacement compiler artifact was dropped at the end of its arm.
+        assert_eq!(replacement_published.pc_map(), Some(&replacement_map));
+        drop(replacement_published);
+    }
+}
