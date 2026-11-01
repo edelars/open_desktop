@@ -3472,6 +3472,65 @@ S3-41 remain open. See the
 [S3-40d result report](../reports/STAGE_3_S3-40d_2026-10-31.md) and
 [`BENCHMARKS.md`](../testing/BENCHMARKS.md#s3-40d-cached-composed-nativeregisterv1-eagerdemand-flags-comparison).
 
+#### S3-40e: bounded checked-memory cold, warm, and cached-call evidence
+
+**Acceptance:** Add the completed S3-35c cold direct-entry, S3-36d warm
+direct-entry, and S3-36e cached full-call checked-memory measurements to the
+provisional decision ledger, preserving their distinct timed boundaries,
+sequence strata, host/toolchain, source fingerprints, and fixture limits.
+Do not derive cache cost or break-even by subtracting results from different
+timed paths. Keep production policy and the broader S3-36/S3-40/S3-41 and
+hardware gates open.
+
+**Result:** S3-18e supplies the bounded capacity-one checked-memory cache
+prerequisite (`b1a6ccb130844c40a396155a8f84bda656bfa8c3`), limited to the two
+frozen `StoreThenLoad`/`LoadThenStore` fixture profiles. S3-35c measured cold
+direct entry, including compile, publication, execution, and per-input drops;
+its 60 paired raw-total native/interpreter ratios had median 71.4765 and range
+66.7736–93.9423. S3-36d measured a resident warm direct typed entry without
+dispatcher lookup or cache activity; across 60 pairs per sequence, medians and
+ranges were 1.3718847445 (1.3116083380–1.4203506060) for
+`store_then_load` and 1.3662312961 (1.2865399535–1.4421564464) for
+`load_then_store`. S3-36e timed the complete cached `MemoryPairCache::run`
+call, including validation, lookup/counters, and typed host execution; across
+60 pairs per sequence, medians and ranges were 2.7222892353
+(2.6348242133–2.8855539942) and 2.7650079504
+(2.6390215880–2.9278959372), respectively. S3-35c reports one corpus-level
+aggregate across its 60 pairs for both sequences; S3-36d and S3-36e keep the
+two sequence strata separate.
+
+These ratios compare different native boundaries with separately timed
+interpreter calls. They cannot be subtracted from one another to estimate
+cache overhead, cache-only cost, or break-even. All evidence is limited to two
+frozen S3-34a memory sequences on Apple M3 Max / aarch64 / macOS 26.7.1 / rustc
+1.99.0. Keep profile fingerprints distinct from release build source hashes
+and revisions:
+
+| Slice | Profile source identity | Scored release build identity |
+|---|---|---|
+| S3-35c | Revision `6f9da043073188b5164ee81b543add51314981a0`; profile source SHA-256 `5f4948f477c6e21232da25951219dab32c163a0a445fcade1b4b61c43d9e364a`. | All three runs: revision `6f9da043073188b5164ee81b543add51314981a0`; build source SHA-256 `1b1f655e70e989e96e92c4f17cee0724ccf9ef6a0714104a7107a7880e6d4d15`. [Manifest](../reports/data/stage3/s3-35c/suite-manifest.json). |
+| S3-36d | Revision `dee1c860895c94883be7ce5650f50585569291f8`; profile source fingerprint `2ba1b077bc7a905adae120a98436a1fbf4d9d7de157cc2d02692db1d08ee0177`. | All three runs: revision `dee1c860895c94883be7ce5650f50585569291f8`; release build source SHA-256 `16771ca3b7d4f5e227a6c42a87c52b2788eb6987f8e1256488058a1568fbb5b0`. [Manifest](../reports/data/stage3/s3-36d/suite-manifest.json). |
+| S3-36e | Common 15-file benchmark/runtime profile fingerprint `cdc04dc1ca8041c68a44b371f5f6f0aec7829f0466c005eb05deecec6cf6dd0f`. | Scored run 1: revision `16e68fb57427f8749447347787666971f49b44e3`, build source SHA-256 `008ccea1d32c22fc34fdf9c0f642a4b3f6a6190705578626ca89801df362db40`; run 2: `2bd172469014fb27a70ae5875513c6d389a15e38`, `e32bec28f899f19d228de31730daf33ac72d867e4d514883cbf91b16848271c4`; run 3: `d24865d29646eb5741fbc412fb52f4140ee81943`, `c9dd54440ba68f23e33b5c071fc96b6f028e5201f47414494617a5618a3bf0ce`. [Manifest](../reports/data/stage3/s3-36e/suite-manifest.json). |
+
+S3-36e's release preflight build revision `cea6d65f764bd2d4a5d8b564cf743945aae596ab` and build source SHA-256 `a56d73670c3c273f555ff56fdb0d7a68ddcfae40695c4f04bc4ed9d7da4db63f` identify the preflight build only, not the three scored builds. The S3-36d profile fingerprint is not its release build SHA. Full identities and artifact manifests are preserved in the linked source reports and manifests.
+
+The S3-35c suite-manifest SHA-256 is
+`55b20439bf3b78366b803ada9744966cd2f995d4f52c4826fc19e907193344b1`; the
+S3-36d and S3-36e manifest hashes are respectively
+`ae855641e2643d7888558ffddf8ef29eb40021605e47ed8d27e8021058c5be19` and
+`e643469ccb79ad69ebb9347f657c680f62b90c4a7e9c1d1c29111e4ad5a57c3f`.
+S3-35c and S3-36d runtime dirty status is unknown; S3-36e release source tree
+was clean while runtime `working_tree_dirty` is unknown.
+
+This bounded ledger update does not support general memory-performance,
+production default/winner, owner/MMU/SMC, whole-system, or broad cold/warm
+claims. S3-36, S3-40, S3-41, and physical hardware gates remain open; Mini
+checks remain deferred until the end of Stage 3. See the
+[S3-40e evidence report](../reports/STAGE_3_S3-40e_2026-11-01.md) and the
+[S3-35c](../reports/STAGE_3_S3-35c_2026-11-01.md),
+[S3-36d](../reports/STAGE_3_S3-36d_2026-11-01.md), and
+[S3-36e](../reports/STAGE_3_S3-36e_2026-11-01.md) source reports.
+
 ### S3-41. Оформить приёмку этапа
 
 1. Создать STAGE_3_REPORT: exact profiles/forms, native/helper/fallback границы, revision/fingerprint, машины/toolchains, correctness counts, commands/seeds, cold/warm/resource результаты.
