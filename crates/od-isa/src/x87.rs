@@ -289,6 +289,51 @@ pub fn sqrt_finite_to_binary80(
     pack_normal_rounded_significand(false, exponent, rounded_significand, 64)
 }
 
+/// Return the exact truncated finite remainder coefficient and exponent for
+/// normalized nonzero binary80 values.
+///
+/// The returned pair `(exponent, coefficient)` represents
+/// `coefficient * 2^(exponent - 63)`. For exponent gaps from zero through 64,
+/// the helper computes the remainder of `(lhs.significand << gap)` divided by
+/// `rhs.significand`. A negative gap returns the left operand unchanged. Gaps
+/// above 64 are outside this bounded helper and return `None`. Only normal,
+/// subnormal, and pseudo-denormal provenance with a normalized significand is
+/// accepted. This is exact integer arithmetic only: it does not implement an
+/// x87 remainder instruction, remainder rounding variant, status flags,
+/// exceptions, or state changes.
+pub fn remainder_finite_trunc(lhs: X87Finite, rhs: X87Finite) -> Option<(i32, i128)> {
+    let valid = |value: X87Finite| {
+        matches!(
+            value.source_class,
+            X87Binary80Class::Normal
+                | X87Binary80Class::Subnormal
+                | X87Binary80Class::PseudoDenormal
+        ) && value.significand & (1_u64 << 63) != 0
+    };
+    if !valid(lhs) || !valid(rhs) {
+        return None;
+    }
+
+    let signed = |magnitude: u64, sign: bool| {
+        let magnitude = i128::from(magnitude);
+        if sign { -magnitude } else { magnitude }
+    };
+    let gap = i64::from(lhs.exponent) - i64::from(rhs.exponent);
+    if gap < 0 {
+        return Some((lhs.exponent, signed(lhs.significand, lhs.sign)));
+    }
+    if gap > 64 {
+        return None;
+    }
+
+    // `lhs.significand` has at most 64 bits, so shifting by at most 64 keeps
+    // the exact numerator within u128. The remainder is strictly below the
+    // 64-bit divisor and therefore safely representable as a signed i128.
+    let numerator = u128::from(lhs.significand) << (gap as u32);
+    let remainder = (numerator % u128::from(rhs.significand)) as u64;
+    Some((rhs.exponent, signed(remainder, lhs.sign)))
+}
+
 /// Round an exact normalized quotient directly into the binary80 subnormal
 /// range, preserving the quotient's rational tail until the final rounding.
 ///
@@ -922,9 +967,10 @@ mod tests {
         add_finite_unequal_exponents, align_finite_pair, divide_finite_significands,
         divide_finite_to_binary80, multiply_finite_significands, multiply_finite_to_binary80,
         normalize_exact_coefficient, normalize_exact_magnitude, pack_normal_rounded_significand,
-        round_pack_exact_coefficient, round_pack_exact_magnitude, round_pack_subnormal_quotient,
-        round_quotient_magnitude, round_quotient_ties_even, round_quotient_to_precision,
-        scale_finite_to_binary80, shift_right_jam, shift_right_jam_u128, sqrt_finite_to_binary80,
+        remainder_finite_trunc, round_pack_exact_coefficient, round_pack_exact_magnitude,
+        round_pack_subnormal_quotient, round_quotient_magnitude, round_quotient_ties_even,
+        round_quotient_to_precision, scale_finite_to_binary80, shift_right_jam,
+        shift_right_jam_u128, sqrt_finite_to_binary80,
     };
     use crate::state::{X87State, X87Tag};
 
@@ -2483,6 +2529,201 @@ mod tests {
             assert_eq!(sqrt_finite_to_binary80(negative_zero, mode), None);
             assert_eq!(sqrt_finite_to_binary80(negative, mode), None);
             assert_eq!(sqrt_finite_to_binary80(unnormalized, mode), None);
+        }
+    }
+
+    #[test]
+    fn finite_truncated_remainder_matches_literal_signed_and_gap_vectors() {
+        let normal = X87Binary80Class::Normal;
+        let high = 0x8000_0000_0000_0000;
+
+        // 5.5 % 2 is exactly 1.5 in units of 2^(rhs exponent - 63).
+        for (lhs_sign, rhs_sign, expected) in [
+            (false, false, 0x6000_0000_0000_0000_i128),
+            (false, true, 0x6000_0000_0000_0000_i128),
+            (true, false, -0x6000_0000_0000_0000_i128),
+            (true, true, -0x6000_0000_0000_0000_i128),
+        ] {
+            let lhs = finite(2, 0xb000_0000_0000_0000, lhs_sign, normal);
+            let rhs = finite(1, high, rhs_sign, normal);
+            let before = (lhs, rhs);
+            assert_eq!(remainder_finite_trunc(lhs, rhs), Some((1, expected)));
+            assert_eq!((lhs, rhs), before);
+        }
+
+        // Exact multiples have a mathematical zero coefficient regardless of
+        // operand signs; architectural zero sign is outside this helper.
+        for lhs_sign in [false, true] {
+            for rhs_sign in [false, true] {
+                assert_eq!(
+                    remainder_finite_trunc(
+                        finite(2, 0xc000_0000_0000_0000, lhs_sign, normal),
+                        finite(1, high, rhs_sign, normal),
+                    ),
+                    Some((1, 0))
+                );
+            }
+        }
+
+        // A smaller exponent returns the signed left coefficient unchanged.
+        assert_eq!(
+            remainder_finite_trunc(
+                finite(0, high, true, normal),
+                finite(1, high, false, normal),
+            ),
+            Some((0, -0x8000_0000_0000_0000_i128))
+        );
+
+        let max = u64::MAX;
+        let edge_vectors = [
+            (0, 0x8000_0000_0000_0001, high, 1),
+            (1, high, max, 1),
+            (63, max, 0x8000_0000_0000_0001, 3),
+            (64, max, 0x8000_0000_0000_0001, 6),
+            (64, max, max, 0),
+        ];
+        for (gap, lhs_significand, rhs_significand, expected) in edge_vectors {
+            let lhs = finite(gap, lhs_significand, false, normal);
+            let rhs = finite(0, rhs_significand, false, normal);
+            assert_eq!(
+                remainder_finite_trunc(lhs, rhs),
+                Some((0, expected)),
+                "gap={gap}, lhs={lhs_significand:#018x}, rhs={rhs_significand:#018x}"
+            );
+        }
+        assert_eq!(
+            remainder_finite_trunc(
+                finite(65, high, false, normal),
+                finite(0, high, false, normal)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn finite_truncated_remainder_covers_provenance_boundaries_and_rejections() {
+        let high = 0x8000_0000_0000_0000;
+        let normal = X87Binary80Class::Normal;
+
+        // Minimum normal modulo maximum subnormal is the minimum subnormal.
+        assert_eq!(
+            remainder_finite_trunc(
+                finite(-16382, high, false, normal),
+                finite(
+                    -16383,
+                    0xffff_ffff_ffff_fffe,
+                    false,
+                    X87Binary80Class::Subnormal
+                ),
+            ),
+            Some((-16383, 2))
+        );
+
+        // Raw subnormal integers 7 % 3 == 1 after normalization.
+        assert_eq!(
+            remainder_finite_trunc(
+                finite(
+                    -16443,
+                    0xe000_0000_0000_0000,
+                    false,
+                    X87Binary80Class::Subnormal,
+                ),
+                finite(
+                    -16444,
+                    0xc000_0000_0000_0000,
+                    false,
+                    X87Binary80Class::Subnormal,
+                ),
+            ),
+            Some((-16444, 0x4000_0000_0000_0000_i128))
+        );
+
+        let pseudo_min = finite(-16382, high, true, X87Binary80Class::PseudoDenormal);
+        let normal_min = finite(-16382, high, true, normal);
+        let rhs = finite(-16383, 0xc000_0000_0000_0000, false, normal);
+        assert_eq!(
+            remainder_finite_trunc(pseudo_min, rhs),
+            remainder_finite_trunc(normal_min, rhs)
+        );
+
+        // Widen before subtracting exponents: both i32 endpoints are safe.
+        assert_eq!(
+            remainder_finite_trunc(
+                finite(i32::MIN, high, true, normal),
+                finite(i32::MAX, high, false, normal),
+            ),
+            Some((i32::MIN, -0x8000_0000_0000_0000_i128))
+        );
+        assert_eq!(
+            remainder_finite_trunc(
+                finite(i32::MAX, high, false, normal),
+                finite(i32::MIN, high, false, normal),
+            ),
+            None
+        );
+
+        let valid = finite(0, high, false, normal);
+        let invalid = [
+            finite(0, 0, false, normal),
+            finite(0, high - 1, false, normal),
+            finite(0, 0, false, X87Binary80Class::Zero),
+            finite(0, high, false, X87Binary80Class::Infinity),
+            finite(0, high, false, X87Binary80Class::QuietNaN),
+            finite(0, high, false, X87Binary80Class::Unnormal),
+        ];
+        for value in invalid {
+            assert_eq!(remainder_finite_trunc(value, valid), None);
+            assert_eq!(remainder_finite_trunc(valid, value), None);
+        }
+        assert_eq!(
+            remainder_finite_trunc(valid, finite(0, 0, false, normal)),
+            None
+        );
+    }
+
+    #[test]
+    fn finite_truncated_remainder_composes_to_literal_exact_binary80_values() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+        let modes = [Nearest, Zero, Up, Down];
+        let normal = X87Binary80Class::Normal;
+        let high = 0x8000_0000_0000_0000;
+
+        let (exponent, coefficient) = remainder_finite_trunc(
+            finite(2, 0xb000_0000_0000_0000, false, normal),
+            finite(1, high, true, normal),
+        )
+        .unwrap();
+        assert_eq!((exponent, coefficient), (1, 0x6000_0000_0000_0000));
+        for mode in modes {
+            assert_eq!(
+                round_pack_exact_coefficient(exponent, coefficient, mode)
+                    .unwrap()
+                    .to_bytes(),
+                [0, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0x3f]
+            );
+        }
+
+        let (exponent, coefficient) = remainder_finite_trunc(
+            finite(-16382, high, false, normal),
+            finite(
+                -16383,
+                0xffff_ffff_ffff_fffe,
+                false,
+                X87Binary80Class::Subnormal,
+            ),
+        )
+        .unwrap();
+        assert_eq!((exponent, coefficient), (-16383, 2));
+        for mode in modes {
+            assert_eq!(
+                round_pack_exact_coefficient(exponent, coefficient, mode)
+                    .unwrap()
+                    .to_bytes(),
+                [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            );
         }
     }
 
