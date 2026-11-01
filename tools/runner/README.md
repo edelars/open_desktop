@@ -282,3 +282,11 @@ direct ISA tests cover callback count and alignment. See the [CPU contract](../.
 The runner dispatches exact `F2 0F 2A 00` fixtures to the local interpreter
 profile and preserves backend closure. The matrix covers integer boundaries,
 RC variation, and MXCSR=0/PM=0.
+
+
+### S2-37cd — CVTSI2SD m64
+
+The runner dispatches exact `F2 48 0F 2A 00` fixtures to the bounded
+interpreter profile. Its matrix covers signed i64 boundaries, RC-dependent
+rounding around 2^53, sticky PE, high-XMM and pending-x87 preservation, strict
+schema/tamper checks, and backend denials. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cd--bounded-long64-cvtsi2sd-xmm0qword-ptr-rax-m64-memory-profile).

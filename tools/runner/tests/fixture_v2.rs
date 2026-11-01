@@ -18695,6 +18695,143 @@ fn cvtsi2sd_m32_exactly_widens_i32_and_preserves_mxcsr() {
 }
 
 #[test]
+fn cvtsi2sd_m64_rounds_signed_i64_and_preserves_unrelated_state() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let path = root.join("s2_37cd_cvtsi2sd_m64_i64_min.case.json");
+    let mut fixture = Fixture::from_json(&fs::read(&path).unwrap())
+        .unwrap()
+        .fixture;
+    assert_eq!(
+        fixture.profile,
+        od_testkit::v2::Profile::LongCvtsi2sdMemory64RaxV1
+    );
+    let mut x87 = od_isa::state::X87State::fixture_seed();
+    x87.status_word = 0x8081; // Pending x87 state is an unchanged canary for SSE2.
+    x87.tag_word = 0x5555;
+    x87.registers[3] = [0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe, 0x21, 0x43];
+    fixture.initial_state.x87 = Some(od_testkit::v2::X87Snapshot::from(&x87));
+    let controls = fixture.cvtsi2sd_r64_memory_controls.unwrap();
+    let values = [
+        0i64,
+        1,
+        -1,
+        i64::MIN,
+        i64::MIN + 1,
+        i64::MAX,
+        i64::MAX - 1023,
+        (1i64 << 53) - 1,
+        (1i64 << 53) + 1,
+        (1i64 << 53) + 3,
+        -((1i64 << 53) + 1),
+        -((1i64 << 53) + 3),
+    ];
+    for value in values {
+        for rc in 0..4u64 {
+            for base_mxcsr in [0x1000u64, 0x1f80] {
+                for sticky in [0u64, 1 << 5] {
+                    let mut case = fixture.clone();
+                    case.memory[1].initial_bytes_hex = value
+                        .to_le_bytes()
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect();
+                    let mxcsr = base_mxcsr | (rc << 13) | sticky;
+                    case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+                    case.cvtsi2sd_r64_memory_controls = Some(controls);
+                    let source = case.to_json().unwrap();
+                    let (input, result) = run(&source, "interpreter", 0);
+                    od_testkit::v2::compare(&input, &result, &result).unwrap();
+                    assert_eq!(result.outcome, Outcome::StopAddress {});
+                    let actual = snapshot(&result);
+                    let magnitude = value.unsigned_abs();
+                    let bit_length = u64::BITS - magnitude.leading_zeros();
+                    let discarded = bit_length.saturating_sub(53);
+                    let inexact = discarded != 0 && magnitude & ((1u64 << discarded) - 1) != 0;
+                    let expected_mxcsr = mxcsr | (u64::from(inexact) << 5);
+                    assert_eq!(
+                        actual.state.sse.as_ref().unwrap().mxcsr,
+                        HexU64(expected_mxcsr)
+                    );
+                    assert_eq!(
+                        &actual.state.sse.as_ref().unwrap().xmm[0][16..],
+                        &fixture.initial_state.sse.as_ref().unwrap().xmm[0][16..]
+                    );
+                    assert_eq!(actual.state.x87, fixture.initial_state.x87);
+                }
+            }
+        }
+    }
+
+    let source = fixture.to_json().unwrap();
+    for backend in ["jit", "native"] {
+        let (_, result) = run(&source, backend, 4);
+        assert!(
+            matches!(result.outcome, Outcome::Unsupported { .. }),
+            "{backend}"
+        );
+    }
+
+    let mut ac = fixture.clone();
+    ac.initial_state.rflags = HexU64(ac.initial_state.rflags.get() | (1 << 18));
+    ac.expected_exit = ExpectedExit::Unsupported;
+    let (_, result) = run(&ac.to_json().unwrap(), "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(snapshot(&result).state, ac.initial_state);
+
+    let mut gate_priority = fixture.clone();
+    gate_priority
+        .cvtsi2sd_r64_memory_controls
+        .as_mut()
+        .unwrap()
+        .sse2_available = false;
+    gate_priority
+        .cvtsi2sd_r64_memory_controls
+        .as_mut()
+        .unwrap()
+        .cr0_ts = true;
+    gate_priority.expected_exit = ExpectedExit::Exception;
+    let (input, result) = run(&gate_priority.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    assert!(matches!(result.outcome, Outcome::Exception {}));
+
+    let mut foreign = fixture.clone();
+    foreign.cvtsi2sd_r64_controls = Some(od_testkit::v2::Cvtsi2sdR32ControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: false,
+    });
+    assert!(foreign.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
+    let mut missing = fixture.clone();
+    missing.cvtsi2sd_r64_memory_controls = None;
+    assert!(missing.validate().is_err());
+    let mut unmasked_precision = fixture.clone();
+    unmasked_precision.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x0f80);
+    assert!(unmasked_precision.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&unmasked_precision).unwrap()).is_err());
+    let mut daz = fixture.clone();
+    daz.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1040);
+    assert!(daz.validate().is_err());
+    let mut reserved_mxcsr = fixture.clone();
+    reserved_mxcsr.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x0040_1000);
+    assert!(reserved_mxcsr.validate().is_err());
+    let mut wrong_opcode = fixture.clone();
+    wrong_opcode.memory[0].initial_bytes_hex = "f2480f2a01".into();
+    assert!(wrong_opcode.validate().is_err());
+
+    let (input, result) = run(&source, "interpreter", 0);
+    let mut tampered = result.clone();
+    let Observation::Available { value } = &mut tampered.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.state.sse.as_mut().unwrap().xmm[0].replace_range(..2, "ff");
+    assert!(od_testkit::v2::compare(&input, &result, &tampered).is_err());
+}
+
+#[test]
 fn cvtsi2sd_canonical_register_space_executes_all_512_forms() {
     let root =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");

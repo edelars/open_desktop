@@ -14706,3 +14706,31 @@ closed; no physical x86 acceptance is claimed. See the [plan](../plans/STAGE_2.m
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SD pp. 3-236–3-237; Vol. 1
 §11.5.2.2 and Table 14-21; Vol. 3A §16.1 and Table 16-1. The VEX-only Type
 3/Table 2-20 and Type 5/Table 2-22 entries are not used as legacy evidence.
+
+
+## S2-37cd — bounded Long64 CVTSI2SD XMM0,qword ptr [RAX] m64 memory profile
+
+Exact bytes: `F2 48 0F 2A 00` (F2 precedes REX.W). The schema-v2 profile fetches
+all five bytes, then applies the local SSE2/CR0.EM/CR4.OSFXSR `#UD` and CR0.TS
+`#NM` gates in that order, for CPL0–3. This is a bounded ordering policy, not a
+universal exception-priority claim. Missing SSE state after gates is a local
+fail-closed refusal, not a host panic.
+
+The checked canonical48 source span is `[RAX,RAX+7]`. The local profile requires
+AC=0 while permitting unaligned m64 addresses. It performs exactly one eight-byte
+little-endian read, then commits output; memory read failure preserves all CPU
+state. On success signed i64 converts directly to binary64 using MXCSR.RC,
+writing only XMM0.low64. Binary64 can exactly represent the full i64 exponent
+range, so conversion has no overflow. Inexact conversions set sticky PE; exact
+conversions add no flags. Existing MXCSR control and status bits are preserved.
+Strict fixture admission requires MXCSR mask `0xffbf`, DAZ=0, and PM=1; other supported
+exception masks, all RC and FTZ settings, and existing sticky flags are allowed. PM=0, DAZ=1, and reserved MXCSR bits are malformed fixture inputs; direct ISA tests separately verify runtime fail-closed behavior.
+XMM0.high64, other XMM registers, and optional x87 state—including pending
+canaries—are preserved.
+
+The profile is interpreter-only. Native, JIT, C ABI, and generic backend
+admission remain closed; no physical x86 acceptance is claimed. See the [plan](../plans/STAGE_2.md#s2-37cd--exact-legacy-long64-cvtsi2sd-xmm0qword-ptr-rax), [report](../reports/STAGE_2_REPORT.md#s2-37cd--cvtsi2sd-xmm0qword-ptr-rax-m64-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cd--cvtsi2sd-xmm0qword-ptr-rax-m64-memory-profile).
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SD pp. 3-236–3-237; Vol. 1
+§4.8.4, §11.5.2.6, and Table 14-21; Vol. 3A Table 16-1. VEX-only Type
+3/Table 2-20 is not used as evidence for this legacy form.

@@ -7359,3 +7359,22 @@ Workspace all-target check passed. No physical x86 acceptance is claimed.
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SD pp. 3-236–3-237; Vol. 1
 §11.5.2.2 and Table 14-21; Vol. 3A §16.1/Table 16-1. VEX-only Type 3/Table
 2-20 and Type 5/Table 2-22 are not used for legacy behavior. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37cc--exact-legacy-long64-cvtsi2sd-xmm0dword-ptr-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cc--bounded-long64-cvtsi2sd-xmm0dword-ptr-rax-m32-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cc--cvtsi2sd-xmm0dword-ptr-rax-m32-memory-profile).
+
+
+### S2-37cd — CVTSI2SD XMM0,qword ptr [RAX] m64 memory profile
+
+`s2_37cd_cvtsi2sd_m64_i64_min.case.json` is the literal exact legacy
+`F2 48 0F 2A 00` case. Its unaligned source contains `INT64_MIN`, which converts
+exactly to binary64. The profile writes only XMM0.low64, preserves the full
+MXCSR and XMM0.high64, and leaves x87 untouched. Strict fixture admission requires PM=1 and DAZ=0; malformed PM=0/DAZ/reserved-bit inputs are schema-only rejection cases. Runner coverage checks signed boundaries, 2^53 rounding ties, four RC modes,
+PM-only versus all-mask MXCSR, sticky PE histories, pending-x87 canaries, foreign
+fields, tampering, and JIT/native denial. Direct ISA tests cover CPL/gates, AC
+refusal, span validation, and read rollback. Full suites passed: od-isa 1,634;
+od-testkit 446; od-runner 112 unit + 460 fixture; od-x86-runner 8 library + 4
+binary tests. Workspace all-target check, formatting, diff, layout, anchor, and
+Graphify checks passed; independent code review is complete. Physical x86
+acceptance was not run. See [plan](../../../../docs/plans/STAGE_2.md#s2-37cd--exact-legacy-long64-cvtsi2sd-xmm0qword-ptr-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cd--bounded-long64-cvtsi2sd-xmm0qword-ptr-rax-m64-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cd--cvtsi2sd-xmm0qword-ptr-rax-m64-memory-profile).
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SD pp. 3-236–3-237; Vol. 1
+§4.8.4, §11.5.2.6, Table 14-21; Vol. 3A Table 16-1. The Type 3/Table 2-20
+note is VEX-only and is not cited as legacy evidence.

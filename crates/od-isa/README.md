@@ -731,3 +731,12 @@ The exact `F2 0F 2A 00` local profile reads four bytes at RAX and exactly widens
 signed i32 into XMM0.low64. It preserves MXCSR and upper XMM0; the bounded
 interpreter profile allows RC/FTZ/sticky/mask variation, requires DAZ=0 and AC=0,
 and keeps native/JIT/C ABI admission closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cc--bounded-long64-cvtsi2sd-xmm0dword-ptr-rax-m32-memory-profile).
+
+
+### S2-37cd — CVTSI2SD m64 memory form
+
+The exact `F2 48 0F 2A 00` interpreter profile reads one unaligned-allowed
+eight-byte signed i64 at RAX, rounds directly to binary64 under MXCSR.RC, and
+writes only XMM0.low64. It preserves XMM0.high64 and unrelated state; inexact
+conversions set sticky PE. The bounded profile requires PM=1, DAZ=0, and AC=0,
+and keeps native/JIT/C ABI admission closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cd--bounded-long64-cvtsi2sd-xmm0qword-ptr-rax-m64-memory-profile).

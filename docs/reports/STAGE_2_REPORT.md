@@ -19957,3 +19957,36 @@ Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SD pp. 3-236–3-237 (legacy memory
 form p. 3-237); Vol. 1 §11.5.2.2 and Table 14-21; Vol. 3A §16.1 and Table
 16-1. VEX-only Type 3/Table 2-20 and Type 5/Table 2-22 are not used as legacy
 evidence.
+
+
+## S2-37cd — CVTSI2SD XMM0,qword ptr [RAX] m64 memory profile
+
+Implemented exact legacy `F2 48 0F 2A 00` as a separate schema-v2,
+interpreter-only profile. It fetches all five bytes before local SSE2/EM/OSFXSR
+`#UD` and TS `#NM` gates; direct ISA coverage includes CPL0–3 and local
+no-SSE fail-closed behavior. The source is one signed little-endian i64 from
+`[RAX]`, read once after checked canonical48 span validation. Unaligned access
+is accepted under local AC=0. Read failures and prior refusals preserve CPU
+state. Direct ISA tests cover read rollback, overflow/noncanonical span, and
+prerequisite priority.
+
+The independent testkit oracle rounds signed i64 to binary64 through integer
+significand/exponent operations and never uses host FP or production conversion
+helpers. RC controls the result; exact values add no flags, inexact values OR PE
+into existing sticky status. XMM0.low64 is written, while XMM0.high64, other SSE
+state, and arbitrary/pending x87 canaries are preserved. The local profile
+requires MXCSR mask `0xffbf`, DAZ=0, and PM=1; other masks and all RC/FTZ/sticky
+histories are admitted. The literal fixture contains unaligned i64::MIN, an
+exact conversion. Native/JIT/C ABI/generic backends remain closed.
+
+Focused verification passed:
+
+- `cargo test -p od-isa cvtsi2sd_r64_memory_rounds_i64_and_is_atomic --offline -- --nocapture` — 1 passed; direct matrix includes RC×CPL, gates, no-SSE, span, AC, exact read, and read-failure rollback.
+- `cargo test -p od-testkit cvtsi2sd_r64_independent_oracle_covers_signed_boundaries_ties_and_directed_rounding --offline -- --nocapture` — 1 passed.
+- `cargo test -p od-runner --test fixture_v2 cvtsi2sd_m64_rounds_signed_i64_and_preserves_unrelated_state --offline -- --nocapture` — 1 passed; 12 values × 4 RC × 2 MXCSR mask profiles × 2 PE histories (192 conversions), pending-x87 preservation, AC/gate behavior, foreign-field admission, tampering, and JIT/native denial.
+
+Full verification passed: `cargo test -p od-isa --offline -- --test-threads=1` (1,634 passed, 0 failed); `cargo test -p od-testkit --offline -- --test-threads=1` (446 passed, 0 failed); `cargo test -p od-runner --offline -- --test-threads=1` (112 unit and 460 fixture tests passed); and `cargo test -p od-x86-runner --offline -- --test-threads=1` (8 library and 4 binary tests passed; doc-tests 0). `cargo check --workspace --all-targets --offline` passed. Formatting passed with `cargo fmt --all -- --check` after `cargo fmt --all`; `git diff --check`, `python3 tools/check_layout.py` (48 required directories, 6 crate scaffolds, 14 instruction scopes), and linked-heading checks passed. Graphify update completed with 10,358 nodes, 22,116 edges, and 308 communities (54 unsupported-extension files skipped; 13 files had no extracted symbols). Independent code review and documentation/evidence recheck are complete. Physical x86 acceptance was not run, and no native physical execution is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SD pp. 3-236–3-237; Vol. 1
+§4.8.4, §11.5.2.6, Table 14-21; Vol. 3A Table 16-1. Type 3/Table 2-20 is a
+VEX note and is not used as legacy evidence.

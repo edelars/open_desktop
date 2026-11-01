@@ -1163,6 +1163,8 @@ pub enum Operation {
     },
     /// Local-only exact legacy `F2 0F 2A 00` signed m32-to-binary64 form.
     Cvtsi2sdR32MemoryRax,
+    /// Local-only exact legacy `F2 48 0F 2A 00` signed m64-to-binary64 form.
+    Cvtsi2sdR64MemoryRax,
     /// Local-only legacy `F2 REX.W 0F 2A /r` signed r64-to-binary64 form.
     Cvtsi2sdR64Register {
         destination: u8,
@@ -4975,12 +4977,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Escape0f, 0x2a) if cvtsi2sd_r64_register => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if modrm == 0 && prefixes.rex == Some(0x48) {
+                    Operation::Cvtsi2sdR64MemoryRax
+                } else if modrm >> 6 != 3 {
                     return Err(self.unsupported(opcode));
-                }
-                Operation::Cvtsi2sdR64Register {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                } else {
+                    Operation::Cvtsi2sdR64Register {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x2a) if cvtsi2ss_r32_register => {
@@ -20906,12 +20911,17 @@ mod tests {
                 .operation,
             Operation::Cvtsi2sdR32MemoryRax
         );
+        let decoded = Memory::new(&[0xf2, 0x48, 0x0f, 0x2a, 0x00])
+            .decode()
+            .unwrap();
+        assert_eq!(decoded.operation, Operation::Cvtsi2sdR64MemoryRax);
+        assert_eq!(decoded.length, 5);
         for bytes in [
             &[0xf2, 0x40, 0x0f, 0x2a, 0xc0][..],
             &[0xf2, 0x42, 0x0f, 0x2a, 0xc0],
             &[0xf2, 0xf2, 0x0f, 0x2a, 0xc0],
             &[0x48, 0xf2, 0x0f, 0x2a, 0xc0],
-            &[0xf2, 0x48, 0x0f, 0x2a, 0x00],
+            &[0xf2, 0x49, 0x0f, 0x2a, 0x00],
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }

@@ -349,3 +349,12 @@ The strict `s2-long-cvtsi2sd-memory32-rax-v1` profile has its own gate field and
 uses an independent raw-i32 integer oracle. The oracle constructs the exact
 binary64 encoding without host floating point or production conversion helpers;
 it checks XMM0 low64 output, high64 preservation, and exact MXCSR preservation.
+
+
+### S2-37cd — CVTSI2SD m64 memory profile
+
+The strict `s2-long-cvtsi2sd-memory64-rax-v1` profile has its own control field
+and an integer-only raw-i64→binary64 oracle. It models RC-dependent ties and PE
+stickies without host FP or production conversion helpers, and validates
+low64 output, high64 preservation, optional x87 canaries, and exact MXCSR state.
+See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cd--bounded-long64-cvtsi2sd-xmm0qword-ptr-rax-m64-memory-profile).
