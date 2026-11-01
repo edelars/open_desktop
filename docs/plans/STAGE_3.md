@@ -3317,9 +3317,17 @@ does not claim hit-only behavior. Exact per-input cache deltas are checked for
 both phases. Reports separate total successfully published code bytes from
 resident high-water sizes. A bench-only checked byte counter runs once per
 successful publication under `phase-observation`, with no hit-path work; its
-latency cost is not independently measured. This is harness
-readiness only: no scored performance runs or default selection have occurred.
-S3-40 and S3-41 remain open. See
+latency cost is not independently measured. Three scored M3 Max release runs
+completed on the frozen corpus. Candidate/eager paired-ratio medians were
+1.020–1.029 cold and 1.014–1.025 repeat, with paired spread crossing parity.
+The candidate published 14.27% more code in cold mode and 13.07% more in
+repeat mode. No winner inference or default change is supported; eager remains
+the default. One high-load run2 attempt is diagnostic only; the accepted run2
+retry is noisy bounded evidence, and run3 included low-load Stage 2 activity.
+Stage 2 process launches alone do not stop a run; actual load and paired spread
+are recorded. Mini checks remain deferred to the end of Stage 3. S3-40 and
+S3-41 remain open. See the
+[S3-40d result report](../reports/STAGE_3_S3-40d_2026-10-31.md) and
 [`BENCHMARKS.md`](../testing/BENCHMARKS.md#s3-40d-cached-composed-nativeregisterv1-eagerdemand-flags-comparison).
 
 ### S3-41. Оформить приёмку этапа

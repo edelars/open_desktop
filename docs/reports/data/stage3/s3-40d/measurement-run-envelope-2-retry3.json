@@ -1,0 +1,352 @@
+{
+  "schema": 1,
+  "record_type": "reconstructed_measurement_run_envelope",
+  "created_at_utc": "2026-11-01T00:20:01.005785+00:00",
+  "reconstruction_note": "Bound to the raw JSON and assembled from executor output plus read-only process/load snapshots. No continuous monitor log was persisted. Snapshot points do not establish uninterrupted state between samples. The raw report has no per-pair wall-clock timestamps, so exact temporal correlation of late pairs with host activity cannot be established.",
+  "source_revision": "588c21f2e1b6642dd98e2d9c5703ba7481256546",
+  "bindings": {
+    "preflight": {
+      "path": "work/tmp/stage3/s3-40d/preflight-588c21f.json",
+      "sha256": "35cfb854d7507e0c566f955feb3cc0eb16a3148ca31f21975d8a75f315b0a378"
+    },
+    "run1": {
+      "path": "work/tmp/stage3/s3-40d/cached-native-flags-1-retry-quiet.json",
+      "sha256": "2141d9c2833068828da9f7b87f80f97fad09c147a98b75377ac40168ef10443f"
+    },
+    "run1_envelope": {
+      "path": "work/tmp/stage3/s3-40d/measurement-run-envelope-1.json",
+      "sha256": "1bcc7f94e5d4d04aebe204600fe7aaf7d301f2b9e0031c99c99b3c8bca05b299"
+    },
+    "run2_excluded_attempt1": {
+      "path": "work/tmp/stage3/s3-40d/measurement-run-envelope-2-overlap.json",
+      "sha256": "d805f6ed3a52a04cbc42bd6992ccf123a9c7ef2af04bd13861e19a52b9a4fd86"
+    },
+    "run2_excluded_attempt2": {
+      "path": "work/tmp/stage3/s3-40d/measurement-run-envelope-2-retry-overlap.json",
+      "sha256": "c53d53b533d188bd1d71cddd4ef1a271de07882059fdaa5f49f1e44091e51e6b"
+    },
+    "run2_excluded_attempt3": {
+      "path": "work/tmp/stage3/s3-40d/measurement-run-envelope-2-retry2-overlap.json",
+      "sha256": "99bc8698f05704be73932f94e147be17a2468204889160a6a6ed8ab0fa58fc99"
+    },
+    "run2_diagnostic_report": {
+      "path": "work/tmp/stage3/s3-40d/cached-native-flags-2-final.json",
+      "sha256": "e401b3d3fee41c9f1fed7fc3c21af220f46baf8074f3d6fc21e9d05f723d59b0"
+    },
+    "run2_diagnostic_envelope": {
+      "path": "work/tmp/stage3/s3-40d/measurement-run-envelope-2-final.json",
+      "sha256": "ceb32e4e5889131635c621fc2f1f69be775728163c5fddf87cb19246b7b95d23"
+    },
+    "run2_retry3_report": {
+      "path": "work/tmp/stage3/s3-40d/cached-native-flags-2-retry3.json",
+      "sha256": "ec8a7da940c081e42bccae9b5f6970f4ec6fe70c3b8aa939f479656b71ead48a"
+    }
+  },
+  "run": {
+    "process_run": 2,
+    "classification": "completed_with_early_stage2_overlap_for_independent_spread_review",
+    "command": "work/tmp/stage3/s3-40d/target-588c21f/release/od-bench cached-native-flags-compare --corpus work/stage3-native-register-v1/manual/native-register-v1-observations.json --process-run 2 --output work/tmp/stage3/s3-40d/cached-native-flags-2-retry3.json",
+    "process": {
+      "pid": 60964,
+      "start_local": "2026-10-31 21:16:02 America/Argentina/Buenos_Aires",
+      "start_utc": "2026-11-01T00:16:02Z"
+    },
+    "report_mtime_epoch": 1793492340,
+    "report_mtime_utc": "2026-11-01T00:19:00Z",
+    "process_state": "benchmark process was absent at 00:19:03Z; complete report JSON exists and parses. Executor wrapper emitted the git-status-timeout warning. Numeric exit code was not captured in the displayed wrapper result; not claimed.",
+    "host": {
+      "cpu_model": "Apple M3 Max",
+      "os": "macos",
+      "os_version": "26.7.1",
+      "architecture": "aarch64",
+      "build": {
+        "profile": "release",
+        "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+        "source_revision": "588c21f2e1b6642dd98e2d9c5703ba7481256546",
+        "source_sha256": "a85ddefd0f74cb00ee25066bb2256f7c213e73faefc4c8a7feea46cc0d015d1c",
+        "source_tree_dirty": false,
+        "target": "aarch64-apple-darwin"
+      },
+      "execution": {
+        "repository_revision": "588c21f2e1b6642dd98e2d9c5703ba7481256546",
+        "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+        "working_tree_dirty": null
+      }
+    },
+    "corpus": {
+      "path": "work/stage3-native-register-v1/manual/native-register-v1-observations.json",
+      "sha256": "3fddc5c753f3d2884850468480ec68d13a6069d1aed16e8973e1acef56ffac1f",
+      "inputs_digest": "fnv1a64:172fb17b01c502df",
+      "case_count": 1200
+    },
+    "observed_load_and_process_timeline": [
+      {
+        "at_utc": "2026-11-01T00:16:37Z",
+        "uptime_load_avg_1_5_15_min": [
+          3.16,
+          3.61,
+          3.48
+        ],
+        "benchmark": {
+          "pid": 60964,
+          "elapsed": "00:35",
+          "cpu_percent": 99.1
+        },
+        "stage2": [
+          {
+            "pid": 61543,
+            "command": "cargo test -p od-isa cvtps2pd --offline --no-run",
+            "started_local": "2026-10-31 21:16:33",
+            "cwd": "/Users/senya/projects/open_desktop",
+            "cpu_percent": 0.0
+          },
+          {
+            "pid": 61562,
+            "command": "rustc --crate-name od_isa ...",
+            "started_local": "2026-10-31 21:16:33",
+            "cwd": "/Users/senya/projects/open_desktop",
+            "cpu_percent": 24.3
+          }
+        ]
+      },
+      {
+        "at_utc": "approximately_2026-11-01T00:17:00Z",
+        "source": "independent parent snapshot",
+        "benchmark": {
+          "pid": 60964,
+          "cpu_percent": 98
+        },
+        "stage2": [
+          {
+            "pid": 61543,
+            "command": "cargo test -p od-isa cvtps2pd --offline --no-run",
+            "cpu_percent": 0
+          },
+          {
+            "pid": 61562,
+            "command": "rustc in /Users/senya/projects/open_desktop/target",
+            "cpu_percent": 56
+          }
+        ]
+      },
+      {
+        "at_utc": "2026-11-01T00:17:13Z",
+        "uptime_load_avg_1_5_15_min": [
+          2.98,
+          3.53,
+          3.46
+        ],
+        "benchmark": {
+          "pid": 60964,
+          "elapsed": "01:11",
+          "cpu_percent": 100.0
+        },
+        "stage2_cargo_or_rustc": []
+      },
+      {
+        "at_utc": "2026-11-01T00:17:47Z",
+        "uptime_load_avg_1_5_15_min": [
+          2.54,
+          3.36,
+          3.4
+        ],
+        "benchmark": {
+          "pid": 60964,
+          "elapsed": "01:45",
+          "cpu_percent": 100.0
+        },
+        "stage2_cargo_or_rustc": []
+      },
+      {
+        "at_utc": "2026-11-01T00:18:23Z",
+        "uptime_load_avg_1_5_15_min": [
+          2.58,
+          3.27,
+          3.36
+        ],
+        "benchmark": {
+          "pid": 60964,
+          "elapsed": "02:21",
+          "cpu_percent": 100.0
+        },
+        "stage2_cargo_or_rustc": []
+      },
+      {
+        "at_utc": "2026-11-01T00:18:57Z",
+        "uptime_load_avg_1_5_15_min": [
+          2.94,
+          3.29,
+          3.36
+        ],
+        "benchmark": {
+          "pid": 60964,
+          "elapsed": "02:55",
+          "cpu_percent": 100.0
+        },
+        "stage2_cargo_or_rustc": []
+      },
+      {
+        "at_utc": "2026-11-01T00:19:03Z",
+        "benchmark_or_cargo_or_rustc_processes": []
+      }
+    ],
+    "sampling_spread": {
+      "cold": {
+        "sweeps_per_sample": 74,
+        "paired_samples": 20,
+        "restarts": 0,
+        "eager": {
+          "median_ns_per_case": 13514,
+          "min_ns_per_case": 11962,
+          "max_ns_per_case": 14909,
+          "iqr_ns_per_case": 767
+        },
+        "candidate": {
+          "median_ns_per_case": 14006,
+          "min_ns_per_case": 13204,
+          "max_ns_per_case": 16990,
+          "iqr_ns_per_case": 622
+        },
+        "candidate_over_eager_ratio": {
+          "standard_median": 1.028747621398062,
+          "lower_median": 1.0239118685687671,
+          "min": 0.9417647312835075,
+          "max": 1.3105196075910819,
+          "p25": 0.9961079579818474,
+          "p75": 1.0452682696253415,
+          "iqr": 0.0491603116434941
+        },
+        "selected_pair_ratios": {
+          "3": 1.125438169478061,
+          "15": 0.9417647312835075,
+          "17": 1.3105196075910819,
+          "19": 1.1836390311775826
+        },
+        "additive_counters": {
+          "eager": {
+            "hits": 294520,
+            "misses": 2518960,
+            "compiles": 2518960,
+            "publications": 2518960,
+            "replacements": 1312760,
+            "published_code_bytes_total": 3054068800
+          },
+          "candidate": {
+            "hits": 294520,
+            "misses": 2518960,
+            "compiles": 2518960,
+            "publications": 2518960,
+            "replacements": 1312760,
+            "published_code_bytes_total": 3489757120
+          }
+        },
+        "resident_stats_per_sample": {
+          "eager": {
+            "peak_resident_entries_max": 1,
+            "max_resident_code_bytes": 2452,
+            "max_resident_logical_bytes": 6340,
+            "final_resident_code_bytes_per_sweep": 868536,
+            "min_final_resident_code_bytes": 0,
+            "max_final_resident_code_bytes": 2384
+          },
+          "candidate": {
+            "peak_resident_entries_max": 1,
+            "max_resident_code_bytes": 3144,
+            "max_resident_logical_bytes": 9927,
+            "final_resident_code_bytes_per_sweep": 937632,
+            "min_final_resident_code_bytes": 0,
+            "max_final_resident_code_bytes": 3144
+          }
+        }
+      },
+      "repeat_dispatch": {
+        "sweeps_per_sample": 96,
+        "paired_samples": 20,
+        "restarts": 0,
+        "eager": {
+          "median_ns_per_case": 12110,
+          "min_ns_per_case": 11158,
+          "max_ns_per_case": 12806,
+          "iqr_ns_per_case": 873
+        },
+        "candidate": {
+          "median_ns_per_case": 12276,
+          "min_ns_per_case": 11463,
+          "max_ns_per_case": 13604,
+          "iqr_ns_per_case": 1013
+        },
+        "candidate_over_eager_ratio": {
+          "standard_median": 1.0245630516398327,
+          "lower_median": 1.0202121495345116,
+          "min": 0.9263763002371295,
+          "max": 1.1234060699995858,
+          "p25": 0.9893525499439711,
+          "p75": 1.0606132540941422,
+          "iqr": 0.07126070415017105
+        },
+        "selected_pair_ratios": {
+          "5": 0.9263763002371295,
+          "10": 1.1234060699995858
+        },
+        "additive_counters": {
+          "eager": {
+            "hits": 735360,
+            "misses": 2914560,
+            "compiles": 2914560,
+            "publications": 2914560,
+            "replacements": 2914560,
+            "published_code_bytes_total": 3384921600
+          },
+          "candidate": {
+            "hits": 735360,
+            "misses": 2914560,
+            "compiles": 2914560,
+            "publications": 2914560,
+            "replacements": 2914560,
+            "published_code_bytes_total": 3827166720
+          }
+        },
+        "resident_stats_per_sample": {
+          "eager": {
+            "peak_resident_entries_max": 1,
+            "max_resident_code_bytes": 2452,
+            "max_resident_logical_bytes": 6340,
+            "final_resident_code_bytes_per_sweep": 868536,
+            "min_final_resident_code_bytes": 0,
+            "max_final_resident_code_bytes": 2384
+          },
+          "candidate": {
+            "peak_resident_entries_max": 1,
+            "max_resident_code_bytes": 3144,
+            "max_resident_logical_bytes": 9927,
+            "final_resident_code_bytes_per_sweep": 937632,
+            "min_final_resident_code_bytes": 0,
+            "max_final_resident_code_bytes": 3144
+          }
+        }
+      }
+    },
+    "code_size_and_retirement_context": {
+      "resident_high_water_bytes": {
+        "eager_code": 2452,
+        "eager_logical": 6340,
+        "candidate_code": 3144,
+        "candidate_logical": 9927
+      },
+      "published_total_bytes": {
+        "cold": {
+          "eager": 3054068800,
+          "candidate": 3489757120
+        },
+        "repeat_dispatch": {
+          "eager": 3384921600,
+          "candidate": 3827166720
+        }
+      },
+      "preflight_parity": "1,200 cases / 2,400 comparisons; stored interpreter, eager and candidate full-state/exit/budget/retirement parity validated. Same frozen interpreter remains result oracle."
+    },
+    "stage2_overlap_and_pair_correlation": "Stage2 compile/test activity was observed at run start and in the early run window; later sampled load fell to 2.5\u20132.9. Cold pairs 17/19 are late in the cold series, but the raw JSON has no per-pair wall-clock timestamps, so their exact temporal relation to Stage2 activity cannot be established. All raw pairs are retained without trimming for review.",
+    "total_elapsed_ns": 177762459833,
+    "status": "awaiting independent review of spread/validity; no run3 started"
+  }
+}

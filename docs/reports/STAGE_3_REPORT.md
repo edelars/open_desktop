@@ -58,10 +58,11 @@
 | S3-40a предварительная сводка решений | Исходный ledger зафиксировал сравнения allocator, flags, cache, linking и IR; timed flags evidence добавлено позднее в S3-29f/S3-40c. Финальный production выбор/default не сделан; S3-40 остаётся открытым. Cold full corpus и warm resident prefix нельзя объединять в break-even. См. [S3-40a](STAGE_3_S3-40a_2026-10-30.md), [S3-29f](STAGE_3_S3-29f_2026-10-30.md) и [S3-40c](STAGE_3_S3-40c_2026-10-30.md). |
 | S3-40b дополнение к предварительному реестру | На момент дополнения добавлены отдельные bounded branch/helper warm результаты S3-36b и process-wide RSS snapshots S3-37b. Позднее S3-35b добавил cold pipeline attribution, а S3-37d — sustained lifecycle/counter evidence; production default, общий break-even и более широкие component-timing/resource/lifecycle gates остаются открытыми. См. [S3-40b](STAGE_3_S3-40b_2026-10-30.md), [S3-35b](STAGE_3_S3-35b_2026-10-31.md) и [S3-37d](STAGE_3_S3-37d_2026-10-31.md). |
 | S3-40c flags strategy evidence | S3-29f single-block ratios не показали преимущества demand-flags candidate и зафиксировали больший код; сравнение ограничено семью случаями и не выбирает production default. См. [отчёт](STAGE_3_S3-40c_2026-10-30.md). |
+| S3-40d composed cached flags comparison | Три release runs на frozen S3-34p corpus: median paired candidate/eager ratios 1.020–1.029 cold и 1.014–1.025 repeat; разброс crossing parity, candidate публикует на 14.27%/13.07% больше кода. Нет основания менять eager default или выбирать winner. Run2 принят как noisy bounded; run3 включал low-load Stage 2 activity; высоконагруженная попытка сохранена как diagnostic. Числовой exit status runs 2/3 не captured. См. [S3-40d report](STAGE_3_S3-40d_2026-10-31.md) и [raw evidence](data/stage3/s3-40d/). |
 | Полные cold/warm measurements, resource/lifecycle gates и решения о default (S3-35…37, S3-40) | Не выполнены. S3-35b дал bounded cold register-only pipeline attribution, а S3-37d — три v5 sustained FIFO16 lifecycle/counter runs. Memory/fallback warm workloads, production teardown/independent-instance evidence, SMC stress, broader RSS attribution и выбор default остаются открытыми; bounded результаты не переносятся на другие workloads. |
 | Production RAM/backing/mapping/MMU owner и committed-writer integration | Не входит в текущий local fixture scope; не реализован этим отчётом и не засчитывается как локальное доказательство. |
 | ISSUE-027 | Открыта: прежний timeout не локализован; три диагностических наблюдения не установили причину или исправление. Не повторять suite без нового основания. |
-| M1 Pro (S3-39) | Не подтверждён этим run; проверка остаётся отдельной. |
+| M1 Pro (S3-39) | Ограниченный ARM64 smoke завершён на MacBookPro18,3 / macOS 14.6.1 для arithmetic, taken multi-block branch, accepted S3-14 helper, cooperative STOP и same-handle C ABI publication lifecycle. Это не широкая гарантия host support и не заменяет physical x86 oracle. См. [S3-39 report](STAGE_3_S3-39_M1PRO_2026-10-31.md). |
 | Итоговая приёмка S3-41 | Открыта. Stage 3 нельзя объявлять завершённым по этой локальной сводке. |
 
 ## Источники
@@ -71,6 +72,8 @@
 - [S3-27d direct V2 PC maps](STAGE_3_S3-27d_2026-10-30.md),
   [S3-34f local gates](STAGE_3_S3-34f_2026-10-30.md),
   [S3-34h memory corpus](STAGE_3_S3-34h_2026-10-30.md),
+  [S3-39 M1 Pro smoke](STAGE_3_S3-39_M1PRO_2026-10-31.md),
+  [S3-40d composed cached flags comparison](STAGE_3_S3-40d_2026-10-31.md),
   [S3-38c sequential-thread lifecycle](STAGE_3_S3-38c_2026-10-30.md),
   [S3-38b VMHost process suite](STAGE_3_S3-38b_2026-10-30.md) и
   [ISSUE-027 diagnostics](ISSUE_027_DIAGNOSTIC_2026-10-30.md).

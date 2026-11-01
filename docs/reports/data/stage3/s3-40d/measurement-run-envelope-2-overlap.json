@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "record_type": "reconstructed_measurement_run_envelope",
+  "created_at_utc": "2026-10-31T23:32:24.325706+00:00",
+  "reconstruction_note": "Reconstructed immediately after an interrupt from the executor session result and read-only process snapshots captured during this turn. No continuous monitor log was persisted at execution time. Snapshots are point-in-time.",
+  "source_revision": "588c21f2e1b6642dd98e2d9c5703ba7481256546",
+  "preflight": {
+    "path": "work/tmp/stage3/s3-40d/preflight-588c21f.json",
+    "sha256": "35cfb854d7507e0c566f955feb3cc0eb16a3148ca31f21975d8a75f315b0a378",
+    "timing_started": false
+  },
+  "run1_valid_binding": {
+    "report_path": "work/tmp/stage3/s3-40d/cached-native-flags-1-retry-quiet.json",
+    "report_sha256": "2141d9c2833068828da9f7b87f80f97fad09c147a98b75377ac40168ef10443f",
+    "envelope_path": "work/tmp/stage3/s3-40d/measurement-run-envelope-1.json",
+    "envelope_sha256": "1bcc7f94e5d4d04aebe204600fe7aaf7d301f2b9e0031c99c99b3c8bca05b299"
+  },
+  "attempt": {
+    "planned_process_run": 2,
+    "output_path": "work/tmp/stage3/s3-40d/cached-native-flags-2.json",
+    "raw_report_produced": false,
+    "classification": "inconclusive_stage2_overlap_stopped",
+    "command": "work/tmp/stage3/s3-40d/target-588c21f/release/od-bench cached-native-flags-compare --corpus work/stage3-native-register-v1/manual/native-register-v1-observations.json --process-run 2 --output work/tmp/stage3/s3-40d/cached-native-flags-2.json",
+    "quiet_pair_before_launch": [
+      {
+        "at_utc": "2026-10-31T23:29:02Z",
+        "stage2_cargo_or_rustc_processes": []
+      },
+      {
+        "at_utc": "2026-10-31T23:29:42Z",
+        "stage2_cargo_or_rustc_processes": []
+      }
+    ],
+    "run_process": {
+      "pid": 44850,
+      "start_local": "2026-10-31 20:29:46 America/Argentina/Buenos_Aires",
+      "start_utc": "2026-10-31T23:29:46Z"
+    },
+    "during_run_snapshots": [
+      {
+        "at_utc": "2026-10-31T23:30:21Z",
+        "benchmark_pid": 44850,
+        "elapsed": "00:35",
+        "cpu_percent": 100.0,
+        "stage2_cargo_or_rustc_processes": []
+      },
+      {
+        "at_utc": "2026-10-31T23:30:54Z",
+        "benchmark_pid": 44850,
+        "elapsed": "01:08",
+        "cpu_percent": 100.0,
+        "stage2_cargo_or_rustc_processes": []
+      },
+      {
+        "at_utc": "2026-10-31T23:31:28Z",
+        "benchmark_pid": 44850,
+        "elapsed": "01:42",
+        "cpu_percent": 100.0,
+        "stage2_cargo_or_rustc_processes": []
+      }
+    ],
+    "overlap_detection": {
+      "at_utc": "2026-10-31T23:32:02Z",
+      "stage2_processes": [
+        {
+          "pid": 47049,
+          "start_local": "2026-10-31 20:31:55 America/Argentina/Buenos_Aires",
+          "start_utc": "2026-10-31T23:31:55Z",
+          "command": "cargo check -p od-testkit --offline",
+          "cwd": "/Users/senya/projects/open_desktop"
+        },
+        {
+          "pid": 47068,
+          "start_local": "2026-10-31 20:31:55 America/Argentina/Buenos_Aires",
+          "start_utc": "2026-10-31T23:31:55Z",
+          "command": "rustc --crate-name od_isa --edition=2024 crates/od-isa/src/lib.rs ... --out-dir /Users/senya/projects/open_desktop/target/debug/deps",
+          "cwd": "/Users/senya/projects/open_desktop"
+        }
+      ],
+      "decision": "Stage2 overlap; sent Ctrl-C only to S3-40d process 44850."
+    },
+    "executor_result": {
+      "session_exit_code": 130,
+      "stop_method": "Ctrl-C to our own session after overlap detection",
+      "observed_at_utc": "2026-10-31T23:32:02Z"
+    },
+    "post_stop_check": {
+      "at_utc": "2026-10-31T23:32:07Z",
+      "s3_40d_pid_44850": "absent",
+      "stage2_pid_47049": "still active; cwd /Users/senya/projects/open_desktop",
+      "output_file_exists": false
+    },
+    "scoring_status": "excluded; no report was written; do not count and do not overwrite with a later retry"
+  },
+  "run3_started": false
+}

@@ -183,20 +183,36 @@ cargo run --release -p od-bench --offline -- cached-native-flags-compare \
   --preflight-only --output work/tmp/stage3/s3-40d/preflight.json
 ```
 
-After independent source review, collect three release processes sequentially
-during a Stage2-quiet window:
+After independent source review, collect three release processes sequentially.
+A Stage 2 test launch alone is not a reason to stop a run. Record observed
+processes and host-load snapshots. If actual concurrent work materially changes
+load or is associated with a timing disturbance, retain the run as diagnostic
+evidence and repeat the full process; do not trim individual pairs after
+seeing their results.
 
 ```sh
 for run in 1 2 3; do
   cargo run --release -p od-bench --offline -- cached-native-flags-compare \
     --corpus work/stage3-native-register-v1/manual/native-register-v1-observations.json \
     --process-run "$run" \
-    --output "work/tmp/stage3/s3-40d/cached-native-flags-$run.json"
+    --output "work/tmp/stage3/s3-40d/cached-native-flags-$run-reproduced.json"
 done
 ```
 
-No S3-40d performance result is recorded yet. The harness implementation and
-focused non-performance checks do not constitute a scored run.
+Use a fresh output path for every reproduction attempt so prior reports and
+their evidence bindings remain immutable.
+
+Three scored M3 Max release processes completed against the frozen corpus.
+Candidate/eager paired-ratio medians were 1.020–1.029 in cold mode and
+1.014–1.025 in repeat mode; paired ranges cross parity and their spread is
+larger than the central differences. Candidate published 14.27% more code
+bytes in cold mode and 13.07% more in repeat mode. No strategy winner or default
+change is supported. Run 2 is accepted as noisy bounded evidence after a
+high-load attempt was retained separately as diagnostic; run 3 included
+low-load Stage 2 activity. Stage 2 snapshots are point-in-time, and numeric
+executor exits for accepted runs 2 and 3 were not captured. See the
+[S3-40d result report](../reports/STAGE_3_S3-40d_2026-10-31.md) and its
+[raw data](../reports/data/stage3/s3-40d/).
 
 ## Подготовка прогона
 

@@ -1,0 +1,144 @@
+{
+  "schema": 1,
+  "record_type": "reconstructed_measurement_run_envelope",
+  "created_at_utc": "2026-10-31T23:26:55.873056+00:00",
+  "reconstruction_note": "Reconstructed after the run from the executor session result and read-only process snapshots captured during this turn. No continuous monitor log was persisted at execution time. Snapshot evidence is point-in-time; it does not claim continuous observation between snapshots.",
+  "source_revision": "588c21f2e1b6642dd98e2d9c5703ba7481256546",
+  "preflight": {
+    "path": "work/tmp/stage3/s3-40d/preflight-588c21f.json",
+    "sha256": "35cfb854d7507e0c566f955feb3cc0eb16a3148ca31f21975d8a75f315b0a378",
+    "timing_started": false
+  },
+  "stage2_monitor_definition": {
+    "commands_considered_overlap": [
+      "cargo check",
+      "cargo test",
+      "cargo build",
+      "rustc"
+    ],
+    "also_checked_for": [
+      "stage2",
+      "stage 2",
+      "stage2_harness",
+      "stage2-followup paths"
+    ],
+    "scope_note": "After the first overlapping attempt, monitoring was widened to generic cargo/rustc process argv because Stage2 cargo tests did not contain Stage2 in the command line."
+  },
+  "excluded_attempt": {
+    "path": "work/tmp/stage3/s3-40d/cached-native-flags-1.json",
+    "sha256": "989b638745f71b9a914de0a99316fc83de1e363be515f5ddb5571a6947a7964f",
+    "process_run": 1,
+    "executor_exit_code": 0,
+    "classification": "inconclusive_overlap_excluded",
+    "report_mtime_epoch": 1793488809,
+    "report_mtime_utc": "2026-10-31T23:20:09Z",
+    "observed_stage2_processes": [
+      {
+        "pid": 34245,
+        "start_local": "2026-10-31 20:20:01 America/Argentina/Buenos_Aires",
+        "start_utc": "2026-10-31T23:20:01Z",
+        "command": "cargo test -p od-runner --test fixture_v2 cvtpd2dq_m128_rounds_binary64_and_fails_closed --offline -- --nocapture",
+        "cwd": "/Users/senya/projects/open_desktop"
+      },
+      {
+        "pid": 34246,
+        "start_local": "2026-10-31 20:20:01 America/Argentina/Buenos_Aires",
+        "start_utc": "2026-10-31T23:20:01Z",
+        "command": "cargo test -p od-isa cvtpd2dq --offline",
+        "cwd": "/Users/senya/projects/open_desktop"
+      }
+    ],
+    "overlap_basis": "The Stage2 cargo tests began at 23:20:01Z while the run1 process was still active; the report was written at 23:20:09Z. The coordinator confirmed an approximately 8-second tail overlap. The raw JSON is retained unchanged and excluded from scored evidence."
+  },
+  "valid_attempt": {
+    "path": "work/tmp/stage3/s3-40d/cached-native-flags-1-retry-quiet.json",
+    "sha256": "2141d9c2833068828da9f7b87f80f97fad09c147a98b75377ac40168ef10443f",
+    "process_run": 1,
+    "executor_exit_code": 0,
+    "classification": "completed_no_stage2_overlap_observed",
+    "command": "work/tmp/stage3/s3-40d/target-588c21f/release/od-bench cached-native-flags-compare --corpus work/stage3-native-register-v1/manual/native-register-v1-observations.json --process-run 1 --output work/tmp/stage3/s3-40d/cached-native-flags-1-retry-quiet.json",
+    "run_process": {
+      "pid": 36246,
+      "start_local": "2026-10-31 20:22:24 America/Argentina/Buenos_Aires",
+      "start_utc": "2026-10-31T23:22:24Z"
+    },
+    "quiet_pair_before_launch": [
+      {
+        "at_utc": "2026-10-31T23:21:38Z",
+        "stage2_cargo_or_rustc_processes": [],
+        "stage2_test_or_benchmark_processes": [],
+        "observed_idle_processes": [
+          5442,
+          5484,
+          5485,
+          78787,
+          78758
+        ]
+      },
+      {
+        "at_utc": "2026-10-31T23:22:19Z",
+        "stage2_cargo_or_rustc_processes": [],
+        "stage2_test_or_benchmark_processes": [],
+        "observed_idle_processes": [
+          5442,
+          5484,
+          5485,
+          78787,
+          78758
+        ]
+      }
+    ],
+    "during_run_snapshots": [
+      {
+        "at_utc": "2026-10-31T23:23:00Z",
+        "benchmark_pid": 36246,
+        "benchmark_elapsed": "00:36",
+        "benchmark_cpu_percent": 100.0,
+        "stage2_cargo_or_rustc_processes": [],
+        "stage2_test_or_benchmark_processes": []
+      },
+      {
+        "at_utc": "2026-10-31T23:23:33Z",
+        "benchmark_pid": 36246,
+        "benchmark_elapsed": "01:09",
+        "benchmark_cpu_percent": 100.0,
+        "stage2_cargo_or_rustc_processes": [],
+        "stage2_test_or_benchmark_processes": []
+      },
+      {
+        "at_utc": "2026-10-31T23:24:06Z",
+        "benchmark_pid": 36246,
+        "benchmark_elapsed": "01:42",
+        "benchmark_cpu_percent": 98.0,
+        "stage2_cargo_or_rustc_processes": [],
+        "stage2_test_or_benchmark_processes": []
+      },
+      {
+        "at_utc": "2026-10-31T23:24:39Z",
+        "benchmark_pid": 36246,
+        "benchmark_elapsed": "02:15",
+        "benchmark_cpu_percent": 99.1,
+        "stage2_cargo_or_rustc_processes": [],
+        "stage2_test_or_benchmark_processes": []
+      },
+      {
+        "at_utc": "2026-10-31T23:25:15Z",
+        "benchmark_pid": 36246,
+        "benchmark_elapsed": "02:51",
+        "benchmark_cpu_percent": 9.8,
+        "stage2_cargo_or_rustc_processes": [],
+        "stage2_test_or_benchmark_processes": []
+      }
+    ],
+    "completion": {
+      "artifact_mtime_epoch": 1793489117,
+      "artifact_mtime_utc": "2026-10-31T23:25:17Z",
+      "executor_session_result": "process exited with code 0; output: host metadata git status unavailable: git timed out after 2000 ms",
+      "host_metadata_limit": "execution.working_tree_dirty is null because the harness git-status probe timed out; build.source_tree_dirty is false and the current source revision/hash are recorded in the raw report.",
+      "post_run_process_snapshot_at_utc": "2026-10-31T23:25:21Z",
+      "post_run_benchmark_or_cargo_or_rustc_processes": []
+    }
+  },
+  "run2_started": false,
+  "run3_started": false
+}

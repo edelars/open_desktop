@@ -1,0 +1,276 @@
+{
+  "schema": 1,
+  "record_type": "reconstructed_measurement_run_envelope",
+  "created_at_utc": "2026-11-01T00:11:12.621478+00:00",
+  "reconstruction_note": "Run metadata combines the raw report, executor session completion output, and read-only process/load snapshots captured during execution. No continuous monitor log was persisted. Snapshot timings are point-in-time; the adjacent ps CPU query near 00:08:59Z followed the uptime snapshot and is marked approximate.",
+  "source_revision": "588c21f2e1b6642dd98e2d9c5703ba7481256546",
+  "bindings": {
+    "preflight": {
+      "path": "work/tmp/stage3/s3-40d/preflight-588c21f.json",
+      "sha256": "35cfb854d7507e0c566f955feb3cc0eb16a3148ca31f21975d8a75f315b0a378"
+    },
+    "run1": {
+      "path": "work/tmp/stage3/s3-40d/cached-native-flags-1-retry-quiet.json",
+      "sha256": "2141d9c2833068828da9f7b87f80f97fad09c147a98b75377ac40168ef10443f"
+    },
+    "run1_envelope": {
+      "path": "work/tmp/stage3/s3-40d/measurement-run-envelope-1.json",
+      "sha256": "1bcc7f94e5d4d04aebe204600fe7aaf7d301f2b9e0031c99c99b3c8bca05b299"
+    },
+    "run2_overlap1": {
+      "path": "work/tmp/stage3/s3-40d/measurement-run-envelope-2-overlap.json",
+      "sha256": "d805f6ed3a52a04cbc42bd6992ccf123a9c7ef2af04bd13861e19a52b9a4fd86"
+    },
+    "run2_overlap2": {
+      "path": "work/tmp/stage3/s3-40d/measurement-run-envelope-2-retry-overlap.json",
+      "sha256": "c53d53b533d188bd1d71cddd4ef1a271de07882059fdaa5f49f1e44091e51e6b"
+    },
+    "run2_overlap3": {
+      "path": "work/tmp/stage3/s3-40d/measurement-run-envelope-2-retry2-overlap.json",
+      "sha256": "99bc8698f05704be73932f94e147be17a2468204889160a6a6ed8ab0fa58fc99"
+    },
+    "report": {
+      "path": "work/tmp/stage3/s3-40d/cached-native-flags-2-final.json",
+      "sha256": "e401b3d3fee41c9f1fed7fc3c21af220f46baf8074f3d6fc21e9d05f723d59b0"
+    }
+  },
+  "run": {
+    "process_run": 2,
+    "classification": "completed_with_stage2_activity_for_review",
+    "command": "work/tmp/stage3/s3-40d/target-588c21f/release/od-bench cached-native-flags-compare --corpus work/stage3-native-register-v1/manual/native-register-v1-observations.json --process-run 2 --output work/tmp/stage3/s3-40d/cached-native-flags-2-final.json",
+    "run_process": {
+      "pid": 78411,
+      "start_local": "2026-10-31 21:06:43 America/Argentina/Buenos_Aires",
+      "start_utc": "2026-11-01T00:06:43Z"
+    },
+    "report_mtime_utc": "2026-11-01T00:09:27Z",
+    "executor_result": {
+      "session_completion": "The executor session completed and produced a complete parseable report; displayed output was the host-metadata git-status timeout warning.",
+      "numeric_exit_code": "unverified; not captured in the persisted wrapper result",
+      "host_metadata_warning": "host metadata git status unavailable: git timed out after 2000 ms"
+    },
+    "host": {
+      "cpu_model": "Apple M3 Max",
+      "os": "macOS 26.7.1",
+      "target": "aarch64-apple-darwin",
+      "profile": "release",
+      "rustc": "1.99.0 (b940084d7 2026-09-28)",
+      "source_dirty": false,
+      "execution_working_tree_dirty": null
+    },
+    "corpus": {
+      "path": "work/stage3-native-register-v1/manual/native-register-v1-observations.json",
+      "sha256": "3fddc5c753f3d2884850468480ec68d13a6069d1aed16e8973e1acef56ffac1f",
+      "inputs_digest": "fnv1a64:172fb17b01c502df",
+      "case_count": 1200
+    },
+    "observed_stage2_activity": [
+      {
+        "at_utc": "2026-11-01T00:06:33Z",
+        "pid": 77854,
+        "command": "cargo test -p od-runner --test fixture_v2 cvtps2pd_m64_widens_subnormals_and_fails_closed --offline -- --nocapture",
+        "started_local": "2026-10-31 21:05:55",
+        "cwd": "/Users/senya/projects/open_desktop"
+      },
+      {
+        "at_utc": "2026-11-01T00:06:33Z",
+        "pid": 78188,
+        "command": "rustc --crate-name od_host ...",
+        "started_local": "2026-10-31 21:06:23",
+        "cwd": "/Users/senya/projects/open_desktop"
+      },
+      {
+        "at_utc": "2026-11-01T00:07:18Z",
+        "pid": 77854,
+        "command": "cargo test -p od-runner --test fixture_v2 ...",
+        "cpu_percent": 0.0,
+        "benchmark_cpu_percent": 100.0
+      },
+      {
+        "at_utc": "2026-11-01T00:07:51Z",
+        "pid": 79101,
+        "command": "cargo test -p od-runner --offline",
+        "started_local": "2026-10-31 21:07:23",
+        "cpu_percent": 0.0,
+        "benchmark_cpu_percent": 100.0
+      },
+      {
+        "at_utc": "2026-11-01T00:08:25Z",
+        "pid": 79101,
+        "command": "cargo test -p od-runner --offline",
+        "elapsed": "01:02",
+        "cpu_percent": 0.0,
+        "benchmark_cpu_percent": 98.2
+      },
+      {
+        "at_utc": "2026-11-01T00:08:59Z",
+        "pid": 79101,
+        "command": "cargo test -p od-runner --offline",
+        "elapsed": "01:36",
+        "cpu_percent": 0.0,
+        "benchmark_cpu_percent": 66.3
+      },
+      {
+        "at_utc": "approximately_2026-11-01T00:08:59Z",
+        "pid": 80338,
+        "parent_pid": 79101,
+        "command": "/Users/senya/projects/open_desktop/target/debug/deps/fixture_v2-256be82b9cd311b3",
+        "cpu_percent": 223.5,
+        "benchmark_cpu_percent_in_adjacent_ps_snapshot": 89.9,
+        "time_note": "ps top-process query was issued immediately after the uptime/process snapshot; exact second not recorded"
+      }
+    ],
+    "host_load_samples": [
+      {
+        "at_utc": "2026-11-01T00:07:18Z",
+        "load_average_1_5_15_min": [
+          3.9,
+          3.04,
+          2.99
+        ]
+      },
+      {
+        "at_utc": "2026-11-01T00:07:51Z",
+        "load_average_1_5_15_min": [
+          3.47,
+          3.03,
+          2.99
+        ]
+      },
+      {
+        "at_utc": "2026-11-01T00:08:25Z",
+        "load_average_1_5_15_min": [
+          3.38,
+          3.06,
+          3.0
+        ]
+      },
+      {
+        "at_utc": "2026-11-01T00:08:59Z",
+        "load_average_1_5_15_min": [
+          8.46,
+          4.2,
+          3.41
+        ]
+      }
+    ],
+    "sampling_and_spread": {
+      "paired_samples_per_mode": 20,
+      "calibration_restarts": {
+        "cold": 0,
+        "repeat_dispatch": 0
+      },
+      "sweeps_per_sample": {
+        "cold": 73,
+        "repeat_dispatch": 82
+      },
+      "cold": {
+        "eager_ns_per_case": {
+          "median": 13256,
+          "min": 11853,
+          "max": 14180,
+          "iqr": 904
+        },
+        "candidate_ns_per_case": {
+          "median": 13516,
+          "min": 12759,
+          "max": 14418,
+          "iqr": 777
+        },
+        "candidate_over_eager_pair_ratio": {
+          "median": 1.0183530811635837,
+          "min": 0.9577701971259277,
+          "max": 1.1077266401435004,
+          "iqr": 0.03378002115099488,
+          "lower_median": 1.0167786230172962,
+          "p25": 0.9936329722033954,
+          "p75": 1.0274129933543903,
+          "standard_median": 1.0183530811635837
+        }
+      },
+      "repeat_dispatch": {
+        "eager_ns_per_case": {
+          "median": 12178,
+          "min": 11691,
+          "max": 18292,
+          "iqr": 1123
+        },
+        "candidate_ns_per_case": {
+          "median": 12767,
+          "min": 11975,
+          "max": 17369,
+          "iqr": 1022
+        },
+        "candidate_over_eager_pair_ratio": {
+          "median": 1.026294086436315,
+          "min": 0.9495375046305423,
+          "max": 1.1367929071743115,
+          "iqr": 0.042979057218120564,
+          "lower_median": 1.0249811111129907,
+          "p25": 1.0031125933266778,
+          "p75": 1.0460916505447984,
+          "standard_median": 1.026294086436315
+        },
+        "slow_pair_indices": {
+          "pairs": [
+            14,
+            15,
+            16
+          ],
+          "ratios": {
+            "14": 1.1271464050875442,
+            "15": 0.9495375046305422,
+            "16": 0.9676402335551937
+          }
+        },
+        "sample_spread_note": "Pairs 14\u201316 are substantially slower and are retained. See slow_pair_spread_note for full-sample versus per-sweep units and ratios.",
+        "slow_pair_spread_note": "Pairs 14\u201316 are substantially slower and are retained. Each repeat sample executes 82 sweeps / 98,400 cases. Pair 15 full-sample totals are eager 1799.953913 ms and candidate 1709.123747 ms; normalized per 1,200-case sweep these are 21.9506575 ms and 20.8429725 ms. The candidate/eager ratio is 0.9495375046305422. A high-load observation occurred in the same late run window. Raw samples are retained for reviewer assessment."
+      }
+    },
+    "cache_and_code_totals": {
+      "cold": {
+        "per_strategy": {
+          "misses_compiles_publications": 2484920,
+          "hits": 290540,
+          "replacements": 1295020,
+          "published_code_bytes": {
+            "eager": 3012797600,
+            "candidate": 3442598240
+          }
+        },
+        "resident_high_water": {
+          "eager_code_bytes": 2452,
+          "eager_logical_bytes": 6340,
+          "candidate_code_bytes": 3144,
+          "candidate_logical_bytes": 9927
+        }
+      },
+      "repeat_dispatch": {
+        "per_strategy": {
+          "misses_compiles_publications": 2489520,
+          "hits": 628120,
+          "replacements": 2489520,
+          "published_code_bytes": {
+            "eager": 2891287200,
+            "candidate": 3269038240
+          }
+        },
+        "resident_high_water": {
+          "eager_code_bytes": 2452,
+          "eager_logical_bytes": 6340,
+          "candidate_code_bytes": 3144,
+          "candidate_logical_bytes": 9927
+        }
+      }
+    },
+    "stage2_after_run": {
+      "at_utc": "2026-11-01T00:09:49Z",
+      "cargo_process": "cargo check --workspace --all-targets --offline",
+      "started_local": "2026-10-31 21:09:49",
+      "note": "Started after the run report mtime 00:09:27Z; no overlap observed."
+    },
+    "parity_and_oracle": "Preflight bound to this HEAD checked 1,200 cases and 2,400 comparisons against the recomputed interpreter and frozen stored observations; run dispatches validate full result state, exit, budget, and retirement split against the same oracle.",
+    "interpretation": "The user directed that Stage2 test launches alone do not invalidate the run. This envelope records actual test/compiler overlap and elevated load; the paired raw sample spread, including late outliers, is left for independent classification."
+  },
+  "run3_started": false
+}
