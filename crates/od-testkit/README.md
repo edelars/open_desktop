@@ -310,3 +310,10 @@ legacy `F2 0F E6 00`. Validation isolates its MXCSR and prerequisite controls;
 the independent raw-u64 oracle covers MXCSR.RC rounding and signed-i32 range
 checks without host floating point or production conversion helpers. See the
 [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bx--bounded-long64-cvtpd2dq-xmm0rax-aligned-m128-profile).
+
+S2-37by adds exact schema-v2 `s2-long-cvtps2pd-memory-rax-v1` controls for the
+legacy `0F 5A 00` m64 form. Its integer-only oracle widens raw binary32 lanes,
+models SNaN IE and subnormal DE, and checks sticky MXCSR plus full XMM0 state.
+Separate controls and strict admission keep it isolated from register CVTPS2PD;
+the oracle does not use host FP or production conversion helpers. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37by--bounded-long64-cvtps2pd-xmm0rax-m64-memory-profile).

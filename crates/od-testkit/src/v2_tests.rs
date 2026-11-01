@@ -1,6 +1,43 @@
 use super::*;
 
 #[test]
+fn cvtps2pd_m64_schema_is_strict_and_keeps_controls_separate() {
+    let fixture = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_37by_cvtps2pd_m64_snan_subnormal.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(fixture.profile, Profile::LongCvtps2pdMemoryRaxV1);
+
+    let mut missing_controls = fixture.clone();
+    missing_controls.cvtps2pd_m64_controls = None;
+    assert!(missing_controls.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&missing_controls).unwrap()).is_err());
+
+    let mut foreign_register_controls = fixture.clone();
+    foreign_register_controls.cvtps2pd_controls = Some(Cvtps2pdControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: true,
+    });
+    assert!(foreign_register_controls.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign_register_controls).unwrap()).is_err());
+
+    for invalid_mxcsr in [0x0000_cfc0, 0x0000_cf00, 0x0000_ce80] {
+        let mut invalid = fixture.clone();
+        invalid.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(invalid_mxcsr);
+        invalid.expected_exit = ExpectedExit::Unsupported;
+        assert!(invalid.validate().is_ok());
+    }
+    let mut ac_set = fixture.clone();
+    ac_set.initial_state.rflags = HexU64(2 | (1 << 18));
+    ac_set.expected_exit = ExpectedExit::Unsupported;
+    assert!(ac_set.validate().is_ok());
+}
+
+#[test]
 fn cli_rflags_comparison_includes_if_and_iopl_without_expanding_definedness() {
     let mask = INTEGER_FLAGS | (1 << 9) | (3 << 12);
     let initial = INTEGER_FLAGS | (2 << 12);
@@ -391,6 +428,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 cvttpd2pi_memory_controls: input.fixture.cvttpd2pi_memory_controls,
                 cvtpd2pi_memory_controls: input.fixture.cvtpd2pi_memory_controls,
                 cvtps2pd_controls: input.fixture.cvtps2pd_controls,
+                cvtps2pd_m64_controls: input.fixture.cvtps2pd_m64_controls,
                 comiss_ucomiss_controls: input.fixture.comiss_ucomiss_controls,
                 cmpss_controls: input.fixture.cmpss_controls,
                 cmpsd_controls: input.fixture.cmpsd_controls,

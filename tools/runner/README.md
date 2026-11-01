@@ -244,3 +244,9 @@ S2-37bx runs the local-only schema-v2 legacy `CVTPD2DQ XMM0,[RAX]`
 lanes according to MXCSR.RC before range checking, and reports masked IE/PE
 sticky flags. Native/JIT/C ABI remain closed; physical x86 acceptance is not
 claimed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bx--bounded-long64-cvtpd2dq-xmm0rax-aligned-m128-profile).
+
+S2-37by runs exact legacy `CVTPS2PD XMM0,[RAX]` (`0F 5A 00`) through the
+interpreter using one m64 read. Its fixture matrix covers NaN payloads,
+subnormal widening, RC/FTZ independence, MXCSR sticky state and x87 canaries.
+The integer oracle is independent of host FP; JIT/native remain Unsupported.
+See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37by--bounded-long64-cvtps2pd-xmm0rax-m64-memory-profile).

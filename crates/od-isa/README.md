@@ -690,3 +690,10 @@ The exact legacy `F2 0F E6 00` Long64 profile performs one aligned 16-byte read,
 then rounds two binary64 values with MXCSR.RC before signed-i32 range checking.
 Masked invalid contributes IE, valid inexact contributes PE; native/JIT/C ABI
 remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bx--bounded-long64-cvtpd2dq-xmm0rax-aligned-m128-profile).
+
+### S2-37by — CVTPS2PD m64 memory profile
+
+The exact legacy `0F 5A 00` RAX form reads one checked m64 span, then widens
+two binary32 lanes into all of XMM0. It records masked IE for SNaN quieting and
+DE for nonzero subnormal widening; MXCSR RC/FTZ do not affect the result. x87
+state is untouched and does not gate the operation. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37by--bounded-long64-cvtps2pd-xmm0rax-m64-memory-profile).

@@ -14555,3 +14555,27 @@ p. 3-216); Vol. 1 §§11.5.2.2, 11.5.2.6, 11.5.3, 11.5.5 and Table 14-21;
 Vol. 3A §§16.1.3–16.1.4, Table 16-1. See [plan](../plans/STAGE_2.md#s2-37bx--bounded-long64-cvtpd2dq-xmm0rax-aligned-m128-memory-profile),
 [report](../reports/STAGE_2_REPORT.md#s2-37bx--cvtpd2dq-xmm0rax-aligned-m128-memory-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bx-cvtpd2dq-xmm0rax-aligned-m128-rounding-profile).
+
+## S2-37by — bounded Long64 CVTPS2PD XMM0,[RAX] m64 memory profile
+
+Exact legacy encoding `0F 5A 00`, Long64 only, complete 3-byte fetch, budget
+one, stop RIP=entry+3. The local SSE2/EM/OSFXSR #UD then TS #NM ordering is a
+bounded test policy; CPL0–3 are admitted. RAX names one 8-byte m64 span, with
+checked canonical48 bounds and exactly one read. Unaligned addresses are
+allowed under the local AC=0 condition. CPU state changes only after the read
+succeeds.
+
+The two little-endian binary32 lanes widen by raw-bit construction into
+binary64 and replace all 128 bits of XMM0. SNaNs are quieted with IE; QNaNs do
+not set IE, preserving sign and payload bits while extending the payload. A
+nonzero binary32 subnormal widens exactly and sets DE, not PE; RC and FTZ do not
+affect this operation. Existing MXCSR status is sticky-ORed. Local admission
+requires supported mask `0xffbf`, DAZ=0, IM=DM=1; PM may be clear and other
+masks are unrestricted. No unmasked delivery is modeled. x87 state, including
+pending status, is neither gated nor changed.
+
+The independent testkit oracle uses integer bit operations only. JIT, native,
+C ABI, fragment and generic execution remain closed; physical x86 acceptance
+is not claimed. Normative sources: Intel SDM Rev. 093 Vol. 2A CVTPS2PD pp.
+3-228–3-230; Vol. 1 §§11.5.2.1–11.5.2.2, 11.5.3, 11.5.5, Tables D-11 and
+14-21; Vol. 3A §§16.1.3–16.1.4, Table 16-1. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37by--bounded-long64-cvtps2pd-xmm0rax-m64-memory-profile), [report](../reports/STAGE_2_REPORT.md#s2-37by--cvtps2pd-xmm0rax-m64-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37by--cvtps2pd-xmm0rax-m64-memory-profile).

@@ -1118,6 +1118,8 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only legacy `0F 5A 00` packed binary32-to-binary64 m64 form.
+    Cvtps2pdMemoryRax,
     /// Local-only legacy `0F 2F/2E /r` XMM scalar comparison forms.
     ComissUcomissRegister {
         unordered_quiet: bool,
@@ -4823,12 +4825,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
             (OpcodeMap::Escape0f, 0x5b) => return Err(self.unsupported(opcode)),
             (OpcodeMap::Escape0f, 0x5a) if cvtps2pd_register => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if modrm == 0 && prefixes.rex.is_none() {
+                    Operation::Cvtps2pdMemoryRax
+                } else if modrm >> 6 != 3 {
                     return Err(self.unsupported(opcode));
-                }
-                Operation::Cvtps2pdRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                } else {
+                    Operation::Cvtps2pdRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x2e | 0x2f) if comisd_ucomisd_register => {
@@ -21643,6 +21648,29 @@ mod tests {
                 ),
                 "{bytes:02x?}"
             );
+        }
+    }
+
+    #[test]
+    fn cvtps2pd_m64_decodes_only_exact_rax_form() {
+        assert_eq!(
+            Memory::new(&[0x0f, 0x5a, 0x00]).decode().unwrap().operation,
+            Operation::Cvtps2pdMemoryRax
+        );
+        for bytes in [
+            &[0x0f, 0x5a, 0x08][..],
+            &[0x48, 0x0f, 0x5a, 0x00][..],
+            &[0x40, 0x0f, 0x5a, 0xc1][..],
+            &[0x66, 0x0f, 0x5a, 0xc1][..],
+            &[0xf3, 0x0f, 0x5a, 0xc1][..],
+        ] {
+            if let Ok(decoded) = Memory::new(bytes).decode() {
+                assert_ne!(
+                    decoded.operation,
+                    Operation::Cvtps2pdMemoryRax,
+                    "{bytes:02x?}"
+                );
+            }
         }
     }
 

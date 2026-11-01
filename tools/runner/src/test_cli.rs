@@ -6,32 +6,33 @@ use std::process::{Command, ExitCode};
 use od_isa::execute::{
     AddpdControls, AddpsControls, AddsdControls, AddssControls, Cvtpd2dqMemoryControls,
     Cvtpd2piControls, Cvtpd2psControls, Cvtpi2pdControls, Cvtpi2psControls, Cvtps2dqMemoryControls,
-    Cvtsd2ssControls, Cvttpd2dqControls, Cvttpd2dqMemoryControls, Cvttps2dqControls,
-    Cvttps2dqMemoryControls, Cvttss2siRegistersControls, DivpdControls, DivpsControls,
-    DivsdControls, DivssControls, MulpdControls, MulpsControls, MulsdControls, MulssControls,
-    SqrtpdControls, SqrtpsControls, SqrtsdControls, SqrtssControls, SubpdControls, SubpsControls,
-    SubsdControls, SubssControls, run_with_addpd_register_controls,
+    Cvtps2pdMemoryControls, Cvtsd2ssControls, Cvttpd2dqControls, Cvttpd2dqMemoryControls,
+    Cvttps2dqControls, Cvttps2dqMemoryControls, Cvttss2siRegistersControls, DivpdControls,
+    DivpsControls, DivsdControls, DivssControls, MulpdControls, MulpsControls, MulsdControls,
+    MulssControls, SqrtpdControls, SqrtpsControls, SqrtsdControls, SqrtssControls, SubpdControls,
+    SubpsControls, SubsdControls, SubssControls, run_with_addpd_register_controls,
     run_with_addps_register_controls, run_with_addsd_register_controls,
     run_with_addss_register_controls, run_with_cvtpd2dq_memory_controls,
     run_with_cvtpd2dq_register_controls, run_with_cvtpd2pi_mm0_memory_rax_controls,
     run_with_cvtpd2pi_mm0_xmm1_controls, run_with_cvtpd2ps_register_controls,
     run_with_cvtpi2pd_memory_controls, run_with_cvtpi2pd_xmm0_mm1_controls,
     run_with_cvtpi2ps_memory_controls, run_with_cvtpi2ps_xmm0_mm1_controls,
-    run_with_cvtps2dq_memory_controls, run_with_cvtps2pi_mm0_memory_rax_controls,
-    run_with_cvtps2pi_mm0_xmm1_controls, run_with_cvtsd2ss_register_controls,
-    run_with_cvttpd2dq_memory_controls, run_with_cvttpd2dq_register_controls,
-    run_with_cvttpd2pi_mm0_memory_rax_controls, run_with_cvttpd2pi_mm0_xmm1_controls,
-    run_with_cvttps2dq_memory_controls, run_with_cvttps2dq_register_controls,
-    run_with_cvttps2pi_mm0_memory_rax_controls, run_with_cvttps2pi_mm0_xmm1_controls,
-    run_with_cvttsd2si_registers_controls, run_with_cvttss2si_registers_controls,
-    run_with_divpd_register_controls, run_with_divps_register_controls,
-    run_with_divsd_register_controls, run_with_divss_register_controls,
-    run_with_mulpd_register_controls, run_with_mulps_register_controls,
-    run_with_mulsd_register_controls, run_with_mulss_register_controls,
-    run_with_sqrtpd_register_controls, run_with_sqrtps_register_controls,
-    run_with_sqrtsd_register_controls, run_with_sqrtss_register_controls,
-    run_with_subpd_register_controls, run_with_subps_register_controls,
-    run_with_subsd_register_controls, run_with_subss_register_controls,
+    run_with_cvtps2dq_memory_controls, run_with_cvtps2pd_memory_controls,
+    run_with_cvtps2pi_mm0_memory_rax_controls, run_with_cvtps2pi_mm0_xmm1_controls,
+    run_with_cvtsd2ss_register_controls, run_with_cvttpd2dq_memory_controls,
+    run_with_cvttpd2dq_register_controls, run_with_cvttpd2pi_mm0_memory_rax_controls,
+    run_with_cvttpd2pi_mm0_xmm1_controls, run_with_cvttps2dq_memory_controls,
+    run_with_cvttps2dq_register_controls, run_with_cvttps2pi_mm0_memory_rax_controls,
+    run_with_cvttps2pi_mm0_xmm1_controls, run_with_cvttsd2si_registers_controls,
+    run_with_cvttss2si_registers_controls, run_with_divpd_register_controls,
+    run_with_divps_register_controls, run_with_divsd_register_controls,
+    run_with_divss_register_controls, run_with_mulpd_register_controls,
+    run_with_mulps_register_controls, run_with_mulsd_register_controls,
+    run_with_mulss_register_controls, run_with_sqrtpd_register_controls,
+    run_with_sqrtps_register_controls, run_with_sqrtsd_register_controls,
+    run_with_sqrtss_register_controls, run_with_subpd_register_controls,
+    run_with_subps_register_controls, run_with_subsd_register_controls,
+    run_with_subss_register_controls,
 };
 use od_isa::{CpuState, ExecutionResult, interpret};
 use od_testkit::case::{Fixture, LoadedFixture};
@@ -588,6 +589,7 @@ fn expected_native_xorpd_oracle(
                 cvttpd2pi_memory_controls: None,
                 cvtpd2pi_memory_controls: None,
                 cvtps2pd_controls: None,
+                cvtps2pd_m64_controls: None,
                 comiss_ucomiss_controls: None,
                 cmpss_controls: None,
                 cmpsd_controls: None,
@@ -2186,6 +2188,23 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongCvtps2pdMemoryRaxV1 {
+        let controls = loaded
+            .fixture
+            .cvtps2pd_m64_controls
+            .expect("validated CVTPS2PD m64 controls");
+        run_with_cvtps2pd_memory_controls(
+            &mut state,
+            memory,
+            config,
+            Cvtps2pdMemoryControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongCvtps2pdRegistersV1 {
         let controls = loaded
             .fixture
@@ -2799,6 +2818,7 @@ fn execute_fixture_v2(
                 cvttpd2pi_memory_controls: loaded.fixture.cvttpd2pi_memory_controls,
                 cvtpd2pi_memory_controls: loaded.fixture.cvtpd2pi_memory_controls,
                 cvtps2pd_controls: loaded.fixture.cvtps2pd_controls,
+                cvtps2pd_m64_controls: loaded.fixture.cvtps2pd_m64_controls,
                 comiss_ucomiss_controls: loaded.fixture.comiss_ucomiss_controls,
                 cmpss_controls: loaded.fixture.cmpss_controls,
                 cmpsd_controls: loaded.fixture.cmpsd_controls,
@@ -4019,6 +4039,7 @@ mod tests {
                     cvttpd2pi_memory_controls: input.fixture.cvttpd2pi_memory_controls,
                     cvtpd2pi_memory_controls: input.fixture.cvtpd2pi_memory_controls,
                     cvtps2pd_controls: input.fixture.cvtps2pd_controls,
+                    cvtps2pd_m64_controls: input.fixture.cvtps2pd_m64_controls,
                     comiss_ucomiss_controls: input.fixture.comiss_ucomiss_controls,
                     cmpss_controls: input.fixture.cmpss_controls,
                     cmpsd_controls: input.fixture.cmpsd_controls,

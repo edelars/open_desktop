@@ -19766,3 +19766,37 @@ Normative sources: Intel SDM Rev. 093 Vol. 2A CVTPD2DQ pp. 3-214–3-217
 Table 14-21; Vol. 3A §§16.1.3–16.1.4, Table 16-1. See the [plan](../plans/STAGE_2.md#s2-37bx--bounded-long64-cvtpd2dq-xmm0rax-aligned-m128-memory-profile),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37bx--bounded-long64-cvtpd2dq-xmm0rax-aligned-m128-profile),
 and [literal fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bx-cvtpd2dq-xmm0rax-aligned-m128-rounding-profile).
+
+## S2-37by — CVTPS2PD XMM0,[RAX] m64 memory profile
+
+Implemented the exact legacy `0F 5A 00` schema-v2 Long64 interpreter profile.
+The decoder admits only the exact RAX memory form. The interpreter performs a
+checked canonical48 8-byte read once and commits only after success. It widens
+two raw binary32 lanes into all of XMM0, accumulates masked SNaN IE and
+subnormal DE, and preserves incoming MXCSR status and all x87 state. The local
+AC=0, MXCSR mask `0xffbf`, DAZ=0, IM=DM=1 admission remains distinct from
+architectural operation behavior; PM may be clear. Native/JIT/C ABI/fragment/
+generic paths remain closed.
+
+The literal fixture contains an SNaN plus the smallest negative subnormal and
+pending-x87 canaries. Runner cases span signed zero, infinities, max finite,
+Q/SNaN payloads, all subnormal significand leading positions, all RC modes and
+FTZ settings; they compare against an integer-only raw-bit oracle. ISA tests
+cover fetch/gates, unaligned reads and atomic read-failure behavior. Focused
+ISA passed 3/3; full `od-isa` passed 1,622/1,622, `od-testkit` passed 446/446,
+`od-runner` passed 112 unit plus 454 fixture tests, and `od-x86-runner` passed
+8 library plus 4 binary tests. The focused by runner passed 1/1. Its local
+Unsupported probes assert the Unsupported outcome and unchanged snapshot state
+directly because `compare` intentionally rejects Unsupported results. The
+native local-only classifier includes by; this is closure evidence only, not
+native execution. `cargo check --workspace --all-targets --offline`,
+`cargo fmt --all -- --check`, `git diff --check`, layout validation, and 16
+targeted cross-document link/anchor checks passed. `graphify update .` completed
+with 10,272 nodes, 21,887 edges and 277 communities; it reported 54 files
+skipped for unsupported extensions and 13 code files without symbols.
+Independent review completed without remaining findings. No physical x86
+acceptance is claimed.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTPS2PD pp. 3-228–3-230; Vol. 1
+§§11.5.2.1–11.5.2.2, 11.5.3, 11.5.5, Tables D-11 and 14-21; Vol. 3A
+§§16.1.3–16.1.4, Table 16-1. See [plan](../plans/STAGE_2.md#s2-37by--bounded-long64-cvtps2pd-xmm0rax-m64-memory-profile), [CPU contract](../specs/CPU_CONTRACT.md#s2-37by--bounded-long64-cvtps2pd-xmm0rax-m64-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37by--cvtps2pd-xmm0rax-m64-memory-profile).

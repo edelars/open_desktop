@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последний завершённый кодовый срез S2-37bx добавил exact legacy `CVTPD2DQ XMM0,[RAX]` (`F2 0F E6 00`): один aligned m128 read, binary64→i32 с MXCSR.RC rounding и masked IE/PE. Профили остаются local schema-v2 interpreter-only; соседние формы и native/JIT/C ABI закрыты. Предыдущие ограничения/профили перечислены ниже. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последний завершённый кодовый срез S2-37by добавил exact legacy `CVTPS2PD XMM0,[RAX]` (`0F 5A 00`): один m64 read, raw binary32→binary64 widening с masked IE/DE. Профили остаются local schema-v2 interpreter-only; соседние формы и native/JIT/C ABI закрыты. Предыдущие ограничения/профили перечислены ниже. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -502,6 +502,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37bv | Local-only legacy Long64 CVTPS2DQ XMM0,[RAX] aligned m128 memory profile; MXCSR.RC rounding then range check, masked IE/PE; native/JIT closed | S2-37bu; approved bounded contract; independent review complete |
 | [x] | S2-37bw | Local-only legacy Long64 CVTTPD2DQ XMM0,[RAX] aligned m128 memory profile; toward-zero conversion after truncation range check, masked IE/PE; native/JIT closed | S2-37bv; approved bounded contract; implementation and verification recorded below; independent review complete |
 | [x] | S2-37bx | Local-only legacy Long64 CVTPD2DQ XMM0,[RAX] aligned m128 memory profile; MXCSR.RC rounding then range check, masked IE/PE; native/JIT closed | S2-37bw; approved bounded contract; implementation and verification below; independent review complete |
+| [x] | S2-37by | Local-only legacy Long64 CVTPS2PD XMM0,[RAX] m64 memory profile; raw binary32 widening with masked IE/DE; native/JIT closed | S2-37u; approved bounded contract; implementation, verification and independent review complete |
 | [x] | S2-37t | Local-only canonical Long64 CVTSS2SD XMM register-pair profile; raw binary32 widening with sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37u | Local-only canonical Long64 CVTPS2PD XMM register-pair profile; two-lane raw widening with aggregate sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-37t, S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37v | Local-only canonical Long64 COMISS/UCOMISS XMM register-pair profile; NaN-priority IE/DE, unordered flags, unmasked atomic flag exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
@@ -6813,7 +6814,7 @@ inventory.
 | CVTPI2PD | `66 0F 2A /r` | SSE2 | mm/m64 → XMM; 2×i32 → 2×f64 | 3-223 | S2-37bf, exact memory-only `[RAX]`; S2-37bm, exact `XMM0,MM1` register source |
 | CVTPI2PS | `NP 0F 2A /r` | SSE | mm/m64 → XMM; 2×i32 → low 2×f32 | 3-224 | S2-37bg, exact memory-only `[RAX]`; S2-37bn, exact `XMM0,MM1` register source |
 | CVTPS2DQ | `66 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-225 | S2-37af registers; S2-37bv exact `[RAX]` memory |
-| CVTPS2PD | `NP 0F 5A /r` | SSE2 | m64; low 2×f32 → 2×f64 | 3-228 | S2-37u, bounded register-only |
+| CVTPS2PD | `NP 0F 5A /r` | SSE2 | m64; low 2×f32 → 2×f64 | 3-228 | S2-37u register pairs; S2-37by exact `[RAX]` m64 memory |
 | CVTPS2PI | `NP 0F 2D /r` | SSE | XMM, m64 → mm; 2×f32 → 2×i32 | 3-231 | S2-37bj, exact masked `0F 2D C1` register-source; S2-37bp, exact masked `[RAX]` memory profile |
 | CVTSD2SI | `F2 0F 2D /r`; `F2 REX.W 0F 2D /r` | SSE2 | m64 → r32 / r64 | 3-232 | S2-37ac, bounded register-only |
 | CVTSD2SS | `F2 0F 5A /r` | SSE2 | XMM, m64; f64 → low f32 | 3-234 | S2-37be, bounded register-only |
@@ -14898,3 +14899,40 @@ conversion helpers. JIT/native/C ABI/fragment/generic execution remain closed.
 Verification passed: focused ISA 4/4; full ISA 1,619, testkit 445, runner 112 unit + 453 fixture, and x86-runner 8 library + 4 binary tests; workspace all-target check and format check passed. Independent review completed without remaining findings. A separate no-compile CLI smoke passed 64/64 across bx and bw rounding/truncation, boundary, subnormal, and invalid cases. No physical x86 acceptance is claimed. Sources: Intel SDM Rev. 093 Vol. 2A CVTPD2DQ
 pp. 3-214–3-217 (legacy operation p. 3-216); Vol. 1 §§11.5.2.2, 11.5.2.6,
 11.5.3, 11.5.5 and Table 14-21; Vol. 3A §§16.1.3–16.1.4, Table 16-1.
+
+#### S2-37by — bounded Long64 CVTPS2PD XMM0,[RAX] m64 memory profile
+
+Exact legacy bytes are `0F 5A 00`; schema-v2 profile
+`s2-long-cvtps2pd-memory-rax-v1` admits Long64, full three-byte fetch,
+instruction budget 1 and stop RIP=entry+3. The local prerequisite order is
+SSE2 (CPUID bit 26), CR0.EM/CR4.OSFXSR #UD, then CR0.TS #NM; CPL0–3 are
+admitted. This is bounded local policy, not a universal exception-priority
+claim.
+
+RAX supplies one 8-byte m64 span. Checked canonical48 `[RAX..RAX+7]` validation
+precedes exactly one data read; unaligned addresses are accepted under the
+profile's RFLAGS.AC=0 admission. A failed read leaves CPU state unchanged.
+Two raw binary32 lanes widen to binary64 and replace all of XMM0. SNaNs are
+quieted and contribute IE; QNaNs preserve sign/payload and do not contribute
+IE. Nonzero binary32 subnormals widen exactly and contribute DE. RC and FTZ do
+not change this widening. Sticky IE/DE are ORed into incoming MXCSR; DAZ=0 and
+IM=DM=1 are local admission rules, while PM may be clear. No unmasked SIMD
+delivery is modeled. x87 state, including pending-exception canaries, is
+preserved without a gate.
+
+The testkit oracle constructs binary64 results from raw binary32 fields using
+integer bit operations, with no host FP or production conversion helper. JIT,
+native, C ABI, fragment and generic execution remain closed. Focused ISA passed
+3/3; full `od-isa` passed 1,622/1,622, `od-testkit` passed 446/446, `od-runner`
+passed 112 unit plus 454 fixture tests, and `od-x86-runner` passed 8 library
+plus 4 binary tests. The focused by runner passed 1/1. `cargo check --workspace
+--all-targets --offline`, `cargo fmt --all -- --check`, `git diff --check`,
+`python3 tools/check_layout.py`, and 16 targeted by cross-document link/anchor
+checks passed. `graphify update .` completed with 10,272 nodes, 21,887 edges
+and 277 communities; it reported 54 unsupported-extension files skipped and
+13 code files without symbols. Independent review completed without remaining
+findings. No physical x86 acceptance is claimed.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTPS2PD pp. 3-228–3-230; Vol. 1
+§§11.5.2.1–11.5.2.2, 11.5.3, 11.5.5, Table D-11 and Table 14-21; Vol. 3A
+§§16.1.3–16.1.4, Table 16-1. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37by--bounded-long64-cvtps2pd-xmm0rax-m64-memory-profile), [report](../reports/STAGE_2_REPORT.md#s2-37by--cvtps2pd-xmm0rax-m64-memory-profile), and [literal fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37by--cvtps2pd-xmm0rax-m64-memory-profile).

@@ -25401,6 +25401,138 @@ fn cvtps2pd_register_pairs_raw_classes_and_exception_matrix() {
 }
 
 #[test]
+fn cvtps2pd_m64_widens_subnormals_and_fails_closed() {
+    use od_testkit::v2::Profile;
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_37by_cvtps2pd_m64_snan_subnormal.case.json");
+    let fixture = Fixture::from_json(&fs::read(path).unwrap())
+        .unwrap()
+        .fixture;
+    assert_eq!(fixture.profile, Profile::LongCvtps2pdMemoryRaxV1);
+    let (literal_input, literal_result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&literal_input, &literal_result, &literal_result).unwrap();
+    let mut raw_pairs = vec![
+        (0x7f80_0001, 0x8000_0001), // SNaN + smallest negative subnormal
+        (0x7fc1_2345, 0xffc5_4321), // signed QNaNs with payloads
+        (0x0000_0000, 0x8000_0000), // signed zero
+        (0x7f80_0000, 0xff80_0000), // infinities
+        (0x7f7f_ffff, 0xff7f_ffff), // max finite values
+        (0x3f80_0000, 0xc000_0000), // exact normal values
+    ];
+    for bit in 0..23 {
+        raw_pairs.push((1u32 << bit, 0x8000_0000 | (1u32 << bit)));
+    }
+
+    for (index, (lo, hi)) in raw_pairs.into_iter().enumerate() {
+        for rc in 0..4u32 {
+            let mut case = fixture.clone();
+            let mut source = Vec::new();
+            source.extend(lo.to_le_bytes());
+            source.extend(hi.to_le_bytes());
+            case.memory[1].initial_bytes_hex = od_testkit::memory::encode_bytes(&source);
+            let controls = 0x1f80 | (rc << 13) | if index & 1 == 0 { 1 << 15 } else { 0 };
+            // The profile admits PM=0 while requiring IM=DM=1 and DAZ=0.
+            case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(u64::from(controls & !0x1000));
+            case.case_id = format!("s2_37by_matrix_{index}_{rc}");
+            let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+            assert_eq!(input.fixture.profile, Profile::LongCvtps2pdMemoryRaxV1);
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+            let Observation::Available { value } = &result.snapshot else {
+                panic!("snapshot unavailable")
+            };
+            assert_eq!(
+                value.state.x87, input.fixture.initial_state.x87,
+                "x87 canaries must be preserved"
+            );
+            assert_eq!(
+                value.memory[1].bytes_hex,
+                input.fixture.memory[1].initial_bytes_hex
+            );
+        }
+    }
+
+    for sticky in [0, 1, 2, 3, 0x20] {
+        let mut case = fixture.clone();
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0xcf80 | sticky);
+        case.case_id = format!("s2_37by_sticky_{sticky:02x}");
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+    }
+
+    for (name, mxcsr, rflags) in [
+        ("daz", 0x1fc0, 0x2),
+        ("im_clear", 0x1f00, 0x2),
+        ("dm_clear", 0x1e80, 0x2),
+        ("ac", 0x1f80, 1 << 18 | 2),
+    ] {
+        let mut rejected = fixture.clone();
+        rejected.expected_exit = ExpectedExit::Unsupported;
+        rejected.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        rejected.initial_state.rflags = HexU64(rflags);
+        rejected.case_id = format!("s2_37by_unsupported_{name}");
+        rejected.validate().unwrap();
+        let (input, result) = run(&rejected.to_json().unwrap(), "interpreter", 4);
+        assert!(
+            matches!(result.outcome, Outcome::Unsupported { .. }),
+            "{name}"
+        );
+        assert_eq!(
+            snapshot(&result).state,
+            input.fixture.initial_state,
+            "{name}"
+        );
+    }
+
+    for (field, enabled) in [
+        ("sse2_available", false),
+        ("cr0_em", true),
+        ("cr4_osfxsr", false),
+        ("cr0_ts", true),
+    ] {
+        let mut gated = fixture.clone();
+        gated.expected_exit = ExpectedExit::Exception;
+        let controls = gated.cvtps2pd_m64_controls.as_mut().unwrap();
+        match field {
+            "sse2_available" => controls.sse2_available = enabled,
+            "cr0_em" => controls.cr0_em = enabled,
+            "cr4_osfxsr" => controls.cr4_osfxsr = enabled,
+            "cr0_ts" => controls.cr0_ts = enabled,
+            _ => unreachable!(),
+        }
+        gated.case_id = format!("s2_37by_gate_{field}");
+        let (input, result) = run(&gated.to_json().unwrap(), "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::Exception {}), "{field}");
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+    }
+
+    let mut foreign = fixture.clone();
+    foreign.cvtps2pd_controls = Some(od_testkit::v2::Cvtps2pdControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: false,
+    });
+    assert!(foreign.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
+    let mut malformed = fixture.clone();
+    malformed.memory[0].initial_bytes_hex = "660f5a00".into();
+    assert!(malformed.validate().is_err());
+    let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+    let mut tampered = result.clone();
+    let Observation::Available { value } = &mut tampered.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.state.sse.as_mut().unwrap().xmm[0] = "00".repeat(16);
+    assert!(od_testkit::v2::compare(&input, &result, &tampered).is_err());
+    let (_, jit) = run(&fixture.to_json().unwrap(), "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    let (_, native) = run(&fixture.to_json().unwrap(), "native", 4);
+    assert!(matches!(native.outcome, Outcome::Unsupported { .. }));
+}
+
+#[test]
 fn comiss_ucomiss_register_pairs_raw_classes_exceptions_and_backend_denial() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/x86/stage2/s2_37v_comiss_ucomiss_baseline.case.json");

@@ -7268,3 +7268,21 @@ pp. 3-214–3-217 (legacy operation p. 3-216); Vol. 1 §§11.5.2.2, 11.5.2.6,
 11.5.3, 11.5.5, Table 14-21; Vol. 3A §§16.1.3–16.1.4, Table 16-1.
 
 Related documentation: [Stage 2 plan](../../../../docs/plans/STAGE_2.md#s2-37bx--bounded-long64-cvtpd2dq-xmm0rax-aligned-m128-memory-profile), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bx--bounded-long64-cvtpd2dq-xmm0rax-aligned-m128-profile), and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bx--cvtpd2dq-xmm0rax-aligned-m128-memory-profile).
+
+### S2-37by — CVTPS2PD XMM0,[RAX] m64 memory profile
+
+`s2_37by_cvtps2pd_m64_snan_subnormal.case.json` is the literal exact legacy
+`0F 5A 00` case. Its unaligned m64 contains SNaN `0x7f800001` and the smallest
+negative subnormal `0x80000001`; MXCSR has FTZ set, round-up selected and PM
+clear. The output demonstrates SNaN quieting with IE, exact subnormal widening
+with DE, and preserved pending-x87 state. The runner matrix covers all four RC
+values, FTZ on/off, representative NaN/zero/infinity/max-finite values and all
+23 subnormal leading-bit positions. x87 canaries are preserved with no gate.
+
+The schema-v2 oracle uses raw binary32 integer fields; it does not use host FP
+or the production conversion helper. Direct ISA tests cover exact fetch, SSE2
+gates, unaligned single-read behavior and read-failure rollback. JIT/native/C
+ABI remain closed; physical x86 acceptance is not claimed. Provenance cites
+Intel SDM Rev. 093 Vol. 2A CVTPS2PD pp. 3-228–3-230; Vol. 1 §§11.5.2.1–
+11.5.2.2, 11.5.3, 11.5.5, Tables D-11 and 14-21; Vol. 3A §§16.1.3–16.1.4,
+Table 16-1. See [plan](../../../../docs/plans/STAGE_2.md#s2-37by--bounded-long64-cvtps2pd-xmm0rax-m64-memory-profile), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37by--bounded-long64-cvtps2pd-xmm0rax-m64-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37by--cvtps2pd-xmm0rax-m64-memory-profile).
