@@ -832,7 +832,16 @@ interpreter and 4,800 cached executions and 4,800 parity trials. Each sequence
 reported 2,399 hits, one miss/compile/publication, no replacements, and one
 resident entry. `timing_started` was false. Runtime Git dirty status is `null`
 because the two-second Git probe timed out; the build source tree was clean.
-Calibration-only and scored runs remain open; no performance result is claimed.
+The calibration-only release run passed the 200 ms floor for both sequences
+at 2,048 repetitions per side, with 12 retained attempts per sequence and no
+scored pairs. The outer `cargo` command envelope was 55.671 s; the report's
+`total_elapsed_ns` was 10.621381750 s. A point-in-time envelope observed
+Graphify in the before/early samples and a Stage 2 `od-runner` test plus
+`rustc` in six later samples. Sampled one-minute load averages ranged from
+2.16 to 2.61; the visible `rustc` samples ranged from 0.0% to 120.3% CPU.
+Stage 2 was not stopped. The envelope has no per-call timestamps, so overlap
+with timed calls cannot be assigned. Three scored runs remain open; no
+performance result is claimed.
 
 Run the release preflight first:
 
@@ -844,9 +853,10 @@ cargo run --release --offline -p od-bench -- two-site-memory-cache \
 
 The [S3-36e report](../reports/STAGE_3_S3-36e_2026-11-01.md) and
 [preflight artifact](../reports/data/stage3/s3-36e/preflight-release-run1.json)
-record this partial gate. Calibration-only and three sequential scored runs
-will be archived before any conclusion. Mini checks remain deferred to the end
-of Stage 3.
+and [calibration artifact](../reports/data/stage3/s3-36e/calibration-run1.json)
+record the completed preflight and calibration-only gates. Three sequential
+scored runs will be archived before any conclusion. Mini checks remain deferred
+to the end of Stage 3.
 
 ### S3-37a: bounded production FIFO16 corpus churn observation
 

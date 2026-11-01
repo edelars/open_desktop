@@ -1,0 +1,697 @@
+{
+  "calibration_floor_passed": true,
+  "calibration_only": true,
+  "input_digest": "b09478b556aa91234d8c453f20e70f637222c5de2d7369d305ffe7c78caae540",
+  "interpreter_preflight_executions": 4800,
+  "journal_path": "work/tmp/stage3/s3-36e/calibration-run1.json.cache.journal.jsonl",
+  "measure_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "489ebe483e078d0020c8ddba0fa23086cb2ce8c4",
+      "source_sha256": "7423746f0226b0e434952c81ad38922c6bb29bdf89e34eb5e295b4dee463843f",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "489ebe483e078d0020c8ddba0fa23086cb2ce8c4",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "minimum_side_time_ns": 200000000,
+  "native_preflight_executions": 4800,
+  "parity_trials": 4800,
+  "preflight_repetitions_per_case_backend": 2,
+  "process_run": 1,
+  "profile_id": "s3-36e-two-site-memory-full-cache-call-v1",
+  "sample_floor_passed": false,
+  "sample_floor_policy": "Retain all 20 pairs independently per sequence. Each side must meet 200ms; any short or incomplete side makes the full process diagnostic-only. No trimming or cross-sequence aggregate.",
+  "schema": 1,
+  "sequences": [
+    {
+      "cache_drop_ns": 10292,
+      "calibration_attempts": [
+        {
+          "attempt_index": 0,
+          "interpreter_executions": 1200,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 325247,
+          "interpreter_wall_elapsed_ns": 603833,
+          "native_cache_delta": {
+            "hits": 1200,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 1200,
+          "native_floor_met": false,
+          "native_total_ns": 776545,
+          "native_wall_elapsed_ns": 1494041,
+          "record_type": "calibration_attempt",
+          "repetitions": 1,
+          "sequence": "store_then_load"
+        },
+        {
+          "attempt_index": 1,
+          "interpreter_executions": 2400,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 640215,
+          "interpreter_wall_elapsed_ns": 1176208,
+          "native_cache_delta": {
+            "hits": 2400,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 2400,
+          "native_floor_met": false,
+          "native_total_ns": 789449,
+          "native_wall_elapsed_ns": 1468708,
+          "record_type": "calibration_attempt",
+          "repetitions": 2,
+          "sequence": "store_then_load"
+        },
+        {
+          "attempt_index": 2,
+          "interpreter_executions": 4800,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 1603468,
+          "interpreter_wall_elapsed_ns": 2926917,
+          "native_cache_delta": {
+            "hits": 4800,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 4800,
+          "native_floor_met": false,
+          "native_total_ns": 3337928,
+          "native_wall_elapsed_ns": 6323334,
+          "record_type": "calibration_attempt",
+          "repetitions": 4,
+          "sequence": "store_then_load"
+        },
+        {
+          "attempt_index": 3,
+          "interpreter_executions": 9600,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 1220898,
+          "interpreter_wall_elapsed_ns": 2303542,
+          "native_cache_delta": {
+            "hits": 9600,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 9600,
+          "native_floor_met": false,
+          "native_total_ns": 3140900,
+          "native_wall_elapsed_ns": 5819375,
+          "record_type": "calibration_attempt",
+          "repetitions": 8,
+          "sequence": "store_then_load"
+        },
+        {
+          "attempt_index": 4,
+          "interpreter_executions": 19200,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 2395686,
+          "interpreter_wall_elapsed_ns": 4546208,
+          "native_cache_delta": {
+            "hits": 19200,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 19200,
+          "native_floor_met": false,
+          "native_total_ns": 6354141,
+          "native_wall_elapsed_ns": 11732625,
+          "record_type": "calibration_attempt",
+          "repetitions": 16,
+          "sequence": "store_then_load"
+        },
+        {
+          "attempt_index": 5,
+          "interpreter_executions": 38400,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 4754656,
+          "interpreter_wall_elapsed_ns": 9093792,
+          "native_cache_delta": {
+            "hits": 38400,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 38400,
+          "native_floor_met": false,
+          "native_total_ns": 12626115,
+          "native_wall_elapsed_ns": 23352834,
+          "record_type": "calibration_attempt",
+          "repetitions": 32,
+          "sequence": "store_then_load"
+        },
+        {
+          "attempt_index": 6,
+          "interpreter_executions": 76800,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 9456329,
+          "interpreter_wall_elapsed_ns": 18053125,
+          "native_cache_delta": {
+            "hits": 76800,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 76800,
+          "native_floor_met": false,
+          "native_total_ns": 25432009,
+          "native_wall_elapsed_ns": 47055500,
+          "record_type": "calibration_attempt",
+          "repetitions": 64,
+          "sequence": "store_then_load"
+        },
+        {
+          "attempt_index": 7,
+          "interpreter_executions": 153600,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 18667655,
+          "interpreter_wall_elapsed_ns": 35753791,
+          "native_cache_delta": {
+            "hits": 153600,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 153600,
+          "native_floor_met": false,
+          "native_total_ns": 50401800,
+          "native_wall_elapsed_ns": 93254625,
+          "record_type": "calibration_attempt",
+          "repetitions": 128,
+          "sequence": "store_then_load"
+        },
+        {
+          "attempt_index": 8,
+          "interpreter_executions": 307200,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 38145920,
+          "interpreter_wall_elapsed_ns": 72626833,
+          "native_cache_delta": {
+            "hits": 307200,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 307200,
+          "native_floor_met": false,
+          "native_total_ns": 101077004,
+          "native_wall_elapsed_ns": 187350625,
+          "record_type": "calibration_attempt",
+          "repetitions": 256,
+          "sequence": "store_then_load"
+        },
+        {
+          "attempt_index": 9,
+          "interpreter_executions": 614400,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 75288244,
+          "interpreter_wall_elapsed_ns": 143771125,
+          "native_cache_delta": {
+            "hits": 614400,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 614400,
+          "native_floor_met": true,
+          "native_total_ns": 203750124,
+          "native_wall_elapsed_ns": 377043208,
+          "record_type": "calibration_attempt",
+          "repetitions": 512,
+          "sequence": "store_then_load"
+        },
+        {
+          "attempt_index": 10,
+          "interpreter_executions": 1228800,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 150177121,
+          "interpreter_wall_elapsed_ns": 284768708,
+          "native_cache_delta": {
+            "hits": 1228800,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 1228800,
+          "native_floor_met": true,
+          "native_total_ns": 408501216,
+          "native_wall_elapsed_ns": 762385250,
+          "record_type": "calibration_attempt",
+          "repetitions": 1024,
+          "sequence": "store_then_load"
+        },
+        {
+          "attempt_index": 11,
+          "interpreter_executions": 2457600,
+          "interpreter_floor_met": true,
+          "interpreter_total_ns": 299291429,
+          "interpreter_wall_elapsed_ns": 571663125,
+          "native_cache_delta": {
+            "hits": 2457600,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 2457600,
+          "native_floor_met": true,
+          "native_total_ns": 808182792,
+          "native_wall_elapsed_ns": 1510547625,
+          "record_type": "calibration_attempt",
+          "repetitions": 2048,
+          "sequence": "store_then_load"
+        }
+      ],
+      "calibration_counter_delta": {
+        "hits": 4914000,
+        "misses": 0,
+        "replacements": 0,
+        "successful_compiles": 0,
+        "successful_publications": 0
+      },
+      "calibration_floor_passed": true,
+      "final_counters": {
+        "hits": 4917599,
+        "misses": 1,
+        "replacements": 0,
+        "resident_entries_high_water": 1,
+        "resident_logical_bytes_high_water": 4782,
+        "successful_compiles": 1,
+        "successful_publications": 1
+      },
+      "input_count": 1200,
+      "repetitions_per_side": 2048,
+      "resident_entries_high_water": 1,
+      "resident_logical_bytes_high_water": 4782,
+      "sample_floor_passed": false,
+      "sample_pairs": [],
+      "scored_counter_delta": {
+        "hits": 0,
+        "misses": 0,
+        "replacements": 0,
+        "successful_compiles": 0,
+        "successful_publications": 0
+      },
+      "sequence": "store_then_load",
+      "setup_preflight_counter_delta": {
+        "hits": 2399,
+        "misses": 1,
+        "replacements": 0,
+        "successful_compiles": 1,
+        "successful_publications": 1
+      },
+      "setup_preflight_counters": {
+        "hits": 2399,
+        "misses": 1,
+        "replacements": 0,
+        "resident_entries_high_water": 1,
+        "resident_logical_bytes_high_water": 4782,
+        "successful_compiles": 1,
+        "successful_publications": 1
+      },
+      "setup_preflight_interpreter_executions": 2400,
+      "setup_preflight_native_executions": 2400,
+      "setup_preflight_parity_trials": 2400,
+      "warmup_complete": true,
+      "warmup_interpreter_executions": 1200,
+      "warmup_native_counter_delta": {
+        "hits": 1200,
+        "misses": 0,
+        "replacements": 0,
+        "successful_compiles": 0,
+        "successful_publications": 0
+      },
+      "warmup_native_executions": 1200,
+      "warmup_sweeps_per_backend": 1
+    },
+    {
+      "cache_drop_ns": 18750,
+      "calibration_attempts": [
+        {
+          "attempt_index": 0,
+          "interpreter_executions": 1200,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 144537,
+          "interpreter_wall_elapsed_ns": 273583,
+          "native_cache_delta": {
+            "hits": 1200,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 1200,
+          "native_floor_met": false,
+          "native_total_ns": 387400,
+          "native_wall_elapsed_ns": 744666,
+          "record_type": "calibration_attempt",
+          "repetitions": 1,
+          "sequence": "load_then_store"
+        },
+        {
+          "attempt_index": 1,
+          "interpreter_executions": 2400,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 290901,
+          "interpreter_wall_elapsed_ns": 547417,
+          "native_cache_delta": {
+            "hits": 2400,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 2400,
+          "native_floor_met": false,
+          "native_total_ns": 789307,
+          "native_wall_elapsed_ns": 1474917,
+          "record_type": "calibration_attempt",
+          "repetitions": 2,
+          "sequence": "load_then_store"
+        },
+        {
+          "attempt_index": 2,
+          "interpreter_executions": 4800,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 578666,
+          "interpreter_wall_elapsed_ns": 1094125,
+          "native_cache_delta": {
+            "hits": 4800,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 4800,
+          "native_floor_met": false,
+          "native_total_ns": 1551296,
+          "native_wall_elapsed_ns": 2977500,
+          "record_type": "calibration_attempt",
+          "repetitions": 4,
+          "sequence": "load_then_store"
+        },
+        {
+          "attempt_index": 3,
+          "interpreter_executions": 9600,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 1158844,
+          "interpreter_wall_elapsed_ns": 2174292,
+          "native_cache_delta": {
+            "hits": 9600,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 9600,
+          "native_floor_met": false,
+          "native_total_ns": 3183886,
+          "native_wall_elapsed_ns": 5899583,
+          "record_type": "calibration_attempt",
+          "repetitions": 8,
+          "sequence": "load_then_store"
+        },
+        {
+          "attempt_index": 4,
+          "interpreter_executions": 19200,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 2323080,
+          "interpreter_wall_elapsed_ns": 4365333,
+          "native_cache_delta": {
+            "hits": 19200,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 19200,
+          "native_floor_met": false,
+          "native_total_ns": 6456477,
+          "native_wall_elapsed_ns": 11932167,
+          "record_type": "calibration_attempt",
+          "repetitions": 16,
+          "sequence": "load_then_store"
+        },
+        {
+          "attempt_index": 5,
+          "interpreter_executions": 38400,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 4602418,
+          "interpreter_wall_elapsed_ns": 8736834,
+          "native_cache_delta": {
+            "hits": 38400,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 38400,
+          "native_floor_met": false,
+          "native_total_ns": 12297702,
+          "native_wall_elapsed_ns": 23516125,
+          "record_type": "calibration_attempt",
+          "repetitions": 32,
+          "sequence": "load_then_store"
+        },
+        {
+          "attempt_index": 6,
+          "interpreter_executions": 76800,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 9189208,
+          "interpreter_wall_elapsed_ns": 17409791,
+          "native_cache_delta": {
+            "hits": 76800,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 76800,
+          "native_floor_met": false,
+          "native_total_ns": 24668311,
+          "native_wall_elapsed_ns": 46911875,
+          "record_type": "calibration_attempt",
+          "repetitions": 64,
+          "sequence": "load_then_store"
+        },
+        {
+          "attempt_index": 7,
+          "interpreter_executions": 153600,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 18494635,
+          "interpreter_wall_elapsed_ns": 34736792,
+          "native_cache_delta": {
+            "hits": 153600,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 153600,
+          "native_floor_met": false,
+          "native_total_ns": 49049150,
+          "native_wall_elapsed_ns": 93557250,
+          "record_type": "calibration_attempt",
+          "repetitions": 128,
+          "sequence": "load_then_store"
+        },
+        {
+          "attempt_index": 8,
+          "interpreter_executions": 307200,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 37440602,
+          "interpreter_wall_elapsed_ns": 70160125,
+          "native_cache_delta": {
+            "hits": 307200,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 307200,
+          "native_floor_met": false,
+          "native_total_ns": 101548357,
+          "native_wall_elapsed_ns": 188538750,
+          "record_type": "calibration_attempt",
+          "repetitions": 256,
+          "sequence": "load_then_store"
+        },
+        {
+          "attempt_index": 9,
+          "interpreter_executions": 614400,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 73831244,
+          "interpreter_wall_elapsed_ns": 138630667,
+          "native_cache_delta": {
+            "hits": 614400,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 614400,
+          "native_floor_met": true,
+          "native_total_ns": 202802665,
+          "native_wall_elapsed_ns": 377389458,
+          "record_type": "calibration_attempt",
+          "repetitions": 512,
+          "sequence": "load_then_store"
+        },
+        {
+          "attempt_index": 10,
+          "interpreter_executions": 1228800,
+          "interpreter_floor_met": false,
+          "interpreter_total_ns": 147723168,
+          "interpreter_wall_elapsed_ns": 277268375,
+          "native_cache_delta": {
+            "hits": 1228800,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 1228800,
+          "native_floor_met": true,
+          "native_total_ns": 401670291,
+          "native_wall_elapsed_ns": 748280792,
+          "record_type": "calibration_attempt",
+          "repetitions": 1024,
+          "sequence": "load_then_store"
+        },
+        {
+          "attempt_index": 11,
+          "interpreter_executions": 2457600,
+          "interpreter_floor_met": true,
+          "interpreter_total_ns": 289805163,
+          "interpreter_wall_elapsed_ns": 547387500,
+          "native_cache_delta": {
+            "hits": 2457600,
+            "misses": 0,
+            "replacements": 0,
+            "successful_compiles": 0,
+            "successful_publications": 0
+          },
+          "native_executions": 2457600,
+          "native_floor_met": true,
+          "native_total_ns": 807220613,
+          "native_wall_elapsed_ns": 1504781250,
+          "record_type": "calibration_attempt",
+          "repetitions": 2048,
+          "sequence": "load_then_store"
+        }
+      ],
+      "calibration_counter_delta": {
+        "hits": 4914000,
+        "misses": 0,
+        "replacements": 0,
+        "successful_compiles": 0,
+        "successful_publications": 0
+      },
+      "calibration_floor_passed": true,
+      "final_counters": {
+        "hits": 4917599,
+        "misses": 1,
+        "replacements": 0,
+        "resident_entries_high_water": 1,
+        "resident_logical_bytes_high_water": 4782,
+        "successful_compiles": 1,
+        "successful_publications": 1
+      },
+      "input_count": 1200,
+      "repetitions_per_side": 2048,
+      "resident_entries_high_water": 1,
+      "resident_logical_bytes_high_water": 4782,
+      "sample_floor_passed": false,
+      "sample_pairs": [],
+      "scored_counter_delta": {
+        "hits": 0,
+        "misses": 0,
+        "replacements": 0,
+        "successful_compiles": 0,
+        "successful_publications": 0
+      },
+      "sequence": "load_then_store",
+      "setup_preflight_counter_delta": {
+        "hits": 2399,
+        "misses": 1,
+        "replacements": 0,
+        "successful_compiles": 1,
+        "successful_publications": 1
+      },
+      "setup_preflight_counters": {
+        "hits": 2399,
+        "misses": 1,
+        "replacements": 0,
+        "resident_entries_high_water": 1,
+        "resident_logical_bytes_high_water": 4782,
+        "successful_compiles": 1,
+        "successful_publications": 1
+      },
+      "setup_preflight_interpreter_executions": 2400,
+      "setup_preflight_native_executions": 2400,
+      "setup_preflight_parity_trials": 2400,
+      "warmup_complete": true,
+      "warmup_interpreter_executions": 1200,
+      "warmup_native_counter_delta": {
+        "hits": 1200,
+        "misses": 0,
+        "replacements": 0,
+        "successful_compiles": 0,
+        "successful_publications": 0
+      },
+      "warmup_native_executions": 1200,
+      "warmup_sweeps_per_backend": 1
+    }
+  ],
+  "source_files": [
+    "tools/bench/src/two_site_memory_cached.rs",
+    "tools/bench/src/two_site_memory_warm.rs",
+    "tools/bench/src/two_site_memory_cold.rs",
+    "tools/bench/src/main.rs",
+    "tools/bench/src/lib.rs",
+    "crates/od-jit/src/memory_cache.rs",
+    "crates/od-host/src/lib.rs",
+    "crates/od-jit/src/memory_load_v2.rs",
+    "crates/od-jit/src/translation.rs",
+    "crates/od-jit/src/memory_dispatch.rs",
+    "crates/od-jit/src/block.rs",
+    "crates/od-jit/src/runtime.rs",
+    "crates/od-isa/src/execute.rs",
+    "crates/od-isa/src/state.rs",
+    "crates/od-testkit/src/memory_corpus.rs"
+  ],
+  "source_sha256": "cdc04dc1ca8041c68a44b371f5f6f0aec7829f0466c005eb05deecec6cf6dd0f",
+  "status": "calibration_only_unscored",
+  "stop_reason": null,
+  "timer_boundaries": "Each native timed call is one complete MemoryPairCache::run, including profile/context/source/dependency/key validation, cache lookup and counters, and typed host execution. State/RAM/callback reset, counter snapshots and per-result full state/RAM/ordered event/exit validation are outside each call timer. One resident capacity-one cache/mapping is retained per sequence, then cleared/dropped before publishing the next sequence.",
+  "timing_started": true,
+  "total_elapsed_ns": 10621381750,
+  "unique_cases": 2400
+}

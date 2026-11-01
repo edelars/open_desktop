@@ -3173,13 +3173,16 @@ cache lookup/counters, and typed host execution; interpreter execution is
 measured separately. The release preflight passed on Apple M3 Max/aarch64:
 2,400 unique inputs, two trials per backend/input, 4,800 executions per
 backend and parity trials, with one initial miss/compile/publication followed
-by 2,399 hits per sequence and one resident entry. No timing started. Runtime
-`working_tree_dirty` is unknown because the Git status probe timed out; build
-source tree was clean. Calibration and scored runs remain open. This is still a
-bounded fixture, not general memory or production owner/MMU evidence. Mini
-checks remain deferred to the end of Stage 3. See the [S3-36e
-report](../reports/STAGE_3_S3-36e_2026-11-01.md) and [preflight
-evidence](../reports/data/stage3/s3-36e/preflight-release-run1.json).
+by 2,399 hits per sequence and one resident entry. No timing started during
+preflight. A separate calibration-only release run passed the 200 ms floor
+for both sequences at 2,048 repetitions per side, retained 12 attempts per
+sequence, and emitted no scored pairs. Runtime `working_tree_dirty` is unknown
+because the Git status probe timed out; build source tree was clean. Three
+scored runs remain open. This is still a bounded fixture, not general memory
+or production owner/MMU evidence. Mini checks remain deferred to the end of
+Stage 3. See the [S3-36e report](../reports/STAGE_3_S3-36e_2026-11-01.md),
+[preflight evidence](../reports/data/stage3/s3-36e/preflight-release-run1.json),
+and [calibration evidence](../reports/data/stage3/s3-36e/calibration-run1.json).
 
 ### S3-37. Проверить cache churn и ресурсы
 
