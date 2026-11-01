@@ -7319,3 +7319,24 @@ Sources: Intel SDM Rev. 093 Vol. 2A CVTSD2SS pp. 3-234–3-235; Vol. 1
 §§4.9.1.4–4.9.1.6, Table 4-12, §10.2.3.3, §§11.5.2–11.5.3, 11.5.5, Table
 D-12, Table 14-21; Vol. 3A §§16.1.3–16.1.4, Table 16-1; Intel Floating-Point
 Reference Sheet v2.13 p. 2. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37ca--bounded-long64-cvtsd2ss-xmm0rax-m64-memory-profile), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ca--bounded-long64-cvtsd2ss-xmm0rax-m64-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ca--cvtsd2ss-xmm0rax-m64-memory-profile).
+
+
+### S2-37cb — CVTPD2PS XMM0,[RAX] aligned m128 memory profile
+
+`s2_37cb_cvtpd2ps_m128_snan_subnormal_rc_up.case.json` is the literal exact
+legacy `66 0F 5A 00` case. Its aligned lanes contain SNaN and the smallest
+binary64 subnormal; the fixture verifies independent lane exception aggregation,
+including IE|DE|UE|PE. The focused runner covers both lane orders for mixed
+invalid/overflow/denormal combinations, QNaN+normal, schema-only DAZ and PM
+rejection, strict foreign controls, tamper detection, and JIT/native denial. Direct ISA tests cover CPL×AC
+alignment behavior, one aligned 16-byte read, and read rollback; runner tests do
+not expose callback counts. The integer raw-u64 oracle uses no host FP or
+production conversion helper. No physical x86 acceptance is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTPD2PS pp. 3-219–3-222; Vol. 1
+§§4.9.1.4–4.9.1.6, Table 4-12, §10.2.3.3, §§11.5.2–11.5.3, §11.5.3.1,
+Table D-12, Table 14-21; Vol. 3A Table 16-1; Intel Floating-Point Reference
+Sheet v2.13 p. 2. Type 2/Table 2-19 is VEX-only and is not used for legacy
+alignment. See [plan](../../../../docs/plans/STAGE_2.md#s2-37cb--bounded-long64-cvtpd2ps-xmm0rax-aligned-m128-memory-profile),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cb--bounded-long64-cvtpd2ps-xmm0rax-aligned-m128-memory-profile), and
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cb--cvtpd2ps-xmm0rax-aligned-m128-memory-profile).

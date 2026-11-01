@@ -14641,3 +14641,39 @@ Normative sources: Intel SDM Rev. 093 Vol. 2A CVTSD2SS pp. 3-234–3-235; Vol. 1
 D-12, Table 14-21; Vol. 3A §§16.1.3–16.1.4, Table 16-1; Intel Floating-Point
 Reference Sheet v2.13 p. 2. Type 3/Table 2-20 is VEX-specific and is not used
 as a legacy alignment source. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37ca--bounded-long64-cvtsd2ss-xmm0rax-m64-memory-profile), [report](../reports/STAGE_2_REPORT.md#s2-37ca--cvtsd2ss-xmm0rax-m64-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ca--cvtsd2ss-xmm0rax-m64-memory-profile).
+
+
+## S2-37cb — bounded Long64 CVTPD2PS XMM0,[RAX] aligned m128 memory profile
+
+The exact legacy schema-v2 interpreter-only profile is `66 0F 5A 00`, Long64,
+full four-byte fetch, budget one and stop RIP entry+4. Local prerequisite gates
+are SSE2 CPUID bit 26, EM/OSFXSR #UD before TS #NM, admitted CPL0–3; this is a
+bounded profile ordering policy. Missing SSE state returns Unsupported after
+prerequisite gates. RAX names one checked canonical48 m128 span. The 16-byte
+alignment check precedes data access and returns #GP(0) independent of CPL and
+RFLAGS.AC; successful execution reads exactly 16 bytes once. Read failure leaves
+CPU state unchanged.
+
+Two binary64 lanes narrow independently to binary32 according to MXCSR.RC. WPR
+tininess is measured after rounding to 24-bit precision with unbounded exponent
+and before final exponent encoding. FTZ flushes any WPR-tiny nonzero result to
+signed zero with UE|PE, even if precision rounding was exact. IE/DE/OE/UE/PE are
+aggregated across lanes and ORed with existing sticky flags; there is no ZE.
+SNaN quieting adds IE but not PE; QNaN adds no IE/PE; a source subnormal adds
+DE and may underflow. Masked invalid lanes do not suppress other-lane events.
+Success replaces XMM0.low64 with two binary32 results and zeroes XMM0[127:64];
+architectural bits above 127 are preserved. No x87/MMX state is gated or
+modified. Admission requires MXCSR mask `0xffbf`, DAZ=0, and IM/DM/OM/UM/PM=1;
+ZM may be clear. No unmasked SIMD delivery is modeled. Native/JIT/C ABI/fragment/
+generic execution remains closed; physical x86 acceptance is not claimed.
+
+The independent testkit oracle constructs binary32 bits from raw binary64
+integers; it uses neither host floating point nor production conversion
+helpers. Normative sources: Intel SDM Rev. 093 Vol. 2A CVTPD2PS pp. 3-219–3-222
+(legacy operation p. 3-221); Vol. 1 §§4.9.1.4–4.9.1.6, Table 4-12,
+§10.2.3.3, §§11.5.2–11.5.3, §11.5.3.1, Table D-12, Table 14-21; Vol. 3A
+Table 16-1; Intel Floating-Point Reference Sheet v2.13 p. 2. Type 2/Table
+2-19 on p. 3-222 is VEX-only and is not the legacy alignment basis. See the
+[plan](../plans/STAGE_2.md#s2-37cb--bounded-long64-cvtpd2ps-xmm0rax-aligned-m128-memory-profile),
+[report](../reports/STAGE_2_REPORT.md#s2-37cb--cvtpd2ps-xmm0rax-aligned-m128-memory-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cb--cvtpd2ps-xmm0rax-aligned-m128-memory-profile).

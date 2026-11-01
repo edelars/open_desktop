@@ -268,3 +268,11 @@ runner verifies sticky status, high-XMM preservation, schema/tamper behavior,
 and JIT/native denial. Direct ISA tests cover gates, no-SSE refusal, unaligned
 single-read behavior, and read rollback. No physical x86 acceptance is claimed.
 See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ca--bounded-long64-cvtsd2ss-xmm0rax-m64-memory-profile).
+
+
+### S2-37cb — CVTPD2PS aligned m128 profile
+
+The exact `66 0F 5A 00` fixture profile reads one aligned 16-byte source,
+narrows both lanes with RC/WPR/FTZ semantics, and remains interpreter-only. The
+runner checks lane exception aggregation and strict schema/backend closure;
+direct ISA tests cover callback count and alignment. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cb--bounded-long64-cvtpd2ps-xmm0rax-aligned-m128-memory-profile).

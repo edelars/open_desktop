@@ -334,3 +334,11 @@ field and strict foreign-field admission. Its independent raw-u64 oracle
 rounds by integer bit operations, checks WPR tininess, models FTZ and sticky
 IE/DE/OE/UE/PE, and preserves XMM0 high bits. It does not use host FP or a
 production conversion helper. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ca--bounded-long64-cvtsd2ss-xmm0rax-m64-memory-profile).
+
+
+### S2-37cb — CVTPD2PS m128 memory profile
+
+The strict schema-v2 `s2-long-cvtpd2ps-memory-rax-v1` profile uses its own
+control field and an independent raw-u64 integer oracle for two-lane binary64
+narrowing, WPR/FTZ flags and full destination state. The oracle does not use host
+FP or production conversion helpers. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cb--bounded-long64-cvtpd2ps-xmm0rax-aligned-m128-memory-profile).

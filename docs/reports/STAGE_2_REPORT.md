@@ -19882,3 +19882,38 @@ Normative sources: Intel SDM Rev. 093 Vol. 2A CVTSD2SS pp. 3-234–3-235; Vol. 1
 §§4.9.1.4–4.9.1.6, Table 4-12, §10.2.3.3, §§11.5.2–11.5.3, 11.5.5, Table
 D-12 and Table 14-21; Vol. 3A §§16.1.3–16.1.4, Table 16-1; Intel
 Floating-Point Reference Sheet v2.13 p. 2. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37ca--bounded-long64-cvtsd2ss-xmm0rax-m64-memory-profile), [plan](../plans/STAGE_2.md#s2-37ca--bounded-long64-cvtsd2ss-xmm0rax-m64-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ca--cvtsd2ss-xmm0rax-m64-memory-profile).
+
+
+## S2-37cb — CVTPD2PS XMM0,[RAX] aligned m128 memory profile
+
+Implemented exact legacy `66 0F 5A 00` as schema-v2 interpreter-only profile
+`s2-long-cvtpd2ps-memory-rax-v1`. The execution path requires aligned m128,
+checks the canonical48 16-byte span before one data read, and commits only after
+that read. It narrows both binary64 lanes independently using MXCSR.RC, WPR
+tininess, and FTZ; it ORs lane IE/DE/OE/UE/PE and old sticky state, writes
+XMM0.low64 and zeroes XMM0.high64. x87 state is not gated or modified.
+
+The literal fixture contains an SNaN and the smallest binary64 subnormal with
+round-up selected. Direct ISA alignment/read tests passed 2/2, including the
+CPL×AC alignment matrix, one aligned 16-byte read, missing-SSE gating, and
+read rollback. Focused `cargo test -p od-isa cvtpd2ps --offline` passed 5/5,
+including the corrected neighboring CVTSD2SS decode; its exact decoder target
+passed 1/1. Full `od-testkit` passed 446/446 with 0 doc tests. The historical
+full `od-runner` run passed 112 unit and 457 fixture tests before the
+comparator-only regression was added; the final cross-profile AC comparison
+regression passed 1/1. An independent CLI smoke passed 240/240. DAZ/PM probes
+exercise schema admission only, not runtime refusal. The workspace all-target
+check passed. `cargo fmt --all -- --check`, `git diff --check`, and
+`python3 tools/check_layout.py` passed; layout validation found 48 required
+directories, 6 crate scaffolds, and 14 instruction scopes. `od-x86-runner`
+library tests passed 8/8, but its main-test binary stalled at macOS dyld startup,
+so the complete x86-runner suite is unverified. No physical native execution
+was attempted. Independent review is complete.
+Graphify updated to 10,333 nodes, 22,046 edges, and 271 communities; 54
+unsupported-extension files were skipped and 13 files yielded no symbols.
+No physical x86 acceptance is claimed.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTPD2PS pp. 3-219–3-222
+(legacy operation p. 3-221); Vol. 1 §§4.9.1.4–4.9.1.6, Table 4-12,
+§10.2.3.3, §§11.5.2–11.5.3, §11.5.3.1, Table D-12, Table 14-21; Vol. 3A
+Table 16-1; Intel Floating-Point Reference Sheet v2.13 p. 2.

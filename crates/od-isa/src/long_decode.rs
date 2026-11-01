@@ -954,6 +954,8 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only exact legacy `66 0F 5A 00` packed m128 conversion.
+    Cvtpd2psMemoryRax,
     /// Local-only legacy `66 0F E6 /r` truncating packed binary64-to-signed-i32 form.
     Cvttpd2dqRegister {
         destination: u8,
@@ -3464,6 +3466,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         .rex
                         .is_some_and(|rex| matches!(rex, 0x41 | 0x44 | 0x45))
                     && prefix_bytes[1] == prefixes.rex.unwrap());
+        let cvtpd2ps_memory_rax = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x5a
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && prefixes.operand_override
+            && !prefixes.address_override
+            && prefixes.rex.is_none()
+            && prefix_count == 1
+            && prefix_bytes[0] == 0x66;
         let cvtpi2pd_memory_rax = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x2a
             && prefixes.group1.is_none()
@@ -4504,14 +4515,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
             }
-            (OpcodeMap::Escape0f, 0x5a) if cvtpd2ps_register => {
+            (OpcodeMap::Escape0f, 0x5a) if cvtpd2ps_memory_rax || cvtpd2ps_register => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if cvtpd2ps_memory_rax && modrm == 0x00 {
+                    Operation::Cvtpd2psMemoryRax
+                } else if cvtpd2ps_register && modrm >> 6 == 3 {
+                    Operation::Cvtpd2psRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
+                } else {
                     return Err(self.unsupported(opcode));
-                }
-                Operation::Cvtpd2psRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
                 }
             }
             (OpcodeMap::Escape0f, 0x2a) if cvtpi2pd_memory_rax => match self.byte()? {
@@ -11365,6 +11379,29 @@ mod tests {
             let mut memory = Memory::new(bytes);
             assert!(memory.decode().is_err(), "{bytes:02x?}");
         }
+    }
+
+    #[test]
+    fn cvtpd2ps_m128_rax_decodes_only_exact_legacy_encoding() {
+        let mut memory = Memory::new(&[0x66, 0x0f, 0x5a, 0x00]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.operation, Operation::Cvtpd2psMemoryRax);
+        assert_eq!(decoded.length, 4);
+        for bytes in [
+            &[0x66, 0x0f, 0x5a][..],
+            &[0x66, 0x0f, 0x5a, 0x01][..],
+            &[0x66, 0x40, 0x0f, 0x5a, 0x00][..],
+            &[0x66, 0x67, 0x0f, 0x5a, 0x00][..],
+            &[0xc5, 0xfd, 0x5a, 0x00][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+        let mut cvtsd2ss = Memory::new(&[0xf2, 0x0f, 0x5a, 0x00]);
+        assert_eq!(
+            cvtsd2ss.decode().unwrap().operation,
+            Operation::Cvtsd2ssMemoryRax
+        );
     }
 
     #[test]

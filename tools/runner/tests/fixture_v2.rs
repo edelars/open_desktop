@@ -44,6 +44,9 @@ const ADDSS_REGISTER_PAIR: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37bc_addss_xmm0_xmm1.case.json");
 const CVTPD2PS_REGISTER_PAIR: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37bd_cvtpd2ps_xmm0_xmm1.case.json");
+const CVTPD2PS_M128_MEMORY: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37cb_cvtpd2ps_m128_snan_subnormal_rc_up.case.json"
+);
 const CVTSD2SS_REGISTER_PAIR: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37be_cvtsd2ss_asymmetric_register_pair.case.json"
 );
@@ -30620,6 +30623,199 @@ fn cvtpd2ps_fixture_narrows_two_lanes_and_enforces_atomic_exceptions() {
     let actual = snapshot(&output);
     assert_eq!(actual.state.sse.as_ref().unwrap().xmm[0], old_destination);
     assert_eq!(actual.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f, 0x20);
+}
+
+#[test]
+fn cvtpd2ps_m128_fixture_aggregates_lane_exceptions_and_fails_closed() {
+    use od_testkit::v2::Profile;
+    let (input, baseline) = run(CVTPD2PS_M128_MEMORY, "interpreter", 0);
+    od_testkit::v2::compare(&input, &baseline, &baseline).unwrap();
+    assert_eq!(input.fixture.profile, Profile::LongCvtpd2psMemoryRaxV1);
+    let sse = snapshot(&baseline).state.sse.as_ref().unwrap();
+    assert_eq!(sse.xmm[0], "0000c07f010000000000000000000000");
+    assert_eq!(sse.mxcsr.get() & 0x3f, 0x33);
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(CVTPD2PS_M128_MEMORY, backend, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+    }
+    let boundary_values = [
+        0x380f_ffff_e000_0000u64,
+        0xb80f_ffff_e000_0000,
+        0x380f_ffff_f000_0000,
+        0xb80f_ffff_f000_0000,
+        0x47ef_ffff_f000_0000,
+        0xc7ef_ffff_f000_0000,
+        0x47f0_0000_0000_0000,
+        0xc7f0_0000_0000_0000,
+        0x36a0_0000_0000_0000,
+        0xb6a0_0000_0000_0000,
+        1,
+        0x8000_0000_0000_0001,
+    ];
+    for raw in boundary_values {
+        for rc in 0..4u32 {
+            for ftz in [false, true] {
+                for lane in 0..2 {
+                    let mut fixture = input.fixture.clone();
+                    let other = 0x3ff0_0000_0000_0000u64;
+                    let pair = if lane == 0 {
+                        (raw, other)
+                    } else {
+                        (other, raw)
+                    };
+                    fixture
+                        .memory
+                        .iter_mut()
+                        .find(|r| r.region_id == "data")
+                        .unwrap()
+                        .initial_bytes_hex = format!("{}{}", hex_le(pair.0), hex_le(pair.1));
+                    fixture.initial_state.sse.as_mut().unwrap().mxcsr =
+                        HexU64(0x1f80 | (u64::from(rc) << 13) | if ftz { 1 << 15 } else { 0 });
+                    let (loaded, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+                    od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+                    assert_eq!(
+                        snapshot(&result).state.sse.as_ref().unwrap().xmm[0].len(),
+                        32
+                    );
+                    assert_eq!(
+                        &snapshot(&result).state.sse.as_ref().unwrap().xmm[0][16..],
+                        "0000000000000000"
+                    );
+                }
+            }
+        }
+    }
+    for (left, right, flags) in [
+        (0x7ff0_0000_0000_0001u64, 0x47f0_0000_0000_0000u64, 0x29),
+        (0x7ff0_0000_0000_0001, 1, 0x33),
+        (0x47f0_0000_0000_0000, 1, 0x3a),
+        (0x7ff8_0000_0000_0001, 0x3ff0_0000_0000_0000, 0),
+    ] {
+        for (a, b) in [(left, right), (right, left)] {
+            let mut fixture = input.fixture.clone();
+            fixture
+                .memory
+                .iter_mut()
+                .find(|r| r.region_id == "data")
+                .unwrap()
+                .initial_bytes_hex = format!("{}{}", hex_le(a), hex_le(b));
+            fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+            let (loaded, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+            assert_eq!(
+                snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+                flags
+            );
+        }
+    }
+    for history in [0u64, 1, 2, 8, 16, 32, 0x3b] {
+        let mut fixture = input.fixture.clone();
+        fixture
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "data")
+            .unwrap()
+            .initial_bytes_hex = format!(
+            "{}{}",
+            hex_le(0x3ff0_0000_0000_0000),
+            hex_le(0x3ff0_0000_0000_0000)
+        );
+        fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | history);
+        let (loaded, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+        assert_eq!(
+            snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+            history
+        );
+    }
+    let mut missing_pm = input.fixture.clone();
+    missing_pm.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x0f80);
+    assert!(missing_pm.to_json().is_err());
+    missing_pm.expected_exit = ExpectedExit::Unsupported;
+    assert!(missing_pm.to_json().is_ok());
+    let mut daz = input.fixture.clone();
+    daz.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1fc0);
+    assert!(daz.to_json().is_err());
+    daz.expected_exit = ExpectedExit::Unsupported;
+    assert!(
+        daz.to_json().is_ok(),
+        "DAZ refusal is profile-local Unsupported"
+    );
+    for (mut gated, vector) in [(input.fixture.clone(), 6), (input.fixture.clone(), 7)] {
+        gated.expected_exit = ExpectedExit::Exception;
+        let controls = gated.cvtpd2ps_m128_controls.as_mut().unwrap();
+        if vector == 6 {
+            controls.sse2_available = false;
+            controls.cr0_ts = true;
+        } else {
+            controls.cr0_ts = true;
+        }
+        let (loaded, output) = run(&gated.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&loaded, &output, &output).unwrap();
+        let exception = snapshot(&output).exception.clone();
+        let Observation::Available {
+            value: Some(exception),
+        } = exception
+        else {
+            panic!("expected gate exception")
+        };
+        assert_eq!(exception.vector, vector);
+    }
+    let mut foreign = input.fixture.clone();
+    foreign.cvtsd2ss_m64_controls = Some(od_testkit::v2::Cvtsd2ssMemoryControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+    });
+    assert!(foreign.validate().is_err());
+    let raw = serde_json::to_vec(&foreign).unwrap();
+    assert!(Fixture::from_json(&raw).is_err());
+    let mut tampered = baseline.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0] = "ff".repeat(16);
+    }
+    assert!(od_testkit::v2::compare(&input, &baseline, &tampered).is_err());
+    let mut missing = input.fixture.clone();
+    missing.cvtpd2ps_m128_controls = None;
+    assert!(missing.to_json().is_err());
+}
+
+#[test]
+fn cvt_memory_profile_rflags_masks_compare_ac_without_changing_local_ac_policy() {
+    let fixtures = [
+        ("s2_37by_cvtps2pd_m64_snan_subnormal.case.json", false),
+        ("s2_37bz_cvtss2sd_m32_snan_subnormal.case.json", false),
+        ("s2_37ca_cvtsd2ss_m64_wpr_tiny_ftz_rc_up.case.json", false),
+        ("s2_37cb_cvtpd2ps_m128_snan_subnormal_rc_up.case.json", true),
+    ];
+    for (name, aligned_ac_one) in fixtures {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/x86/stage2")
+            .join(name);
+        let mut fixture = Fixture::from_json(&fs::read(path).unwrap())
+            .unwrap()
+            .fixture;
+        fixture.rflags_mask = HexU64(1 << 18);
+        fixture.initial_state.rflags = HexU64(if aligned_ac_one { (1 << 18) | 2 } else { 2 });
+        let input_bytes = fixture.to_json().unwrap();
+        let (input, result) = run(&input_bytes, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result)
+            .unwrap_or_else(|error| panic!("{name}: {error:?}"));
+        assert_eq!(
+            snapshot(&result).state.rflags.get() & (1 << 18) != 0,
+            aligned_ac_one,
+            "{name}"
+        );
+    }
+}
+
+fn hex_le(value: u64) -> String {
+    value
+        .to_le_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 #[test]

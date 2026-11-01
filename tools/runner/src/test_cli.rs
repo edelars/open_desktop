@@ -5,16 +5,17 @@ use std::process::{Command, ExitCode};
 
 use od_isa::execute::{
     AddpdControls, AddpsControls, AddsdControls, AddssControls, Cvtpd2dqMemoryControls,
-    Cvtpd2piControls, Cvtpd2psControls, Cvtpi2pdControls, Cvtpi2psControls, Cvtps2dqMemoryControls,
-    Cvtps2pdMemoryControls, Cvtsd2ssControls, Cvtsd2ssMemoryControls, Cvtss2sdMemoryControls,
-    Cvttpd2dqControls, Cvttpd2dqMemoryControls, Cvttps2dqControls, Cvttps2dqMemoryControls,
-    Cvttss2siRegistersControls, DivpdControls, DivpsControls, DivsdControls, DivssControls,
-    MulpdControls, MulpsControls, MulsdControls, MulssControls, SqrtpdControls, SqrtpsControls,
-    SqrtsdControls, SqrtssControls, SubpdControls, SubpsControls, SubsdControls, SubssControls,
-    run_with_addpd_register_controls, run_with_addps_register_controls,
-    run_with_addsd_register_controls, run_with_addss_register_controls,
-    run_with_cvtpd2dq_memory_controls, run_with_cvtpd2dq_register_controls,
-    run_with_cvtpd2pi_mm0_memory_rax_controls, run_with_cvtpd2pi_mm0_xmm1_controls,
+    Cvtpd2piControls, Cvtpd2psControls, Cvtpd2psMemoryControls, Cvtpi2pdControls, Cvtpi2psControls,
+    Cvtps2dqMemoryControls, Cvtps2pdMemoryControls, Cvtsd2ssControls, Cvtsd2ssMemoryControls,
+    Cvtss2sdMemoryControls, Cvttpd2dqControls, Cvttpd2dqMemoryControls, Cvttps2dqControls,
+    Cvttps2dqMemoryControls, Cvttss2siRegistersControls, DivpdControls, DivpsControls,
+    DivsdControls, DivssControls, MulpdControls, MulpsControls, MulsdControls, MulssControls,
+    SqrtpdControls, SqrtpsControls, SqrtsdControls, SqrtssControls, SubpdControls, SubpsControls,
+    SubsdControls, SubssControls, run_with_addpd_register_controls,
+    run_with_addps_register_controls, run_with_addsd_register_controls,
+    run_with_addss_register_controls, run_with_cvtpd2dq_memory_controls,
+    run_with_cvtpd2dq_register_controls, run_with_cvtpd2pi_mm0_memory_rax_controls,
+    run_with_cvtpd2pi_mm0_xmm1_controls, run_with_cvtpd2ps_memory_controls,
     run_with_cvtpd2ps_register_controls, run_with_cvtpi2pd_memory_controls,
     run_with_cvtpi2pd_xmm0_mm1_controls, run_with_cvtpi2ps_memory_controls,
     run_with_cvtpi2ps_xmm0_mm1_controls, run_with_cvtps2dq_memory_controls,
@@ -593,6 +594,7 @@ fn expected_native_xorpd_oracle(
                 cvtps2pd_m64_controls: None,
                 cvtss2sd_m32_controls: None,
                 cvtsd2ss_m64_controls: None,
+                cvtpd2ps_m128_controls: None,
                 comiss_ucomiss_controls: None,
                 cmpss_controls: None,
                 cmpsd_controls: None,
@@ -2404,6 +2406,23 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongCvtpd2psMemoryRaxV1 {
+        let controls = loaded
+            .fixture
+            .cvtpd2ps_m128_controls
+            .expect("validated CVTPD2PS m128 controls");
+        run_with_cvtpd2ps_memory_controls(
+            &mut state,
+            memory,
+            config,
+            Cvtpd2psMemoryControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongCvtpi2pdMemoryRaxV1 {
         let controls = loaded
             .fixture
@@ -2792,6 +2811,10 @@ fn execute_fixture_v2(
                             | v2::Profile::LongCvtps2dqMemoryRaxV1
                             | v2::Profile::LongCvttpd2dqMemoryRaxV1
                             | v2::Profile::LongCvtpd2dqMemoryRaxV1
+                            | v2::Profile::LongCvtps2pdMemoryRaxV1
+                            | v2::Profile::LongCvtss2sdMemoryRaxV1
+                            | v2::Profile::LongCvtpd2psMemoryRaxV1
+                            | v2::Profile::LongCvtsd2ssMemoryRaxV1
                     ) {
                         v2::INTEGER_FLAGS | (1 << 18)
                     } else {
@@ -2858,6 +2881,7 @@ fn execute_fixture_v2(
                 cvtps2pd_m64_controls: loaded.fixture.cvtps2pd_m64_controls,
                 cvtss2sd_m32_controls: loaded.fixture.cvtss2sd_m32_controls,
                 cvtsd2ss_m64_controls: loaded.fixture.cvtsd2ss_m64_controls,
+                cvtpd2ps_m128_controls: loaded.fixture.cvtpd2ps_m128_controls,
                 comiss_ucomiss_controls: loaded.fixture.comiss_ucomiss_controls,
                 cmpss_controls: loaded.fixture.cmpss_controls,
                 cmpsd_controls: loaded.fixture.cmpsd_controls,
@@ -4081,6 +4105,7 @@ mod tests {
                     cvtps2pd_m64_controls: input.fixture.cvtps2pd_m64_controls,
                     cvtss2sd_m32_controls: input.fixture.cvtss2sd_m32_controls,
                     cvtsd2ss_m64_controls: input.fixture.cvtsd2ss_m64_controls,
+                    cvtpd2ps_m128_controls: input.fixture.cvtpd2ps_m128_controls,
                     comiss_ucomiss_controls: input.fixture.comiss_ucomiss_controls,
                     cmpss_controls: input.fixture.cmpss_controls,
                     cmpsd_controls: input.fixture.cmpsd_controls,

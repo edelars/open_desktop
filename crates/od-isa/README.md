@@ -716,3 +716,11 @@ values with UE|PE, including exact tiny values. The bounded masked profile
 requires IM/DM/OM/UM/PM=1 and DAZ=0. It preserves upper XMM0 and x87 state.
 Missing SSE is refused after prerequisite gates and before data access.
 Native/JIT/C ABI remain closed; see the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ca--bounded-long64-cvtsd2ss-xmm0rax-m64-memory-profile).
+
+
+### S2-37cb — CVTPD2PS m128 memory profile
+
+The exact `66 0F 5A 00` interpreter profile reads aligned m128 once and narrows
+two binary64 lanes with WPR tininess and FTZ, aggregating masked SIMD status.
+It zeroes XMM0.high64 on success and leaves x87 unchanged; non-interpreter
+backends remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cb--bounded-long64-cvtpd2ps-xmm0rax-aligned-m128-memory-profile).
