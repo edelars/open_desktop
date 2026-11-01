@@ -513,6 +513,41 @@ pub fn round_pack_exact_coefficient(
     }
 }
 
+/// Round an exact signed unsigned magnitude once into finite binary80.
+///
+/// The exact input is `(-1)^sign * magnitude * 2^(exponent - 127)`. Unlike the
+/// coefficient rounder, the magnitude may be odd in its low bit. After exact
+/// normalization, the low 64 bits are compressed into a 63-bit remainder plus
+/// sticky bit. This preserves zero/nonzero, below-half, exact-half, and
+/// above-half distinctions as well as the tail information needed by normal
+/// and subnormal rounding. `None` is only helper rejection (zero input,
+/// exponent overflow, or a result outside finite binary80 range); it does not
+/// define architectural signed-zero or exception behavior.
+pub fn round_pack_exact_magnitude(
+    sign: bool,
+    exponent: i32,
+    magnitude: u128,
+    mode: RationalRoundingMode,
+) -> Option<X87Binary80> {
+    if magnitude == 0 {
+        return None;
+    }
+
+    let (sign, normalized_exponent, normalized_magnitude) =
+        normalize_exact_magnitude(sign, exponent, magnitude)?;
+    let q = (normalized_magnitude >> 64) as u64;
+    let low = normalized_magnitude as u64;
+    let r = (low >> 1) | (low & 1);
+    const D: u64 = 1_u64 << 63;
+
+    if normalized_exponent >= -16382 {
+        let rounded = round_quotient_to_precision(sign, q, r, D, 64, mode)?;
+        pack_normal_rounded_significand(sign, normalized_exponent, rounded, 64)
+    } else {
+        round_pack_subnormal_quotient(sign, normalized_exponent, q, r, D, mode)
+    }
+}
+
 /// Multiply two finite significands without alignment, jam bits, or
 /// normalization.
 ///
@@ -534,6 +569,29 @@ pub fn multiply_finite_significands(lhs: X87Finite, rhs: X87Finite) -> Option<(b
     let magnitude = (lhs.significand as u128) * (rhs.significand as u128);
 
     Some((lhs.sign ^ rhs.sign, exponent, magnitude))
+}
+
+/// Multiply two nonzero finite values and round their exact product once to
+/// finite binary80.
+///
+/// The full unsigned 128-bit product is passed directly to
+/// `round_pack_exact_magnitude`, so odd low product bits remain available as a
+/// sticky tail. Zero operands are rejected because this helper does not choose
+/// an architectural signed-zero result. `None` means bounded helper rejection
+/// (zero input, checked exponent failure, or finite-range overflow), not a
+/// guest exception. No x87 flags, control-word behavior, or instruction
+/// semantics are defined here.
+pub fn multiply_finite_to_binary80(
+    lhs: X87Finite,
+    rhs: X87Finite,
+    mode: RationalRoundingMode,
+) -> Option<X87Binary80> {
+    if lhs.is_zero() || rhs.is_zero() {
+        return None;
+    }
+
+    let (sign, exponent, magnitude) = multiply_finite_significands(lhs, rhs)?;
+    round_pack_exact_magnitude(sign, exponent, magnitude, mode)
 }
 
 /// Normalize an exact unsigned magnitude representing
@@ -768,10 +826,11 @@ mod tests {
         RationalRoundingMode, X87Binary80, X87Binary80Class, X87Finite, X87Grs,
         add_finite_same_exponent, add_finite_same_exponent_to_binary80, add_finite_to_binary80,
         add_finite_unequal_exponents, align_finite_pair, divide_finite_significands,
-        divide_finite_to_binary80, multiply_finite_significands, normalize_exact_coefficient,
-        normalize_exact_magnitude, pack_normal_rounded_significand, round_pack_exact_coefficient,
-        round_pack_subnormal_quotient, round_quotient_magnitude, round_quotient_ties_even,
-        round_quotient_to_precision, shift_right_jam, shift_right_jam_u128,
+        divide_finite_to_binary80, multiply_finite_significands, multiply_finite_to_binary80,
+        normalize_exact_coefficient, normalize_exact_magnitude, pack_normal_rounded_significand,
+        round_pack_exact_coefficient, round_pack_exact_magnitude, round_pack_subnormal_quotient,
+        round_quotient_magnitude, round_quotient_ties_even, round_quotient_to_precision,
+        shift_right_jam, shift_right_jam_u128,
     };
     use crate::state::{X87State, X87Tag};
 
@@ -3259,6 +3318,256 @@ mod tests {
         assert_eq!(
             (min_normal, adjacent, adjacent_negative, zero, unequal),
             operands_before
+        );
+    }
+
+    #[test]
+    fn exact_magnitude_rounding_preserves_odd_tail_for_normal_ties() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let modes = [Nearest, Zero, Up, Down];
+        let tails = [
+            ((1_u64 << 63) - 1, false),
+            (1_u64 << 63, false),
+            ((1_u64 << 63) + 1, true),
+        ];
+        for sign in [false, true] {
+            for (low, above_tie) in tails {
+                let magnitude = (1_u128 << 127) | u128::from(low);
+                for mode in modes {
+                    let increment = match mode {
+                        Nearest => above_tie,
+                        Zero => false,
+                        Up => !sign,
+                        Down => sign,
+                    };
+                    let expected_significand = (1_u64 << 63) + u64::from(increment);
+                    assert_eq!(
+                        round_pack_exact_magnitude(sign, 0, magnitude, mode),
+                        Some(raw_finite(0x3fff, expected_significand, sign)),
+                        "sign={sign}, low={low:#018x}, mode={mode:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn exact_magnitude_rounding_covers_subnormal_boundaries_and_even_regression() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let normalized = 1_u128 << 127;
+        assert_eq!(
+            round_pack_exact_magnitude(false, -16382, normalized, Nearest),
+            Some(raw_finite(1, 1_u64 << 63, false)),
+            "minimum normal"
+        );
+        assert_eq!(
+            round_pack_exact_magnitude(false, -16383, normalized, Nearest),
+            Some(raw_finite(0, 1_u64 << 62, false)),
+            "half minimum normal is an exact subnormal"
+        );
+        assert_eq!(
+            round_pack_exact_magnitude(false, -16445, normalized, Nearest),
+            Some(raw_finite(0, 1, false)),
+            "minimum subnormal"
+        );
+
+        let largest_subnormal_magnitude = u128::from(u64::MAX - 1) << 64;
+        assert_eq!(
+            round_pack_exact_magnitude(false, -16383, largest_subnormal_magnitude, Nearest),
+            Some(raw_finite(0, u64::MAX >> 1, false)),
+            "largest subnormal"
+        );
+
+        // At this exponent, q = u64::MAX is exactly halfway between the
+        // largest subnormal and the minimum normal. Its odd retained value
+        // rounds up for ties-to-even; an odd low product bit moves it above tie.
+        let half_min_normal = u128::from(u64::MAX) << 64;
+        for sign in [false, true] {
+            for mode in [Nearest, Zero, Up, Down] {
+                let rounds_to_minimum_normal = match mode {
+                    Nearest => true,
+                    Zero => false,
+                    Up => !sign,
+                    Down => sign,
+                };
+                let expected = if rounds_to_minimum_normal {
+                    raw_finite(1, 1_u64 << 63, sign)
+                } else {
+                    raw_finite(0, u64::MAX >> 1, sign)
+                };
+                assert_eq!(
+                    round_pack_exact_magnitude(sign, -16383, half_min_normal, mode),
+                    Some(expected),
+                    "subnormal boundary sign={sign}, mode={mode:?}"
+                );
+            }
+        }
+        assert_eq!(
+            round_pack_exact_magnitude(false, -16383, half_min_normal | 1, Nearest),
+            Some(raw_finite(1, 1_u64 << 63, false)),
+            "odd low bit nudges subnormal boundary above the tie"
+        );
+
+        let half_min_subnormal = round_pack_exact_magnitude(true, -16446, normalized, Nearest);
+        assert_eq!(half_min_subnormal, Some(raw_finite(0, 0, true)));
+        assert_eq!(
+            round_pack_exact_magnitude(true, -16446, normalized, Down),
+            Some(raw_finite(0, 1, true))
+        );
+        assert_eq!(
+            round_pack_exact_magnitude(true, -16446, normalized | 1, Nearest),
+            Some(raw_finite(0, 1, true)),
+            "odd low bit moves an exact half-minsub tail above half"
+        );
+        assert_eq!(
+            round_pack_exact_magnitude(false, -16446, normalized, Up),
+            Some(raw_finite(0, 1, false))
+        );
+
+        for significand in [1_u64 << 63, (1_u64 << 63) + 1, u64::MAX] {
+            let magnitude = u128::from(significand) << 64;
+            for sign in [false, true] {
+                let coefficient = if sign {
+                    -i128::from(significand)
+                } else {
+                    i128::from(significand)
+                };
+                for exponent in [-16445, -16383, -16382, 0, 16383] {
+                    for mode in [Nearest, Zero, Up, Down] {
+                        assert_eq!(
+                            round_pack_exact_magnitude(sign, exponent, magnitude, mode),
+                            round_pack_exact_coefficient(exponent, coefficient, mode),
+                            "even magnitude regression: sign={sign}, exponent={exponent}, significand={significand:#018x}, mode={mode:?}"
+                        );
+                    }
+                }
+            }
+        }
+
+        assert_eq!(round_pack_exact_magnitude(false, 0, 0, Nearest), None);
+        assert_eq!(
+            round_pack_exact_magnitude(false, i32::MIN, 1, Nearest),
+            None,
+            "checked normalization exponent underflow"
+        );
+        assert_eq!(
+            round_pack_exact_magnitude(false, 16384, normalized, Nearest),
+            None,
+            "outside finite exponent range"
+        );
+        assert_eq!(
+            round_pack_exact_magnitude(false, 16383, u128::MAX, Nearest),
+            None,
+            "rounding carry beyond maximum finite"
+        );
+        assert_eq!(
+            round_pack_exact_magnitude(false, 0, u128::MAX, Nearest),
+            Some(raw_finite(0x4000, 1_u64 << 63, false)),
+            "normal rounding carry increments the exponent"
+        );
+        assert_eq!(
+            round_pack_exact_magnitude(false, 0, u128::MAX, Zero),
+            Some(raw_finite(0x3fff, u64::MAX, false)),
+            "toward-zero does not carry"
+        );
+    }
+
+    #[test]
+    fn finite_product_rounds_full_u128_once_and_rejects_zero_or_overflow() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let one = finite(0, 1_u64 << 63, false, X87Binary80Class::Normal);
+        let maximum = finite(0, u64::MAX, false, X87Binary80Class::Normal);
+        let maximum_negative = finite(0, u64::MAX, true, X87Binary80Class::PseudoDenormal);
+        let minimum_subnormal = finite(-16445, 1_u64 << 63, false, X87Binary80Class::Subnormal);
+        let negative_minimum_subnormal =
+            finite(-16445, 1_u64 << 63, true, X87Binary80Class::Normal);
+        let zero = finite(0, 0, false, X87Binary80Class::Zero);
+        let before = (
+            one,
+            maximum,
+            maximum_negative,
+            minimum_subnormal,
+            negative_minimum_subnormal,
+            zero,
+        );
+
+        for mode in [Nearest, Zero, Up, Down] {
+            assert_eq!(
+                multiply_finite_to_binary80(one, one, mode),
+                Some(raw_finite(0x3fff, 1_u64 << 63, false))
+            );
+        }
+
+        // The product's low 64-bit word is one. Nearest must retain the even
+        // high word; directed rounding still observes that odd sticky tail.
+        for (lhs, rhs) in [(maximum, maximum), (maximum_negative, maximum)] {
+            let sign = lhs.sign() ^ rhs.sign();
+            for mode in [Nearest, Zero, Up, Down] {
+                let increment = match mode {
+                    Nearest | Zero => false,
+                    Up => !sign,
+                    Down => sign,
+                };
+                let significand = (u64::MAX - 1) + u64::from(increment);
+                assert_eq!(
+                    multiply_finite_to_binary80(lhs, rhs, mode),
+                    Some(raw_finite(0x4000, significand, sign)),
+                    "mode={mode:?}, sign={sign}"
+                );
+            }
+        }
+
+        assert_eq!(
+            multiply_finite_to_binary80(minimum_subnormal, negative_minimum_subnormal, Zero),
+            Some(raw_finite(0, 0, true)),
+            "nonzero negative underflow preserves the sign of zero"
+        );
+        assert_eq!(
+            multiply_finite_to_binary80(minimum_subnormal, negative_minimum_subnormal, Down),
+            Some(raw_finite(0, 1, true)),
+            "directed negative underflow rounds to negative minimum subnormal"
+        );
+        assert_eq!(
+            multiply_finite_to_binary80(minimum_subnormal, minimum_subnormal, Up),
+            Some(raw_finite(0, 1, false)),
+            "directed positive underflow rounds to minimum subnormal"
+        );
+
+        let largest = finite(16383, u64::MAX, false, X87Binary80Class::Normal);
+        assert_eq!(
+            multiply_finite_to_binary80(largest, one, Nearest),
+            Some(raw_finite(0x7ffe, u64::MAX, false)),
+            "largest finite multiplied by one remains finite"
+        );
+        let two = finite(1, 1_u64 << 63, false, X87Binary80Class::Normal);
+        assert_eq!(multiply_finite_to_binary80(largest, two, Nearest), None);
+        assert_eq!(multiply_finite_to_binary80(zero, one, Nearest), None);
+
+        let extreme = finite(i32::MAX, 1_u64 << 63, false, X87Binary80Class::Normal);
+        assert_eq!(multiply_finite_to_binary80(extreme, extreme, Nearest), None);
+        assert_eq!(
+            (
+                one,
+                maximum,
+                maximum_negative,
+                minimum_subnormal,
+                negative_minimum_subnormal,
+                zero
+            ),
+            before,
+            "inputs and source-class provenance are immutable"
         );
     }
 
