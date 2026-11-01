@@ -57,6 +57,9 @@ const MINPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
 const SQRTPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dd_sqrtps_m128_memory_source_lanes_rounding.case.json"
 );
+const SQRTPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37de_sqrtpd_m128_memory_source_lanes_rounding.case.json"
+);
 const MINPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37db_minpd_m128_qnan_and_other_lane_denormal.case.json"
 );
@@ -37197,4 +37200,180 @@ fn sqrtps_m128_memory_uses_memory_lanes_and_aggregates_masked_exceptions() {
     let mut wrong = base.clone();
     wrong.memory[0].initial_bytes_hex = "0f5101".into();
     assert!(wrong.validate().is_err());
+}
+
+#[test]
+fn sqrtpd_m128_memory_profile_covers_rounding_stickies_nan_classes_and_denials() {
+    use od_testkit::v2::Profile;
+    let base = Fixture::from_json(SQRTPD_M128_MEMORY_RAX).unwrap().fixture;
+    assert_eq!(base.profile, Profile::LongSqrtpdMemoryRaxV1);
+    assert_eq!(base.memory[0].initial_bytes_hex, "660f5100");
+    assert_eq!(base.memory[0].length, 4);
+    assert_eq!(
+        base.initial_state.sse.as_ref().unwrap().xmm[0],
+        "deadbeefcafef00d123456789abcdef0"
+    );
+
+    for rc in 0..4u64 {
+        for sticky in 0..64u64 {
+            let mut case = base.clone();
+            case.case_id = format!("s2_37de_rc{rc}_sticky{sticky:02x}");
+            case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (rc << 13) | sticky);
+            let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+            let snap = match result.snapshot {
+                Observation::Available { value } => value,
+                _ => panic!("missing snapshot"),
+            };
+            let sqrt2 = match rc {
+                1 | 3 => "cc3b7f669ea0f63f",
+                _ => "cd3b7f669ea0f63f",
+            };
+            assert_eq!(&snap.state.sse.as_ref().unwrap().xmm[0][16..32], sqrt2);
+            assert_eq!(
+                snap.state.sse.as_ref().unwrap().mxcsr,
+                HexU64(0x1f80 | (rc << 13) | sticky | 0x20)
+            );
+            assert_eq!(snap.state.gpr, case.initial_state.gpr);
+            assert_eq!(snap.memory[1].bytes_hex, case.memory[1].initial_bytes_hex);
+        }
+    }
+
+    let vectors: [(&str, [u64; 2], u64); 19] = [
+        (
+            "negative_and_positive_min_subnormal",
+            [0xbff0000000000000, 1],
+            0x03,
+        ),
+        (
+            "negative_min_subnormal",
+            [0x8000000000000001, 0x4010000000000000],
+            0x01,
+        ),
+        ("positive_subnormal", [3, 0x4000000000000000], 0x22),
+        ("signed_zeros", [0x8000000000000000, 0], 0),
+        ("infinities", [0x7ff0000000000000, 0xfff0000000000000], 0x01),
+        ("qnan_positive", [0x7ff8123456789abc, 0x4010000000000000], 0),
+        ("qnan_negative", [0xfff8123456789abc, 0x4010000000000000], 0),
+        (
+            "qnan_second_positive",
+            [0x4010000000000000, 0x7ff8123456789abc],
+            0,
+        ),
+        (
+            "qnan_second_negative",
+            [0x4010000000000000, 0xfff8123456789abc],
+            0,
+        ),
+        (
+            "snan_positive",
+            [0x7ff0123456789abc, 0x4010000000000000],
+            0x01,
+        ),
+        (
+            "snan_negative",
+            [0xfff0123456789abc, 0x4010000000000000],
+            0x01,
+        ),
+        (
+            "snan_second_lane",
+            [0x4010000000000000, 0xfff0000000000001],
+            0x01,
+        ),
+        (
+            "snan_second_positive",
+            [0x4010000000000000, 0x7ff0123456789abc],
+            0x01,
+        ),
+        (
+            "positive_finite_inexact",
+            [0x4000000000000000, 0x4000000000000000],
+            0x20,
+        ),
+        (
+            "negative_second_lane",
+            [0x4010000000000000, 0xbff0000000000000],
+            0x01,
+        ),
+        (
+            "negative_inf_first_lane",
+            [0xfff0000000000000, 0x4010000000000000],
+            0x01,
+        ),
+        ("subnormal_and_snan", [1, 0x7ff0000000000001], 0x03),
+        ("aggregate_ie_de_pe", [3, 0x7ff0123456789abc], 0x23),
+        ("aggregate_ie_de_pe_swapped", [0xfff0000000000001, 3], 0x23),
+    ];
+    for (name, lanes, flags) in vectors {
+        let mut case = base.clone();
+        case.case_id = format!("s2_37de_{name}");
+        case.memory[1].initial_bytes_hex = lanes
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let snap = match result.snapshot {
+            Observation::Available { value } => value,
+            _ => panic!("missing snapshot"),
+        };
+        assert_eq!(
+            snap.state.sse.as_ref().unwrap().mxcsr,
+            HexU64(0x1f80 | flags),
+            "{name}"
+        );
+        if name == "negative_and_positive_min_subnormal" {
+            assert_eq!(
+                &snap.state.sse.as_ref().unwrap().xmm[0],
+                "000000000000f8ff000000000000601e"
+            );
+        }
+        if name == "negative_min_subnormal" {
+            assert_eq!(
+                &snap.state.sse.as_ref().unwrap().xmm[0],
+                "000000000000f8ff0000000000000040"
+            );
+        }
+        assert_ne!(
+            snap.state.sse.as_ref().unwrap().xmm[0],
+            case.initial_state.sse.as_ref().unwrap().xmm[0],
+            "{name}: poisoned destination was reused"
+        );
+    }
+
+    assert!(matches!(
+        run(SQRTPD_M128_MEMORY_RAX, "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    assert!(matches!(
+        run(SQRTPD_M128_MEMORY_RAX, "native", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    let (input, good) = run(SQRTPD_M128_MEMORY_RAX, "interpreter", 0);
+    let mut bad = good.clone();
+    if let Observation::Available { value } = &mut bad.snapshot {
+        value.state.rip = HexU64(value.state.rip.get() + 1);
+    }
+    assert!(od_testkit::v2::compare(&input, &good, &bad).is_err());
+    let mut bad_retirement = good.clone();
+    bad_retirement.instructions_executed = Observation::Available { value: HexU64(0) };
+    assert!(od_testkit::v2::compare(&input, &good, &bad_retirement).is_err());
+    let mut bad_controls = good.clone();
+    if let Observation::Available { value } = &mut bad_controls.snapshot {
+        value.sqrtpd_memory_rax_controls.as_mut().unwrap().cr0_ts = true;
+    }
+    assert!(od_testkit::v2::compare(&input, &good, &bad_controls).is_err());
+    let mut malformed = base.clone();
+    malformed.memory[0].initial_bytes_hex = "660f5101".into();
+    assert!(malformed.validate().is_err());
+    for mxcsr in [0x1f00, 0x1fc0, 0x9f80, 0x0001_1f80] {
+        let mut invalid_control = base.clone();
+        invalid_control.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(invalid_control.validate().is_err(), "MXCSR={mxcsr:#x}");
+    }
+    let mut missing = base;
+    missing.sqrtpd_memory_rax_controls = None;
+    assert!(missing.validate().is_err());
 }
