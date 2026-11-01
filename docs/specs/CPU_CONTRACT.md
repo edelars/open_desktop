@@ -14734,3 +14734,38 @@ admission remain closed; no physical x86 acceptance is claimed. See the [plan](.
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SD pp. 3-236–3-237; Vol. 1
 §4.8.4, §11.5.2.6, and Table 14-21; Vol. 3A Table 16-1. VEX-only Type
 3/Table 2-20 is not used as evidence for this legacy form.
+
+
+## S2-37ce — bounded Long64 CVTSI2SS XMM0,dword ptr [RAX] m32 memory profile
+
+Exact bytes are `F3 0F 2A 00`. The profile fully fetches four bytes before its
+local CPUID.SSE (bit 25), CR0.EM, and CR4.OSFXSR `#UD` gates, followed by CR0.TS
+`#NM`, for CPL0–3. This is a bounded local ordering policy, not a universal
+hardware-priority statement. Missing SSE state after gates returns local
+Unsupported rather than panicking.
+
+The checked canonical48 source span is `[RAX,RAX+3]`, followed by exactly one
+four-byte little-endian read. Unaligned access is permitted with local RFLAGS.AC
+clear; AC set is a local refusal. A read failure or any earlier refusal leaves
+CPU state unchanged.
+
+The source is signed i32 and converts directly to binary32 according to
+MXCSR.RC. Successful execution changes only XMM0.low32 and sticky MXCSR.PE when
+the conversion is inexact; PE is ORed with the old sticky value. Exact inputs
+add no status bits, and PE is the only possible newly generated SIMD status.
+The remaining 96 bits of XMM0, architectural bits above 127, other SSE state,
+GPRs, and optional x87 state are preserved. In particular, INT32_MAX can round
+to `+2^31` under nearest/up without an overflow exception.
+
+Strict schema-v2 admission uses a dedicated control field and requires MXCSR
+supported mask `0xffbf`, DAZ=0, PM=1, AC=0, exact encoding, budget one, and stop
+RIP at entry+4. It admits all RC/FTZ modes, all other supported exception masks,
+and existing sticky bits. PM=0, DAZ=1, and reserved MXCSR bits are malformed
+strict-schema inputs. AC=1 is admitted as a negative fixture with expected
+`Unsupported` and exercises runtime no-read/state-preservation refusal. Native,
+JIT, C ABI, and generic execution remain closed. No physical x86 acceptance is
+claimed. See the [plan](../plans/STAGE_2.md#s2-37ce--exact-legacy-long64-cvtsi2ss-xmm0dword-ptr-rax), [report](../reports/STAGE_2_REPORT.md#s2-37ce--cvtsi2ss-xmm0dword-ptr-rax-m32-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ce--cvtsi2ss-xmm0dword-ptr-rax-m32-memory-profile).
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SS pp. 3-238–3-239; Vol. 1
+§11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. The Type
+3/Table 2-20 entry is VEX-only and is not legacy evidence.

@@ -1163,6 +1163,8 @@ pub enum Operation {
     },
     /// Local-only exact legacy `F2 0F 2A 00` signed m32-to-binary64 form.
     Cvtsi2sdR32MemoryRax,
+    /// Local-only exact legacy `F3 0F 2A 00` signed m32-to-binary32 form.
+    Cvtsi2ssR32MemoryRax,
     /// Local-only exact legacy `F2 48 0F 2A 00` signed m64-to-binary64 form.
     Cvtsi2sdR64MemoryRax,
     /// Local-only legacy `F2 REX.W 0F 2A /r` signed r64-to-binary64 form.
@@ -4990,12 +4992,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Escape0f, 0x2a) if cvtsi2ss_r32_register => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if modrm == 0 && prefixes.rex.is_none() {
+                    Operation::Cvtsi2ssR32MemoryRax
+                } else if modrm >> 6 == 3 {
+                    Operation::Cvtsi2ssR32Register {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
+                } else {
                     return Err(self.unsupported(opcode));
-                }
-                Operation::Cvtsi2ssR32Register {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
                 }
             }
             (OpcodeMap::Escape0f, 0x2a) if cvtsi2ss_r64_register => {
@@ -20865,6 +20870,50 @@ mod tests {
             &[0x62, 0xf1, 0x7d, 0x08, 0x63, 0xc1],
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn cvtsi2ss_accepts_exact_m32_memory_form_and_keeps_register_form_distinct() {
+        let mut memory = Memory::new(&[0xf3, 0x0f, 0x2a, 0x00]);
+        let instruction = memory.decode().unwrap();
+        assert_eq!(instruction.operation, Operation::Cvtsi2ssR32MemoryRax);
+        assert_eq!(instruction.length, 4);
+
+        let mut register = Memory::new(&[0xf3, 0x0f, 0x2a, 0xc0]);
+        assert!(matches!(
+            register.decode().unwrap().operation,
+            Operation::Cvtsi2ssR32Register { .. }
+        ));
+        assert_eq!(
+            Memory::new(&[0x0f, 0x2a, 0x00]).decode().unwrap().operation,
+            Operation::Cvtpi2psMemoryRax
+        );
+        assert_eq!(
+            Memory::new(&[0xf2, 0x0f, 0x2a, 0x00])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::Cvtsi2sdR32MemoryRax
+        );
+        for bytes in [
+            &[0xf3, 0x48, 0x0f, 0x2a, 0x00][..],
+            &[0xf3, 0x0f, 0x2a, 0x01],
+            &[0xf3, 0x0f, 0x2a, 0x04, 0x00],
+            &[0xf3, 0x0f, 0x2a, 0x40, 0x00],
+            &[0x40, 0xf3, 0x0f, 0x2a, 0x00],
+            &[0xf3, 0xf3, 0x0f, 0x2a, 0x00],
+            &[0xf3, 0x66, 0x0f, 0x2a, 0x00],
+            &[0xf3, 0x67, 0x0f, 0x2a, 0x00],
+            &[0xf3, 0xf0, 0x0f, 0x2a, 0x00],
+            &[0xc5, 0xf8, 0x2a, 0x00],
+            &[0x62, 0xf1, 0x7e, 0x08, 0x2a, 0x00],
+            &[0xf3][..],
+            &[0xf3, 0x0f],
+            &[0xf3, 0x0f, 0x2a],
+        ] {
+            let decoded = Memory::new(bytes).decode();
+            assert!(decoded.is_err(), "{bytes:02x?}: {decoded:?}");
         }
     }
 

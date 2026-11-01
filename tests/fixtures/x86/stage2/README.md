@@ -7378,3 +7378,25 @@ acceptance was not run. See [plan](../../../../docs/plans/STAGE_2.md#s2-37cd--ex
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SD pp. 3-236–3-237; Vol. 1
 §4.8.4, §11.5.2.6, Table 14-21; Vol. 3A Table 16-1. The Type 3/Table 2-20
 note is VEX-only and is not cited as legacy evidence.
+
+
+### S2-37ce — CVTSI2SS XMM0,dword ptr [RAX] m32 memory profile
+
+`s2_37ce_cvtsi2ss_m32_i32_max_nearest.case.json` is the literal exact legacy
+`F3 0F 2A 00` case. Its unaligned m32 source is `INT32_MAX`; nearest conversion
+produces `+2^31` with sticky PE, which is a valid rounded result. The fixture
+uses PM-only MXCSR (`0x1000`) and XMM0 high96/x87 canaries. Runner coverage
+checks signed boundaries, positive and negative inexact values across all RC
+modes, existing PE history, high96 and pending-x87 preservation, schema and
+foreign-field rejection, output tampering, and JIT/native denial. Direct ISA
+tests cover SSE-bit-25 gates, all CPLs, AC refusal, span/read atomicity, and
+runtime MXCSR refusal. The AC=1 runner case is valid and expects local
+`Unsupported`; PM=0, DAZ=1, and reserved MXCSR controls are rejected by strict
+schema admission. Full local suites passed: od-isa 1,637; od-testkit 446;
+od-runner 112 unit + 461 fixture; od-x86-runner 8 library + 4 main tests.
+Workspace all-target check passed. The portable native classifier marks the
+profile local-only; no physical x86 execution is claimed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37ce--exact-legacy-long64-cvtsi2ss-xmm0dword-ptr-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37ce--bounded-long64-cvtsi2ss-xmm0dword-ptr-rax-m32-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ce--cvtsi2ss-xmm0dword-ptr-rax-m32-memory-profile).
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SS pp. 3-238–3-239; Vol. 1
+§11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. Type 3/Table
+2-20 is VEX-only and is not used as legacy evidence.

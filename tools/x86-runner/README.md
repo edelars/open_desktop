@@ -76,3 +76,7 @@ is claimed.
 
 S2-37cc CVTSI2SD m32 is a local-only schema-v2 profile. Native admission stays
 closed; classifier evidence does not claim physical x86 execution.
+
+S2-37ce CVTSI2SS m32 is classified local-only by the portable native-profile
+matcher. The classifier test and runner `Unsupported` result establish backend
+closure only; no physical x86 execution or acceptance is claimed.

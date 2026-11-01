@@ -19990,3 +19990,51 @@ Full verification passed: `cargo test -p od-isa --offline -- --test-threads=1` (
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SD pp. 3-236–3-237; Vol. 1
 §4.8.4, §11.5.2.6, Table 14-21; Vol. 3A Table 16-1. Type 3/Table 2-20 is a
 VEX note and is not used as legacy evidence.
+
+
+## S2-37ce — CVTSI2SS XMM0,dword ptr [RAX] m32 memory profile
+
+Implemented the exact legacy `F3 0F 2A 00` schema-v2 profile
+`s2-long-cvtsi2ss-memory32-rax-v1`. It fetches four bytes before local SSE
+bit-25/EM/OSFXSR `#UD` and TS `#NM` gates, allows CPL0–3, validates canonical48
+`[RAX,RAX+3]`, and performs one 4-byte read. The source may be unaligned at
+AC=0. Read errors/refusals preserve state. SSE state absence after gates is a
+local Unsupported result, never a host panic.
+
+The oracle parses signed i32 directly from fixture memory and computes the
+binary32 result with integer rounding, independently of production conversion
+helpers and host FP. Only XMM0.low32 is replaced; high96, architectural state
+above the XMM register, other registers, and optional x87 state are preserved.
+MXCSR.RC controls conversion; PE is the only possible new status and is sticky
+ORed for inexact values. Exact values add no flags. INT32_MAX rounding to
+`+2^31` is valid and does not produce overflow. Strict fixture admission
+requires mask `0xffbf`, DAZ=0, PM=1, and AC=0; all RC/FTZ modes and other
+supported masks/status histories are admitted. PM=0, DAZ=1, and reserved MXCSR
+bits are malformed schema inputs; AC=1 is an admitted negative fixture with
+runtime `Unsupported` and no-read/state-preservation checks. None of these
+tests is a physical CPU claim.
+
+Focused verification passed:
+
+- `cargo test -p od-isa cvtsi2ss --offline -- --test-threads=1` — 8 passed,
+  including direct gate/atomicity cases and decoder neighbors.
+- `cargo test -p od-testkit cvtsi2ss_integer_oracle_covers_precision_boundaries_and_double_rounding --offline -- --test-threads=1` — 1 passed.
+- `cargo test -p od-runner --test fixture_v2 cvtsi2ss_m32_rounds_i32_and_preserves_high96_and_x87 --offline -- --nocapture` — 1 passed, 460 filtered; 8 integer sources × 4 RC × two valid mask profiles × two incoming PE histories (128 conversions), plus canaries, schema/tamper checks, and JIT/native denial.
+- `cargo test -p od-x86-runner narrow_xorpd_is_not_blocked_with_existing_sse_and_x87_profiles_denied --offline -- --test-threads=1` — 1 passed in the main test target; verifies portable local-only classification.
+
+Full verification passed: `cargo test -p od-isa --offline -- --test-threads=1`
+(1,637 passed, doc-tests 0); `cargo test -p od-testkit --offline --
+--test-threads=1` (446 passed, doc-tests 0); `cargo test -p od-runner --offline
+-- --test-threads=1` (112 unit + 461 fixture tests passed); and
+`cargo test -p od-x86-runner --offline -- --test-threads=1` (8 library + 4
+main tests passed, doc-tests 0). `cargo check --workspace --all-targets --offline`
+passed. Formatting, diff, layout and linked-heading checks passed. Graphify
+update completed with 10,369 nodes, 22,155 edges, and 307 communities (54
+unsupported-extension files skipped; 13 files had no extracted symbols).
+Independent code review is complete. Native classification and runner
+Unsupported behavior are local closure evidence only; physical/native x86
+execution was not performed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SS pp. 3-238–3-239; Vol. 1
+§11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. Type 3/Table
+2-20 is VEX-only and is not cited as legacy evidence.

@@ -290,3 +290,13 @@ The runner dispatches exact `F2 48 0F 2A 00` fixtures to the bounded
 interpreter profile. Its matrix covers signed i64 boundaries, RC-dependent
 rounding around 2^53, sticky PE, high-XMM and pending-x87 preservation, strict
 schema/tamper checks, and backend denials. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cd--bounded-long64-cvtsi2sd-xmm0qword-ptr-rax-m64-memory-profile).
+
+
+### S2-37ce — CVTSI2SS m32
+
+The runner dispatches exact `F3 0F 2A 00` fixtures to the local
+`s2-long-cvtsi2ss-memory32-rax-v1` interpreter profile. The independent oracle
+reads signed i32 from fixture memory and rounds directly to binary32. Matrix
+coverage spans all RC modes, integer precision boundaries, old PE histories,
+high96/x87 preservation, strict schema/tamper checks and JIT/native denial.
+See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ce--bounded-long64-cvtsi2ss-xmm0dword-ptr-rax-m32-memory-profile).

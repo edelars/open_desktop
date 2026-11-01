@@ -358,3 +358,13 @@ and an integer-only raw-i64→binary64 oracle. It models RC-dependent ties and P
 stickies without host FP or production conversion helpers, and validates
 low64 output, high64 preservation, optional x87 canaries, and exact MXCSR state.
 See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cd--bounded-long64-cvtsi2sd-xmm0qword-ptr-rax-m64-memory-profile).
+
+
+### S2-37ce — CVTSI2SS m32 memory profile
+
+The exact schema-v2 `s2-long-cvtsi2ss-memory32-rax-v1` profile owns a separate
+control field and strict foreign-field admission. Its oracle reads the raw
+little-endian i32 from fixture memory, then constructs the binary32 result with
+integer rounding logic; it does not use host FP, the register-source result
+parser, or a production conversion helper. It verifies low32 output, high96 and
+x87 preservation, and sticky PE. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37ce--bounded-long64-cvtsi2ss-xmm0dword-ptr-rax-m32-memory-profile).

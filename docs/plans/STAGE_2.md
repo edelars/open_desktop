@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последний завершённый кодовый срез S2-37cd — exact legacy `CVTSI2SD XMM0,qword ptr [RAX]` (`F2 48 0F 2A 00`): один unaligned-allowed 8-byte read и signed-i64→binary64 округление по MXCSR.RC со sticky PE. Профиль остаётся local schema-v2 interpreter-only; native/JIT/C ABI закрыты. S2-37cc добавил отдельный exact m32-вариант с точным преобразованием без новых SIMD flags; S2-37cb добавил exact legacy `CVTPD2PS XMM0,[RAX]` (`66 0F 5A 00`): один aligned 16-byte read, binary64→binary32 under MXCSR.RC с WPR tininess, FTZ, masked IE/DE/OE/UE/PE и записью двух low lanes. Предыдущие ограничения/профили перечислены ниже. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последний завершённый кодовый срез S2-37ce — exact legacy `CVTSI2SS XMM0,dword ptr [RAX]` (`F3 0F 2A 00`): один read(4), signed-i32→binary32 округление по MXCSR.RC и sticky PE только для inexact. Профиль отдельный, schema-v2 и interpreter-only; native/JIT/C ABI закрыты. S2-37cd добавил m64 signed-i64→binary64, S2-37cc — точное m32 signed-i32→binary64. Предыдущие ограничения и профили перечислены ниже. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -508,6 +508,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37cb | Local-only legacy Long64 CVTPD2PS XMM0,[RAX] aligned m128 memory profile; two-lane binary64 narrowing with WPR/FTZ; native/JIT closed | S2-37ca; full local verification and independent review complete; AC comparison regression passed 1/1; no physical x86 acceptance |
 | [x] | S2-37cc | Local-only legacy Long64 CVTSI2SD XMM0,dword ptr [RAX] exact m32 profile; signed i32→binary64 exact widening; native/JIT closed | S2-37cb; full local verification and independent code review complete; physical x86 acceptance not run |
 | [x] | S2-37cd | Local-only legacy Long64 CVTSI2SD XMM0,qword ptr [RAX] exact m64 profile; signed i64→binary64 under MXCSR.RC with sticky PE; native/JIT closed | S2-37cc; full local verification and independent code review complete; physical x86 acceptance not run |
+| [x] | S2-37ce | Local-only legacy Long64 CVTSI2SS XMM0,dword ptr [RAX] exact m32 profile; signed i32→binary32 under MXCSR.RC with sticky PE; SSE-bit25 gates; native/JIT closed | S2-37cd; full local verification and independent code review complete; physical x86 acceptance not run |
 | [x] | S2-37t | Local-only canonical Long64 CVTSS2SD XMM register-pair profile; raw binary32 widening with sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37u | Local-only canonical Long64 CVTPS2PD XMM register-pair profile; two-lane raw widening with aggregate sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-37t, S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37v | Local-only canonical Long64 COMISS/UCOMISS XMM register-pair profile; NaN-priority IE/DE, unordered flags, unmasked atomic flag exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
@@ -6824,7 +6825,7 @@ inventory.
 | CVTSD2SI | `F2 0F 2D /r`; `F2 REX.W 0F 2D /r` | SSE2 | m64 → r32 / r64 | 3-232 | S2-37ac, bounded register-only |
 | CVTSD2SS | `F2 0F 5A /r` | SSE2 | XMM, m64; f64 → low f32 | 3-234 | S2-37be register pairs; S2-37ca bounded m64 memory |
 | CVTSI2SD | `F2 0F 2A /r`; `F2 REX.W 0F 2A /r` | SSE2 | r32/m32 or r64/m64 → low f64 | 3-236 | S2-37n/o exact forms; S2-37q canonical 512 register forms; S2-37cc exact `[RAX]` m32 memory; S2-37cd exact REX.W `[RAX]` m64 memory |
-| CVTSI2SS | `F3 0F 2A /r`; `F3 REX.W 0F 2A /r` | SSE | r32/m32 or r64/m64 → low f32 | 3-238 | S2-37r canonical 512 Long64 register forms |
+| CVTSI2SS | `F3 0F 2A /r`; `F3 REX.W 0F 2A /r` | SSE | r32/m32 or r64/m64 → low f32 | 3-238 | S2-37r canonical 512 Long64 register forms; S2-37ce exact m32 `[RAX]` memory form |
 | CVTSS2SD | `F3 0F 5A /r` | SSE2 | XMM, m32; f32 → low f64 | 3-240 | S2-37t register pairs; S2-37bz exact `[RAX]` m32 memory |
 | CVTSS2SI | `F3 0F 2D /r`; `F3 REX.W 0F 2D /r` | SSE | m32 → r32 / r64 | 3-242 | S2-37ab, bounded register-only |
 | CVTTSS2SI | `F3 0F 2C /r`; `F3 REX.W 0F 2C /r` | SSE | m32 → r32 / r64 | 3-255 | S2-37ad, bounded register-only |
@@ -15126,3 +15127,42 @@ Physical x86 acceptance was not run. See the
 Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SD pp. 3-236–3-237; Vol. 1
 §4.8.4, §11.5.2.6, and Table 14-21; Vol. 3A Table 16-1. The Vol. 2A Type
 3/Table 2-20 note describes VEX and is not used as legacy evidence.
+
+
+#### S2-37ce — exact legacy Long64 CVTSI2SS XMM0,dword ptr [RAX]
+
+The bounded exact encoding is `F3 0F 2A 00`; it fetches all four bytes before
+the local SSE/CR0.EM/CR4.OSFXSR `#UD` gates and CR0.TS `#NM` gate, with CPL0–3
+admitted. The SSE feature is CPUID bit 25 (not SSE2 bit 26). This fetch and
+fault ordering is the local profile policy, not a universal exception priority.
+After checked canonical48 span validation of `[RAX,RAX+3]`, execution performs
+exactly one four-byte little-endian read. Unaligned m32 access is allowed under
+local AC=0; AC=1 is a local Unsupported refusal. Read failure and earlier
+refusal preserve CPU state.
+
+The memory value is signed i32 and is converted directly to binary32 according
+to MXCSR.RC. Only XMM0.low32 is written; XMM0[127:32], architectural bits above
+127, other XMM registers, MXCSR except for newly sticky PE, GPRs, and optional
+x87 state remain unchanged. Conversion is exact where the integer is
+representable; any discarded significand bits set PE. The only possible new
+SIMD status flag is PE, ORed with its incoming sticky value. For example,
+`INT32_MAX` may round to `+2^31` under nearest/up without overflow. The local
+profile admits all RC and FTZ modes, requires MXCSR mask `0xffbf`, DAZ=0, and
+PM=1; other supported masks and pre-existing status bits are allowed. PM=0,
+DAZ=1, and reserved MXCSR controls are malformed strict-schema inputs. AC=1
+remains a serialized fixture with expected local `Unsupported` and is covered
+as a runtime no-read/state-preservation refusal.
+
+The separate schema-v2 profile is
+`s2-long-cvtsi2ss-memory32-rax-v1`, interpreter-only. The independent oracle
+parses the four fixture bytes as signed i32 and constructs binary32 using
+integer rounding logic; it does not use host floating point or the production
+conversion helper. Native/JIT/C ABI/generic execution remains closed. Full
+local verification and independent code review are complete; physical x86
+acceptance was not run. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37ce--bounded-long64-cvtsi2ss-xmm0dword-ptr-rax-m32-memory-profile),
+[report](../reports/STAGE_2_REPORT.md#s2-37ce--cvtsi2ss-xmm0dword-ptr-rax-m32-memory-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ce--cvtsi2ss-xmm0dword-ptr-rax-m32-memory-profile).
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SS pp. 3-238–3-239; Vol. 1
+§11.5.2.6, §§11.5.3.1–3, and Table 14-21; Vol. 3A Table 16-1. Type 3/Table
+2-20 is VEX-only and is not used as legacy evidence.
