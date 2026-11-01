@@ -2417,35 +2417,48 @@ production решений из этого среза не следует.
 
 **Готово:** внедрены только полезные и корректные преобразования либо сохранён baseline с результатами сравнения. «Меньше IR operations» не заменяет измеренную пользу.
 
-#### S3-32a. Одно чтение для точного aliased W64 ADD — experiment pending
+#### S3-32a. Одно чтение для точного aliased W64 ADD — candidate implemented; performance measurement pending
 
-Проверить только точную bare форму `48 03 C0` (`ADD RAX,RAX`, W64). Сейчас
-`lower_instruction` в arithmetic arm
-[`lowering.rs`](../../crates/od-jit/src/lowering.rs) независимо эмитит два
-`ReadGpr` для decoded destination и source (arm начинается на строке 1822);
-candidate может прочитать общий aliased register один раз и подать тот же
-temporary на оба входа `Integer`. Сохранить `Integer`/arithmetic-flags
-materialization, вычисление результата, `WriteGpr`, guest commit, guards и
-retirement без изменений.
+Commit `30febb1` добавил opt-in uncached correctness candidate только для
+точной bare формы `48 03 C0` (`ADD RAX,RAX`, W64), закреплённой отдельной
+`S3_32aAddRaxRaxAdmission` в
+[`block.rs`](../../crates/od-jit/src/block.rs). Базовый
+[`lower_instruction` arithmetic arm](../../crates/od-jit/src/lowering.rs)
+эмитит два `ReadGpr` для decoded destination и source; candidate-specific
+lowering читает общий aliased register один раз и использует этот temporary на
+обоих входах `Integer`. `Integer` с arithmetic flags, вычисление результата,
+`WriteGpr`, guest commit, guards и retirement сохранены. Baseline compiler и
+обычный `lower` путь не изменены.
 
-Изолировать candidate в opt-in uncached compiler path. И baseline, и candidate
-используют allocator `register_homes=4`; diagnostic budget0 из S3-30b не
-является candidate для этого сравнения. Не менять default compiler,
-eager-flags default, cache admission или key, и production policy. Не
-распространять read reuse через соседние
-guest instructions, helper, memory effect или commit; не редактировать
-allocation/PC-map metadata вручную. Другие alias patterns не входят в этот
-срез.
+Candidate остаётся opt-in и uncached; baseline и candidate используют
+`register_homes=4`. Diagnostic budget0 из S3-30b не является candidate для
+этого сравнения. Default compiler, eager-flags default, cache admission/key и
+production policy не менялись. Read reuse не распространяется через соседние
+guest instructions, helper, memory effect или commit; allocation/PC-map
+metadata вручную не редактировались. Другие alias patterns не входят в этот
+срез; не заявляется сохранность не наблюдавшихся live values.
 
-**Acceptance:** structural test требует ровно один `ReadGpr` для точной
-aliased W64 формы и сохраняет существующие отрицательные/prefix/width и
-non-alias случаи без расширения admission. Interpreter, baseline и candidate
-сравниваются по полному state и flags, RIP/exit, remaining budget и retirement
-на арифметических edge values, а также для STOP, budget exits и continuation
-без повторного commit уже retired prefix. Отдельно проверить allocation и
-PC-map consistency, не объявляя сохранность не наблюдавшихся live values.
+**Correctness result:** structural и normal verified compile-pipeline tests
+подтвердили exact admission, один read для формы и отсутствие расширения на
+negative/non-alias cases; od-jit прошёл 2/2. Host parity test сравнил
+interpreter, baseline и candidate по полному state/flags, RIP/exit, remaining
+budget и retirement для arithmetic edge values, STOP, budget exits и
+continuation без повторного commit; od-host прошёл 1/1. Независимое code review
+завершилось PASS. После benchmark-harness commit `cefd59c` команды
+`cargo fmt --all -- --check` и
+`cargo check -p od-jit -p od-host -p od-bench --all-targets --offline`
+и `git diff --check` завершились с exit 0; Graphify update тоже завершился с
+exit 0. Точные receipts приведены в отчёте.
+Подробности — в
+[S3-32a report](../reports/STAGE_3_S3-32a_2026-11-01.md).
 
-Только после correctness preflight сравнить baseline и candidate на
+Commit `cefd59c` добавил и прошёл review изолированный benchmark harness
+`allocator-cost-s3-32a`. Release binary для этого профиля не собран;
+calibration и scored A/B runs не выполнялись, поэтому измерительное evidence
+отсутствует.
+
+**Performance measurement pending:** после correctness preflight сравнить
+baseline и candidate на
 зафиксированном S3-30b `distinct-jz-fallthrough` workload и неизменном frozen
 fixture (27-byte input, SHA-256
 `72210fb82b0ffa9f88f10f63697a1051347d07587e3569028947119726fac8c7`): compile
