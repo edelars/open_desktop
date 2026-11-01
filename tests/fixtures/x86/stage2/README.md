@@ -7286,3 +7286,18 @@ ABI remain closed; physical x86 acceptance is not claimed. Provenance cites
 Intel SDM Rev. 093 Vol. 2A CVTPS2PD pp. 3-228–3-230; Vol. 1 §§11.5.2.1–
 11.5.2.2, 11.5.3, 11.5.5, Tables D-11 and 14-21; Vol. 3A §§16.1.3–16.1.4,
 Table 16-1. See [plan](../../../../docs/plans/STAGE_2.md#s2-37by--bounded-long64-cvtps2pd-xmm0rax-m64-memory-profile), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37by--bounded-long64-cvtps2pd-xmm0rax-m64-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37by--cvtps2pd-xmm0rax-m64-memory-profile).
+
+
+### S2-37bz — CVTSS2SD XMM0,[RAX] m32 memory profile
+
+`s2_37bz_cvtss2sd_m32_snan_subnormal.case.json` is the literal exact legacy
+`F3 0F 5A 00` case. Its unaligned 4-byte source is an SNaN; the fixture records
+quieting/IE, preserves the XMM high qword and pending x87 canaries, and uses a
+MXCSR setting with IM=DM=1 and PM clear. The runner matrix covers NaN classes,
+subnormals, zeros, infinities, normal values, all RC/FTZ settings, AC refusal,
+foreign controls and backend denial. The oracle uses raw integer bit construction
+without host FP or production helpers. No physical x86 acceptance is claimed.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTSS2SD pp. 3-240–3-241; Vol. 1
+§§11.5.2, 11.5.3, 11.5.5, Table D-11 p. D-8, Table 14-21; Vol. 3A
+§§16.1.3–16.1.4, Table 16-1. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37bz--bounded-long64-cvtss2sd-xmm0rax-m32-memory-profile), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37bz--bounded-long64-cvtss2sd-xmm0rax-m32-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37bz--cvtss2sd-xmm0rax-m32-memory-profile).

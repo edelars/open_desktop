@@ -68,3 +68,8 @@ acceptance. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bx--bou
 The S2-37by legacy `CVTPS2PD XMM0,[RAX]` profile remains interpreter-only and
 is classified local-only for native admission. No native physical execution
 or acceptance is claimed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37by--bounded-long64-cvtps2pd-xmm0rax-m64-memory-profile).
+
+The S2-37bz legacy `CVTSS2SD XMM0,[RAX]` schema-v2 profile is classified
+local-only and denied before native execution. The portable classifier and
+runner `Unsupported` behavior are closure evidence; no physical x86 execution
+is claimed.

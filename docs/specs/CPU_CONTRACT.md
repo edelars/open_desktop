@@ -14579,3 +14579,29 @@ C ABI, fragment and generic execution remain closed; physical x86 acceptance
 is not claimed. Normative sources: Intel SDM Rev. 093 Vol. 2A CVTPS2PD pp.
 3-228–3-230; Vol. 1 §§11.5.2.1–11.5.2.2, 11.5.3, 11.5.5, Tables D-11 and
 14-21; Vol. 3A §§16.1.3–16.1.4, Table 16-1. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37by--bounded-long64-cvtps2pd-xmm0rax-m64-memory-profile), [report](../reports/STAGE_2_REPORT.md#s2-37by--cvtps2pd-xmm0rax-m64-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37by--cvtps2pd-xmm0rax-m64-memory-profile).
+
+
+## S2-37bz — bounded Long64 CVTSS2SD XMM0,[RAX] m32 memory profile
+
+The exact schema-v2 interpreter-only encoding is legacy `F3 0F 5A 00` in
+Long64. Fetch all four bytes, then apply local SSE2/EM/OSFXSR #UD before TS
+#NM gates; this ordering is bounded test policy, not universal SDM exception
+priority. CPL0–3 are admitted. RAX names one checked canonical48 `[RAX..RAX+3]`
+span; exactly one 4-byte read occurs after preflight. Unaligned reads are valid
+under the profile's AC=0 condition; AC=1 is a local Unsupported refusal, not an
+architectural #GP claim. CPU state is unchanged when the read fails.
+
+Binary32 widens exactly to binary64 and replaces XMM0.low64 only. XMM0.high64
+and architectural bits above 127 remain unchanged. SNaNs are quieted with IE;
+QNaNs retain sign/payload with no IE. Nonzero subnormals widen exactly and set
+DE only. Sticky IE/DE are ORed into incoming MXCSR; RC and FTZ do not affect the
+result. Admission uses supported mask `0xffbf`, DAZ=0, IM=DM=1; PM may be clear.
+No unmasked delivery is modeled. x87/MMX state, including pending x87, is not
+gated or changed. Independent testkit oracle uses raw bits/integer construction,
+not host FP or production conversion helpers. Native/JIT/C ABI/fragment/generic
+paths remain closed; physical x86 acceptance is not claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTSS2SD pp. 3-240–3-241; Vol. 1
+§§11.5.2, 11.5.3, 11.5.5, Table D-11 p. D-8, Table 14-21; Vol. 3A
+§§16.1.3–16.1.4, Table 16-1. The instruction-page Type 3/Table 2-20 is VEX-only
+and is not used as a legacy alignment reference. See [plan](../plans/STAGE_2.md#s2-37bz--bounded-long64-cvtss2sd-xmm0rax-m32-memory-profile), [report](../reports/STAGE_2_REPORT.md#s2-37bz--cvtss2sd-xmm0rax-m32-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bz--cvtss2sd-xmm0rax-m32-memory-profile).

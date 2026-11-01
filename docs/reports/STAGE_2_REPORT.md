@@ -19800,3 +19800,47 @@ acceptance is claimed.
 Normative sources: Intel SDM Rev. 093 Vol. 2A CVTPS2PD pp. 3-228–3-230; Vol. 1
 §§11.5.2.1–11.5.2.2, 11.5.3, 11.5.5, Tables D-11 and 14-21; Vol. 3A
 §§16.1.3–16.1.4, Table 16-1. See [plan](../plans/STAGE_2.md#s2-37by--bounded-long64-cvtps2pd-xmm0rax-m64-memory-profile), [CPU contract](../specs/CPU_CONTRACT.md#s2-37by--bounded-long64-cvtps2pd-xmm0rax-m64-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37by--cvtps2pd-xmm0rax-m64-memory-profile).
+
+
+## S2-37bz — CVTSS2SD XMM0,[RAX] m32 memory profile
+
+Implemented exact legacy `F3 0F 5A 00` as the schema-v2 interpreter-only
+`s2-long-cvtss2sd-memory-rax-v1` profile. It fetches all four bytes, applies
+the local SSE2/EM/OSFXSR #UD then TS #NM policy, and admits CPL0–3. The
+executor validates a checked canonical48 m32 span and performs exactly one
+4-byte read before committing CPU state. Unaligned reads are allowed under the
+local AC=0 boundary; AC=1 is a local Unsupported refusal.
+
+An integer-only raw-binary32 oracle checks exact widening into XMM0.low64 while
+preserving XMM0.high64 and all other state. SNaN is quieted and contributes IE;
+QNaN retains sign/payload without IE. Nonzero subnormals widen exactly and
+contribute DE only. Existing sticky flags are preserved; RC/FTZ do not affect
+the result. The strict local boundary uses MXCSR mask `0xffbf`, DAZ=0, IM=DM=1,
+with PM optional. Pending x87 state is neither gated nor changed. Native/JIT/C
+ABI/fragment/generic admission remains closed. No physical x86 acceptance is
+claimed.
+
+Latest focused verification: `cargo test -p od-runner --test fixture_v2
+cvtps2pd_m64_widens_subnormals_and_fails_closed --offline --
+--test-threads=1` passed 1/1 (454 filtered), and
+`cargo test -p od-runner --test fixture_v2
+cvtss2sd_m32_widens_scalar_and_fails_closed --offline -- --test-threads=1`
+passed 1/1 (454 filtered). The by test confirms its neighboring fixture remains
+free of bz-only tamper cases; the bz test now exercises tampered #UD/#NM/#GP
+metadata. Full `cargo test -p od-isa --offline -- --test-threads=1` passed
+1,625/1,625; full `cargo test -p od-testkit --offline -- --test-threads=1
+--nocapture` passed 446/446 with 0 doc-tests. Full `cargo test -p od-runner
+--offline -- --test-threads=1` passed 112 unit and 455 fixture tests. Full
+`cargo test -p od-x86-runner --offline` passed 8 library and 4 binary tests.
+`cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`,
+layout validation and `git diff --check` passed. Independent review completed
+with no remaining findings; physical x86 acceptance was not run.
+`graphify update .` completed with 10,291 nodes, 21,935 edges, and 313
+communities; the existing extractor warnings remain for 13 code files without
+symbols and 54 unsupported-extension files skipped.
+
+Normative sources: Intel SDM Rev. 093 Vol. 2A CVTSS2SD pp. 3-240–3-241; Vol. 1
+§§11.5.2, 11.5.3, 11.5.5, Table D-11 p. D-8 and Table 14-21; Vol. 3A
+§§16.1.3–16.1.4, Table 16-1. See the [plan](../plans/STAGE_2.md#s2-37bz--bounded-long64-cvtss2sd-xmm0rax-m32-memory-profile),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37bz--bounded-long64-cvtss2sd-xmm0rax-m32-memory-profile), and
+[literal fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37bz--cvtss2sd-xmm0rax-m32-memory-profile).

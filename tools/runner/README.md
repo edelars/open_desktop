@@ -250,3 +250,12 @@ interpreter using one m64 read. Its fixture matrix covers NaN payloads,
 subnormal widening, RC/FTZ independence, MXCSR sticky state and x87 canaries.
 The integer oracle is independent of host FP; JIT/native remain Unsupported.
 See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37by--bounded-long64-cvtps2pd-xmm0rax-m64-memory-profile).
+
+
+### S2-37bz — CVTSS2SD m32 memory profile
+
+The exact `F3 0F 5A 00` scalar form reads four bytes from RAX once and writes
+only the low 64 bits of XMM0. It widens binary32 exactly, adding masked IE for
+SNaN quieting and DE for nonzero subnormal input; it preserves all upper XMM0
+bits, MXCSR control/sticky state, and x87 canaries. RC/FTZ do not affect the
+result. Native/JIT/C ABI remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bz--bounded-long64-cvtss2sd-xmm0rax-m32-memory-profile).

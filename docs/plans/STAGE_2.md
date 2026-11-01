@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последний завершённый кодовый срез S2-37by добавил exact legacy `CVTPS2PD XMM0,[RAX]` (`0F 5A 00`): один m64 read, raw binary32→binary64 widening с masked IE/DE. Профили остаются local schema-v2 interpreter-only; соседние формы и native/JIT/C ABI закрыты. Предыдущие ограничения/профили перечислены ниже. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
+Последний завершённый кодовый срез S2-37bz добавил exact legacy `CVTSS2SD XMM0,[RAX]` (`F3 0F 5A 00`): один 4-byte read, точное binary32→binary64 widening в low64 с masked IE/DE и сохранением high64. Профили остаются local schema-v2 interpreter-only; соседние формы и native/JIT/C ABI закрыты. Предыдущие ограничения/профили перечислены ниже. Локальные проверки не закрывают общий S2-37, CPUID admission или physical acceptance. Аппаратная проверка остаётся в совместном final substage. S2-19t добавило REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавило REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -503,6 +503,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37bw | Local-only legacy Long64 CVTTPD2DQ XMM0,[RAX] aligned m128 memory profile; toward-zero conversion after truncation range check, masked IE/PE; native/JIT closed | S2-37bv; approved bounded contract; implementation and verification recorded below; independent review complete |
 | [x] | S2-37bx | Local-only legacy Long64 CVTPD2DQ XMM0,[RAX] aligned m128 memory profile; MXCSR.RC rounding then range check, masked IE/PE; native/JIT closed | S2-37bw; approved bounded contract; implementation and verification below; independent review complete |
 | [x] | S2-37by | Local-only legacy Long64 CVTPS2PD XMM0,[RAX] m64 memory profile; raw binary32 widening with masked IE/DE; native/JIT closed | S2-37u; approved bounded contract; implementation, verification and independent review complete |
+| [x] | S2-37bz | Local-only legacy Long64 CVTSS2SD XMM0,[RAX] m32 memory profile; scalar raw binary32 widening with masked IE/DE; native/JIT closed | S2-37by; focused checks and full local suites passed; independent review complete |
 | [x] | S2-37t | Local-only canonical Long64 CVTSS2SD XMM register-pair profile; raw binary32 widening with sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37u | Local-only canonical Long64 CVTPS2PD XMM register-pair profile; two-lane raw widening with aggregate sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-37t, S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37v | Local-only canonical Long64 COMISS/UCOMISS XMM register-pair profile; NaN-priority IE/DE, unordered flags, unmasked atomic flag exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
@@ -14936,3 +14937,30 @@ findings. No physical x86 acceptance is claimed.
 Normative sources: Intel SDM Rev. 093 Vol. 2A CVTPS2PD pp. 3-228–3-230; Vol. 1
 §§11.5.2.1–11.5.2.2, 11.5.3, 11.5.5, Table D-11 and Table 14-21; Vol. 3A
 §§16.1.3–16.1.4, Table 16-1. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37by--bounded-long64-cvtps2pd-xmm0rax-m64-memory-profile), [report](../reports/STAGE_2_REPORT.md#s2-37by--cvtps2pd-xmm0rax-m64-memory-profile), and [literal fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37by--cvtps2pd-xmm0rax-m64-memory-profile).
+
+
+#### S2-37bz — bounded Long64 CVTSS2SD XMM0,[RAX] m32 memory profile
+
+Exact legacy encoding `F3 0F 5A 00`, Long64 only, full 4-byte fetch, budget
+one, stop RIP=entry+4. Local SSE2/EM/OSFXSR #UD then TS #NM ordering is bounded
+policy; CPL0–3 are admitted. RAX supplies a checked canonical48 4-byte span,
+read exactly once after admission. Unaligned addresses are accepted with local
+AC=0; AC=1 is Unsupported local admission. A failed read does not commit CPU
+state.
+
+The one binary32 source widens exactly into XMM0.low64; XMM0.high64 and all
+architectural state above XMM0 are preserved. SNaN is quieted with sticky IE;
+QNaN preserves sign/payload and adds no IE. Nonzero subnormal widens exactly
+and adds DE, not PE; RC/FTZ are irrelevant. Sticky flags are preserved/ORed.
+The profile requires MXCSR mask `0xffbf`, DAZ=0, IM=DM=1, but does not require
+PM. No unmasked delivery is modeled. Pending x87 is preserved and never gated.
+Native/JIT/C ABI/fragment/generic execution stay closed. The focused `by` and
+`bz` runner tests passed 1/1 each after the metadata-tamper block was moved into
+the bz test; each filtered 454 other fixtures. The full suites passed: od-isa
+1,625/1,625; od-testkit 446/446 (0 doc-tests); od-runner 112 unit + 455 fixture;
+od-x86-runner 8 library + 4 binary tests. Workspace all-target check, formatting,
+layout, diff checks and Graphify update passed. Independent review completed
+with no remaining findings. No physical x86 acceptance was run. Sources: Intel SDM Rev. 093 Vol. 2A CVTSS2SD
+pp. 3-240–3-241; Vol. 1 §§11.5.2, 11.5.3, 11.5.5, Table D-11 p. D-8 and
+Table 14-21; Vol. 3A §§16.1.3–16.1.4, Table 16-1. Type 3/Table 2-20 is not
+used as a legacy alignment source because it describes VEX encoding.

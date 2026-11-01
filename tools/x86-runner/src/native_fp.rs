@@ -28,6 +28,7 @@ pub(crate) fn native_profile_local_only(profile: od_testkit::v2::Profile) -> boo
             | od_testkit::v2::Profile::LongX87SseStateV1
             | od_testkit::v2::Profile::LongCvtps2pdRegistersV1
             | od_testkit::v2::Profile::LongCvtps2pdMemoryRaxV1
+            | od_testkit::v2::Profile::LongCvtss2sdMemoryRaxV1
             | od_testkit::v2::Profile::LongCvtpi2pdRegisterMaskedV1
             | od_testkit::v2::Profile::LongCvtpi2psRegisterMaskedV1
             | od_testkit::v2::Profile::LongCvttps2piMemoryRaxV1
@@ -316,6 +317,7 @@ mod tests {
             Profile::LongCvttpd2dqMemoryRaxV1,
             Profile::LongCvtpd2dqMemoryRaxV1,
             Profile::LongCvtps2pdMemoryRaxV1,
+            Profile::LongCvtss2sdMemoryRaxV1,
             Profile::LongX87SseStateV1,
             Profile::LongComisdUcomisdRegistersV1,
             Profile::LongCr0FpInitV1,

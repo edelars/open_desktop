@@ -1085,6 +1085,8 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only exact legacy `F3 0F 5A 00` scalar binary32-to-binary64 m32 form.
+    Cvtss2sdMemoryRax,
     /// Local-only legacy `F2 0F 5A /r` scalar binary64-to-binary32 XMM form.
     Cvtsd2ssRegister {
         destination: u8,
@@ -4916,12 +4918,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Escape0f, 0x5a) if cvtss2sd_register => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if modrm == 0 && prefixes.rex.is_none() {
+                    Operation::Cvtss2sdMemoryRax
+                } else if modrm >> 6 != 3 {
                     return Err(self.unsupported(opcode));
-                }
-                Operation::Cvtss2sdRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                } else {
+                    Operation::Cvtss2sdRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x5a) if cvtsd2ss_register => {
@@ -21441,6 +21446,18 @@ mod tests {
             }
         );
         assert_eq!(instruction.length, 4);
+    }
+
+    #[test]
+    fn cvtss2sd_exact_m32_rax_form_decodes() {
+        let mut memory = Memory::new(&[0xf3, 0x0f, 0x5a, 0x00]);
+        let instruction = memory.decode().unwrap();
+        assert_eq!(instruction.operation, Operation::Cvtss2sdMemoryRax);
+        assert_eq!(instruction.length, 4);
+        assert!(matches!(
+            Memory::new(&[0xf3, 0x0f, 0x5a, 0x01]).decode(),
+            Err(DecodeError::Unsupported { .. })
+        ));
     }
 
     #[test]

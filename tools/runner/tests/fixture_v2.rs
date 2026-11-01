@@ -25533,6 +25533,220 @@ fn cvtps2pd_m64_widens_subnormals_and_fails_closed() {
 }
 
 #[test]
+fn cvtss2sd_m32_widens_scalar_and_fails_closed() {
+    use od_testkit::v2::Profile;
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/x86/stage2/s2_37bz_cvtss2sd_m32_snan_subnormal.case.json");
+    let fixture = Fixture::from_json(&fs::read(path).unwrap())
+        .unwrap()
+        .fixture;
+    assert_eq!(fixture.profile, Profile::LongCvtss2sdMemoryRaxV1);
+    let (literal_input, literal_result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&literal_input, &literal_result, &literal_result).unwrap();
+
+    for raw in [
+        0x7f80_0001u32,
+        0x7fc1_2345,
+        0x0000_0001,
+        0x007f_ffff,
+        0x0000_0000,
+        0x8000_0000,
+        0x3f80_0000,
+        0x7f80_0000,
+    ] {
+        for rc in 0..4u32 {
+            for ftz in [false, true] {
+                let mut case = fixture.clone();
+                case.memory[1].initial_bytes_hex =
+                    od_testkit::memory::encode_bytes(&raw.to_le_bytes());
+                case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(u64::from(
+                    0x0180 | (rc << 13) | if ftz { 1 << 15 } else { 0 },
+                ));
+                case.case_id = format!("s2_37bz_{raw:08x}_{rc}_{ftz}");
+                let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                assert_eq!(input.fixture.profile, Profile::LongCvtss2sdMemoryRaxV1);
+                od_testkit::v2::compare(&input, &result, &result).unwrap();
+                let Observation::Available { value } = &result.snapshot else {
+                    panic!("snapshot unavailable")
+                };
+                assert_eq!(
+                    &value.state.sse.as_ref().unwrap().xmm[0][16..],
+                    &case.initial_state.sse.as_ref().unwrap().xmm[0][16..]
+                );
+                assert_eq!(value.state.x87, case.initial_state.x87);
+            }
+        }
+    }
+
+    for sticky in [0u64, 1, 2, 3, 0x20, 0x3f] {
+        let mut case = fixture.clone();
+        case.memory[1].initial_bytes_hex = "0000803f".into();
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x180 | sticky);
+        case.case_id = format!("s2_37bz_sticky_{sticky:02x}");
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        assert_eq!(
+            snapshot(&result).state.sse.as_ref().unwrap().mxcsr,
+            HexU64(0x180 | sticky)
+        );
+    }
+
+    for (name, mxcsr, rflags) in [
+        ("ac", 0x180, (1 << 18) | 2),
+        ("daz", 0x1c0, 2),
+        ("im_clear", 0x100, 2),
+        ("dm_clear", 0x80, 2),
+    ] {
+        let mut unsupported = fixture.clone();
+        unsupported.expected_exit = ExpectedExit::Unsupported;
+        unsupported.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        unsupported.initial_state.rflags = HexU64(rflags);
+        unsupported.case_id = format!("s2_37bz_unsupported_{name}");
+        let (input, result) = run(&unsupported.to_json().unwrap(), "interpreter", 4);
+        assert!(
+            matches!(result.outcome, Outcome::Unsupported { .. }),
+            "{name}"
+        );
+        assert_eq!(
+            snapshot(&result).state,
+            input.fixture.initial_state,
+            "{name}"
+        );
+    }
+
+    for (field, enabled) in [
+        ("sse2_available", false),
+        ("cr0_em", true),
+        ("cr4_osfxsr", false),
+        ("cr0_ts", true),
+    ] {
+        let mut gated = fixture.clone();
+        gated.expected_exit = ExpectedExit::Exception;
+        let controls = gated.cvtss2sd_m32_controls.as_mut().unwrap();
+        match field {
+            "sse2_available" => controls.sse2_available = enabled,
+            "cr0_em" => controls.cr0_em = enabled,
+            "cr4_osfxsr" => controls.cr4_osfxsr = enabled,
+            "cr0_ts" => controls.cr0_ts = enabled,
+            _ => unreachable!(),
+        }
+        gated.case_id = format!("s2_37bz_gate_{field}");
+        let (input, result) = run(&gated.to_json().unwrap(), "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::Exception {}), "{field}");
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+    }
+
+    let mut gated = fixture.clone();
+    gated.expected_exit = ExpectedExit::Exception;
+    gated.cvtss2sd_m32_controls.as_mut().unwrap().sse2_available = false;
+    gated.case_id = "s2_37bz_gate_metadata".into();
+    let (loaded, result) = run(&gated.to_json().unwrap(), "interpreter", 0);
+    for tamper_error_code in [true, false] {
+        let mut tampered = result.clone();
+        let Observation::Available { value } = &mut tampered.snapshot else {
+            panic!("snapshot unavailable")
+        };
+        let Observation::Available {
+            value: Some(exception),
+        } = &mut value.exception
+        else {
+            panic!("exception snapshot unavailable")
+        };
+        if tamper_error_code {
+            exception.error_code = Observation::Available { value: HexU64(7) };
+        } else {
+            exception.fault_address = Observation::Available {
+                value: HexU64(gated.initial_state.gpr[0].get()),
+            };
+        }
+        assert!(tampered.validate_for(&loaded).is_err());
+        assert!(od_testkit::v2::compare(&loaded, &tampered, &tampered).is_err());
+    }
+
+    let mut ts_gate = fixture.clone();
+    ts_gate.expected_exit = ExpectedExit::Exception;
+    ts_gate.cvtss2sd_m32_controls.as_mut().unwrap().cr0_ts = true;
+    ts_gate.case_id = "s2_37bz_nm_metadata".into();
+    let (loaded, result) = run(&ts_gate.to_json().unwrap(), "interpreter", 0);
+    for tamper_error_code in [true, false] {
+        let mut tampered = result.clone();
+        let Observation::Available { value } = &mut tampered.snapshot else {
+            panic!("snapshot unavailable")
+        };
+        let Observation::Available {
+            value: Some(exception),
+        } = &mut value.exception
+        else {
+            panic!("exception snapshot unavailable")
+        };
+        if tamper_error_code {
+            exception.error_code = Observation::Available { value: HexU64(0) };
+        } else {
+            exception.fault_address = Observation::Available {
+                value: HexU64(ts_gate.initial_state.gpr[0].get()),
+            };
+        }
+        assert!(tampered.validate_for(&loaded).is_err());
+        assert!(od_testkit::v2::compare(&loaded, &tampered, &tampered).is_err());
+    }
+
+    let mut noncanonical = fixture.clone();
+    noncanonical.expected_exit = ExpectedExit::Exception;
+    noncanonical.initial_state.gpr[0] = HexU64(0x0000_8000_0000_0000);
+    noncanonical.memory[1].guest_address = HexU64(0x0000_8000_0000_0000);
+    noncanonical.case_id = "s2_37bz_noncanonical_error_code".into();
+    let (loaded, result) = run(&noncanonical.to_json().unwrap(), "interpreter", 0);
+    let mut tampered = result.clone();
+    let Observation::Available { value } = &mut tampered.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    let Observation::Available {
+        value: Some(exception),
+    } = &mut value.exception
+    else {
+        panic!("exception snapshot unavailable")
+    };
+    exception.error_code = Observation::Available { value: HexU64(7) };
+    assert!(tampered.validate_for(&loaded).is_err());
+    assert!(od_testkit::v2::compare(&loaded, &tampered, &tampered).is_err());
+
+    let mut foreign = fixture.clone();
+    foreign.cvtps2pd_m64_controls = Some(od_testkit::v2::Cvtps2pdMemoryControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+    });
+    assert!(foreign.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
+    let mut foreign_register = fixture.clone();
+    foreign_register.cvtss2sd_controls = Some(od_testkit::v2::Cvtss2sdControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: false,
+    });
+    assert!(foreign_register.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign_register).unwrap()).is_err());
+    let mut malformed = fixture.clone();
+    malformed.memory[0].initial_bytes_hex = "660f5a00".into();
+    assert!(malformed.validate().is_err());
+    let (_, jit) = run(&fixture.to_json().unwrap(), "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    let (_, native) = run(&fixture.to_json().unwrap(), "native", 4);
+    assert!(matches!(native.outcome, Outcome::Unsupported { .. }));
+    let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+    let mut tampered = result.clone();
+    let Observation::Available { value } = &mut tampered.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.state.sse.as_mut().unwrap().xmm[0] = "00".repeat(16);
+    assert!(od_testkit::v2::compare(&input, &result, &tampered).is_err());
+}
+
+#[test]
 fn comiss_ucomiss_register_pairs_raw_classes_exceptions_and_backend_denial() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/x86/stage2/s2_37v_comiss_ucomiss_baseline.case.json");

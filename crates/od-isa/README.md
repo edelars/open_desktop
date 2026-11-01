@@ -697,3 +697,12 @@ The exact legacy `0F 5A 00` RAX form reads one checked m64 span, then widens
 two binary32 lanes into all of XMM0. It records masked IE for SNaN quieting and
 DE for nonzero subnormal widening; MXCSR RC/FTZ do not affect the result. x87
 state is untouched and does not gate the operation. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37by--bounded-long64-cvtps2pd-xmm0rax-m64-memory-profile).
+
+
+### S2-37bz — CVTSS2SD m32 memory profile
+
+The exact `F3 0F 5A 00` scalar form reads four bytes from RAX once and writes
+only the low 64 bits of XMM0. It widens binary32 exactly, adding masked IE for
+SNaN quieting and DE for nonzero subnormal input; it preserves all upper XMM0
+bits, MXCSR control/sticky state, and x87 canaries. RC/FTZ do not affect the
+result. Native/JIT/C ABI remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37bz--bounded-long64-cvtss2sd-xmm0rax-m32-memory-profile).
