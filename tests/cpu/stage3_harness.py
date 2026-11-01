@@ -70,6 +70,7 @@ SELF_TEST_NAMES = (
     "test_s3_34s_memory_event_gates_are_pinned_once_and_fail_closed",
     "test_s3_34t_register_event_gates_are_pinned_once_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
+    "test_s3_38d_result_state_validator_rejects_corruption",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
     "test_rust_gate_summary_rejects_an_omitted_mandatory_gate",
     "test_rust_gate_summary_rejects_forged_passed_evidence",
@@ -488,16 +489,66 @@ RUST_TEST_GATES = (
     ),
     *ADDITIONAL_TEST_GATES,
 )
+LOCAL_VMHOST_RESULT_SUITE = "local_vmhost_result_state"
+LOCAL_VMHOST_RESULT_STEPS = (
+    "local_s38d_validator_selfcheck",
+    "local_s38d_codesign_path",
+    "local_s38d_build_od_host",
+    "local_s38d_compile_vmhost",
+    "local_s38d_sign_vmhost",
+    "local_s38d_verify_vmhost",
+    "local_s38d_vmhost_signature",
+    "local_s38d_vmhost_entitlements",
+    "local_s38d_compile_launcher",
+    "local_s38d_sign_launcher",
+    "local_s38d_verify_launcher",
+    "local_s38d_launcher_signature",
+    "local_s38d_launcher_entitlements",
+    "local_s38d_result_state",
+)
+LOCAL_VMHOST_RESULT_TIMEOUTS = {
+    "local_s38d_validator_selfcheck": 120,
+    "local_s38d_codesign_path": 30,
+    "local_s38d_build_od_host": 1800,
+    "local_s38d_compile_vmhost": 900,
+    "local_s38d_sign_vmhost": 120,
+    "local_s38d_verify_vmhost": 120,
+    "local_s38d_vmhost_signature": 120,
+    "local_s38d_vmhost_entitlements": 120,
+    "local_s38d_compile_launcher": 900,
+    "local_s38d_sign_launcher": 120,
+    "local_s38d_verify_launcher": 120,
+    "local_s38d_launcher_signature": 120,
+    "local_s38d_launcher_entitlements": 120,
+    "local_s38d_result_state": 900,
+}
+LOCAL_VMHOST_RESULT_SOURCE_PATHS = (
+    "Cargo.lock",
+    "Cargo.toml",
+    "crates/od-host/Cargo.toml",
+    "crates/od-host/src/lib.rs",
+    "include/open_desktop/host_abi.h",
+    "apps/vmhost/Sources/ControlFrame.swift",
+    "apps/vmhost/Sources/main.swift",
+    "apps/macos/Sources/launcher.swift",
+    "apps/vmhost/Configuration/vmhost-smoke.entitlements",
+    "protocols/control/CONTROL_PROTOCOL_V0.md",
+    "tests/system/vmhost_result_state_smoke.py",
+    "tests/cpu/stage3_harness.py",
+    "tests/cpu/test_stage3_harness.py",
+)
 LOCAL_STEPS = (
     "harness_self_tests",
     "stage1_dispatch",
     "memory_corpus",
     "memory_s3_34h_exact_gate",
     *(step for step, _, _, _ in RUST_TEST_GATES),
+    *LOCAL_VMHOST_RESULT_STEPS,
 )
 UNSELECTED_SUITES = ("physical_x86", "mac_mini", "performance", "owner_backed", "stage2")
 LOCAL_SUITE_NAMES = (
     "local_lifecycle", "local_acceptance", "stage1_dispatch", "memory_corpus",
+    LOCAL_VMHOST_RESULT_SUITE,
 )
 PROCESS_SUITE_STEPS = (
     "process_sw_vers",
@@ -537,6 +588,17 @@ PROCESS_SUITE_STEPS = (
 PROCESS_SUITE_NAME = "vmhost_process"
 ALL_SUITES = (*LOCAL_SUITE_NAMES, PROCESS_SUITE_NAME, *UNSELECTED_SUITES)
 ALL_STEPS = (*LOCAL_STEPS, *PROCESS_SUITE_STEPS)
+LOCAL_VMHOST_RESULT_LOOP = "48b8010000000000000075f4"
+LOCAL_VMHOST_RESULT_BUDGETS = (0, 1, 2, 3, 4)
+LOCAL_VMHOST_RESULT_INITIAL_GPRS = (
+    0xF00DFACE12345678,
+    0x1122334455667788,
+    0x8877665544332211,
+    0xCAFEBABE0BADF00D,
+)
+LOCAL_VMHOST_RESULT_INITIAL_RFLAGS = 0x202
+LOCAL_VMHOST_RESULT_LAUNCHER_RFLAGS = 0x2
+LOCAL_VMHOST_RESULT_STOP_BUDGET = (1 << 64) - 1
 PROCESS_STEP_TIMEOUTS = {
     "process_sw_vers": 30,
     "process_uname": 30,
@@ -1273,6 +1335,55 @@ def vmhost_process_command_manifest() -> list[dict[str, object]]:
             for value in argv
         ]}
         for name, argv in vmhost_process_commands(run_placeholder).items()
+    ]
+
+
+def local_vmhost_result_commands(
+    run_root: Path, codesign_path: str = "${CODESIGN_PATH}"
+) -> dict[str, list[str]]:
+    process = vmhost_process_commands(run_root, codesign_path)
+    paths = vmhost_process_paths(run_root)
+    return {
+        "local_s38d_validator_selfcheck": [
+            sys.executable,
+            "tests/cpu/test_stage3_harness.py",
+            "Stage3HarnessValidationTests.test_s3_38d_result_state_validator_rejects_corruption",
+        ],
+        "local_s38d_codesign_path": ["xcrun", "--find", "codesign"],
+        "local_s38d_build_od_host": process["process_build_od_host"],
+        "local_s38d_compile_vmhost": process["process_compile_vmhost"],
+        "local_s38d_sign_vmhost": process["process_sign_vmhost"],
+        "local_s38d_verify_vmhost": process["process_verify_vmhost"],
+        "local_s38d_vmhost_signature": process["process_vmhost_signature"],
+        "local_s38d_vmhost_entitlements": process["process_vmhost_entitlements"],
+        "local_s38d_compile_launcher": process["process_compile_launcher"],
+        "local_s38d_sign_launcher": process["process_sign_launcher"],
+        "local_s38d_verify_launcher": process["process_verify_launcher"],
+        "local_s38d_launcher_signature": process["process_launcher_signature"],
+        "local_s38d_launcher_entitlements": process["process_launcher_entitlements"],
+        "local_s38d_result_state": [
+            sys.executable,
+            "tests/system/vmhost_result_state_smoke.py",
+            str(paths["launcher"]),
+            str(paths["vmhost"]),
+            "--diagnostics-dir",
+            str(run_root / "logs" / "local_s38d_result_state_children"),
+        ],
+    }
+
+
+def local_vmhost_result_command_manifest() -> list[dict[str, object]]:
+    run_placeholder = ROOT / "work" / "stage3-harness" / "<RUN_ID>"
+    return [
+        {
+            "step": name,
+            "argv": [
+                value.replace(str(run_placeholder), "${RUN_ROOT}")
+                for value in argv
+            ],
+            "timeout_seconds": LOCAL_VMHOST_RESULT_TIMEOUTS[name],
+        }
+        for name, argv in local_vmhost_result_commands(run_placeholder).items()
     ]
 
 
@@ -2282,6 +2393,98 @@ def run_vmhost_process_suite(
     }
 
 
+def run_local_vmhost_result_state(
+    summary: dict, run_root: Path, fingerprint: str
+) -> None:
+    host_target, _ = rust_host()
+    require_local_arm64_backend(host_target)
+    paths = vmhost_process_paths(run_root)
+    paths["artifacts"].mkdir(parents=True, exist_ok=False)
+    paths["swift_modules"].mkdir(parents=True, exist_ok=False)
+    (run_root / "logs" / "local_s38d_result_state_children").mkdir()
+
+    codesign_path = "${CODESIGN_PATH}"
+    for step_name in LOCAL_VMHOST_RESULT_STEPS:
+        commands = local_vmhost_result_commands(run_root, codesign_path)
+        step = run_process_step(
+            step_name,
+            commands[step_name],
+            run_root,
+            LOCAL_VMHOST_RESULT_TIMEOUTS[step_name],
+            fingerprint,
+        )
+        step["suite"] = LOCAL_VMHOST_RESULT_SUITE
+        step["expected_returncode"] = 0
+
+        if step_name == "local_s38d_codesign_path" and step["status"] == "passed":
+            raw_path = step.get("output_tail", "").strip()
+            tool_path = Path(raw_path)
+            if not tool_path.is_absolute() or tool_path.is_symlink() or not tool_path.is_file():
+                step["status"] = "failed"
+                step["failure"] = "xcrun codesign path is invalid"
+            else:
+                codesign_path = str(tool_path)
+
+        if step["status"] == "passed":
+            try:
+                validate_local_vmhost_result_step(
+                    step, step_name, run_root, fingerprint, codesign_path
+                )
+                if step_name == "local_s38d_vmhost_signature":
+                    process_signature_output(
+                        step, requires_jit=False, step_name=step_name
+                    )
+                elif step_name == "local_s38d_vmhost_entitlements":
+                    process_entitlements_output(
+                        step, requires_jit=True, step_name=step_name
+                    )
+                elif step_name == "local_s38d_launcher_signature":
+                    process_signature_output(
+                        step, requires_jit=False, step_name=step_name
+                    )
+                elif step_name == "local_s38d_launcher_entitlements":
+                    process_entitlements_output(
+                        step, requires_jit=False, step_name=step_name
+                    )
+                elif step_name == "local_s38d_validator_selfcheck":
+                    output = step.get("output_tail", "")
+                    expected_test = (
+                        "test_s3_38d_result_state_validator_rejects_corruption"
+                    )
+                    if (
+                        not isinstance(output, str)
+                        or f"{expected_test} (__main__.Stage3HarnessValidationTests.{expected_test}) ... ok"
+                        not in output
+                        or "Ran 1 test" not in output
+                        or "OK" not in output
+                    ):
+                        raise HarnessError("S3-38d validator selfcheck did not run exactly once")
+                elif step_name == "local_s38d_result_state":
+                    step["child_diagnostics"] = child_log_evidence(
+                        run_root, "local_s38d_result_state"
+                    )
+                    validate_local_vmhost_result_observation(step, run_root)
+            except HarnessError as error:
+                step["status"] = "failed"
+                step["failure"] = str(error)
+
+        summary["steps"][step_name] = step
+        replace_json(run_root / "summary.json", summary)
+        if step["status"] != "passed":
+            raise HarnessError(
+                f"required local VMHost RESULT step failed: {step_name}: {step.get('failure')}"
+            )
+
+    artifacts = local_vmhost_result_artifacts(run_root, Path(codesign_path))
+    summary["local_vmhost_result_artifacts"] = artifacts
+    summary["suites"][LOCAL_VMHOST_RESULT_SUITE] = {
+        "status": "passed",
+        "steps": list(LOCAL_VMHOST_RESULT_STEPS),
+        "artifacts": artifacts,
+        "automatic_retry": False,
+    }
+
+
 def generated_fault_observation(step: dict) -> dict:
     output = step.get("output_tail")
     prefix = "generated_fault_observation="
@@ -2438,6 +2641,32 @@ def input_manifest() -> dict:
             },
             "automatic_retry": False,
         },
+        "local_vmhost_result_state": {
+            "host_requirement": {
+                "system": "darwin",
+                "machine": "arm64",
+                "rust_target_prefix": "aarch64-apple-darwin",
+            },
+            "commands": local_vmhost_result_command_manifest(),
+            "inputs": [
+                {"path": name, "sha256": sha256_file(ROOT / name)}
+                for name in LOCAL_VMHOST_RESULT_SOURCE_PATHS
+            ],
+            "profile": {
+                "loop_code_hex": LOCAL_VMHOST_RESULT_LOOP,
+                "fixed_budgets": list(LOCAL_VMHOST_RESULT_BUDGETS),
+                "initial_gprs": list(LOCAL_VMHOST_RESULT_INITIAL_GPRS),
+                "initial_rflags": LOCAL_VMHOST_RESULT_INITIAL_RFLAGS,
+                "launcher_initial_rflags": LOCAL_VMHOST_RESULT_LAUNCHER_RFLAGS,
+                "result_format": "<6QIIQ",
+                "result_bytes": 64,
+                "stop_budget": LOCAL_VMHOST_RESULT_STOP_BUDGET,
+                "stop_delays_ms": [0, 5],
+                "vmhost_handshake_timeout_seconds": 30,
+                "control_response_timeout_seconds": 5,
+            },
+            "automatic_retry": False,
+        },
     }
 
 
@@ -2486,6 +2715,35 @@ def validate_input_manifest_file(path: Path, expected_digest: str) -> dict:
     ]
     if inputs != expected_inputs:
         raise HarnessError("VMHost process source inputs differ from the pinned manifest")
+    local_result = value.get("local_vmhost_result_state")
+    expected_local_result = {
+        "host_requirement": {
+            "system": "darwin",
+            "machine": "arm64",
+            "rust_target_prefix": "aarch64-apple-darwin",
+        },
+        "commands": local_vmhost_result_command_manifest(),
+        "inputs": [
+            {"path": name, "sha256": sha256_file(ROOT / name)}
+            for name in LOCAL_VMHOST_RESULT_SOURCE_PATHS
+        ],
+        "profile": {
+            "loop_code_hex": LOCAL_VMHOST_RESULT_LOOP,
+            "fixed_budgets": list(LOCAL_VMHOST_RESULT_BUDGETS),
+            "initial_gprs": list(LOCAL_VMHOST_RESULT_INITIAL_GPRS),
+            "initial_rflags": LOCAL_VMHOST_RESULT_INITIAL_RFLAGS,
+            "launcher_initial_rflags": LOCAL_VMHOST_RESULT_LAUNCHER_RFLAGS,
+            "result_format": "<6QIIQ",
+            "result_bytes": 64,
+            "stop_budget": LOCAL_VMHOST_RESULT_STOP_BUDGET,
+            "stop_delays_ms": [0, 5],
+            "vmhost_handshake_timeout_seconds": 30,
+            "control_response_timeout_seconds": 5,
+        },
+        "automatic_retry": False,
+    }
+    if local_result != expected_local_result:
+        raise HarnessError("local VMHost RESULT command profile or inputs differ")
     return value
 
 
@@ -2548,6 +2806,242 @@ def validate_process_child_logs(step: dict, step_name: str, run_root: Path) -> N
         raise HarnessError(f"VMHost child diagnostics differ from saved files: {step_name}")
     if step_name == "process_isolation" and len(observed) != 4:
         raise HarnessError("VMHost isolation did not preserve both child stdout/stderr pairs")
+
+
+def validate_local_vmhost_result_observation(step: dict, run_root: Path) -> None:
+    output = step.get("output_tail")
+    marker = "vmhost_result_state_observation="
+    rows = [line[len(marker):] for line in output.splitlines() if line.startswith(marker)] \
+        if isinstance(output, str) else []
+    if len(rows) != 1 or "VMHost RESULT state smoke passed:" not in output:
+        raise HarnessError("S3-38d process step omitted its unique result-state observation")
+    try:
+        observed = json.loads(rows[0])
+    except json.JSONDecodeError as error:
+        raise HarnessError(f"S3-38d result-state observation is malformed: {error}") from error
+
+    def expected_gprs(budget: int, retired: int) -> list[int]:
+        return [
+            LOCAL_VMHOST_RESULT_INITIAL_GPRS[0] if retired == 0 else 1,
+            *LOCAL_VMHOST_RESULT_INITIAL_GPRS[1:],
+        ]
+
+    raw_budget = observed.get("raw_budget") if isinstance(observed, dict) else None
+    launcher_budget = observed.get("launcher_budget") if isinstance(observed, dict) else None
+    stops = observed.get("stop") if isinstance(observed, dict) else None
+    if not all(isinstance(value, list) for value in (raw_budget, launcher_budget, stops)):
+        raise HarnessError("S3-38d observation fields are missing")
+    if len(raw_budget) != len(LOCAL_VMHOST_RESULT_BUDGETS) \
+            or len(launcher_budget) != len(LOCAL_VMHOST_RESULT_BUDGETS) or len(stops) != 2:
+        raise HarnessError("S3-38d observation case count differs from the pinned profile")
+
+    for index, budget in enumerate(LOCAL_VMHOST_RESULT_BUDGETS, start=1):
+        raw = raw_budget[index - 1]
+        expected = {
+            "gpr": expected_gprs(budget, budget),
+            "rip": 0 if budget % 2 == 0 else 10,
+            "rflags": LOCAL_VMHOST_RESULT_INITIAL_RFLAGS,
+            "reason": 1,
+            "reserved": 0,
+            "instructions_executed": budget,
+            "request_id": 0x380D0000 + index,
+            "payload_length": 64,
+        }
+        if raw != expected:
+            raise HarnessError(f"S3-38d raw RESULT budget binding differs: {budget}")
+        launcher = launcher_budget[index - 1]
+        projected = {
+            "gpr": expected_gprs(budget, budget),
+            "instructions_executed": budget,
+            "reason": 1,
+            "rflags": LOCAL_VMHOST_RESULT_LAUNCHER_RFLAGS,
+            "rip": 0 if budget % 2 == 0 else 10,
+        }
+        if launcher != projected:
+            raise HarnessError(f"S3-38d launcher RESULT projection differs: {budget}")
+
+    expected_stop_ids = (0x380D1001, 0x380D1002)
+    for index, (result, request_id) in enumerate(zip(stops, expected_stop_ids)):
+        if not isinstance(result, dict):
+            raise HarnessError(f"S3-38d STOP result is malformed: case {index}")
+        retired = result.get("instructions_executed")
+        if isinstance(retired, bool) or not isinstance(retired, int) \
+                or not 0 <= retired <= LOCAL_VMHOST_RESULT_STOP_BUDGET:
+            raise HarnessError(f"S3-38d STOP retirement count is invalid: case {index}")
+        expected_stop = {
+            "gpr": expected_gprs(LOCAL_VMHOST_RESULT_STOP_BUDGET, retired),
+            "rip": 0 if retired % 2 == 0 else 10,
+            "rflags": LOCAL_VMHOST_RESULT_INITIAL_RFLAGS,
+            "reason": 2,
+            "reserved": 0,
+            "instructions_executed": retired,
+            "request_id": request_id,
+            "payload_length": 64,
+            "ack_order": ["RUN_ACK", "STOP_ACK", "RESULT"],
+            "stop_observation": (
+                "early_stop_no_guest_progress" if retired == 0
+                else "stop_after_observed_guest_progress"
+            ),
+        }
+        if result != expected_stop:
+            raise HarnessError(f"S3-38d STOP RESULT boundary or ordering differs: case {index}")
+
+    labels = [
+        *(f"raw-budget-{budget}" for budget in LOCAL_VMHOST_RESULT_BUDGETS),
+        "raw-stop-immediate",
+        "raw-stop-delayed",
+        *(f"launcher-budget-{budget}" for budget in LOCAL_VMHOST_RESULT_BUDGETS),
+    ]
+    expected_paths = sorted(
+        f"local_s38d_result_state_children/{label}.{stream}.log"
+        for label in labels
+        for stream in ("stdout", "stderr")
+    )
+    children = child_log_evidence(run_root, "local_s38d_result_state")
+    observed_paths = local_vmhost_result_child_paths(run_root, children)
+    if observed_paths != expected_paths:
+        raise HarnessError("S3-38d child diagnostics do not cover each launcher and VMHost")
+    if step.get("child_diagnostics") != children:
+        raise HarnessError("S3-38d child log digests differ from saved files")
+
+
+def local_vmhost_result_child_paths(run_root: Path, children: list[dict]) -> list[str]:
+    logs_relative = (run_root / "logs").relative_to(ROOT)
+    result = []
+    for child in children:
+        path = Path(child.get("path", ""))
+        try:
+            relative = path.relative_to(logs_relative)
+        except ValueError as error:
+            raise HarnessError("S3-38d child diagnostic escaped its run logs") from error
+        result.append(relative.as_posix())
+    return result
+
+
+def local_vmhost_result_artifacts(run_root: Path, codesign_path: Path) -> dict[str, object]:
+    paths = vmhost_process_paths(run_root)
+    if not codesign_path.is_absolute() or codesign_path.is_symlink() or not codesign_path.is_file():
+        raise HarnessError("S3-38d codesign binary path is invalid")
+    return {
+        "od_host_library": process_artifact_record(paths["od_host_library"]),
+        "vmhost": process_artifact_record(paths["vmhost"]),
+        "launcher": process_artifact_record(paths["launcher"]),
+        "entitlements_source": process_artifact_record(paths["entitlements"]),
+        "codesign_binary": {
+            "path": str(codesign_path),
+            "sha256": sha256_file(codesign_path),
+            "size_bytes": codesign_path.stat().st_size,
+        },
+    }
+
+
+def validate_local_vmhost_result_step(
+    step: dict,
+    step_name: str,
+    run_root: Path,
+    fingerprint: str,
+    codesign_path: str,
+) -> None:
+    expected_argv = local_vmhost_result_commands(run_root, codesign_path).get(step_name)
+    if expected_argv is None:
+        raise HarnessError(f"unknown local VMHost RESULT step: {step_name}")
+    if (
+        step.get("name") != step_name
+        or step.get("suite") != LOCAL_VMHOST_RESULT_SUITE
+        or step.get("argv") != expected_argv
+        or step.get("command") != shlex.join(expected_argv)
+        or step.get("status") != "passed"
+        or step.get("returncode") != 0
+        or step.get("expected_returncode") != 0
+        or step.get("failure") is not None
+        or step.get("timeout_seconds") != LOCAL_VMHOST_RESULT_TIMEOUTS[step_name]
+        or step.get("process_group_cleanup") != "empty"
+        or step.get("source_fingerprint_after") != fingerprint
+    ):
+        raise HarnessError(f"local VMHost RESULT step evidence is missing, forged, or failed: {step_name}")
+    duration = step.get("duration_seconds")
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or duration < 0:
+        raise HarnessError(f"local VMHost RESULT step has invalid duration: {step_name}")
+
+    contents: dict[str, bytes] = {}
+    for field, basename in {
+        "log": f"{step_name}.log",
+        "stdout_log": f"{step_name}.stdout.log",
+        "stderr_log": f"{step_name}.stderr.log",
+    }.items():
+        expected_path = run_root / "logs" / basename
+        if step.get(field) != expected_path.relative_to(ROOT).as_posix() \
+                or expected_path.is_symlink() or not expected_path.is_file():
+            raise HarnessError(f"local VMHost RESULT log path is invalid: {step_name}/{field}")
+        contents[field] = expected_path.read_bytes()
+    stdout = contents["stdout_log"].decode("utf-8", errors="replace")
+    stderr = contents["stderr_log"].decode("utf-8", errors="replace")
+    combined = stdout + ("\n--- stderr ---\n" + stderr if stderr else "")
+    if (
+        sha256_bytes(contents["log"]) != step.get("output_sha256")
+        or sha256_bytes(contents["stdout_log"]) != step.get("stdout_sha256")
+        or sha256_bytes(contents["stderr_log"]) != step.get("stderr_sha256")
+        or contents["log"].decode("utf-8", errors="replace") != combined
+        or step.get("output_tail") != combined[-4000:]
+    ):
+        raise HarnessError(f"local VMHost RESULT log digest or stream evidence differs: {step_name}")
+
+
+def validate_local_vmhost_result_state(summary: dict, manifest: dict, run_root: Path) -> None:
+    suite = summary.get("suites", {}).get(LOCAL_VMHOST_RESULT_SUITE)
+    if not isinstance(suite, dict) or suite.get("status") != "passed" \
+            or suite.get("steps") != list(LOCAL_VMHOST_RESULT_STEPS):
+        raise HarnessError("local VMHost RESULT suite membership is missing or forged")
+    steps = summary.get("steps", {})
+    codesign = steps.get("local_s38d_codesign_path", {})
+    codesign_path = codesign.get("output_tail", "").strip()
+    if not Path(codesign_path).is_absolute():
+        raise HarnessError("S3-38d codesign tool path is missing or not absolute")
+    fingerprint = summary.get("source", {}).get("fingerprint_start")
+    for step_name in LOCAL_VMHOST_RESULT_STEPS:
+        step = steps.get(step_name)
+        if not isinstance(step, dict):
+            raise HarnessError(f"local VMHost RESULT step is missing: {step_name}")
+        validate_local_vmhost_result_step(step, step_name, run_root, fingerprint, codesign_path)
+    selfcheck = steps["local_s38d_validator_selfcheck"].get("output_tail", "")
+    expected_selfcheck = (
+        "test_s3_38d_result_state_validator_rejects_corruption"
+    )
+    if (
+        not isinstance(selfcheck, str)
+        or f"{expected_selfcheck} (__main__.Stage3HarnessValidationTests.{expected_selfcheck}) ... ok"
+        not in selfcheck
+        or "Ran 1 test" not in selfcheck
+        or "OK" not in selfcheck
+    ):
+        raise HarnessError("S3-38d validator selfcheck evidence is missing or forged")
+    process_signature_output(
+        steps["local_s38d_vmhost_signature"], requires_jit=False,
+        step_name="local_s38d_vmhost_signature",
+    )
+    process_entitlements_output(
+        steps["local_s38d_vmhost_entitlements"], requires_jit=True,
+        step_name="local_s38d_vmhost_entitlements",
+    )
+    process_signature_output(
+        steps["local_s38d_launcher_signature"], requires_jit=False,
+        step_name="local_s38d_launcher_signature",
+    )
+    process_entitlements_output(
+        steps["local_s38d_launcher_entitlements"], requires_jit=False,
+        step_name="local_s38d_launcher_entitlements",
+    )
+    validate_local_vmhost_result_observation(steps["local_s38d_result_state"], run_root)
+    codesign_path_value = Path(codesign_path)
+    artifacts = local_vmhost_result_artifacts(run_root, codesign_path_value)
+    if summary.get("local_vmhost_result_artifacts") != artifacts \
+            or suite.get("artifacts") != artifacts:
+        raise HarnessError("local VMHost RESULT binary hashes differ from current run outputs")
+    if suite.get("automatic_retry") is not False:
+        raise HarnessError("local VMHost RESULT suite permits automatic retry")
+    if not isinstance(manifest.get("local_vmhost_result_state"), dict) \
+            or manifest["local_vmhost_result_state"].get("automatic_retry") is not False:
+        raise HarnessError("local VMHost RESULT manifest permits automatic retry")
 
 
 def validate_vmhost_process_summary(summary: dict, manifest: dict, run_root: Path) -> None:
@@ -2674,6 +3168,7 @@ def validate_final_summary(summary: dict, input_manifest_path: Path) -> None:
         validate_required_steps(statuses)
         validate_memory_exact_gate_evidence(steps["memory_s3_34h_exact_gate"], run_root)
         validate_required_rust_test_evidence(steps, run_root)
+        validate_local_vmhost_result_state(summary, manifest, run_root)
         validate_native_register_v1_artifacts(steps, run_root)
         memory_suite = suites.get("memory_corpus", {})
         if (
@@ -2703,15 +3198,47 @@ def validate_final_summary(summary: dict, input_manifest_path: Path) -> None:
             raise HarnessError("VMHost process suite must remain not_run in the local suite")
     elif selection == "vmhost-process":
         validate_vmhost_process_summary(summary, manifest, run_root)
+    elif selection == "vmhost-result-state":
+        if (
+            summary.get("status") != "vmhost_result_state_only"
+            or summary.get("result_scope") != "vmhost_result_state_only"
+        ):
+            raise HarnessError("S3-38d dedicated suite scope is missing or forged")
+        validate_vmhost_result_state_selection(suites, steps)
+        validate_local_vmhost_result_state(summary, manifest, run_root)
     else:
         raise HarnessError("Stage 3 suite selection is missing or unsupported")
     source = summary.get("source", {})
     validate_fingerprint(source.get("fingerprint_start", ""), source.get("fingerprint_end", ""))
 
 
+def validate_vmhost_result_state_selection(suites: dict, steps: dict) -> None:
+    validate_unselected_suites(suites, (PROCESS_SUITE_NAME, *UNSELECTED_SUITES))
+    if suites.get(LOCAL_VMHOST_RESULT_SUITE, {}).get("status") != "passed":
+        raise HarnessError("selected S3-38d suite must be passed")
+    if suites.get(PROCESS_SUITE_NAME) != {"status": "not_run"}:
+        raise HarnessError("VMHost process suite must remain not_run in S3-38d selection")
+    if any(
+        suites.get(name) != {"status": "not_run"}
+        for name in LOCAL_SUITE_NAMES
+        if name != LOCAL_VMHOST_RESULT_SUITE
+    ):
+        raise HarnessError("non-S3-38d local suites must remain not_run")
+    if any(
+        steps.get(name, {}).get("status") != "not_run"
+        for name in ALL_STEPS
+        if name not in LOCAL_VMHOST_RESULT_STEPS
+    ):
+        raise HarnessError("non-S3-38d steps must remain not_run")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--suite", choices=("local", "vmhost-process"), default="local")
+    parser.add_argument(
+        "--suite",
+        choices=("local", "vmhost-process", "vmhost-result-state"),
+        default="local",
+    )
     args = parser.parse_args(argv)
 
     run_id = new_run_id()
@@ -2729,7 +3256,11 @@ def main(argv: list[str] | None = None) -> int:
         "run_id": run_id,
         "status": "running",
         "suite_selection": args.suite,
-        "result_scope": "local_only" if args.suite == "local" else "vmhost_process_only",
+        "result_scope": {
+            "local": "local_only",
+            "vmhost-process": "vmhost_process_only",
+            "vmhost-result-state": "vmhost_result_state_only",
+        }[args.suite],
         "source": {
             "revision": None,
             "fingerprint_start": None,
@@ -2785,6 +3316,21 @@ def main(argv: list[str] | None = None) -> int:
             summary["source"]["fingerprint_end"] = source_fingerprint()
             validate_fingerprint(fingerprint, summary["source"]["fingerprint_end"])
             summary["status"] = "vmhost_process_only"
+            validate_final_summary(summary, manifest_path)
+            summary["finished_utc"] = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+            )
+            replace_json(summary_path, summary)
+            print(f"stage3_harness_status={summary['status']}")
+            print(f"input_manifest_sha256={summary['input_manifest_sha256']}")
+            print(f"summary_path={summary_path.relative_to(ROOT)}")
+            return 0
+
+        if args.suite == "vmhost-result-state":
+            run_local_vmhost_result_state(summary, run_dir, fingerprint)
+            summary["source"]["fingerprint_end"] = source_fingerprint()
+            validate_fingerprint(fingerprint, summary["source"]["fingerprint_end"])
+            summary["status"] = "vmhost_result_state_only"
             validate_final_summary(summary, manifest_path)
             summary["finished_utc"] = time.strftime(
                 "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
@@ -2931,6 +3477,7 @@ def main(argv: list[str] | None = None) -> int:
             "test_outcomes": summary["steps"]["memory_corpus"]["test_outcomes"],
             "s3_34h_exact_gate": summary["steps"]["memory_s3_34h_exact_gate"],
         }
+        run_local_vmhost_result_state(summary, run_dir, fingerprint)
         summary["source"]["fingerprint_end"] = source_fingerprint()
         validate_fingerprint(fingerprint, summary["source"]["fingerprint_end"])
         summary["status"] = "local_only"

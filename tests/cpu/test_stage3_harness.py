@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import socket
 import signal
 import subprocess
 import shutil
@@ -16,6 +17,15 @@ from unittest import mock
 from pathlib import Path
 
 import stage3_harness as harness
+
+_result_smoke_spec = importlib.util.spec_from_file_location(
+    "vmhost_result_state_smoke",
+    harness.ROOT / "tests/system/vmhost_result_state_smoke.py",
+)
+if _result_smoke_spec is None or _result_smoke_spec.loader is None:
+    raise RuntimeError("cannot load VMHost RESULT state validator")
+result_state_smoke = importlib.util.module_from_spec(_result_smoke_spec)
+_result_smoke_spec.loader.exec_module(result_state_smoke)
 
 
 def temporary_run_root():
@@ -568,6 +578,182 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 harness.validate_required_rust_test_evidence(steps, run_root)
         finally:
             temporary.cleanup()
+
+    def test_s3_38d_result_state_validator_rejects_corruption(self):
+        smoke = result_state_smoke
+        request_id = 0x380D0001
+        budget = 4
+        payload = smoke.expected_result(budget)
+        valid = smoke.decode_result(
+            smoke.RESULT,
+            request_id,
+            payload,
+            expected_request_id=request_id,
+            initial_gprs=smoke.INITIAL_GPRS,
+            initial_rflags=smoke.INITIAL_RFLAGS,
+            budget=budget,
+            expected_reason=1,
+        )
+        self.assertEqual(valid["payload_length"], 64)
+        self.assertEqual(valid["instructions_executed"], budget)
+        self.assertEqual(valid["rip"], 0)
+        self.assertEqual(valid["reserved"], 0)
+
+        def mutate_u64(offset):
+            changed = bytearray(payload)
+            value = int.from_bytes(changed[offset:offset + 8], "little")
+            changed[offset:offset + 8] = (value ^ 1).to_bytes(8, "little")
+            return bytes(changed)
+
+        def mutate_u32(offset):
+            changed = bytearray(payload)
+            value = int.from_bytes(changed[offset:offset + 4], "little")
+            changed[offset:offset + 4] = (value ^ 1).to_bytes(4, "little")
+            return bytes(changed)
+
+        for label, changed in (
+            ("rax", mutate_u64(0)),
+            ("rcx", mutate_u64(8)),
+            ("rdx", mutate_u64(16)),
+            ("rbx", mutate_u64(24)),
+            ("rip", mutate_u64(32)),
+            ("rflags", mutate_u64(40)),
+            ("reason", mutate_u32(48)),
+            ("reserved", mutate_u32(52)),
+            ("retired", mutate_u64(56)),
+            ("short payload", payload[:-1]),
+            ("long payload", payload + b"\0"),
+        ):
+            with self.subTest(corruption=label), self.assertRaises(ValueError):
+                smoke.decode_result(
+                    smoke.RESULT,
+                    request_id,
+                    changed,
+                    expected_request_id=request_id,
+                    initial_gprs=smoke.INITIAL_GPRS,
+                    initial_rflags=smoke.INITIAL_RFLAGS,
+                    budget=budget,
+                    expected_reason=1,
+                )
+
+        for label, kind, observed_request_id in (
+            ("kind", smoke.STOP_ACK, request_id),
+            ("request id", smoke.RESULT, request_id + 1),
+        ):
+            with self.subTest(corruption=label), self.assertRaises(ValueError):
+                smoke.decode_result(
+                    kind,
+                    observed_request_id,
+                    payload,
+                    expected_request_id=request_id,
+                    initial_gprs=smoke.INITIAL_GPRS,
+                    initial_rflags=smoke.INITIAL_RFLAGS,
+                    budget=budget,
+                    expected_reason=1,
+                )
+
+        stop_payload = smoke.expected_result(10, retired=2, reason=2)
+        over_budget = bytearray(stop_payload)
+        over_budget[56:64] = (11).to_bytes(8, "little")
+        over_budget[32:40] = (10).to_bytes(8, "little")
+        with self.assertRaisesRegex(ValueError, "beyond budget"):
+            smoke.decode_result(
+                smoke.RESULT,
+                request_id,
+                bytes(over_budget),
+                expected_request_id=request_id,
+                initial_gprs=smoke.INITIAL_GPRS,
+                initial_rflags=smoke.INITIAL_RFLAGS,
+                budget=10,
+                expected_reason=2,
+            )
+
+        run_root = harness.ROOT / "work" / "stage3-harness" / "stage3-20261101-000000-0000000000"
+        relative_logs = (run_root / "logs").relative_to(harness.ROOT)
+        self.assertEqual(
+            harness.local_vmhost_result_child_paths(run_root, [{
+                "path": (relative_logs / "local_s38d_result_state_children/raw-budget-0.stdout.log").as_posix(),
+            }]),
+            ["local_s38d_result_state_children/raw-budget-0.stdout.log"],
+        )
+        with self.assertRaisesRegex(harness.HarnessError, "escaped its run logs"):
+            harness.local_vmhost_result_child_paths(run_root, [{
+                "path": "work/stage3-harness/other-run/logs/local_s38d_result_state_children/raw-budget-0.stdout.log",
+            }])
+
+        suites = {name: {"status": "not_run"} for name in harness.ALL_SUITES}
+        suites[harness.LOCAL_VMHOST_RESULT_SUITE] = {"status": "passed"}
+        steps = {name: {"status": "not_run"} for name in harness.ALL_STEPS}
+        harness.validate_vmhost_result_state_selection(suites, steps)
+        for changed_suite, changed_step in (
+            ("stage2", None),
+            (harness.PROCESS_SUITE_NAME, None),
+            (None, harness.PROCESS_SUITE_STEPS[0]),
+        ):
+            changed_suites = {name: value.copy() for name, value in suites.items()}
+            changed_steps = {name: value.copy() for name, value in steps.items()}
+            if changed_suite is not None:
+                changed_suites[changed_suite] = {"status": "passed"}
+            if changed_step is not None:
+                changed_steps[changed_step] = {"status": "passed"}
+            with self.subTest(changed_suite=changed_suite, changed_step=changed_step):
+                with self.assertRaises(harness.HarnessError):
+                    harness.validate_vmhost_result_state_selection(changed_suites, changed_steps)
+        missing_selected_suite = {name: value.copy() for name, value in suites.items()}
+        missing_selected_suite[harness.LOCAL_VMHOST_RESULT_SUITE] = {"status": "not_run"}
+        with self.assertRaisesRegex(harness.HarnessError, "selected S3-38d suite"):
+            harness.validate_vmhost_result_state_selection(missing_selected_suite, steps)
+
+        class FakeSocket:
+            def __init__(self, descriptor):
+                self.descriptor = descriptor
+
+            def fileno(self):
+                return self.descriptor
+
+            def close(self):
+                self.descriptor = -1
+
+            def settimeout(self, _timeout):
+                pass
+
+            def sendall(self, _payload):
+                pass
+
+        parent, child = FakeSocket(101), FakeSocket(102)
+
+        class FakeProcess:
+            pid = 987654321
+
+            def __init__(self):
+                self.wait_calls = 0
+
+            def poll(self):
+                return None
+
+            def wait(self):
+                self.wait_calls += 1
+                return -9
+
+        process = FakeProcess()
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                mock.patch.object(smoke.socket, "socketpair", return_value=(parent, child)),
+                mock.patch.object(smoke.subprocess, "Popen", return_value=process) as popen,
+                mock.patch.object(smoke, "read_frame", side_effect=socket.timeout()),
+                mock.patch.object(smoke, "terminate_group") as terminate,
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    r"raw-budget-0: timed out after 30s waiting READY after HELLO",
+                ),
+            ):
+                smoke.start_vmhost(Path("fake-vmhost"), Path(temporary), "raw-budget-0")
+            popen.assert_called_once()
+            self.assertTrue(popen.call_args.kwargs["start_new_session"])
+            terminate.assert_called_once_with(process.pid)
+            self.assertEqual(process.wait_calls, 1)
+            self.assertEqual(parent.fileno(), -1)
+            self.assertEqual(child.fileno(), -1)
 
     def test_s3_32a_candidate_gates_are_unique_and_fail_closed(self):
         expected = [
