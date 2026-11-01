@@ -3929,3 +3929,48 @@ fn published_single_site_pc_maps_match_artifacts_outlive_them_and_republish() {
         drop(replacement_published);
     }
 }
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn published_dword_pc_maps_match_artifacts_survive_drop_and_republish_at_new_rips() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap();
+    use od_jit::runtime::MemorySiteOperationV2::{Load, Store};
+
+    let mut previous_map = None;
+    for (index, operation) in [Load, Store, Load].into_iter().enumerate() {
+        let entry_rip = ENTRY_RIP + 0x400 + index as u64 * 0x20;
+        let (map, published) = match operation {
+            Load => {
+                let source = [0x8b, 0x03];
+                let artifact = od_jit::memory_load_v2::compile_ir_memory_dword_load_block_v2(
+                    od_jit::block::CodeView::new(entry_rip, &source).unwrap(),
+                    entry_rip,
+                )
+                .unwrap();
+                let map = artifact.pc_map().clone();
+                let published = PublishedCode::publish_ir_memory_dword_load_v2(&artifact).unwrap();
+                (map, published)
+            }
+            Store => {
+                let source = [0x89, 0x03];
+                let artifact = od_jit::memory_load_v2::compile_ir_memory_dword_store_block_v2(
+                    od_jit::block::CodeView::new(entry_rip, &source).unwrap(),
+                    entry_rip,
+                )
+                .unwrap();
+                let map = artifact.pc_map().clone();
+                let published = PublishedCode::publish_ir_memory_dword_store_v2(&artifact).unwrap();
+                (map, published)
+            }
+        };
+
+        assert_eq!(published.pc_map(), Some(&map));
+        // The compiler artifact was dropped when the operation arm returned.
+        assert_eq!(published.pc_map(), Some(&map));
+        if let Some(previous_map) = previous_map.as_ref() {
+            assert_ne!(previous_map, &map);
+        }
+        previous_map = Some(map);
+        drop(published);
+    }
+}

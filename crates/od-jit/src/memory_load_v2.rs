@@ -2446,6 +2446,199 @@ mod tests {
             })
     }
 
+    fn matches_dword_pc_map_contract(
+        map: &crate::statepoints::PcMap,
+        entry_rip: u64,
+        next_rip: u64,
+        instruction_index: u32,
+        instruction_count: u32,
+        helper_phase: StatePhase,
+        operation: MemorySiteOperationV2,
+    ) -> bool {
+        use crate::statepoints::{
+            GuestRipBoundary, GuestRipSource, SnapshotAdmissibility, StatePhase,
+        };
+
+        let helper_snapshot = match operation {
+            MemorySiteOperationV2::Load => SnapshotAdmissibility::ReplayCurrentInstruction,
+            MemorySiteOperationV2::Store => SnapshotAdmissibility::InadmissibleAfterEffect,
+        };
+        let code_len = map.code_len();
+        if map.instruction_count() != instruction_count || code_len == 0 || code_len % 4 != 0 {
+            return false;
+        }
+        if helper_phase != StatePhase::HelperCall {
+            return false;
+        }
+
+        let mut cursor = 0;
+        for (range_index, range) in map.ranges().iter().enumerate() {
+            let expected_site = if range.phase == StatePhase::Service {
+                range.instruction_index.is_none()
+            } else {
+                range.instruction_index == Some(instruction_index)
+            };
+            if !expected_site
+                || range.range.start() != cursor
+                || range.range.start() >= range.range.end()
+                || range.range.start() % 4 != 0
+                || range.range.end() % 4 != 0
+                || range.range.end() > code_len
+                || map.lookup(range.range.start()) != Some(range)
+            {
+                return false;
+            }
+            if range_index + 1 < map.ranges().len()
+                && map.lookup(range.range.end()) != map.ranges().get(range_index + 1)
+            {
+                return false;
+            }
+            cursor = range.range.end();
+        }
+        if cursor != code_len
+            || map.lookup(code_len).is_some()
+            || map.snapshot_admissibility_at(code_len).is_some()
+        {
+            return false;
+        }
+
+        let has_exactly_one = |phase, rip, snapshot| {
+            let matching: Vec<_> = map
+                .ranges()
+                .iter()
+                .filter(|range| {
+                    range.instruction_index == Some(instruction_index) && range.phase == phase
+                })
+                .collect();
+            matching.len() == 1
+                && matching[0].guest_rip == GuestRipSource::Fixed(rip)
+                && matching[0].snapshot == snapshot
+        };
+        let service_ranges: Vec<_> = map
+            .ranges()
+            .iter()
+            .filter(|range| range.phase == StatePhase::Service)
+            .collect();
+        if service_ranges.len() != 2
+            || service_ranges[0].guest_rip != GuestRipSource::Fixed(entry_rip)
+            || service_ranges[0].snapshot != SnapshotAdmissibility::CanonicalBoundary
+            || service_ranges[1].guest_rip != GuestRipSource::CanonicalState
+            || service_ranges[1].snapshot != SnapshotAdmissibility::CanonicalBoundary
+            || !has_exactly_one(
+                StatePhase::BeforeInstruction,
+                entry_rip,
+                SnapshotAdmissibility::CanonicalBoundary,
+            )
+            || !has_exactly_one(helper_phase, entry_rip, helper_snapshot)
+            || !has_exactly_one(StatePhase::AfterHelper, entry_rip, helper_snapshot)
+            || !has_exactly_one(
+                StatePhase::CommitInProgress,
+                entry_rip,
+                SnapshotAdmissibility::InadmissibleDuringCommit,
+            )
+        {
+            return false;
+        }
+
+        let pending: Vec<_> = map
+            .ranges()
+            .iter()
+            .filter(|range| range.phase == StatePhase::PendingEffects)
+            .collect();
+        if pending.is_empty()
+            || pending.iter().any(|range| {
+                range.guest_rip != GuestRipSource::Fixed(entry_rip)
+                    || range.snapshot != SnapshotAdmissibility::ReplayCurrentInstruction
+            })
+        {
+            return false;
+        }
+
+        let failed_helper_snapshot = match operation {
+            MemorySiteOperationV2::Load | MemorySiteOperationV2::Store => {
+                SnapshotAdmissibility::ReplayCurrentInstruction
+            }
+        };
+        let helper_failure_exits = map
+            .ranges()
+            .iter()
+            .filter(|range| {
+                range.phase == StatePhase::Exit
+                    && range.guest_rip == GuestRipSource::Fixed(entry_rip)
+                    && range.snapshot == failed_helper_snapshot
+            })
+            .count();
+        let next_rip_exits: Vec<_> = map
+            .ranges()
+            .iter()
+            .filter(|range| {
+                range.phase == StatePhase::Exit
+                    && range.guest_rip == GuestRipSource::Fixed(next_rip)
+            })
+            .collect();
+        let exits: Vec<_> = map
+            .ranges()
+            .iter()
+            .filter(|range| range.phase == StatePhase::Exit)
+            .collect();
+        let exits_have_exact_attribution = exits.iter().all(|range| {
+            range.instruction_index == Some(instruction_index)
+                && match range.guest_rip {
+                    GuestRipSource::Fixed(rip) if rip == entry_rip => {
+                        range.snapshot == SnapshotAdmissibility::CanonicalBoundary
+                            || range.snapshot == SnapshotAdmissibility::ReplayCurrentInstruction
+                    }
+                    GuestRipSource::Fixed(rip) if rip == next_rip => {
+                        range.snapshot == SnapshotAdmissibility::CanonicalBoundary
+                    }
+                    GuestRipSource::CanonicalState => {
+                        operation == MemorySiteOperationV2::Load
+                            && range.snapshot == SnapshotAdmissibility::CanonicalBoundary
+                    }
+                    _ => false,
+                }
+        });
+        let canonical_block_complete_exit_count = exits
+            .iter()
+            .filter(|range| {
+                range.guest_rip == GuestRipSource::CanonicalState
+                    && range.instruction_index == Some(instruction_index)
+                    && range.snapshot == SnapshotAdmissibility::CanonicalBoundary
+            })
+            .count();
+        let expected_next_rip_exit_count = match operation {
+            MemorySiteOperationV2::Load => 1,
+            MemorySiteOperationV2::Store => 2,
+        };
+        let expected_canonical_block_complete_exit_count =
+            usize::from(operation == MemorySiteOperationV2::Load);
+        let boundary = map.boundaries();
+        helper_failure_exits == 1
+            && exits_have_exact_attribution
+            && !map.ranges().iter().any(|range| {
+                range.phase == StatePhase::Exit
+                    && range.guest_rip == GuestRipSource::Fixed(entry_rip)
+                    && range.snapshot == SnapshotAdmissibility::InadmissibleAfterEffect
+            })
+            && next_rip_exits.len() == expected_next_rip_exit_count
+            && next_rip_exits.iter().all(|range| {
+                range.instruction_index == Some(instruction_index)
+                    && range.snapshot == SnapshotAdmissibility::CanonicalBoundary
+            })
+            && canonical_block_complete_exit_count == expected_canonical_block_complete_exit_count
+            && boundary.len() == 1
+            && boundary[0].rip == GuestRipBoundary::Fixed(next_rip)
+            && boundary[0].instruction_index == instruction_index
+            && boundary[0].committed_instructions == 1
+            && boundary[0].phase == StatePhase::Committed
+            && boundary[0].snapshot == SnapshotAdmissibility::CanonicalBoundary
+            && map.lookup(boundary[0].host_offset).is_some_and(|range| {
+                range.instruction_index == Some(instruction_index)
+                    && range.guest_rip == GuestRipSource::Fixed(next_rip)
+                    && range.snapshot == SnapshotAdmissibility::CanonicalBoundary
+            })
+    }
+
     #[test]
     fn ir_dword_load_admits_only_exact_8b03_and_preserves_its_provenance() {
         let entry = 0x8100;
@@ -2595,6 +2788,115 @@ mod tests {
                 .site()
                 .matches_source_bytes(&[0x89, 0x0b], MemorySiteOperationV2::Store)
         );
+    }
+
+    #[test]
+    fn ir_dword_load_pc_map_has_exact_8b03_single_site_contract() {
+        let entry = 0x8300;
+        let block = compile_ir_memory_dword_load_block_v2(
+            CodeView::new(entry, &[0x8b, 0x03]).unwrap(),
+            entry,
+        )
+        .unwrap();
+        let map = block.pc_map();
+        assert!(matches_dword_pc_map_contract(
+            map,
+            entry,
+            entry + 2,
+            0,
+            1,
+            StatePhase::HelperCall,
+            MemorySiteOperationV2::Load,
+        ));
+
+        for (site_rip, next_rip, site_index, instruction_count, helper_phase) in [
+            (entry + 1, entry + 2, 0, 1, StatePhase::HelperCall),
+            (entry, entry + 3, 0, 1, StatePhase::HelperCall),
+            (entry, entry + 2, 1, 1, StatePhase::HelperCall),
+            (entry, entry + 2, 0, 2, StatePhase::HelperCall),
+            (entry, entry + 2, 0, 1, StatePhase::AfterHelper),
+        ] {
+            assert!(
+                !matches_dword_pc_map_contract(
+                    map,
+                    site_rip,
+                    next_rip,
+                    site_index,
+                    instruction_count,
+                    helper_phase,
+                    MemorySiteOperationV2::Load,
+                ),
+                "accepted mutated load PC-map expectation: site={site_rip:#x}, next={next_rip:#x}, index={site_index}, count={instruction_count}, phase={helper_phase:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ir_dword_store_pc_map_has_exact_8903_single_site_contract() {
+        let entry = 0x8400;
+        let block = compile_ir_memory_dword_store_block_v2(
+            CodeView::new(entry, &[0x89, 0x03]).unwrap(),
+            entry,
+        )
+        .unwrap();
+        let map = block.pc_map();
+        assert!(matches_dword_pc_map_contract(
+            map,
+            entry,
+            entry + 2,
+            0,
+            1,
+            StatePhase::HelperCall,
+            MemorySiteOperationV2::Store,
+        ));
+
+        for (site_rip, next_rip, site_index, instruction_count, helper_phase) in [
+            (entry + 1, entry + 2, 0, 1, StatePhase::HelperCall),
+            (entry, entry + 3, 0, 1, StatePhase::HelperCall),
+            (entry, entry + 2, 1, 1, StatePhase::HelperCall),
+            (entry, entry + 2, 0, 2, StatePhase::HelperCall),
+            (entry, entry + 2, 0, 1, StatePhase::AfterHelper),
+        ] {
+            assert!(
+                !matches_dword_pc_map_contract(
+                    map,
+                    site_rip,
+                    next_rip,
+                    site_index,
+                    instruction_count,
+                    helper_phase,
+                    MemorySiteOperationV2::Store,
+                ),
+                "accepted mutated store PC-map expectation: site={site_rip:#x}, next={next_rip:#x}, index={site_index}, count={instruction_count}, phase={helper_phase:?}"
+            );
+        }
+
+        let mut malformed_ranges = map.ranges().to_vec();
+        let second_next_rip_exit = malformed_ranges
+            .iter_mut()
+            .filter(|range| {
+                range.phase == StatePhase::Exit
+                    && range.guest_rip == crate::statepoints::GuestRipSource::Fixed(entry + 2)
+            })
+            .nth(1)
+            .expect("store has separate success and STOP exits at A+2");
+        second_next_rip_exit.guest_rip = crate::statepoints::GuestRipSource::Fixed(entry + 3);
+        let malformed_map = crate::statepoints::PcMap::new(
+            map.code_len() as usize,
+            map.instruction_count() as usize,
+            malformed_ranges,
+            map.boundaries().to_vec(),
+        )
+        .unwrap();
+        assert!(!matches_dword_pc_map_contract(
+            &malformed_map,
+            entry,
+            entry + 2,
+            0,
+            1,
+            StatePhase::HelperCall,
+            MemorySiteOperationV2::Store,
+        ));
     }
 
     #[test]
