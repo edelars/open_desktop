@@ -251,7 +251,7 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-28b | Cooperative event yield на bounded checked-memory dispatcher | S3-15, S3-20, S3-28a |
 | [ ] | S3-29 | Flags по потребности и сравнение стратегий | S3-01, S3-27, S3-28 |
 | [x] | S3-29g | Cached NativeRegisterV1 eager/candidate full-dispatch comparison | S3-29f, S3-38b/c |
-| [ ] | S3-30 | Выбор allocator по измерениям | S3-01, S3-29 |
+| [partial] | S3-30 | Ограниченное allocator comparison; выбор по более широким workloads открыт | S3-01, S3-29 |
 | [ ] | S3-31 | Прямые связи блоков, если оправданы | S3-25, S3-28, S3-30 |
 | [ ] | S3-32 | Локальные IR-преобразования, если оправданы | S3-03, S3-27, S3-30 |
 | [ ] | S3-33 | Расширение lowering по готовности S2 | S3-27, S3-29; готовый interpreter/native subset |
@@ -2338,6 +2338,8 @@ gate.
 Выполнен только correctness-coverage срез, без изменения allocator algorithm или runtime compiler behavior. Table-driven matrix в [`allocator.rs`](../../crates/od-jit/src/allocator.rs) проверяет определения и использования `Constant`, `ReadGpr`, `Integer`, `Compare`, `CheckedLoad` и `WriteGpr`; helper boundaries до/после definitions и uses; одновременную живость register homes и spills; повторное использование capture slots; бюджеты 0..=4. Сохранённый native helper-clobber probe прошёл как ограниченная transport/ABI smoke-проверка, без утверждения, что его sum-only assertion проверяет значения по отдельности.
 
 Проверки: `cargo fmt --all -- --check`, `cargo check -p od-jit --all-targets --offline`, `cargo test -p od-jit --offline` (275/275), targeted `od-host` helper-clobber probe (1/1), `git diff --check`; Graphify обновлён, независимое Sol/high review чистое. ISSUE-022 закрывает только названный пробел def/use/helper-boundary coverage; pending-flags и прочие не проверенные paths остаются вне доказанного результата. Это не allocator comparison, performance evidence или выбор реализации; измерительная часть S3-30 остаётся открытой.
+
+Дополнительный cost-probe срез сравнил `register_homes` budget4 и diagnostic budget0 на одном frozen register-only multi-helper block с двумя ZF initial states. Три release процесса сохранили 60 compile и 240 execution pairs; все стороны прошли 200 ms floor, корректность сверялась по полной CPU state и документированной end-of-block exit normalization. Compilation, publication/destruction и repeated execution измерены отдельно. Это bounded descriptive evidence: разброс пересекается, JZ+0 не разводит taken/fall-through targets, а allocator winner/default не выбран. Stage2 cargo/rustc процессы наблюдались в точечных снимках всех трёх runs, без per-pair timestamps; runtime working-tree status неизвестен. См. [S3-30a allocator cost report](../reports/STAGE_3_S3-30a_2026-11-01.md) и [archived evidence](../reports/data/stage3/s3-30a/). S3-30 остаётся открытым для broader workload evidence и принятия решения.
 
 ### S3-31. Оценить прямые связи блоков
 

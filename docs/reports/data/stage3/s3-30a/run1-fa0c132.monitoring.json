@@ -1,0 +1,204 @@
+{
+  "schema_version": 1,
+  "classification": "reconstructed_point_in_time_monitoring_envelope",
+  "run": {
+    "process_run": 1,
+    "command": "/tmp/od-bench-s3-30a-target/release/od-bench allocator-cost --process-run 1 --output work/tmp/stage3/s3-30a/run1-fa0c132.json",
+    "source_revision": "fa0c1329a432885432bb8ada3e45c50edc69b830",
+    "source_sha256": "049fdd15756203bfbb791f8ccb5462bbfaafe4c89fd0d30dc4839bd30ecd7aa9",
+    "frozen_code_sha256": "4fe980f463d01c3fc413943b73860314d9c780c638acdc9bf50072290c89f778",
+    "report": {
+      "path": "work/tmp/stage3/s3-30a/run1-fa0c132.json",
+      "sha256": "ed50059b39cb2665c39e88d9e69d52ce7a671e91e2e2dbe621c1db87f1d44bfa"
+    },
+    "calibration_journal": {
+      "path": "work/tmp/stage3/s3-30a/run1-fa0c132.calibration.jsonl",
+      "sha256": "5d254720de95af8aec6abf96f7053528092432b8b1c8bc1e48d7319a7e8ed104"
+    },
+    "host": {
+      "cpu_model": "Apple M3 Max",
+      "architecture": "aarch64",
+      "os": "macos",
+      "os_version": "26.7.1",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "profile": "release",
+      "target": "aarch64-apple-darwin"
+    },
+    "build_source_tree_dirty": false,
+    "runtime_working_tree_dirty": null,
+    "start_observed_utc": "2026-11-01T03:14:55Z",
+    "completion_observed_utc": "2026-11-01T03:22:36Z",
+    "completion_time_exact": false,
+    "executor_exit_code": null,
+    "executor_exit_code_reason": "The tool session expired; the complete report exists, but its exit status could not be recovered."
+  },
+  "snapshots": [
+    {
+      "time_utc": "2026-11-01T03:14:49Z",
+      "boundary": "prestart",
+      "load_average": [
+        1.95,
+        2.6,
+        2.66
+      ],
+      "benchmark_pid": null,
+      "notes": "No benchmark process observed."
+    },
+    {
+      "time_utc": "2026-11-01T03:14:55Z",
+      "benchmark_pid": 62337,
+      "benchmark_cpu_pct": 100.0,
+      "benchmark_elapsed": "00:04",
+      "load_average": [
+        2.11,
+        2.62,
+        2.66
+      ],
+      "notes": "No Stage2 process observed."
+    },
+    {
+      "time_utc": "2026-11-01T03:15:47Z",
+      "benchmark_pid": 62337,
+      "benchmark_cpu_pct": 100.0,
+      "benchmark_elapsed": "00:56",
+      "load_average": [
+        3.05,
+        2.8,
+        2.73
+      ],
+      "notes": "No Stage2 process observed."
+    },
+    {
+      "time_utc": "2026-11-01T03:16:39Z",
+      "benchmark_pid": 62337,
+      "benchmark_cpu_pct": 98.1,
+      "benchmark_elapsed": "01:49",
+      "load_average": [
+        2.89,
+        2.81,
+        2.74
+      ],
+      "other_processes": [
+        {
+          "kind": "Stage2 cargo test",
+          "pid": 63852,
+          "cpu_pct": 0.0,
+          "rustc_visible": false
+        }
+      ]
+    },
+    {
+      "time_utc": "2026-11-01T03:17:31Z",
+      "benchmark_pid": 62337,
+      "benchmark_cpu_pct": 99.6,
+      "benchmark_elapsed": "02:40",
+      "load_average": [
+        3.12,
+        2.89,
+        2.77
+      ],
+      "notes": "No other relevant process observed."
+    },
+    {
+      "time_utc": "2026-11-01T03:18:23Z",
+      "benchmark_pid": 62337,
+      "benchmark_cpu_pct": 99.0,
+      "benchmark_elapsed": "03:32",
+      "load_average": [
+        2.96,
+        2.86,
+        2.76
+      ],
+      "other_processes": [
+        {
+          "kind": "Stage2 cargo check",
+          "pid": 66670,
+          "child_kind": "rustc",
+          "child_pid": 66690,
+          "child_cpu_pct": 19.8
+        }
+      ]
+    },
+    {
+      "time_utc": "2026-11-01T03:19:09Z",
+      "benchmark_pid": 62337,
+      "benchmark_cpu_pct": 98.3,
+      "benchmark_elapsed": "04:18",
+      "load_average": [
+        2.69,
+        2.8,
+        2.74
+      ],
+      "other_processes": [
+        {
+          "kind": "Stage2 cargo test",
+          "pid": 66824,
+          "cpu_pct": 0.0
+        }
+      ]
+    },
+    {
+      "time_utc": "2026-11-01T03:19:46Z",
+      "benchmark_pid": 62337,
+      "benchmark_cpu_pct": 100.0,
+      "benchmark_elapsed": "04:55",
+      "load_average": [
+        2.79,
+        2.82,
+        2.75
+      ]
+    },
+    {
+      "time_utc": "2026-11-01T03:20:21Z",
+      "benchmark_pid": 62337,
+      "benchmark_cpu_pct": 98.9,
+      "benchmark_elapsed": "05:30",
+      "load_average": [
+        3.31,
+        2.95,
+        2.8
+      ]
+    },
+    {
+      "time_utc": "2026-11-01T03:20:57Z",
+      "benchmark_pid": 62337,
+      "benchmark_cpu_pct": 98.1,
+      "benchmark_elapsed": "06:06",
+      "load_average": [
+        2.87,
+        2.87,
+        2.78
+      ],
+      "other_processes": [
+        {
+          "kind": "Stage2 fixture_v2 cargo test",
+          "pid": 69491,
+          "child_kind": "rustc",
+          "child_pid": 69514,
+          "child_cpu_pct": 25.2,
+          "child_elapsed": "00:01"
+        }
+      ]
+    },
+    {
+      "time_utc": "2026-11-01T03:22:36Z",
+      "benchmark_pid": null,
+      "other_processes": [
+        {
+          "kind": "Stage2 fixture_v2 cargo test",
+          "pid": 70421,
+          "cpu_pct": 0.0,
+          "elapsed": "00:52"
+        }
+      ],
+      "notes": "Benchmark PID absent; report and journal present. Exact process completion time unknown."
+    }
+  ],
+  "limits": [
+    "Snapshots are point-in-time, not continuous monitoring.",
+    "No per-pair timestamps exist, so observed process overlap cannot be correlated to individual pairs.",
+    "Stage2 compiler activity overlapped some observed intervals; exact pair overlap is unknown.",
+    "No Graphify process was observed in available snapshots.",
+    "Preserve report and calibration journal byte-for-byte; this envelope is separate monitoring metadata."
+  ]
+}

@@ -1,0 +1,21 @@
+S3-30a calibration-only pilot process envelope
+
+Command:
+/tmp/od-bench-s3-30a-target/release/od-bench allocator-cost --calibration-only --process-run 1 --output work/tmp/stage3/s3-30a/calibration-pilot-fa0c132.json
+
+Source revision: fa0c1329a432885432bb8ada3e45c50edc69b830
+Host: MacBook Pro, Apple M3 Max, macOS 26.7.1, aarch64
+Process ID: 59155; first observed 2026-11-01T03:11:32Z at 3s elapsed; absent by the 03:13:15Z snapshot. Exact end timestamp not captured.
+Command exit status: 0; `timing_status=calibration_only_unscored`; no compile pairs or execution pairs were collected.
+Calibration wall reported after preflight: 37,524,761,292ns.
+
+Point-in-time load/process observations (not per-attempt timestamps):
+- 2026-11-01T03:10:44Z, before release build: load average 2.18, 2.78, 2.70; Stage2 cargo test PID 57587, rustc PIDs 57867/57868 at 23.3%/17.8% CPU.
+- 2026-11-01T03:11:28Z, after build and before calibration launch: load average 2.65, 2.81, 2.71; Stage2 cargo test PID 59050 at 0%, rustc PID 59069 at 16.4% CPU.
+- 2026-11-01T03:11:32Z: load average 2.59, 2.80, 2.71; calibration-only PID 59155 at 3s elapsed; Stage2 cargo test PID 59050 at 0%, rustc PID 59069 at 18.6% CPU.
+- 2026-11-01T03:11:58Z: load average 2.90, 2.86, 2.73; calibration-only PID 59155 at 29s elapsed; no Stage2 compiler process visible.
+- 2026-11-01T03:12:35Z: load average 3.08, 2.91, 2.75; calibration-only PID 59155 at 100% CPU and 01:06 elapsed; Stage2 cargo check PID 60044 and rustc PID 60166 at 24.3% CPU.
+- By the 2026-11-01T03:13:15Z snapshot the calibration process had exited; load average was 2.82, 2.87, 2.75, with no benchmark, Stage2, rustc, or Graphify process visible.
+- 2026-11-01T03:13:24Z post-run snapshot: load average 2.69, 2.84, 2.74; a new Stage2 cargo check PID 60926 and rustc PID 60954 at 68.7% CPU; no benchmark visible.
+
+The 03:11:32 and 03:12:35 samples show actual Stage2 compiler overlap. Exact overlap intervals within calibration attempts are unknown because no per-attempt wall-clock timestamps are recorded. Build source_tree_dirty=false; runtime working_tree_dirty=null.

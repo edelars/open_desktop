@@ -1,0 +1,16 @@
+S3-30a calibration-only pilot process envelope
+
+Command:
+/tmp/od-bench-s3-30a-target/release/od-bench allocator-cost --calibration-only --process-run 1 --output work/tmp/stage3/s3-30a/calibration-pilot-736bb6b.json
+
+Source: 736bb6b6120cde0d87d73c2b4ea1b220be8fa2e9
+Host: MacBook Pro, Apple M3 Max, macOS 26.7.1, aarch64
+Exit status: 1 after report and JSONL journal were written; diagnostic only
+Calibration report/journal contain the per-attempt measured durations and repetitions.
+
+Point-in-time load/process observations:
+- 2026-11-01T03:00:38Z, before launch: load average 4.84, 2.82, 2.51; Stage2 cargo test PID 47492 at 0% CPU; no benchmark, rustc, or Graphify process.
+- 2026-11-01T03:00:46Z: load average 4.61, 2.80, 2.51; allocator-cost PID 48489 at 4 seconds elapsed; Stage2 cargo test PID 47492 at 0% CPU; no rustc or Graphify process.
+- By the 2026-11-01T03:01:11Z snapshot, allocator-cost had exited. Load average was 4.58, 2.96, 2.57; Stage2 cargo check PID 48938 and rustc PID 48957 were visible, rustc at 37% CPU. Their exact overlap with the benchmark is unknown because there are no per-attempt wall-clock timestamps.
+
+The cargo launcher printed `host metadata git status unavailable: git timed out after 2000 ms`; report runtime working_tree_dirty is null. Build source_tree_dirty is false.

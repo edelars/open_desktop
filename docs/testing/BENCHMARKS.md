@@ -423,6 +423,64 @@ timing, arena/cache construction/destruction, or a single cold compile+first
 execution. No product speed or cache-policy conclusion is made. Full Stage 3
 performance acceptance and S3-18 remain open.
 
+### S3-30a: bounded register-home allocator cost probe
+
+`od-bench allocator-cost` is an opt-in Apple Silicon macOS release diagnostic.
+It compares the existing `register_homes` budget4 baseline against budget0
+spill-only configuration on one frozen six-instruction register-only
+multi-helper block. Two initial states produce ZF=1 and ZF=0; the final `JZ +0`
+converges to `code_end` on both outcomes, so the fixture does not measure
+distinct branch routing. The command changes neither the allocation algorithm
+nor the production default.
+
+Build the release runner in an isolated target directory, run its non-scored
+preflight, then use a distinct output path for each sequential process:
+
+```sh
+CARGO_TARGET_DIR=/tmp/od-bench-s3-30a-target cargo build --release --offline -p od-bench
+/tmp/od-bench-s3-30a-target/release/od-bench allocator-cost \
+  --preflight-only --output work/tmp/stage3/s3-30a/preflight-current.json
+for run in 1 2 3; do
+  /tmp/od-bench-s3-30a-target/release/od-bench allocator-cost \
+    --process-run "$run" \
+    --output "work/tmp/stage3/s3-30a/run${run}-fa0c132.json"
+done
+```
+
+The archived standalone preflight report was built from the earlier reviewed
+source revision `80d4bd3289727b211a620ba08965efc9bf57bea1`. Each scored process
+at `fa0c1329a432885432bb8ada3e45c50edc69b830` performs its own correctness
+preflight and per-sample validation. Full CPU state, exit, retired count and
+remaining budget must match; only the specified `BlockComplete` versus
+`InstructionBudgetExhausted` end-of-block result is normalized. One published
+mapping is retained at a time. Compile batches have 32,768 calls and include
+destruction of each unpublished `CompiledBlock`; publication and published
+mapping destruction are reported separately. Repeated interpreter calls and
+direct `PublishedCode::execute_block` native block-entry calls are timed; cache
+lookup and dispatcher work are excluded. State setup/reset and validation are
+outside the interval. The shared calibrated count is 8,388,608 calls per side,
+with a 200 ms floor; each process records 20 alternating-order paired compile
+samples comparing the two budgets and 20 interpreter/native execution pairs
+for each case and budget. Every pair in all three reports passed the floor.
+
+Three sequential release processes on Apple M3 Max were reviewed at source
+revision `fa0c1329a432885432bb8ada3e45c50edc69b830`. Across 60 retained samples
+per case/budget, raw-total-derived native medians were 43.5195 ns/call
+(41.9681–44.9925) at budget4 and 44.3761 (42.5741–46.0665) at budget0 for
+ZF=1; for ZF=0 they were 43.2271 (41.3485–47.8473) and 45.2711
+(43.4873–46.5666), respectively. Paired compile budget0/budget4 ratio median
+was 0.99284 (range 0.95969–1.03218, 60 pairs). Budget4 emitted 3,052 bytes
+with four register-home values and ten spilled temporaries; budget0 emitted
+3,040 bytes with no homes and fourteen spills. These overlapping, bounded
+measurements do not select an allocator or a production default. Stage2
+cargo/rustc activity appeared in point-in-time snapshots during all three
+processes; there are no per-pair timestamps to attribute timing variation.
+Runtime `working_tree_dirty` is unknown because metadata collection timed out;
+run1's numeric executor exit was unavailable, although its report completed
+without failure and all sample floors passed. Mac mini checks remain deferred
+until the end of Stage 3. See the [S3-30a report](../reports/STAGE_3_S3-30a_2026-11-01.md)
+and [reviewed raw evidence](../reports/data/stage3/s3-30a/).
+
 ### S3-35a: cold first full-corpus execution
 
 `od-bench cold-first-run` is an opt-in Apple Silicon macOS release benchmark

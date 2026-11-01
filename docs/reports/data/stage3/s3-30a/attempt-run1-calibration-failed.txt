@@ -1,0 +1,16 @@
+S3-30a allocator-cost attempt (inconclusive; no report was written)
+
+Command:
+/tmp/od-bench-s3-30a-target/release/od-bench allocator-cost --process-run 1 --output work/tmp/stage3/s3-30a/run1.json
+
+Host: MacBook Pro, Apple M3 Max, macOS 26.7.1, aarch64
+Source revision: 80d4bd3289727b211a620ba08965efc9bf57bea1
+Started: approximately 2026-11-01T02:31:10Z
+Ended: before 2026-11-01T02:31:44Z; exact completion timestamp unavailable
+Observed benchmark PID: 21226 at 99.3% CPU, elapsed 00:02 in the 02:31:12Z snapshot
+Pre-start load average: 1.64, 2.25, 2.68
+Pre-start snapshot: no allocator-cost, cargo, rustc, or Graphify process visible
+Exit status: 1
+Exact error: Error: CostError("execution calibration exceeded safety bound")
+Classification: incomplete/inconclusive; failed before report serialization and before scored pairs
+Output path: work/tmp/stage3/s3-30a/run1.json (not created)

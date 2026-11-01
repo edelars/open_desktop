@@ -1,0 +1,238 @@
+{
+  "allocation_accounting_by_budget": {
+    "0": {
+      "assigned_register_home_values": 0,
+      "default_api_code_match": null,
+      "emitted_code_bytes": 3040,
+      "frame_bytes": 288,
+      "helper_boundary_count": 5,
+      "helper_capture_slots": 0,
+      "helper_reloads": 0,
+      "helper_saves": 0,
+      "planned_transfer_bytes": 112,
+      "planned_transfer_words": 28,
+      "register_homes_budget": 0,
+      "spilled_temporary_values": 14,
+      "value_spill_loads": 14,
+      "value_spill_slots": 14,
+      "value_spill_stores": 14
+    },
+    "4": {
+      "assigned_register_home_values": 4,
+      "default_api_code_match": true,
+      "emitted_code_bytes": 3052,
+      "frame_bytes": 288,
+      "helper_boundary_count": 5,
+      "helper_capture_slots": 3,
+      "helper_reloads": 3,
+      "helper_saves": 3,
+      "planned_transfer_bytes": 104,
+      "planned_transfer_words": 26,
+      "register_homes_budget": 4,
+      "spilled_temporary_values": 10,
+      "value_spill_loads": 10,
+      "value_spill_slots": 10,
+      "value_spill_stores": 10
+    }
+  },
+  "calibration_only_attempts": [
+    {
+      "classification": "failed_unscored_inconclusive",
+      "journal": {
+        "path": "work/tmp/stage3/s3-30a/calibration-pilot-736bb6b.calibration.jsonl",
+        "sha256": "4f577502293f0fec115ba8edd21b161b568ede7e2bfa941ad606797238d64aad"
+      },
+      "report": {
+        "path": "work/tmp/stage3/s3-30a/calibration-pilot-736bb6b.json",
+        "sha256": "ab2297b148a1d07ee4046133a22e342a69dced4d7ff5aefff124b4d5084cbe53"
+      },
+      "result": "budget4 equal case hit 1s measured-side ceiling before common 200ms floor feasibility; zero scored samples; exit1; independent review clean",
+      "source_revision": "736bb6b"
+    },
+    {
+      "classification": "successful_calibration_only_unscored",
+      "journal": {
+        "path": "work/tmp/stage3/s3-30a/calibration-pilot-fa0c132.calibration.jsonl",
+        "sha256": "b1e8a8dc17b7b758e3735b01f82f87e252e9c07d6ec5e84c8b5cacd29c833b86"
+      },
+      "report": {
+        "path": "work/tmp/stage3/s3-30a/calibration-pilot-fa0c132.json",
+        "sha256": "ca34da79c8c0aabba08ec414e75618e92d935aea8827bddb80f9cba38ce089d9"
+      },
+      "result": "64 records; all four budget x case combinations completed at common 8388608 calls; both sides met 200ms and stayed below 3s; zero scored pairs; independent review clean",
+      "source_revision": "fa0c1329a432885432bb8ada3e45c50edc69b830"
+    },
+    {
+      "artifact": {
+        "path": "work/tmp/stage3/s3-30a/attempt-run1-calibration-failed.txt",
+        "sha256": "4a876a03853bb00a7c332a85c01a074c4cde017d2fef145a62754db9baf99fcd"
+      },
+      "classification": "incomplete_inconclusive_no_report",
+      "result": "exit1 before report serialization and scored pairs; exact error execution calibration exceeded safety bound; no timing durations recoverable",
+      "source_revision": "80d4bd3289727b211a620ba08965efc9bf57bea1"
+    }
+  ],
+  "caveats": [
+    "Bounded six-instruction register-only multi-helper diagnostic with two initial ZF states; JZ+0 taken and fall-through converge at code_end, so this does not measure distinct branch routing.",
+    "This is not a broad workload or allocator winner claim and does not cover max pressure, pending flags, memory workload, full program corpus, or Mac mini.",
+    "Run reports say sample_floor_passed_bounded_diagnostic and all retained compile/execution pairs meet the 200ms floor; preserve every pair.",
+    "Stage2 cargo/rustc activity appeared in point-in-time envelopes for all runs; no per-pair timestamps exist, so timing impact cannot be attributed or corrected. No post-hoc trimming or retry was performed.",
+    "Run1 executor exit code was unavailable after its tool session expired; report completed with no failure and all floors passed. Run2 and run3 executor exit0, with a 2s git metadata timeout each; runtime working_tree_dirty is unknown.",
+    "Monitoring envelopes are reconstructed/point-in-time, not continuous; exact process completion timestamps are unknown."
+  ],
+  "classification": "bounded_descriptive_allocator_cost_suite_manifest",
+  "compile_budget0_over_budget4_ratio": {
+    "max": 1.0321766555673912,
+    "median": 0.9928444817807873,
+    "min": 0.9596905601236915,
+    "pair_count": 60
+  },
+  "cross_run_execution_summary": {
+    "multi-helper-equal:budget0": {
+      "interpreter_ns_per_call_max": 284.51646506786346,
+      "interpreter_ns_per_call_median": 279.0466784834862,
+      "interpreter_ns_per_call_min": 266.2823785543442,
+      "native_ns_per_call_max": 46.06646406650543,
+      "native_ns_per_call_median": 44.376069486141205,
+      "native_ns_per_call_min": 42.57413458824158,
+      "native_over_interpreter_ratio_max": 0.16340353137252595,
+      "native_over_interpreter_ratio_median": 0.159394080063256,
+      "native_over_interpreter_ratio_min": 0.15518197225262864,
+      "samples_across_three_runs": 60
+    },
+    "multi-helper-equal:budget4": {
+      "interpreter_ns_per_call_max": 284.4848574399948,
+      "interpreter_ns_per_call_median": 277.77451211214066,
+      "interpreter_ns_per_call_min": 266.17910385131836,
+      "native_ns_per_call_max": 44.992464900016785,
+      "native_ns_per_call_median": 43.51951813697815,
+      "native_ns_per_call_min": 41.96809208393097,
+      "native_over_interpreter_ratio_max": 0.16159288413422743,
+      "native_over_interpreter_ratio_median": 0.1565178405261662,
+      "native_over_interpreter_ratio_min": 0.15151725931523571,
+      "samples_across_three_runs": 60
+    },
+    "multi-helper-not-equal:budget0": {
+      "interpreter_ns_per_call_max": 285.51786756515503,
+      "interpreter_ns_per_call_median": 281.2374270558357,
+      "interpreter_ns_per_call_min": 272.7259588241577,
+      "native_ns_per_call_max": 46.56661343574524,
+      "native_ns_per_call_median": 45.27112799882889,
+      "native_ns_per_call_min": 43.48733341693878,
+      "native_over_interpreter_ratio_max": 0.1638420418503301,
+      "native_over_interpreter_ratio_median": 0.16101197965841563,
+      "native_over_interpreter_ratio_min": 0.15685496924770978,
+      "samples_across_three_runs": 60
+    },
+    "multi-helper-not-equal:budget4": {
+      "interpreter_ns_per_call_max": 289.5834642648697,
+      "interpreter_ns_per_call_median": 280.0785812139511,
+      "interpreter_ns_per_call_min": 267.1954530477524,
+      "native_ns_per_call_max": 47.84726297855377,
+      "native_ns_per_call_median": 43.22714823484421,
+      "native_ns_per_call_min": 41.34851086139679,
+      "native_over_interpreter_ratio_max": 0.17864027540811517,
+      "native_over_interpreter_ratio_median": 0.15416071401781167,
+      "native_over_interpreter_ratio_min": 0.1498984522258563,
+      "samples_across_three_runs": 60
+    }
+  },
+  "cross_run_execution_summary_method": "For each retained sample, derive ns/call as raw total_ns divided by the calibrated common repetition count (8388608); median/min/max below are calculated over the 60 raw-derived values per case and budget. Integer-truncated report ns-per-call fields are not used.",
+  "frozen_code_sha256": "4fe980f463d01c3fc413943b73860314d9c780c638acdc9bf50072290c89f778",
+  "host": {
+    "cpu_model": "Apple M3 Max",
+    "os": "macos",
+    "os_version": "26.7.1",
+    "profile": "release",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "source_revision": "fa0c1329a432885432bb8ada3e45c50edc69b830",
+    "source_sha256": "049fdd15756203bfbb791f8ccb5462bbfaafe4c89fd0d30dc4839bd30ecd7aa9",
+    "source_tree_dirty": false,
+    "target": "aarch64-apple-darwin"
+  },
+  "measurement_scope": "One frozen six-instruction register-only multi-helper block; budget4 baseline versus budget0 spill-only diagnostic. This does not choose an allocator globally.",
+  "preflight": {
+    "path": "work/tmp/stage3/s3-30a/preflight-run1.json",
+    "review": "independent source/preflight review clean per recorded parent handoff",
+    "sha256": "dbe41087b1777c14467dfa2f3d74aba5ff816bd68c5f1d240d0b909c3768d208",
+    "source_revision": "80d4bd3289727b211a620ba08965efc9bf57bea1"
+  },
+  "schema_version": 1,
+  "scored_runs": [
+    {
+      "all_retained_samples_meet_200ms": true,
+      "calibration_journal": {
+        "path": "work/tmp/stage3/s3-30a/run1-fa0c132.calibration.jsonl",
+        "sha256": "5d254720de95af8aec6abf96f7053528092432b8b1c8bc1e48d7319a7e8ed104"
+      },
+      "calibration_record_count": 64,
+      "compile_pair_count": 20,
+      "execution_pair_count": 80,
+      "executor_exit_code": null,
+      "monitoring_envelope": {
+        "path": "work/tmp/stage3/s3-30a/run1-fa0c132.monitoring.json",
+        "sha256": "e557c40ce6461980119a9abfb7a127e8886818482cae33e4f64585796299dd99"
+      },
+      "process_run": 1,
+      "report": {
+        "path": "work/tmp/stage3/s3-30a/run1-fa0c132.json",
+        "sha256": "ed50059b39cb2665c39e88d9e69d52ce7a671e91e2e2dbe621c1db87f1d44bfa"
+      },
+      "runtime_working_tree_dirty": null,
+      "sample_floor_passed": true,
+      "timing_status": "sample_floor_passed_bounded_diagnostic"
+    },
+    {
+      "all_retained_samples_meet_200ms": true,
+      "calibration_journal": {
+        "path": "work/tmp/stage3/s3-30a/run2-fa0c132.calibration.jsonl",
+        "sha256": "b11cab9132b9b4554f7bae2791fcda745c5004c5c293bae349b044c8d605d815"
+      },
+      "calibration_record_count": 64,
+      "compile_pair_count": 20,
+      "execution_pair_count": 80,
+      "executor_exit_code": 0,
+      "monitoring_envelope": {
+        "path": "work/tmp/stage3/s3-30a/run2-fa0c132.monitoring.json",
+        "sha256": "913fb0f3214e5f0cb5c48e7ef52ec3ec5440b627900731b815c150ab48d44972"
+      },
+      "process_run": 2,
+      "report": {
+        "path": "work/tmp/stage3/s3-30a/run2-fa0c132.json",
+        "sha256": "110fe15761eaf1235bb8addd8622e1256f309e496c012bc4ffe177ed7add987d"
+      },
+      "runtime_working_tree_dirty": null,
+      "sample_floor_passed": true,
+      "timing_status": "sample_floor_passed_bounded_diagnostic"
+    },
+    {
+      "all_retained_samples_meet_200ms": true,
+      "calibration_journal": {
+        "path": "work/tmp/stage3/s3-30a/run3-fa0c132.calibration.jsonl",
+        "sha256": "bef88f7812371e394a77d20bf61fb9e0b9ec3478ee685870f54ba33b2402d7c6"
+      },
+      "calibration_record_count": 64,
+      "compile_pair_count": 20,
+      "execution_pair_count": 80,
+      "executor_exit_code": 0,
+      "monitoring_envelope": {
+        "path": "work/tmp/stage3/s3-30a/run3-fa0c132.monitoring.json",
+        "sha256": "64e0491a027ce82d90ec7262decc780fc0d16cc7b2bd518653920ae867f07a76"
+      },
+      "process_run": 3,
+      "report": {
+        "path": "work/tmp/stage3/s3-30a/run3-fa0c132.json",
+        "sha256": "77c1cd2d90368402b70d01a6c6e05c0d3395016a0d45b9c8c1858bfea971493d"
+      },
+      "runtime_working_tree_dirty": null,
+      "sample_floor_passed": true,
+      "timing_status": "sample_floor_passed_bounded_diagnostic"
+    }
+  ],
+  "source": {
+    "build_source_tree_dirty": false,
+    "revision": "fa0c1329a432885432bb8ada3e45c50edc69b830",
+    "runtime_working_tree_dirty": "unknown (null in reports due git status timeout)",
+    "sha256": "049fdd15756203bfbb791f8ccb5462bbfaafe4c89fd0d30dc4839bd30ecd7aa9"
+  }
+}

@@ -1,0 +1,572 @@
+{
+  "branch_scope": "Final JZ is checked via ZF=1/0, but its displacement is zero, so taken and fall-through both target code_end; this fixture does not test distinct branch routing.",
+  "cache_and_mapping_policy": "No translation-cache lookup or cache entry. One MAP_JIT PublishedCode mapping at a time; publication is separate from repeated execution; each budget mapping is dropped before publishing the other.",
+  "calibration": {
+    "calibration_checks": [
+      {
+        "budget": 4,
+        "case_id": "multi-helper-equal",
+        "interpreter_calls": 256,
+        "interpreter_ns": 79792,
+        "native_calls": 256,
+        "native_ns": 12291,
+        "process_wall_ns": 28275667,
+        "record_kind": "attempt",
+        "requested_repetitions": 256,
+        "sample_floor_met": false,
+        "stop_reason": null
+      },
+      {
+        "budget": 4,
+        "case_id": "multi-helper-equal",
+        "interpreter_calls": 512,
+        "interpreter_ns": 335917,
+        "native_calls": 512,
+        "native_ns": 69791,
+        "process_wall_ns": 58904792,
+        "record_kind": "attempt",
+        "requested_repetitions": 512,
+        "sample_floor_met": false,
+        "stop_reason": null
+      },
+      {
+        "budget": 4,
+        "case_id": "multi-helper-equal",
+        "interpreter_calls": 1024,
+        "interpreter_ns": 649125,
+        "native_calls": 1024,
+        "native_ns": 125042,
+        "process_wall_ns": 65520625,
+        "record_kind": "attempt",
+        "requested_repetitions": 1024,
+        "sample_floor_met": false,
+        "stop_reason": null
+      },
+      {
+        "budget": 4,
+        "case_id": "multi-helper-equal",
+        "interpreter_calls": 2048,
+        "interpreter_ns": 2183873,
+        "native_calls": 2048,
+        "native_ns": 531082,
+        "process_wall_ns": 89198875,
+        "record_kind": "attempt",
+        "requested_repetitions": 2048,
+        "sample_floor_met": false,
+        "stop_reason": null
+      },
+      {
+        "budget": 4,
+        "case_id": "multi-helper-equal",
+        "interpreter_calls": 4096,
+        "interpreter_ns": 3325501,
+        "native_calls": 4096,
+        "native_ns": 780710,
+        "process_wall_ns": 101197042,
+        "record_kind": "attempt",
+        "requested_repetitions": 4096,
+        "sample_floor_met": false,
+        "stop_reason": null
+      },
+      {
+        "budget": 4,
+        "case_id": "multi-helper-equal",
+        "interpreter_calls": 8192,
+        "interpreter_ns": 5029753,
+        "native_calls": 8192,
+        "native_ns": 1125167,
+        "process_wall_ns": 115490292,
+        "record_kind": "attempt",
+        "requested_repetitions": 8192,
+        "sample_floor_met": false,
+        "stop_reason": null
+      },
+      {
+        "budget": 4,
+        "case_id": "multi-helper-equal",
+        "interpreter_calls": 16384,
+        "interpreter_ns": 4627374,
+        "native_calls": 16384,
+        "native_ns": 715833,
+        "process_wall_ns": 129832459,
+        "record_kind": "attempt",
+        "requested_repetitions": 16384,
+        "sample_floor_met": false,
+        "stop_reason": null
+      },
+      {
+        "budget": 4,
+        "case_id": "multi-helper-equal",
+        "interpreter_calls": 32768,
+        "interpreter_ns": 9177782,
+        "native_calls": 32768,
+        "native_ns": 1425498,
+        "process_wall_ns": 152508000,
+        "record_kind": "attempt",
+        "requested_repetitions": 32768,
+        "sample_floor_met": false,
+        "stop_reason": null
+      },
+      {
+        "budget": 4,
+        "case_id": "multi-helper-equal",
+        "interpreter_calls": 65536,
+        "interpreter_ns": 18309206,
+        "native_calls": 65536,
+        "native_ns": 2889574,
+        "process_wall_ns": 193996000,
+        "record_kind": "attempt",
+        "requested_repetitions": 65536,
+        "sample_floor_met": false,
+        "stop_reason": null
+      },
+      {
+        "budget": 4,
+        "case_id": "multi-helper-equal",
+        "interpreter_calls": 131072,
+        "interpreter_ns": 37119129,
+        "native_calls": 131072,
+        "native_ns": 5771202,
+        "process_wall_ns": 272305334,
+        "record_kind": "attempt",
+        "requested_repetitions": 131072,
+        "sample_floor_met": false,
+        "stop_reason": null
+      },
+      {
+        "budget": 4,
+        "case_id": "multi-helper-equal",
+        "interpreter_calls": 262144,
+        "interpreter_ns": 72934133,
+        "native_calls": 262144,
+        "native_ns": 11505163,
+        "process_wall_ns": 423072042,
+        "record_kind": "attempt",
+        "requested_repetitions": 262144,
+        "sample_floor_met": false,
+        "stop_reason": null
+      },
+      {
+        "budget": 4,
+        "case_id": "multi-helper-equal",
+        "interpreter_calls": 524288,
+        "interpreter_ns": 147679151,
+        "native_calls": 524288,
+        "native_ns": 22995087,
+        "process_wall_ns": 720829792,
+        "record_kind": "attempt",
+        "requested_repetitions": 524288,
+        "sample_floor_met": false,
+        "stop_reason": null
+      },
+      {
+        "budget": 4,
+        "case_id": "multi-helper-equal",
+        "interpreter_calls": 1048576,
+        "interpreter_ns": 291031146,
+        "native_calls": 1048576,
+        "native_ns": 45875303,
+        "process_wall_ns": 1307661334,
+        "record_kind": "attempt",
+        "requested_repetitions": 1048576,
+        "sample_floor_met": false,
+        "stop_reason": null
+      },
+      {
+        "budget": 4,
+        "case_id": "multi-helper-equal",
+        "interpreter_calls": 2097152,
+        "interpreter_ns": 585468189,
+        "native_calls": 2097152,
+        "native_ns": 91682012,
+        "process_wall_ns": 2482541625,
+        "record_kind": "attempt",
+        "requested_repetitions": 2097152,
+        "sample_floor_met": false,
+        "stop_reason": null
+      },
+      {
+        "budget": 4,
+        "case_id": "multi-helper-equal",
+        "interpreter_calls": 3582464,
+        "interpreter_ns": 1000016691,
+        "native_calls": 4194304,
+        "native_ns": 181908558,
+        "process_wall_ns": 4594545125,
+        "record_kind": "attempt",
+        "requested_repetitions": 4194304,
+        "sample_floor_met": false,
+        "stop_reason": "per_side_wall_ceiling"
+      }
+    ],
+    "common_repetitions_per_case_and_side": null,
+    "maximum_measured_side_ns": 1000000000,
+    "maximum_overall_wall_ns": 180000000000,
+    "maximum_repetitions_per_side": 16777216,
+    "minimum_sample_ns": 200000000,
+    "outcome": "calibration stopped: per_side_wall_ceiling; budget=4, case=multi-helper-equal, repetitions=4194304, native_ns=181908558, interpreter_ns=Some(1000016691), process_wall_ns=4594545125",
+    "sample_pairs": 0,
+    "total_wall_ns": 4598993167,
+    "wall_bound_derivation": "Estimated ceiling: 2 budgets × 2 cases × 17 doubled call counts × 2 sides × 1s per side = 136s timed work; 180s overall allows an estimated 44s for state reset, validation, block setup and durable journal writes. The prior failed attempt's individual side durations are unknown, so this is a planning bound, not a measured runtime claim.",
+    "warmup_calls_per_case": 0
+  },
+  "calibration_only_mode": true,
+  "cases": [
+    {
+      "execution_pairs": [],
+      "expected_zf": true,
+      "id": "multi-helper-equal",
+      "initial": {
+        "auxiliary_state": "fs_selector=0x0;gs_selector=0x0;gdtr=None;fs_cache=None;gs_cache=None;x87=None",
+        "fs_base": 0,
+        "gpr": [
+          0,
+          34,
+          51,
+          7,
+          4116,
+          4117,
+          4118,
+          4119,
+          4120,
+          4121,
+          4122,
+          4123,
+          4124,
+          4125,
+          4126,
+          4127
+        ],
+        "gs_base": 0,
+        "rflags": 514,
+        "rip": 4096
+      },
+      "interpreter_oracle": {
+        "raw_exit": "InstructionBudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 6,
+        "state": {
+          "auxiliary_state": "fs_selector=0x0;gs_selector=0x0;gdtr=None;fs_cache=None;gs_cache=None;x87=None",
+          "fs_base": 0,
+          "gpr": [
+            7,
+            0,
+            0,
+            7,
+            4116,
+            4117,
+            4118,
+            4119,
+            4120,
+            4121,
+            4122,
+            4123,
+            4124,
+            4125,
+            4126,
+            4127
+          ],
+          "gs_base": 0,
+          "rflags": 582,
+          "rip": 4113
+        }
+      },
+      "preflight_native": [
+        [
+          4,
+          {
+            "raw_exit": "BlockComplete",
+            "remaining_budget": 0,
+            "retired": 6,
+            "state": {
+              "auxiliary_state": "fs_selector=0x0;gs_selector=0x0;gdtr=None;fs_cache=None;gs_cache=None;x87=None",
+              "fs_base": 0,
+              "gpr": [
+                7,
+                0,
+                0,
+                7,
+                4116,
+                4117,
+                4118,
+                4119,
+                4120,
+                4121,
+                4122,
+                4123,
+                4124,
+                4125,
+                4126,
+                4127
+              ],
+              "gs_base": 0,
+              "rflags": 582,
+              "rip": 4113
+            }
+          }
+        ],
+        [
+          0,
+          {
+            "raw_exit": "BlockComplete",
+            "remaining_budget": 0,
+            "retired": 6,
+            "state": {
+              "auxiliary_state": "fs_selector=0x0;gs_selector=0x0;gdtr=None;fs_cache=None;gs_cache=None;x87=None",
+              "fs_base": 0,
+              "gpr": [
+                7,
+                0,
+                0,
+                7,
+                4116,
+                4117,
+                4118,
+                4119,
+                4120,
+                4121,
+                4122,
+                4123,
+                4124,
+                4125,
+                4126,
+                4127
+              ],
+              "gs_base": 0,
+              "rflags": 582,
+              "rip": 4113
+            }
+          }
+        ]
+      ]
+    },
+    {
+      "execution_pairs": [],
+      "expected_zf": false,
+      "id": "multi-helper-not-equal",
+      "initial": {
+        "auxiliary_state": "fs_selector=0x0;gs_selector=0x0;gdtr=None;fs_cache=None;gs_cache=None;x87=None",
+        "fs_base": 0,
+        "gpr": [
+          1,
+          34,
+          51,
+          7,
+          4116,
+          4117,
+          4118,
+          4119,
+          4120,
+          4121,
+          4122,
+          4123,
+          4124,
+          4125,
+          4126,
+          4127
+        ],
+        "gs_base": 0,
+        "rflags": 514,
+        "rip": 4096
+      },
+      "interpreter_oracle": {
+        "raw_exit": "InstructionBudgetExhausted",
+        "remaining_budget": 0,
+        "retired": 6,
+        "state": {
+          "auxiliary_state": "fs_selector=0x0;gs_selector=0x0;gdtr=None;fs_cache=None;gs_cache=None;x87=None",
+          "fs_base": 0,
+          "gpr": [
+            9,
+            0,
+            0,
+            7,
+            4116,
+            4117,
+            4118,
+            4119,
+            4120,
+            4121,
+            4122,
+            4123,
+            4124,
+            4125,
+            4126,
+            4127
+          ],
+          "gs_base": 0,
+          "rflags": 514,
+          "rip": 4113
+        }
+      },
+      "preflight_native": [
+        [
+          4,
+          {
+            "raw_exit": "BlockComplete",
+            "remaining_budget": 0,
+            "retired": 6,
+            "state": {
+              "auxiliary_state": "fs_selector=0x0;gs_selector=0x0;gdtr=None;fs_cache=None;gs_cache=None;x87=None",
+              "fs_base": 0,
+              "gpr": [
+                9,
+                0,
+                0,
+                7,
+                4116,
+                4117,
+                4118,
+                4119,
+                4120,
+                4121,
+                4122,
+                4123,
+                4124,
+                4125,
+                4126,
+                4127
+              ],
+              "gs_base": 0,
+              "rflags": 514,
+              "rip": 4113
+            }
+          }
+        ],
+        [
+          0,
+          {
+            "raw_exit": "BlockComplete",
+            "remaining_budget": 0,
+            "retired": 6,
+            "state": {
+              "auxiliary_state": "fs_selector=0x0;gs_selector=0x0;gdtr=None;fs_cache=None;gs_cache=None;x87=None",
+              "fs_base": 0,
+              "gpr": [
+                9,
+                0,
+                0,
+                7,
+                4116,
+                4117,
+                4118,
+                4119,
+                4120,
+                4121,
+                4122,
+                4123,
+                4124,
+                4125,
+                4126,
+                4127
+              ],
+              "gs_base": 0,
+              "rflags": 514,
+              "rip": 4113
+            }
+          }
+        ]
+      ]
+    }
+  ],
+  "code_bytes": [
+    72,
+    3,
+    192,
+    72,
+    43,
+    210,
+    72,
+    3,
+    195,
+    72,
+    43,
+    201,
+    72,
+    59,
+    195,
+    116,
+    0
+  ],
+  "compile_calls_per_sample": null,
+  "compile_pairs_ns_per_call": [],
+  "compile_timer_boundary": "compile_block_with_register_homes: block build/decode, lowering, allocation, ARM64 emission, finalization, and destruction of each unpublished CompiledBlock within the timed compile batch; excludes allocator-summary reconstruction, publication, execution, input reset and validation",
+  "execution_timer_boundary": "Repeated PublishedCode::execute_block calls over the same retained artifact; state vectors are initialized before timing, and full-state/exit validation is outside timing. Interpreter uses the same initial state and code fetch adapter.",
+  "exit_normalization": "Preserve raw tags. Normalize only BlockComplete versus InstructionBudgetExhausted when complete LongModeState matches, both retire exactly 6, both have zero remaining budget, and RIP equals code_end.",
+  "frozen_code_sha256": "4fe980f463d01c3fc413943b73860314d9c780c638acdc9bf50072290c89f778",
+  "guest_base_rip": 4096,
+  "host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "736bb6b6120cde0d87d73c2b4ea1b220be8fa2e9",
+      "source_sha256": "ec2fca3bab0fe2a80ac823daeace51a57028f7851358a451bf95b5723135212a",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "736bb6b6120cde0d87d73c2b4ea1b220be8fa2e9",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "instruction_budget": 6,
+  "process_run": 1,
+  "publication_timer_boundary": "PublishedCode::publish_block and PublishedCode drop are timed and reported separately. The mapping remains live for warmup/timing; drop occurs after execution timing and before the other budget is published. These durations are never added to compile or execution samples.",
+  "sample_floor_passed": null,
+  "sample_floor_policy": "Retain every raw sample. A compile or execution side below 200ms sets sample_floor_passed=false and classifies the full process as diagnostic-only; no samples are trimmed and no comparison result should be scored.",
+  "schema_version": 1,
+  "scope": "One frozen six-instruction register-only multi-helper block; budget4 baseline versus budget0 spill-only diagnostic. This does not choose an allocator globally.",
+  "timing_started": true,
+  "timing_status": "calibration_only_failed_unscored",
+  "variants": [
+    {
+      "allocation": {
+        "assigned_register_home_values": 4,
+        "default_api_code_match": true,
+        "emitted_code_bytes": 3052,
+        "frame_bytes": 288,
+        "helper_boundary_count": 5,
+        "helper_capture_slots": 3,
+        "helper_reloads": 3,
+        "helper_saves": 3,
+        "planned_transfer_bytes": 104,
+        "planned_transfer_words": 26,
+        "register_homes_budget": 4,
+        "spilled_temporary_values": 10,
+        "value_spill_loads": 10,
+        "value_spill_slots": 10,
+        "value_spill_stores": 10
+      },
+      "drop_ns": null,
+      "publication_lifetime": "one preflight publication; dropped before next budget",
+      "publication_ns": null
+    },
+    {
+      "allocation": {
+        "assigned_register_home_values": 0,
+        "default_api_code_match": null,
+        "emitted_code_bytes": 3040,
+        "frame_bytes": 288,
+        "helper_boundary_count": 5,
+        "helper_capture_slots": 0,
+        "helper_reloads": 0,
+        "helper_saves": 0,
+        "planned_transfer_bytes": 112,
+        "planned_transfer_words": 28,
+        "register_homes_budget": 0,
+        "spilled_temporary_values": 14,
+        "value_spill_loads": 14,
+        "value_spill_slots": 14,
+        "value_spill_stores": 14
+      },
+      "drop_ns": null,
+      "publication_lifetime": "one preflight publication; dropped before next budget",
+      "publication_ns": null
+    }
+  ]
+}
