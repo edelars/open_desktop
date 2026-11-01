@@ -439,6 +439,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 cmpps_controls: input.fixture.cmpps_controls,
                 comisd_ucomisd_controls: input.fixture.comisd_ucomisd_controls,
                 comisd_memory_rax_controls: input.fixture.comisd_memory_rax_controls,
+                ucomisd_memory_rax_controls: input.fixture.ucomisd_memory_rax_controls,
                 cvtsi2sd_r32_controls: input.fixture.cvtsi2sd_r32_controls,
                 cvtsi2sd_r32_memory_controls: input.fixture.cvtsi2sd_r32_memory_controls,
                 cvtsi2ss_r32_memory_controls: input.fixture.cvtsi2ss_r32_memory_controls,
@@ -490,6 +491,33 @@ fn comisd_m64_oracle_prioritizes_nan_over_subnormal_and_preserves_x87() {
     output.state.sse.as_mut().unwrap().mxcsr = HexU64(0x0181);
     assert!(expected.validate_for(&loaded).is_ok());
 
+    let mut tampered = expected;
+    snapshot(&mut tampered)
+        .state
+        .x87
+        .as_mut()
+        .unwrap()
+        .status_word = HexU64(0x0080);
+    assert!(tampered.validate_for(&loaded).is_err());
+}
+
+#[test]
+fn ucomisd_m64_oracle_keeps_qnan_ie_and_de_clear_and_preserves_x87() {
+    let loaded = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_37cp_ucomisd_m64_qnan_subnormal_priority.case.json"
+    ))
+    .unwrap();
+    let mut expected = result(&loaded);
+    let output = snapshot(&mut expected);
+    output.state.rflags = HexU64(0x0247);
+    output.state.sse.as_mut().unwrap().mxcsr = HexU64(0x0180);
+    assert!(expected.validate_for(&loaded).is_ok());
+
+    for mxcsr in [0x0181, 0x0182] {
+        let mut tampered = expected.clone();
+        snapshot(&mut tampered).state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(tampered.validate_for(&loaded).is_err());
+    }
     let mut tampered = expected;
     snapshot(&mut tampered)
         .state

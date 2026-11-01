@@ -396,3 +396,18 @@ covered by direct ISA tests only.
 Native/JIT/C/fragment/generic execution remains closed; the runner result is
 host-side evidence and does not claim physical x86 execution. See the [CPU
 contract](../../docs/specs/CPU_CONTRACT.md#s2-37co--bounded-long64-comisd-xmm0qword-ptr-rax-m64-memory-profile).
+
+### S2-37cp — UCOMISD XMM0,m64
+
+The runner admits the separate strict profile `s2-long-ucomisd-memory-rax-v1`
+for exact legacy `66 0F 2E 00`. Its raw-bit oracle compares XMM0.low64 with
+one eight-byte m64 read and checks relation flags, UCOMISD's QNaN-no-IE and
+NaN-suppresses-DE behavior, sticky status, and remaining-state preservation.
+The focused fixture passed 1/1 with 224 comparisons across relation/class
+pairs, RC/FTZ settings, and prior IE/DE histories. The runner checks a valid
+baseline foreign-field rejection and JIT denial. CP direct tests cover AC,
+missing-SSE, span and read-failure refusals; malformed-MXCSR runtime refusals
+are covered by the shared CO direct preflight tests. The runner matrix uses
+Ring0; direct numeric checks cover CPL0–3 while other direct probes use Ring0.
+Native/JIT/C/fragment/generic execution remains closed. See the [CPU
+contract](../../docs/specs/CPU_CONTRACT.md#s2-37cp--bounded-long64-ucomisd-xmm0qword-ptr-rax-m64-memory-profile).

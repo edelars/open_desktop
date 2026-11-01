@@ -82,6 +82,9 @@ const CVTTSD2SI_R64_MEMORY_RAX: &[u8] = include_bytes!(
 const COMISD_M64_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37co_comisd_m64_qnan_subnormal_priority.case.json"
 );
+const UCOMISD_M64_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37cp_ucomisd_m64_qnan_subnormal_priority.case.json"
+);
 const COMISD_UCOMISD_REGISTER: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37w_comisd_ucomisd_baseline.case.json");
 const CVTSD2SI_R64_MEMORY_RAX: &[u8] = include_bytes!(
@@ -26578,6 +26581,71 @@ fn comisd_m64_memory_uses_raw_bits_flags_priority_and_denies_other_backends() {
 
     assert!(matches!(
         run(COMISD_M64_MEMORY_RAX, "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+}
+
+#[test]
+fn ucomisd_m64_memory_uses_quiet_nan_priority_and_denies_other_backends() {
+    let loaded = Fixture::from_json(UCOMISD_M64_MEMORY_RAX).unwrap();
+    let fixture = loaded.fixture;
+    let encode_u64 = |value: u64| {
+        value
+            .to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let cases: [(u64, u64, u64, u64); 7] = [
+        (0x4000_0000_0000_0000, 0x3ff0_0000_0000_0000, 0x0202, 0), // greater
+        (0x3ff0_0000_0000_0000, 0x4000_0000_0000_0000, 0x0203, 0), // less
+        (0x3ff0_0000_0000_0000, 0x3ff0_0000_0000_0000, 0x0242, 0), // equal
+        (0x7ff8_1234_5678_9abc, 0x0000_0000_0000_0001, 0x0247, 0), // QNaN suppresses IE and DE
+        (0x0000_0000_0000_0001, 0x7ff8_1234_5678_9abc, 0x0247, 0), // memory QNaN also suppresses both
+        (0x0000_0000_0000_0001, 0x7ff0_1234_5678_9abc, 0x0247, 1), // SNaN suppresses DE
+        (0x0000_0000_0000_0001, 0x3ff0_0000_0000_0000, 0x0203, 2), // subnormal adds DE
+    ];
+    let old_sticky = [0u64, 1, 2, 3];
+    for (index, (left, right, expected_flags, generated_status)) in cases.into_iter().enumerate() {
+        for rc in 0..4u32 {
+            for ftz in [false, true] {
+                for old in old_sticky {
+                    let mut case = fixture.clone();
+                    case.case_id = format!("s2_37cp_matrix_{index}_{rc}_{ftz}_{old}");
+                    case.initial_state.sse.as_mut().unwrap().xmm[0] =
+                        format!("{}{}", encode_u64(left), "010000000000f07f");
+                    case.initial_state.sse.as_mut().unwrap().mxcsr =
+                        HexU64(0x0180 | old | (u64::from(rc) << 13) | (u64::from(ftz) << 15));
+                    case.memory[1].initial_bytes_hex = encode_u64(right);
+                    let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                    od_testkit::v2::compare(&input, &result, &result).unwrap();
+                    let observed = match &result.snapshot {
+                        Observation::Available { value: snapshot } => snapshot,
+                        other => panic!("unexpected UCOMISD snapshot: {other:?}"),
+                    };
+                    assert_eq!(observed.state.rflags.get() & 0x8d5, expected_flags & 0x8d5);
+                    assert_eq!(
+                        observed.state.sse.as_ref().unwrap().mxcsr.get(),
+                        0x0180
+                            | old
+                            | generated_status
+                            | (u64::from(rc) << 13)
+                            | (u64::from(ftz) << 15),
+                    );
+                }
+            }
+        }
+    }
+
+    // A valid neighboring register fixture proves foreign memory controls are rejected.
+    let mut foreign = Fixture::from_json(COMISD_UCOMISD_REGISTER).unwrap().fixture;
+    assert!(foreign.validate().is_ok());
+    foreign.ucomisd_memory_rax_controls = fixture.ucomisd_memory_rax_controls;
+    assert!(foreign.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
+
+    assert!(matches!(
+        run(UCOMISD_M64_MEMORY_RAX, "jit", 4).1.outcome,
         Outcome::Unsupported { .. }
     ));
 }

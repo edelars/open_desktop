@@ -667,6 +667,21 @@ pub struct ComisdMemoryRaxControls {
     pub cr4_osfxsr: bool,
 }
 
+/// Explicit SSE2 prerequisite gates for exact S2-37cp UCOMISD m64 at [RAX].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UcomisdMemoryRaxControls {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ComparisonMemoryRaxProfile {
+    controls: ComisdMemoryRaxControls,
+    quiet_nan_raises_ie: bool,
+}
+
 /// Explicit prerequisites for the exact S2-37n CVTSI2SD r32 profile.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Cvtsi2sdR32Controls {
@@ -954,7 +969,7 @@ struct ExecutionProfiles<'a> {
     cmppd_registers: Option<CmppdControls>,
     cmpps_registers: Option<CmppsControls>,
     comisd_ucomisd_registers: Option<ComisdUcomisdControls>,
-    comisd_memory_rax: Option<ComisdMemoryRaxControls>,
+    comisd_memory_rax: Option<ComparisonMemoryRaxProfile>,
     cvtsi2sd_r32: Option<Cvtsi2sdR32Controls>,
     cvtsi2sd_r32_memory: Option<Cvtsi2sdR32Controls>,
     cvtsi2sd_r64: Option<Cvtsi2sdR64Controls>,
@@ -10016,6 +10031,50 @@ pub fn run_with_comisd_memory_rax_controls(
     memory: &mut impl GuestMemory,
     config: RunConfig,
     controls: ComisdMemoryRaxControls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_comparison_memory_rax_profile(
+        state,
+        memory,
+        config,
+        ComparisonMemoryRaxProfile {
+            controls,
+            quiet_nan_raises_ie: true,
+        },
+        stop_requested,
+    )
+}
+
+/// Execute the bounded exact Long64 UCOMISD m64-at-RAX profile.
+pub fn run_with_ucomisd_memory_rax_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: UcomisdMemoryRaxControls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_comparison_memory_rax_profile(
+        state,
+        memory,
+        config,
+        ComparisonMemoryRaxProfile {
+            controls: ComisdMemoryRaxControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            quiet_nan_raises_ie: false,
+        },
+        stop_requested,
+    )
+}
+
+fn run_with_comparison_memory_rax_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    profile: ComparisonMemoryRaxProfile,
     mut stop_requested: impl FnMut() -> bool,
 ) -> RunResult {
     run_configured(
@@ -10081,7 +10140,7 @@ pub fn run_with_comisd_memory_rax_controls(
             cmppd_registers: None,
             cmpps_registers: None,
             comisd_ucomisd_registers: None,
-            comisd_memory_rax: Some(controls),
+            comisd_memory_rax: Some(profile),
             cvtsi2sd_r32: None,
             cvtsi2sd_r32_memory: None,
             cvtsi2sd_r64: None,
@@ -15216,11 +15275,22 @@ fn step_configured(
             }));
         }
     }
-    if let Some(controls) = configured_comisd_memory_rax_controls {
-        let is_canonical_memory_form = instruction.operation == Operation::ComisdMemoryRax
+    if let Some(profile) = configured_comisd_memory_rax_controls {
+        let controls = profile.controls;
+        let expected_operation = if profile.quiet_nan_raises_ie {
+            Operation::ComisdMemoryRax
+        } else {
+            Operation::UcomisdMemoryRax
+        };
+        let expected_opcode = if profile.quiet_nan_raises_ie {
+            0x2f
+        } else {
+            0x2e
+        };
+        let is_canonical_memory_form = instruction.operation == expected_operation
             && instruction.length == 4
             && instruction.opcode.map == OpcodeMap::Escape0f
-            && instruction.opcode.byte == 0x2f
+            && instruction.opcode.byte == expected_opcode
             && instruction.prefixes.group1.is_none()
             && instruction.prefixes.segment.is_none()
             && instruction.prefixes.operand_override
@@ -17066,7 +17136,10 @@ fn step_configured(
         {
             sse.mxcsr & !0x0000_ffbf == 0 && sse.mxcsr & (1 << 6) == 0
         } else if configured_comisd_memory_rax_controls.is_some()
-            && instruction.operation == Operation::ComisdMemoryRax
+            && matches!(
+                instruction.operation,
+                Operation::ComisdMemoryRax | Operation::UcomisdMemoryRax
+            )
         {
             sse.mxcsr & !0x0000_ffbf == 0
                 && sse.mxcsr & (1 << 6) == 0
@@ -17957,10 +18030,13 @@ fn step_configured(
             state.sse.is_some()
         }
         Operation::ComissUcomissRegister { .. } => false,
-        Operation::ComisdMemoryRax if configured_comisd_memory_rax_controls.is_some() => {
+        Operation::ComisdMemoryRax | Operation::UcomisdMemoryRax
+            if configured_comisd_memory_rax_controls.is_some() =>
+        {
             state.sse.is_some()
         }
         Operation::ComisdMemoryRax => false,
+        Operation::UcomisdMemoryRax => false,
         Operation::Cvtsi2sdR32Register { .. }
             if configured_cvtsi2sd_r32_controls.is_some()
                 || configured_cvtsi2sd_register_controls.is_some() =>
@@ -25580,7 +25656,9 @@ fn step_configured(
                 opcode: instruction.opcode.byte,
             });
         }
-        Operation::ComisdMemoryRax if configured_comisd_memory_rax_controls.is_some() => {
+        Operation::ComisdMemoryRax | Operation::UcomisdMemoryRax
+            if configured_comisd_memory_rax_controls.is_some() =>
+        {
             let address = state.gpr[Register::Rax as usize];
             let Some(last) = address.checked_add(7) else {
                 return Ok(StepOutcome::Fault(ArchitecturalFault {
@@ -25617,7 +25695,12 @@ fn step_configured(
             let left_class = classify(left);
             let right_class = classify(right);
             let has_nan = matches!(left_class, 3 | 4) || matches!(right_class, 3 | 4);
-            let new_ie = has_nan;
+            let new_ie = has_nan
+                && (configured_comisd_memory_rax_controls
+                    .expect("COMISD/UCOMISD m64 profile prevalidated")
+                    .quiet_nan_raises_ie
+                    || left_class == 4
+                    || right_class == 4);
             let new_de = !has_nan && (left_class == 2 || right_class == 2);
             let old_mxcsr = state
                 .sse
@@ -25659,7 +25742,7 @@ fn step_configured(
             }
             *rflags_defined |= arithmetic_flags & crate::INTEGER_FLAGS;
         }
-        Operation::ComisdMemoryRax => {
+        Operation::ComisdMemoryRax | Operation::UcomisdMemoryRax => {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -123833,6 +123916,229 @@ mod swapgs_profile_tests {
             }
             assert_eq!(result.instructions_executed, 0);
             assert_eq!(memory.fetches, [0x9b00, 0x9b01, 0x9b02, 0x9b03]);
+            assert!(memory.accesses.is_empty());
+            assert_eq!(state, before);
+        }
+    }
+
+    #[test]
+    fn ucomisd_m64_memory_profile_suppresses_qnan_invalid_and_nan_denormal() {
+        let code = [0x66, 0x0f, 0x2e, 0x00];
+        let controls = UcomisdMemoryRaxControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+        };
+        let cases: [(u64, u64, u64, u32); 6] = [
+            (0x7ff8_1234_5678_9abc, 1, 0x0247, 0x0180), // QNaN suppresses IE and DE
+            (0x7ff0_1234_5678_9abc, 1, 0x0247, 0x0181), // SNaN raises IE, suppresses DE
+            (1, 0x7ff8_1234_5678_9abc, 0x0247, 0x0180), // QNaN in memory also suppresses both
+            (1, 0x7ff0_1234_5678_9abc, 0x0247, 0x0181), // SNaN in memory raises IE only
+            (1, 0x3ff0_0000_0000_0000, 0x0203, 0x0182), // numeric subnormal raises DE
+            (0x8000_0000_0000_0000, 0, 0x0242, 0x0180), // signed zeros compare equal
+        ];
+        for privilege in [
+            PrivilegeLevel::Ring0,
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            for (left, right, expected_flags, expected_mxcsr) in cases {
+                let mut state = LongModeState::default();
+                state.rip = 0x9c00;
+                state.gpr[Register::Rax as usize] = 0x2000;
+                state.rflags = 0x0ad7;
+                let mut xmm0 = [0xa5; 16];
+                xmm0[..8].copy_from_slice(&left.to_le_bytes());
+                xmm0[8..].copy_from_slice(&0x7ff0_0000_0000_0001u64.to_le_bytes());
+                state.sse = Some(SseState {
+                    xmm: [xmm0; 16],
+                    mxcsr: 0x0180,
+                });
+                state.x87 = Some(X87State::fixture_seed());
+                let before_xmm = state.sse.as_ref().unwrap().xmm;
+                let before_x87 = state.x87.clone();
+                let mut memory = Memory::at(&code, 0x9c00);
+                memory.data_base = 0x2000;
+                memory.bytes = right.to_le_bytes().to_vec();
+                let result = run_with_ucomisd_memory_rax_controls(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(0x9c04),
+                        context: AccessContext {
+                            privilege,
+                            ..AccessContext::default()
+                        },
+                    },
+                    controls,
+                    || false,
+                );
+                assert_eq!(result.exit, RunExit::StopAddress);
+                assert_eq!(result.instructions_executed, 1);
+                assert_eq!(memory.fetches, [0x9c00, 0x9c01, 0x9c02, 0x9c03]);
+                assert_eq!(memory.accesses, vec![(AccessKind::Read, 0x2000, 8)]);
+                assert_eq!(state.rflags, expected_flags);
+                assert_eq!(state.sse.as_ref().unwrap().mxcsr, expected_mxcsr);
+                assert_eq!(state.sse.as_ref().unwrap().xmm, before_xmm);
+                assert_eq!(state.x87, before_x87);
+            }
+        }
+
+        // A signaling NaN must not commit IE before the m64 callback succeeds.
+        let mut state = LongModeState::default();
+        state.rip = 0x9d00;
+        state.gpr[Register::Rax as usize] = 0x2000;
+        state.rflags = 0x0ad7;
+        let mut xmm0 = [0x5a; 16];
+        xmm0[..8].copy_from_slice(&0x7ff0_1234_5678_9abcu64.to_le_bytes());
+        state.sse = Some(SseState {
+            xmm: [xmm0; 16],
+            mxcsr: 0x0180,
+        });
+        let before = state.clone();
+        let mut failed = Memory::at(&code, 0x9d00);
+        failed.data_base = 0x2000;
+        failed.bytes.clear();
+        let result = run_with_ucomisd_memory_rax_controls(
+            &mut state,
+            &mut failed,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x9d04),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(failed.accesses, vec![(AccessKind::Read, 0x2000, 8)]);
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn ucomisd_m64_memory_profile_gates_and_ac_refusal_precede_data_reads() {
+        let code = [0x66, 0x0f, 0x2e, 0x00];
+        let controls = UcomisdMemoryRaxControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+        };
+        for (gate_controls, vector) in [
+            (
+                UcomisdMemoryRaxControls {
+                    sse2_available: false,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                UcomisdMemoryRaxControls {
+                    cr0_em: true,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                UcomisdMemoryRaxControls {
+                    cr4_osfxsr: false,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                UcomisdMemoryRaxControls {
+                    cr0_ts: true,
+                    ..controls
+                },
+                7,
+            ),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x9e00;
+            state.gpr[Register::Rax as usize] = 0x2000;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x0180,
+            });
+            let before = state.clone();
+            let mut memory = Memory::at(&code, state.rip);
+            memory.data_base = 0x2000;
+            memory.bytes = 1u64.to_le_bytes().to_vec();
+            let result = run_with_ucomisd_memory_rax_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x9e04),
+                    context: AccessContext::default(),
+                },
+                gate_controls,
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector,
+                    error_code: None,
+                    linear_address: None,
+                })
+            );
+            assert_eq!(memory.fetches, [0x9e00, 0x9e01, 0x9e02, 0x9e03]);
+            assert!(memory.accesses.is_empty());
+            assert_eq!(state, before);
+        }
+
+        let refusal_cases = [
+            (0x2000, 0, true, None),
+            (0x2000, 1 << 18, false, None),
+            (0x0000_8000_0000_0000, 0, false, Some(13)),
+        ];
+        for (address, rflags, no_sse, fault) in refusal_cases {
+            let mut state = LongModeState::default();
+            state.rip = 0x9f00;
+            state.gpr[Register::Rax as usize] = address;
+            state.rflags = 0x202 | rflags;
+            if !no_sse {
+                state.sse = Some(SseState {
+                    xmm: [[0x5a; 16]; 16],
+                    mxcsr: 0x0180,
+                });
+            }
+            let before = state.clone();
+            let mut memory = Memory::at(&code, state.rip);
+            memory.data_base = address;
+            memory.bytes = 1u64.to_le_bytes().to_vec();
+            let result = run_with_ucomisd_memory_rax_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x9f04),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            match fault {
+                Some(vector) => assert_eq!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector,
+                        error_code: Some(0),
+                        linear_address: None,
+                    })
+                ),
+                None => assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x2e })),
+            }
+            assert_eq!(memory.fetches, [0x9f00, 0x9f01, 0x9f02, 0x9f03]);
             assert!(memory.accesses.is_empty());
             assert_eq!(state, before);
         }

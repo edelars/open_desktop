@@ -11,7 +11,7 @@ use od_isa::execute::{
     Cvttps2dqMemoryControls, Cvttss2siRegistersControls, DivpdControls, DivpsControls,
     DivsdControls, DivssControls, MulpdControls, MulpsControls, MulsdControls, MulssControls,
     SqrtpdControls, SqrtpsControls, SqrtsdControls, SqrtssControls, SubpdControls, SubpsControls,
-    SubsdControls, SubssControls, run_with_addpd_register_controls,
+    SubsdControls, SubssControls, UcomisdMemoryRaxControls, run_with_addpd_register_controls,
     run_with_addps_register_controls, run_with_addsd_register_controls,
     run_with_addss_register_controls, run_with_cvtpd2dq_memory_controls,
     run_with_cvtpd2dq_register_controls, run_with_cvtpd2pi_mm0_memory_rax_controls,
@@ -602,6 +602,7 @@ fn expected_native_xorpd_oracle(
                 cmpps_controls: None,
                 comisd_ucomisd_controls: None,
                 comisd_memory_rax_controls: None,
+                ucomisd_memory_rax_controls: None,
                 cvtsi2sd_r32_controls: None,
                 cvtsi2sd_r32_memory_controls: None,
                 cvtsi2ss_r32_memory_controls: None,
@@ -1138,7 +1139,8 @@ fn execute_fixture_v2(
         run_with_minsd_unmasked_controls, run_with_minss_invalid_controls,
         run_with_minss_unmasked_denormal_controls, run_with_msr_profile, run_with_rdtsc_source,
         run_with_rep_continuation, run_with_sep_profile, run_with_sti_profile,
-        run_with_swapgs_profile, run_with_xorpd_prerequisites,
+        run_with_swapgs_profile, run_with_ucomisd_memory_rax_controls,
+        run_with_xorpd_prerequisites,
     };
     use od_testkit::v2;
     use std::time::{Duration, Instant};
@@ -2393,6 +2395,23 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongUcomisdMemoryRaxV1 {
+        let controls = loaded
+            .fixture
+            .ucomisd_memory_rax_controls
+            .expect("validated UCOMISD m64 controls");
+        run_with_ucomisd_memory_rax_controls(
+            &mut state,
+            memory,
+            config,
+            UcomisdMemoryRaxControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongCvtss2sdRegistersV1 {
         let controls = loaded
             .fixture
@@ -3136,6 +3155,7 @@ fn execute_fixture_v2(
                 cmpps_controls: loaded.fixture.cmpps_controls,
                 comisd_ucomisd_controls: loaded.fixture.comisd_ucomisd_controls,
                 comisd_memory_rax_controls: loaded.fixture.comisd_memory_rax_controls,
+                ucomisd_memory_rax_controls: loaded.fixture.ucomisd_memory_rax_controls,
                 cvtsi2sd_r32_controls: loaded.fixture.cvtsi2sd_r32_controls,
                 cvtsi2sd_r32_memory_controls: loaded.fixture.cvtsi2sd_r32_memory_controls,
                 cvtsi2ss_r32_memory_controls: loaded.fixture.cvtsi2ss_r32_memory_controls,
@@ -4373,6 +4393,7 @@ mod tests {
                     cmpps_controls: input.fixture.cmpps_controls,
                     comisd_ucomisd_controls: input.fixture.comisd_ucomisd_controls,
                     comisd_memory_rax_controls: input.fixture.comisd_memory_rax_controls,
+                    ucomisd_memory_rax_controls: input.fixture.ucomisd_memory_rax_controls,
                     cvtsi2sd_r32_controls: input.fixture.cvtsi2sd_r32_controls,
                     cvtsi2sd_r32_memory_controls: input.fixture.cvtsi2sd_r32_memory_controls,
                     cvtsi2ss_r32_memory_controls: input.fixture.cvtsi2ss_r32_memory_controls,

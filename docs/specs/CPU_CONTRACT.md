@@ -15227,3 +15227,51 @@ reference to VEX forms; Table 2-20 itself also contains legacy SSE
 conditions. See the [plan](../plans/STAGE_2.md#s2-37co--exact-legacy-long64-comisd-xmm0qword-ptr-rax),
 [report](../reports/STAGE_2_REPORT.md#s2-37co--comisd-xmm0m64), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37co--comisd-xmm0m64).
+
+## S2-37cp — bounded Long64 UCOMISD XMM0,qword ptr [RAX] m64 memory profile
+
+The strict schema-v2 profile `s2-long-ucomisd-memory-rax-v1` accepts only
+exact legacy `66 0F 2E 00`, fetches all four bytes, and executes one
+instruction. It requires SSE2 feature bit 26. CR0.EM=1 or CR4.OSFXSR=0 causes
+local `#UD`; CR0.TS=1 then causes `#NM` under the bounded local ordering. This
+is not a universal SDM exception-priority claim. Missing SSE state is refused
+after prerequisite gates. The direct numeric comparison loop covers CPL0–3;
+gate/refusal/span/read-failure probes use Ring0.
+
+Execution compares XMM0.low64 to one little-endian binary64 value from the
+checked canonical48 span `[RAX,RAX+7]`, making exactly one eight-byte read
+after pre-read checks. AC=0 allows unaligned addresses. AC=1 is a valid
+negative fixture returning local `Unsupported` before span checking or a
+memory callback. Noncanonical spans cause `#GP(0)`; a failed read preserves
+the entire CPU state. GPRs, XMM registers, x87/MMX state and unrelated RFLAGS
+bits are preserved.
+
+UCOMISD sets CF/PF/ZF by relation: greater=`0`, less=`CF`, equal=`ZF`,
+unordered=`CF|PF|ZF`; it clears OF/SF/AF. A QNaN produces unordered without
+new IE. An SNaN produces unordered and adds sticky IE. Any NaN suppresses new
+DE, including QNaN paired with a subnormal; without a NaN, either subnormal
+operand adds sticky DE. Old MXCSR status bits remain preserved. The bounded
+profile admits supported MXCSR mask `0xffbf`, DAZ=0, IM=DM=1; PM may be clear.
+RC and FTZ are irrelevant. Unmasked exception delivery is not modeled.
+
+Native, JIT, C ABI, fragment and generic execution remain closed. Focused
+evidence: decoder/direct ISA 3/3, independent testkit oracle 1/1, runner
+fixture 1/1 with 224 raw-bit comparisons, and native-local-only classifier
+1/1. The combined COMISD/UCOMISD memory direct filter passed 4/4 (two CO
+and two CP tests); the COMISD runner regression separately passed 1/1 with
+192 comparisons. The runner checks matrix/foreign-field/
+backend denial but has no CP-specific AC or malformed-MXCSR negative case.
+CP direct tests cover AC,
+missing-SSE and span/read refusals; malformed-MXCSR runtime refusals are
+covered by the shared CO direct preflight tests. Full suites passed: ISA
+1,668; testkit 451; runner 112 unit + 472 fixtures; x86-runner 8+4. Workspace
+all-target check, formatting, layout, Graphify (10,557 nodes / 22,651 edges /
+308 communities), diff check, 13 CP anchors, and independent code/docs and
+final evidence reviews passed. No physical x86 acceptance is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2B `UCOMISD` pp. 4-733–4-734; Vol. 1
+§4.9.2, §11.5.2.2, §11.5.3, Tables D-6/D-7; Vol. 3A §16.1.3/Table 16-1.
+The instruction entry scopes its Type 3/Table 2-20 reference to VEX forms;
+Table 2-20 itself also includes legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37cp--exact-legacy-long64-ucomisd-xmm0qword-ptr-rax),
+[report](../reports/STAGE_2_REPORT.md#s2-37cp--ucomisd-xmm0m64), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cp--ucomisd-xmm0m64).

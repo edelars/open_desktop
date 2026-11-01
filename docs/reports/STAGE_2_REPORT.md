@@ -20432,3 +20432,43 @@ reference to VEX forms; Table 2-20 itself also contains legacy SSE
 conditions. See the [plan](../plans/STAGE_2.md#s2-37co--exact-legacy-long64-comisd-xmm0qword-ptr-rax),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37co--bounded-long64-comisd-xmm0qword-ptr-rax-m64-memory-profile), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37co--comisd-xmm0m64).
+
+## S2-37cp — UCOMISD XMM0,m64
+
+Implemented the strict interpreter-only profile `s2-long-ucomisd-memory-rax-v1`
+for exact legacy `66 0F 2E 00`. It compares XMM0.low64 with one m64 value
+read from checked canonical48 span `[RAX,RAX+7]`; a successful execution
+performs exactly one eight-byte read. AC=0 admits unaligned addresses; AC=1
+is local `Unsupported` before span/read. Noncanonical spans fault with
+`#GP(0)`, and read failure is atomic. The instruction preserves the complete
+GPR/XMM/x87 state and unrelated RFLAGS bits.
+
+Greater/equal/less/unordered set the comparison flags (`0`, ZF, CF,
+CF|PF|ZF); OF/SF/AF are cleared. UCOMISD's QNaN case is unordered without
+new IE; SNaN is unordered with IE. Either NaN suppresses new DE, even when
+the other operand is subnormal. Without NaNs, subnormal operands add DE.
+Prior IE/DE sticky bits are preserved. The local scope requires SSE2 bit 26,
+supported MXCSR mask `0xffbf`, DAZ=0, IM=DM=1; PM may be clear. RC/FTZ are
+irrelevant. Native/JIT/C/fragment/generic execution remains closed.
+
+Focused evidence: decoder/direct ISA 3/3 (numeric matrix CPL0–3; gate,
+refusal, span and read-failure probes Ring0), independent testkit oracle 1/1,
+runner fixture 1/1 with 224 comparisons, native-local-only classifier 1/1.
+The combined COMISD/UCOMISD memory direct filter passed 4/4 (two CO and two
+CP tests); the COMISD runner regression separately passed 1/1 with 192
+comparisons.
+Runner coverage includes matrix, valid-baseline foreign-control rejection,
+and JIT denial; CP direct tests cover AC, missing-SSE, span and read-failure
+refusals. Malformed-MXCSR runtime refusals are covered by the shared CO direct
+preflight tests. Full suites passed: ISA 1,668; testkit 451; runner 112 unit
++ 472 fixtures; x86-runner 8+4. Workspace all-target check, formatting, layout,
+Graphify (10,557 nodes / 22,651 edges / 308 communities), diff check, 13 CP
+anchors, and independent code/docs and final evidence reviews passed. No
+physical x86 acceptance is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2B `UCOMISD` pp. 4-733–4-734; Vol. 1
+§4.9.2, §11.5.2.2, §11.5.3, Tables D-6/D-7; Vol. 3A §16.1.3/Table 16-1.
+The instruction entry scopes its Type 3/Table 2-20 reference to VEX forms;
+Table 2-20 itself also contains legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37cp--exact-legacy-long64-ucomisd-xmm0qword-ptr-rax),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37cp--bounded-long64-ucomisd-xmm0qword-ptr-rax-m64-memory-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cp--ucomisd-xmm0m64).

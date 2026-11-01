@@ -7596,3 +7596,21 @@ local-only classification is checked, but no physical x86 acceptance is
 claimed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37co--exact-legacy-long64-comisd-xmm0qword-ptr-rax),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37co--bounded-long64-comisd-xmm0qword-ptr-rax-m64-memory-profile), and
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37co--comisd-xmm0m64).
+
+### S2-37cp — UCOMISD XMM0,m64
+
+`s2_37cp_ucomisd_m64_qnan_subnormal_priority.case.json` is the literal exact
+legacy `66 0F 2E 00` profile. XMM0.low64 holds a QNaN and `[RAX]` holds the
+minimum positive binary64 subnormal. UCOMISD returns unordered flags CF|PF|ZF
+without adding IE or DE; the fixture includes pending-x87 and RFLAGS canaries.
+
+The runner matrix covers seven relation/class pairs across four RC settings,
+both FTZ settings, and four incoming IE/DE histories (224 raw-bit oracle
+comparisons), including QNaN/subnormal in both operand orders and the SNaN
+contrast. Direct numeric checks cover CPL0–3; direct gate/refusal/span/read-
+failure checks use Ring0. The runner checks foreign-field rejection and JIT
+denial; it does not add CP-specific AC or malformed-MXCSR negatives. Native
+local-only classification is checked, with no physical x86 claim. See the
+[plan](../../../../docs/plans/STAGE_2.md#s2-37cp--exact-legacy-long64-ucomisd-xmm0qword-ptr-rax),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cp--bounded-long64-ucomisd-xmm0qword-ptr-rax-m64-memory-profile), and
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cp--ucomisd-xmm0m64).
