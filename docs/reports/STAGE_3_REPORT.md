@@ -6,7 +6,7 @@
 
 | Статус | Текущее состояние |
 |---|---|
-| Bounded local evidence | Подтверждены только перечисленные ниже fixture/profile slices: checked-memory cache correctness (S3-18e), cold direct-entry (S3-35c), warm direct-entry (S3-36d), cached full-call (S3-36e), warm dispatcher phase attribution on two selected S3-17 strata (S3-31; no linking conclusion), FIFO16 lifecycle/counters (S3-37d), VMHost/C ABI lifecycle (S3-38), and an M1 Pro ARM64 smoke (S3-39). |
+| Bounded local evidence | Подтверждены только перечисленные ниже fixture/profile slices: checked-memory cache correctness (S3-18e), cold direct-entry (S3-35c), warm direct-entry (S3-36d), cached full-call (S3-36e), warm dispatcher phase attribution on two selected S3-17 strata (S3-31; no linking conclusion), FIFO16 lifecycle/counters (S3-37d), separate VMHost/C ABI lifecycle and RESULT-state slices (S3-38a/c/d), current-source VMHost process-only regression (S3-38b), and an M1 Pro ARM64 smoke (S3-39). |
 | Broad Stage 3 conditions | Не доказаны: full dispatcher/workload and memory matrix, general cold/warm usefulness, wider resource/lifecycle behavior, or final production policy. These conditions remain open. |
 | Physical hardware gate | S3-21 remains deferred until the end-of-Stage-3 Mac mini checks; local Apple Silicon evidence does not replace the physical x86 comparison. |
 | Production owner/MMU | Outside the current fixture scope; no production RAM/backing/mapping/MMU owner or committed-writer integration is claimed here. |
@@ -52,6 +52,15 @@ report](STAGE_3_S3-36e_2026-11-01.md) and independently reviewed
   `work/stage3-harness/stage3-20261030-054347-8d2c65aebe/`; run manifest и
   summary намеренно не копируются в Git.
 
+The later current-source VMHost process run was recorded separately from the
+30 October report-inclusive local harness run above. It passed its selected
+process suite (33 passed, 0 failed); 120 steps and all other suites, including
+Stage 2 and Mini, remained `not_run`. Its independent binding review passed.
+This bounded integration evidence neither resolves ISSUE-027 nor replaces the
+separate S3-38d RESULT-state evidence. See the [S3-38b current-source
+addendum](STAGE_3_S3-38b-current-source_2026-11-01.md) and its
+[committed evidence bundle](data/stage3/s3-38b-20261101/).
+
 ## Карта требований и границ
 
 | Область | Локально подтверждено | Статус и граница |
@@ -65,7 +74,7 @@ report](STAGE_3_S3-36e_2026-11-01.md) and independently reviewed
 | S3-30p3 allocator helper-clobber correctness | Test-only native probe теперь отдельно проверяет все шесть W64 значений (четыре register homes, две spill/reload values) после каждого из двух wrapper calls; focused test прошёл 1/1. | Закрывает только sum-only observation gap этого bounded helper probe; не доказывает pending flags, прочие pressure/path combinations или allocator policy/performance. S3-30 остаётся открытой. См. [S3-30p3 report](STAGE_3_S3-30p3_2026-11-01.md) и [test output](data/stage3/s3-30p3/focused-test.log). |
 | S3-30p4 pending-flags allocator-pressure correctness | JZ/JNZ candidate/eager/interpreter comparison прошёл на four branch outcomes, `register_homes` 0..4 и budgets 0..4; captured helper operands/calls, allocation placements, entry STOP and STOP/budget continuation checked. Focused test 1/1. | Один bounded W64 fixture, не полное allocator/path coverage и без performance/default decision. S3-30 остаётся открытой. См. [S3-30p4 report](STAGE_3_S3-30p4_2026-11-01.md), [focused test](data/stage3/s3-30p4/focused-test.log) и [format/diff checks](data/stage3/s3-30p4/format-diff-check.log). |
 | S3-29f eager/demand-flags single-block comparison | Три release runs завершили fixed seven-case profile; candidate/eager cross-run paired-ratio medians составили 1.003–1.086 по cases, код candidate был на 40–47% больше. Eager остаётся reference/default; общий performance вывод и policy choice не сделаны. См. [S3-29f](STAGE_3_S3-29f_2026-10-30.md). |
-| VMHost/C ABI | S3-38a register-only V0 ABI integration, S3-38b process-suite evidence, S3-38c sequential cross-thread handle lifecycle | Bounded local slices; persistent cache/full session are not implemented. ISSUE-027 remains open; process suite was not retried without new basis. See [S3-38c](STAGE_3_S3-38c_2026-10-30.md), [S3-38b](STAGE_3_S3-38b_2026-10-30.md), [issue registry](../KNOWN_ISSUES.md) and [diagnostics](ISSUE_027_DIAGNOSTIC_2026-10-30.md). |
+| VMHost/C ABI | S3-38a register-only V0 ABI integration, S3-38b original and current-source process-suite evidence, S3-38c sequential cross-thread handle lifecycle, and S3-38d full RESULT-state transport | Bounded local slices; persistent cache/full session are not implemented. ISSUE-027 remains open; the current process regression does not establish its resolution. See [S3-38c](STAGE_3_S3-38c_2026-10-30.md), [S3-38b current-source addendum](STAGE_3_S3-38b-current-source_2026-11-01.md), [S3-38d](STAGE_3_S3-38d-local_2026-11-01.md), [issue registry](../KNOWN_ISSUES.md) and [diagnostics](ISSUE_027_DIAGNOSTIC_2026-10-30.md). |
 | Harness/replay/reducer | Fixed seeds, repeated corpus, callback-aware comparison, saved-case validation, reducer preservation и negative self-checks | Подтверждает только внесённые профили и локальный ARM64 runner. Полный S3-34 и physical comparison остаются открытыми. См. [S3-34h](STAGE_3_S3-34h_2026-10-30.md). |
 | S3-36e cached checked-memory full-call profile | Three release runs on Apple M3 Max, 20 pairs per sequence/run, all sides passed 200 ms. Across 60 paired raw native/interpreter ratios, medians/ranges were 2.7223 (2.6348–2.8856) for `store_then_load` and 2.7650 (2.6390–2.9279) for `load_then_store`. | Ratios above 1 mean native full-call time exceeded interpreter time on these bounded fixtures; a useful target scenario is not yet proven. No cross-stratum or general memory claim. Monitoring has no per-pair attribution; Mini remains deferred. See [S3-36e](STAGE_3_S3-36e_2026-11-01.md) and [evidence manifest](data/stage3/s3-36e/suite-manifest.json). |
 
@@ -93,6 +102,7 @@ report](STAGE_3_S3-36e_2026-11-01.md) and independently reviewed
 | S3-40d composed cached flags comparison | Три release runs на frozen S3-34p corpus: median paired candidate/eager ratios 1.020–1.029 cold и 1.014–1.025 repeat; разброс crossing parity, candidate публикует на 14.27%/13.07% больше кода. Нет основания менять eager default или выбирать winner. Run2 принят как noisy bounded; run3 включал low-load Stage 2 activity; высоконагруженная попытка сохранена как diagnostic. Числовой exit status runs 2/3 не captured. См. [S3-40d report](STAGE_3_S3-40d_2026-10-31.md) и [raw evidence](data/stage3/s3-40d/). |
 | S3-40e checked-memory timing ledger | Сопоставлены в ledger bounded S3-35c cold direct-entry, S3-36d warm direct-entry и S3-36e cached full-call profiles. Их native timed boundaries различаются, поэтому их ratios нельзя вычитать для оценки cache cost или break-even. Two-sequence fixture only; no general memory claim or production policy. См. [S3-40e](STAGE_3_S3-40e_2026-11-01.md), [S3-35c](STAGE_3_S3-35c_2026-11-01.md), [S3-36d](STAGE_3_S3-36d_2026-11-01.md) и [S3-36e](STAGE_3_S3-36e_2026-11-01.md). |
 | S3-40f allocator decision addendum | Синтезированы отдельно S3-30a same-target и S3-30b distinct-target budget4-vs-budget0 configuration-cost evidence, плюс bounded correctness S3-30p3/p4. Текущий homes4 baseline/default остаётся: evidence недостаточно для смены allocator/default. Следующий gate — representative hot workload и мотивированная альтернатива, сравнённые на одинаковых условиях. Это не algorithm comparison или finding, что diagnostic budget0 лучше; fixtures и timed boundaries не объединяются. Полный S3-30/S3-40 остаётся открыт; production owner/MMU, broader workloads и Mini/physical gates не закрыты. См. [S3-40f](STAGE_3_S3-40f_2026-11-01.md). |
+| S3-40g aliased ADD allocator diagnostic | Один frozen 27-byte W64 `ADD RAX,RAX` fixture: три sequential release processes, 60 pooled pairs на set, все 360 timed sides прошли 200 ms floor. Все pooled median ratios ниже 1, но диапазоны пересекают parity; fixture-only evidence не подтверждает speedup, allocator winner или default. S3-32 и S3-40 остаются открыты. См. [S3-40g](STAGE_3_S3-40g_2026-11-01.md) и [S3-32a report](STAGE_3_S3-32a_2026-11-01.md). |
 | Полные cold/warm measurements, resource/lifecycle gates и решения о default (S3-35…37, S3-40) | Не выполнены. S3-35b дал bounded cold register-only pipeline attribution, S3-35c — узкий direct-entry checked-memory cold profile; S3-36c и S3-36d — отдельные native-plus-NOP budget-exit и resident warm direct-entry checked-memory срезы; S3-36e добавил cached full-call profile. Их различающиеся timed boundaries нельзя объединить в cache-cost или break-even вывод. На S3-36e fixtures native/interpreter ratios выше 1, поэтому useful target scenario is not yet proven. S3-37d добавил три v5 sustained FIFO16 lifecycle/counter runs. Full S3-36 dispatcher/lookup, general memory/fallback warm workloads, production teardown/independent-instance evidence, SMC stress, broader RSS attribution и выбор default остаются открытыми; bounded результаты не переносятся на другие workloads. |
 | Production RAM/backing/mapping/MMU owner и committed-writer integration | Не входит в текущий local fixture scope; не реализован этим отчётом и не засчитывается как локальное доказательство. |
 | ISSUE-027 | Открыта: прежний timeout не локализован; три диагностических наблюдения не установили причину или исправление. Не повторять suite без нового основания. |
@@ -116,7 +126,10 @@ report](STAGE_3_S3-36e_2026-11-01.md) and independently reviewed
   [S3-39 M1 Pro smoke](STAGE_3_S3-39_M1PRO_2026-10-31.md),
   [S3-40d composed cached flags comparison](STAGE_3_S3-40d_2026-10-31.md),
   [S3-40f allocator decision addendum](STAGE_3_S3-40f_2026-11-01.md),
+  [S3-40g aliased ADD allocator diagnostic](STAGE_3_S3-40g_2026-11-01.md),
   [S3-38c sequential-thread lifecycle](STAGE_3_S3-38c_2026-10-30.md),
-  [S3-38b VMHost process suite](STAGE_3_S3-38b_2026-10-30.md) и
+  [S3-38b VMHost process suite](STAGE_3_S3-38b_2026-10-30.md),
+  [S3-38b current-source process regression](STAGE_3_S3-38b-current-source_2026-11-01.md),
+  [S3-38d RESULT-state transport](STAGE_3_S3-38d-local_2026-11-01.md) и
   [ISSUE-027 diagnostics](ISSUE_027_DIAGNOSTIC_2026-10-30.md).
 - [Открытые проблемы](../KNOWN_ISSUES.md).
