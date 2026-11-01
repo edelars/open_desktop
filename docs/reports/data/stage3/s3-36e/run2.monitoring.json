@@ -1,0 +1,518 @@
+{
+  "schema": 1,
+  "profile": "s3-36e-two-site-memory-full-cache-call-v1",
+  "run_kind": "scored",
+  "process_run": 2,
+  "command": "cargo run --release --offline -p od-bench -- two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+  "process": {
+    "pid": 53851,
+    "started_at_utc": "2026-11-01T07:42:27Z",
+    "completed_by_utc": "2026-11-01T07:44:54Z",
+    "exit_code": 0,
+    "outer_elapsed_seconds": 146.6
+  },
+  "outputs": {
+    "report_path": "work/tmp/stage3/s3-36e/run2.json",
+    "report_sha256": "0d6bd61f12d1b5abbb4062d8e6eeeab053a3a64aea92c9585bc36e76b6ba675d",
+    "log_path": "work/tmp/stage3/s3-36e/run2.log",
+    "log_sha256": "d1a4ee8ca9305c7d7b0294781d71dfb0d0e4f31808e975ccbbf1a3936af43585"
+  },
+  "snapshots": [
+    {
+      "observed_at_utc": "2026-11-01T07:42:27Z",
+      "phase": "immediately_before_launch",
+      "load_average": [
+        1.90869140625,
+        2.40869140625,
+        2.4560546875
+      ],
+      "benchmark_pid": null,
+      "selected_processes": [
+        "52102 69645       01:13   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-testkit --offline -- --test-threads=1",
+        "52969 52102       00:48   0.0 /Users/senya/pro /Users/senya/projects/open_desktop/target/debug/deps/od_testkit-9d0d27f7abccf649 --test-threads=1",
+        "77034  2041 06-13:26:56   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:42:27Z",
+      "phase": "early_after_launch",
+      "load_average": [
+        1.90869140625,
+        2.40869140625,
+        2.4560546875
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "52102 69645       01:13   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-testkit --offline -- --test-threads=1",
+        "52969 52102       00:48   0.0 /Users/senya/pro /Users/senya/projects/open_desktop/target/debug/deps/od_testkit-9d0d27f7abccf649 --test-threads=1",
+        "53851 53831       00:00   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo run --release --offline -p od-bench -- two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "77034  2041 06-13:26:56   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:42:32Z",
+      "phase": "during_run",
+      "load_average": [
+        1.91552734375,
+        2.40185546875,
+        2.453125
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "52102 69645       01:18   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-testkit --offline -- --test-threads=1",
+        "52969 52102       00:53   0.0 /Users/senya/pro /Users/senya/projects/open_desktop/target/debug/deps/od_testkit-9d0d27f7abccf649 --test-threads=1",
+        "53851 53831       00:05   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo run --release --offline -p od-bench -- two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "53853 53851       00:05   0.0 /Users/senya/.co /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/build/od-bench-18183800239eb316/build-script-build",
+        "77034  2041 06-13:27:01   0.1 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:42:38Z",
+      "phase": "during_run",
+      "load_average": [
+        1.841796875,
+        2.37841796875,
+        2.4443359375
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "52102 69645       01:23   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-testkit --offline -- --test-threads=1",
+        "52969 52102       00:58   0.0 /Users/senya/pro /Users/senya/projects/open_desktop/target/debug/deps/od_testkit-9d0d27f7abccf649 --test-threads=1",
+        "53851 53831       00:10   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo run --release --offline -p od-bench -- two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "53853 53851       00:10   0.0 /Users/senya/.co /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/build/od-bench-18183800239eb316/build-script-build",
+        "77034  2041 06-13:27:07   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:42:43Z",
+      "phase": "during_run",
+      "load_average": [
+        1.85400390625,
+        2.3720703125,
+        2.44140625
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "52102 69645       01:29   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-testkit --offline -- --test-threads=1",
+        "52969 52102       01:04 100.0 /Users/senya/pro /Users/senya/projects/open_desktop/target/debug/deps/od_testkit-9d0d27f7abccf649 --test-threads=1",
+        "53851 53831       00:16   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo run --release --offline -p od-bench -- two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "53853 53851       00:16   0.0 /Users/senya/.co /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/build/od-bench-18183800239eb316/build-script-build",
+        "77034  2041 06-13:27:12   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:42:48Z",
+      "phase": "during_run",
+      "load_average": [
+        1.865234375,
+        2.36572265625,
+        2.4384765625
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "52102 69645       01:34   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-testkit --offline -- --test-threads=1",
+        "52969 52102       01:09  99.0 /Users/senya/pro /Users/senya/projects/open_desktop/target/debug/deps/od_testkit-9d0d27f7abccf649 --test-threads=1",
+        "53851 53831       00:21   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo run --release --offline -p od-bench -- two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "53853 53851       00:21   0.0 /Users/senya/.co /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/build/od-bench-18183800239eb316/build-script-build",
+        "77034  2041 06-13:27:17   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:42:53Z",
+      "phase": "during_run",
+      "load_average": [
+        1.9560546875,
+        2.3759765625,
+        2.44140625
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "52102 69645       01:39   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-testkit --offline -- --test-threads=1",
+        "52969 52102       01:14  81.7 /Users/senya/pro /Users/senya/projects/open_desktop/target/debug/deps/od_testkit-9d0d27f7abccf649 --test-threads=1",
+        "53851 53831       00:26   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo run --release --offline -p od-bench -- two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "53853 53851       00:26   0.0 /Users/senya/.co /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/build/od-bench-18183800239eb316/build-script-build",
+        "77034  2041 06-13:27:22   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:42:58Z",
+      "phase": "during_run",
+      "load_average": [
+        2.03955078125,
+        2.38623046875,
+        2.4443359375
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "52102 69645       01:44   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-testkit --offline -- --test-threads=1",
+        "53851 53831       00:31   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo run --release --offline -p od-bench -- two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "53853 53851       00:31   0.0 /Users/senya/.co /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/build/od-bench-18183800239eb316/build-script-build",
+        "54142 52102       00:01  14.4 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustdoc --edition=2024 --crate-type lib --color auto --crate-name od_testkit --test crates/od-testkit/src/lib.rs --test-run-directory /Users/senya/projects/open_desktop/crates/od-testkit --test-args --test-threads=1 --deny=unused_must_use --deny=unsafe_op_in_unsafe_fn --extern od_isa=/Users/senya/projects/open_desktop/target/debug/deps/libod_isa-6a009041e4a6d7d7.rlib --extern od_testkit=/Users/senya/projects/open_desktop/target/debug/deps/libod_testkit-bca62e33e11dfe78.rlib --extern serde=/Users/senya/projects/open_desktop/target/debug/deps/libserde-3708aab64d3b570b.rlib --extern serde_json=/Users/senya/projects/open_desktop/target/debug/deps/libserde_json-b95cb1045e4a234d.rlib --extern sha2=/Users/senya/projects/open_desktop/target/debug/deps/libsha2-9a34cda2dfd4019d.rlib -L dependency=/Users/senya/projects/open_desktop/target/debug/deps -C embed-bitcode=no --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values()) --error-format human",
+        "77034  2041 06-13:27:27   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:43:03Z",
+      "phase": "during_run",
+      "load_average": [
+        2.1162109375,
+        2.39599609375,
+        2.447265625
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "52102 69645       01:49   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-testkit --offline -- --test-threads=1",
+        "53851 53831       00:36   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo run --release --offline -p od-bench -- two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "53853 53851       00:36   0.0 /Users/senya/.co /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/build/od-bench-18183800239eb316/build-script-build",
+        "54142 52102       00:06  28.6 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustdoc --edition=2024 --crate-type lib --color auto --crate-name od_testkit --test crates/od-testkit/src/lib.rs --test-run-directory /Users/senya/projects/open_desktop/crates/od-testkit --test-args --test-threads=1 --deny=unused_must_use --deny=unsafe_op_in_unsafe_fn --extern od_isa=/Users/senya/projects/open_desktop/target/debug/deps/libod_isa-6a009041e4a6d7d7.rlib --extern od_testkit=/Users/senya/projects/open_desktop/target/debug/deps/libod_testkit-bca62e33e11dfe78.rlib --extern serde=/Users/senya/projects/open_desktop/target/debug/deps/libserde-3708aab64d3b570b.rlib --extern serde_json=/Users/senya/projects/open_desktop/target/debug/deps/libserde_json-b95cb1045e4a234d.rlib --extern sha2=/Users/senya/projects/open_desktop/target/debug/deps/libsha2-9a34cda2dfd4019d.rlib -L dependency=/Users/senya/projects/open_desktop/target/debug/deps -C embed-bitcode=no --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values()) --error-format human",
+        "77034  2041 06-13:27:32   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:43:08Z",
+      "phase": "during_run",
+      "load_average": [
+        2.0263671875,
+        2.37255859375,
+        2.4384765625
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "53851 53831       00:41   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo run --release --offline -p od-bench -- two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "53853 53851       00:41   0.0 /Users/senya/.co /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/build/od-bench-18183800239eb316/build-script-build",
+        "77034  2041 06-13:27:37   8.7 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:43:13Z",
+      "phase": "during_run",
+      "load_average": [
+        2.10400390625,
+        2.3828125,
+        2.44140625
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "53851 53831       00:46   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo run --release --offline -p od-bench -- two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "54291 53851       00:03 109.6 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name od_bench --edition=2024 tools/bench/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=3 -C embed-bitcode=no --deny=unused_must_use --deny=unsafe_op_in_unsafe_fn --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values()) -C metadata=03fc780a63932e39 -C extra-filename=-2f74967f8eb30eb6 --out-dir /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/deps -C strip=debuginfo -L dependency=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/deps --extern od_host=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/deps/libod_host-0bff09692c629b2e.rlib --extern od_isa=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/deps/libod_isa-75c4ccaaa52a4c93.rmeta --extern od_jit=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/deps/libod_jit-fb2acf8b6f2dfe1e.rmeta --extern od_testkit=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/deps/libod_testkit-cfb8e121bc234d0e.rmeta --extern serde=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/deps/libserde-b40149a0cdb1b629.rmeta --extern serde_json=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/target/release/deps/libserde_json-bfdb7965f0a04fa5.rmeta",
+        "54302 69645       00:03   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "54321 54302       00:03  25.9 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name od_runner --edition=2024 tools/runner/src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked --deny=unused_must_use --deny=unsafe_op_in_unsafe_fn --test --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values()) -C metadata=6f54b1122ce381d4 -C extra-filename=-7b05a2e60e49148a --out-dir /Users/senya/projects/open_desktop/target/debug/deps -C incremental=/Users/senya/projects/open_desktop/target/debug/incremental -L dependency=/Users/senya/projects/open_desktop/target/debug/deps --extern od_host=/Users/senya/projects/open_desktop/target/debug/deps/libod_host-5ab2430f07141386.rlib --extern od_isa=/Users/senya/projects/open_desktop/target/debug/deps/libod_isa-6a009041e4a6d7d7.rlib --extern od_jit=/Users/senya/projects/open_desktop/target/debug/deps/libod_jit-9855e3530d3679a5.rlib --extern od_testkit=/Users/senya/projects/open_desktop/target/debug/deps/libod_testkit-bca62e33e11dfe78.rlib --extern serde_json=/Users/senya/projects/open_desktop/target/debug/deps/libserde_json-b95cb1045e4a234d.rlib",
+        "77034  2041 06-13:27:42   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:43:18Z",
+      "phase": "during_run",
+      "load_average": [
+        2.01513671875,
+        2.359375,
+        2.4326171875
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "53851 53831       00:51  96.7 target/release/o target/release/od-bench two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "54302 69645       00:08   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "54321 54302       00:08  26.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name od_runner --edition=2024 tools/runner/src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked --deny=unused_must_use --deny=unsafe_op_in_unsafe_fn --test --check-cfg cfg(docsrs,test) --check-cfg cfg(feature, values()) -C metadata=6f54b1122ce381d4 -C extra-filename=-7b05a2e60e49148a --out-dir /Users/senya/projects/open_desktop/target/debug/deps -C incremental=/Users/senya/projects/open_desktop/target/debug/incremental -L dependency=/Users/senya/projects/open_desktop/target/debug/deps --extern od_host=/Users/senya/projects/open_desktop/target/debug/deps/libod_host-5ab2430f07141386.rlib --extern od_isa=/Users/senya/projects/open_desktop/target/debug/deps/libod_isa-6a009041e4a6d7d7.rlib --extern od_jit=/Users/senya/projects/open_desktop/target/debug/deps/libod_jit-9855e3530d3679a5.rlib --extern od_testkit=/Users/senya/projects/open_desktop/target/debug/deps/libod_testkit-bca62e33e11dfe78.rlib --extern serde_json=/Users/senya/projects/open_desktop/target/debug/deps/libserde_json-b95cb1045e4a234d.rlib",
+        "77034  2041 06-13:27:47   5.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:43:23Z",
+      "phase": "during_run",
+      "load_average": [
+        2.09375,
+        2.36962890625,
+        2.435546875
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "53851 53831       00:56  98.0 target/release/o target/release/od-bench two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "54302 69645       00:13   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "77034  2041 06-13:27:52   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:43:28Z",
+      "phase": "during_run",
+      "load_average": [
+        2.0859375,
+        2.36328125,
+        2.4326171875
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "53851 53831       01:01  98.2 target/release/o target/release/od-bench two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "54302 69645       00:18   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "77034  2041 06-13:27:57   5.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:43:33Z",
+      "phase": "during_run",
+      "load_average": [
+        2.07861328125,
+        2.35693359375,
+        2.4296875
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "53851 53831       01:06  99.1 target/release/o target/release/od-bench two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "54302 69645       00:23   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "77034  2041 06-13:28:02   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:43:38Z",
+      "phase": "during_run",
+      "load_average": [
+        2.15234375,
+        2.3671875,
+        2.4326171875
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "53851 53831       01:11  99.3 target/release/o target/release/od-bench two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "54302 69645       00:28   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "77034  2041 06-13:28:07   3.1 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:43:43Z",
+      "phase": "during_run",
+      "load_average": [
+        2.38037109375,
+        2.41064453125,
+        2.447265625
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "53851 53831       01:16 100.0 target/release/o target/release/od-bench two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "54302 69645       00:33   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "77034  2041 06-13:28:12   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:43:48Z",
+      "phase": "during_run",
+      "load_average": [
+        2.349609375,
+        2.40380859375,
+        2.4443359375
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "53851 53831       01:21 100.0 target/release/o target/release/od-bench two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "54302 69645       00:38   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "77034  2041 06-13:28:17  11.2 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:43:53Z",
+      "phase": "during_run",
+      "load_average": [
+        2.4013671875,
+        2.41357421875,
+        2.447265625
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "53851 53831       01:26 100.0 target/release/o target/release/od-bench two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "54302 69645       00:43   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "77034  2041 06-13:28:22   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:43:58Z",
+      "phase": "during_run",
+      "load_average": [
+        2.529296875,
+        2.439453125,
+        2.4560546875
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "53851 53831       01:31  97.3 target/release/o target/release/od-bench two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "54302 69645       00:48   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "77034  2041 06-13:28:27   0.9 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:44:03Z",
+      "phase": "during_run",
+      "load_average": [
+        2.64697265625,
+        2.46533203125,
+        2.46484375
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "53851 53831       01:36  94.0 target/release/o target/release/od-bench two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "54302 69645       00:53   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "77034  2041 06-13:28:32   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:44:08Z",
+      "phase": "during_run",
+      "load_average": [
+        2.5947265625,
+        2.45751953125,
+        2.4619140625
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "53851 53831       01:41  99.2 target/release/o target/release/od-bench two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "54302 69645       00:58   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "77034  2041 06-13:28:37   0.6 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:44:13Z",
+      "phase": "during_run",
+      "load_average": [
+        3.02734375,
+        2.54931640625,
+        2.494140625
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "53851 53831       01:46  95.5 target/release/o target/release/od-bench two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "54302 69645       01:03   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "77034  2041 06-13:28:42   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:44:19Z",
+      "phase": "during_run",
+      "load_average": [
+        3.02490234375,
+        2.556640625,
+        2.4970703125
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "53851 53831       01:52 100.0 target/release/o target/release/od-bench two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "54302 69645       01:09   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "77034  2041 06-13:28:48   0.5 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:44:24Z",
+      "phase": "during_run",
+      "load_average": [
+        3.1025390625,
+        2.58056640625,
+        2.505859375
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "53851 53831       01:57  97.1 target/release/o target/release/od-bench two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "54302 69645       01:14   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "77034  2041 06-13:28:53   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:44:29Z",
+      "phase": "during_run",
+      "load_average": [
+        3.17431640625,
+        2.60400390625,
+        2.51416015625
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "53851 53831       02:02  97.9 target/release/o target/release/od-bench two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "54302 69645       01:19   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "77034  2041 06-13:28:58   0.3 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:44:34Z",
+      "phase": "during_run",
+      "load_average": [
+        3.16015625,
+        2.6103515625,
+        2.5166015625
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "53851 53831       02:07 100.0 target/release/o target/release/od-bench two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "54302 69645       01:24   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "77034  2041 06-13:29:03   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:44:39Z",
+      "phase": "during_run",
+      "load_average": [
+        3.14697265625,
+        2.61669921875,
+        2.51904296875
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "53851 53831       02:12  97.8 target/release/o target/release/od-bench two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "54302 69645       01:29   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "77034  2041 06-13:29:08   0.1 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:44:44Z",
+      "phase": "during_run",
+      "load_average": [
+        3.294921875,
+        2.65625,
+        2.533203125
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "53851 53831       02:17 100.0 target/release/o target/release/od-bench two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "54302 69645       01:34   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "77034  2041 06-13:29:13   0.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:44:49Z",
+      "phase": "during_run",
+      "load_average": [
+        3.27099609375,
+        2.66162109375,
+        2.53564453125
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "53851 53831       02:22  99.1 target/release/o target/release/od-bench two-site-memory-cache --process-run 2 --output work/tmp/stage3/s3-36e/run2.json",
+        "54302 69645       01:39   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "77034  2041 06-13:29:18   0.2 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:44:54Z",
+      "phase": "during_run",
+      "load_average": [
+        3.1689453125,
+        2.650390625,
+        2.5322265625
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "54302 69645       01:44   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "77034  2041 06-13:29:23   1.0 lazygit          lazygit"
+      ]
+    },
+    {
+      "observed_at_utc": "2026-11-01T07:44:54Z",
+      "phase": "after_completion",
+      "load_average": [
+        3.1689453125,
+        2.650390625,
+        2.5322265625
+      ],
+      "benchmark_pid": 53851,
+      "selected_processes": [
+        "54302 69645       01:44   0.0 /Users/senya/.ru /Users/senya/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo test -p od-runner --offline -- --test-threads=1",
+        "77034  2041 06-13:29:23   1.0 lazygit          lazygit"
+      ]
+    }
+  ]
+}

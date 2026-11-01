@@ -849,7 +849,7 @@ sequence; every side exceeded the 200 ms floor. The raw
 `native_total_ns/interpreter_total_ns` median and range were 2.7592
 (2.6746–2.8856) for `store_then_load` and 2.8393 (2.7617–2.9279) for
 `load_then_store`. The sequence strata remain separate. This is one bounded
-process only; two scored runs are still required before a cross-run summary.
+process only; two more scored runs were required after this first process.
 The point-in-time envelope covered an outer 156.740 s command on M3 Max and
 sampled one-minute load averages from 1.73 to 3.95. Graphify appeared in 7 of
 34 snapshots. A Stage 2 `od-runner` test was visible in 14 of 34 snapshots
@@ -857,6 +857,18 @@ during the earlier portion of the envelope; a `rustc` child reached 21.2% CPU
 in one sample. The sparse monitor
 has no per-pair timing, so it cannot attribute overlap to individual samples.
 Stage 2 was not stopped.
+
+Scored release run 2 also retained all 20 alternating pairs per sequence and
+passed the 200 ms floor for every side. Its raw
+`native_total_ns/interpreter_total_ns` median/range was 2.6903
+(2.6348–2.7647) for `store_then_load` and 2.7630 (2.7334–2.7913) for
+`load_then_store`; the strata remain separate. The process recorded exactly
+49,152,000 hit-only calls per sequence and no scored misses, replacements,
+compiles, or publications. The envelope covered 146.600 s, with one-minute
+load averages 1.84–3.29 and a Stage 2 `od-runner` test visible in 22 of 32
+snapshots. Its `rustc` child reached 25.9% and 26.0% CPU in two samples; the
+benchmark's own release `rustc` compile reached 109.6% in one. Graphify was not
+visible. No per-pair timestamps are available; one scored run remains.
 
 Run the release preflight first:
 
@@ -869,8 +881,9 @@ cargo run --release --offline -p od-bench -- two-site-memory-cache \
 The [S3-36e report](../reports/STAGE_3_S3-36e_2026-11-01.md) and
 [preflight artifact](../reports/data/stage3/s3-36e/preflight-release-run1.json),
 [calibration artifact](../reports/data/stage3/s3-36e/calibration-run1.json),
-and [scored run 1](../reports/data/stage3/s3-36e/run1.json) record completed
-gates. Two additional scored runs remain. Mini checks remain deferred to the
+and [scored runs 1](../reports/data/stage3/s3-36e/run1.json) and
+[2](../reports/data/stage3/s3-36e/run2.json) record completed gates. One
+scored run remains. Mini checks remain deferred to the
 end of Stage 3.
 
 ### S3-37a: bounded production FIFO16 corpus churn observation
