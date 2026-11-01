@@ -992,26 +992,22 @@ fn calibrate_common_repetitions(
             }
         }
         drop(published);
-        if failure.is_none() && calibration_started.elapsed() >= MAX_CALIBRATION_WALL {
-            let wall_ns = calibration_started.elapsed().as_nanos();
-            persist_terminal_stop(
-                journal_path,
-                &mut checks,
-                wall_ns,
-                "overall_wall_ceiling_after_publication_teardown",
-            )?;
-            failure = Some(format!(
-                "calibration exceeded overall wall ceiling after publication teardown: process_wall_ns={wall_ns}"
-            ));
-        }
         if failure.is_some() {
             break;
         }
     }
+    let final_elapsed = calibration_started.elapsed();
+    if let Some(reason) = calibration_finalization_stop_reason(failure.is_some(), final_elapsed) {
+        persist_terminal_stop(journal_path, &mut checks, final_elapsed.as_nanos(), reason)?;
+        failure = Some(format!(
+            "calibration exceeded overall wall ceiling after final teardown: process_wall_ns={}",
+            final_elapsed.as_nanos()
+        ));
+    }
     Ok(CalibrationRun {
         common_repetitions: failure.is_none().then_some(common),
         checks,
-        total_wall_ns: calibration_started.elapsed().as_nanos(),
+        total_wall_ns: final_elapsed.as_nanos(),
         failure,
     })
 }
@@ -1128,6 +1124,14 @@ fn calibration_stop_reason(limits: Option<CalibrationLimits>, elapsed: Duration)
     } else {
         None
     }
+}
+
+fn calibration_finalization_stop_reason(
+    already_failed: bool,
+    elapsed: Duration,
+) -> Option<&'static str> {
+    (!already_failed && elapsed >= MAX_CALIBRATION_WALL)
+        .then_some("overall_wall_ceiling_after_calibration_teardown")
 }
 
 fn time_native_batch(
@@ -1281,9 +1285,9 @@ mod tests {
     use super::{
         CHUNK_CALLS, CalibrationCheck, CalibrationLimits, MAX_CALIBRATED_CALLS,
         MAX_CALIBRATION_SIDE_WALL, MAX_CALIBRATION_WALL, MIN_SAMPLE, append_calibration_check,
-        both_samples_meet_floor, calibration_stop_reason, collect_scored_samples,
-        next_calibration_call_count, persist_terminal_stop, report_requires_nonzero_exit,
-        reset_calibration_journal, sample_meets_floor,
+        both_samples_meet_floor, calibration_finalization_stop_reason, calibration_stop_reason,
+        collect_scored_samples, next_calibration_call_count, persist_terminal_stop,
+        report_requires_nonzero_exit, reset_calibration_journal, sample_meets_floor,
     };
     use std::fs;
     use std::time::{Duration, Instant};
@@ -1346,6 +1350,32 @@ mod tests {
     }
 
     #[test]
+    fn final_teardown_deadline_classifies_before_at_and_after_boundary() {
+        assert_eq!(
+            calibration_finalization_stop_reason(
+                false,
+                MAX_CALIBRATION_WALL - Duration::from_nanos(1)
+            ),
+            None
+        );
+        assert_eq!(
+            calibration_finalization_stop_reason(false, MAX_CALIBRATION_WALL),
+            Some("overall_wall_ceiling_after_calibration_teardown")
+        );
+        assert_eq!(
+            calibration_finalization_stop_reason(
+                false,
+                MAX_CALIBRATION_WALL + Duration::from_nanos(1)
+            ),
+            Some("overall_wall_ceiling_after_calibration_teardown")
+        );
+        assert_eq!(
+            calibration_finalization_stop_reason(true, MAX_CALIBRATION_WALL),
+            None
+        );
+    }
+
+    #[test]
     fn failed_calibration_attempt_is_durable_and_requires_nonzero_exit() {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1375,7 +1405,7 @@ mod tests {
             &path,
             &mut checks,
             MAX_CALIBRATION_WALL.as_nanos() + 1,
-            "overall_wall_ceiling_after_publication_teardown",
+            "overall_wall_ceiling_after_calibration_teardown",
         )
         .expect("persist terminal deadline event");
         let encoded = fs::read_to_string(&path).expect("read durable journal");
@@ -1397,7 +1427,7 @@ mod tests {
         );
         assert_eq!(
             terminal["stop_reason"],
-            "overall_wall_ceiling_after_publication_teardown"
+            "overall_wall_ceiling_after_calibration_teardown"
         );
 
         let report = serde_json::json!({
