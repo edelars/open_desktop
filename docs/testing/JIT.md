@@ -778,6 +778,28 @@ probe or complete S3-34/Stage 3; Mini, physical x86, performance, VMHost
 process and owner-backed checks remain outside this run. See the
 [S3-34p3 report](../reports/STAGE_3_S3-34p3_2026-11-01.md).
 
+### S3-34 local harness inventory for S3-32a
+
+The mandatory local harness now includes exact gates for the three existing
+S3-32a checks: exact candidate lowering, the verified compile pipeline, and
+interpreter edge/budget-resume parity. The inventory contains 101 Rust gates:
+91 acceptance and 10 lifecycle gates. Its self-checks pin each new identity,
+package, argv, log and source binding, and reject omission, zero-match or
+ignored output, substituted identity/argv/log, and forged success.
+
+The full local run `stage3-20261101-142811-25240b316e` exited 0 with
+`local_only`: 105 passed steps, 0 failures and 33 `not_run` steps. The three
+new S3-32a gates each passed exactly one test. Source fingerprints matched at
+start and end (`fc13385ae96175d9745071afb080165c1e1bfc8156b1d9590611d9a0bdb6b73d`).
+The run's recorded revision is `fdb744b463990ac77f5e8c8a744966a8513eabec`;
+the later harness commit `de98d9f` contains the exact tested harness files.
+Stage1 dispatch was `local_only`. VMHost process, physical x86, Mac mini,
+performance, owner-backed and Stage 2 suites were `not_run`. This is bounded
+local harness evidence; S3-34 and Stage 3 remain open. Summary, input manifest,
+logs and generated corpus artifacts are preserved under
+[`data/stage3/s3-34-local/`](../reports/data/stage3/s3-34-local/).
+See the [S3-34 local report](../reports/STAGE_3_S3-34-local_2026-11-01.md).
+
 Каждая новая строка support matrix получает literal positive/negative cases,
 точный сравниваемый state и внешний prerequisite. В отчёте сохранять git
 revision, build fingerprint, host/OS/toolchain, fixtures/corpus fingerprint,

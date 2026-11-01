@@ -1,0 +1,27 @@
+
+running 17 tests
+test bounded_reducer_is_deterministic_preserves_class_and_saves_report ... ok
+test capacity_one_memory_cache_matches_uncached_dispatch_for_frozen_profiles ... ok
+test capacity_one_memory_cache_preserves_control_and_committed_prefix_behavior ... ok
+test comparator_rejects_corruption_and_serializes_named_diagnostics ... ok
+test fixed_seed_memory_corpus_matches_interpreter_twice_per_input ... ok
+test generic_reducer_can_clear_marker_when_comparator_allows_candidate ... ok
+test mismatch_report_preserves_empty_first_and_mismatching_continuation_phases ... ok
+test named_fault_stop_budget_and_continuation_cases_are_separate ... ok
+test reduce_saved_case_from_environment ... ignored, set OD_JIT_REDUCE_CASE to a saved versioned mismatch report
+test reducer_preserves_load_pair_site_fault_boundary_and_mismatch_class ... ok
+test reducer_rejects_malformed_and_unavailable_inputs_and_stops_on_nonreproduction ... ok
+test reducer_rejects_same_mismatch_moving_to_continuation_phase ... ok
+test replay_envelope_round_trips_and_rejects_malformed_reports ... ok
+test replay_refuses_to_claim_equivalence_without_native_backend ... ok
+test replay_saved_case_from_environment ... ignored, set OD_JIT_REPLAY_CASE to a saved versioned mismatch report
+test replay_success_fault_stop_budget_and_continuation_for_all_sequences ... ok
+test saved_mismatch_report_replays_and_preserves_original_classes ... ok
+
+test result: ok. 15 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.85s
+
+
+--- stderr ---
+   Compiling od-host v0.1.0 (/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/crates/od-host)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.83s
+     Running tests/memory_corpus.rs (target/debug/deps/memory_corpus-22a3426082385912)

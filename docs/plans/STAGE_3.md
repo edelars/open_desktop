@@ -3111,6 +3111,29 @@ process, performance, owner-backed и Stage 2 в этом run — `not_run`. S3-
 Stage 3 остаются открытыми. Факты и локальные artifact bindings приведены в
 [S3-34p3 report](../reports/STAGE_3_S3-34p3_2026-11-01.md).
 
+#### S3-34 local gates для S3-32a
+
+В mandatory local inventory добавлены три exact gates для уже существующих
+S3-32a проверок: lowering точного кандидата, проход через обычный verified
+compile pipeline и parity с interpreter на краевых значениях и budget resume.
+Инвентарь содержит 101 Rust gate: 91 acceptance и 10 lifecycle. Self-check
+проверяет точные identity/package/argv/log/source bindings, обязательность
+каждого gate и отказ на zero-match, ignored output, подмену параметров или
+forge success.
+
+Полный `--suite local` run `stage3-20261101-142811-25240b316e` завершился с
+`local_only`: 105 шагов `passed`, 0 failures, 33 шага `not_run`. Все три новых
+S3-32a tests прошли по одному разу. Source fingerprint до и после совпал:
+`fc13385ae96175d9745071afb080165c1e1bfc8156b1d9590611d9a0bdb6b73d`; summary
+фиксирует revision `fdb744b463990ac77f5e8c8a744966a8513eabec`. Поздний commit
+`de98d9f` содержит тот же проверенный harness source. Дочерний Stage1 dispatch
+имеет scope `local_only`; VMHost process, physical x86, Mac mini, performance,
+owner-backed и Stage2 suites имеют статус `not_run`. Проверки на Mac mini
+отложены до конца Stage 3. Это локальное bounded evidence; S3-34 и Stage 3
+остаются открытыми. Summary, input manifest, logs и corpus artifacts сохранены
+в [S3-34 local report data](../reports/data/stage3/s3-34-local/) и связаны в
+[отчёте](../reports/STAGE_3_S3-34-local_2026-11-01.md).
+
 ### S3-35. Измерить холодное исполнение
 
 #### S3-35a: first full-corpus interpreter/FIFO comparison path

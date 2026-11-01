@@ -1,0 +1,55 @@
+{
+  "run_id": "stage1-harness-20261101-142954-4c12b90c",
+  "status": "local_only",
+  "suite_selection": "oracle",
+  "suites": {
+    "local": {
+      "status": "not_run",
+      "steps": []
+    },
+    "oracle": {
+      "status": "local_only",
+      "steps": [
+        {
+          "name": "generate_corpus",
+          "command": "cargo run --offline -p od-runner -- --generate-corpus 0x5eedcafe 1000 work/stage1-harness-generated-stage1-harness-20261101-142954-4c12b90c",
+          "status": "passed",
+          "returncode": 0,
+          "duration_seconds": 15.906,
+          "log": "work/stage1-harness/stage1-harness-20261101-142954-4c12b90c/generate_corpus.log",
+          "output_tail": "   Compiling od-host v0.1.0 (/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/crates/od-host)\n   Compiling od-runner v0.1.0 (/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/tools/runner)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.20s\n     Running `target/debug/od-runner --generate-corpus 0x5eedcafe 1000 work/stage1-harness-generated-stage1-harness-20261101-142954-4c12b90c`\ngenerated 1000 fixtures with seed 0x000000005eedcafe; corpus_sha256=9356e916b2037a3f5a082e8366fe33bf4277ab00812489809bfc586210744d35\n"
+        },
+        {
+          "name": "local_oracle",
+          "command": "/opt/homebrew/opt/python@3.15/bin/python3.15 tests/cpu/stage1_oracle.py --host 192.168.1.14 --user senya --remote-root /home/senya/projects/open_desktop-stage1 --repeats 2 --engine jit-dispatch --local-only tests/fixtures/x86/s0_09_mov_imm64.case.json tests/fixtures/x86/s0_09_add_overflow.case.json tests/fixtures/x86/s0_09_cmp_jz.case.json tests/fixtures/x86/s0_09_sub_jnz_loop.case.json tests/fixtures/x86/s1_06_add_signed_overflow.case.json tests/fixtures/x86/s1_06_sub_borrow.case.json tests/fixtures/x86/s1_06_cmp_signed_boundary.case.json tests/fixtures/x86/s1_06_jz_taken.case.json tests/fixtures/x86/s1_06_jz_not_taken.case.json tests/fixtures/x86/s1_06_mov_preserves_flags.case.json work/stage1-harness-generated-stage1-harness-20261101-142954-4c12b90c",
+          "status": "local_only",
+          "returncode": 0,
+          "duration_seconds": 36.694,
+          "log": "work/stage1-harness/stage1-harness-20261101-142954-4c12b90c/local_oracle.log",
+          "output_tail": "-only repeat 2/2: gen_v1_000000005eedcafe_000003d4 matched interpreter and jit-dispatch\nlocal-only repeat 2/2: gen_v1_000000005eedcafe_000003d5 matched interpreter and jit-dispatch\nlocal-only repeat 2/2: gen_v1_000000005eedcafe_000003d6 matched interpreter and jit-dispatch\nlocal-only repeat 2/2: gen_v1_000000005eedcafe_000003d7 matched interpreter and jit-dispatch\nlocal-only repeat 2/2: gen_v1_000000005eedcafe_000003d8 matched interpreter and jit-dispatch\nlocal-only repeat 2/2: gen_v1_000000005eedcafe_000003d9 matched interpreter and jit-dispatch\nlocal-only repeat 2/2: gen_v1_000000005eedcafe_000003da matched interpreter and jit-dispatch\nlocal-only repeat 2/2: gen_v1_000000005eedcafe_000003db matched interpreter and jit-dispatch\nlocal-only repeat 2/2: gen_v1_000000005eedcafe_000003dc matched interpreter and jit-dispatch\nlocal-only repeat 2/2: gen_v1_000000005eedcafe_000003dd matched interpreter and jit-dispatch\nlocal-only repeat 2/2: gen_v1_000000005eedcafe_000003de matched interpreter and jit-dispatch\nlocal-only repeat 2/2: gen_v1_000000005eedcafe_000003df matched interpreter and jit-dispatch\nlocal-only repeat 2/2: gen_v1_000000005eedcafe_000003e0 matched interpreter and jit-dispatch\nlocal-only repeat 2/2: gen_v1_000000005eedcafe_000003e1 matched interpreter and jit-dispatch\nlocal-only repeat 2/2: gen_v1_000000005eedcafe_000003e2 matched interpreter and jit-dispatch\nlocal-only repeat 2/2: gen_v1_000000005eedcafe_000003e3 matched interpreter and jit-dispatch\nlocal-only repeat 2/2: gen_v1_000000005eedcafe_000003e4 matched interpreter and jit-dispatch\nlocal-only repeat 2/2: gen_v1_000000005eedcafe_000003e5 matched interpreter and jit-dispatch\nlocal-only repeat 2/2: gen_v1_000000005eedcafe_000003e6 matched interpreter and jit-dispatch\nlocal-only repeat 2/2: gen_v1_000000005eedcafe_000003e7 matched interpreter and jit-dispatch\nlocal-only manifest: /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage1-oracle/stage1-20261101-143010-26dc3e9b/manifest.json\n"
+        }
+      ],
+      "generated_cases": 1000,
+      "evidence_scope": "local_only",
+      "manifest": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage1-oracle/stage1-20261101-143010-26dc3e9b/manifest.json"
+    },
+    "vmhost": {
+      "status": "not_run",
+      "steps": []
+    }
+  },
+  "host": {
+    "x86_host": "192.168.1.14",
+    "x86_user": "senya",
+    "remote_root": "/home/senya/projects/open_desktop-stage1"
+  },
+  "engine": "jit-dispatch",
+  "evidence_scope": "local_only",
+  "oracle": {
+    "repeats": 2,
+    "generated_count": 1000,
+    "seed": "0x5eedcafe",
+    "local_only": true
+  },
+  "finished_utc": "2026-11-01T14:30:47Z"
+}
