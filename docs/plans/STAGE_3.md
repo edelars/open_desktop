@@ -2480,9 +2480,9 @@ strata against the ordinary dispatcher and interpreter, including exact guest
 state, retirement, and remaining-budget parity; six partial/control cases
 cover later-iteration boundaries, STOP before XCHG, STOP at JNZ, and wrapping
 operand reuse. Each main-path candidate case prepares one key and reuses it
-`iterations - 1` times. The archived preflight is from a pre-commit dirty tree
-and has no timing; the timed processes below use the clean committed source
-revision.
+`iterations - 1` times. The untimed preflight was rerun at the same clean
+committed source revision and fingerprints as the timing processes, using a
+temporary detached worktree.
 
 Three release processes recorded 20 paired baseline/candidate/interpreter
 triples per stratum, 60 triples per stratum overall. All 1,080 measured sides

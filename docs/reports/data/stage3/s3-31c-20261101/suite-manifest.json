@@ -39,15 +39,19 @@
   ],
   "archive_provenance": {
     "process_1_2_3": "Copied byte-identically from work/stage3/s3-31c/process-1.json, process-2.json, and process-3.json.",
-    "preflight": "Copied byte-identically from work/stage3/s3-31c/preflight-release.json and archived as preflight-release-final.json.",
+    "preflight": "Untimed preflight rerun in the clean detached worktree /private/tmp/stage3-s31c-clean at the committed source revision; archived as preflight-release-final.json.",
     "process_3_retry": "An earlier process-3 attempt timed out and was discarded; archived process-3.json is the completed rerun."
   },
   "preflight": {
     "path": "preflight-release-final.json",
-    "sha256": "a972cd0e6a09571002f98d54fed8ccf9c24005af7d62a812db2e50ff66f7b781",
-    "source_revision": "ed4c7cbab388c4b879dec6f0189d448423d1fbf9",
-    "source_sha256": "ad4af85007323569916af44bed41bfdc8aa3adbb8aee18b61a5e611c04013610",
-    "source_tree_dirty": true,
+    "sha256": "cfcd006ae6b8bf5ca0e1fbbc606e4aca299f4cb0ca9154a9e0911bb356c9bc57",
+    "source_revision": "dcd1bfe5db813a2647c100c4c64a008dca9bd21c",
+    "source_sha256": "68c08c7ff7f91f3fffea8eab3ba7c85e2094725e6cadc23c1eab42c5a5cb696c",
+    "source_tree_dirty": false,
+    "execution_repository_revision": "dcd1bfe5db813a2647c100c4c64a008dca9bd21c",
+    "execution_working_directory": "/private/tmp/stage3-s31c-clean",
+    "execution_working_tree_dirty": false,
+    "source_fingerprints_match_timed_processes": true,
     "timing_started": false,
     "strata_count": 6,
     "all_main_paths_match_state_retirement_budget": true,
@@ -71,7 +75,7 @@
       {"id": "b_64", "iterations": 64, "prepared_keys": 1, "reused_keys": 63, "timed_cache_hit_only": true},
       {"id": "b_4096", "iterations": 4096, "prepared_keys": 1, "reused_keys": 4095, "timed_cache_hit_only": true}
     ],
-    "scope_note": "Correctness-only preflight from a pre-commit dirty source tree; not timing evidence for the committed revision."
+    "scope_note": "Correctness-only untimed preflight from the same clean committed revision and frozen source fingerprints as the timed processes; executed from a separate temporary detached worktree."
   },
   "sampling": {
     "process_runs": 3,
@@ -111,11 +115,11 @@
   },
   "artifacts": {
     "raw_files": [
-      {"path": "preflight-release-final.json", "sha256": "a972cd0e6a09571002f98d54fed8ccf9c24005af7d62a812db2e50ff66f7b781", "bytes": 113038},
+      {"path": "preflight-release-final.json", "sha256": "cfcd006ae6b8bf5ca0e1fbbc606e4aca299f4cb0ca9154a9e0911bb356c9bc57", "bytes": 113012},
       {"path": "process-1.json", "sha256": "d479d4c2a9b5f7ec23d9ecc25c7fc02751409de51b273e062aaccb8723fe97d2", "bytes": 184126},
       {"path": "process-2.json", "sha256": "ae04f7bb97d52b60ed1e0b38c6ca7b031df7e78f4ff54577c6617f252d57ea46", "bytes": 184119},
       {"path": "process-3.json", "sha256": "96f993f459878d07caef17973614d2ea80eff56c327e8b5b03924ae475b1756b", "bytes": 184119}
     ],
-    "report": {"path": "../../../STAGE_3_S3-31c_2026-11-01.md", "sha256": "35fcae0f34544d08da00725b07a1fcef60360110524ddebf73fe23345046afb4"}
+    "report": {"path": "../../../STAGE_3_S3-31c_2026-11-01.md", "sha256": "52f4eb0bb0dea08cc5199798c9ddecdc680692151373f754320c8da6fab84a02"}
   }
 }

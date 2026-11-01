@@ -1232,9 +1232,10 @@ candidate/baseline medians are above 1; at 64 and 4,096 iterations they are
 below 1 in both forms. Candidate/interpreter medians are above 1 for all `a`
 strata and `b_1`, below 1 only for `b_64` and `b_4096`. No broad workload
 speedup or default/policy change follows; the candidate remains opt-in and
-S3-31 remains open. The archived preflight is correctness-only, from a dirty
-pre-commit source tree; the timed process artifacts share clean revision
-`dcd1bfe5db813a2647c100c4c64a008dca9bd21c`. See the [S3-31c report](../reports/STAGE_3_S3-31c_2026-11-01.md) and
+S3-31 remains open. The untimed correctness preflight and timed process
+artifacts share clean source revision and fingerprints
+`dcd1bfe5db813a2647c100c4c64a008dca9bd21c`; the preflight ran from a temporary
+detached worktree, while timing ran from the main working directory. See the [S3-31c report](../reports/STAGE_3_S3-31c_2026-11-01.md) and
 [suite manifest](../reports/data/stage3/s3-31c-20261101/suite-manifest.json).
 
 ### S3-37a: bounded production FIFO16 corpus churn observation

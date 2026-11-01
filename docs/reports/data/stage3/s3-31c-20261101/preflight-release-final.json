@@ -4,16 +4,16 @@
     "build": {
       "profile": "release",
       "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
-      "source_revision": "ed4c7cbab388c4b879dec6f0189d448423d1fbf9",
-      "source_sha256": "ad4af85007323569916af44bed41bfdc8aa3adbb8aee18b61a5e611c04013610",
-      "source_tree_dirty": true,
+      "source_revision": "dcd1bfe5db813a2647c100c4c64a008dca9bd21c",
+      "source_sha256": "68c08c7ff7f91f3fffea8eab3ba7c85e2094725e6cadc23c1eab42c5a5cb696c",
+      "source_tree_dirty": false,
       "target": "aarch64-apple-darwin"
     },
     "cpu_model": "Apple M3 Max",
     "execution": {
-      "repository_revision": "ed4c7cbab388c4b879dec6f0189d448423d1fbf9",
-      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
-      "working_tree_dirty": null
+      "repository_revision": "dcd1bfe5db813a2647c100c4c64a008dca9bd21c",
+      "working_directory": "/private/tmp/stage3-s31c-clean",
+      "working_tree_dirty": false
     },
     "os": "macos",
     "os_version": "26.7.1"
