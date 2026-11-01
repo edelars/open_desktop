@@ -1,0 +1,365 @@
+{
+  "calibration_attempts": [
+    {
+      "interpreter_floor_met": false,
+      "interpreter_total_ns": 309918,
+      "native_floor_met": false,
+      "native_total_ns": 22371405,
+      "record_type": "calibration_attempt",
+      "repetitions": 1
+    },
+    {
+      "interpreter_floor_met": false,
+      "interpreter_total_ns": 628480,
+      "native_floor_met": false,
+      "native_total_ns": 45952002,
+      "record_type": "calibration_attempt",
+      "repetitions": 2
+    },
+    {
+      "interpreter_floor_met": false,
+      "interpreter_total_ns": 1232993,
+      "native_floor_met": false,
+      "native_total_ns": 89367041,
+      "record_type": "calibration_attempt",
+      "repetitions": 4
+    },
+    {
+      "interpreter_floor_met": false,
+      "interpreter_total_ns": 2452259,
+      "native_floor_met": false,
+      "native_total_ns": 178787787,
+      "record_type": "calibration_attempt",
+      "repetitions": 8
+    },
+    {
+      "interpreter_floor_met": false,
+      "interpreter_total_ns": 4755265,
+      "native_floor_met": true,
+      "native_total_ns": 352002879,
+      "record_type": "calibration_attempt",
+      "repetitions": 16
+    },
+    {
+      "interpreter_floor_met": false,
+      "interpreter_total_ns": 9380132,
+      "native_floor_met": true,
+      "native_total_ns": 710570046,
+      "record_type": "calibration_attempt",
+      "repetitions": 32
+    },
+    {
+      "interpreter_floor_met": false,
+      "interpreter_total_ns": 18314356,
+      "native_floor_met": true,
+      "native_total_ns": 1308267358,
+      "record_type": "calibration_attempt",
+      "repetitions": 64
+    },
+    {
+      "interpreter_floor_met": false,
+      "interpreter_total_ns": 37398051,
+      "native_floor_met": true,
+      "native_total_ns": 2658353465,
+      "record_type": "calibration_attempt",
+      "repetitions": 128
+    },
+    {
+      "interpreter_floor_met": false,
+      "interpreter_total_ns": 75939542,
+      "native_floor_met": true,
+      "native_total_ns": 4865733079,
+      "record_type": "calibration_attempt",
+      "repetitions": 256
+    },
+    {
+      "interpreter_floor_met": false,
+      "interpreter_total_ns": 139170578,
+      "native_floor_met": true,
+      "native_total_ns": 9743749688,
+      "record_type": "calibration_attempt",
+      "repetitions": 512
+    },
+    {
+      "interpreter_floor_met": true,
+      "interpreter_total_ns": 279315126,
+      "native_floor_met": true,
+      "native_total_ns": 19591149250,
+      "record_type": "calibration_attempt",
+      "repetitions": 1024
+    }
+  ],
+  "calibration_floor_passed": true,
+  "calibration_only": false,
+  "case_count": 2400,
+  "frozen_seed_values": [
+    5999696582365151233,
+    5999696582365151234,
+    5999696582365151235
+  ],
+  "input_digest": "b09478b556aa91234d8c453f20e70f637222c5de2d7369d305ffe7c78caae540",
+  "interpreter_preflight_executions": 4800,
+  "journal_path": "work/tmp/stage3/s3-35c/run2.json.journal.jsonl",
+  "measure_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "6f9da043073188b5164ee81b543add51314981a0",
+      "source_sha256": "1b1f655e70e989e96e92c4f17cee0724ccf9ef6a0714104a7107a7880e6d4d15",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "6f9da043073188b5164ee81b543add51314981a0",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "minimum_side_time_ns": 200000000,
+  "native_preflight_executions": 4800,
+  "preflight_parity_cases": 4800,
+  "preflight_repetitions_per_case": 2,
+  "preflight_unique_cases": 2400,
+  "process_run": 2,
+  "profile_id": "s3-35c-two-site-memory-cold-direct-v1",
+  "repetitions_per_side": 1024,
+  "sample_floor_passed": true,
+  "sample_floor_policy": "Retain all 20 raw pairs. Any side below 200ms classifies the entire process diagnostic-only; no partial scoring or trimming.",
+  "sample_pairs": [
+    {
+      "interpreter_first": false,
+      "interpreter_floor_met": true,
+      "interpreter_total_ns": 279587713,
+      "native_floor_met": true,
+      "native_over_interpreter": 70.18414916895865,
+      "native_total_ns": 19622625755,
+      "pair_index": 0,
+      "record_type": "sample_pair",
+      "repetitions": 1024
+    },
+    {
+      "interpreter_first": true,
+      "interpreter_floor_met": true,
+      "interpreter_total_ns": 281098985,
+      "native_floor_met": true,
+      "native_over_interpreter": 70.20107087544268,
+      "native_total_ns": 19733449769,
+      "pair_index": 1,
+      "record_type": "sample_pair",
+      "repetitions": 1024
+    },
+    {
+      "interpreter_first": false,
+      "interpreter_floor_met": true,
+      "interpreter_total_ns": 284992416,
+      "native_floor_met": true,
+      "native_over_interpreter": 71.83777706561848,
+      "native_total_ns": 20473221646,
+      "pair_index": 2,
+      "record_type": "sample_pair",
+      "repetitions": 1024
+    },
+    {
+      "interpreter_first": true,
+      "interpreter_floor_met": true,
+      "interpreter_total_ns": 297188540,
+      "native_floor_met": true,
+      "native_over_interpreter": 66.77359786820851,
+      "native_total_ns": 19844348061,
+      "pair_index": 3,
+      "record_type": "sample_pair",
+      "repetitions": 1024
+    },
+    {
+      "interpreter_first": false,
+      "interpreter_floor_met": true,
+      "interpreter_total_ns": 291094430,
+      "native_floor_met": true,
+      "native_over_interpreter": 72.30404667997254,
+      "native_total_ns": 21047305255,
+      "pair_index": 4,
+      "record_type": "sample_pair",
+      "repetitions": 1024
+    },
+    {
+      "interpreter_first": true,
+      "interpreter_floor_met": true,
+      "interpreter_total_ns": 291397500,
+      "native_floor_met": true,
+      "native_over_interpreter": 73.28830454276375,
+      "native_total_ns": 21356028723,
+      "pair_index": 5,
+      "record_type": "sample_pair",
+      "repetitions": 1024
+    },
+    {
+      "interpreter_first": false,
+      "interpreter_floor_met": true,
+      "interpreter_total_ns": 285659149,
+      "native_floor_met": true,
+      "native_over_interpreter": 74.75612920417963,
+      "native_total_ns": 21354772251,
+      "pair_index": 6,
+      "record_type": "sample_pair",
+      "repetitions": 1024
+    },
+    {
+      "interpreter_first": true,
+      "interpreter_floor_met": true,
+      "interpreter_total_ns": 286078775,
+      "native_floor_met": true,
+      "native_over_interpreter": 75.22725503491128,
+      "native_total_ns": 21520920967,
+      "pair_index": 7,
+      "record_type": "sample_pair",
+      "repetitions": 1024
+    },
+    {
+      "interpreter_first": false,
+      "interpreter_floor_met": true,
+      "interpreter_total_ns": 293410209,
+      "native_floor_met": true,
+      "native_over_interpreter": 74.0117424544011,
+      "native_total_ns": 21715800822,
+      "pair_index": 8,
+      "record_type": "sample_pair",
+      "repetitions": 1024
+    },
+    {
+      "interpreter_first": true,
+      "interpreter_floor_met": true,
+      "interpreter_total_ns": 298165572,
+      "native_floor_met": true,
+      "native_over_interpreter": 70.47788324468259,
+      "native_total_ns": 21014078371,
+      "pair_index": 9,
+      "record_type": "sample_pair",
+      "repetitions": 1024
+    },
+    {
+      "interpreter_first": false,
+      "interpreter_floor_met": true,
+      "interpreter_total_ns": 285076303,
+      "native_floor_met": true,
+      "native_over_interpreter": 73.57811018757319,
+      "native_total_ns": 20975375634,
+      "pair_index": 10,
+      "record_type": "sample_pair",
+      "repetitions": 1024
+    },
+    {
+      "interpreter_first": true,
+      "interpreter_floor_met": true,
+      "interpreter_total_ns": 284484671,
+      "native_floor_met": true,
+      "native_over_interpreter": 74.6655876688695,
+      "native_total_ns": 21241215143,
+      "pair_index": 11,
+      "record_type": "sample_pair",
+      "repetitions": 1024
+    },
+    {
+      "interpreter_first": false,
+      "interpreter_floor_met": true,
+      "interpreter_total_ns": 301434439,
+      "native_floor_met": true,
+      "native_over_interpreter": 68.97284663946445,
+      "native_total_ns": 20790791333,
+      "pair_index": 12,
+      "record_type": "sample_pair",
+      "repetitions": 1024
+    },
+    {
+      "interpreter_first": true,
+      "interpreter_floor_met": true,
+      "interpreter_total_ns": 302319619,
+      "native_floor_met": true,
+      "native_over_interpreter": 69.56724015982569,
+      "native_total_ns": 21031541540,
+      "pair_index": 13,
+      "record_type": "sample_pair",
+      "repetitions": 1024
+    },
+    {
+      "interpreter_first": false,
+      "interpreter_floor_met": true,
+      "interpreter_total_ns": 293948767,
+      "native_floor_met": true,
+      "native_over_interpreter": 71.479345194872,
+      "native_total_ns": 21011265386,
+      "pair_index": 14,
+      "record_type": "sample_pair",
+      "repetitions": 1024
+    },
+    {
+      "interpreter_first": true,
+      "interpreter_floor_met": true,
+      "interpreter_total_ns": 290791237,
+      "native_floor_met": true,
+      "native_over_interpreter": 72.94103545149127,
+      "native_total_ns": 21210613927,
+      "pair_index": 15,
+      "record_type": "sample_pair",
+      "repetitions": 1024
+    },
+    {
+      "interpreter_first": false,
+      "interpreter_floor_met": true,
+      "interpreter_total_ns": 289412818,
+      "native_floor_met": true,
+      "native_over_interpreter": 73.43808403468847,
+      "native_total_ns": 21253922849,
+      "pair_index": 16,
+      "record_type": "sample_pair",
+      "repetitions": 1024
+    },
+    {
+      "interpreter_first": true,
+      "interpreter_floor_met": true,
+      "interpreter_total_ns": 294125957,
+      "native_floor_met": true,
+      "native_over_interpreter": 68.9842976592508,
+      "native_total_ns": 20290072567,
+      "pair_index": 17,
+      "record_type": "sample_pair",
+      "repetitions": 1024
+    },
+    {
+      "interpreter_first": false,
+      "interpreter_floor_met": true,
+      "interpreter_total_ns": 291786223,
+      "native_floor_met": true,
+      "native_over_interpreter": 71.61230691141988,
+      "native_total_ns": 20895484554,
+      "pair_index": 18,
+      "record_type": "sample_pair",
+      "repetitions": 1024
+    },
+    {
+      "interpreter_first": true,
+      "interpreter_floor_met": true,
+      "interpreter_total_ns": 291572156,
+      "native_floor_met": true,
+      "native_over_interpreter": 71.73039799108938,
+      "native_total_ns": 20914586793,
+      "pair_index": 19,
+      "record_type": "sample_pair",
+      "repetitions": 1024
+    }
+  ],
+  "schema": 1,
+  "sequence_counts": [
+    1200,
+    1200
+  ],
+  "source_sha256": "5f4948f477c6e21232da25951219dab32c163a0a445fcade1b4b61c43d9e364a",
+  "status": "scored",
+  "stop_reason": null,
+  "timer_boundaries": "Native per-input timer includes compile_ir_memory_two_site_block_v2, publish_ir_memory_two_site_v2, direct typed execute_ir_memory_two_site_v2, and explicit PublishedCode plus IR block drops. Interpreter timer includes only od_isa::execute::run. State/RAM reset and full-result validation are outside each timer. Each backend must report exactly two ordered 8-byte data callbacks at the sequence's expected addresses. Direct Complete or BudgetExhausted is normalized to interpreter InstructionBudgetExhausted only when all CPU state and RAM match, RIP is code_end, retired count is 2, and remaining budget is 0.",
+  "timing_started": true,
+  "total_elapsed_ns": 476679000500
+}

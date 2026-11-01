@@ -3012,6 +3012,39 @@ retirement parity; paired observed/ordinary ratio median составил 1.0301
 Mini не запускался, Stage 2 не менялся. Этот результат не выбирает оптимизацию
 или default.
 
+#### S3-35c: cold direct-entry checked-memory profile
+
+Три release process run завершили opt-in `od-bench two-site-memory-cold` на
+точно двух замороженных S3-34a sequences × 3 фиксированных seed × 400 inputs
+(2,400 уникальных inputs; третий sequence не включён). Каждый input прошёл
+две preflight trials на каждом backend: 4,800 interpreter и 4,800 native
+executions, полное CPU/RAM/exit/retirement/budget сравнение и точная ordered
+callback trace. Native timed interval включает compile IR, publish, direct
+typed entry, explicit drop `PublishedCode` и IR; interpreter interval включает
+выполнение interpreter. Reset и validation находятся вне обоих интервалов.
+Dispatcher, VMHost и cache reuse не используются.
+
+В каждом процессе сохранены 20 alternating timing pairs с 1,024 repetitions
+на сторону; все 60 пар прошли floor 200 ms без trimming. Median raw-total ratio
+`native_total_ns / interpreter_total_ns` по 60 парам — 71.4765, range
+66.7736–93.9423. Эти числа относятся только к этому cold checked-memory
+profile и не выбирают production default или общий winner. В каждом процессе
+наблюдались Stage 2 snapshots; run 1 и run 3 также имеют Graphify activity
+snapshots. Нет pair timestamps, поэтому per-pair overlap и его влияние
+неизвестны. Для run1/run2 numeric executor exit недоступен и выводится из
+scored report + all-floor gate; run3 exit0 записан явно. Runtime dirty status
+неизвестен (`null`) из-за git metadata timeout. Подробнее и все ограничения:
+[S3-35c report](../reports/STAGE_3_S3-35c_2026-11-01.md),
+[evidence archive](../reports/data/stage3/s3-35c/).
+
+Нижний calibration cap дал диагностический результат без interpreter floor;
+эта попытка сохранена. Cap 2048 отдельно прошёл calibration-only при 1,024
+repetitions. Проекция 16.7555 min включает cumulative calibration до reserve cap 2,048 и
+20 пар при 2,048. Это линейная оценка, не измеренный full-process runtime;
+setup, teardown и другой overhead исключены. Scored runs остановились на 1,024. S3-35 остаётся partial:
+третий sequence, dispatcher/VMHost и broader checked-memory workloads не
+измерялись. Mini отложен до конца Stage 3.
+
 ### S3-36. Измерить прогретое исполнение
 
 #### S3-36a: bounded resident warm register-only path

@@ -1,0 +1,151 @@
+{
+  "schema": "open-desktop-stage3-process-monitoring-v1",
+  "run": "s3-35c-calibration-only-process-run-1",
+  "command": "cargo run --release -p od-bench --offline -- two-site-memory-cold --calibration-only --process-run 1 --output work/tmp/stage3/s3-35c/calibration.json",
+  "process": {
+    "pid": 3630,
+    "observed_command_transition": [
+      "cargo run --release -p od-bench --offline -- two-site-memory-cold --calibration-only --process-run 1 --output work/tmp/stage3/s3-35c/calibration.json",
+      "target/release/od-bench two-site-memory-cold --calibration-only --process-run 1 --output work/tmp/stage3/s3-35c/calibration.json"
+    ],
+    "start_utc_window": {
+      "earliest": "2026-11-01T04:43:46Z",
+      "latest": "2026-11-01T04:43:52Z",
+      "basis": "04:43:46Z prelaunch snapshot; first process snapshot at 04:43:52Z showed PID 3630 elapsed 4 seconds"
+    },
+    "last_active_snapshot_utc": "2026-11-01T04:44:45Z",
+    "finished_absent_by_utc": "2026-11-01T04:45:04Z",
+    "exact_finish_timestamp_available": false,
+    "executor_exit_code": 1
+  },
+  "result_artifacts": {
+    "report": {
+      "path": "work/tmp/stage3/s3-35c/calibration.json",
+      "sha256": "ec7328d6f2cccf464333fefb22802799c9f19e011f8ce28970c22640e888f49e"
+    },
+    "journal": {
+      "path": "work/tmp/stage3/s3-35c/calibration.json.journal.jsonl",
+      "sha256": "253a35c723cbc0e8959c5ac0b555662953a4d6cb68825ffc8383674e7e491360",
+      "records": 6,
+      "record_type": "calibration_attempt"
+    }
+  },
+  "scoring": {
+    "calibration_only": true,
+    "scored_samples_started": false,
+    "sample_pairs": 0,
+    "sample_floor_passed": false,
+    "status": "diagnostic_only_calibration_floor_failed"
+  },
+  "source_and_host": {
+    "source_revision": "47028a93cf0e85fcd80cf6a7a43a2558e1244227",
+    "source_sha256": "b1801aed089183d7a94d0b0c33fb5b259c675026ee5e5365876a35c8f05ee6fd",
+    "source_tree_dirty": false,
+    "runtime_working_tree_dirty": null,
+    "runtime_working_tree_dirty_reason": "host metadata git status unavailable: git timed out after 2000 ms",
+    "host": "Apple M3 Max",
+    "architecture": "aarch64",
+    "os": "macos 26.7.1",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "target": "aarch64-apple-darwin",
+    "profile": "release"
+  },
+  "snapshots": [
+    {
+      "utc": "2026-11-01T04:43:46Z",
+      "phase": "prelaunch",
+      "load_average": [3.1, 2.95, 2.75],
+      "benchmark_pid": null,
+      "stage2": [
+        {"pid": 3175, "command": "cargo test -p od-runner --test fixture_v2 cvtsi2ss_m32_rounds_i32_and_preserves_high96_and_x87 --offline -- --nocapture", "cpu_percent": 0.0},
+        {"pid": 3525, "command": "rustc od_host", "cpu_percent": 24.3}
+      ],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T04:43:52Z",
+      "phase": "release_build",
+      "load_average": [2.93, 2.91, 2.74],
+      "benchmark_pid": 3630,
+      "benchmark_elapsed_seconds": 4,
+      "stage2": [
+        {"pid": 3175, "command": "cargo test -p od-runner --test fixture_v2 cvtsi2ss_m32_rounds_i32_and_preserves_high96_and_x87 --offline -- --nocapture", "cpu_percent": 0.0},
+        {"pid": 3606, "command": "rustc fixture_v2", "cpu_percent": 22.9},
+        {"pid": 3607, "command": "rustc od_runner", "cpu_percent": 21.5}
+      ],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T04:44:00Z",
+      "phase": "release_build",
+      "load_average": [2.93, 2.92, 2.74],
+      "benchmark_pid": 3630,
+      "benchmark_elapsed_seconds": 12,
+      "stage2": [],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T04:44:20Z",
+      "phase": "release_build",
+      "load_average": [2.6, 2.84, 2.71],
+      "benchmark_pid": 3630,
+      "benchmark_elapsed_seconds": 32,
+      "benchmark_rustc": {"pid": 4180, "cpu_percent": 28.3},
+      "stage2": [
+        {"pid": 4008, "command": "cargo test -p od-runner --test fixture_v2 cvtsi2ss_m32_rounds_i32_and_preserves_high96_and_x87 --offline -- --nocapture", "cpu_percent": 0.0}
+      ],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T04:44:28Z",
+      "phase": "calibration_process",
+      "load_average": [2.73, 2.86, 2.72],
+      "benchmark_pid": 3630,
+      "benchmark_elapsed_seconds": 40,
+      "benchmark_cpu_percent": 0.0,
+      "stage2": [
+        {"pid": 4008, "command": "cargo test -p od-runner --test fixture_v2 cvtsi2ss_m32_rounds_i32_and_preserves_high96_and_x87 --offline -- --nocapture", "cpu_percent": 0.0}
+      ],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T04:44:36Z",
+      "phase": "calibration_process",
+      "load_average": [2.62, 2.83, 2.71],
+      "benchmark_pid": 3630,
+      "benchmark_elapsed_seconds": 48,
+      "benchmark_cpu_percent": 0.0,
+      "stage2": [
+        {"pid": 4008, "command": "cargo test -p od-runner --test fixture_v2 cvtsi2ss_m32_rounds_i32_and_preserves_high96_and_x87 --offline -- --nocapture", "cpu_percent": 0.0}
+      ],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T04:44:45Z",
+      "phase": "calibration_process",
+      "load_average": [2.89, 2.88, 2.73],
+      "benchmark_pid": 3630,
+      "benchmark_elapsed_seconds": 54,
+      "benchmark_cpu_percent": 0.0,
+      "benchmark_state": "S",
+      "stage2": [
+        {"pid": 4008, "command": "cargo test -p od-runner --test fixture_v2 cvtsi2ss_m32_rounds_i32_and_preserves_high96_and_x87 --offline -- --nocapture", "cpu_percent": 0.0}
+      ],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T04:45:04Z",
+      "phase": "postprocess",
+      "load_average": [3.1, 2.94, 2.76],
+      "benchmark_pid": null,
+      "report_and_journal_present": true,
+      "executor_exit_code": 1,
+      "graphify_visible": false
+    }
+  ],
+  "limitations": [
+    "Snapshots are point-in-time, reconstructed from observed process listings; no per-calibration-attempt wall-clock timestamps were collected.",
+    "Stage2 compilation overlapped release compilation at the recorded snapshots; its direct effect on calibration totals is unquantified.",
+    "The benchmark binary remained in sleeping state with near-zero CPU in late snapshots; the process completed and wrote its diagnostic artifacts by 04:45:04Z."
+  ]
+}

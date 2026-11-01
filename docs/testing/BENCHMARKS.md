@@ -595,6 +595,58 @@ that window; the test was not stopped, and the complete three-run series was
 repeated after it exited. This evidence covers only the frozen register-only
 corpus and does not select an optimization or default.
 
+### S3-35c: cold direct-entry checked-memory comparison
+
+`od-bench two-site-memory-cold` is an opt-in Apple Silicon release profile for
+the exact two-sequence S3-34a subset from the shared `od-testkit` provider:
+three fixed seeds and 400 cases for each sequence/seed combination, 2,400
+unique inputs total. The third S3-34a sequence is excluded. Every input gets
+two preflight executions per backend. Preflight and every result compare full
+CPU state, RAM, normalized exit, retirement, remaining budget, and exact
+ordered callback records (addresses and widths), including deterministic
+same-backend equality across the two trials.
+
+For each native timing repetition, the timer starts before IR memory-block
+compile and includes publication, direct typed entry execution, and explicit
+destruction of `PublishedCode` and the IR block. The interpreter timer includes
+only interpreter execution. Fixture construction, state/RAM reset, and full
+result validation are outside both timers. This path has no dispatcher,
+VMHost, or cache/artifact reuse across inputs/repetitions.
+
+Each process calibrates independently, then runs 20 alternating pairs at 1,024
+repetitions per side. Both sides must meet the 200 ms floor in every pair; a
+failed floor classifies the whole process diagnostic-only and preserves all
+samples without trimming. A previous lower-cap calibration that missed the
+interpreter floor is retained as diagnostic; the separate calibration-only run
+met the floor at 1,024. The projection artifact estimates 16.7555 minutes for
+cumulative calibration through the reserve cap of 2,048 plus 20 pairs at 2,048.
+This is linear inference, not a measured full-run duration; it excludes setup,
+teardown, and other overhead. Scored runs calibrated and measured at 1,024.
+
+Scored commands, each with a distinct output path:
+
+```sh
+for run in 1 2 3; do
+  cargo run --release -p od-bench --offline -- two-site-memory-cold \
+    --process-run "$run" \
+    --output "work/tmp/stage3/s3-35c/run$run.json"
+done
+```
+
+Three reviewed release process runs completed on 2026-11-01. All 60 timing
+pairs passed the floor. The raw-total native/interpreter ratio median was
+71.4765 (range 66.7736–93.9423); run medians were 70.0309, 71.7841, and
+71.1482. No sample was trimmed. Stage 2 compiler activity overlapped sampled
+intervals in all runs, with Graphify activity sampled in runs 1 and 3. Monitoring
+is point-in-time, reports have no per-pair timestamps, and exact impact on
+individual pairs is unknown. Run1/run2 numeric executor exits were not retained
+(success is inferred from report status/all-floor gate); run3 exit0 was captured.
+Runtime dirty-tree status is unknown in all reports. This is a bounded fixture
+result only; it does not select a production default or general winner. See the
+[S3-35c report](../reports/STAGE_3_S3-35c_2026-11-01.md),
+[reviewed suite manifest](../reports/data/stage3/s3-35c/suite-manifest.json),
+and [raw evidence archive](../reports/data/stage3/s3-35c/).
+
 ### S3-36a: bounded resident warm register-only execution
 
 `od-bench warm-first-run` is an opt-in Apple Silicon macOS release benchmark

@@ -1,0 +1,69 @@
+{
+  "schema": "open-desktop-stage3-calibration-cap-projection-v1",
+  "profile": "s3-35c-two-site-memory-cold-direct-v1",
+  "purpose": "Rationale for MAX_REPETITIONS=2048; projections are estimates, not measured scored outcomes.",
+  "bound_evidence": {
+    "source_revision": "47028a93cf0e85fcd80cf6a7a43a2558e1244227",
+    "source_report": {
+      "path": "work/tmp/stage3/s3-35c/calibration.json",
+      "sha256": "ec7328d6f2cccf464333fefb22802799c9f19e011f8ce28970c22640e888f49e",
+      "status": "diagnostic_only_calibration_floor_failed",
+      "repetitions_per_side": 32
+    },
+    "cap2048_calibration_report": {
+      "path": "work/tmp/stage3/s3-35c/calibration-cap2048.json",
+      "sha256": "77f843b1b3a3ec70a5a107c6f73598abb816cdfb3cbfd1049a43ab8712906972",
+      "status": "calibration_only_unscored",
+      "actual_repetitions_per_side": 1024,
+      "calibration_floor_passed": true,
+      "sample_pairs": 0
+    }
+  },
+  "conservative_rates_from_first_diagnostic": {
+    "method": "maximum observed total_ns / repetitions among the six durable calibration attempts; linear projection only",
+    "native_ns_per_repetition": 22016031.5,
+    "interpreter_ns_per_repetition": 297336,
+    "observed_total_ranges": {
+      "native_ns": [21692767, 649013776],
+      "interpreter_ns": [297336, 9026810],
+      "repetitions": [1, 32]
+    }
+  },
+  "projection": {
+    "minimum_side_floor_ns": 200000000,
+    "first_projected_passing_power_of_two": 1024,
+    "projected_at_512": {
+      "native_ns": 11272208128,
+      "interpreter_ns": 152236032,
+      "both_sides_meet_floor": false
+    },
+    "projected_at_1024": {
+      "native_ns": 22544416256,
+      "interpreter_ns": 304472064,
+      "both_sides_meet_floor": true
+    },
+    "actual_at_1024_from_cap2048_calibration": {
+      "native_ns": 21040642591,
+      "interpreter_ns": 286090692,
+      "both_sides_meet_floor": true
+    },
+    "cap2048_reserve_projection": {
+      "native_ns_per_side": 45088832512,
+      "interpreter_ns_per_side": 608944128,
+      "twenty_full_paired_samples_seconds": 913.9555328,
+      "calibration_attempt_repetitions_sum": 4095,
+      "calibration_series_seconds": 91.3732399125,
+      "calibration_plus_twenty_pairs_minutes": 16.7554795452,
+      "overall_wall_time_ceiling_minutes": 30,
+      "remaining_projected_margin_minutes": 13.2445204548
+    }
+  },
+  "assumptions_and_limits": [
+    "A repetition is one complete sweep of all 2400 frozen inputs on one backend; a paired sample contains one native and one interpreter sweep set.",
+    "The projection uses the highest per-repetition rate observed in the first diagnostic attempts and assumes linear scaling through 2048 repetitions.",
+    "The 2048 cap is a reserve doubling after the first projected passing candidate 1024; the cap2048 calibration actually passed at 1024, so no 2048-repetition calibration or sample was measured.",
+    "Estimated duration excludes preflight/setup, outcome validation, journaling, host metadata, report writing, and teardown. It does not guarantee completion under 30 minutes.",
+    "The earlier monitoring records Stage2 compilation during release build, but no per-attempt timestamps establish whether Stage2 activity overlapped calibration totals; performance impact is unquantified.",
+    "No scored samples or performance comparison are contained in these artifacts."
+  ]
+}

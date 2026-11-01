@@ -1,0 +1,253 @@
+{
+  "schema": "open-desktop-stage3-process-monitoring-v1",
+  "run": "s3-35c-two-site-memory-cold-scored-process-run-1",
+  "command": "cargo run --release -p od-bench --offline -- two-site-memory-cold --process-run 1 --output work/tmp/stage3/s3-35c/run1.json",
+  "process": {
+    "pid": 77362,
+    "start_utc_window": {
+      "earliest": "2026-11-01T04:59:12Z",
+      "latest": "2026-11-01T04:59:19Z",
+      "basis": "04:59:12Z prelaunch snapshot; first process snapshot at04:59:19Z showed PID77362 elapsed4 seconds"
+    },
+    "last_active_snapshot_utc": "2026-11-01T05:07:15Z",
+    "finished_absent_by_utc": "2026-11-01T05:07:38Z",
+    "exact_finish_timestamp_available": false,
+    "executor_exit_code": null,
+    "cli_exit_code_inference": 0,
+    "cli_exit_code_inference_basis": "The report is status=scored with sample_floor_passed=true and all20 pairs present; the command emitted only the host metadata git-status timeout warning, with no diagnostic-only CLI error. Exact process-session exit code was not retained by the observer."
+  },
+  "result_artifacts": {
+    "report": {
+      "path": "work/tmp/stage3/s3-35c/run1.json",
+      "sha256": "6799b892e2c01942635fb10bf3740bf12f47a50a6081e7320147e745a5c43f83"
+    },
+    "journal": {
+      "path": "work/tmp/stage3/s3-35c/run1.json.journal.jsonl",
+      "sha256": "858d7b4050ddfc113376fef6aa44b528cffa64aad4cfae6a3204cd44e20d7140",
+      "records": 31,
+      "calibration_attempts": 11,
+      "sample_pairs": 20
+    }
+  },
+  "scoring": {
+    "status": "scored",
+    "sample_floor_passed": true,
+    "repetitions_per_side": 1024,
+    "sample_pairs": 20,
+    "pair_ratio_median_raw_totals": 70.03086240997824,
+    "pair_ratio_min_raw_totals": 67.20639304829173,
+    "pair_ratio_max_raw_totals": 93.94226574965805,
+    "all_pair_floor_flags": true,
+    "total_elapsed_ns": 486627171083
+  },
+  "source_and_host": {
+    "source_revision": "6f9da043073188b5164ee81b543add51314981a0",
+    "source_sha256": "5f4948f477c6e21232da25951219dab32c163a0a445fcade1b4b61c43d9e364a",
+    "build_source_sha256": "1b1f655e70e989e96e92c4f17cee0724ccf9ef6a0714104a7107a7880e6d4d15",
+    "build_source_tree_dirty": false,
+    "runtime_working_tree_dirty": null,
+    "runtime_working_tree_dirty_reason": "host metadata git status unavailable: git timed out after 2000 ms",
+    "host": "Apple M3 Max",
+    "architecture": "aarch64",
+    "os": "macos 26.7.1",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "target": "aarch64-apple-darwin",
+    "profile": "release"
+  },
+  "snapshots": [
+    {
+      "utc": "2026-11-01T04:59:12Z",
+      "phase": "prelaunch",
+      "load_average": [3.42, 3.34, 3.08],
+      "benchmark_pid": null,
+      "stage2": [
+        {"pid": 14724, "command": "cargo test -p od-runner --offline -- --test-threads=1", "cpu_percent": 0.0, "elapsed_seconds": 248}
+      ],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T04:59:19Z",
+      "phase": "benchmark_process_observed",
+      "load_average": [3.47, 3.35, 3.09],
+      "benchmark_pid": 77362,
+      "benchmark_elapsed_seconds": 4,
+      "benchmark_cpu_percent": 98.4,
+      "stage2": [
+        {"pid": 14724, "command": "cargo test -p od-runner --offline -- --test-threads=1", "cpu_percent": 0.0, "elapsed_seconds": 255}
+      ],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T04:59:49Z",
+      "phase": "benchmark_process_observed",
+      "load_average": [3.54, 3.38, 3.1],
+      "benchmark_pid": 77362,
+      "benchmark_elapsed_seconds": 34,
+      "benchmark_cpu_percent": 100.0,
+      "stage2": [
+        {"pid": 14724, "command": "cargo test -p od-runner --offline -- --test-threads=1", "cpu_percent": 0.0, "elapsed_seconds": 285}
+      ],
+      "graphify_visible": false,
+      "journal_bytes": 1688
+    },
+    {
+      "utc": "2026-11-01T05:00:23Z",
+      "phase": "benchmark_process_observed",
+      "load_average": [3.54, 3.42, 3.13],
+      "benchmark_pid": 77362,
+      "benchmark_elapsed_seconds": 68,
+      "benchmark_cpu_percent": 100.0,
+      "journal_line_count": 12,
+      "stage2": [
+        {"pid": 92864, "command": "cargo test -p od-x86-runner --offline -- --test-threads=1", "cpu_percent": 0.0, "elapsed_seconds": 20}
+      ],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T05:01:05Z",
+      "phase": "benchmark_process_observed",
+      "load_average": [3.74, 3.48, 3.17],
+      "benchmark_pid": 77362,
+      "benchmark_elapsed_seconds": 110,
+      "benchmark_cpu_percent": 100.0,
+      "journal_line_count": 13,
+      "stage2": [
+        {"pid": 92864, "command": "cargo test -p od-x86-runner --offline -- --test-threads=1", "cpu_percent": 0.0, "elapsed_seconds": 62}
+      ],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T05:01:44Z",
+      "phase": "benchmark_process_observed",
+      "load_average": [3.9, 3.55, 3.2],
+      "benchmark_pid": 77362,
+      "benchmark_elapsed_seconds": 149,
+      "benchmark_cpu_percent": 99.1,
+      "journal_line_count": 15,
+      "stage2": [
+        {"pid": 93662, "command": "cargo test od-x86-runner", "elapsed_seconds": 0},
+        {"pid": 94071, "command": "rustc od-host test", "cpu_percent": 21.7, "elapsed_seconds": 10},
+        {"pid": 94073, "command": "rustc od-host lib", "cpu_percent": 18.3, "elapsed_seconds": 10},
+        {"pid": 94075, "command": "rustc od-x86-runner test", "cpu_percent": 18.4, "elapsed_seconds": 9},
+        {"pid": 94076, "command": "rustc od-x86-runner lib", "cpu_percent": 18.4, "elapsed_seconds": 9}
+      ],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T05:02:25Z",
+      "phase": "benchmark_process_observed",
+      "load_average": [3.38, 3.47, 3.19],
+      "benchmark_pid": 77362,
+      "benchmark_elapsed_seconds": 190,
+      "benchmark_cpu_percent": 100.0,
+      "journal_line_count": 17,
+      "stage2": [
+        {"pid": 92864, "command": "cargo test -p od-x86-runner", "cpu_percent": 0.0}
+      ],
+      "graphify": {"pid": 94517, "cpu_percent": 100.0, "elapsed_seconds": 15},
+      "graphify_visible": true
+    },
+    {
+      "utc": "2026-11-01T05:03:09Z",
+      "phase": "benchmark_process_observed",
+      "load_average": [3.0, 3.36, 3.16],
+      "benchmark_pid": 77362,
+      "benchmark_elapsed_seconds": 234,
+      "benchmark_cpu_percent": 99.2,
+      "journal_line_count": 19,
+      "stage2": [],
+      "graphify": {"pid": 94517, "cpu_percent": 98.5, "elapsed_seconds": 59},
+      "graphify_visible": true
+    },
+    {
+      "utc": "2026-11-01T05:03:49Z",
+      "phase": "benchmark_process_observed",
+      "load_average": [2.35, 3.15, 3.09],
+      "benchmark_pid": 77362,
+      "benchmark_elapsed_seconds": 274,
+      "benchmark_cpu_percent": 99.7,
+      "journal_line_count": 21,
+      "stage2": [],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T05:04:30Z",
+      "phase": "benchmark_process_observed",
+      "load_average": [3.04, 3.2, 3.11],
+      "benchmark_pid": 77362,
+      "benchmark_elapsed_seconds": 315,
+      "benchmark_cpu_percent": 98.6,
+      "journal_line_count": 23,
+      "stage2": [],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T05:05:10Z",
+      "phase": "benchmark_process_observed",
+      "load_average": [3.79, 3.38, 3.18],
+      "benchmark_pid": 77362,
+      "benchmark_elapsed_seconds": 356,
+      "benchmark_cpu_percent": 99.6,
+      "journal_line_count": 25,
+      "stage2": [],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T05:05:51Z",
+      "phase": "benchmark_process_observed",
+      "load_average": [3.24, 3.29, 3.16],
+      "benchmark_pid": 77362,
+      "benchmark_elapsed_seconds": 396,
+      "benchmark_cpu_percent": 98.2,
+      "journal_line_count": 26,
+      "stage2": [],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T05:06:32Z",
+      "phase": "benchmark_process_observed",
+      "load_average": [3.01, 3.21, 3.13],
+      "benchmark_pid": 77362,
+      "benchmark_elapsed_seconds": 437,
+      "benchmark_cpu_percent": 99.1,
+      "journal_line_count": 28,
+      "stage2": [
+        {"pid": 98713, "command": "cargo test -p od-testkit", "elapsed_seconds": 0},
+        {"pid": 98857, "command": "rustc od-testkit test", "cpu_percent": 0.0, "elapsed_seconds": 24},
+        {"pid": 98861, "command": "rustc od-testkit lib", "cpu_percent": 0.0, "elapsed_seconds": 24},
+        {"pid": 98974, "command": "rustc od-host lib", "cpu_percent": 10.3, "elapsed_seconds": 13},
+        {"pid": 98975, "command": "rustc od-host test", "cpu_percent": 14.1, "elapsed_seconds": 13}
+      ],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T05:07:15Z",
+      "phase": "benchmark_process_observed",
+      "load_average": [3.44, 3.29, 3.16],
+      "benchmark_pid": 77362,
+      "benchmark_elapsed_seconds": 480,
+      "benchmark_cpu_percent": 100.0,
+      "journal_line_count": 30,
+      "stage2": [],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T05:07:38Z",
+      "phase": "postprocess",
+      "load_average": [3.25, 3.26, 3.16],
+      "benchmark_pid": null,
+      "report_and_journal_present": true,
+      "report_bytes": 11649,
+      "journal_bytes": 6860,
+      "executor_output": "host metadata git status unavailable: git timed out after 2000 ms",
+      "graphify_visible": false
+    }
+  ],
+  "limitations": [
+    "Snapshots are point-in-time only; no per-pair wall-clock timestamps were collected, so Stage2 or Graphify snapshots cannot be mapped to individual pair indices.",
+    "Graphify ran concurrently at the 05:02:25Z and 05:03:09Z snapshots; any impact on one or more paired samples is unquantified.",
+    "Stage2 rustc activity was observed in snapshots at 05:01:44Z and 05:06:32Z; exact pair overlap and impact are unknown.",
+    "The runtime working-tree dirty check timed out after two seconds; runtime working_tree_dirty remains null.",
+    "The exact process-session exit code was not retained; exit0 is inferred from the scored report and CLI success predicate."
+  ]
+}

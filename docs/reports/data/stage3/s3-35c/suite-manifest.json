@@ -1,0 +1,225 @@
+{
+  "schema": 1,
+  "profile_id": "s3-35c-two-site-memory-cold-direct-v1",
+  "manifest_kind": "three_run_scored_suite",
+  "review_state": "awaiting_independent_cross_run_review",
+  "scope": {
+    "sequence_count": 2,
+    "seeds_per_sequence": 3,
+    "inputs_per_seed_sequence": 400,
+    "unique_input_count": 2400,
+    "preflight_trials_per_backend_per_input": 2,
+    "preflight_executions_per_backend": 4800,
+    "native_timed_boundary": "Per input: compile IR memory block + publish + direct typed entry execution + explicit PublishedCode and IR drops.",
+    "interpreter_timed_boundary": "Interpreter execution only.",
+    "correctness": "Each of the 4800 paired preflight trials compares full CPU/RAM, exit normalization, retirement and exact ordered callback traces; deterministic same-backend trial equality is required.",
+    "sample_policy": "20 alternating raw interpreter/native timing pairs per process; each side must meet 200ms. All pairs retained; a process with a failed floor is diagnostic-only, with no trimming."
+  },
+  "source_host": {
+    "source_revision": "6f9da043073188b5164ee81b543add51314981a0",
+    "source_sha256": "5f4948f477c6e21232da25951219dab32c163a0a445fcade1b4b61c43d9e364a",
+    "build_source_sha256": "1b1f655e70e989e96e92c4f17cee0724ccf9ef6a0714104a7107a7880e6d4d15",
+    "source_tree_dirty_at_build": false,
+    "runtime_working_tree_dirty": null,
+    "host": "Apple M3 Max, aarch64, macOS 26.7.1, release, rustc 1.99.0"
+  },
+  "preflight_and_calibration_evidence": [
+    {
+      "path": "work/tmp/stage3/s3-35c/preflight.json",
+      "sha256": "da5b4bc31dc3d682be8dc2f972d7c4d10a296f5b7c95386d405dd34008cfc519",
+      "status": "superseded pre-fix preflight; original one-trial coverage retained immutable"
+    },
+    {
+      "path": "work/tmp/stage3/s3-35c/preflight.monitoring.json",
+      "sha256": "9820d9bdb2ee96e737f9e1d0a84404414fba1f1a50fcb210c09d52e6196bce75",
+      "status": "monitoring for superseded preflight"
+    },
+    {
+      "path": "work/tmp/stage3/s3-35c/preflight-repeat2.json",
+      "sha256": "a49dca5314914f9f6bb86c65ddb3f4f8bdd61d7026c64d831fca05efbce588a8",
+      "status": "repeat-two-trial preflight"
+    },
+    {
+      "path": "work/tmp/stage3/s3-35c/preflight-repeat2.monitoring.json",
+      "sha256": "9b7c65dd9583858299c4fa49d86ae1207675ac6a078c7344991e0383b9e84d27",
+      "status": "monitoring for repeat-two-trial preflight"
+    },
+    {
+      "path": "work/tmp/stage3/s3-35c/calibration.json",
+      "sha256": "ec7328d6f2cccf464333fefb22802799c9f19e011f8ce28970c22640e888f49e",
+      "status": "diagnostic calibration; old repetition cap did not meet interpreter floor"
+    },
+    {
+      "path": "work/tmp/stage3/s3-35c/calibration.json.journal.jsonl",
+      "sha256": "253a35c723cbc0e8959c5ac0b555662953a4d6cb68825ffc8383674e7e491360",
+      "status": "immutable diagnostic journal"
+    },
+    {
+      "path": "work/tmp/stage3/s3-35c/calibration.monitoring.json",
+      "sha256": "67081eb6b86e61031e3516373eaccbba8845f3ed5994c20773f5d1f6b6ad6ff4",
+      "status": "original monitoring retained immutable"
+    },
+    {
+      "path": "work/tmp/stage3/s3-35c/calibration.monitoring-correction.json",
+      "sha256": "c19d9f482e69e54718fd959c6f7f0c22abff826662c7d65e877fd38b58f650f8",
+      "status": "monitoring interpretation addendum, binds original monitoring hash"
+    },
+    {
+      "path": "work/tmp/stage3/s3-35c/calibration-cap2048.json",
+      "sha256": "77f843b1b3a3ec70a5a107c6f73598abb816cdfb3cbfd1049a43ab8712906972",
+      "status": "calibration-only, unscored, floor passed at 1024 repetitions"
+    },
+    {
+      "path": "work/tmp/stage3/s3-35c/calibration-cap2048.json.journal.jsonl",
+      "sha256": "338641f6c1c3020153d8db3d9754992766f675f442d9a89f296bc120d04e7725",
+      "status": "calibration-only journal"
+    },
+    {
+      "path": "work/tmp/stage3/s3-35c/calibration-cap2048.monitoring.json",
+      "sha256": "85db14b94c2b8ef563c4b3c0bbcc7a9963c9bbad8611dc296a59757181e21d09",
+      "status": "monitoring for calibration-only pass"
+    },
+    {
+      "path": "work/tmp/stage3/s3-35c/calibration-cap2048-projection.json",
+      "sha256": "9d7d0fd1551991ed4badfebe9b5e91c47e398c3c3821a13ec39b532aa06778a2",
+      "status": "linear feasibility estimate only; excludes setup/teardown and is not a measurement"
+    }
+  ],
+  "scored_runs": [
+    {
+      "process_run": 1,
+      "report": "work/tmp/stage3/s3-35c/run1.json",
+      "report_sha256": "6799b892e2c01942635fb10bf3740bf12f47a50a6081e7320147e745a5c43f83",
+      "journal": "work/tmp/stage3/s3-35c/run1.json.journal.jsonl",
+      "journal_sha256": "858d7b4050ddfc113376fef6aa44b528cffa64aad4cfae6a3204cd44e20d7140",
+      "monitoring": "work/tmp/stage3/s3-35c/run1.monitoring.json",
+      "monitoring_sha256": "3d2d1480e26ca90773e482cc57677cd299f4cbde88d723167c15eda55a9ad8f9",
+      "journal_records": {
+        "calibration_attempts": 11,
+        "sample_pairs": 20
+      },
+      "status": "scored",
+      "executor_exit_code": null,
+      "exit_note": "Exact numeric exit not retained; successful scored status and all-floor CLI gate imply exit0.",
+      "repetitions_per_side": 1024,
+      "floor_pass_pairs": 20,
+      "alternation_first_backend": "interpreter",
+      "ratio_median_raw_totals": 70.03086240997824,
+      "ratio_range_raw_totals": [
+        67.20639304829173,
+        93.94226574965805
+      ],
+      "elapsed_ns": 486627171083,
+      "load_caveat": "Stage2 compiler and Graphify hook activity were observed at sampled points; exact pair overlap is unknown because no pair timestamps exist.",
+      "review": "independent evidence review clean"
+    },
+    {
+      "process_run": 2,
+      "report": "work/tmp/stage3/s3-35c/run2.json",
+      "report_sha256": "e5010ace610613927849800422db2eba16148384a38834adad41dc26c0dcd0f0",
+      "journal": "work/tmp/stage3/s3-35c/run2.json.journal.jsonl",
+      "journal_sha256": "3c0aa530c37ddf483e5d28abd6e9f2d13c52e2296c5fc18ba3e72f588fa27a76",
+      "monitoring": "work/tmp/stage3/s3-35c/run2.monitoring.json",
+      "monitoring_sha256": "5e0b42b5a60adc473e4eac94bf088ca13e0ffc655252011ddacf8448d6122cad",
+      "journal_records": {
+        "calibration_attempts": 11,
+        "sample_pairs": 20
+      },
+      "status": "scored",
+      "executor_exit_code": null,
+      "exit_note": "Exact numeric exit not retained; successful scored status and all-floor CLI gate imply exit0.",
+      "repetitions_per_side": 1024,
+      "floor_pass_pairs": 20,
+      "alternation_first_backend": "native",
+      "ratio_median_raw_totals": 71.78408752835392,
+      "ratio_range_raw_totals": [
+        66.77359786820851,
+        75.22725503491128
+      ],
+      "elapsed_ns": 476679000500,
+      "load_caveat": "Stage2 compiler activity was sampled, including bursts up to421.9% CPU; exact pair overlap is unknown because no pair timestamps exist.",
+      "review": "independent evidence review clean"
+    },
+    {
+      "process_run": 3,
+      "report": "work/tmp/stage3/s3-35c/run3.json",
+      "report_sha256": "578b3ccd38b479201a183af3305acb0632c07f46945ef7663cc384c4f47b8eb2",
+      "journal": "work/tmp/stage3/s3-35c/run3.json.journal.jsonl",
+      "journal_sha256": "f20b2c4954a335707124999b5030725ddaadadea8a7890d4cf4fc386ea3fe7e4",
+      "monitoring": "work/tmp/stage3/s3-35c/run3.monitoring.json",
+      "monitoring_sha256": "16fb0ed6206487357e4154465668b6e4ac477bde139a4e5d3e0d7107570cd3a3",
+      "journal_records": {
+        "calibration_attempts": 11,
+        "sample_pairs": 20
+      },
+      "status": "scored",
+      "executor_exit_code": 0,
+      "repetitions_per_side": 1024,
+      "floor_pass_pairs": 20,
+      "alternation_first_backend": "interpreter",
+      "ratio_median_raw_totals": 71.14823893090171,
+      "ratio_range_raw_totals": [
+        68.32898460215894,
+        74.64164430275244
+      ],
+      "elapsed_ns": 478420430542,
+      "load_caveat": "Stage2 compiler activity was sampled; a Graphify hook-check appeared near startup. Exact pair overlap is unknown because no pair timestamps exist.",
+      "review": "independent evidence review clean"
+    }
+  ],
+  "cross_run_statistics": {
+    "ratio_definition": "For every pair, native_total_ns / interpreter_total_ns, calculated from raw integer totals; never from rounded ns-per-call fields.",
+    "accepted_processes": 3,
+    "pairs_total": 60,
+    "all_pairs_floor_passed": 60,
+    "all_pair_raw_ratio_median": 71.4765405893938,
+    "all_pair_raw_ratio_range": [
+      66.77359786820851,
+      93.94226574965805
+    ],
+    "per_process_medians": [
+      70.03086240997824,
+      71.78408752835392,
+      71.14823893090171
+    ],
+    "per_pair_index_across_run_medians": {
+      "definition": "For each timing pair index 0..19, median of the three complete-corpus raw-total ratios at that same pair index across process runs; then summarize those 20 pair-index medians. These are not per-input measurements.",
+      "median": 71.4765405893938,
+      "range": [
+        68.790202638028,
+        74.6655876688695
+      ],
+      "values": [
+        68.790202638028,
+        71.65928578804366,
+        73.71881151767839,
+        69.94207723208639,
+        73.24627395317977,
+        73.28830454276375,
+        70.60714864150566,
+        71.47373598391563,
+        68.83751737299909,
+        70.47788324468259,
+        72.68559347221886,
+        74.6655876688695,
+        72.4782812684616,
+        69.56724015982569,
+        71.479345194872,
+        70.11964758787009,
+        72.1321520515573,
+        70.48126661376118,
+        68.8082607172929,
+        71.60091600935297
+      ]
+    }
+  },
+  "interpretation_limits": [
+    "This is a bounded direct-entry checked-memory cold path on exactly two original S3-34a sequences and 2400 generated inputs.",
+    "No dispatcher, VMHost, cache reuse, owner/MMU, or expanded ISA coverage is measured.",
+    "Stage2 compilation overlapped sampled intervals in all scored runs. Monitoring is point-in-time; no pair timestamps exist. The exact affected pairs and timing impact are unknown. No sample was removed or replayed.",
+    "Run1 includes a wide outlier (pair ratio 93.9423) and it is preserved. The aggregate range includes that observation.",
+    "The common ratio describes measured native compile+publish+execute+drop versus interpreter execute for this fixture only; it is not a general workload claim or a global winner statement.",
+    "Runtime working-tree dirty state is null on all reports because git status exceeded its 2000ms limit. Build source tree was clean at the committed revision.",
+    "No Mac mini run was performed."
+  ]
+}
