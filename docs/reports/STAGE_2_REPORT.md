@@ -5439,6 +5439,42 @@ only: no FSQRT execution, FCW mapping, x87 state mutation, architectural status
 or exception behavior, or physical x86 acceptance is claimed. S2-29, S2-28,
 and ISSUE-019 remain open.
 
+## S2-29w — exact finite binary80 scaling to one rounded result
+
+Added `x87::scale_finite_to_binary80(value, power, mode)` for normalized,
+nonzero finite binary80 values. For the exact input
+`(-1)^sign * S * 2^(e-63)`, it checks normalized finite provenance and `S >=
+2^63`, computes `e + power` with checked `i32` addition, forms the exact signed
+coefficient `±i128::from(S)`, and calls `round_pack_exact_coefficient` once.
+There is no additional shift, GRS arithmetic, or intermediate rounding.
+
+The helper returns `None` only for its bounded rejection cases: zero, malformed
+normalization/provenance, checked exponent-add overflow, or a result outside
+finite binary80 range. Exact underflow is rounded once and may produce signed
+zero, subnormal, or a carry to minimum normal. Inputs remain unchanged;
+pseudo-denormal provenance is accepted and output is canonical finite
+encoding. This is mathematical helper coverage only, with no FSCALE/FCW/FSW,
+guest exception, instruction execution, or physical x86 acceptance claim.
+
+Literal tests cover both signs and all four mathematical rounding modes,
+including exact powers, low-significand-bit retention, normal/subnormal
+boundaries, pseudo-denormal normalization, minimum-subnormal half/quarter
+underflow, raw subnormal significands 3/5/7 scaled by one half, midpoint carry
+to minimum normal, max-finite acceptance and doubling rejection, checked
+`i32::MIN/MAX` exponent-add overflow versus representable deep underflow,
+invalid inputs, and immutability. Expected binary80 bytes are independently
+literal. Validation passed: focused `finite_scale` tests 6/6, full
+`cargo test -p od-isa --offline` (1,712 passed),
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --offline`,
+and `git diff --check`. Graphify was updated after implementation. Independent
+`gpt-6.1-sol` high review found three coverage/report corrections; those were
+fixed and follow-up review completed cleanly. The layout check passes in the
+main checkout; the isolated worktree invocation flags its `.git` pointer and
+gitignored oracle manifests absent there. See the [standalone S2-29w report](S2_29W_X87_FINITE_SCALE_BINARY80.md).
+
+ISSUE-019 remains open for broader architectural x87 behavior and physical
+acceptance.
+
 ## S2-30i — exact-only FSUB ST(i), ST(0) (bounded local slice)
 
 Added bare `DC E8+i`, `i=0..7`, as `FSUB ST(i), ST(0)`. The operation shares

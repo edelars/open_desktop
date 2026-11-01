@@ -3248,6 +3248,33 @@ is added. `cargo fmt --all -- --check`, `cargo test -p od-isa --offline`
 (1706 passed), and `cargo check -p od-isa --all-targets --offline` passed;
 independent Sol/high review found no remaining issues. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-29v-pure-finite-x87-square-root-helper), [implementation report](../reports/STAGE_2_REPORT.md#s2-29v--pure-finite-x87-square-root-helper), and [standalone report](../reports/S2_29V_X87_FINITE_SQRT_BINARY80.md). S2-29, S2-28, and ISSUE-019 remain open.
 
+### S2-29w. Exact finite binary80 scaling to one rounded result (bounded helper)
+
+`scale_finite_to_binary80(value, power, mode)` accepts a nonzero normalized
+finite binary80 value with normal, subnormal, or pseudo-denormal provenance.
+For `value = (-1)^sign * S * 2^(e-63)`, it computes `e' = e.checked_add(power)`
+and the exact signed coefficient `c = ±i128::from(S)`, then calls the existing
+`round_pack_exact_coefficient(e', c, mode)` exactly once. It adds no shift,
+GRS, or intermediate rounding arithmetic. `None` is bounded-helper rejection
+for zero, malformed normalization/provenance, checked exponent-add overflow,
+or a result outside finite binary80 range. Exact underflow may round once to
+signed zero or a subnormal, with carry to minimum normal where applicable.
+
+Literal byte vectors cover both signs and all four mathematical rounding modes:
+exact powers of two, retained low significand bits, normal/subnormal and
+pseudo-denormal provenance, half/quarter minimum-subnormal underflow, raw
+subnormal significands 3/5/7 scaled by one half, the maximum-subnormal to
+minimum-normal midpoint, minimum-normal scaling, maximum-finite acceptance and
+doubling rejection, `i32` exponent-add overflow versus representable deep
+underflow, invalid inputs, and input immutability. Expected outputs are literal
+bytes independent of the system under test.
+
+This is a numerical helper only: it adds no FSCALE decode/execution, FCW/RC
+mapping, x87 state or FSW behavior, guest exceptions, or physical x86
+acceptance. Verification and the complete literal matrix are in the
+[standalone S2-29w report](../reports/S2_29W_X87_FINITE_SCALE_BINARY80.md).
+S2-29, S2-28, and ISSUE-019 remain open.
+
 ### S2-30. Основные x87 операции
 
 1. Добавлять отдельными подшагами FLD/FST/FSTP, stack operations/constants, basic arithmetic и comparisons из профиля.

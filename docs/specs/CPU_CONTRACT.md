@@ -3518,6 +3518,30 @@ Source for the binary80 storage format: Intel SDM revision 093, Vol. 1
 The square-root rounding rules above are the explicit integer-helper contract,
 not an assertion about an executed x87 instruction.
 
+## Local S2-29w: exact finite binary80 scaling to one rounded result
+
+`od_isa::x87::scale_finite_to_binary80(value: X87Finite, power: i32,
+mode: RationalRoundingMode) -> Option<X87Binary80>` scales a normalized,
+nonzero finite binary80 value `(-1)^sign * S * 2^(e-63)` by the exact power
+`2^power`. It accepts normalized significands `S >= 2^63` with finite normal,
+subnormal, or pseudo-denormal provenance. The helper computes `e' =
+e.checked_add(power)`, forms `c = ±i128::from(S)`, and calls the existing
+`round_pack_exact_coefficient(e', c, mode)` once. It performs no separate
+shift, GRS construction, or intermediate rounding.
+
+`None` means bounded-helper rejection: zero, malformed normalization or
+provenance, checked `i32` addition overflow, or a result outside finite
+binary80 range. A representable nonzero value below minimum subnormal is
+rounded once and can produce sign-preserving zero or a subnormal; rounding can
+carry into minimum normal. Inputs are immutable and pseudo-denormal provenance
+does not change the numerical result; output uses canonical finite encoding.
+
+This contract is mathematical only. It adds no FSCALE instruction behavior,
+FCW/RC mapping, x87 state/FSW changes, guest exception semantics, or physical
+x86 acceptance. Literal coverage and verification are recorded in the
+[S2-29w standalone report](../reports/S2_29W_X87_FINITE_SCALE_BINARY80.md).
+S2-29, S2-28, and ISSUE-019 remain open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.
