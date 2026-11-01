@@ -26,7 +26,7 @@ const PREFLIGHT_REPETITIONS_PER_CASE: usize = 2;
 const FROZEN_INPUT_DIGEST: &str =
     "b09478b556aa91234d8c453f20e70f637222c5de2d7369d305ffe7c78caae540";
 const MIN_SIDE_TIME: Duration = Duration::from_millis(200);
-const MAX_REPETITIONS: u32 = 32;
+const MAX_REPETITIONS: u32 = 2048;
 const MAX_SAMPLE_PAIRS: usize = 20;
 const MAX_RUN_TIME: Duration = Duration::from_secs(30 * 60);
 const CODE_SOURCE: &[u8] = include_bytes!("two_site_memory_cold.rs");
@@ -914,14 +914,16 @@ fn calibrate(
             }
             return Err(error);
         }
-        if interpreter >= MIN_SIDE_TIME.as_nanos() && native >= MIN_SIDE_TIME.as_nanos() {
+        if calibration_attempt_meets_floor(native, interpreter) {
             return Ok((repetitions, attempts, true, None));
         }
-        let Some(next_repetitions) = repetitions
-            .checked_mul(2)
-            .filter(|value| *value <= MAX_REPETITIONS)
-        else {
-            return Ok((repetitions, attempts, false, None));
+        let Some(next_repetitions) = next_calibration_repetitions(repetitions) else {
+            return Ok((
+                repetitions,
+                attempts,
+                false,
+                Some("maximum_repetitions".into()),
+            ));
         };
         repetitions = next_repetitions;
     }
@@ -1063,6 +1065,16 @@ fn wall_limit_exceeded(elapsed_ns: u128) -> bool {
     elapsed_ns >= MAX_RUN_TIME.as_nanos()
 }
 
+fn next_calibration_repetitions(current: u32) -> Option<u32> {
+    current
+        .checked_mul(2)
+        .filter(|next| *next <= MAX_REPETITIONS)
+}
+
+fn calibration_attempt_meets_floor(native_total_ns: u128, interpreter_total_ns: u128) -> bool {
+    native_total_ns >= MIN_SIDE_TIME.as_nanos() && interpreter_total_ns >= MIN_SIDE_TIME.as_nanos()
+}
+
 fn classify_final_status(
     calibration_only: bool,
     calibration_floor_passed: bool,
@@ -1074,8 +1086,13 @@ fn classify_final_status(
         stop_reason = Some("overall_wall_time_ceiling_after_final_sync".into());
         sample_floor_passed = false;
     }
-    let status = if stop_reason.is_some() {
+    let status = if stop_reason
+        .as_deref()
+        .is_some_and(|reason| reason.starts_with("overall_wall_time_ceiling"))
+    {
         "diagnostic_only_overall_deadline"
+    } else if stop_reason.as_deref() == Some("maximum_repetitions") {
+        "diagnostic_only_calibration_repetition_limit"
     } else if calibration_only && calibration_floor_passed {
         "calibration_only_unscored"
     } else if sample_floor_passed {
@@ -1101,9 +1118,9 @@ mod tests {
     use super::{
         EXPECTED_CASES, FixtureMemory, MAX_REPETITIONS, MIN_SIDE_TIME, MemoryCorpusSequence,
         MemoryEvent, MemoryOperation, Outcome, PREFLIGHT_REPETITIONS_PER_CASE,
-        append_record_with_sync, classify_final_status, expected_memory_events,
-        preflight_execution_count, repeat_outcomes_equal, should_collect_sample_pairs,
-        wall_limit_exceeded,
+        append_record_with_sync, calibration_attempt_meets_floor, classify_final_status,
+        expected_memory_events, next_calibration_repetitions, preflight_execution_count,
+        repeat_outcomes_equal, should_collect_sample_pairs, wall_limit_exceeded,
     };
     use od_testkit::memory_corpus::{S3_34A_CASES_PER_SEED, S3_34A_SEEDS, S3_34A_SEQUENCES};
 
@@ -1153,7 +1170,28 @@ mod tests {
     #[test]
     fn sample_floor_and_repetition_bound_are_fixed() {
         assert_eq!(MIN_SIDE_TIME.as_millis(), 200);
-        assert_eq!(MAX_REPETITIONS, 32);
+        assert_eq!(MAX_REPETITIONS, 2048);
+    }
+
+    #[test]
+    fn calibration_candidate_cap_includes_1024_and_one_reserve_doubling() {
+        let mut candidates = vec![1];
+        while let Some(next) = next_calibration_repetitions(*candidates.last().unwrap()) {
+            candidates.push(next);
+        }
+        assert_eq!(
+            candidates,
+            [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048]
+        );
+        assert_eq!(next_calibration_repetitions(2048), None);
+
+        // Deterministic arithmetic from the conservative 1024-repetition
+        // projection. This checks the floor predicate, not machine timing.
+        assert!(calibration_attempt_meets_floor(22_544_416_256, 304_472_064));
+        assert!(!calibration_attempt_meets_floor(
+            11_272_208_128,
+            152_236_032
+        ));
     }
 
     #[test]
@@ -1236,6 +1274,14 @@ mod tests {
         assert_eq!(
             classify_final_status(true, false, false, None, 0).0,
             "diagnostic_only_calibration_floor_failed"
+        );
+        assert_eq!(
+            classify_final_status(true, false, false, Some("maximum_repetitions".into()), 0),
+            (
+                "diagnostic_only_calibration_repetition_limit",
+                Some("maximum_repetitions".into()),
+                false
+            )
         );
         assert_eq!(
             classify_final_status(
