@@ -597,7 +597,7 @@ corpus and does not select an optimization or default.
 
 ### S3-31: bounded warm dispatcher phase harness
 
-`od-bench warm-dispatch-phases` is an implementation-only harness for the
+`od-bench warm-dispatch-phases` is an opt-in bounded measurement harness for the
 accepted S3-17 frozen case list and dispatch trace. It checks the case-list
 SHA-256 `b9276b52556b3692552de074e83cd8aef0c777f29861bd19ab09c188e41615d3`
 and trace SHA-256
@@ -623,9 +623,11 @@ validation is outside each timed call.
 For each of three release process runs, the harness collects 20 paired samples
 per stratum. Each side of every pair must reach a 200 ms timer floor; if not,
 the paired series restarts with a larger common sweep count. The `order` field
-records which path ran first. Keep stratum results separate. Bounded Run 1
-evidence is available in the [S3-31 report](../reports/STAGE_3_S3-31_2026-11-01.md);
-runs 2/3 and broad S3-31 acceptance remain open.
+records which path ran first. Keep stratum results separate. Three bounded
+release process runs are complete; cross-run synthesis is in the
+[S3-31 report](../reports/STAGE_3_S3-31_2026-11-01.md) and
+[suite manifest](../reports/data/stage3/s3-31/suite-manifest.json). Broad
+S3-31 acceptance, total lookup attribution, and any linking claim remain open.
 
 The full timed interval wraps `Variant::call` or `Variant::call_observed`, so
 it includes adapter setup (CodeView, dependency and control/context setup) as

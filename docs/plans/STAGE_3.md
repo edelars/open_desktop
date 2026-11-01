@@ -2370,7 +2370,7 @@ gate.
 
 **Готово:** выбранный способ переходов проверен и измерен. Direct linking необязателен; корректные межблочные переходы обязательны.
 
-#### S3-31a. Bounded warm dispatcher phase harness — implementation only
+#### S3-31a. Bounded warm dispatcher phase evidence
 
 Для измерения доли dispatcher/lookup добавлен opt-in `warm-dispatch-phases`.
 Он фиксирует S3-17 case-list и trace hashes, а `recorded_multiblock` и
@@ -2383,11 +2383,12 @@ counter snapshots отдельно для каждого вызова, а изм
 identities, hashes, таймеры, фазы, residual и команда находятся в разделе
 [BENCHMARKS S3-31](../testing/BENCHMARKS.md#s3-31-bounded-warm-dispatcher-phase-harness).
 
-**Результат:** ограниченный harness реализован; доступно только bounded Run 1
-evidence ([отчёт S3-31](../reports/STAGE_3_S3-31_2026-11-01.md)). Runs 2/3 и
-широкая приёмка S3-31 остаются открытыми; S3-31 не закрыт. Harness не
-изолирует цену наблюдателя или total lookup и не доказывает пользу linking;
-никаких production решений из этого среза не следует.
+**Результат:** три bounded release runs по двум отдельным frozen strata
+завершены; cross-run synthesis доступен в [отчёте S3-31](../reports/STAGE_3_S3-31_2026-11-01.md)
+и [evidence manifest](../reports/data/stage3/s3-31/suite-manifest.json).
+Широкая приёмка S3-31 остаётся открытой. Harness не изолирует цену
+наблюдателя или total lookup и не доказывает пользу linking; никаких
+production решений из этого среза не следует.
 
 ### S3-32. Оценить локальные IR-преобразования
 
