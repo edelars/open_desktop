@@ -32560,6 +32560,15 @@ mod tests {
     static PROBE_HELPER_STATUS: AtomicU32 = AtomicU32::new(0);
     static PROBE_NESTED_CALLS: AtomicUsize = AtomicUsize::new(0);
     static mut ALLOCATOR_PROBE_OUTPUT: u64 = 0;
+    const ALLOCATOR_PROBE_VALUES: [u64; 6] = [
+        0x0000_0001_0000_0001,
+        0x8000_0002_0000_0002,
+        0x7FFF_FFFF_0000_0003,
+        0xFEDC_BA98_0000_0004,
+        0xAAAA_AAAA_0000_0005,
+        0x5555_5555_0000_0006,
+    ];
+    static mut ALLOCATOR_PROBE_OBSERVED_VALUES: [u64; 6] = [0; 6];
 
     // Keep x29 as a valid frame pointer: it points at this wrapper's saved
     // x29/x30 record while the generated entry runs.
@@ -32919,7 +32928,7 @@ mod tests {
             operations.push(Operation::Constant {
                 dst: TempId(temp),
                 width: IntWidth::W64,
-                value: temp as u64 + 1,
+                value: ALLOCATOR_PROBE_VALUES[temp as usize],
             });
         }
         let helper_boundary = operations.len();
@@ -32979,10 +32988,14 @@ mod tests {
         emit_pair_push(&mut encoder, 17, 20);
 
         for temp in 0..4 {
-            encoder.movz_x(xr(9 + temp), (temp + 1) as u16, 0).unwrap();
+            emit_u64(
+                &mut encoder,
+                9 + temp,
+                ALLOCATOR_PROBE_VALUES[temp as usize],
+            );
         }
-        for (temp, value) in [(4, 5), (5, 6)] {
-            encoder.movz_x(xr(13), value, 0).unwrap();
+        for temp in 4u32..6 {
+            emit_u64(&mut encoder, 13, ALLOCATOR_PROBE_VALUES[temp as usize]);
             allocation
                 .emit_store_scratch(&mut encoder, TempId(temp), xr(13))
                 .unwrap();
@@ -33012,10 +33025,32 @@ mod tests {
         allocation
             .emit_load_scratch(&mut encoder, TempId(5), xr(14))
             .unwrap();
+
+        // Record the restored homes and reloaded spill values individually.
+        // X16 is available after the helper and avoids the live X9-X14 values.
+        emit_u64(
+            &mut encoder,
+            16,
+            std::ptr::addr_of_mut!(ALLOCATOR_PROBE_OBSERVED_VALUES) as usize as u64,
+        );
+        for (index, register) in [9, 10, 11, 12, 13, 14].into_iter().enumerate() {
+            encoder
+                .str_x(
+                    XRegOrZero::Reg(xr(register)),
+                    AddressBase::Reg(xr(16)),
+                    (index * std::mem::size_of::<u64>()) as u32,
+                )
+                .unwrap();
+        }
+
         encoder.mov_x(xr(0), XRegOrZero::Reg(xr(9)));
         for register in [10, 11, 12, 13, 14] {
             encoder.add_x(xr(0), xr(0), XRegOrZero::Reg(xr(register)));
         }
+        // Preserve the probe's low-32-bit return contract for high-bit values.
+        encoder.movz_x(xr(15), 0xFFFF, 0).unwrap();
+        encoder.movk_x(xr(15), 0xFFFF, 1).unwrap();
+        encoder.and_x(xr(0), xr(0), XRegOrZero::Reg(xr(15)));
 
         emit_pair_pop(&mut encoder, 17, 20);
         emit_pair_pop(&mut encoder, 15, 16);
@@ -33406,7 +33441,19 @@ mod tests {
         let mut state = probe_state();
         let stop = AtomicU8::new(0);
         let mut context = make_probe_context(&mut state, &stop);
+        // SAFETY: this test owns the observation buffer under JIT_TEST_LOCK.
+        unsafe { std::ptr::addr_of_mut!(ALLOCATOR_PROBE_OBSERVED_VALUES).write([0; 6]) };
         let (raw, simd_values) = call_probe_with_simd_canaries(entry, &mut context);
+        // SAFETY: generated code writes the observation buffer while the test
+        // lock excludes all other callers of this test-only probe.
+        assert_eq!(
+            unsafe { std::ptr::addr_of!(ALLOCATOR_PROBE_OBSERVED_VALUES).read() },
+            ALLOCATOR_PROBE_VALUES
+        );
+
+        // Clear the buffer so the second wrapper call must write every element.
+        // SAFETY: this test owns the observation buffer under JIT_TEST_LOCK.
+        unsafe { std::ptr::addr_of_mut!(ALLOCATOR_PROBE_OBSERVED_VALUES).write([0; 6]) };
         // SAFETY: the entry points into `published`; the assembly wrapper
         // seeds/checks x19-x29 and SP, then restores the wrapper's own frame.
         let gpr_raw = unsafe {
@@ -33415,6 +33462,12 @@ mod tests {
                 (&mut context as *mut RuntimeContextV1) as usize,
             )
         };
+        // SAFETY: generated code writes the observation buffer while the test
+        // lock excludes all other callers of this test-only probe.
+        assert_eq!(
+            unsafe { std::ptr::addr_of!(ALLOCATOR_PROBE_OBSERVED_VALUES).read() },
+            ALLOCATOR_PROBE_VALUES
+        );
 
         assert_eq!(raw, 21);
         assert_eq!(gpr_raw, 21);
