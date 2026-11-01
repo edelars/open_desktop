@@ -60,6 +60,7 @@ SELF_TEST_NAMES = (
     "test_stage1_child_fingerprint_and_both_builds_are_pinned",
     "test_manual_frozen_input_and_result_bind_to_parent_manifest",
     "test_rust_test_manifest_rejects_a_missing_mandatory_gate",
+    "test_s3_32a_candidate_gates_are_unique_and_fail_closed",
     "test_s3_33_native_gates_are_pinned_once_in_manifest_steps_and_summary",
     "test_s3_34n_native_register_corpus_gates_are_pinned_once",
     "test_s3_34p_cached_native_register_trace_gates_are_pinned_once",
@@ -456,6 +457,18 @@ ADDITIONAL_TEST_GATES = (
     (
         S3_30P3_GATE_STEP, "local_acceptance", "od-host", S3_30P3_GATE_IDENTITY,
     ),
+    (
+        "s3_32a_candidate_exact_lowering", "local_acceptance", "od-jit",
+        "lowering::tests::s3_32a_candidate_reuses_one_preinstruction_rax_read_only_for_exact_opcode",
+    ),
+    (
+        "s3_32a_candidate_verified_compile_pipeline", "local_acceptance", "od-jit",
+        "block_compile::tests::s3_32a_exact_candidate_uses_the_normal_verified_compile_pipeline",
+    ),
+    (
+        "s3_32a_candidate_interpreter_edges_and_resume", "local_acceptance", "od-host",
+        "tests::s3_32a_candidate_matches_interpreter_edges_and_budget_resume",
+    ),
 )
 RUST_TEST_GATES = (
     *(
@@ -572,6 +585,7 @@ LOCAL_RUST_TEST_SOURCES = (
     "crates/od-jit/src/block.rs",
     "crates/od-jit/src/block_emitter.rs",
     "crates/od-jit/src/block_compile.rs",
+    "crates/od-jit/src/lowering.rs",
     "crates/od-jit/src/dispatch.rs",
     "crates/od-jit/src/memory_dispatch.rs",
     "crates/od-jit/src/translation.rs",
