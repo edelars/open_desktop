@@ -334,6 +334,71 @@ pub fn remainder_finite_trunc(lhs: X87Finite, rhs: X87Finite) -> Option<(i32, i1
     Some((rhs.exponent, signed(remainder, lhs.sign)))
 }
 
+/// Return the exact finite nearest-even remainder coefficient and exponent.
+///
+/// The returned pair `(exponent, coefficient)` represents
+/// `coefficient * 2^(exponent - 63)` and equals
+/// `lhs - nearest_integer_ties_even(lhs / rhs) * rhs`. Only normalized
+/// nonzero Normal, Subnormal, and PseudoDenormal inputs are accepted. The
+/// bounded integer decomposition handles exponent gaps from -1 through 64;
+/// smaller-magnitude lhs values are returned unchanged and larger gaps are
+/// rejected. This helper does not implement FPREM1 or any x87 instruction,
+/// status, exception, or quotient-bit behavior.
+pub fn remainder_finite_nearest_even(lhs: X87Finite, rhs: X87Finite) -> Option<(i32, i128)> {
+    let valid = |value: X87Finite| {
+        matches!(
+            value.source_class,
+            X87Binary80Class::Normal
+                | X87Binary80Class::Subnormal
+                | X87Binary80Class::PseudoDenormal
+        ) && value.significand & (1_u64 << 63) != 0
+    };
+    if !valid(lhs) || !valid(rhs) {
+        return None;
+    }
+
+    let apply_sign = |coefficient: i128, sign: bool| {
+        if sign { -coefficient } else { coefficient }
+    };
+    let gap = i64::from(lhs.exponent) - i64::from(rhs.exponent);
+    if gap <= -2 {
+        return Some((
+            lhs.exponent,
+            apply_sign(i128::from(lhs.significand), lhs.sign),
+        ));
+    }
+    if gap == -1 {
+        if lhs.significand <= rhs.significand {
+            // The ratio is at most one half; at equality, zero is even.
+            return Some((
+                lhs.exponent,
+                apply_sign(i128::from(lhs.significand), lhs.sign),
+            ));
+        }
+        let coefficient = i128::from(lhs.significand) - (i128::from(rhs.significand) << 1);
+        return Some((lhs.exponent, apply_sign(coefficient, lhs.sign)));
+    }
+    if gap > 64 {
+        return None;
+    }
+
+    // With a gap no larger than 64, the exact numerator fits in u128. Keep
+    // both quotient and doubled remainder wide through the tie decision.
+    let numerator = u128::from(lhs.significand) << (gap as u32);
+    let denominator = u128::from(rhs.significand);
+    let quotient = numerator / denominator;
+    let remainder = numerator % denominator;
+    let twice_remainder = remainder * 2;
+    let increment =
+        twice_remainder > denominator || (twice_remainder == denominator && quotient & 1 != 0);
+    let coefficient = if increment {
+        i128::try_from(remainder).ok()? - i128::from(rhs.significand)
+    } else {
+        i128::try_from(remainder).ok()?
+    };
+    Some((rhs.exponent, apply_sign(coefficient, lhs.sign)))
+}
+
 /// Round an exact normalized quotient directly into the binary80 subnormal
 /// range, preserving the quotient's rational tail until the final rounding.
 ///
@@ -967,10 +1032,10 @@ mod tests {
         add_finite_unequal_exponents, align_finite_pair, divide_finite_significands,
         divide_finite_to_binary80, multiply_finite_significands, multiply_finite_to_binary80,
         normalize_exact_coefficient, normalize_exact_magnitude, pack_normal_rounded_significand,
-        remainder_finite_trunc, round_pack_exact_coefficient, round_pack_exact_magnitude,
-        round_pack_subnormal_quotient, round_quotient_magnitude, round_quotient_ties_even,
-        round_quotient_to_precision, scale_finite_to_binary80, shift_right_jam,
-        shift_right_jam_u128, sqrt_finite_to_binary80,
+        remainder_finite_nearest_even, remainder_finite_trunc, round_pack_exact_coefficient,
+        round_pack_exact_magnitude, round_pack_subnormal_quotient, round_quotient_magnitude,
+        round_quotient_ties_even, round_quotient_to_precision, scale_finite_to_binary80,
+        shift_right_jam, shift_right_jam_u128, sqrt_finite_to_binary80,
     };
     use crate::state::{X87State, X87Tag};
 
@@ -2723,6 +2788,249 @@ mod tests {
                     .unwrap()
                     .to_bytes(),
                 [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            );
+        }
+    }
+
+    #[test]
+    fn finite_nearest_even_remainder_matches_literal_gap_matrix() {
+        let normal = X87Binary80Class::Normal;
+        let high = 0x8000_0000_0000_0000;
+        let max = u64::MAX;
+        let cases = [
+            (
+                0,
+                0xc000_0000_0000_0000,
+                high,
+                0,
+                -0x4000_0000_0000_0000_i128,
+            ),
+            (
+                1,
+                0xa000_0000_0000_0000,
+                high,
+                0,
+                0x4000_0000_0000_0000_i128,
+            ),
+            (
+                1,
+                0xe000_0000_0000_0000,
+                high,
+                0,
+                -0x4000_0000_0000_0000_i128,
+            ),
+            (-1, high, high, -1, 0x8000_0000_0000_0000_i128),
+            (-1, high + 1, high, -1, 1 - 0x8000_0000_0000_0000_i128),
+            (-1, high, high + 1, -1, 0x8000_0000_0000_0000_i128),
+            (-2, max, high, -2, i128::from(max)),
+            (63, high, high + 1, 0, 1),
+            (64, high, high + 1, 0, 2),
+            (64, max, high + 1, 0, 6),
+            (64, max, max, 0, 0),
+        ];
+        for (gap, lhs_sig, rhs_sig, rhs_exp, expected) in cases {
+            let lhs = finite(gap + rhs_exp, lhs_sig, false, normal);
+            let rhs = finite(rhs_exp, rhs_sig, false, normal);
+            let expected_exp = if gap < 0 {
+                lhs.exponent()
+            } else {
+                rhs.exponent()
+            };
+            assert_eq!(
+                remainder_finite_nearest_even(lhs, rhs),
+                Some((expected_exp, expected)),
+                "gap={gap}, lhs={lhs_sig:#018x}, rhs={rhs_sig:#018x}"
+            );
+        }
+        assert_eq!(
+            remainder_finite_nearest_even(
+                finite(65, high, false, normal),
+                finite(0, high, false, normal),
+            ),
+            None
+        );
+
+        // Exact 6 % 2 has zero regardless of either sign.
+        for lhs_sign in [false, true] {
+            for rhs_sign in [false, true] {
+                assert_eq!(
+                    remainder_finite_nearest_even(
+                        finite(2, 0xc000_0000_0000_0000, lhs_sign, normal),
+                        finite(1, high, rhs_sign, normal),
+                    ),
+                    Some((1, 0))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn finite_nearest_even_remainder_handles_signs_ties_and_normalized_subnormals() {
+        let normal = X87Binary80Class::Normal;
+        let subnormal = X87Binary80Class::Subnormal;
+        let high = 0x8000_0000_0000_0000;
+
+        // Below, exactly at, and above one half for an exponent gap of -1.
+        for (lhs_sig, rhs_sig, expected) in [
+            (high, high + 1, i128::from(high)),
+            (high, high, i128::from(high)),
+            (high + 1, high, 1 - i128::from(high)),
+        ] {
+            assert_eq!(
+                remainder_finite_nearest_even(
+                    finite(0, lhs_sig, false, normal),
+                    finite(1, rhs_sig, false, normal),
+                ),
+                Some((0, expected))
+            );
+        }
+
+        // The midpoint q=1 is odd and rounds away; q=2 is even and stays.
+        assert_eq!(
+            remainder_finite_nearest_even(
+                finite(0, 0xc000_0000_0000_0000, false, normal),
+                finite(0, high, false, normal),
+            ),
+            Some((0, -0x4000_0000_0000_0000))
+        );
+        assert_eq!(
+            remainder_finite_nearest_even(
+                finite(1, 0xa000_0000_0000_0000, false, normal),
+                finite(0, high, false, normal),
+            ),
+            Some((0, 0x4000_0000_0000_0000))
+        );
+
+        // For a -1 coefficient at the nearest remainder, only lhs sign applies.
+        for (lhs_sign, rhs_sign, expected) in [
+            (false, false, -0x4000_0000_0000_0000_i128),
+            (false, true, -0x4000_0000_0000_0000_i128),
+            (true, false, 0x4000_0000_0000_0000_i128),
+            (true, true, 0x4000_0000_0000_0000_i128),
+        ] {
+            assert_eq!(
+                remainder_finite_nearest_even(
+                    finite(0, 0xc000_0000_0000_0000, lhs_sign, normal),
+                    finite(0, high, rhs_sign, normal),
+                ),
+                Some((0, expected))
+            );
+        }
+
+        // Minimum normal % maximum subnormal is minimum subnormal; raw 7 % 4
+        // subnormal units rounds the quotient 1.75 to 2 and leaves -1 unit.
+        assert_eq!(
+            remainder_finite_nearest_even(
+                finite(-16382, high, false, normal),
+                finite(-16383, 0xffff_ffff_ffff_fffe, false, subnormal),
+            ),
+            Some((-16383, 2))
+        );
+        assert_eq!(
+            remainder_finite_nearest_even(
+                finite(-16443, 0xe000_0000_0000_0000, false, subnormal),
+                finite(-16443, high, false, subnormal),
+            ),
+            Some((-16443, -0x2000_0000_0000_0000))
+        );
+
+        let pseudo = finite(-16382, high, true, X87Binary80Class::PseudoDenormal);
+        let canonical = finite(-16382, high, true, normal);
+        let divisor = finite(-16383, 0xc000_0000_0000_0000, false, normal);
+        assert_eq!(
+            remainder_finite_nearest_even(pseudo, divisor),
+            remainder_finite_nearest_even(canonical, divisor)
+        );
+    }
+
+    #[test]
+    fn finite_nearest_even_remainder_rejects_invalid_inputs_and_preserves_them() {
+        let normal = X87Binary80Class::Normal;
+        let high = 0x8000_0000_0000_0000;
+        let valid = finite(0, high, false, normal);
+        let invalid = [
+            finite(0, 0, false, normal),
+            finite(0, high - 1, false, normal),
+            finite(0, 0, false, X87Binary80Class::Zero),
+            finite(0, high, false, X87Binary80Class::Infinity),
+            finite(0, high, false, X87Binary80Class::QuietNaN),
+            finite(0, high, false, X87Binary80Class::Unnormal),
+        ];
+        for value in invalid {
+            assert_eq!(remainder_finite_nearest_even(value, valid), None);
+            assert_eq!(remainder_finite_nearest_even(valid, value), None);
+        }
+        assert_eq!(
+            remainder_finite_nearest_even(valid, finite(0, 0, false, normal)),
+            None
+        );
+
+        // Subtract exponents only after widening, and preserve the i32-extreme
+        // lhs unchanged when its exponent gap is far below the divisor.
+        assert_eq!(
+            remainder_finite_nearest_even(
+                finite(i32::MIN, high, true, normal),
+                finite(i32::MAX, high, false, normal),
+            ),
+            Some((i32::MIN, -i128::from(high)))
+        );
+        assert_eq!(
+            remainder_finite_nearest_even(
+                finite(i32::MAX, high, false, normal),
+                finite(i32::MIN, high, false, normal),
+            ),
+            None
+        );
+
+        let lhs = finite(0, 0xc000_0000_0000_0000, true, normal);
+        let rhs = finite(0, high, false, normal);
+        let before = (lhs, rhs);
+        let _ = remainder_finite_nearest_even(lhs, rhs);
+        assert_eq!((lhs, rhs), before);
+    }
+
+    #[test]
+    fn finite_nearest_even_remainder_composes_to_literal_binary80_outputs() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+        let modes = [Nearest, Zero, Up, Down];
+        let normal = X87Binary80Class::Normal;
+        let high = 0x8000_0000_0000_0000;
+
+        let (exponent, coefficient) = remainder_finite_nearest_even(
+            finite(0, 0xc000_0000_0000_0000, false, normal),
+            finite(0, high, false, normal),
+        )
+        .unwrap();
+        assert_eq!((exponent, coefficient), (0, -0x4000_0000_0000_0000));
+        for mode in modes {
+            assert_eq!(
+                round_pack_exact_coefficient(exponent, coefficient, mode)
+                    .unwrap()
+                    .to_bytes(),
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0xfe, 0xbf]
+            );
+        }
+
+        let (exponent, coefficient) = remainder_finite_nearest_even(
+            finite(-16382, high, true, normal),
+            finite(
+                -16383,
+                0xffff_ffff_ffff_fffe,
+                false,
+                X87Binary80Class::Subnormal,
+            ),
+        )
+        .unwrap();
+        assert_eq!((exponent, coefficient), (-16383, -2));
+        for mode in modes {
+            assert_eq!(
+                round_pack_exact_coefficient(exponent, coefficient, mode)
+                    .unwrap()
+                    .to_bytes(),
+                [1, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]
             );
         }
     }
