@@ -544,9 +544,22 @@ decode; state setup and full-state/exit validation are outside it. The harness
 retains only one `MAP_JIT` mapping at a time. It does not measure cache lookup,
 dispatcher traversal, or the fallthrough suffix, and the execution timing is
 not pure guest-instruction time. This profile adds no allocator/runtime policy
-change. S3-30 remains open pending scored evidence and broader allocator
-correctness/performance evidence; Mac mini checks remain deferred until the end
-of Stage 3.
+change. Three release runs on Apple M3 Max completed with all 360 measured
+compile/execution sides above the 200 ms floor; each native side used
+8,388,608 calls. From the 60 raw budget0/budget4 pair totals per set, compile
+ratio median/range was 0.996036170827 (0.962808301520–1.045968410700), JZ-taken
+was 1.019455351209 (0.981907318288–1.048155961189), and JZ-fallthrough was
+1.038610853426 (1.008862994910–1.086055631502). These are pooled raw-pair
+ratios, not ratios of run medians. Budget4 used four home values and ten spills
+with 3,052 emitted bytes; budget0 used no homes and fourteen spills with 3,040
+bytes; both frames were 288 bytes. This remains a bounded configuration-cost
+comparison, not marginal spill cost, allocator algorithm/winner/default
+evidence, or downstream dispatcher behavior. Runtime Git status timed out
+after two seconds, so runtime `working_tree_dirty` is unknown (`null`); the
+three runtime revisions differ while the built source revision/fingerprint is
+common. Mac mini checks remain deferred until the end of Stage 3. See the
+[S3-30b report](../reports/STAGE_3_S3-30b_2026-11-01.md) and
+[suite manifest with checksums and raw-derived summaries](../reports/data/stage3/s3-30b/suite-manifest.json).
 
 ### S3-35a: cold first full-corpus execution
 
