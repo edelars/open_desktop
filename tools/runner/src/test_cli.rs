@@ -606,6 +606,7 @@ fn expected_native_xorpd_oracle(
                 ucomisd_memory_rax_controls: None,
                 comiss_memory_rax_controls: None,
                 ucomiss_memory_rax_controls: None,
+                cmpss_memory_rax_controls: None,
                 cvtsi2sd_r32_controls: None,
                 cvtsi2sd_r32_memory_controls: None,
                 cvtsi2ss_r32_memory_controls: None,
@@ -1105,20 +1106,21 @@ fn execute_fixture_v2(
     memory: &mut od_testkit::memory::FlatMemory,
 ) -> od_testkit::v2::RunResult {
     use od_isa::execute::{
-        CmppdControls, CmppsControls, CmpsdControls, CmpssControls, ComisdMemoryRaxControls,
-        ComisdUcomisdControls, ComissUcomissControls, Cr0Profile, Cr4Profile, Cvtdq2pdControls,
-        Cvtdq2pdMemoryControls, Cvtdq2psControls, Cvtdq2psMemoryControls, Cvtpd2dqControls,
-        Cvtps2dqControls, Cvtps2pdControls, Cvtsd2siMemoryR32Controls, Cvtsd2siMemoryR64Controls,
-        Cvtsd2siRegistersControls, Cvtsi2sdR32Controls, Cvtsi2sdR64Controls,
-        Cvtsi2sdR64MemoryControls, Cvtsi2ssR32MemoryControls, Cvtsi2ssR64MemoryControls,
-        Cvtsi2ssRegistersControls, Cvtss2sdControls, Cvtss2siMemoryR32Controls,
-        Cvtss2siMemoryR64Controls, Cvtss2siRegistersControls, Cvttsd2siMemoryR32Controls,
-        Cvttsd2siMemoryR64Controls, Cvttss2siMemoryR32Controls, Cvttss2siMemoryR64Controls,
-        Fxrstor64Cr0Controls, Fxsave64Cr0Controls, MaxpdUnmaskedControls, MaxpsUnmaskedControls,
-        MaxsdUnmaskedControls, MaxssUnmaskedControls, MinpdUnmaskedControls, MinpsUnmaskedControls,
-        MinsdUnmaskedControls, MinssInvalidControls, RdtscControls, RunConfig, RunExit,
-        XorpdPrerequisiteState, run, run_with_cli_profile, run_with_cmppd_register_controls,
-        run_with_cmpps_register_controls, run_with_cmpsd_register_controls,
+        CmppdControls, CmppsControls, CmpsdControls, CmpssControls, CmpssMemoryRaxControls,
+        ComisdMemoryRaxControls, ComisdUcomisdControls, ComissUcomissControls, Cr0Profile,
+        Cr4Profile, Cvtdq2pdControls, Cvtdq2pdMemoryControls, Cvtdq2psControls,
+        Cvtdq2psMemoryControls, Cvtpd2dqControls, Cvtps2dqControls, Cvtps2pdControls,
+        Cvtsd2siMemoryR32Controls, Cvtsd2siMemoryR64Controls, Cvtsd2siRegistersControls,
+        Cvtsi2sdR32Controls, Cvtsi2sdR64Controls, Cvtsi2sdR64MemoryControls,
+        Cvtsi2ssR32MemoryControls, Cvtsi2ssR64MemoryControls, Cvtsi2ssRegistersControls,
+        Cvtss2sdControls, Cvtss2siMemoryR32Controls, Cvtss2siMemoryR64Controls,
+        Cvtss2siRegistersControls, Cvttsd2siMemoryR32Controls, Cvttsd2siMemoryR64Controls,
+        Cvttss2siMemoryR32Controls, Cvttss2siMemoryR64Controls, Fxrstor64Cr0Controls,
+        Fxsave64Cr0Controls, MaxpdUnmaskedControls, MaxpsUnmaskedControls, MaxsdUnmaskedControls,
+        MaxssUnmaskedControls, MinpdUnmaskedControls, MinpsUnmaskedControls, MinsdUnmaskedControls,
+        MinssInvalidControls, RdtscControls, RunConfig, RunExit, XorpdPrerequisiteState, run,
+        run_with_cli_profile, run_with_cmppd_register_controls, run_with_cmpps_register_controls,
+        run_with_cmpsd_register_controls, run_with_cmpss_memory_rax_controls,
         run_with_cmpss_register_controls, run_with_comisd_memory_rax_controls,
         run_with_comisd_ucomisd_register_controls, run_with_comiss_memory_rax_controls,
         run_with_comiss_ucomiss_register_controls, run_with_cr0_profile,
@@ -2310,6 +2312,23 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongCmpssMemoryRaxV1 {
+        let controls = loaded
+            .fixture
+            .cmpss_memory_rax_controls
+            .expect("validated CMPSS m32 controls");
+        run_with_cmpss_memory_rax_controls(
+            &mut state,
+            memory,
+            config,
+            CmpssMemoryRaxControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongCmpsdRegistersV1 {
         let controls = loaded
             .fixture
@@ -3196,6 +3215,7 @@ fn execute_fixture_v2(
                 ucomisd_memory_rax_controls: loaded.fixture.ucomisd_memory_rax_controls,
                 comiss_memory_rax_controls: loaded.fixture.comiss_memory_rax_controls,
                 ucomiss_memory_rax_controls: loaded.fixture.ucomiss_memory_rax_controls,
+                cmpss_memory_rax_controls: loaded.fixture.cmpss_memory_rax_controls,
                 cvtsi2sd_r32_controls: loaded.fixture.cvtsi2sd_r32_controls,
                 cvtsi2sd_r32_memory_controls: loaded.fixture.cvtsi2sd_r32_memory_controls,
                 cvtsi2ss_r32_memory_controls: loaded.fixture.cvtsi2ss_r32_memory_controls,
@@ -4436,6 +4456,7 @@ mod tests {
                     ucomisd_memory_rax_controls: input.fixture.ucomisd_memory_rax_controls,
                     comiss_memory_rax_controls: input.fixture.comiss_memory_rax_controls,
                     ucomiss_memory_rax_controls: input.fixture.ucomiss_memory_rax_controls,
+                    cmpss_memory_rax_controls: input.fixture.cmpss_memory_rax_controls,
                     cvtsi2sd_r32_controls: input.fixture.cvtsi2sd_r32_controls,
                     cvtsi2sd_r32_memory_controls: input.fixture.cvtsi2sd_r32_memory_controls,
                     cvtsi2ss_r32_memory_controls: input.fixture.cvtsi2ss_r32_memory_controls,

@@ -440,3 +440,25 @@ generic execution remains closed. Full package suites passed: od-isa 1,674,
 od-testkit 453, od-runner 112 unit + 474 fixtures, and od-x86-runner 8+4;
 workspace all-target check and layout passed. Independent code/schema and final docs/evidence reviews passed. This is not physical x86 evidence. See the
 [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cr--bounded-long64-ucomiss-xmm0dword-ptr-rax-m32-memory-profile).
+
+### S2-37cs — CMPSS XMM0,m32,imm8
+
+The strict `s2-long-cmpss-memory-rax-v1` profile admits exact
+`F3 0F C2 00 pp` for pp=0..7. The independent raw-bit oracle checks the eight
+predicate results and sticky IE/DE behavior across 1,024 predicate/relation/
+RC/FTZ/history combinations, plus 48 NaN/denormal-priority cases. The matrix
+includes QNaN IE only for predicates 1/2/5/6, SNaN IE for all predicates,
+NaN suppression of DE, and subnormal DE in the absence of NaNs. A literal
+QNaN/subnormal case checks unordered output and pending-x87/RFLAGS preservation.
+
+The runner also checks AC=1 refusal, full-fetch pp8 local refusal before
+missing-SSE/TS gate faults, valid-baseline foreign-control rejection, and JIT
+denial. It uses Ring0; CPL0–3 coverage belongs to the direct ISA relation
+matrix. Decoder and direct ISA checks cover span and read-failure atomicity.
+`pp>7` is a local unsupported-profile result, not an architectural `#UD`.
+Native/JIT/C/fragment/generic execution remains closed; no physical x86
+acceptance is claimed. Full suites passed: od-isa 1,678, od-testkit 453,
+od-runner 112 unit + 475 fixtures, and od-x86-runner 8+4; workspace all-target
+check, formatting, layout, Graphify (10,615/22,791/311), diff, and 13 anchors
+passed. Independent code/schema and docs/evidence review passed. See the
+[CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cs--bounded-long64-cmpss-xmm0m32-raximm8-memory-profile).

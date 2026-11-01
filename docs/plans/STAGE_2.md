@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последний завершённый срез S2-37cr — exact legacy `UCOMISS XMM0,dword ptr [RAX]` (`0F 2E 00`): один read(4), raw-binary32 relation flags, QNaN без нового IE, SNaN с IE и подавление DE при любом NaN. Фокусные проверки и полные suites (od-isa 1,674; od-testkit 453; od-runner 112 unit + 474 fixtures; od-x86-runner 8+4), workspace all-target check, fmt, layout, Graphify (10,595 nodes / 22,730 edges / 311 communities), diff check и 13 anchors прошли. Независимые code/schema и docs/evidence reviews прошли. Физическая x86-проверка не заявляется. Профиль отдельный, strict schema-v2, только для interpreter; native/JIT/C ABI закрыты. Предыдущие профили перечислены ниже. Локальные проверки не закрывают общий S2-37 и CPUID admission. Аппаратная проверка остаётся в совместном final substage. S2-19t добавил REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавил REPE SCASB на точные
+Последний завершённый срез S2-37cs — exact legacy `CMPSS XMM0,m32 [RAX],imm8` (`F3 0F C2 00 pp`): восемь predicate truth tables, один read(4), Q/SNaN IE и NaN-before-DE, только запись XMM0.low32. Полные suites прошли (od-isa 1,678; od-testkit 453; od-runner 112 unit + 475 fixtures; od-x86-runner 8+4), как и workspace all-target check, fmt, layout, Graphify 10,615/22,791/311, diff и 13 anchors. Независимые code/schema и docs/evidence reviews завершены. Физическая x86-проверка не заявляется. Профиль только для interpreter; native/JIT/C ABI закрыты. Предыдущие профили перечислены ниже. Локальные проверки не закрывают общий S2-37 и CPUID admission. Аппаратная проверка остаётся в совместном final substage. S2-19t добавил REPNE CMPSW/D/Q с addr32 после S2-19s REPNE SCASW/D/Q; S2-19m ранее добавил REPE SCASB на точные
 address-size-32 формы; общий REP/JIT/native profile
 и финальный Mac mini/SSH/native/physical acceptance не расширены. Dual-fault
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
@@ -522,6 +522,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37cp | Local-only legacy Long64 UCOMISD XMM0,qword ptr [RAX] exact m64 memory profile; raw binary64 comparison, QNaN does not add IE, NaN suppresses DE, six EFLAGS outputs; SSE2-bit26 gates; native/JIT closed | Focused decoder/direct ISA 3/3; testkit oracle 1/1; runner 1/1 with 224 comparisons; native-local-only classifier 1/1; full suites passed: ISA 1,668; testkit 451; runner 112+472; x86-runner 8+4; workspace check, fmt, layout, Graphify, diff, 13 anchors and independent code/docs review passed; no physical x86 acceptance |
 | [x] | S2-37cq | Local-only legacy Long64 COMISS XMM0,m32 `[RAX]` exact memory profile; raw binary32 relation flags, Q/SNaN IE and NaN-before-DE priority; SSE bit25 gates; native/JIT closed | Focused decoder 1/1, direct ISA 2/2, testkit oracle 1/1, runner 1/1 with 224 comparisons; shared COMISD/UCOMISD path regressions passed: ISA 4/4, CO runner 1/1 (192), CP runner 1/1 (224); native classifier 1/1; full suites passed: ISA 1,671, testkit 452, runner 112+473, x86-runner 8+4; workspace all-target check, fmt, layout, Graphify 10,578/22,693/311, diff check, 13 anchors, and independent code/docs/final evidence reviews passed; no physical x86 acceptance |
 | [x] | S2-37cr | Local-only legacy Long64 UCOMISS XMM0,m32 `[RAX]` exact memory profile; raw binary32 relation flags, SNaN IE, QNaN quiet behavior and NaN-before-DE priority; SSE bit25 gates; native/JIT closed | Focused decoder 1/1, direct ISA 2/2, testkit raw-bit oracle 1/1, runner 1/1 with 288 comparisons, native classifier 3 passed; full suites passed: ISA 1,674, testkit 453, runner 112+474, x86-runner 8+4; workspace check, fmt, layout, Graphify 10,595/22,730/311, diff and 13 anchors passed; independent code/schema and final docs/evidence reviews passed |
+| [x] | S2-37cs | Local-only legacy Long64 CMPSS XMM0,m32 `[RAX]`,imm8 exact memory profile; eight predicate relations, Q/SNaN and denormal priority, XMM0.low32 result with other state/RFLAGS preserved; SSE bit25 gates; native/JIT closed | Focused decoder 1/1, direct ISA 3/3, runner 1/1 with 1,072 raw-bit oracle comparisons, native-local-only classifier 1/1; full suites passed: od-isa 1,678, od-testkit 453, od-runner 112+475, od-x86-runner 8+4; workspace all-target check, fmt, layout, Graphify 10,615/22,791/311, diff and 13 anchors passed; independent code/schema and docs/evidence reviews passed; no physical x86 acceptance |
 | [x] | S2-37t | Local-only canonical Long64 CVTSS2SD XMM register-pair profile; raw binary32 widening with sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37u | Local-only canonical Long64 CVTPS2PD XMM register-pair profile; two-lane raw widening with aggregate sticky IE/DE and atomic unmasked exit; JIT/native closed | S2-37t, S2-38 IE/DE policy; independent Sol-medium review clean |
 | [x] | S2-37v | Local-only canonical Long64 COMISS/UCOMISS XMM register-pair profile; NaN-priority IE/DE, unordered flags, unmasked atomic flag exit; JIT/native closed | S2-38 IE/DE policy; independent Sol-medium review clean |
@@ -15730,3 +15731,49 @@ instruction entry scopes its Type 3/Table 2-20 reference to VEX forms; Table
 2-20 itself also contains legacy SSE conditions. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37cr--bounded-long64-ucomiss-xmm0dword-ptr-rax-m32-memory-profile),
 [report](../reports/STAGE_2_REPORT.md#s2-37cr--ucomiss-xmm0m32), and [fixture
 notes](../../tests/fixtures/x86/stage2/README.md#s2-37cr--ucomiss-xmm0m32).
+
+#### S2-37cs — exact legacy Long64 CMPSS XMM0,m32 [RAX],imm8
+
+The separate local-only schema-v2 profile admits exact legacy
+`F3 0F C2 00 pp` for predicate immediates `pp=0..7`. It fetches all five bytes
+including the immediate before gates and any memory read, reads exactly four
+bytes from checked canonical48 span `[RAX,RAX+3]`, and retires once at
+entry+5. AC=0 admits unaligned addresses; AC=1 is a local `Unsupported`
+refusal after the SSE/TS gates and before the source read. An out-of-profile
+immediate `pp>7` is a local `Unsupported` refusal after the complete fetch and
+before gate faults, span validation, or memory access; it is not an
+architectural `#UD`. Read failure and every pre-read refusal preserve CPU
+state.
+
+Each predicate compares the binary32 value in XMM0.low32 against the m32
+source and writes all ones or zero to only XMM0.low32. XMM0.high96, other XMM
+registers, GPRs, x87 state, RFLAGS, and unrelated state remain unchanged.
+Predicate truth rows for greater/less/equal/unordered are: pp0 F/F/T/F; pp1
+F/T/F/F; pp2 F/T/T/F; pp3 F/F/F/T; pp4 T/T/F/T; pp5 T/F/T/T; pp6 T/F/F/T;
+pp7 T/T/T/F. SNaN adds sticky IE for every predicate; QNaN adds IE only for
+pp1/2/5/6. Either NaN suppresses new DE, including when the other operand is
+subnormal; with no NaN, a subnormal adds sticky DE. Existing IE/DE stickies
+are preserved. The local profile requires SSE (CPUID bit 25), supported MXCSR
+mask `0xffbf`, DAZ=0, and IM=DM=1; PM, RC, and FTZ may vary. EM=1 or OSFXSR=0
+causes `#UD`, then TS=1 causes `#NM` for in-range predicates under the local
+gate order. Native/JIT/C/fragment/generic execution remains closed.
+
+Focused evidence: exact decoder 1/1; direct ISA 3/3; runner fixture 1/1 with
+1,072 raw-bit oracle comparisons (1,024 predicate/relation/RC/FTZ/sticky cases
+and 48 NaN/denormal-priority cases); native-local-only classifier 1/1; and
+`cargo check -p od-testkit --tests --offline`. The runner matrix is Ring0;
+the direct predicate/relation matrix covers CPL0–3, while its gate/refusal,
+span, fetch, and read-failure probes use Ring0. The oracle runs through the
+runner matrix; there is no separate CMPSS-memory testkit unit filter.
+Full suites passed: od-isa 1,678; od-testkit 453; od-runner 112 unit + 475
+fixtures; od-x86-runner 8+4. Workspace all-target check, formatting, diff,
+layout, anchor checks, and Graphify update (10,615 nodes / 22,791 edges / 311
+communities) passed. Independent code/schema and docs/evidence reviews passed;
+final evidence-only recheck is complete. No physical x86 acceptance is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CMPSS` pp. 3-189–3-192 and Table 3-8
+p. 3-169; Vol. 1 §4.9.2; Vol. 3A §16.1.3/Table 16-1. The instruction entry's
+Type 3 reference is scoped to VEX forms; Table 2-20 itself also contains
+legacy SSE conditions. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37cs--bounded-long64-cmpss-xmm0m32-raximm8-memory-profile),
+[report](../reports/STAGE_2_REPORT.md#s2-37cs--cmpss-xmm0m32imm8), and [fixture
+notes](../../tests/fixtures/x86/stage2/README.md#s2-37cs--cmpss-xmm0m32imm8).

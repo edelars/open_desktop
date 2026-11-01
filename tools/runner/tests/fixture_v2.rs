@@ -2,8 +2,8 @@
 use od_testkit::HexU64;
 use od_testkit::result::{Backend, MemoryRegionSnapshot, Observation};
 use od_testkit::v2::{
-    ComissUcomissControlSnapshot, ExpectedExit, Fixture, LoadedFixture, Outcome, RunResult,
-    Snapshot, StiShadowSnapshot,
+    CmpssMemoryRaxControlSnapshot, ComissUcomissControlSnapshot, ExpectedExit, Fixture,
+    LoadedFixture, Outcome, RunResult, Snapshot, StiShadowSnapshot,
 };
 use std::fs;
 use std::process::{Command, Output};
@@ -90,6 +90,9 @@ const COMISS_M32_MEMORY_RAX: &[u8] = include_bytes!(
 );
 const UCOMISS_M32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37cr_ucomiss_m32_qnan_subnormal_priority.case.json"
+);
+const CMPSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37cs_cmpss_m32_qnan_subnormal_priority.case.json"
 );
 const COMISD_UCOMISD_REGISTER: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37w_comisd_ucomisd_baseline.case.json");
@@ -26810,6 +26813,203 @@ fn ucomiss_m32_memory_uses_quiet_nan_priority_and_denies_other_backends() {
         run(UCOMISS_M32_MEMORY_RAX, "jit", 4).1.outcome,
         Outcome::Unsupported { .. }
     ));
+}
+
+#[test]
+fn cmpss_m32_memory_covers_predicates_nan_priority_and_denies_other_backends() {
+    let fixture = Fixture::from_json(CMPSS_M32_MEMORY_RAX).unwrap().fixture;
+    let truth = [
+        [false, false, true, false],
+        [false, true, false, false],
+        [false, true, true, false],
+        [false, false, false, true],
+        [true, true, false, true],
+        [true, false, true, true],
+        [true, false, false, true],
+        [true, true, true, false],
+    ];
+    let relations = [
+        (0x4000_0000u32, 0x3f80_0000u32), // greater
+        (0x3f80_0000, 0x4000_0000),       // less
+        (0x0000_0000, 0x8000_0000),       // equal signed zero
+        (0x7fc1_2345, 0x3f80_0000),       // unordered QNaN
+    ];
+    let encode_u32 = |value: u32| {
+        value
+            .to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let decode_u32 = |hex: &str| {
+        let bytes = (0..4)
+            .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
+            .collect::<Vec<_>>();
+        u32::from_le_bytes(bytes.try_into().unwrap())
+    };
+    let old_sticky = [0u64, 1, 2, 3];
+    let mut comparisons = 0usize;
+    for predicate in 0u8..8 {
+        for (relation, (left, right)) in relations.iter().copied().enumerate() {
+            for rc in 0..4u32 {
+                for ftz in [false, true] {
+                    for old in old_sticky {
+                        let mut case = fixture.clone();
+                        case.case_id =
+                            format!("s2_37cs_p{predicate}_r{relation}_rc{rc}_ftz{ftz}_old{old}");
+                        case.memory[0].initial_bytes_hex = format!("f30fc200{predicate:02x}");
+                        case.memory[0].comparison_mask_hex = "ff".repeat(5);
+                        case.initial_state.sse.as_mut().unwrap().xmm[0] =
+                            format!("{}{}", encode_u32(left), "010000000000f07f01000000");
+                        case.initial_state.sse.as_mut().unwrap().mxcsr =
+                            HexU64(0x0180 | old | (u64::from(rc) << 13) | (u64::from(ftz) << 15));
+                        case.memory[1].initial_bytes_hex = encode_u32(right);
+                        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                        od_testkit::v2::compare(&input, &result, &result).unwrap();
+                        let snapshot = match &result.snapshot {
+                            Observation::Available { value } => value,
+                            other => panic!("unexpected CMPSS snapshot: {other:?}"),
+                        };
+                        let output = decode_u32(&snapshot.state.sse.as_ref().unwrap().xmm[0]);
+                        assert_eq!(
+                            output,
+                            if truth[usize::from(predicate)][relation] {
+                                u32::MAX
+                            } else {
+                                0
+                            }
+                        );
+                        let qnan_signaling_predicate = matches!(predicate, 1 | 2 | 5 | 6);
+                        let raised_ie = relation == 3 && qnan_signaling_predicate;
+                        assert_eq!(
+                            snapshot.state.sse.as_ref().unwrap().mxcsr.get(),
+                            0x0180
+                                | old
+                                | u64::from(raised_ie)
+                                | (u64::from(rc) << 13)
+                                | (u64::from(ftz) << 15)
+                        );
+                        assert_eq!(snapshot.state.rflags.get(), case.initial_state.rflags.get());
+                        comparisons += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // QNaN never adds DE, while SNaN raises IE for every predicate; a numeric
+    // subnormal raises DE only when neither operand is NaN.
+    for (index, (left, right, generated)) in [
+        (0x7fc1_2345, 1, 0),
+        (1, 0x7fc1_2345, 0),
+        (0x7f81_2345, 1, 1),
+        (1, 0x7f81_2345, 1),
+        (1, 0x3f80_0000, 2),
+        (0x3f80_0000, 1, 2),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for predicate in 0u8..8 {
+            let mut case = fixture.clone();
+            case.case_id = format!("s2_37cs_priority_{index}_p{predicate}");
+            case.memory[0].initial_bytes_hex = format!("f30fc200{predicate:02x}");
+            case.memory[0].comparison_mask_hex = "ff".repeat(5);
+            case.initial_state.sse.as_mut().unwrap().xmm[0] =
+                format!("{}{}", encode_u32(left), "010000000000f07f01000000");
+            case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x0180);
+            case.memory[1].initial_bytes_hex = encode_u32(right);
+            let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+            let snapshot = match &result.snapshot {
+                Observation::Available { value } => value,
+                other => panic!("unexpected CMPSS snapshot: {other:?}"),
+            };
+            let nan = (left & 0x7f80_0000 == 0x7f80_0000 && left & 0x007f_ffff != 0)
+                || (right & 0x7f80_0000 == 0x7f80_0000 && right & 0x007f_ffff != 0);
+            let signaling = [left, right].into_iter().any(|bits| {
+                bits & 0x7f80_0000 == 0x7f80_0000
+                    && bits & 0x007f_ffff != 0
+                    && bits & 0x0040_0000 == 0
+            });
+            let expected = if signaling || (nan && matches!(predicate, 1 | 2 | 5 | 6)) {
+                generated | 1
+            } else {
+                generated
+            };
+            assert_eq!(
+                snapshot.state.sse.as_ref().unwrap().mxcsr.get(),
+                0x0180 | expected
+            );
+        }
+    }
+
+    let (input, baseline) = run(CMPSS_M32_MEMORY_RAX, "interpreter", 0);
+    let mut wrong_result = baseline.clone();
+    if let Observation::Available { value } = &mut wrong_result.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(..8, "00000000");
+    }
+    assert!(od_testkit::v2::compare(&input, &wrong_result, &baseline).is_err());
+    let mut wrong_status = baseline.clone();
+    if let Observation::Available { value } = &mut wrong_status.snapshot {
+        value.state.sse.as_mut().unwrap().mxcsr = HexU64(0x0181);
+    }
+    assert!(od_testkit::v2::compare(&input, &wrong_status, &baseline).is_err());
+    let mut wrong_flags = baseline.clone();
+    if let Observation::Available { value } = &mut wrong_flags.snapshot {
+        value.state.rflags = HexU64(value.state.rflags.get() ^ 1);
+    }
+    assert!(od_testkit::v2::compare(&input, &wrong_flags, &baseline).is_err());
+
+    let mut ac = fixture.clone();
+    ac.case_id = "s2_37cs_ac1_unsupported".into();
+    ac.initial_state.rflags = HexU64(ac.initial_state.rflags.get() | (1 << 18));
+    ac.expected_exit = ExpectedExit::Unsupported;
+    assert!(matches!(
+        run(&ac.to_json().unwrap(), "interpreter", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    for (index, controls) in [
+        CmpssMemoryRaxControlSnapshot {
+            sse_available: false,
+            cr0_em: false,
+            cr0_ts: true,
+            cr4_osfxsr: true,
+        },
+        CmpssMemoryRaxControlSnapshot {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: true,
+            cr4_osfxsr: true,
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut invalid_predicate = fixture.clone();
+        invalid_predicate.case_id = format!("s2_37cs_predicate_8_precedes_gate_{index}");
+        invalid_predicate.memory[0].initial_bytes_hex = "f30fc20008".into();
+        invalid_predicate.memory[0].comparison_mask_hex = "ff".repeat(5);
+        invalid_predicate.expected_exit = ExpectedExit::Unsupported;
+        invalid_predicate.cmpss_memory_rax_controls = Some(controls);
+        let (_, result) = run(&invalid_predicate.to_json().unwrap(), "interpreter", 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    }
+    for mxcsr in [0x0100, 0x0080, 0x01c0, 0x0040_0180] {
+        let mut malformed = fixture.clone();
+        malformed.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(malformed.validate().is_err(), "accepted MXCSR {mxcsr:#x}");
+    }
+    let mut foreign = Fixture::from_json(CMPSS_REGISTER_PAIRS).unwrap().fixture;
+    assert!(foreign.validate().is_ok());
+    foreign.cmpss_memory_rax_controls = fixture.cmpss_memory_rax_controls;
+    assert!(foreign.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
+    assert!(matches!(
+        run(CMPSS_M32_MEMORY_RAX, "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    assert!(comparisons > 0);
 }
 
 #[test]

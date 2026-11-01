@@ -20524,3 +20524,45 @@ Sources: Intel SDM Rev. 093 Vol. 2B `UCOMISS` pp. 4-735–4-736; Vol. 1
 §4.9.2, §11.5.2.2, §11.5.3, Tables D-6/D-7; Vol. 3A §16.1.3/Table 16-1.
 The instruction entry scopes its Type 3/Table 2-20 reference to VEX forms;
 Table 2-20 itself also includes legacy SSE conditions.
+
+## S2-37cs — CMPSS XMM0,m32,imm8
+
+The separate strict profile `s2-long-cmpss-memory-rax-v1` admits exact legacy
+`F3 0F C2 00 pp` with `pp=0..7`, fetches all five bytes, and reads exactly
+four bytes from checked canonical48 span `[RAX,RAX+3]`. Successful execution
+retires once and stops at entry+5. AC=1 is a local `Unsupported` refusal after
+SSE/TS gates and before the read. An immediate above 7 is a local profile
+refusal after full fetch but before gate faults, span checks, or source reads;
+it is not represented as an architectural `#UD`. Read failures and all
+pre-read refusals preserve CPU state.
+
+The raw-binary32 predicate oracle checks the truth matrix over greater, less,
+equal, and unordered inputs: pp0 F/F/T/F; pp1 F/T/F/F; pp2 F/T/T/F; pp3
+F/F/F/T; pp4 T/T/F/T; pp5 T/F/T/T; pp6 T/F/F/T; pp7 T/T/T/F. Only XMM0.low32
+is written (all ones or zero); high96 and remaining CPU state, including
+RFLAGS, are preserved. SNaN adds sticky IE for every predicate; QNaN adds IE
+for pp1/2/5/6 only. Any NaN suppresses new DE, while a subnormal with no NaN
+adds DE. IM=DM=1 and DAZ=0 are local requirements; PM, RC, and FTZ are
+unrestricted. SSE CPUID bit 25 is required; EM=1 or OSFXSR=0 yields `#UD`,
+then TS=1 yields `#NM` for in-range predicates. Native/JIT/C/fragment/generic
+execution remains closed.
+
+Focused checks passed: decoder 1/1; direct ISA 3/3; runner 1/1 with 1,072
+raw-bit oracle comparisons (1,024 predicate/relation/RC/FTZ/sticky cases plus
+48 NaN/denormal-priority cases); native-local-only classifier 1/1; and
+`cargo check -p od-testkit --tests --offline`. The runner matrix uses Ring0;
+direct predicate/relation tests cover CPL0–3, while direct gate/refusal/span,
+fetch, and read-failure probes use Ring0. There is no separate CMPSS-memory
+testkit unit filter: the independent memory oracle runs through the runner
+matrix. Full suites passed: od-isa 1,678, od-testkit 453, od-runner 112 unit +
+475 fixtures, and od-x86-runner 8+4. Workspace all-target check, formatting,
+diff, layout, anchor checks, and Graphify update (10,615 nodes / 22,791 edges /
+311 communities) passed. Independent code/schema and docs/evidence reviews
+passed; final evidence-only recheck is complete. No physical x86 acceptance is
+claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A `CMPSS` pp. 3-189–3-192 and Table 3-8
+p. 3-169; Vol. 1 §4.9.2; Vol. 3A §16.1.3/Table 16-1. The instruction entry's
+Type 3 reference is scoped to VEX forms; Table 2-20 itself also contains
+legacy SSE conditions. See the [plan](../plans/STAGE_2.md#s2-37cs--exact-legacy-long64-cmpss-xmm0m32-raximm8),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37cs--bounded-long64-cmpss-xmm0m32-raximm8-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cs--cmpss-xmm0m32imm8).

@@ -632,6 +632,15 @@ pub struct CmpssControls {
     pub cr4_osxmmexcpt: bool,
 }
 
+/// Explicit SSE prerequisites for the exact S2-37cs CMPSS m32-at-RAX profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CmpssMemoryRaxControls {
+    pub sse_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+}
+
 /// Explicit SSE2 and SIMD exception-delivery controls for canonical CMPSD.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CmpsdControls {
@@ -998,6 +1007,7 @@ struct ExecutionProfiles<'a> {
     cvtss2sd_memory: Option<Cvtss2sdMemoryControls>,
     comiss_ucomiss_registers: Option<ComissUcomissControls>,
     cmpss_registers: Option<CmpssControls>,
+    cmpss_memory_rax: Option<CmpssMemoryRaxControls>,
     cmpsd_registers: Option<CmpsdControls>,
     cmppd_registers: Option<CmppdControls>,
     cmpps_registers: Option<CmppsControls>,
@@ -1863,6 +1873,7 @@ pub fn run_with_maxss_unmasked_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -1978,6 +1989,7 @@ pub fn run_with_minsd_unmasked_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -2093,6 +2105,7 @@ pub fn run_with_maxsd_unmasked_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -2208,6 +2221,7 @@ pub fn run_with_minpd_unmasked_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -2323,6 +2337,7 @@ pub fn run_with_minps_unmasked_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -2438,6 +2453,7 @@ pub fn run_with_maxps_unmasked_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -2553,6 +2569,7 @@ pub fn run_with_maxpd_unmasked_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -2668,6 +2685,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -2783,6 +2801,7 @@ pub fn run_with_cvtsi2sd_r32_memory_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -2898,6 +2917,7 @@ pub fn run_with_cvtsi2sd_r64_memory_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -3013,6 +3033,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -3128,6 +3149,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -3243,6 +3265,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -3358,6 +3381,7 @@ pub fn run_with_cvtsi2ss_r32_memory_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -3473,6 +3497,7 @@ pub fn run_with_cvtsi2ss_r64_memory_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -3588,6 +3613,7 @@ pub fn run_with_cvtss2si_registers_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -3703,6 +3729,7 @@ pub fn run_with_cvttss2si_registers_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -3817,6 +3844,7 @@ pub fn run_with_cvtsd2si_registers_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -3932,6 +3960,7 @@ pub fn run_with_cvtsd2si_r32_memory_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -4047,6 +4076,7 @@ pub fn run_with_cvtsd2si_r64_memory_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -4164,6 +4194,7 @@ pub fn run_with_cvttsd2si_r32_memory_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -4283,6 +4314,7 @@ pub fn run_with_cvttsd2si_r64_memory_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -4398,6 +4430,7 @@ pub fn run_with_cvtss2si_r32_memory_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -4513,6 +4546,7 @@ pub fn run_with_cvtss2si_r64_memory_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -4628,6 +4662,7 @@ pub fn run_with_cvttss2si_r64_memory_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -4743,6 +4778,7 @@ pub fn run_with_cvttss2si_r32_memory_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -4859,6 +4895,7 @@ pub fn run_with_cvttsd2si_registers_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -4974,6 +5011,7 @@ pub fn run_with_cvtdq2pd_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -5089,6 +5127,7 @@ pub fn run_with_cvtdq2pd_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -5203,6 +5242,7 @@ pub fn run_with_cvtdq2pd_memory_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -5318,6 +5358,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -5433,6 +5474,7 @@ pub fn run_with_cvtdq2ps_memory_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -5548,6 +5590,7 @@ pub fn run_with_cvtps2dq_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -5663,6 +5706,7 @@ pub fn run_with_cvttps2dq_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -5778,6 +5822,7 @@ pub fn run_with_cvtps2dq_memory_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -5893,6 +5938,7 @@ pub fn run_with_cvttps2dq_memory_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -6008,6 +6054,7 @@ pub fn run_with_cvttpd2dq_memory_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -6123,6 +6170,7 @@ pub fn run_with_cvtpd2dq_memory_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -6238,6 +6286,7 @@ pub fn run_with_cvtpd2dq_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -6353,6 +6402,7 @@ pub fn run_with_cvtpd2ps_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -6468,6 +6518,7 @@ pub fn run_with_cvttpd2dq_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -6583,6 +6634,7 @@ pub fn run_with_cvtss2sd_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -6702,6 +6754,7 @@ pub fn run_with_cvtpi2pd_memory_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -6853,6 +6906,7 @@ fn run_with_cvtpi2ps_profile(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -7135,6 +7189,7 @@ pub fn run_with_cvtsd2ss_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -7246,6 +7301,7 @@ pub fn run_with_cvtps2pd_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -7361,6 +7417,7 @@ pub fn run_with_cvtps2pd_memory_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -7476,6 +7533,7 @@ pub fn run_with_cvtss2sd_memory_controls(
             cvtss2sd_memory: Some(controls),
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -7591,6 +7649,7 @@ pub fn run_with_cvtsd2ss_memory_controls(
             cvtsd2ss_memory: Some(controls),
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -7705,6 +7764,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: Some(controls),
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -7759,6 +7819,28 @@ pub fn run_with_cmpss_register_controls(
     memory: &mut impl GuestMemory,
     config: RunConfig,
     controls: CmpssControls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_cmpss_profile(state, memory, config, Some(controls), None, stop_requested)
+}
+
+/// Execute the bounded exact Long64 memory-source CMPSS profile.
+pub fn run_with_cmpss_memory_rax_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: CmpssMemoryRaxControls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_cmpss_profile(state, memory, config, None, Some(controls), stop_requested)
+}
+
+fn run_with_cmpss_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    cmpss_register_controls: Option<CmpssControls>,
+    cmpss_memory_controls: Option<CmpssMemoryRaxControls>,
     mut stop_requested: impl FnMut() -> bool,
 ) -> RunResult {
     run_configured(
@@ -7819,7 +7901,8 @@ pub fn run_with_cmpss_register_controls(
             cvtps2pd_memory: None,
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
-            cmpss_registers: Some(controls),
+            cmpss_registers: cmpss_register_controls,
+            cmpss_memory_rax: cmpss_memory_controls,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -7935,6 +8018,7 @@ pub fn run_with_cmpsd_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: Some(controls),
             cmppd_registers: None,
             cmpps_registers: None,
@@ -8050,6 +8134,7 @@ pub fn run_with_cmppd_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: Some(controls),
             cmpps_registers: None,
@@ -8164,6 +8249,7 @@ pub fn run_with_cmpps_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: Some(controls),
@@ -8279,6 +8365,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -8447,6 +8534,7 @@ pub fn run_with_efer_rdmsr_profile(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -8771,6 +8859,7 @@ pub fn run_with_cr0_profile(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -8887,6 +8976,7 @@ pub fn run_with_cr4_profile(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -9237,6 +9327,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -9537,6 +9628,7 @@ pub fn step_with_cr0_profile(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -9895,6 +9987,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -10010,6 +10103,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -10228,6 +10322,7 @@ fn run_with_comparison_memory_rax_profile(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -10345,6 +10440,7 @@ pub fn run_with_sqrtss_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -10460,6 +10556,7 @@ pub fn run_with_sqrtsd_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -10575,6 +10672,7 @@ pub fn run_with_sqrtps_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -10690,6 +10788,7 @@ pub fn run_with_sqrtpd_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -10805,6 +10904,7 @@ pub fn run_with_subpd_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -10920,6 +11020,7 @@ pub fn run_with_mulpd_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -11035,6 +11136,7 @@ pub fn run_with_addpd_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -11150,6 +11252,7 @@ pub fn run_with_addsd_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -11265,6 +11368,7 @@ pub fn run_with_divpd_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -11380,6 +11484,7 @@ pub fn run_with_addss_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -11495,6 +11600,7 @@ pub fn run_with_addps_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -11610,6 +11716,7 @@ pub fn run_with_divsd_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -11725,6 +11832,7 @@ pub fn run_with_divps_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -11840,6 +11948,7 @@ pub fn run_with_divss_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -11955,6 +12064,7 @@ pub fn run_with_mulsd_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -12070,6 +12180,7 @@ pub fn run_with_mulss_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -12185,6 +12296,7 @@ pub fn run_with_mulps_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -12300,6 +12412,7 @@ pub fn run_with_subsd_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -12415,6 +12528,7 @@ pub fn run_with_subss_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -12530,6 +12644,7 @@ pub fn run_with_subps_register_controls(
             cvtss2sd_memory: None,
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -12645,6 +12760,7 @@ pub fn run_with_cvtpd2ps_memory_controls(
             cvtpd2ps_memory: Some(controls),
             comiss_ucomiss_registers: None,
             cmpss_registers: None,
+            cmpss_memory_rax: None,
             cmpsd_registers: None,
             cmppd_registers: None,
             cmpps_registers: None,
@@ -12693,6 +12809,59 @@ pub fn run_with_cvtpd2ps_memory_controls(
 }
 
 /// Execute the bounded canonical Long64 register-register COMISS/UCOMISS profile.
+
+fn cmpss_binary32_predicate(lhs: u32, rhs: u32, predicate: u8) -> (bool, bool, bool) {
+    let classify = |bits: u32| -> u8 {
+        let exponent = (bits >> 23) & 0xff;
+        let fraction = bits & 0x007f_ffff;
+        if exponent == 0xff && fraction != 0 {
+            if fraction & (1 << 22) != 0 { 3 } else { 4 }
+        } else if exponent == 0 && fraction != 0 {
+            2
+        } else {
+            0
+        }
+    };
+    let lhs_class = classify(lhs);
+    let rhs_class = classify(rhs);
+    let has_nan = matches!(lhs_class, 3 | 4) || matches!(rhs_class, 3 | 4);
+    let signaling = matches!(predicate, 1 | 2 | 5 | 6);
+    let new_ie =
+        lhs_class == 4 || rhs_class == 4 || (signaling && (lhs_class == 3 || rhs_class == 3));
+    // Rev. 093 §4.9.2 gives NaN handling precedence over denormal for CMPSS.
+    let new_de = !has_nan && (lhs_class == 2 || rhs_class == 2);
+    let ordering = if lhs & 0x7fff_ffff == 0 && rhs & 0x7fff_ffff == 0 {
+        core::cmp::Ordering::Equal
+    } else if lhs >> 31 != rhs >> 31 {
+        if lhs >> 31 != 0 {
+            core::cmp::Ordering::Less
+        } else {
+            core::cmp::Ordering::Greater
+        }
+    } else if lhs >> 31 == 0 {
+        (lhs & 0x7fff_ffff).cmp(&(rhs & 0x7fff_ffff))
+    } else {
+        (rhs & 0x7fff_ffff).cmp(&(lhs & 0x7fff_ffff))
+    };
+    let result = match predicate {
+        0 => !has_nan && ordering == core::cmp::Ordering::Equal,
+        1 => !has_nan && ordering == core::cmp::Ordering::Less,
+        2 => {
+            !has_nan
+                && matches!(
+                    ordering,
+                    core::cmp::Ordering::Less | core::cmp::Ordering::Equal
+                )
+        }
+        3 => has_nan,
+        4 => has_nan || ordering != core::cmp::Ordering::Equal,
+        5 => has_nan || ordering != core::cmp::Ordering::Less,
+        6 => has_nan || ordering == core::cmp::Ordering::Greater,
+        7 => !has_nan,
+        _ => unreachable!("CMPSS predicate was prevalidated"),
+    };
+    (result, new_ie, new_de)
+}
 
 fn step_configured(
     state: &mut LongModeState,
@@ -12754,6 +12923,7 @@ fn step_configured(
         cvtss2sd_memory: configured_cvtss2sd_memory_controls,
         comiss_ucomiss_registers: configured_comiss_ucomiss_controls,
         cmpss_registers: configured_cmpss_controls,
+        cmpss_memory_rax: configured_cmpss_memory_rax_controls,
         cmpsd_registers: configured_cmpsd_controls,
         cmppd_registers: configured_cmppd_controls,
         cmpps_registers: configured_cmpps_controls,
@@ -15184,6 +15354,54 @@ fn step_configured(
             }));
         }
     }
+    if let Some(controls) = configured_cmpss_memory_rax_controls {
+        let is_canonical_memory_form = matches!(
+            instruction.operation,
+            Operation::CmpssMemoryRax { predicate }
+                if predicate <= 7
+                    && instruction.length == 5
+                    && instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0xc2
+                    && instruction.prefixes.group1 == Some(0xf3)
+                    && instruction.prefixes.segment.is_none()
+                    && !instruction.prefixes.operand_override
+                    && !instruction.prefixes.address_override
+                    && instruction.prefixes.rex.is_none()
+        );
+        if !is_canonical_memory_form {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        let gate = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+            Some(6)
+        } else if controls.cr0_ts {
+            Some(7)
+        } else {
+            None
+        };
+        if let Some(vector) = gate {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+        let Some(sse) = state.sse.as_ref() else {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        };
+        if sse.mxcsr & !0x0000_ffbf != 0
+            || sse.mxcsr & (1 << 6) != 0
+            || sse.mxcsr & ((1 << 7) | (1 << 8)) != ((1 << 7) | (1 << 8))
+            || state.rflags & (1 << 18) != 0
+        {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+    }
     if let Some(controls) = configured_cmpsd_controls {
         let is_canonical_register_form = matches!(
             instruction.operation,
@@ -17209,6 +17427,13 @@ fn step_configured(
             && matches!(instruction.operation, Operation::CmpssRegister { .. })
         {
             sse.mxcsr & !0x0000_ffbf == 0 && sse.mxcsr & (1 << 6) == 0
+        } else if configured_cmpss_memory_rax_controls.is_some()
+            && matches!(instruction.operation, Operation::CmpssMemoryRax { .. })
+        {
+            sse.mxcsr & !0x0000_ffbf == 0
+                && sse.mxcsr & (1 << 6) == 0
+                && sse.mxcsr & ((1 << 7) | (1 << 8)) == ((1 << 7) | (1 << 8))
+                && state.rflags & (1 << 18) == 0
         } else if configured_cmpsd_controls.is_some()
             && matches!(instruction.operation, Operation::CmpsdRegister { .. })
         {
@@ -18108,6 +18333,10 @@ fn step_configured(
             state.sse.is_some()
         }
         Operation::CmpssRegister { .. } => false,
+        Operation::CmpssMemoryRax { .. } if configured_cmpss_memory_rax_controls.is_some() => {
+            state.sse.is_some()
+        }
+        Operation::CmpssMemoryRax { .. } => false,
         Operation::CmpsdRegister { .. } if configured_cmpsd_controls.is_some() => {
             state.sse.is_some()
         }
@@ -25290,26 +25519,7 @@ fn step_configured(
                     sse.mxcsr,
                 )
             };
-            let classify = |bits: u32| -> u8 {
-                let exponent = (bits >> 23) & 0xff;
-                let fraction = bits & 0x007f_ffff;
-                if exponent == 0xff && fraction != 0 {
-                    if fraction & (1 << 22) != 0 { 3 } else { 4 }
-                } else if exponent == 0 && fraction != 0 {
-                    2
-                } else {
-                    0
-                }
-            };
-            let lhs_class = classify(lhs);
-            let rhs_class = classify(rhs);
-            let has_nan = matches!(lhs_class, 3 | 4) || matches!(rhs_class, 3 | 4);
-            let signaling = matches!(predicate, 1 | 2 | 5 | 6);
-            let new_ie = lhs_class == 4
-                || rhs_class == 4
-                || (signaling && (lhs_class == 3 || rhs_class == 3));
-            // Rev. 093 §4.9.2 gives NaN handling precedence over denormal for CMPSS.
-            let new_de = !has_nan && (lhs_class == 2 || rhs_class == 2);
+            let (result, new_ie, new_de) = cmpss_binary32_predicate(lhs, rhs, predicate);
             state.sse.as_mut().expect("CMPSS state prevalidated").mxcsr =
                 old_mxcsr | u32::from(new_ie) | (u32::from(new_de) << 1);
             let unmasked =
@@ -25322,41 +25532,49 @@ fn step_configured(
                     linear_address: None,
                 }));
             }
-            let ordering = if lhs & 0x7fff_ffff == 0 && rhs & 0x7fff_ffff == 0 {
-                core::cmp::Ordering::Equal
-            } else if lhs >> 31 != rhs >> 31 {
-                if lhs >> 31 != 0 {
-                    core::cmp::Ordering::Less
-                } else {
-                    core::cmp::Ordering::Greater
-                }
-            } else if lhs >> 31 == 0 {
-                (lhs & 0x7fff_ffff).cmp(&(rhs & 0x7fff_ffff))
-            } else {
-                (rhs & 0x7fff_ffff).cmp(&(lhs & 0x7fff_ffff))
-            };
-            let result = match predicate {
-                0 => !has_nan && ordering == core::cmp::Ordering::Equal,
-                1 => !has_nan && ordering == core::cmp::Ordering::Less,
-                2 => {
-                    !has_nan
-                        && matches!(
-                            ordering,
-                            core::cmp::Ordering::Less | core::cmp::Ordering::Equal
-                        )
-                }
-                3 => has_nan,
-                4 => has_nan || ordering != core::cmp::Ordering::Equal,
-                5 => has_nan || ordering != core::cmp::Ordering::Less,
-                6 => has_nan || ordering == core::cmp::Ordering::Greater,
-                7 => !has_nan,
-                _ => unreachable!("CMPSS predicate was prevalidated"),
-            };
             let sse = state.sse.as_mut().expect("CMPSS state prevalidated");
             sse.xmm[usize::from(destination)][..4]
                 .copy_from_slice(&(if result { u32::MAX } else { 0 }).to_le_bytes());
         }
         Operation::CmpssRegister { .. } => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        Operation::CmpssMemoryRax { predicate }
+            if configured_cmpss_memory_rax_controls.is_some() =>
+        {
+            let address = state.gpr[Register::Rax as usize];
+            let Some(last) = address.checked_add(3) else {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            };
+            if !long_decode::canonical(address) || !long_decode::canonical(last) {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            let mut source = [0u8; 4];
+            memory.read(address, context, &mut source)?;
+            let (lhs, old_mxcsr) = {
+                let sse = state.sse.as_ref().expect("CMPSS memory state prevalidated");
+                (
+                    u32::from_le_bytes(sse.xmm[0][..4].try_into().expect("low dword")),
+                    sse.mxcsr,
+                )
+            };
+            let rhs = u32::from_le_bytes(source);
+            let (result, new_ie, new_de) = cmpss_binary32_predicate(lhs, rhs, predicate);
+            let sse = state.sse.as_mut().expect("CMPSS memory state prevalidated");
+            sse.mxcsr = old_mxcsr | u32::from(new_ie) | (u32::from(new_de) << 1);
+            sse.xmm[0][..4].copy_from_slice(&(if result { u32::MAX } else { 0 }).to_le_bytes());
+        }
+        Operation::CmpssMemoryRax { .. } => {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -31279,7 +31497,7 @@ mod tests {
         contexts: Vec<(AccessKind, AccessContext)>,
         read_errors: Vec<MemoryError>,
         pub(super) error: Option<MemoryError>,
-        error_kind: Option<AccessKind>,
+        pub(super) error_kind: Option<AccessKind>,
         fail_after_reads: Option<usize>,
         deny_writes: bool,
         atomic_exchanges: Vec<(u64, OperandSize, u64)>,
@@ -124954,6 +125172,457 @@ mod swapgs_profile_tests {
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(memory.fetches, vec![0xa300, 0xa301, 0xa302]);
         assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn cmpss_m32_memory_covers_predicates_relations_and_all_cpls() {
+        let controls = CmpssMemoryRaxControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+        };
+        let relations: [(u32, u32); 4] = [
+            (0x4000_0000, 0x3f80_0000), // greater
+            (0x3f80_0000, 0x4000_0000), // less
+            (0x3f80_0000, 0x3f80_0000), // equal
+            (0x7fc1_2345, 0x3f80_0000), // unordered
+        ];
+        let truth = [
+            [false, false, true, false],
+            [false, true, false, false],
+            [false, true, true, false],
+            [false, false, false, true],
+            [true, true, false, true],
+            [true, false, true, true],
+            [true, false, false, true],
+            [true, true, true, false],
+        ];
+        for predicate in 0u8..8 {
+            for (relation, (lhs, rhs)) in relations.iter().copied().enumerate() {
+                for privilege in [
+                    PrivilegeLevel::Ring0,
+                    PrivilegeLevel::Ring1,
+                    PrivilegeLevel::Ring2,
+                    PrivilegeLevel::Ring3,
+                ] {
+                    let code = [0xf3, 0x0f, 0xc2, 0x00, predicate];
+                    let mut state = LongModeState::default();
+                    state.rip = 0xc000;
+                    let address = 0x0000_0001_0020_0003;
+                    state.gpr[Register::Rax as usize] = address;
+                    state.rflags = 0x0ad7;
+                    state.x87 = Some(X87State::fixture_seed());
+                    let mut xmm = [[0x5a; 16]; 16];
+                    xmm[0][..4].copy_from_slice(&lhs.to_le_bytes());
+                    xmm[0][4..8].copy_from_slice(&0x7f81_2345u32.to_le_bytes());
+                    state.sse = Some(SseState { xmm, mxcsr: 0x0180 });
+                    let before = state.clone();
+                    let mut memory = Memory::at(&code, state.rip);
+                    memory.data_base = address;
+                    memory.bytes[..4].copy_from_slice(&rhs.to_le_bytes());
+                    let result = run_with_cmpss_memory_rax_controls(
+                        &mut state,
+                        &mut memory,
+                        RunConfig {
+                            instruction_budget: 1,
+                            stop_rip: Some(0xc005),
+                            context: AccessContext {
+                                privilege,
+                                ..AccessContext::default()
+                            },
+                        },
+                        controls,
+                        || false,
+                    );
+                    assert_eq!(result.exit, RunExit::StopAddress);
+                    assert_eq!(result.instructions_executed, 1);
+                    let (expected_mask, new_ie, new_de) =
+                        cmpss_binary32_predicate(lhs, rhs, predicate);
+                    assert_eq!(expected_mask, truth[predicate as usize][relation]);
+                    let mut expected = before;
+                    expected.rip += 5;
+                    expected.sse.as_mut().unwrap().mxcsr =
+                        0x0180 | u32::from(new_ie) | (u32::from(new_de) << 1);
+                    expected.sse.as_mut().unwrap().xmm[0][..4]
+                        .copy_from_slice(&(if expected_mask { u32::MAX } else { 0 }).to_le_bytes());
+                    assert_eq!(state, expected, "pp={predicate} relation={relation}");
+                    assert_eq!(memory.fetches, (0xc000..0xc005).collect::<Vec<_>>());
+                    assert_eq!(memory.accesses, [(AccessKind::Read, address, 4)]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cmpss_m32_memory_nan_denormal_priority_and_stickies_are_exact() {
+        let controls = CmpssMemoryRaxControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+        };
+        let rows: [(u32, u32, u8, u32); 8] = [
+            (0x7fc1_2345, 1, 0, 0), // QNaN + subnormal: DE suppressed.
+            (1, 0x7fc1_2345, 0, 0),
+            (0x7f81_2345, 1, 0xff, 1), // SNaN raises IE for every predicate.
+            (1, 0x7f81_2345, 0xff, 1),
+            (0x7fc1_2345, 0x7f81_2345, 0, 1),
+            (0x3f80_0000, 1, 0xff, 2), // No NaN: subnormal raises DE.
+            (1, 0x3f80_0000, 0, 2),
+            (0x7fc1_2345, 0x3f80_0000, 0xff, 0), // QNaN IE only for signaling predicates.
+        ];
+        for (lhs, rhs, predicates, raised) in rows {
+            let predicate_iter: Vec<u8> = if predicates == 0xff {
+                (0..8).collect()
+            } else {
+                vec![0, 3, 4, 7]
+            };
+            for predicate in predicate_iter {
+                let expected_raised = if lhs == 0x7fc1_2345 && rhs == 0x3f80_0000 {
+                    u32::from(matches!(predicate, 1 | 2 | 5 | 6))
+                } else {
+                    raised
+                };
+                let code = [0xf3, 0x0f, 0xc2, 0x00, predicate];
+                for old_status in 0u32..4 {
+                    let mut state = LongModeState::default();
+                    state.rip = 0xc100;
+                    state.gpr[Register::Rax as usize] = 0x2000;
+                    state.rflags = 0x0ad7;
+                    let mut xmm = [[0xa5; 16]; 16];
+                    xmm[0][..4].copy_from_slice(&lhs.to_le_bytes());
+                    xmm[0][4..8].copy_from_slice(&0x7f81_2345u32.to_le_bytes());
+                    state.sse = Some(SseState {
+                        xmm,
+                        mxcsr: 0x0180 | old_status,
+                    });
+                    state.x87 = Some(X87State::fixture_seed());
+                    let before = state.clone();
+                    let mut memory = Memory::at(&code, state.rip);
+                    memory.data_base = 0x2000;
+                    memory.bytes[..4].copy_from_slice(&rhs.to_le_bytes());
+                    let result = run_with_cmpss_memory_rax_controls(
+                        &mut state,
+                        &mut memory,
+                        RunConfig {
+                            instruction_budget: 1,
+                            stop_rip: Some(0xc105),
+                            context: AccessContext::default(),
+                        },
+                        controls,
+                        || false,
+                    );
+                    assert_eq!(result.exit, RunExit::StopAddress);
+                    let (truth, new_ie, new_de) = cmpss_binary32_predicate(lhs, rhs, predicate);
+                    assert_eq!(
+                        u32::from(new_ie) | (u32::from(new_de) << 1),
+                        expected_raised
+                    );
+                    let mut expected = before;
+                    expected.rip += 5;
+                    expected.sse.as_mut().unwrap().mxcsr =
+                        0x0180 | old_status | u32::from(new_ie) | (u32::from(new_de) << 1);
+                    expected.sse.as_mut().unwrap().xmm[0][..4]
+                        .copy_from_slice(&(if truth { u32::MAX } else { 0 }).to_le_bytes());
+                    assert_eq!(state, expected, "pp={predicate} old={old_status:#x}");
+                    assert_eq!(memory.accesses, [(AccessKind::Read, 0x2000, 4)]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cmpss_m32_memory_fetch_gates_controls_span_and_read_errors_are_atomic() {
+        let code = [0xf3, 0x0f, 0xc2, 0x00, 3];
+        let controls = CmpssMemoryRaxControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+        };
+        let initial = || {
+            let mut state = LongModeState::default();
+            state.rip = 0xc200;
+            state.gpr[Register::Rax as usize] = 0x2000;
+            state.rflags = 0x0ad7;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x0180,
+            });
+            state.x87 = Some(X87State::fixture_seed());
+            state
+        };
+        let before = initial();
+
+        let mut truncated = Memory::at(&code[..4], before.rip);
+        let mut state = before.clone();
+        assert!(matches!(
+            run_with_cmpss_memory_rax_controls(
+                &mut state,
+                &mut truncated,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0xc205),
+                    context: AccessContext::default()
+                },
+                CmpssMemoryRaxControls {
+                    sse_available: false,
+                    cr0_ts: true,
+                    ..controls
+                },
+                || false,
+            )
+            .exit,
+            RunExit::MemoryError(MemoryError::Unmapped {
+                access: AccessKind::Fetch,
+                ..
+            })
+        ));
+        assert_eq!(state, before);
+        assert!(truncated.accesses.is_empty());
+        assert_eq!(truncated.fetches, (0xc200..0xc205).collect::<Vec<_>>());
+
+        // An out-of-profile immediate is a local refusal after the full
+        // five-byte fetch, before SSE/TS gate faults or a source read.
+        let invalid_predicate = [0xf3, 0x0f, 0xc2, 0x00, 8];
+        for refusal_controls in [
+            CmpssMemoryRaxControls {
+                sse_available: false,
+                cr0_ts: true,
+                ..controls
+            },
+            CmpssMemoryRaxControls {
+                cr0_ts: true,
+                ..controls
+            },
+        ] {
+            let mut state = before.clone();
+            let mut memory = Memory::at(&invalid_predicate, before.rip);
+            let result = run_with_cmpss_memory_rax_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0xc205),
+                    context: AccessContext::default(),
+                },
+                refusal_controls,
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xc2 });
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert_eq!(memory.fetches, (0xc200..0xc205).collect::<Vec<_>>());
+            assert!(memory.accesses.is_empty());
+        }
+
+        for (gate_controls, vector) in [
+            (
+                CmpssMemoryRaxControls {
+                    sse_available: false,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                CmpssMemoryRaxControls {
+                    cr0_em: true,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                CmpssMemoryRaxControls {
+                    cr4_osfxsr: false,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                CmpssMemoryRaxControls {
+                    cr0_ts: true,
+                    ..controls
+                },
+                7,
+            ),
+        ] {
+            let mut state = before.clone();
+            let mut memory = Memory::at(&code, before.rip);
+            let result = run_with_cmpss_memory_rax_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0xc205),
+                    context: AccessContext::default(),
+                },
+                gate_controls,
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector,
+                    error_code: None,
+                    linear_address: None
+                })
+            );
+            assert_eq!(state, before);
+            assert_eq!(memory.fetches, (0xc200..0xc205).collect::<Vec<_>>());
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut no_sse_state = before.clone();
+        no_sse_state.sse = None;
+        let no_sse_before = no_sse_state.clone();
+        let mut no_sse_memory = Memory::at(&code, before.rip);
+        assert!(matches!(
+            run_with_cmpss_memory_rax_controls(
+                &mut no_sse_state,
+                &mut no_sse_memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0xc205),
+                    context: AccessContext::default()
+                },
+                controls,
+                || false
+            )
+            .exit,
+            RunExit::Unsupported { .. }
+        ));
+        assert_eq!(no_sse_state, no_sse_before);
+        assert!(no_sse_memory.accesses.is_empty());
+
+        for mxcsr in [0x0100, 0x0080, 0x01c0, 0x0040_0180] {
+            let mut state = before.clone();
+            state.sse.as_mut().unwrap().mxcsr = mxcsr;
+            let prior = state.clone();
+            let mut memory = Memory::at(&code, before.rip);
+            assert!(matches!(
+                run_with_cmpss_memory_rax_controls(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(0xc205),
+                        context: AccessContext::default()
+                    },
+                    controls,
+                    || false
+                )
+                .exit,
+                RunExit::Unsupported { .. }
+            ));
+            assert_eq!(state, prior);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut high_predicate = code;
+        high_predicate[4] = 0xff;
+        let mut high_predicate_memory = Memory::at(&high_predicate, before.rip);
+        let mut state = before.clone();
+        assert!(matches!(
+            run_with_cmpss_memory_rax_controls(
+                &mut state,
+                &mut high_predicate_memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0xc205),
+                    context: AccessContext::default()
+                },
+                controls,
+                || false
+            )
+            .exit,
+            RunExit::Unsupported { .. }
+        ));
+        assert_eq!(state, before);
+        assert!(high_predicate_memory.accesses.is_empty());
+        assert_eq!(high_predicate_memory.fetches.len(), 5);
+
+        for address in [0x0000_8000_0000_0000, 0x0000_7fff_ffff_fffd, u64::MAX - 2] {
+            let mut state = before.clone();
+            state.gpr[Register::Rax as usize] = address;
+            let prior = state.clone();
+            let mut memory = Memory::at(&code, before.rip);
+            let result = run_with_cmpss_memory_rax_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0xc205),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None
+                })
+            );
+            assert_eq!(state, prior);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut ac_state = before.clone();
+        ac_state.rflags |= 1 << 18;
+        ac_state.gpr[Register::Rax as usize] = 0x0000_8000_0000_0000;
+        let ac_before = ac_state.clone();
+        let mut ac_memory = Memory::at(&code, before.rip);
+        assert!(matches!(
+            run_with_cmpss_memory_rax_controls(
+                &mut ac_state,
+                &mut ac_memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0xc205),
+                    context: AccessContext::default()
+                },
+                controls,
+                || false
+            )
+            .exit,
+            RunExit::Unsupported { .. }
+        ));
+        assert_eq!(ac_state, ac_before);
+        assert!(ac_memory.accesses.is_empty());
+
+        let mut read_state = before.clone();
+        read_state.sse.as_mut().unwrap().xmm[0][..4].copy_from_slice(&0x7f81_2345u32.to_le_bytes());
+        let read_before = read_state.clone();
+        let mut read_memory = Memory::at(&code, before.rip);
+        read_memory.error = Some(MemoryError::Backend(
+            "injected CMPSS memory read failure".into(),
+        ));
+        read_memory.error_kind = Some(AccessKind::Read);
+        assert_eq!(
+            run_with_cmpss_memory_rax_controls(
+                &mut read_state,
+                &mut read_memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0xc205),
+                    context: AccessContext::default()
+                },
+                controls,
+                || false
+            )
+            .exit,
+            RunExit::MemoryError(MemoryError::Backend(
+                "injected CMPSS memory read failure".into()
+            ))
+        );
+        assert_eq!(read_state, read_before);
+        assert_eq!(read_memory.accesses, [(AccessKind::Read, 0x2000, 4)]);
     }
 
     #[test]

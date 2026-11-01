@@ -7652,3 +7652,28 @@ and x86-runner 8+4; workspace all-target check, formatting, layout, Graphify
 and final docs/evidence reviews passed; native execution and physical x86
 acceptance are not claimed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37cr--exact-legacy-long64-ucomiss-xmm0dword-ptr-rax),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cr--bounded-long64-ucomiss-xmm0dword-ptr-rax-m32-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cr--ucomiss-xmm0m32).
+
+### S2-37cs — CMPSS XMM0,m32,imm8
+
+`s2_37cs_cmpss_m32_qnan_subnormal_priority.case.json` is the literal exact
+legacy `F3 0F C2 00 03` profile. XMM0.low32 is a QNaN and `[RAX]` contains the
+minimum positive binary32 subnormal. Predicate 3 returns all ones for
+unordered, preserves RFLAGS and the pending-x87 canary, and raises neither IE
+nor DE because a NaN suppresses DE. Only XMM0.low32 is replaced; its high96
+canary remains unchanged.
+
+The runner matrix covers all eight predicates against greater, less, equal,
+and unordered relations, with four RC values, both FTZ settings, and four
+incoming IE/DE histories (1,024 independent raw-bit oracle comparisons). Its
+48 additional priority cases exercise QNaN/SNaN and subnormal combinations.
+Direct relation checks cover CPL0–3; direct fetch/gate/refusal/span/read-error
+probes and runner cases use Ring0. The full-fetch pp8+gate local-refusal
+priority cases are checked by both direct ISA and runner. Native-local-only
+classification passed 1/1. Full suites passed: od-isa 1,678, od-testkit 453,
+od-runner 112+475, od-x86-runner 8+4; workspace all-target check passed.
+Formatting, layout, Graphify (10,615/22,791/311), diff, and 13 anchors passed.
+Independent code/schema and docs/evidence review passed. No physical x86
+acceptance is claimed. See the
+[plan](../../../../docs/plans/STAGE_2.md#s2-37cs--exact-legacy-long64-cmpss-xmm0m32-raximm8),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cs--bounded-long64-cmpss-xmm0m32-raximm8-memory-profile), and
+[report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cs--cmpss-xmm0m32imm8).
