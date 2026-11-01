@@ -439,6 +439,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 cmpps_controls: input.fixture.cmpps_controls,
                 comisd_ucomisd_controls: input.fixture.comisd_ucomisd_controls,
                 cvtsi2sd_r32_controls: input.fixture.cvtsi2sd_r32_controls,
+                cvtsi2sd_r32_memory_controls: input.fixture.cvtsi2sd_r32_memory_controls,
                 cvtsi2sd_r64_controls: input.fixture.cvtsi2sd_r64_controls,
                 cvtsi2ss_controls: input.fixture.cvtsi2ss_controls,
                 cvtss2si_controls: input.fixture.cvtss2si_controls,

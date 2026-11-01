@@ -724,3 +724,10 @@ The exact `66 0F 5A 00` interpreter profile reads aligned m128 once and narrows
 two binary64 lanes with WPR tininess and FTZ, aggregating masked SIMD status.
 It zeroes XMM0.high64 on success and leaves x87 unchanged; non-interpreter
 backends remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cb--bounded-long64-cvtpd2ps-xmm0rax-aligned-m128-memory-profile).
+
+### S2-37cc — CVTSI2SD m32 memory form
+
+The exact `F2 0F 2A 00` local profile reads four bytes at RAX and exactly widens
+signed i32 into XMM0.low64. It preserves MXCSR and upper XMM0; the bounded
+interpreter profile allows RC/FTZ/sticky/mask variation, requires DAZ=0 and AC=0,
+and keeps native/JIT/C ABI admission closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cc--bounded-long64-cvtsi2sd-xmm0dword-ptr-rax-m32-memory-profile).

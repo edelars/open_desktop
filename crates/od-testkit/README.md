@@ -342,3 +342,10 @@ The strict schema-v2 `s2-long-cvtpd2ps-memory-rax-v1` profile uses its own
 control field and an independent raw-u64 integer oracle for two-lane binary64
 narrowing, WPR/FTZ flags and full destination state. The oracle does not use host
 FP or production conversion helpers. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cb--bounded-long64-cvtpd2ps-xmm0rax-aligned-m128-memory-profile).
+
+### S2-37cc — CVTSI2SD m32 memory profile
+
+The strict `s2-long-cvtsi2sd-memory32-rax-v1` profile has its own gate field and
+uses an independent raw-i32 integer oracle. The oracle constructs the exact
+binary64 encoding without host floating point or production conversion helpers;
+it checks XMM0 low64 output, high64 preservation, and exact MXCSR preservation.

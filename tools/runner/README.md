@@ -276,3 +276,9 @@ The exact `66 0F 5A 00` fixture profile reads one aligned 16-byte source,
 narrows both lanes with RC/WPR/FTZ semantics, and remains interpreter-only. The
 runner checks lane exception aggregation and strict schema/backend closure;
 direct ISA tests cover callback count and alignment. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-37cb--bounded-long64-cvtpd2ps-xmm0rax-aligned-m128-memory-profile).
+
+### S2-37cc — CVTSI2SD m32
+
+The runner dispatches exact `F2 0F 2A 00` fixtures to the local interpreter
+profile and preserves backend closure. The matrix covers integer boundaries,
+RC variation, and MXCSR=0/PM=0.

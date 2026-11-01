@@ -73,3 +73,6 @@ The S2-37bz legacy `CVTSS2SD XMM0,[RAX]` schema-v2 profile is classified
 local-only and denied before native execution. The portable classifier and
 runner `Unsupported` behavior are closure evidence; no physical x86 execution
 is claimed.
+
+S2-37cc CVTSI2SD m32 is a local-only schema-v2 profile. Native admission stays
+closed; classifier evidence does not claim physical x86 execution.

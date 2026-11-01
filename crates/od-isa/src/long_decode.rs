@@ -1161,6 +1161,8 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only exact legacy `F2 0F 2A 00` signed m32-to-binary64 form.
+    Cvtsi2sdR32MemoryRax,
     /// Local-only legacy `F2 REX.W 0F 2A /r` signed r64-to-binary64 form.
     Cvtsi2sdR64Register {
         destination: u8,
@@ -4960,12 +4962,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Escape0f, 0x2a) if cvtsi2sd_r32_register => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if modrm == 0 && prefixes.rex.is_none() {
+                    Operation::Cvtsi2sdR32MemoryRax
+                } else if modrm >> 6 != 3 {
                     return Err(self.unsupported(opcode));
-                }
-                Operation::Cvtsi2sdR32Register {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                } else {
+                    Operation::Cvtsi2sdR32Register {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x2a) if cvtsi2sd_r64_register => {
@@ -20894,12 +20899,19 @@ mod tests {
                 }
             }
         }
+        assert_eq!(
+            Memory::new(&[0xf2, 0x0f, 0x2a, 0x00])
+                .decode()
+                .unwrap()
+                .operation,
+            Operation::Cvtsi2sdR32MemoryRax
+        );
         for bytes in [
             &[0xf2, 0x40, 0x0f, 0x2a, 0xc0][..],
             &[0xf2, 0x42, 0x0f, 0x2a, 0xc0],
             &[0xf2, 0xf2, 0x0f, 0x2a, 0xc0],
             &[0x48, 0xf2, 0x0f, 0x2a, 0xc0],
-            &[0xf2, 0x0f, 0x2a, 0x00],
+            &[0xf2, 0x48, 0x0f, 0x2a, 0x00],
         ] {
             assert!(Memory::new(bytes).decode().is_err(), "{bytes:02x?}");
         }
@@ -21569,7 +21581,6 @@ mod tests {
             &[0x66, 0x44, 0x0f, 0x2a, 0x00][..],       // extended XMM destination
             &[0x66, 0x48, 0x0f, 0x2a, 0x00][..],       // REX.W
             &[0x66, 0x42, 0x0f, 0x2a, 0x00][..],       // REX.X
-            &[0xf2, 0x0f, 0x2a, 0x00][..],             // other mandatory prefix
             &[0x66, 0xf2, 0x0f, 0x2a, 0x00][..],       // additional prefix
             &[0x66, 0x66, 0x0f, 0x2a, 0x00][..],       // repeated prefix
             &[0x40, 0x66, 0x0f, 0x2a, 0x00][..],       // REX before 66
@@ -21580,6 +21591,11 @@ mod tests {
             let mut memory = Memory::new(bytes);
             assert!(memory.decode().is_err(), "{bytes:02x?}");
         }
+        let mut memory = Memory::new(&[0xf2, 0x0f, 0x2a, 0x00]);
+        assert_eq!(
+            memory.decode().unwrap().operation,
+            Operation::Cvtsi2sdR32MemoryRax
+        );
     }
 
     #[test]

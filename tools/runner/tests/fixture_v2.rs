@@ -18582,6 +18582,119 @@ fn cvtsi2sd_r32_exact_literals_use_eax_bits_preserve_state_and_deny_other_backen
 }
 
 #[test]
+fn cvtsi2sd_m32_exactly_widens_i32_and_preserves_mxcsr() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let path = root.join("s2_37cc_cvtsi2sd_m32_i32_min.case.json");
+    let mut fixture = Fixture::from_json(&fs::read(&path).unwrap())
+        .unwrap()
+        .fixture;
+    assert_eq!(
+        fixture.profile,
+        od_testkit::v2::Profile::LongCvtsi2sdMemory32RaxV1
+    );
+    let mut x87 = od_isa::state::X87State::fixture_seed();
+    x87.status_word = 0x8081; // pending x87 canary; this SSE instruction leaves it untouched.
+    x87.tag_word = 0x5555;
+    x87.registers[3] = [0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe, 0x21, 0x43];
+    fixture.initial_state.x87 = Some(od_testkit::v2::X87Snapshot::from(&x87));
+    let controls = fixture.cvtsi2sd_r32_memory_controls.unwrap();
+    let values = [
+        0,
+        1,
+        -1,
+        i32::MIN,
+        i32::MAX,
+        (1 << 24) - 1,
+        -((1 << 24) - 1),
+        1 << 24,
+        -(1 << 24),
+        (1 << 24) + 1,
+        -((1 << 24) + 1),
+        (1 << 24) + 3,
+        -((1 << 24) + 3),
+    ];
+    for value in values {
+        for rc in 0..4u64 {
+            for mxcsr in [0, (0x1f80 & !(3 << 13)) | (rc << 13), 0x0000_003f] {
+                let mut case = fixture.clone();
+                case.memory[1].initial_bytes_hex = value
+                    .to_le_bytes()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
+                case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+                case.cvtsi2sd_r32_memory_controls = Some(controls);
+                let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                od_testkit::v2::compare(&input, &result, &result).unwrap();
+                assert_eq!(result.outcome, Outcome::StopAddress {});
+                let Observation::Available { value: snapshot } = result.snapshot else {
+                    panic!("snapshot unavailable")
+                };
+                assert_eq!(snapshot.state.sse.as_ref().unwrap().mxcsr, HexU64(mxcsr));
+                assert_eq!(
+                    snapshot.state.sse.as_ref().unwrap().xmm[0][16..],
+                    fixture.initial_state.sse.as_ref().unwrap().xmm[0][16..]
+                );
+            }
+        }
+    }
+    let mut ac = fixture.clone();
+    ac.initial_state.rflags = HexU64(ac.initial_state.rflags.get() | (1 << 18));
+    ac.expected_exit = ExpectedExit::Unsupported;
+    let (_, result) = run(&ac.to_json().unwrap(), "interpreter", 4);
+    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(snapshot(&result).state, ac.initial_state);
+    let mut gate_priority = fixture.clone();
+    gate_priority
+        .cvtsi2sd_r32_memory_controls
+        .as_mut()
+        .unwrap()
+        .sse2_available = false;
+    gate_priority
+        .cvtsi2sd_r32_memory_controls
+        .as_mut()
+        .unwrap()
+        .cr0_ts = true;
+    gate_priority.expected_exit = ExpectedExit::Exception;
+    let (input, result) = run(&gate_priority.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    assert!(matches!(result.outcome, Outcome::Exception {}));
+    let mut foreign = fixture.clone();
+    foreign.cvtsi2sd_r32_controls = Some(od_testkit::v2::Cvtsi2sdR32ControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: false,
+    });
+    assert!(foreign.validate().is_err());
+    let foreign_json = serde_json::to_vec(&foreign).unwrap();
+    assert!(Fixture::from_json(&foreign_json).is_err());
+    let source = fixture.to_json().unwrap();
+    for backend in ["jit", "native"] {
+        let (_, result) = run(&source, backend, 4);
+        assert!(
+            matches!(result.outcome, Outcome::Unsupported { .. }),
+            "{backend}"
+        );
+    }
+    let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+    let mut tampered = result.clone();
+    let Observation::Available { value } = &mut tampered.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.state.sse.as_mut().unwrap().xmm[0].replace_range(..2, "ff");
+    assert!(od_testkit::v2::compare(&input, &result, &tampered).is_err());
+    let mut missing_controls = fixture.clone();
+    missing_controls.cvtsi2sd_r32_memory_controls = None;
+    assert!(missing_controls.validate().is_err());
+    let mut wrong_bytes = fixture.clone();
+    wrong_bytes.memory[0].initial_bytes_hex = "f20f2a01".into();
+    assert!(wrong_bytes.validate().is_err());
+}
+
+#[test]
 fn cvtsi2sd_canonical_register_space_executes_all_512_forms() {
     let root =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");

@@ -19917,3 +19917,43 @@ Normative sources: Intel SDM Rev. 093 Vol. 2A CVTPD2PS pp. 3-219–3-222
 (legacy operation p. 3-221); Vol. 1 §§4.9.1.4–4.9.1.6, Table 4-12,
 §10.2.3.3, §§11.5.2–11.5.3, §11.5.3.1, Table D-12, Table 14-21; Vol. 3A
 Table 16-1; Intel Floating-Point Reference Sheet v2.13 p. 2.
+
+
+## S2-37cc — CVTSI2SD XMM0,dword ptr [RAX] m32 memory profile
+
+Implemented exact legacy `F2 0F 2A 00` as a separate schema-v2, interpreter-only
+profile. The integer source is read once as four little-endian bytes after full
+instruction fetch, local SSE2/EM/OSFXSR and TS gates, AC=0 policy, and checked
+canonical48 range validation. The execution path converts signed i32 to exact
+binary64 using integer construction; it writes only XMM0.low64 and preserves
+MXCSR, upper XMM0, x87, and unrelated CPU state. No SIMD flags are generated
+because every signed i32 is exactly representable in binary64. The SDM's generic
+Precision exception for CVTSI2SD concerns the REX.W i64 form; no claim is made
+that it says this m32 form has no exceptions.
+
+The literal fixture uses INT32_MIN at an unaligned source address. The independent
+oracle derives the binary64 result from raw i32 bits and rejects mismatched state.
+Runner coverage includes signed extremes, values around 2^24, four RC modes,
+MXCSR=0 and PM=0/masks-clear cases; strict schema and foreign controls are
+checked. Native/JIT/C ABI remain closed. No physical x86 acceptance is claimed.
+
+Verification passed:
+
+- Focused runner `cargo test -p od-runner --test fixture_v2 cvtsi2sd_m32_exactly_widens_i32_and_preserves_mxcsr --offline -- --nocapture` — 1 passed. It includes the raw-i32 conversion matrix, pending-x87 canary preservation, strict schema/foreign-field checks, gate-priority and AC-refusal cases, tamper rejection, and JIT/native local-only denial. Direct ISA coverage separately checks missing-SSE and read-failure atomicity.
+- Focused decoder neighbor `cargo test -p od-isa cvtpi2pd_accepts_only_the_exact_memory_source_rax_encoding --offline` — 1 passed; `F2 0F 2A 00` is accepted as `Cvtsi2sdR32MemoryRax`, not the `CVTPI2PD` profile.
+- Full `cargo test -p od-isa --offline -- --test-threads=1` — 1,633 passed, doc-tests 0.
+- Full `cargo test -p od-testkit --offline -- --test-threads=1` — 446 passed, doc-tests 0.
+- Full `cargo test -p od-runner --offline -- --test-threads=1` — 112 unit and 459 fixture tests passed.
+- Full `cargo test -p od-x86-runner --offline -- --test-threads=1` — 8 library and 4 binary tests passed, doc-tests 0. This is local classifier/test evidence; no physical native execution is claimed.
+- `cargo check --workspace --all-targets --offline` passed.
+- `cargo fmt --all -- --check`, `git diff --check`, and `python3 tools/check_layout.py` passed; layout reports 48 required directories, 6 crate scaffolds, and 14 instruction scopes.
+- `graphify update .` completed with 10,345 nodes, 22,080 edges, and 305 communities; it reported no code-graph topology change.
+
+Independent code review found and resolved the x87 projection/canary coverage gap
+and the adjacent decoder expectation; no remaining code findings were reported.
+Physical x86 acceptance was not run.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SD pp. 3-236–3-237 (legacy memory
+form p. 3-237); Vol. 1 §11.5.2.2 and Table 14-21; Vol. 3A §16.1 and Table
+16-1. VEX-only Type 3/Table 2-20 and Type 5/Table 2-22 are not used as legacy
+evidence.

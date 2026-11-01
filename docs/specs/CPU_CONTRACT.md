@@ -14677,3 +14677,32 @@ Table 16-1; Intel Floating-Point Reference Sheet v2.13 p. 2. Type 2/Table
 [plan](../plans/STAGE_2.md#s2-37cb--bounded-long64-cvtpd2ps-xmm0rax-aligned-m128-memory-profile),
 [report](../reports/STAGE_2_REPORT.md#s2-37cb--cvtpd2ps-xmm0rax-aligned-m128-memory-profile), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cb--cvtpd2ps-xmm0rax-aligned-m128-memory-profile).
+
+
+## S2-37cc — bounded Long64 CVTSI2SD XMM0,dword ptr [RAX] m32 memory profile
+
+Exact bytes: `F2 0F 2A 00` (no REX.W). The local schema-v2 profile fetches all
+four bytes, then applies SSE2/CR0.EM/CR4.OSFXSR `#UD` and CR0.TS `#NM` gates in
+that local ordering, for CPL0–3. This ordering is bounded policy, not a universal
+SDM exception-priority claim.
+
+On admitted execution, AC must be clear in this profile; AC=1 is a local
+`Unsupported` refusal. The checked canonical48 span is `[RAX,RAX+3]`, and one
+4-byte little-endian memory read occurs before any CPU commit. Source read errors
+preserve state. Unaligned m32 addresses are allowed with AC=0.
+
+The signed i32 input is exactly representable as binary64. Therefore this
+profile creates no new SIMD flags by exactness; this is a range/precision
+derivation, not a claim that the generic CVTSI2SD Precision-exception entry
+applies to the non-REX.W m32 source. XMM0.low64 receives the exact binary64 bits;
+XMM0.high64, all other XMM state, the complete MXCSR value, and all x87 state
+remain unchanged. All supported MXCSR rounding modes, FTZ settings, sticky bits,
+and exception masks including PM=0/IM=0 are admitted; local supported mask is
+`0xffbf` and DAZ must be clear.
+
+The profile is interpreter-only. Native, JIT, C ABI, and generic admission stay
+closed; no physical x86 acceptance is claimed. See the [plan](../plans/STAGE_2.md#s2-37cc--exact-legacy-long64-cvtsi2sd-xmm0dword-ptr-rax), [report](../reports/STAGE_2_REPORT.md#s2-37cc--cvtsi2sd-xmm0dword-ptr-rax-m32-memory-profile), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cc--cvtsi2sd-xmm0dword-ptr-rax-m32-memory-profile).
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SD pp. 3-236–3-237; Vol. 1
+§11.5.2.2 and Table 14-21; Vol. 3A §16.1 and Table 16-1. The VEX-only Type
+3/Table 2-20 and Type 5/Table 2-22 entries are not used as legacy evidence.

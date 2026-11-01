@@ -7340,3 +7340,22 @@ Sheet v2.13 p. 2. Type 2/Table 2-19 is VEX-only and is not used for legacy
 alignment. See [plan](../../../../docs/plans/STAGE_2.md#s2-37cb--bounded-long64-cvtpd2ps-xmm0rax-aligned-m128-memory-profile),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cb--bounded-long64-cvtpd2ps-xmm0rax-aligned-m128-memory-profile), and
 [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cb--cvtpd2ps-xmm0rax-aligned-m128-memory-profile).
+
+
+### S2-37cc — CVTSI2SD XMM0,dword ptr [RAX] m32 memory profile
+
+`s2_37cc_cvtsi2sd_m32_i32_min.case.json` is the literal exact legacy
+`F2 0F 2A 00` case. Its unaligned m32 source is `INT32_MIN`; the expected
+binary64 result is exact. The profile preserves all MXCSR bits and XMM0.high64,
+with no x87/MMX transition. Runner coverage spans signed extrema and values near
+2^24 across RC settings, including MXCSR=0 and PM=0. The runner test also checks
+pending-x87 canary preservation, gate priority and AC refusal, schema
+foreign-field rejection, output tampering, and JIT/native denial. Direct ISA
+coverage checks missing-SSE and read-failure atomicity. The focused runner passed
+1/1; full local suites passed (`od-isa` 1633, `od-testkit` 446, `od-runner`
+112 unit + 459 fixture, and `od-x86-runner` 8 library + 4 binary tests).
+Workspace all-target check passed. No physical x86 acceptance is claimed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTSI2SD pp. 3-236–3-237; Vol. 1
+§11.5.2.2 and Table 14-21; Vol. 3A §16.1/Table 16-1. VEX-only Type 3/Table
+2-20 and Type 5/Table 2-22 are not used for legacy behavior. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37cc--exact-legacy-long64-cvtsi2sd-xmm0dword-ptr-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37cc--bounded-long64-cvtsi2sd-xmm0dword-ptr-rax-m32-memory-profile), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37cc--cvtsi2sd-xmm0dword-ptr-rax-m32-memory-profile).
