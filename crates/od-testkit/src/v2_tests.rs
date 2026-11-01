@@ -38,6 +38,78 @@ fn cvtps2pd_m64_schema_is_strict_and_keeps_controls_separate() {
 }
 
 #[test]
+fn maxps_m128_schema_is_exact_sse_only_and_rejects_tampering() {
+    let mut value: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_37h_maxps_masked_register.case.json"
+    ))
+    .unwrap();
+    value["case_id"] = serde_json::json!("s2_37da_maxps_memory_rax_schema");
+    value["profile"] = serde_json::json!("s2-long-maxps-memory-rax-v1");
+    value["initial_state"]["gpr"][0] = serde_json::json!("0x0000000000200000");
+    value["stop_rip"] = serde_json::json!("0x0000000000100003");
+    value["expected_exit"] = serde_json::json!("stop_address");
+    value["maxps_memory_rax_controls"] = serde_json::json!({
+        "sse_available": true,
+        "cr0_em": false,
+        "cr0_ts": false,
+        "cr4_osfxsr": true
+    });
+    let code = serde_json::json!({
+        "region_id": "code",
+        "guest_address": "0x0000000000100000",
+        "length": 3,
+        "permissions": {"read": true, "write": false, "execute": true},
+        "initial_bytes_hex": "0f5f00",
+        "comparison_mask_hex": "ffffff"
+    });
+    let data = serde_json::json!({
+        "region_id": "data",
+        "guest_address": "0x0000000000200000",
+        "length": 16,
+        "permissions": {"read": true, "write": false, "execute": false},
+        "initial_bytes_hex": "0000803f000000400000404000008040",
+        "comparison_mask_hex": "ffffffffffffffffffffffffffffffff"
+    });
+    value["memory"] = serde_json::json!([code, data]);
+
+    let fixture = Fixture::from_json(&serde_json::to_vec(&value).unwrap())
+        .unwrap()
+        .fixture;
+    assert_eq!(fixture.profile, Profile::LongMaxpsMemoryRaxV1);
+    assert_eq!(
+        fixture.maxps_memory_rax_controls.unwrap().sse_available,
+        true
+    );
+
+    let mut missing_controls = fixture.clone();
+    missing_controls.maxps_memory_rax_controls = None;
+    assert!(missing_controls.validate().is_err());
+
+    for bytes in ["660f5f00", "410f5f00", "670f5f00", "0f5f01", "0f5f00c0"] {
+        let mut invalid = fixture.clone();
+        invalid.memory[0].initial_bytes_hex = bytes.into();
+        invalid.memory[0].length = (bytes.len() / 2) as u32;
+        assert!(invalid.validate().is_err(), "accepted {bytes}");
+    }
+
+    let mut wrong_feature = fixture.clone();
+    wrong_feature
+        .maxps_memory_rax_controls
+        .as_mut()
+        .unwrap()
+        .sse_available = false;
+    assert!(wrong_feature.validate().is_err());
+
+    let mut unsupported_mxcsr = fixture.clone();
+    unsupported_mxcsr.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f00);
+    assert!(unsupported_mxcsr.validate().is_err());
+
+    let mut foreign_control = value.clone();
+    foreign_control["maxps_memory_rax_controls"]["sse2_available"] = serde_json::json!(true);
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign_control).unwrap()).is_err());
+}
+
+#[test]
 fn cli_rflags_comparison_includes_if_and_iopl_without_expanding_definedness() {
     let mask = INTEGER_FLAGS | (1 << 9) | (3 << 12);
     let initial = INTEGER_FLAGS | (2 << 12);
@@ -450,6 +522,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 maxss_memory_rax_controls: input.fixture.maxss_memory_rax_controls,
                 maxsd_memory_rax_controls: input.fixture.maxsd_memory_rax_controls,
                 maxpd_memory_rax_controls: input.fixture.maxpd_memory_rax_controls,
+                maxps_memory_rax_controls: input.fixture.maxps_memory_rax_controls,
                 cvtsi2sd_r32_controls: input.fixture.cvtsi2sd_r32_controls,
                 cvtsi2sd_r32_memory_controls: input.fixture.cvtsi2sd_r32_memory_controls,
                 cvtsi2ss_r32_memory_controls: input.fixture.cvtsi2ss_r32_memory_controls,
@@ -8282,7 +8355,7 @@ fn psubusw_profile_admits_only_its_exact_register_encoding() {
         "66660fd9c1",   // duplicate mandatory prefix
     ] {
         let mut root: serde_json::Value = serde_json::from_slice(raw).unwrap();
-        let byte_len = (bytes.len() / 2) as u64;
+        let byte_len = (bytes.len() / 2) as u32;
         root["memory"][0]["length"] = byte_len.into();
         root["memory"][0]["initial_bytes_hex"] = bytes.into();
         root["memory"][0]["comparison_mask_hex"] = "ff".repeat(byte_len as usize).into();

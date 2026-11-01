@@ -4411,6 +4411,47 @@ mod tests {
     }
 
     #[test]
+    fn maxps_memory_profile_is_explicitly_native_unsupported() {
+        let mut value: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_37h_maxps_masked_register.case.json"
+        ))
+        .unwrap();
+        value["case_id"] = serde_json::json!("s2_37da_maxps_memory_native_denial");
+        value["profile"] = serde_json::json!("s2-long-maxps-memory-rax-v1");
+        value["initial_state"]["gpr"][0] = serde_json::json!("0x0000000000200000");
+        value["stop_rip"] = serde_json::json!("0x0000000000100003");
+        value["expected_exit"] = serde_json::json!("stop_address");
+        value["maxps_memory_rax_controls"] = serde_json::json!({
+            "sse_available": true,
+            "cr0_em": false,
+            "cr0_ts": false,
+            "cr4_osfxsr": true
+        });
+        value["memory"] = serde_json::json!([
+            {
+                "region_id": "code",
+                "guest_address": "0x0000000000100000",
+                "length": 3,
+                "permissions": {"read": true, "write": false, "execute": true},
+                "initial_bytes_hex": "0f5f00",
+                "comparison_mask_hex": "ffffff"
+            },
+            {
+                "region_id": "data",
+                "guest_address": "0x0000000000200000",
+                "length": 16,
+                "permissions": {"read": true, "write": false, "execute": false},
+                "initial_bytes_hex": "0000803f000000400000404000008040",
+                "comparison_mask_hex": "ffffffffffffffffffffffffffffffff"
+            }
+        ]);
+        let loaded = Fixture::from_json(&serde_json::to_vec(&value).unwrap()).unwrap();
+        let result = execute(&loaded);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+    }
+
+    #[test]
     fn movaps_movapd_register_profiles_are_explicitly_native_unsupported() {
         for bytes in [
             &include_bytes!(

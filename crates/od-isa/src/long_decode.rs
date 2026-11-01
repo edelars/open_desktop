@@ -933,6 +933,8 @@ pub enum Operation {
     MaxsdMemoryRax,
     /// Local-only legacy `66 0F 5F 00` MAXPD m128-at-RAX form.
     MaxpdMemoryRax,
+    /// Local-only legacy `0F 5F 00` MAXPS m128-at-RAX form.
+    MaxpsMemoryRax,
     /// Local-only legacy `66 0F 5D /r` XMM-register form with masked IE/DE status.
     MinpdRegisterMasked {
         destination: u8,
@@ -3467,6 +3469,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && !prefixes.address_override
             && prefixes.rex.is_none()
             && prefix_count == 1;
+        let maxps_memory_rax = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x5f
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && prefixes.rex.is_none()
+            && prefix_count == 0;
         let minpd_register_masked = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x5d
             && prefixes.group1.is_none()
@@ -4630,6 +4640,19 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     Operation::MaxpdMemoryRax
                 } else if modrm >> 6 == 3 {
                     Operation::MaxpdRegisterMasked {
+                        destination: (modrm >> 3) & 7,
+                        source: modrm & 7,
+                    }
+                } else {
+                    return Err(self.unsupported(opcode));
+                }
+            }
+            (OpcodeMap::Escape0f, 0x5f) if maxps_memory_rax => {
+                let modrm = self.byte()?;
+                if modrm == 0x00 {
+                    Operation::MaxpsMemoryRax
+                } else if modrm >> 6 == 3 {
+                    Operation::MaxpsRegisterMasked {
                         destination: (modrm >> 3) & 7,
                         source: modrm & 7,
                     }
@@ -12786,6 +12809,54 @@ mod tests {
                 !memory
                     .decode()
                     .is_ok_and(|decoded| decoded.operation == Operation::MaxpdMemoryRax),
+                "{bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn maxps_memory_rax_decodes_only_exact_0f_5f_00() {
+        let mut exact = Memory::new(&[0x0f, 0x5f, 0x00]);
+        let decoded = exact.decode().unwrap();
+        assert_eq!(decoded.operation, Operation::MaxpsMemoryRax);
+        assert_eq!(decoded.length, 3);
+
+        for (modrm, destination, source) in [(0xc0, 0, 0), (0xc1, 0, 1), (0xff, 7, 7)] {
+            let mut register = Memory::new(&[0x0f, 0x5f, modrm]);
+            let decoded = register.decode().unwrap();
+            assert_eq!(
+                decoded.operation,
+                Operation::MaxpsRegisterMasked {
+                    destination,
+                    source,
+                }
+            );
+            assert_eq!(decoded.length, 3);
+        }
+
+        for bytes in [
+            &[0x0f, 0x5f, 0x01][..],
+            &[0x0f, 0x5f, 0x04, 0x00][..],
+            &[0x0f, 0x5f, 0x40, 0x00][..],
+            &[0x0f, 0x5f, 0x80, 0x00, 0x00, 0x00][..],
+            &[0x48, 0x0f, 0x5f, 0x00][..],
+            &[0x41, 0x0f, 0x5f, 0x00][..],
+            &[0x44, 0x0f, 0x5f, 0x00][..],
+            &[0x67, 0x0f, 0x5f, 0x00][..],
+            &[0x66, 0x0f, 0x5f, 0x00][..],
+            &[0xf2, 0x0f, 0x5f, 0x00][..],
+            &[0xf3, 0x0f, 0x5f, 0x00][..],
+            &[0x2e, 0x0f, 0x5f, 0x00][..],
+            &[0x0f, 0x5f][..],
+            &[0xc5, 0xf8, 0x5f, 0x00][..],
+            &[0xc4, 0xe1, 0x78, 0x5f, 0x00][..],
+            &[0x62, 0xf1, 0x7c, 0x08, 0x5f, 0x00][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(
+                !memory
+                    .decode()
+                    .is_ok_and(|decoded| decoded.operation == Operation::MaxpsMemoryRax),
                 "{bytes:02x?}"
             );
         }
