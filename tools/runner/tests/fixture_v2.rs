@@ -48,6 +48,9 @@ const MINSD_M64_MEMORY_RAX: &[u8] = include_bytes!(
 const MAXSD_M64_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37cx_maxsd_m64_qnan_selects_rhs.case.json"
 );
+const MAXSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37cy_maxss_m32_qnan_selects_rhs.case.json"
+);
 const CMPPS_REGISTER_PAIRS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37aa_cmpps_registers.case.json");
 const ADDSD_REGISTER_PAIR: &[u8] =
@@ -36384,4 +36387,34 @@ fn maxsd_m64_memory_covers_raw_nan_selection_denormal_stickies_and_controls() {
     foreign.maxsd_memory_rax_controls = fixture.maxsd_memory_rax_controls;
     assert!(foreign.validate().is_err());
     assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
+}
+
+#[test]
+fn maxss_m32_memory_literal_selects_raw_rhs_and_remains_backend_denied() {
+    let fixture = Fixture::from_json(MAXSS_M32_MEMORY_RAX).unwrap().fixture;
+    assert_eq!(
+        fixture.profile,
+        od_testkit::v2::Profile::LongMaxssMemoryRaxV1
+    );
+    let (input, result) = run(MAXSS_M32_MEMORY_RAX, "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let snapshot = match &result.snapshot {
+        Observation::Available { value } => value,
+        other => panic!("unexpected MAXSS snapshot: {other:?}"),
+    };
+    let sse = snapshot.state.sse.as_ref().unwrap();
+    assert_eq!(sse.xmm[0], "000000403412f87f010000000000f07f");
+    assert_eq!(sse.mxcsr.get(), 0x1f81);
+    assert_eq!(snapshot.memory[1].bytes_hex, "00000040");
+    assert!(matches!(
+        run(MAXSS_M32_MEMORY_RAX, "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    assert!(matches!(
+        run(MAXSS_M32_MEMORY_RAX, "native", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    let mut foreign = Fixture::from_json(CMPPS_REGISTER_PAIRS).unwrap().fixture;
+    foreign.maxss_memory_rax_controls = fixture.maxss_memory_rax_controls;
+    assert!(foreign.validate().is_err());
 }

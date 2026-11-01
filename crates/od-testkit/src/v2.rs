@@ -589,6 +589,8 @@ pub enum Profile {
     LongMinsdMemoryRaxV1,
     #[serde(rename = "s2-long-maxsd-memory-rax-v1")]
     LongMaxsdMemoryRaxV1,
+    #[serde(rename = "s2-long-maxss-memory-rax-v1")]
+    LongMaxssMemoryRaxV1,
     #[serde(rename = "s2-long-maxsd-reg-masked-v1")]
     LongMaxsdMaskedRegV1,
     #[serde(rename = "s2-long-minpd-reg-masked-v1")]
@@ -1437,6 +1439,7 @@ impl IntegerState {
                     | Profile::LongCmppdMemoryRaxV1
                     | Profile::LongCmppsMemoryRaxV1
                     | Profile::LongMinsdMemoryRaxV1
+                    | Profile::LongMaxssMemoryRaxV1
                     | Profile::LongMaxsdMemoryRaxV1,
                     Some(x87),
                 ) => Some(x87.to_cpu()?),
@@ -1536,6 +1539,7 @@ impl IntegerState {
                     | Profile::LongCmppdMemoryRaxV1
                     | Profile::LongCmppsMemoryRaxV1
                     | Profile::LongMinsdMemoryRaxV1
+                    | Profile::LongMaxssMemoryRaxV1
                     | Profile::LongMaxsdMemoryRaxV1
                     | Profile::LongCmpsdRegistersV1
                     | Profile::LongCmppdRegistersV1
@@ -1819,6 +1823,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMaxsdMemoryRaxV1
                 | Profile::LongCmpsdRegistersV1
                 | Profile::LongCmppdRegistersV1
@@ -2029,6 +2034,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMaxsdMemoryRaxV1
                 | Profile::LongCmpsdRegistersV1
                 | Profile::LongCmppdRegistersV1
@@ -2651,6 +2657,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMaxsdMemoryRaxV1
                 | Profile::LongCmpsdRegistersV1
                 | Profile::LongCmppdRegistersV1
@@ -2891,6 +2898,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMaxsdMemoryRaxV1
                 | Profile::LongCmpsdRegistersV1
                 | Profile::LongCmppdRegistersV1
@@ -3140,6 +3148,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMaxsdMemoryRaxV1
                 | Profile::LongCmpsdRegistersV1
                 | Profile::LongCmppdRegistersV1
@@ -3396,6 +3405,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMaxsdMemoryRaxV1
                 | Profile::LongCmpsdRegistersV1
                 | Profile::LongCmppdRegistersV1
@@ -3809,6 +3819,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMaxsdMemoryRaxV1
         ) {
             1 << 18 // AC is an explicit input to these memory profile admissions.
@@ -3825,6 +3836,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMaxsdMemoryRaxV1
         ) {
             1 << 9 // IF is an unrelated preserved canary only for this profile.
@@ -4112,6 +4124,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMaxsdMemoryRaxV1,
                 Some(x87),
             ) => x87.validate()?,
@@ -4372,6 +4385,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMaxsdMemoryRaxV1
                 | Profile::LongCmpsdRegistersV1
                 | Profile::LongCmppdRegistersV1
@@ -4585,6 +4599,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMaxsdMemoryRaxV1
                 | Profile::LongCmpsdRegistersV1
                 | Profile::LongCmppdRegistersV1
@@ -4996,6 +5011,9 @@ pub struct Fixture {
     /// Immutable SSE2 gates for exact S2-37cx MAXSD m64 profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maxsd_memory_rax_controls: Option<MaxsdMemoryRaxControlSnapshot>,
+    /// Immutable SSE gates for exact S2-37cy MAXSS m32 profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maxss_memory_rax_controls: Option<MaxssMemoryRaxControlSnapshot>,
     /// Immutable CVTSI2SD r32 gate inputs and the irrelevant OSXMMEXCPT echo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtsi2sd_r32_controls: Option<Cvtsi2sdR32ControlSnapshot>,
@@ -5405,6 +5423,7 @@ pub struct CmpsdMemoryRaxControlSnapshot {
 
 pub type MinsdMemoryRaxControlSnapshot = CmpsdMemoryRaxControlSnapshot;
 pub type MaxsdMemoryRaxControlSnapshot = CmpsdMemoryRaxControlSnapshot;
+pub type MaxssMemoryRaxControlSnapshot = CmpssMemoryRaxControlSnapshot;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -10644,6 +10663,93 @@ impl Fixture {
                 "only valid for MAXSD m64 profile",
             ));
         }
+        if self.profile == Profile::LongMaxssMemoryRaxV1 {
+            let controls = self.maxss_memory_rax_controls.ok_or_else(|| {
+                invalid("maxss_memory_rax_controls", "required by MAXSS m32 profile")
+            })?;
+            let code = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by MAXSS m32 profile"))?;
+            let data = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "data")
+                .ok_or_else(|| invalid("memory.data", "required by MAXSS m32 profile"))?;
+            let start = self.initial_state.rip.get();
+            let source = self.initial_state.gpr[0].get();
+            let bytes = decode_bytes(&code.initial_bytes_hex)?;
+            if self.cmpss_memory_rax_controls.is_some()
+                || self.cmpsd_memory_rax_controls.is_some()
+                || self.cmppd_memory_rax_controls.is_some()
+                || self.cmpps_memory_rax_controls.is_some()
+                || self.minsd_memory_rax_controls.is_some()
+                || self.minsd_unmasked_controls.is_some()
+                || code.guest_address.get() != start
+                || code.length != 4
+                || !code.permissions.execute
+                || bytes != [0xf3, 0x0f, 0x5f, 0x00]
+                || self.memory.len() != 2
+                || data.guest_address.get() != source
+                || data.length != 4
+                || !data.permissions.read
+                || data.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(4)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress | ExpectedExit::Unsupported
+                )
+            {
+                return Err(invalid(
+                    "memory",
+                    "MAXSS m32 requires exact F3 0F 5F 00, one code/data mapping, budget 1, and stop RIP entry+4",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| invalid("state.sse", "required by MAXSS m32 profile"))?
+                .mxcsr
+                .get();
+            if mxcsr & !0xffbf != 0
+                || mxcsr & ((1 << 6) | (1 << 15)) != 0
+                || mxcsr & 0x1f80 != 0x1f80
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "MAXSS m32 requires supported MXCSR bits, all six exception masks set, DAZ=0, and FTZ=0",
+                ));
+            }
+            let gate = !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr;
+            let nm = !gate && controls.cr0_ts;
+            let ac = !gate && !nm && self.initial_state.rflags.get() & (1 << 18) != 0;
+            let last = source.checked_add(3);
+            let canonical = |a: u64| a >> 47 == 0 || a >> 47 == 0x1ffff;
+            let span = last.is_none_or(|last| !canonical(source) || !canonical(last));
+            let expected = if gate || nm {
+                ExpectedExit::Exception
+            } else if ac {
+                ExpectedExit::Unsupported
+            } else if span {
+                ExpectedExit::Exception
+            } else {
+                ExpectedExit::StopAddress
+            };
+            if self.expected_exit != expected {
+                return Err(invalid(
+                    "expected_exit",
+                    "must reflect MAXSS m32 gates, local AC refusal, and canonical span",
+                ));
+            }
+        } else if self.maxss_memory_rax_controls.is_some() {
+            return Err(invalid(
+                "maxss_memory_rax_controls",
+                "only valid for MAXSS m32 profile",
+            ));
+        }
         if self.profile == Profile::LongCmppsMemoryRaxV1 {
             let controls = self.cmpps_memory_rax_controls.ok_or_else(|| {
                 invalid(
@@ -13147,6 +13253,10 @@ impl Fixture {
                     .ok()
                     .filter(|bytes| bytes == &[0xf2, 0x0f, 0x5f, 0x00])
                     .map(|_| 4),
+                Profile::LongMaxssMemoryRaxV1 => decode_bytes(&code_bytes)
+                    .ok()
+                    .filter(|bytes| bytes == &[0xf3, 0x0f, 0x5f, 0x00])
+                    .map(|_| 4),
                 Profile::LongCmpsdRegistersV1 => {
                     cmpsd_register_encoding(&code_bytes).map(|(_, _, _, length)| length)
                 }
@@ -15165,6 +15275,7 @@ impl Fixture {
             cmppd_memory_rax_controls: None,
             cmpps_memory_rax_controls: None,
             minsd_memory_rax_controls: None,
+            maxss_memory_rax_controls: None,
             maxsd_memory_rax_controls: None,
             cvtsi2sd_r32_controls: None,
             cvtsi2sd_r32_memory_controls: None,
@@ -15412,6 +15523,8 @@ pub struct Snapshot {
     /// Immutable SSE2 gates for exact S2-37cx MAXSD m64 profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maxsd_memory_rax_controls: Option<MaxsdMemoryRaxControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maxss_memory_rax_controls: Option<MaxssMemoryRaxControlSnapshot>,
     /// Immutable CVTSI2SD r32 gate inputs and the irrelevant OSXMMEXCPT echo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cvtsi2sd_r32_controls: Option<Cvtsi2sdR32ControlSnapshot>,
@@ -16875,6 +16988,19 @@ impl RunResult {
                         "only valid for MINSD m64 profile",
                     ));
                 }
+                if self.profile == Profile::LongMaxssMemoryRaxV1 {
+                    if snapshot.maxss_memory_rax_controls.is_none() {
+                        return Err(invalid(
+                            "snapshot.maxss_memory_rax_controls",
+                            "required by MAXSS m32 profile",
+                        ));
+                    }
+                } else if snapshot.maxss_memory_rax_controls.is_some() {
+                    return Err(invalid(
+                        "snapshot.maxss_memory_rax_controls",
+                        "only valid for MAXSS m32 profile",
+                    ));
+                }
                 if self.profile == Profile::LongMaxsdMemoryRaxV1 {
                     if snapshot.maxsd_memory_rax_controls.is_none() {
                         return Err(invalid(
@@ -18009,6 +18135,21 @@ impl RunResult {
             }
             if loaded.fixture.profile == Profile::LongMinsdMemoryRaxV1 {
                 validate_minsd_memory_rax_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.maxss_memory_rax_controls,
+                value.maxss_memory_rax_controls,
+            ) {
+                (Profile::LongMaxssMemoryRaxV1, Some(input), Some(output)) if input == output => {}
+                (Profile::LongMaxssMemoryRaxV1, _, _) => {
+                    return Err(FormatError::CaseMismatch("maxss_memory_rax_controls"));
+                }
+                (_, None, None) => {}
+                _ => return Err(FormatError::CaseMismatch("maxss_memory_rax_controls")),
+            }
+            if loaded.fixture.profile == Profile::LongMaxssMemoryRaxV1 {
+                validate_maxss_memory_rax_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
@@ -35758,6 +35899,168 @@ fn validate_maxsd_memory_rax_result(
         (None, true, Outcome::Unsupported { .. }, Observation::Available { value: None }) => {}
         (None, false, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
         _ => return Err(FormatError::CaseMismatch("MAXSD m64 outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_maxss_memory_rax_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .maxss_memory_rax_controls
+        .ok_or(FormatError::CaseMismatch("maxss_memory_rax_controls"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    let code_bytes = decode_bytes(&code.initial_bytes_hex)?;
+    if code_bytes != [0xf3, 0x0f, 0x5f, 0x00] {
+        return Err(FormatError::CaseMismatch("MAXSS m32 encoding"));
+    }
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let lhs_bytes = decode_bytes(&initial_sse.xmm[0])?;
+    let lhs = u32::from_le_bytes(
+        lhs_bytes[..4]
+            .try_into()
+            .map_err(|_| FormatError::CaseMismatch("xmm0"))?,
+    );
+    let data = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "data")
+        .ok_or(FormatError::CaseMismatch("memory.data"))?;
+    let rhs_bytes = decode_bytes(&data.initial_bytes_hex)?;
+    let rhs = u32::from_le_bytes(
+        rhs_bytes[..4]
+            .try_into()
+            .map_err(|_| FormatError::CaseMismatch("memory.data"))?,
+    );
+    let class = |bits: u32| -> u8 {
+        let exponent = (bits >> 23) & 0xff;
+        let fraction = bits & 0x007f_ffff;
+        if exponent == 0xff && fraction != 0 {
+            2
+        } else if exponent == 0 && fraction != 0 {
+            1
+        } else {
+            0
+        }
+    };
+    let lhs_class = class(lhs);
+    let rhs_class = class(rhs);
+    let invalid = lhs_class == 2 || rhs_class == 2;
+    let denormal = !invalid && (lhs_class == 1 || rhs_class == 1);
+    let raw_order = |left: u32, right: u32| {
+        if left & 0x7fff_ffff == 0 && right & 0x7fff_ffff == 0 {
+            core::cmp::Ordering::Equal
+        } else {
+            match (left >> 31 != 0, right >> 31 != 0) {
+                (true, false) => core::cmp::Ordering::Less,
+                (false, true) => core::cmp::Ordering::Greater,
+                (false, false) => (left & 0x7fff_ffff).cmp(&(right & 0x7fff_ffff)),
+                (true, true) => (right & 0x7fff_ffff).cmp(&(left & 0x7fff_ffff)),
+            }
+        }
+    };
+    let expected_low = if invalid || raw_order(lhs, rhs) != core::cmp::Ordering::Greater {
+        rhs
+    } else {
+        lhs
+    };
+    let gate = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let source = fixture.initial_state.gpr[0].get();
+    let ac_refusal = gate.is_none() && fixture.initial_state.rflags.get() & (1 << 18) != 0;
+    let last = source.checked_add(3);
+    let canonical = |address: u64| address >> 47 == 0 || address >> 47 == 0x1ffff;
+    let span_fault = last.is_none_or(|end| !canonical(source) || !canonical(end));
+    let fault = gate.or_else(|| (!ac_refusal && span_fault).then_some(13));
+    let unsupported = gate.is_none() && ac_refusal;
+    if !matches!(
+        (fault, unsupported, fixture.expected_exit),
+        (Some(_), false, ExpectedExit::Exception)
+            | (None, true, ExpectedExit::Unsupported)
+            | (None, false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("MAXSS m32 expected exit"));
+    }
+    let mut expected = fixture.initial_state.clone();
+    if fault.is_none() && !unsupported {
+        let state_sse = expected
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        let mut output_xmm = expected_low.to_le_bytes().to_vec();
+        output_xmm.extend_from_slice(&lhs_bytes[4..]);
+        state_sse.xmm[0] = crate::memory::encode_bytes(&output_xmm);
+        state_sse.mxcsr =
+            HexU64(initial_sse.mxcsr.get() | u64::from(invalid) | (u64::from(denormal) << 1));
+        expected.rip = HexU64(
+            fixture
+                .initial_state
+                .rip
+                .get()
+                .checked_add(4)
+                .ok_or(FormatError::CaseMismatch("MAXSS m32 RIP overflow"))?,
+        );
+    }
+    let memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != memory
+    {
+        return Err(FormatError::CaseMismatch("MAXSS m32 output state"));
+    }
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(u64::from(fault.is_none() && !unsupported)),
+        })
+    {
+        return Err(FormatError::CaseMismatch("MAXSS m32 retirement"));
+    }
+    match (fault, unsupported, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            false,
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == if vector == 13 {
+                    Observation::Available { value: HexU64(0) }
+                } else {
+                    Observation::Unavailable {
+                        reason: "exception has no architectural error code".into(),
+                    }
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, true, Outcome::Unsupported { .. }, Observation::Available { value: None }) => {}
+        (None, false, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("MAXSS m32 outcome/exception")),
     }
     Ok(())
 }
