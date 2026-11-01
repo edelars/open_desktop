@@ -5557,6 +5557,33 @@ admission, physical acceptance, or a performance claim. ISSUE-019 remains
 open. Checks and review status are detailed in the
 [standalone S2-29z report](S2_29Z_X87_REMAINDER_QUOTIENT.md).
 
+## S2-29aa — direct finite binary80 square-root precision helper
+
+Added `sqrt_finite_to_binary80_precision(value, mode, precision)` for positive,
+nonzero normalized finite binary80 inputs at p=24/53/64. It uses the shared
+exact `(E,q,R)` decomposition and rounds once at the requested precision while
+preserving the binary80 exponent range. The existing
+`sqrt_finite_to_binary80(value, mode)` is the p64 projection and retains its
+previous acceptance/rejection domain. p64 keeps its existing `R>q` nearest
+condition; lower precisions classify discarded root bits and the exact
+remainder at the target precision and carry through the existing normal packer.
+
+Independent literal ten-byte tests cover exact and irrational roots, all four
+rounding modes at p=24/53/64, p24 nearest midpoint ties with even and odd
+retained significands, adjacent p24/p53 boundaries, exponent carry at maximum
+finite input, minimum-subnormal and negative-exponent inputs,
+pseudo-denormal equivalence, p64 wrapper/domain equivalence, rejected
+precisions and inputs, immutable arguments, and a p24 direct-rounding result
+that differs from p64-then-narrow. The p53 boundary vectors have nonzero exact
+root remainder; no exact p53 midpoint root is asserted.
+
+Normative precision choices are grounded in Intel SDM Rev. 093, Vol. 1
+§8.1.5.2 and Table 8-2, pp. 8-7–8-8. No FCW parsing/state, architectural
+flags/exceptions, decoder/execution, native/JIT/C ABI admission, physical x86
+acceptance, or performance claim was added. Focused and full validation results,
+layout status, and review status are in the [standalone report](S2_29AA_X87_SQRT_PRECISION.md).
+S2-29 and ISSUE-019 remain open.
+
 ## S2-30i — exact-only FSUB ST(i), ST(0) (bounded local slice)
 
 Added bare `DC E8+i`, `i=0..7`, as `FSUB ST(i), ST(0)`. The operation shares

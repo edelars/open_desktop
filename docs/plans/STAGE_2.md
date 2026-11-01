@@ -195,6 +195,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-29p | Round an exact signed `i128` coefficient once to finite binary80 through lossless normalization and direct normal/subnormal packing; no x87 architectural effects | S2-29e, S2-29f, S2-29k–n |
 | [x] | S2-29u | p64-aware large-gap binary80 finite-addition bridge for normalized operands with exponent gaps >64; classify tails below/at/above half; preserve binary32/64 adapter behavior; no x87 instruction semantics | S2-29t; independent Sol/high review clean |
 | [x] | S2-29v | Pure integer square-root helper for positive nonzero normalized finite binary80 inputs; one-round binary80 packing; no FSQRT/FCW/state/exception semantics | S2-29u; independent Sol/high review clean |
+| [x] | S2-29aa | Direct binary80 square-root rounding to precision 24/53/64 with binary80 exponent range; retain p64 wrapper domain; no FSQRT/FCW/state/exception semantics | S2-29v; independent Sol/high review pending |
 | [x] | S2-29x | Exact truncated finite binary80 remainder coefficient decomposition for normalized nonzero operands; exact modulo for exponent gaps 0..64, lhs passthrough below, bounded rejection above; no FPREM/FPREM1 semantics | S2-29w; independent Sol/high review clean |
 | [x] | S2-29y | Exact finite nearest-even binary80 remainder coefficient for normalized nonzero operands; d=-1 half-way handling and u128 quotient/remainder for gaps 0..64; helper-only, no FPREM1/ISA or architectural effects | S2-29x; independent Sol/high review clean |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
@@ -3372,6 +3373,36 @@ checks pass; Graphify was updated. Layout validation reports only the known
 isolated-worktree failures tracked by ISSUE-023. Independent review is pending
 follow-up after correcting its P2 negative-gap wording finding. ISSUE-019
 remains open.
+
+### S2-29aa. Direct finite binary80 square-root precision rounding (bounded helper)
+
+Add `sqrt_finite_to_binary80_precision(value, mode, precision)` for positive,
+nonzero normalized finite binary80 inputs and precisions 24, 53, or 64. Use the
+exact shared `(E,q,R)` square-root decomposition and round once at the requested
+significand precision while retaining binary80's exponent range. The existing
+`sqrt_finite_to_binary80(value, mode)` remains the p64 projection with its
+historical acceptance/rejection domain.
+
+For p<64, with `h=64-p`, `T=q>>h`, `L=q&((1<<h)-1)`, and `H=1<<(h-1)`, positive
+inputs increment toward-positive iff `L!=0 || R!=0`, never increment toward
+zero/negative, and increment nearest-even iff `L>H || (L==H && (R!=0 || T odd))`.
+At p64, retain the existing `R>q` nearest condition. Carry is widened before
+the existing normal packer; p64-then-narrow is not permitted.
+
+Literal ten-byte vectors cover all precisions and modes, exact and irrational
+roots, adjacent rounding boundaries, p24 exact midpoint ties for even and odd
+retained significands, exponent carry, minimum-subnormal and maximum-finite
+inputs, negative exponents, pseudo-denormal equivalence, a direct-versus-
+double-rounding counterexample, invalid precisions, p64 wrapper
+projection/domain equivalence, and input immutability. No exact p53 midpoint
+root is asserted. This remains helper-only: no FCW parsing/state, architectural
+flags/exceptions, decode/execute/native/JIT admission, physical x86 acceptance,
+or performance claim. Normative precision-control basis: Intel SDM Rev. 093,
+Vol. 1 §8.1.5.2 and Table 8-2, pp. 8-7–8-8.
+
+**Результат:** implementation and focused literal tests are recorded in the
+[standalone report](../reports/S2_29AA_X87_SQRT_PRECISION.md); S2-29 and
+ISSUE-019 remain open.
 
 ### S2-30. Основные x87 операции
 

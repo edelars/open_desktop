@@ -3631,6 +3631,40 @@ are recorded in the
 [S2-29z standalone report](../reports/S2_29Z_X87_REMAINDER_QUOTIENT.md).
 ISSUE-019 remains open.
 
+## Local S2-29aa: direct finite binary80 square-root precision helper
+
+`od_isa::x87::sqrt_finite_to_binary80_precision(value, mode, precision) ->
+Option<X87Binary80>` rounds the mathematical square root of a positive, nonzero
+normalized finite binary80 input directly to a requested significand precision
+of 24, 53, or 64 bits while retaining binary80's normal exponent range. Invalid
+precision values and the historical p64 helper's rejected input domain return
+`None`. `sqrt_finite_to_binary80(value, mode)` remains an exact p64 projection
+with unchanged acceptance and rejection behavior.
+
+For `x=S*2^(e-63)`, the shared decomposition returns `E=floor(e/2)`,
+`q=floor(sqrt(N))`, and exact `u128` `R=N-q²`, with
+`N=S << (63+e.rem_euclid(2))`. For p<64 let `h=64-p`, `T=q>>h`,
+`L=q&((1<<h)-1)`, and `H=1<<(h-1)`. Because the input is positive, rounding
+toward-positive increments iff `L!=0 || R!=0`; toward-zero and toward-negative
+never increment; nearest-even increments iff `L>H || (L==H && (R!=0 || T is
+odd))`. At p64 preserve the existing nearest condition `R>q` and its directed
+rules. The rounded retained significand is widened to `u128` and sent directly
+to the existing normal packer at precision p, so carry is safe and no p64
+intermediate is rounded again.
+
+Literal ten-byte results cover exact and irrational roots, all four modes at
+each precision, values adjacent to p24 and p53 rounding boundaries, exact p24
+midpoints with even and odd retained significands, max-finite carry, minimum
+subnormal and negative-exponent inputs, pseudo-denormal equivalence, p64 wrapper
+projection/domain equivalence, invalid precisions, and immutability. No exact
+p53 midpoint root is claimed. Intel SDM Rev. 093, Vol. 1 §8.1.5.2 and Table 8-2,
+pp. 8-7–8-8, are the normative basis for the supported x87 precision choices;
+this helper does not parse or model the control word.
+
+This contract is helper-only. It adds no FSQRT decode/execution, FCW parsing or
+state, architectural flags/exceptions, native/JIT/C ABI admission, physical x86
+acceptance, or performance claim. See the [S2-29aa plan](../plans/STAGE_2.md#s2-29aa-direct-finite-binary80-square-root-precision-rounding-bounded-helper), [implementation report](../reports/STAGE_2_REPORT.md#s2-29aa--direct-finite-binary80-square-root-precision-helper), and [standalone report](../reports/S2_29AA_X87_SQRT_PRECISION.md). ISSUE-019 remains open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.
