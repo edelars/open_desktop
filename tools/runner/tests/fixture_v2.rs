@@ -54,6 +54,9 @@ const MAXPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
 const MINPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dc_minps_m128_qnan_and_other_lane_denormal.case.json"
 );
+const SQRTPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37dd_sqrtps_m128_memory_source_lanes_rounding.case.json"
+);
 const MINPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37db_minpd_m128_qnan_and_other_lane_denormal.case.json"
 );
@@ -37025,4 +37028,173 @@ fn maxss_m32_memory_literal_selects_raw_rhs_and_remains_backend_denied() {
     let mut foreign = Fixture::from_json(CMPPS_REGISTER_PAIRS).unwrap().fixture;
     foreign.maxss_memory_rax_controls = fixture.maxss_memory_rax_controls;
     assert!(foreign.validate().is_err());
+}
+
+#[test]
+fn sqrtps_m128_memory_uses_memory_lanes_and_aggregates_masked_exceptions() {
+    let base = Fixture::from_json(SQRTPS_M128_MEMORY_RAX).unwrap().fixture;
+    assert_eq!(base.profile, od_testkit::v2::Profile::LongSqrtpsMemoryRaxV1);
+    assert_eq!(base.memory[0].initial_bytes_hex, "0f5100");
+    assert_eq!(
+        base.initial_state.sse.as_ref().unwrap().xmm[0],
+        "deadbeefcafef00d123456789abcdef0"
+    );
+    for rc in 0..4u64 {
+        let mut case = base.clone();
+        case.case_id = format!("s2_37dd_memory_sqrt_rc{rc}");
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (rc << 13) | 0x2);
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let snapshot = match result.snapshot {
+            Observation::Available { value } => value,
+            _ => panic!("missing snapshot"),
+        };
+        let expected_sqrt2 = if rc == 2 { "f404b53f" } else { "f304b53f" };
+        assert_eq!(
+            &snapshot.state.sse.as_ref().unwrap().xmm[0][8..16],
+            expected_sqrt2
+        );
+        assert_eq!(
+            &snapshot.state.sse.as_ref().unwrap().xmm[0][16..32],
+            "0000803f0000003f"
+        );
+        assert_eq!(
+            snapshot.state.sse.as_ref().unwrap().mxcsr,
+            HexU64(0x1f80 | (rc << 13) | 0x22)
+        );
+        assert_eq!(snapshot.state.gpr, case.initial_state.gpr);
+        assert_eq!(snapshot.state.rflags, case.initial_state.rflags);
+        assert_eq!(
+            snapshot.memory[1].bytes_hex,
+            case.memory[1].initial_bytes_hex
+        );
+    }
+
+    let mut mixed = base.clone();
+    mixed.case_id = "s2_37dd_negative_subnormal_snan_ie_de_pe".into();
+    mixed.memory[1].initial_bytes_hex = "000080bf01000000000000404523817f".into();
+    mixed.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (1 << 13));
+    let (input, result) = run(&mixed.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let snapshot = match result.snapshot {
+        Observation::Available { value } => value,
+        _ => panic!("missing snapshot"),
+    };
+    assert_eq!(
+        snapshot.state.sse.as_ref().unwrap().mxcsr,
+        HexU64(0x1f80 | (1 << 13) | 0x23)
+    );
+    assert_eq!(
+        &snapshot.state.sse.as_ref().unwrap().xmm[0][..8],
+        "0000c0ff"
+    );
+    assert_eq!(
+        &snapshot.state.sse.as_ref().unwrap().xmm[0][24..32],
+        "4523c17f"
+    );
+    assert_eq!(
+        snapshot.memory[1].bytes_hex,
+        mixed.memory[1].initial_bytes_hex
+    );
+
+    for (case_id, lanes, raised) in [
+        (
+            "signed_zero_inf",
+            [0x0000_0000, 0x8000_0000, 0x7f80_0000, 0x4080_0000],
+            0x00,
+        ),
+        (
+            "qnan_only",
+            [0x7fc1_2345, 0x4080_0000, 0x3f80_0000, 0x0000_0000],
+            0x00,
+        ),
+        (
+            "negative_inf_qnan",
+            [0xff80_0000, 0x7fc1_2345, 0x4000_0000, 0x3f80_0000],
+            0x21,
+        ),
+        (
+            "positive_subnormal_snan",
+            [0x0000_0001, 0x0080_0000, 0xff81_4321, 0x7f81_2345],
+            0x23,
+        ),
+        (
+            "negative_subnormal_qnan",
+            [0x8000_0001, 0x7fc1_2345, 0x7f80_0000, 0x3f80_0000],
+            0x01,
+        ),
+    ] {
+        let mut case = base.clone();
+        case.case_id = format!("s2_37dd_{case_id}");
+        case.memory[1].initial_bytes_hex = lanes
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | 0x4);
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let snapshot = match result.snapshot {
+            Observation::Available { value } => value,
+            _ => panic!("missing snapshot"),
+        };
+        assert_eq!(
+            snapshot.state.sse.as_ref().unwrap().mxcsr,
+            HexU64(0x1f80 | 0x4 | raised)
+        );
+        assert_eq!(snapshot.state.sse.as_ref().unwrap().xmm[0].len(), 32);
+        if case_id == "signed_zero_inf" {
+            assert_eq!(
+                &snapshot.state.sse.as_ref().unwrap().xmm[0][..16],
+                "0000000000000080"
+            );
+            assert_eq!(
+                &snapshot.state.sse.as_ref().unwrap().xmm[0][16..24],
+                "0000807f"
+            );
+        }
+        if case_id == "qnan_only" {
+            assert_eq!(
+                &snapshot.state.sse.as_ref().unwrap().xmm[0][..8],
+                "4523c17f"
+            );
+        }
+        if case_id == "negative_inf_qnan" || case_id == "negative_subnormal_qnan" {
+            assert_eq!(
+                &snapshot.state.sse.as_ref().unwrap().xmm[0][..8],
+                "0000c0ff"
+            );
+            assert_eq!(
+                &snapshot.state.sse.as_ref().unwrap().xmm[0][8..16],
+                "4523c17f"
+            );
+        }
+    }
+
+    assert!(matches!(
+        run(SQRTPS_M128_MEMORY_RAX, "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    assert!(matches!(
+        run(SQRTPS_M128_MEMORY_RAX, "native", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    let (tamper_input, good_result) = run(SQRTPS_M128_MEMORY_RAX, "interpreter", 0);
+    let mut tampered = good_result.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(..2, "ff");
+    }
+    assert!(od_testkit::v2::compare(&tamper_input, &good_result, &tampered).is_err());
+    let mut bad_control_echo = good_result.clone();
+    if let Observation::Available { value } = &mut bad_control_echo.snapshot {
+        value.sqrtps_memory_rax_controls.as_mut().unwrap().cr0_ts = true;
+    }
+    assert!(od_testkit::v2::compare(&tamper_input, &good_result, &bad_control_echo).is_err());
+
+    let mut missing = base.clone();
+    missing.sqrtps_memory_rax_controls = None;
+    assert!(missing.validate().is_err());
+    let mut wrong = base.clone();
+    wrong.memory[0].initial_bytes_hex = "0f5101".into();
+    assert!(wrong.validate().is_err());
 }
