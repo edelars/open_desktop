@@ -147,6 +147,7 @@ struct CalibrationReport {
 
 #[derive(Clone, Debug, Serialize)]
 struct CalibrationCheck {
+    record_kind: String,
     budget: u8,
     case_id: String,
     requested_repetitions: usize,
@@ -159,7 +160,7 @@ struct CalibrationCheck {
     stop_reason: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct CalibrationRun {
     common_repetitions: Option<usize>,
     checks: Vec<CalibrationCheck>,
@@ -333,8 +334,16 @@ fn build_report(
         let common_repetitions = repetitions.common_repetitions.unwrap_or(0);
         calibration = Some(CalibrationReport {
             common_repetitions_per_case_and_side: repetitions.common_repetitions,
-            warmup_calls_per_case: if calibration_only { 0 } else { WARMUP_CALLS },
-            sample_pairs: if calibration_only { 0 } else { PAIRS },
+            warmup_calls_per_case: if calibration_only || calibration_failed {
+                0
+            } else {
+                WARMUP_CALLS
+            },
+            sample_pairs: if calibration_only || calibration_failed {
+                0
+            } else {
+                PAIRS
+            },
             minimum_sample_ns: MIN_SAMPLE.as_nanos(),
             maximum_repetitions_per_side: MAX_CALIBRATED_CALLS,
             maximum_measured_side_ns: MAX_CALIBRATION_SIDE_WALL.as_nanos(),
@@ -934,6 +943,7 @@ fn calibrate_common_repetitions(
                             .then(|| "repetition_ceiling".into())
                     });
                 let check = CalibrationCheck {
+                    record_kind: "attempt".into(),
                     budget: *budget,
                     case_id: case.id.into(),
                     requested_repetitions: calls,
@@ -948,11 +958,18 @@ fn calibrate_common_repetitions(
                 append_calibration_check(journal_path, &check)?;
                 checks.push(check);
 
-                if calibration_started.elapsed() >= MAX_CALIBRATION_WALL && stop_reason.is_none() {
+                let post_sync_wall = calibration_started.elapsed();
+                if post_sync_wall >= MAX_CALIBRATION_WALL && stop_reason.is_none() {
+                    persist_terminal_stop(
+                        journal_path,
+                        &mut checks,
+                        post_sync_wall.as_nanos(),
+                        "overall_wall_ceiling_after_journal_sync",
+                    )?;
                     failure = Some(format!(
                         "calibration exceeded overall wall ceiling after durable attempt: budget={budget}, case={}, repetitions={calls}, process_wall_ns={}",
                         case.id,
-                        calibration_started.elapsed().as_nanos()
+                        post_sync_wall.as_nanos()
                     ));
                     break;
                 }
@@ -975,6 +992,18 @@ fn calibrate_common_repetitions(
             }
         }
         drop(published);
+        if failure.is_none() && calibration_started.elapsed() >= MAX_CALIBRATION_WALL {
+            let wall_ns = calibration_started.elapsed().as_nanos();
+            persist_terminal_stop(
+                journal_path,
+                &mut checks,
+                wall_ns,
+                "overall_wall_ceiling_after_publication_teardown",
+            )?;
+            failure = Some(format!(
+                "calibration exceeded overall wall ceiling after publication teardown: process_wall_ns={wall_ns}"
+            ));
+        }
         if failure.is_some() {
             break;
         }
@@ -1012,6 +1041,40 @@ fn append_calibration_check(path: &Path, check: &CalibrationCheck) -> Result<(),
         .map_err(|error| fail(format!("append calibration journal: {error}")))?;
     file.sync_data()
         .map_err(|error| fail(format!("sync calibration journal: {error}")))?;
+    Ok(())
+}
+
+fn persist_terminal_stop(
+    path: &Path,
+    checks: &mut Vec<CalibrationCheck>,
+    process_wall_ns: u128,
+    reason: &str,
+) -> Result<(), CostError> {
+    let previous = checks.last().cloned();
+    let mut terminal = previous.unwrap_or_else(|| CalibrationCheck {
+        record_kind: "terminal_stop".into(),
+        budget: 0,
+        case_id: "calibration".into(),
+        requested_repetitions: 0,
+        native_calls: 0,
+        interpreter_calls: None,
+        native_ns: None,
+        interpreter_ns: None,
+        process_wall_ns,
+        sample_floor_met: None,
+        stop_reason: None,
+    });
+    terminal.record_kind = "terminal_stop".into();
+    terminal.requested_repetitions = 0;
+    terminal.native_calls = 0;
+    terminal.interpreter_calls = None;
+    terminal.native_ns = None;
+    terminal.interpreter_ns = None;
+    terminal.process_wall_ns = process_wall_ns;
+    terminal.sample_floor_met = None;
+    terminal.stop_reason = Some(reason.into());
+    append_calibration_check(path, &terminal)?;
+    checks.push(terminal);
     Ok(())
 }
 
@@ -1217,9 +1280,10 @@ fn time_interpreter_batch_bounded(
 mod tests {
     use super::{
         CHUNK_CALLS, CalibrationCheck, CalibrationLimits, MAX_CALIBRATED_CALLS,
-        MAX_CALIBRATION_SIDE_WALL, MIN_SAMPLE, append_calibration_check, both_samples_meet_floor,
-        calibration_stop_reason, collect_scored_samples, next_calibration_call_count,
-        report_requires_nonzero_exit, reset_calibration_journal, sample_meets_floor,
+        MAX_CALIBRATION_SIDE_WALL, MAX_CALIBRATION_WALL, MIN_SAMPLE, append_calibration_check,
+        both_samples_meet_floor, calibration_stop_reason, collect_scored_samples,
+        next_calibration_call_count, persist_terminal_stop, report_requires_nonzero_exit,
+        reset_calibration_journal, sample_meets_floor,
     };
     use std::fs;
     use std::time::{Duration, Instant};
@@ -1292,35 +1356,53 @@ mod tests {
             std::process::id()
         ));
         reset_calibration_journal(&path).expect("initialize journal");
-        append_calibration_check(
+        let attempt = CalibrationCheck {
+            record_kind: "attempt".into(),
+            budget: 0,
+            case_id: "frozen-case".into(),
+            requested_repetitions: MAX_CALIBRATED_CALLS,
+            native_calls: MAX_CALIBRATED_CALLS,
+            interpreter_calls: Some(MAX_CALIBRATED_CALLS),
+            native_ns: Some(120_000_000),
+            interpreter_ns: Some(180_000_000),
+            process_wall_ns: 1_000_000_000,
+            sample_floor_met: Some(false),
+            stop_reason: Some("repetition_ceiling".into()),
+        };
+        append_calibration_check(&path, &attempt).expect("append diagnostic attempt");
+        let mut checks = vec![attempt];
+        persist_terminal_stop(
             &path,
-            &CalibrationCheck {
-                budget: 0,
-                case_id: "frozen-case".into(),
-                requested_repetitions: MAX_CALIBRATED_CALLS,
-                native_calls: MAX_CALIBRATED_CALLS,
-                interpreter_calls: Some(MAX_CALIBRATED_CALLS),
-                native_ns: Some(120_000_000),
-                interpreter_ns: Some(180_000_000),
-                process_wall_ns: 1_000_000_000,
-                sample_floor_met: Some(false),
-                stop_reason: Some("repetition_ceiling".into()),
-            },
+            &mut checks,
+            MAX_CALIBRATION_WALL.as_nanos() + 1,
+            "overall_wall_ceiling_after_publication_teardown",
         )
-        .expect("append diagnostic attempt");
+        .expect("persist terminal deadline event");
         let encoded = fs::read_to_string(&path).expect("read durable journal");
+        let lines = encoded.lines().collect::<Vec<_>>();
         let saved: serde_json::Value =
-            serde_json::from_str(encoded.trim()).expect("journal line is complete JSON");
+            serde_json::from_str(lines[0]).expect("attempt line is complete JSON");
         assert_eq!(saved["requested_repetitions"], MAX_CALIBRATED_CALLS);
         assert_eq!(saved["native_calls"], MAX_CALIBRATED_CALLS);
         assert_eq!(saved["interpreter_calls"], MAX_CALIBRATED_CALLS);
         assert_eq!(saved["native_ns"], 120_000_000u64);
         assert_eq!(saved["interpreter_ns"], 180_000_000u64);
         assert_eq!(saved["stop_reason"], "repetition_ceiling");
+        let terminal: serde_json::Value =
+            serde_json::from_str(lines[1]).expect("terminal line is complete JSON");
+        assert_eq!(terminal["record_kind"], "terminal_stop");
+        assert_eq!(
+            terminal["process_wall_ns"],
+            (MAX_CALIBRATION_WALL.as_nanos() + 1) as u64
+        );
+        assert_eq!(
+            terminal["stop_reason"],
+            "overall_wall_ceiling_after_publication_teardown"
+        );
 
         let report = serde_json::json!({
             "sample_floor_passed": null,
-            "timing_status": "calibration_only_failed_unscored"
+            "timing_status": "diagnostic_only_calibration_failed_no_scored_comparison"
         });
         assert!(report_requires_nonzero_exit(&report));
         fs::remove_file(path).expect("remove temporary journal");

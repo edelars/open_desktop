@@ -69,9 +69,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             other => return Err(format!("unknown argument: {other}").into()),
         }
     }
-    if preflight_only && calibration_only {
-        return Err("--preflight-only and --calibration-only are mutually exclusive".into());
-    }
+    validate_mode_flags(&mode, preflight_only, calibration_only)
+        .map_err(|message| message.to_owned())?;
 
     match mode.as_str() {
         "record" => {
@@ -465,6 +464,32 @@ fn print_usage() {
   od-bench allocator-cost [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
          `record` requires macOS ARM64. `measure` rebuilds all keys before timing."
     );
+}
+
+fn validate_mode_flags(
+    mode: &str,
+    preflight_only: bool,
+    calibration_only: bool,
+) -> Result<(), &'static str> {
+    if calibration_only && mode != "allocator-cost" {
+        return Err("--calibration-only is only valid for allocator-cost");
+    }
+    if preflight_only && calibration_only {
+        return Err("--preflight-only and --calibration-only are mutually exclusive");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_mode_flags;
+
+    #[test]
+    fn calibration_only_is_rejected_for_other_commands() {
+        assert!(validate_mode_flags("allocator-cost", false, true).is_ok());
+        assert!(validate_mode_flags("cached-flags-compare", false, true).is_err());
+        assert!(validate_mode_flags("allocator-cost", true, true).is_err());
+    }
 }
 
 fn synthetic_smoke_suite() -> Result<BenchmarkSuite, Box<dyn std::error::Error>> {
