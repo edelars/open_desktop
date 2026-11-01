@@ -15726,6 +15726,16 @@ Each 64-bit lane applies the raw MAX selector: ties (including opposite signed z
 
 Focused decoder/direct ISA checks passed 3/3. Full suites passed: od-isa 1717; od-testkit 453; fixture_v2 482; od-x86-runner 8 library + 4 binary tests; workspace all-target check. Formatting, layout, Graphify refresh and independent code/schema and final docs/evidence reviews passed. No physical x86 acceptance is claimed. Sources: Intel SDM Rev. 093 Vol. 2B `MAXPD` pp. 4-5–4-7; Vol. 2A Type 2/Table 2-19 p. 2-27; Vol. 1 §4.9.2, §§11.5.3.1–3 and Appendix D D-9/D-13/D-15; Vol. 3A §16.1.3/Table 16-1. See the [plan](../plans/STAGE_2.md#s2-37cz--exact-legacy-long64-maxpd-xmm0m128-rax), [shared report](../reports/STAGE_2_REPORT.md#s2-37cz--maxpd-xmm0m128-rax), [standalone implementation report](../reports/S2_37CZ_MAXPD_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37cz--maxpd-xmm0m128-rax).
 
+## S2-37da — bounded Long64 MAXPS XMM0,m128 [RAX] memory profile
+
+The schema-v2 interpreter profile `s2-long-maxps-memory-rax-v1` accepts only exact legacy `0F 5F 00`, with a three-byte fetch, budget one, and stop RIP entry+3. It requires SSE availability (`CPUID.01H:EDX[25]`), not SSE2. After full fetch, missing SSE, CR0.EM=1, or CR4.OSFXSR=0 causes #UD before CR0.TS=1 causes #NM. XMM/MXCSR state must be present. The supported MXCSR mask is `0xffbf`; all six exception masks (`mxcsr & 0x1f80 == 0x1f80`) are required, DAZ and FTZ must be clear, and reserved bits must be zero. RC and prior IE/DE sticky bits may vary.
+
+RAX must be aligned to 16 bytes regardless of RFLAGS.AC; AC=0 and AC=1 both work for an aligned address. Misalignment, a noncanonical or overflowing canonical48 span `[RAX,RAX+15]` raises #GP(0) before a memory callback. Success performs exactly one 16-byte read. Read failure preserves CPU state, MXCSR and RIP and does not retire.
+
+Each binary32 lane uses the raw MAX selector: ties (including both signed-zero orders) and any NaN select raw RHS, without quieting an SNaN payload. IE is ORed across lanes. DE is accumulated lane by lane only when that lane has a subnormal operand and no NaN; a NaN in another lane does not suppress DE. New IE/DE are ORed with previous stickies. Success replaces the full XMM0 value and advances RIP by 3. Native/JIT/C ABI/generic/fragment paths remain closed.
+
+Focused decoder/direct ISA checks passed 3/3; schema-tampering check passed 1/1. Full suites passed: od-isa 1723; od-testkit 454; runner 112 unit + 482 fixture tests. Workspace all-target check, fmt and diff check passed; Graphify refreshed to 10,877 nodes / 23,255 edges / 336 communities; independent Sol/high review is clean. The native-denial test exists in the Linux/x86-64 runner but was not executed on the macOS host. No physical x86 acceptance is claimed. Sources: Intel SDM Rev. 093 Vol. 2B `MAXPS` pp. 4-8–4-10; Vol. 2A Type 2/Table 2-19 p. 2-27; Vol. 1 §4.9.2, §§11.5.3.1–3 and Appendix D; Vol. 3A §16.1.3/Table 16-1. See the [plan](../plans/STAGE_2.md#s2-37da--exact-legacy-long64-maxps-xmm0m128-rax), [shared report](../reports/STAGE_2_REPORT.md#s2-37da--maxps-xmm0m128-rax), [standalone report](../reports/S2_37DA_MAXPS_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37da--maxps-xmm0m128-rax).
+
 
 ## S2-37cy — bounded Long64 MAXSS XMM0,m32 [RAX] memory profile
 
