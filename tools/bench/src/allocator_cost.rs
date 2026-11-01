@@ -104,6 +104,7 @@ struct CompilePairSample {
     budget0_total_ns: u128,
     budget4_ns_per_compile: u128,
     budget0_ns_per_compile: u128,
+    minimum_sample_met: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -137,6 +138,9 @@ struct CalibrationReport {
 pub struct Report {
     schema_version: u32,
     timing_started: bool,
+    sample_floor_passed: Option<bool>,
+    timing_status: String,
+    sample_floor_policy: String,
     process_run: u8,
     host: crate::HostMetadata,
     frozen_code_sha256: String,
@@ -338,8 +342,8 @@ fn build_report(
                         native_total_ns: native_ns.as_nanos(),
                         interpreter_ns_per_call: interpreter_per_call,
                         native_ns_per_call: native_per_call,
-                        native_over_interpreter: native_per_call as f64
-                            / interpreter_per_call.max(1) as f64,
+                        native_over_interpreter: native_ns.as_nanos() as f64
+                            / interpreter_ns.as_nanos().max(1) as f64,
                         minimum_sample_met: interpreter_ns >= MIN_SAMPLE && native_ns >= MIN_SAMPLE,
                     });
                 }
@@ -364,9 +368,31 @@ fn build_report(
         });
     }
 
+    let sample_floor_passed = if preflight_only {
+        None
+    } else {
+        Some(
+            compile_pairs_ns_per_call
+                .iter()
+                .all(|sample| sample.minimum_sample_met)
+                && case_reports
+                    .iter()
+                    .flat_map(|case| &case.execution_pairs)
+                    .flat_map(|(_, samples)| samples)
+                    .all(|sample| sample.minimum_sample_met),
+        )
+    };
+    let timing_status = match sample_floor_passed {
+        None => "preflight_only_no_timing".into(),
+        Some(true) => "sample_floor_passed_bounded_diagnostic".into(),
+        Some(false) => "diagnostic_only_sample_floor_failed_no_scored_comparison".into(),
+    };
+
     Ok(Report {
         schema_version: 1,
         timing_started: !preflight_only,
+        sample_floor_passed,
+        timing_status,
         process_run,
         host: crate::HostMetadata::current(),
         frozen_code_sha256: code_sha256,
@@ -374,12 +400,13 @@ fn build_report(
         guest_base_rip: BASE_RIP,
         instruction_budget: INSTRUCTION_BUDGET,
         scope: "One frozen six-instruction register-only multi-helper block; budget4 baseline versus budget0 spill-only diagnostic. This does not choose an allocator globally.".into(),
-        compile_timer_boundary: "compile_block_with_register_homes: block build/decode, lowering, allocation, ARM64 emission and finalization; excludes allocator-summary reconstruction, publication, execution, input reset and validation".into(),
+        compile_timer_boundary: "compile_block_with_register_homes: block build/decode, lowering, allocation, ARM64 emission, finalization, and destruction of each unpublished CompiledBlock within the timed compile batch; excludes allocator-summary reconstruction, publication, execution, input reset and validation".into(),
         publication_timer_boundary: "PublishedCode::publish_block and PublishedCode drop are timed and reported separately. The mapping remains live for warmup/timing; drop occurs after execution timing and before the other budget is published. These durations are never added to compile or execution samples.".into(),
         execution_timer_boundary: "Repeated PublishedCode::execute_block calls over the same retained artifact; state vectors are initialized before timing, and full-state/exit validation is outside timing. Interpreter uses the same initial state and code fetch adapter.".into(),
         cache_and_mapping_policy: "No translation-cache lookup or cache entry. One MAP_JIT PublishedCode mapping at a time; publication is separate from repeated execution; each budget mapping is dropped before publishing the other.".into(),
         exit_normalization: "Preserve raw tags. Normalize only BlockComplete versus InstructionBudgetExhausted when complete LongModeState matches, both retire exactly 6, both have zero remaining budget, and RIP equals code_end.".into(),
         branch_scope: "Final JZ is checked via ZF=1/0, but its displacement is zero, so taken and fall-through both target code_end; this fixture does not test distinct branch routing.".into(),
+        sample_floor_policy: "Retain every raw sample. A compile or execution side below 200ms sets sample_floor_passed=false and classifies the full process as diagnostic-only; no samples are trimmed and no comparison result should be scored.".into(),
         compile_calls_per_sample,
         compile_pairs_ns_per_call,
         variants: variant_reports,
@@ -506,6 +533,9 @@ fn validate_allocation(report: &AllocationReport) -> Result<(), CostError> {
             || report.spilled_temporary_values == 0
             || report.value_spill_loads == 0
             || report.value_spill_stores == 0
+            || report.helper_capture_slots != 0
+            || report.helper_saves != 0
+            || report.helper_reloads != 0
         {
             return Err(fail(
                 "budget0 fixture did not exercise spill-only allocation",
@@ -734,6 +764,7 @@ fn measure_compile_pairs(process_run: u8) -> Result<(usize, Vec<CompilePairSampl
             budget0_total_ns: zero.as_nanos(),
             budget4_ns_per_compile: four.as_nanos() / calls as u128,
             budget0_ns_per_compile: zero.as_nanos() / calls as u128,
+            minimum_sample_met: four >= MIN_SAMPLE && zero >= MIN_SAMPLE,
         });
     }
     Ok((calls, samples))
@@ -796,33 +827,32 @@ fn time_native_batch(
 ) -> Result<Duration, CostError> {
     let mut elapsed = Duration::ZERO;
     let mut remaining = calls;
-    let mut last = None;
     while remaining > 0 {
         let count = remaining.min(CHUNK_CALLS);
         let mut states = vec![case.initial.clone(); count];
+        let mut results = Vec::with_capacity(count);
         let stop_requested = AtomicU8::new(0);
         let started = Instant::now();
         for state in &mut states {
-            last = Some(
+            results.push(
                 published
                     .execute_block(state, INSTRUCTION_BUDGET, None, &stop_requested)
                     .map_err(|error| fail(format!("native timed execution: {error:?}")))?,
             );
         }
         elapsed += started.elapsed();
-        for state in &states {
+        for (state, result) in states.iter().zip(results) {
             if snapshot(state) != oracle.state {
                 return Err(fail(format!("native timed state mismatch for {}", case.id)));
             }
+            if result.exit != RuntimeExitTag::BlockComplete
+                || result.retired_instructions != INSTRUCTION_BUDGET
+                || result.remaining_budget != 0
+            {
+                return Err(fail(format!("native timed exit mismatch: {result:?}")));
+            }
         }
         remaining -= count;
-    }
-    let last = last.ok_or_else(|| fail("empty native timing batch"))?;
-    if last.exit != RuntimeExitTag::BlockComplete
-        || last.retired_instructions != INSTRUCTION_BUDGET
-        || last.remaining_budget != 0
-    {
-        return Err(fail(format!("native timed exit mismatch: {last:?}")));
     }
     Ok(elapsed)
 }
@@ -834,14 +864,14 @@ fn time_interpreter_batch(
 ) -> Result<Duration, CostError> {
     let mut elapsed = Duration::ZERO;
     let mut remaining = calls;
-    let mut last: Option<RunResult> = None;
     while remaining > 0 {
         let count = remaining.min(CHUNK_CALLS);
         let mut states = vec![case.initial.clone(); count];
+        let mut results = Vec::with_capacity(count);
         let mut memory = CodeMemory;
         let started = Instant::now();
         for state in &mut states {
-            last = Some(interpreter_run(
+            results.push(interpreter_run(
                 state,
                 &mut memory,
                 RunConfig {
@@ -853,24 +883,23 @@ fn time_interpreter_batch(
             ));
         }
         elapsed += started.elapsed();
-        for state in &states {
+        for (state, result) in states.iter().zip(results) {
             if snapshot(state) != oracle.state {
                 return Err(fail(format!(
                     "interpreter timed state mismatch for {}",
                     case.id
                 )));
             }
+            if result.exit != RunExit::InstructionBudgetExhausted
+                || result.instructions_executed != INSTRUCTION_BUDGET
+            {
+                return Err(fail(format!(
+                    "interpreter timed exit mismatch: {:?}",
+                    result.exit
+                )));
+            }
         }
         remaining -= count;
-    }
-    let last = last.ok_or_else(|| fail("empty interpreter timing batch"))?;
-    if last.exit != RunExit::InstructionBudgetExhausted
-        || last.instructions_executed != INSTRUCTION_BUDGET
-    {
-        return Err(fail(format!(
-            "interpreter timed exit mismatch: {:?}",
-            last.exit
-        )));
     }
     Ok(elapsed)
 }

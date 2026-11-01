@@ -370,6 +370,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     serde_json::to_value(od_bench::allocator_cost::run(process_run)?)?
                 };
                 od_bench::dispatch_cache::write_atomic(&output, &value)?;
+                if value
+                    .get("sample_floor_passed")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(false)
+                {
+                    return Err(format!(
+                        "allocator-cost wrote a diagnostic-only report (sample floor failed): {}",
+                        output.display()
+                    )
+                    .into());
+                }
             }
             #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
             {
