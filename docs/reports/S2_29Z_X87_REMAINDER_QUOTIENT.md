@@ -67,7 +67,8 @@ formatting, component/workspace checks, and `git diff --check` passed again.
 by the existing isolated-worktree `.git` pointer and two ignored historical
 oracle manifest links documented under ISSUE-023; no layout change was made.
 The initial independent review's P2 documentation finding has been corrected;
-follow-up review is requested separately.
+Sol/high follow-up review confirmed the fix and found no further P0–P2 findings.
+The final docs-only wording cleanup was also reviewed cleanly.
 
 See the [Stage 2 plan](../plans/STAGE_2.md#s2-29z-exact-quotient-metadata-for-bounded-finite-binary80-remainders),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-29z-exact-quotient-metadata-for-bounded-finite-remainders),

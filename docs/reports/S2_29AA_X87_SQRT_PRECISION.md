@@ -45,8 +45,9 @@ Normative basis for the x87 precision choices is Intel SDM Rev. 093, Vol. 1
   no initial index. After seeding the existing index, `graphify update .`
   succeeded in this worktree: 10,961 nodes, 23,607 edges, 328 communities;
   seven uncached files were extracted.
-- Independent Sol/high review is pending. No native/JIT, Mac mini, SSH, or
-  physical x86 verification was performed.
+- Independent `gpt-6.1-sol/high` review of implementation commit
+  `9706ed9f008c7fea78a18cd29248b03c576ed219` found no P0–P2 findings. No
+  native/JIT, Mac mini, SSH, or physical x86 verification was performed.
 
 ## Boundaries
 
