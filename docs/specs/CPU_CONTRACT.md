@@ -9308,10 +9308,13 @@ The interpreter matrix covers 1,536 success states: twelve FCWs × eight TOPs
 × both old PE states × eight C0/C2/C3 patterns. Independent literal raw vectors
 cover sqrt(1), sqrt(4), sqrt(2), p24 tie parity, p53 adjacent midpoint cases,
 minimum and maximum exponent boundaries, p64 significand carry, and a direct
-p24 result that differs from p64-then-narrow. Tests reject all excluded input
-classes/tags, reserved PC=01 and unmasked PM/other masks, each forbidden FSW
-bit, missing x87, prefixes, WAIT/FWAIT, neighboring D9 encodings, truncated
-fetch, STOP, zero budget and fetch faults without commit. JIT and native
+p24 result that differs from p64-then-narrow. Tests reject excluded input
+classes/tags in 11 one-dimension rows, reserved PC=01 and unmasked PM/other
+masks in 28 FCW rows, and each forbidden FSW bit in 8 FSW rows. Missing x87,
+prefixes, WAIT/FWAIT, neighboring D9 encodings, truncated fetch, STOP, zero
+budget and fetch faults also reject without commit. Operand and environment
+rejection rows hold a known-admitted positive Normal in physical TOP except
+for the single field being varied. JIT and native
 admission explicitly deny the operation; no schema/CLI fixture is added. See
 the [S2-30ck plan](../plans/STAGE_2.md#s2-30ck-bare-register-only-fsqrt-st0-d9-fa),
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-30ck--bounded-bare-fsqrt-st0),

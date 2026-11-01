@@ -12461,8 +12461,9 @@ memory access. Refusals are atomic. See the [standalone report](S2_30CK_X87_FSQR
 for exact local boundaries, literal vectors and source citations.
 
 The 1,536-state FCW/TOP/PE/condition-code matrix, literal binary80 vectors,
-excluded input/environment checks, fetch/STOP/budget boundaries and
-neighboring decode checks passed. Full `od-isa` tests passed 1,750/1,750;
+11 one-dimension operand class/tag rejections, 28 FCW and 8 FSW environment
+rejections, fetch/STOP/budget boundaries and neighboring decode checks passed.
+Full `od-isa` tests passed 1,750/1,750;
 full `od-jit` tests passed 7/7, including its explicit fragment-JIT denial;
 workspace check and format check passed. Native backend has an explicit x87
 deny-group tag but no native denial test was run: the Linux-only runner all-

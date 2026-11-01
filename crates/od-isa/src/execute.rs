@@ -66296,20 +66296,26 @@ mod tests {
             ([0; 10], X87Tag::Valid),                                   // zero
             ([0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80], X87Tag::Valid),         // negative zero
             ([0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0xbf], X87Tag::Valid),   // negative
-            ([1, 0, 0, 0, 0, 0, 0, 0, 0, 0], X87Tag::Special),          // subnormal
-            ([0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0], X87Tag::Special),       // pseudo-denormal
-            ([0, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0x7f], X87Tag::Special), // NaN
-            ([0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f], X87Tag::Special), // infinity
+            ([1, 0, 0, 0, 0, 0, 0, 0, 0, 0], X87Tag::Valid),            // subnormal
+            ([0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0], X87Tag::Valid),         // pseudo-denormal
+            ([0, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0x7f], X87Tag::Valid),   // NaN
+            ([0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f], X87Tag::Valid),   // infinity
             ([0, 0, 0, 0, 0, 0, 0, 0x40, 0xff, 0x3f], X87Tag::Valid),   // malformed
             ([0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f], X87Tag::Zero),    // wrong tag
             ([0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f], X87Tag::Empty),   // wrong tag
+            ([0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f], X87Tag::Special), // wrong tag
         ];
+        assert_eq!(invalid_inputs.len(), 11);
         for (raw, tag) in invalid_inputs {
             let mut state = LongModeState::default();
             state.rip = 0x83c0;
             let mut x87 = crate::state::X87State::fixture_seed();
             x87.control_word = 0x037f;
-            x87.status_word = 0x3820;
+            // Keep TOP at physical R0 and start from the admitted operand so
+            // each row changes only the raw class or the tag under test.
+            x87.status_word = 0x0020;
+            x87.registers[0] = [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f];
+            x87.set_tag(0, X87Tag::Valid);
             x87.registers[0] = raw;
             x87.set_tag(0, tag);
             state.x87 = Some(x87);
@@ -66326,12 +66332,15 @@ mod tests {
         for mask in [0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0020] {
             bad_controls.extend([0x037f ^ mask, 0x077f ^ mask, 0x0b7f ^ mask, 0x0f7f ^ mask]);
         }
+        assert_eq!(bad_controls.len(), 28);
         for control_word in bad_controls {
             let mut state = LongModeState::default();
             state.rip = 0x83c0;
             let mut x87 = crate::state::X87State::fixture_seed();
             x87.control_word = control_word;
             x87.status_word = 0;
+            x87.registers[0] = [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f];
+            x87.set_tag(0, X87Tag::Valid);
             state.x87 = Some(x87);
             let before = state.clone();
             let mut memory = Memory::at(&[0xd9, 0xfa], state.rip);
@@ -66342,14 +66351,18 @@ mod tests {
             assert_eq!(state, before);
         }
 
-        for forbidden in [
+        let forbidden_status_words = [
             0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0040, 0x0080, 0x8000,
-        ] {
+        ];
+        assert_eq!(forbidden_status_words.len(), 8);
+        for forbidden in forbidden_status_words {
             let mut state = LongModeState::default();
             state.rip = 0x83c0;
             let mut x87 = crate::state::X87State::fixture_seed();
             x87.control_word = 0x037f;
             x87.status_word = forbidden;
+            x87.registers[0] = [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f];
+            x87.set_tag(0, X87Tag::Valid);
             state.x87 = Some(x87);
             let before = state.clone();
             let mut memory = Memory::at(&[0xd9, 0xfa], state.rip);

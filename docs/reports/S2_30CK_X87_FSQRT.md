@@ -43,6 +43,9 @@ acceptance are not claimed.
   missing x87, all reserved PC=01 forms, each cleared exception mask, each
   forbidden FSW bit, prefixes, WAIT/FWAIT, D9 neighbors, truncation/fetch
   fault, STOP and zero instruction budget.
+- The 11 operand-class/tag rows start at an admitted positive Normal in the
+  physical TOP cell and vary only its raw class or tag. The 28 FCW and 8 FSW
+  rows keep that operand fixed and vary only the environment field under test.
 - JIT denial is covered by a fragment-JIT unit test. Native admission contains
   an explicit x87 deny case, but its Linux-only test could not run on this
   macOS host. Cross-target verification is blocked by pre-existing Linux

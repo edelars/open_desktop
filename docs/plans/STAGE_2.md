@@ -11005,9 +11005,12 @@ Verify the full 12 FCW × 8 TOP × two old-PE × eight C0/C2/C3 matrix (1,536
 success snapshots), literal independent vectors for sqrt(1), sqrt(4), sqrt(2),
 p24 even/odd ties, p53 midpoint neighbors, minimum/maximum normal exponent,
 significand carry and a p24 double-rounding counterexample, plus tag/class,
-FCW/FSW, prefix/WAIT, truncated/fetch, STOP and budget refusals. Check complete
-state canaries and no data access. Confirm JIT and native admission remain
-closed. Do not add schema or CLI fixtures. ISSUE-019 remains open.
+FCW/FSW, prefix/WAIT, truncated/fetch, STOP and budget refusals. Operand
+rejection rows must vary only one property from a known-admitted positive
+Normal at physical TOP; environment rejection rows must retain that operand.
+Check complete state canaries and no data access. Confirm JIT and native
+admission remain closed. Do not add schema or CLI fixtures. ISSUE-019 remains
+open.
 
 
 #### S2-18j — bare CLD/STD (локальный профиль)
