@@ -573,6 +573,32 @@ or displacement width is implied. The fixture does not establish MMIO, SMC,
 owner/MMU integration, or hardware behavior. See the
 [S3-20ea report](../reports/STAGE_3_S3-20ea_2026-11-02.md).
 
+#### S3-20eb: exact RSP-base Dword load with signed disp8 through SIB
+
+The shared typed-IR Dword-load path admits only the exact four-byte singleton
+`8B 44 24 ib` (`MOV EAX,[RSP+disp8]`): address64 SIB, full-width RSP base,
+no index, scale 1, and a signed 8-bit displacement. The decoder-owned memory
+operand computes full-width RSP plus signed disp8 with wrapping u64
+arithmetic. A successful checked load performs one contiguous four-byte read,
+writes EAX with zero-extension into RAX, and commits guest RIP to `A+4`.
+The JIT source/site test binds all 256 displacement-byte values to their exact
+sites; this does not make a separate PC-map phase claim.
+
+The host fixture compares native execution with the interpreter and verifies
+one width-four read. It checks `+1` and `-1` displacement cases, including
+RSP `0x1001` with `-1` reaching `0x1000`, and RSP `u64::MAX` with `+1`
+wrapping the starting address to zero. Noncanonical stack addresses at the
+start and width-four range end fault as `#SS`, contrasted with an RBX-base
+`#GP` control. Width-four range overflow and backend read errors do not commit
+guest state. Budget/STOP guards avoid reads; callback STOP after a successful
+read leaves the load and `A+4` commit visible. Retrying the same published
+block with committed RIP `A+4` returns
+`EntryRipMismatch { expected: A, actual: A+4 }`, preserves state, and does not
+perform another read. Other bases, SIB forms, prefixes, or displacement
+widths are not implied. The fixture does not establish MMIO, SMC, owner/MMU,
+or hardware integration. See the
+[S3-20eb report](../reports/STAGE_3_S3-20eb_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
