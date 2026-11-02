@@ -363,6 +363,27 @@ these exact forms. Host semantic checks use private synchronous RAM and do not
 establish MMIO, SMC, owner notification, or MMU integration. See the
 [S3-20dq report](../reports/STAGE_3_S3-20dq_2026-11-02.md).
 
+#### S3-20dr: exact RBP-base Dword load with signed disp8
+
+The shared typed-IR Dword-load path admits the exact three-byte singleton
+`8B 45 ib` (`MOV EAX,[RBP+disp8]`). The decoder-owned `MemoryOperand` supplies
+full-width RBP plus signed disp8 with wrapping; raw source bytes are not used to
+reconstruct the effective address. A successful checked read transfers exactly
+four bytes, writes EAX, and zero-extends into RAX. The immutable site binds all
+256 displacement-byte values and has the single guest boundary `A+3`.
+
+RBP-based noncanonical start or four-byte range-end failures report `#SS`;
+the separate RBX-based S3-20cr host profile retains `#GP` as a control. An
+effective-address wrap from `u64::MAX+1` to zero
+is valid and performs one four-byte read, while a four-byte range beginning at
+`u64::MAX-1` returns `AddressOverflow` before callback or architectural commit.
+Read faults likewise leave state uncommitted. The bounded host cases cover
+budget and STOP guards and successful callback STOP after the load commits.
+Admission remains limited to this exact encoding: no other base, addressing
+form, prefix, SIB, or displacement width is implied. The fixture does not
+establish MMIO, SMC, owner/MMU, or hardware integration. See the
+[S3-20dr report](../reports/STAGE_3_S3-20dr_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
