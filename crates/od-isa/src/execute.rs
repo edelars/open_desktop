@@ -23666,7 +23666,7 @@ fn step_configured(
         });
     }
     if let Operation::FaddStSt0 { destination } = instruction.operation
-        && bounded_x87_fadd_sti_st0_result(state, destination).is_none()
+        && bounded_x87_fadd_sti_st0_large_gap_result(state, destination).is_none()
     {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
@@ -35924,7 +35924,7 @@ fn step_configured(
         }
         Operation::FaddStSt0 { destination } => {
             let (result, inexact, incremented) =
-                bounded_x87_fadd_sti_st0_result(state, destination)
+                bounded_x87_fadd_sti_st0_large_gap_result(state, destination)
                     .expect("FADD result was prevalidated");
             let x87 = state.x87.as_mut().expect("FADD state was prevalidated");
             let physical_destination =
@@ -38773,6 +38773,15 @@ fn bounded_x87_fadd_sti_st0_result(
     destination_index: u8,
 ) -> Option<([u8; 10], bool, bool)> {
     bounded_x87_fadd_precision_result(state, destination_index, 0, false)
+}
+
+/// Preflight only the non-popping `DC C0..C7` reverse-direction encoding with
+/// the large-gap bridge. `DE C0..C7` FADDP keeps the bounded wrapper above.
+fn bounded_x87_fadd_sti_st0_large_gap_result(
+    state: &LongModeState,
+    destination_index: u8,
+) -> Option<([u8; 10], bool, bool)> {
+    bounded_x87_fadd_precision_result(state, destination_index, 0, true)
 }
 
 fn bounded_x87_fadd_precision_result(
@@ -51590,8 +51599,8 @@ mod tests {
     }
 
     #[test]
-    fn fadd_reverse_and_pop_keep_gap_65_rejection() {
-        for (opcode, modrm) in [(0xdc, 0xc1), (0xde, 0xc1)] {
+    fn faddp_keeps_gap_65_rejection_after_dc_fadd_extension() {
+        for (opcode, modrm) in [(0xde, 0xc1)] {
             let mut state = LongModeState::default();
             state.rip = 0x11a0;
             let mut x87 = crate::state::X87State::fixture_seed();
@@ -55186,8 +55195,10 @@ mod tests {
                     binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
                 match rejection {
                     0 => {
+                        x87.registers[usize::from(physical_destination)] =
+                            binary80_normal(u64::MAX, 0x7ffe, false);
                         x87.registers[usize::from(physical_source)] =
-                            binary80_normal(0x8000_0000_0000_0000, 0x3fff - 65, false);
+                            binary80_normal(u64::MAX, 0x7ffe, false);
                     }
                     1 => {
                         x87.registers[usize::from(physical_source)] =
@@ -55448,7 +55459,113 @@ mod tests {
     }
 
     #[test]
-    fn fadd_sti_st0_rejects_gap_and_environment_failures_atomically() {
+    fn dc_fadd_sti_st0_large_gap_raw_oracle_preserves_destination_and_state() {
+        const CONTROL_WORDS: [u16; 12] = [
+            0x007f, 0x047f, 0x087f, 0x0c7f, 0x027f, 0x067f, 0x0a7f, 0x0e7f, 0x037f, 0x077f, 0x0b7f,
+            0x0f7f,
+        ];
+        // Independent integer oracle: for these power-of-two operands the
+        // tail is strictly below half a target ULP. Round the signed exact
+        // magnitude to the next p-bit integer directly, without using the
+        // production binary80 addition helper.
+        for (gap, high_exponent) in [(65u16, 0x3fff), (66, 0x4000), (32765, 0x7ffe)] {
+            for negative in [false, true] {
+                for opposite_sign in [false, true] {
+                    for high_at_destination in [false, true] {
+                        for control_word in CONTROL_WORDS {
+                            let precision = match control_word & 0x0300 {
+                                0 => 24,
+                                0x0200 => 53,
+                                _ => 64,
+                            };
+                            let rounding = (control_word >> 10) & 3;
+                            let high_significand = 1u64 << 63;
+                            let ulp = 1u64 << (64 - precision);
+                            // The result sign follows the larger-magnitude input.
+                            // Same-sign tails increase magnitude; opposite-sign
+                            // tails decrease it. Directed rounding then chooses
+                            // the adjacent representable integer when required.
+                            let mut state = LongModeState::default();
+                            state.rip = 0x21a0;
+                            let top = 3u8;
+                            let index = 2u8;
+                            let destination = usize::from(top.wrapping_add(index) & 7);
+                            let source = usize::from(top);
+                            let high = binary80_normal(high_significand, high_exponent, negative);
+                            let low = binary80_normal(
+                                high_significand,
+                                high_exponent - gap,
+                                negative ^ opposite_sign,
+                            );
+                            let mut x87 = crate::state::X87State::fixture_seed();
+                            x87.control_word = control_word;
+                            x87.status_word = (u16::from(top) << 11) | (1 << 5) | (1 << 9) | 0x4500;
+                            x87.tag_word = u16::MAX;
+                            x87.registers[destination] =
+                                if high_at_destination { high } else { low };
+                            x87.registers[source] = if high_at_destination { low } else { high };
+                            x87.set_tag(destination as u8, X87Tag::Valid);
+                            x87.set_tag(top, X87Tag::Valid);
+                            state.x87 = Some(x87);
+                            let before = state.clone();
+                            let mut memory = Memory::at(&[0xdc, 0xc0 | index], state.rip);
+                            assert_eq!(
+                                step(&mut state, &mut memory, AccessContext::default()),
+                                Ok(StepOutcome::Advanced),
+                                "gap={gap}, sign={negative}, high_at_destination={high_at_destination}, cw={control_word:#06x}"
+                            );
+                            let result_negative = negative;
+                            let (result_significand, result_exponent, incremented) =
+                                if opposite_sign {
+                                    let rounds_magnitude_down = rounding == 3
+                                        || (result_negative && rounding == 2)
+                                        || (!result_negative && rounding == 1);
+                                    let increments_truncated = rounding == 0
+                                        || (result_negative && rounding == 1)
+                                        || (!result_negative && rounding == 2);
+                                    if rounds_magnitude_down {
+                                        (
+                                            0u64.wrapping_sub(ulp),
+                                            high_exponent - 1,
+                                            increments_truncated,
+                                        )
+                                    } else {
+                                        (high_significand, high_exponent, increments_truncated)
+                                    }
+                                } else {
+                                    let increments = (result_negative && rounding == 1)
+                                        || (!result_negative && rounding == 2);
+                                    (
+                                        high_significand + u64::from(increments) * ulp,
+                                        high_exponent,
+                                        increments,
+                                    )
+                                };
+                            let expected_result = binary80_normal(
+                                result_significand,
+                                result_exponent,
+                                result_negative,
+                            );
+                            let mut expected = before;
+                            let expected_x87 = expected.x87.as_mut().unwrap();
+                            expected_x87.registers[destination] = expected_result;
+                            expected_x87.status_word = (expected_x87.status_word
+                                & !((1 << 5) | (1 << 9)))
+                                | (1 << 5)
+                                | (u16::from(incremented) << 9);
+                            expected_x87.instruction_pointer = expected.rip;
+                            expected.rip += 2;
+                            assert_eq!(state, expected, "gap={gap}, cw={control_word:#06x}");
+                            assert!(memory.accesses.is_empty());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fadd_sti_st0_accepts_extended_gaps_and_rejects_environment_failures_atomically() {
         for (gap, expected, inexact) in [
             (
                 1u16,
@@ -55495,26 +55612,30 @@ mod tests {
             );
         }
 
-        for gap in [65u16, 127, 0x3ffe] {
+        for (gap, high_exponent) in [(65u16, 0x3fff), (127, 0x3fff), (32765, 0x7ffe)] {
             let mut state = LongModeState::default();
             state.rip = 0x2520;
             let mut x87 = crate::state::X87State::fixture_seed();
             x87.control_word = 0x037f;
             x87.status_word = 1 << 5;
             x87.tag_word = u16::MAX;
-            x87.registers[0] = binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
-            x87.registers[1] = binary80_normal(0x8000_0000_0000_0000, 0x3fff - gap, false);
+            x87.registers[0] = binary80_normal(0x8000_0000_0000_0000, high_exponent - gap, false);
+            x87.registers[1] = binary80_normal(0x8000_0000_0000_0000, high_exponent, false);
             x87.set_tag(0, X87Tag::Valid);
             x87.set_tag(1, X87Tag::Valid);
             state.x87 = Some(x87);
-            let before = state.clone();
             let mut memory = Memory::at(&[0xdc, 0xc1], state.rip);
             assert_eq!(
                 step(&mut state, &mut memory, AccessContext::default()),
-                Ok(StepOutcome::Unsupported { opcode: 0xdc }),
+                Ok(StepOutcome::Advanced),
                 "gap={gap}"
             );
-            assert_eq!(state, before, "gap={gap}");
+            assert_eq!(
+                state.x87.as_ref().unwrap().registers[1],
+                binary80_normal(0x8000_0000_0000_0000, high_exponent, false),
+                "gap={gap}"
+            );
+            assert_ne!(state.x87.as_ref().unwrap().status_word & (1 << 5), 0);
         }
 
         for rejection in 0..6 {

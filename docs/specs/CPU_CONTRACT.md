@@ -9710,8 +9710,9 @@ absent FCS/FDS, one of twelve all-exception-masked PC24/53/64 FCWs, and
 physical operands must be Valid-tagged canonical nonzero Normal binary80
 values of either sign. For `i=0`, validate only physical TOP and double ST(0).
 Require normalized exponent gap≤64 before calling the direct-addition
-precision helper, regardless of its wider S2-29af range. Accept only finite
-Normal exact and rounded results.
+precision helper, regardless of its wider S2-29af range. S2-30dg extends only
+the non-popping `DC C0..C7` form to gaps through 32765 using that existing
+large-gap bridge. Accept only finite Normal exact and rounded results.
 
 On success, write the rounded result only to old physical `(TOP+i)&7`, set PE
 to old PE OR `inexact`, replace C1 from the helper's pre-carry magnitude
@@ -9719,9 +9720,11 @@ to old PE OR `inexact`, replace C1 from the helper's pre-carry magnitude
 source bytes and all unrelated state; set FIP to old RIP, advance RIP by two,
 retire once, and make no data access. Unsupported operands, environment,
 exponent gaps, zero/subnormal/overflow results and execution boundaries reject
-atomically. The existing `D8` precision path and `DE` pop forms are unchanged.
-No guest exception delivery, JIT/native admission or physical x86 acceptance
-is implied. See the [S2-30ct report](../reports/S2_30CT_X87_FADD_REVERSE_PRECISION.md),
+atomically. The existing `D8` precision path is unchanged. `DE C0..C7` FADDP
+keeps its independent gap≤64 admission; S2-30dg does not extend popping or
+other reverse arithmetic forms. No guest exception delivery, JIT/native
+admission or physical x86 acceptance is implied. See the [S2-30ct report](../reports/S2_30CT_X87_FADD_REVERSE_PRECISION.md),
+[S2-30dg report](../reports/S2_30DG_X87_FADD_REVERSE_LARGE_GAPS.md),
 [plan](../plans/STAGE_2.md#s2-30ct-bare-reverse-fadd-sti-st0-with-bounded-fcw-precision),
 [shared report](../reports/STAGE_2_REPORT.md#s2-30ct--bounded-reverse-fadd-sti-st0),
 and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).

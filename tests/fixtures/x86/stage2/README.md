@@ -1413,6 +1413,17 @@ suite separately covers gap boundaries through 32765 and verifies `DC`/`DE`
 gap-65 rejection. The fixture is interpreter evidence only, not physical x86
 acceptance.
 
+### S2-30dg large-gap reverse FADD fixture coverage
+
+`s2_30dg_fadd_sti_st0_gap65_up.case.json` is a literal `DC C1` schema-v2
+case with ST(0)=+1 and actual Normal ST(1)=`0000000000000080be3f` (`2^-65`).
+Its PC24 round-up result checks the old physical `ST(1)` destination, sticky
+PE/C1, FIP, TOP/tags and full interpreter snapshot. The runner test also checks
+JIT denial; the native admission test reads this same fixture and rejects the
+x87 operation. ISA raw-integer coverage spans gaps 65, 66 and 32765, both
+operand orders/signs and all twelve masked FCWs. `DE C1` FADDP continues to
+refuse gap 65. This is interpreter evidence only, not physical x86 acceptance.
+
 ### S2-30da x87 schema and fixture coverage
 
 The existing schema admits every bare `DE C8..CF` FMULP encoding. The

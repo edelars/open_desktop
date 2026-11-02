@@ -22079,3 +22079,23 @@ Workspace all-target offline check, formatting, layout и `git diff --check`
 удалены в двух неактивных Stage 3 worktree; чистые Stage 3 worktree с
 уникальными неперенесёнными коммитами сохранены. Физическая x86-проверка не
 выполнялась; Этап 2 остаётся открытым.
+
+## S2-30dg — large-gap reverse FADD ST(i),ST(0)
+
+Extended only bare Long64 `DC C0..C7` to use S2-29af's Normal-to-Normal
+large-gap addition bridge through gap 32765. The explicit admission is limited
+to non-popping reverse FADD; `DE` FADDP and other reverse forms keep their
+separate gates. The 288-case independent integer oracle covers gaps 65, 66
+and 32765 across both operand placements, signs, tail signs and twelve masked
+FCWs. A literal gap-65 fixture checks the complete interpreter state and JIT
+denial; its native-denial test is present in the Linux-only admission suite,
+which was not available on this macOS host.
+
+Validation passed: `od-isa` 1,866; `od-testkit` 455; runner 120 unit + 509
+fixture; `od-x86-runner` 8 library + 4 binary tests; workspace all-target
+offline check; formatting; and diff check. The isolated layout check reports
+its `.git` pointer and two absent historical oracle manifests documented in
+ISSUE-023. No physical x86 acceptance is claimed. Independent Sol/high review
+is pending transfer. See [standalone report](S2_30DG_X87_FADD_REVERSE_LARGE_GAPS.md),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30ct-bounded-fadd-sti-st0-dc-c0c7),
+and [plan](../plans/STAGE_2.md#s2-30dg-large-gap-fadd-sti-st0-admission).

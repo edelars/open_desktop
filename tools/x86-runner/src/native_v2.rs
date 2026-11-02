@@ -4052,6 +4052,23 @@ mod tests {
     }
 
     #[test]
+    fn s2_30dg_large_gap_reverse_fadd_fixture_is_denied_by_native_admission() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/x86/stage2");
+        let loaded = Fixture::from_json(
+            &std::fs::read(directory.join("s2_30dg_fadd_sti_st0_gap65_up.case.json")).unwrap(),
+        )
+        .unwrap();
+        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert!(
+            admission(&loaded.fixture, &mut decoder, &actual)
+                .unwrap_err()
+                .contains("x87 instruction is not admitted")
+        );
+    }
+
+    #[test]
     fn rep_scas_wdq_widths_and_prefix_orders_are_explicitly_rejected_by_native_admission() {
         let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/x86/stage2");

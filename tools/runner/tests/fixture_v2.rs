@@ -42,6 +42,8 @@ const LOCK_XADD_QWORD_MEMORY_ALIAS_SPLIT: &[u8] = include_bytes!(
 );
 const MFENCE_STORE_FENCE_LOAD: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_21g_mfence_store_fence_load.case.json");
+const FADD_STI_ST0_GAP65: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30dg_fadd_sti_st0_gap65_up.case.json");
 const CMPSS_REGISTER_PAIRS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37x_cmpss_registers.case.json");
 const CMPSD_REGISTER_PAIRS: &[u8] =
@@ -9382,6 +9384,31 @@ fn local_x87_state_profile_runs_exact_and_inexact_fadd_with_status() {
     expected_state.rip = HexU64(0x0010_0002);
     expected_state.x87 = Some(od_testkit::v2::X87Snapshot::from(&expected));
     assert_eq!(observed.state, expected_state);
+}
+
+#[test]
+fn s2_30dg_literal_large_gap_reverse_fadd_fixture_checks_state_and_backend_denial() {
+    let (input, result) = run(FADD_STI_ST0_GAP65, "interpreter", 0);
+    assert_eq!(input.fixture.case_id, "s2_30dg_fadd_sti_st0_gap65_up");
+    assert_eq!(count(&result), 1);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    let observed = snapshot(&result);
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = HexU64(0x0010_0002);
+    let mut x87 = expected.x87.clone().unwrap();
+    x87.registers[0] = "0000000000010080ff3f".into(); // 1 + 2^-65, rounded upward at PC24
+    x87.status_word = HexU64(0x3a20); // sticky PE and C1, TOP preserved
+    x87.instruction_pointer = HexU64(0x0010_0000);
+    expected.x87 = Some(x87);
+    assert_eq!(observed.state, expected);
+    assert_eq!(observed.memory[0].bytes_hex, "dcc1");
+
+    let (_, jit_result) = run(FADD_STI_ST0_GAP65, "jit", 4);
+    assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        jit_result.snapshot,
+        Observation::Unavailable { .. }
+    ));
 }
 
 #[test]

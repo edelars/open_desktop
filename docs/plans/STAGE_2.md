@@ -209,6 +209,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30co | Bare `D8 C8..CF` FMUL ST(0),ST(i), direct FCW precision/rounding, normal finite result domain, sticky PE and local C1 diagnostic; reverse/pop remain exact-only | S2-29ad; independent Sol/high review clean |
 | [x] | S2-30cp | Bare `D8 C0..C7` FADD ST(0),ST(i), direct FCW precision/rounding for normalized gap≤64, normal finite result domain, sticky PE and local C1 diagnostic; reverse FADD precision extension is S2-30ct; pop remains exact-only | S2-29ae; independent Sol/high review clean |
 | [x] | S2-30df | Bare `D8 C0..C7` FADD ST(0),ST(i) reuses S2-29af large-gap arithmetic for normalized gaps above 64 through the maximum Normal-to-Normal gap 32765; reverse `DC`, pop `DE`, FSUB family and helper admission stay unchanged | S2-29af, S2-30cp; independent Sol/high review clean; od-isa 1,862, testkit 455, runner 120+507; workspace check/fmt/diff and Graphify pass; layout caveat recorded in standalone report |
+| [x] | S2-30dg | Bare `DC C0..C7` FADD ST(i),ST(0) reuses S2-29af for normalized gaps 65..32765; only non-popping reverse FADD gains large-gap admission, while `DE` FADDP retains gap≤64 | S2-29af, S2-30ct; validation recorded in standalone report; review pending transfer |
 | [x] | S2-30cq | Bare `D8 E0..E7` FSUB ST(0),ST(i), direct FCW precision/rounding for normalized gap≤64 via validated RHS sign flip and existing addition helper; normal finite result domain, sticky PE and local C1 diagnostic; reverse/pop remain exact-only | S2-29ae; independent Sol/high review clean |
 | [x] | S2-30cr | Bare `D8 E8..EF` FSUBR ST(0),ST(i), direct FCW precision/rounding for normalized gap≤64 via validated local ST(0) sign flip and existing addition helper; normal finite result domain, sticky PE and local C1 diagnostic; other DC reverse and DE pop forms remain unchanged | S2-29ae; independent Sol/high review clean |
 | [x] | S2-30cs | Bare `D8 F8..FF` FDIVR ST(0),ST(i), direct FCW precision/rounding in reversed operand order; all-masked PC24/53/64; bounded Normal result; no pop | S2-29ac; independent Sol/high review clean; integrated main validation recorded below |
@@ -11430,6 +11431,21 @@ See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30ct-bounded-fadd-sti-s
 [shared report](../reports/STAGE_2_REPORT.md#s2-30ct--bounded-reverse-fadd-sti-st0), and
 [standalone report](../reports/S2_30CT_X87_FADD_REVERSE_PRECISION.md). S2-30
 and ISSUE-019 remain open.
+
+#### S2-30dg. Large-gap `FADD ST(i), ST(0)` admission
+
+Extend only bare Long64 `DC C0..C7` from S2-30ct to admit normalized
+Normal-to-Normal exponent gaps 65 through 32765 using the existing S2-29af
+arithmetic bridge. Keep the admission explicit on the non-popping reverse
+`FADD` path: `DE C0..C7` FADDP must continue to reject gaps above 64, and
+other `DC` operations retain their own contracts. Preserve S2-30ct's twelve
+all-masked FCWs, selectors/status/tag/operand/result checks, old physical
+destination `(TOP+i)&7`, sticky PE/C1 policy, TOP/tags/source and unrelated
+state, plus atomic refusal. The S2-30dg raw-integer oracle spans gaps 65, 66
+and 32765; operand orders, signs, FCW modes, raw result bits, state, and the
+`DE` gap-65 refusal are checked. A literal schema-v2 case records actual
+`2^-65` input bytes and interpreter state; JIT/native admission remains closed.
+No physical x86 acceptance is claimed. See the [S2-30dg report](../reports/S2_30DG_X87_FADD_REVERSE_LARGE_GAPS.md).
 
 #### S2-30cu. Bare reverse `FMUL ST(i), ST(0)` with bounded FCW precision
 
