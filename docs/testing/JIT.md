@@ -96,6 +96,10 @@ S3-34aj pins only the S3-20cy exact `67 89 03` admission/provenance JIT test and
 
 S3-34ak pins the S3-20cz JIT source/site identity and wrapped-EBX host behavior: `memory_load_v2::tests::ir_dword_addr32_disp8_load_binds_all_signed_source_bytes_to_its_site` and `tests::s3_20cz_addr32_disp8_dword_load_uses_wrapped_ebx`. The gate makes no PC-map claim and does not close corpus/reducer or full S3-34. See the [S3-34ak report](../reports/STAGE_3_S3-34ak_2026-11-02.md).
 
+## S3-34al: exact gates for S3-20da source/site and host behavior
+
+Harness commit `2751ba2` pins `memory_load_v2::tests::ir_dword_addr32_disp32_load_binds_all_source_bytes_to_its_site` from S3-20da and `tests::s3_20da_addr32_disp32_dword_load_uses_wrapped_ebx` from S3-20da. Both exact Cargo gates passed 1/1; the focused harness self-test `test_s3_34al_addr32_disp32_dword_load_gates_are_pinned_and_fail_closed` and full Stage 3 harness passed 59/59. This gate has no PC-map claim and does not close corpus/reducer or full S3-34. No CPU discovery was run for this harness slice. See the [S3-34al report](../reports/STAGE_3_S3-34al_2026-11-02.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases
