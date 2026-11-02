@@ -43,10 +43,19 @@ notes passed. No project path was added outside existing directories. These
 are environment and historical-report limitations, not changes to the
 implementation.
 
-Independent Sol/high review remains pending in the retained worktree for parent
-review. No physical x86 execution or native/JIT support is claimed.
+Independent Sol/high review is clean after adding non-alias `DC E1` and `DE E1`
+gap-65 refusal and full-state rollback coverage. No physical x86 execution or
+native/JIT support is claimed.
 
-See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30di-large-gap-fsub-st0-sti-d8-e0-e7),
+## Main integration
+
+Integrated with S2-37dz. Combined main validation passed: od-isa 1,877,
+od-testkit 455, runner 123 unit + 513 fixture, and od-x86-runner 8 library + 4
+binary tests. Workspace all-target offline check, formatting, layout and diff
+check passed. Main Graphify refresh: 11,695 nodes, 25,338 edges, 355
+communities. No physical x86 acceptance is claimed.
+
+See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30di-large-gap-fsub-st0-sti-d8-e0e7),
 [Stage 2 plan](../plans/STAGE_2.md#s2-30di-large-gap-fsub-st0-sti-admission),
 [shared report](STAGE_2_REPORT.md#s2-30di--large-gap-fsub-st0-sti),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30di-large-gap-fsub-fixture-coverage),

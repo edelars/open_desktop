@@ -22092,6 +22092,18 @@ Workspace all-target offline check, formatting, layout и `git diff --check`
 с уникальными неперенесёнными коммитами сохранены. Физическая x86-проверка не
 выполнялась; Этап 2 остаётся открытым.
 
+## Main integration: S2-30di + S2-37dz
+
+После переноса large-gap `FSUB ST(0),ST(i)` и local masked `RSQRTPS`
+memory-профиля полные проверки main прошли: `od-isa` 1,877; `od-testkit`
+455; runner 123 unit и 513 serialized fixture tests; `od-x86-runner` 8 library
++ 4 binary tests. Workspace all-target offline check, formatting, layout и
+`git diff --check` прошли. Graphify AST refresh: 11,695 nodes, 25,338 edges,
+355 communities. Независимые Sol/high reviews обоих срезов чистые. ISSUE-025
+остаётся открытым: результат RSQRTPS — локальный reference по error envelope,
+без заявлений о hardware bit equality или закрытии tiny-result threshold.
+Физическая x86-проверка не выполнялась; Этап 2 остаётся открытым.
+
 ## Main integration: S2-30dh + S2-37dy
 
 После переноса large-gap `FADDP ST(i),ST(0)` и local masked `RCPPS`

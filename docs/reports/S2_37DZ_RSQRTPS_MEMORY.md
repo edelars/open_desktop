@@ -33,3 +33,12 @@ and 381 communities. `tools/check_layout.py` reports only the isolated worktree
 `.git` marker and two unavailable historical oracle manifests already recorded
 under ISSUE-023; it found no new path/link errors. Independent Sol/high review
 is clean; no actionable findings. No physical x86 acceptance is claimed.
+
+## Main integration
+
+Integrated with S2-30di. Combined main validation passed: od-isa 1,877,
+od-testkit 455, runner 123 unit + 513 fixture, and od-x86-runner 8 library + 4
+binary tests. Workspace all-target offline check, formatting, layout and diff
+check passed. Main Graphify refresh: 11,695 nodes, 25,338 edges, 355
+communities. ISSUE-025 remains open; the local error-envelope reference makes
+no physical hardware bit-equality claim. No physical x86 acceptance was run.
