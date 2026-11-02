@@ -12,6 +12,10 @@ Run `cargo test -p od-jit --lib ir_dword_load_admits_only_exact_8b03_and_preserv
 
 Run `cargo test -p od-jit --lib ir_dword_rbx_disp8_load_binds_all_signed_source_bytes_to_its_site --offline` and `cargo test -p od-host --lib s3_20cr_disp8_dword_load_zero_extends_and_reads_exactly_four_bytes --offline`. Preserve the existing S3-20cn host identity `s3_26c_ir_dword_load_zero_extends_and_reads_exactly_four_bytes` for exact `8B 03`; it is not the disp8 test. Admit only the three-byte singleton `8B 43 ib` (`MOV EAX,[RBX+disp8]`): ModRM `mod=01`, destination EAX, base RBX, and one signed disp8. The JIT test checks all 256 displacement bytes bind distinct source/site identities and preserve the single boundary at `A+3`. The new S3-20cr host differential checks the decoder-owned signed effective address, one four-byte read, EAX zero-extension, atomic no-commit on faults, and the bounded STOP/retirement behavior. Other dword MOVs, bases, SIB, prefixes, and displacement widths remain unsupported. This does not add owner/MMU, Mini, M1, Stage 2, physical-x86, or performance evidence. See the [S3-20cr report](../reports/STAGE_3_S3-20cr_2026-11-01.md).
 
+## S3-20cs: exact dword checked load with signed disp32
+
+Run `cargo test -p od-jit --lib ir_dword_rbx_disp32_load --offline` and `cargo test -p od-host --lib s3_20cs_disp32_dword_load_zero_extends_and_reads_exactly_four_bytes --offline`. Admit only the six-byte singleton `8B 83 id` (`MOV EAX,[RBX+disp32]`), with decoder-owned signed displacement from the full RBX value. JIT checks bind source bytes to the site and use the exact `A+6` single-instruction PC-map boundary. The host differential checks the signed-displacement cases, exact four-byte read, EAX zero-extension, and atomic no-commit on failed reads. Keep the earlier S3-20cr host identity separately pinned for `8B 43 ib`; it is not replaced by this form. Other dword bases/forms remain closed; no owner/MMU, Mini, M1, Stage 2, physical-x86, or performance conclusion follows. See the [S3-20cs report](../reports/STAGE_3_S3-20cs_2026-11-01.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases

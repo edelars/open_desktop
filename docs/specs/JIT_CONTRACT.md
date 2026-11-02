@@ -155,6 +155,23 @@ prefixes, SIB, displacement widths, multi-instruction blocks, or a general
 dword memory family. It adds no owner/MMU, cache, dispatcher, SMC, or
 performance conclusion. See the [S3-20cr report](../reports/STAGE_3_S3-20cr_2026-11-01.md).
 
+#### S3-20cs: exact dword load with RBX-base disp32
+
+The shared typed-IR Dword-load artifact additionally admits exactly the
+six-byte singleton `8B 83 id` (`MOV EAX,[RBX+disp32]`). The decoded
+`MemoryOperand` supplies the signed disp32 effective address from the full-width
+RBX value. A successful checked read transfers four bytes and zero-extends EAX
+into RAX. The descriptor binds all six source bytes and the single guest
+instruction boundary is `A+6`; the PC map uses that same boundary. The bounded
+host fixture checks signed displacement cases, exact four-byte callback,
+zero-extension, and no architectural commit on failed reads.
+
+This is a separate exact encoding from S3-20cr `8B 43 ib`; it does not admit
+other dword bases/addressing modes, prefixes, SIB, arbitrary multi-instruction
+blocks, or a general dword memory family. It adds no owner/MMU, cache,
+dispatcher, SMC, Mini, M1, Stage 2, physical-x86, or performance conclusion.
+See the [S3-20cs report](../reports/STAGE_3_S3-20cs_2026-11-01.md).
+
 #### S3-20c: one-byte SIB extension
 
 S3-20c extends both existing qword operations to exactly one SIB byte:
