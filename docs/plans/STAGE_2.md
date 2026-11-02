@@ -11471,7 +11471,7 @@ Rev. 093 Vol. 2A `FMUL/FMULP/FIMUL`, pp. 3-360–3-362; Vol. 1 §8.1.5.1–.3,
 Table 8-2 and §8.5.6, pp. 8-7–8-8 and 8-30
 ([Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=478),
 [Vol. 1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)).
-See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30da-bounded-fmulp-sti-st0-de-c8cf),
+See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30da-bounded-fcw-precision-fmulp-sti-st0-de-c8i),
 [shared report](../reports/STAGE_2_REPORT.md#s2-30da--bounded-fmulp-sti-st0), and
 [standalone report](../reports/S2_30DA_X87_FMULP_PRECISION.md). S2-30 and
 ISSUE-019 remain open.

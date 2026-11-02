@@ -2854,7 +2854,7 @@ results clear C1, and C0/C2/C3 are undefined. General rounding, special values,
 exception delivery, CR0/#NM and native x87 behavior are not implemented.
 
 The original exact-only admission described here was extended by
-[S2-30da](#local-s2-30da-bounded-fcw-precision-fmulp-sti-st0-de-c8cf): the
+[S2-30da](#local-s2-30da-bounded-fcw-precision-fmulp-sti-st0-de-c8i): the
 current interpreter profile also admits bounded FCW-precision products.
 
 ## Local S2-30da: bounded FCW-precision `FMULP ST(i), ST(0)` (`DE C8+i`)

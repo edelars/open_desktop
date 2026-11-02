@@ -21483,14 +21483,16 @@ occurs. Native/JIT and general x87 exception delivery remain closed.
 Coverage includes all 64 TOP/index pairs, all twelve FCWs and both result
 signs; `i=0` alias squaring; PE/C1 behavior; invalid input and range refusals;
 fetch/STOP/budget atomicity; and a static schema-v2 PC64 inexact fixture.
-Focused `od-isa` tests passed 3/3, the focused runner test passed, all 497
-`fixture_v2` tests passed, and `od-testkit` passed. Full validation, layout,
+Focused `od-isa` tests passed 3/3, and the explicit `fixture_v2` runner test
+compares the complete post-execution CPU state, exception observation and
+memory bytes against the static fixture. The full fixture suite passed 498
+tests, and `od-testkit` passed. Full validation, layout,
 Graphify refresh and independent review results are recorded in the
 [standalone report](S2_30DA_X87_FMULP_PRECISION.md). This extends the original
 exact-only S2-30p local slice. No physical x86 acceptance is claimed. Sources:
 Intel SDM Rev. 093 Vol. 2A `FMUL/FMULP/FIMUL`, pp. 3-360–3-362; Vol. 1
 §§8.1.5.1–.3, Table 8-2 and §8.5.6, pp. 8-7–8-8 and 8-30. See the
-[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30da-bounded-fcw-precision-fmulp-sti-st0-de-c8cf),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30da-bounded-fcw-precision-fmulp-sti-st0-de-c8i),
 [plan](../plans/STAGE_2.md#s2-30da-bare-fmulp-sti-st0-with-bounded-fcw-precision),
 and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
 

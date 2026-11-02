@@ -24,22 +24,28 @@ x87 exception delivery remain unsupported.
   including all 64 TOP/index pairs across twelve FCWs and both signs.
 - `cargo test -p od-isa --offline -q`: 1,838 tests passed.
 - Focused runner FMULP fixture test: passed.
-- `cargo test -p od-runner --test fixture_v2 --offline -q`: 497 tests passed,
-  including the new static PC64 inexact fixture.
+- `cargo test -p od-runner --test fixture_v2 s2_30da_fmulp_fixture_executes_and_matches_the_complete_post_state --offline`:
+  passed; it compares the full resulting CPU state, exception observation and
+  unchanged memory bytes against the static PC64 inexact fixture.
+- `cargo test -p od-runner --test fixture_v2 --offline -q`: 498 tests passed,
+  including that explicit static-fixture test.
 - `cargo test -p od-testkit --offline -q`: 455 tests passed.
 - Runner unit tests: 119 passed.
 - `cargo fmt --all -- --check`, `git diff --check` and
   `cargo check --workspace --all-targets --offline`: passed.
-- `graphify update .`: passed; graph refreshed to 11,478 nodes, 24,711 edges
-  and 361 communities.
+- `graphify update .`: passed; graph refreshed to 11,480 nodes, 24,716 edges
+  and 360 communities.
 - `python3 tools/check_layout.py`: reports only the isolated worktree's `.git`
   marker and two unavailable historical oracle manifests tracked by ISSUE-023;
   it reports no broken local links for this change.
 
-Independent Sol/high review is pending on the committed change. No physical
-x86 or native x87 acceptance is claimed. Sources: Intel SDM Rev. 093 Vol. 2A
+Independent Sol/high review found stale documentation anchors and that the
+static fixture was not connected to the `fixture_v2` suite. The follow-up
+corrected the links and added an explicit full-state fixture assertion; review
+of that follow-up is pending. No physical x86 or native x87 acceptance is
+claimed. Sources: Intel SDM Rev. 093 Vol. 2A
 `FMUL/FMULP/FIMUL`, pp. 3-360–3-362; Vol. 1 §§8.1.5.1–.3, Table 8-2 and
-§8.5.6, pp. 8-7–8-8 and 8-30. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30da-bounded-fcw-precision-fmulp-sti-st0-de-c8cf),
+§8.5.6, pp. 8-7–8-8 and 8-30. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30da-bounded-fcw-precision-fmulp-sti-st0-de-c8i),
 [plan](../plans/STAGE_2.md#s2-30da-bare-fmulp-sti-st0-with-bounded-fcw-precision),
 [shared report](STAGE_2_REPORT.md#s2-30da--bounded-fmulp-sti-st0), and
 [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).

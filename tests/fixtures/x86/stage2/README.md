@@ -1392,9 +1392,11 @@ acceptance.
 
 ### S2-30da x87 schema and fixture coverage
 
-The existing schema admits every bare `DE C8..CF` FMULP encoding. Runner
-coverage checks inexact FCW rounding and the `i=0` square before popping the
-old TOP. The static
+The existing schema admits every bare `DE C8..CF` FMULP encoding. The
+`fixture_v2` runner suite includes the static case and compares the complete
+post-execution CPU state, exception observation and memory bytes. The runner
+also checks inexact FCW rounding and the `i=0` square before popping the old
+TOP. The static
 [`PC64 inexact FMULP fixture`](s2_30da_fmulp_pc64_inexact_pop.case.json)
 checks PE, rounded payload placement, old TOP emptying and TOP advancement.
 The eight encodings remain interpreter-only; native/JIT admission stays

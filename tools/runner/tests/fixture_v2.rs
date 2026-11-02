@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 const LOAD_ADD_STORE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/mov_load_add_store.case.json");
+const FMULP_PC64_INEXACT: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30da_fmulp_pc64_inexact_pop.case.json");
 const WIDTHS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/mov_width_aliasing.case.json");
 const REX_RIP: &[u8] =
@@ -3831,6 +3833,38 @@ fn local_x87_state_profile_runs_fnclex_and_preserves_unaffected_fields() {
         observed.state.x87.as_ref(),
         Some(&od_testkit::v2::X87Snapshot::from(&expected))
     );
+}
+
+#[test]
+fn s2_30da_fmulp_fixture_executes_and_matches_the_complete_post_state() {
+    let (input, result) = run(FMULP_PC64_INEXACT, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    let expected_x87 = expected.x87.as_mut().unwrap();
+    expected_x87.registers[1] = "0200000000000080ff3f".into();
+    expected_x87.tag_word = HexU64(0xfff3);
+    expected_x87.status_word = HexU64(0x0820);
+    expected_x87.instruction_pointer = input.fixture.initial_state.rip;
+
+    let observed = snapshot(&result);
+    assert_eq!(observed.state, expected);
+    assert_eq!(observed.exception, Observation::Available { value: None });
+    for region in &observed.memory {
+        let before = input
+            .fixture
+            .memory
+            .iter()
+            .find(|entry| entry.region_id == region.region_id)
+            .unwrap();
+        assert_eq!(
+            region.bytes_hex, before.initial_bytes_hex,
+            "{}",
+            region.region_id
+        );
+    }
 }
 
 #[test]
