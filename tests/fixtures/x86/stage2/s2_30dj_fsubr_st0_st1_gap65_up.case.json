@@ -6,7 +6,7 @@
     "kind": "project_fixture",
     "source": "Literal large-gap FSUBR D8 E9 with actual 2^-65 ST(1) minus positive unit ST(0); local S2-30dj runner fixture.",
     "specification": "Intel SDM revision 093, FSUB; local S2-30dj CPU contract.",
-    "specification_version": "Intel SDM revision 093; project S2-30di"
+    "specification_version": "Intel SDM revision 093; project S2-30dj"
   },
   "seed": null,
   "converted_from_v1_sha256": null,
