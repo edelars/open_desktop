@@ -21336,6 +21336,44 @@ Vol. 2A `FADD/FADDP/FIADD` pp. 3-311–3-313 and Vol. 1 §§8.1.5.1–.3, Table 
 and [standalone report](S2_30CT_X87_FADD_REVERSE_PRECISION.md). ISSUE-019
 remains open.
 
+## S2-30cu — bounded reverse `FMUL ST(i), ST(0)`
+
+The Long64 interpreter admits only exact bare `DC C8..CF`. It reuses the
+S2-29ad full-product helper and rounds once at FCW PC24/53/64 and RC. Both
+participating physical operands must be Valid-tagged canonical nonzero Normal
+binary80 values of either sign; all twelve all-masked FCWs, absent FCS/FDS and
+`FSW & 0x80df == 0` are required. The `i=0` alias validates physical TOP only
+and squares the value.
+
+Success writes only old physical `(TOP+i)&7`, accumulates PE from `inexact`,
+replaces C1 with the pre-carry magnitude `incremented`, and preserves C0/C2/C3
+by local policy. TOP, tags, source payloads, selectors, unrelated state and
+data memory are preserved; FIP receives old RIP, RIP advances by two and the
+instruction retires once. Invalid domains, environment and execution
+boundaries reject atomically. The S2-30co `D8` path and exact-only `DE` FMULP
+remain unchanged. No guest exception delivery, JIT/native admission or
+physical x86 acceptance is claimed.
+
+The focused reverse-FMUL coverage passes 13 tests and includes an 11,520-case
+matrix across all TOP/index pairs, twelve FCWs, signs and prior PE/C1 states;
+literal midpoint/adjacent, direct-versus-double-rounding, carry, negative
+directed-rounding and refusal cases; state preservation, no data access,
+fetch/STOP/budget boundaries and D8/DC/DE regressions. Full `od-isa` passes
+1,805 tests; `od-testkit` passes 455, and runner passes 114 unit plus 492
+fixture tests. Formatting, workspace all-target offline check and diff check
+passed. Layout reported the isolated-worktree `.git` marker and two missing
+historical oracle manifests tracked by ISSUE-023; it reported no new broken
+documentation links. `graphify update .` completed at 11,300 nodes, 24,290
+edges and 342 communities. Independent Sol/high review was clean; the reviewer
+reran all 13 focused FMUL tests and `git diff --check`. See the standalone
+[S2-30cu report](S2_30CU_X87_FMUL_REVERSE_PRECISION.md).
+Sources: Intel SDM Rev. 093 Vol. 2A `FMUL/FMULP/FIMUL`, including `DC C8+i`,
+pp. 3-360–3-362; Vol. 1 §§8.1.5.1–.3, Table 8-2, and §8.5.6, pp. 8-7–8-8,
+8-30. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cu-bounded-fmul-sti-st0-dc-c8cf),
+[plan](../plans/STAGE_2.md#s2-30cu-bare-reverse-fmul-sti-st0-with-bounded-fcw-precision),
+and [standalone report](S2_30CU_X87_FMUL_REVERSE_PRECISION.md). ISSUE-019
+remains open.
+
 ### S2-37dg — SQRTSS XMM0,m32 [RAX]
 
 The interpreter-only schema-v2 profile admits exact `F3 0F 51 00`, reads one

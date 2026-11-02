@@ -9643,6 +9643,48 @@ is implied. See the [S2-30ct report](../reports/S2_30CT_X87_FADD_REVERSE_PRECISI
 [shared report](../reports/STAGE_2_REPORT.md#s2-30ct--bounded-reverse-fadd-sti-st0),
 and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
 
+## Local S2-30cu: bounded `FMUL ST(i), ST(0)` (`DC C8..CF`)
+
+Only exact bare Long64 `DC C8..CF` is admitted. Require present x87 state,
+absent FCS/FDS, one of twelve all-exception-masked PC24/53/64 FCWs, and
+`FSW & 0x80df == 0`. Both participating physical registers must be
+Valid-tagged canonical nonzero Normal binary80 values of either sign. For
+`i=0`, validate only physical TOP and square its value.
+
+Use `multiply_finite_to_normal_binary80_precision_with_diagnostics` with PC/RC
+from FCW. Accept only finite Normal results. On success, write only old
+physical `(TOP+i)&7`, set PE to old PE OR `inexact`, replace C1 from the
+pre-carry magnitude `incremented`, and preserve C0/C2/C3 by deterministic
+local policy for architecture-undefined fields. Preserve TOP, tags, source
+payloads, FCW/FDP/FOP and unrelated state; set FIP to old RIP, advance RIP by
+two, retire once, and perform no data access. All refusals and execution
+boundaries are atomic.
+
+The result is computed from the old ST(i) and old ST(0) values before any
+mutation; multiplication is commutative, while the destination remains the
+old physical `(TOP+i)&7`. The `i=0` alias validates one tag and can be
+inexact. Only `Operation::FmulStSt0` has this precision-aware reverse
+profile. Existing `D8 C8..CF` precision behavior, exact-only `DE C8..CF`
+FMULP and other reverse forms are unchanged. The increment diagnostic records
+a pre-carry magnitude increase; for negative products it is not a signed
+result comparison. No general exception delivery, native/JIT/schema admission
+or physical x86 acceptance is implied.
+
+Coverage includes all TOP/index pairs and twelve FCWs; sign and prior PE/C1
+histories; alias squaring; exact/inexact, halfway/adjacent, direct-versus-
+double-rounding and carry cases; negative directed rounding; range/domain
+refusals; destination/source/state preservation; full atomicity; fetch, STOP,
+budget, no-data-access and D8/DC/DE regressions. Sources: Intel SDM Rev. 093
+Vol. 2A `FMUL/FMULP/FIMUL`, including `DC C8+i` encoding and Operation/FPU
+Flags Affected, pp. 3-360–3-362
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=478));
+Vol. 1 §8.1.5.1–.3, Table 8-2, and §8.5.6, pp. 8-7–8-8 and 8-30
+([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)).
+See the [S2-30cu plan](../plans/STAGE_2.md#s2-30cu-bare-reverse-fmul-sti-st0-with-bounded-fcw-precision),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30cu--bounded-reverse-fmul-sti-st0),
+[standalone report](../reports/S2_30CU_X87_FMUL_REVERSE_PRECISION.md), and
+[ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
 Sources: Intel SDM Rev. 093 Vol. 2A `FADD/FADDP/FIADD`, including the `DC C0+i`
 encoding and Operation/FPU Flags Affected, pp. 3-311–3-313
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=429));

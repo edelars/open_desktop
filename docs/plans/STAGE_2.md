@@ -212,6 +212,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30cr | Bare `D8 E8..EF` FSUBR ST(0),ST(i), direct FCW precision/rounding for normalized gap≤64 via validated local ST(0) sign flip and existing addition helper; normal finite result domain, sticky PE and local C1 diagnostic; other DC reverse and DE pop forms remain unchanged | S2-29ae; independent Sol/high review clean |
 | [x] | S2-30cs | Bare `D8 F8..FF` FDIVR ST(0),ST(i), direct FCW precision/rounding in reversed operand order; all-masked PC24/53/64; bounded Normal result; no pop | S2-29ac; independent Sol/high review clean; integrated main validation recorded below |
 | [x] | S2-30ct | Bare `DC C0..C7` FADD ST(i),ST(0), direct FCW precision/rounding for normalized gap≤64; Valid canonical nonzero Normal operands/results, sticky PE and local C1 diagnostic; `D8` and `DE` neighbors unchanged | Independent Sol/high review clean; combined main validation: od-isa 1,802, testkit 455, runner 114+492, x86-runner 8+4; Graphify 11,245/24,313/337 |
+| [x] | S2-30cu | Bare `DC C8..CF` FMUL ST(i),ST(0), direct FCW precision/rounding; Valid canonical nonzero Normal operands/results, sticky PE and local C1 diagnostic; `D8` and `DE` neighbors unchanged | S2-29ad, S2-30co, S2-30ct; independent Sol/high review clean; od-isa 1,805, testkit 455, runner 114+492; Graphify 11,300/24,290/342 |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
@@ -11373,6 +11374,41 @@ See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30ct-bounded-fadd-sti-s
 [shared report](../reports/STAGE_2_REPORT.md#s2-30ct--bounded-reverse-fadd-sti-st0), and
 [standalone report](../reports/S2_30CT_X87_FADD_REVERSE_PRECISION.md). S2-30
 and ISSUE-019 remain open.
+
+#### S2-30cu. Bare reverse `FMUL ST(i), ST(0)` with bounded FCW precision
+
+Admit only exact bare Long64 `DC C8..CF`. Require present x87 state, absent
+FCS/FDS, one of twelve all-exception-masked PC24/53/64 FCWs, and
+`FSW & 0x80df == 0`. Both physical operands must be Valid-tagged canonical
+nonzero Normal binary80 values of either sign. For `i=0`, validate only
+physical TOP and square its value. Use the S2-29ad multiplication helper
+directly with PC/RC from the FCW; accept only finite Normal results.
+
+On success, write the rounded result only to old physical `(TOP+i)&7`, set PE
+to old PE OR `inexact`, replace C1 with the helper's pre-carry magnitude
+`incremented` diagnostic, and preserve C0/C2/C3 by local policy. Preserve TOP,
+tags, source bytes, FCW/FDP/FOP and unrelated state; set FIP to old RIP, advance
+RIP by two, retire once and make no data-memory access. Reject unsupported
+operands, exact-product exponent failures, zero/subnormal/overflow results,
+unsupported environment and all execution-boundary failures atomically. Keep
+S2-30co's `D8 C8..CF` precision path, exact-only `DE C8..CF` FMULP, and other
+reverse forms unchanged. No general x87 exception delivery, native/JIT/schema
+admission or physical x86 acceptance is implied.
+
+Cover all 64 TOP/index pairs and twelve FCWs, all sign combinations for
+distinct operands, alias squaring, PE/C1 histories, halfway/adjacent results,
+direct rounding versus double rounding, carry normalization, negative directed
+rounding, exponent-range failures, preserved state, full atomicity,
+fetch/STOP/budget behavior, no data access and D8/DC/DE neighbors. Sources:
+Intel SDM Rev. 093 Vol. 2A `FMUL/FMULP/FIMUL`, including `DC C8+i` and
+Operation/FPU Flags Affected, pp. 3-360–3-362; Vol. 1 §8.1.5.1–.3,
+Table 8-2 and §8.5.6, pp. 8-7–8-8 and 8-30
+([Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=478),
+[Vol. 1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)).
+See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cu-bounded-fmul-sti-st0-dc-c8cf),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30cu--bounded-reverse-fmul-sti-st0), and
+[standalone report](../reports/S2_30CU_X87_FMUL_REVERSE_PRECISION.md). S2-30 and
+ISSUE-019 remain open.
 
 #### S2-30cq. Bare `FSUB ST(0), ST(i)` with bounded FCW precision
 
