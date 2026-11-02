@@ -22017,3 +22017,17 @@ See [standalone report](S2_30DC_X87_FSUBRP_PRECISION.md),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dc-bounded-fsubrp-sti-st0-de-e0e7),
 [plan](../plans/STAGE_2.md#s2-30dc-bare-fsubrp-sti-st0-with-bounded-fcw-precision),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dc-bounded-fsubrp-fixture-coverage).
+## S2-37dt — DIVPS XMM0,m128 [RAX]
+
+Added the exact legacy `0F 5E 00` Long64 interpreter profile with SSE bit 25,
+full-fetch-before-gates ordering, masked-only MXCSR validation, mandatory
+16-byte alignment, canonical48 `[RAX,RAX+15]` checking and one atomic read16.
+Execution divides the four old XMM0 lanes by the four memory lanes through the
+existing `Binary32::divide_raw_result`, aggregates IE/DE/ZE/OE/UE/PE, and
+preserves unrelated state. A separate strict schema/result validator uses the
+independent raw-u32 rational DIVPS oracle with the memory RHS. The fixture and
+focused runner tests cover RC/sticky combinations, NaN, zero/infinity,
+subnormal, overflow, gates, alignment, canonical spans, tampering and backend
+denial. Focused ISA and runner results plus remaining full-suite checks are
+recorded in [the standalone report](S2_37DT_DIVPS_MEMORY.md). No physical x86
+acceptance is claimed. See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dt--masked-only-long64-divps-xmm0m128-rax), [plan](../plans/STAGE_2.md#s2-37dt--masked-only-legacy-long64-divps-xmm0m128-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dt--masked-only-long64-divps-xmm0m128-rax).

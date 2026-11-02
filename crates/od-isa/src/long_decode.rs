@@ -1050,6 +1050,8 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only exact legacy `0F 5E 00` DIVPS m128-at-RAX form.
+    DivpsMemoryRax,
     /// Local-only canonical F3 DIVSS register pair; scalar binary32 division.
     DivssRegister {
         destination: u8,
@@ -3914,6 +3916,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         .rex
                         .is_some_and(|rex| matches!(rex, 0x41 | 0x44 | 0x45))
                     && prefix_bytes[0] == prefixes.rex.unwrap());
+        let divps_memory_rax = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x5e
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && prefixes.rex.is_none()
+            && prefix_count == 0;
         let divss_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x5e
             && prefixes.group1 == Some(0xf3)
@@ -5149,12 +5159,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
             (OpcodeMap::Escape0f, 0x5e) if divps_register => {
                 let modrm = self.byte()?;
                 if modrm >> 6 != 3 {
-                    return Err(self.unsupported(opcode));
-                }
-                let rex = prefixes.rex.unwrap_or(0x40);
-                Operation::DivpsRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                    if modrm == 0 && divps_memory_rax {
+                        Operation::DivpsMemoryRax
+                    } else {
+                        return Err(self.unsupported(opcode));
+                    }
+                } else {
+                    let rex = prefixes.rex.unwrap_or(0x40);
+                    Operation::DivpsRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x5e) if divss_register => {
@@ -12278,6 +12293,29 @@ mod tests {
             divpd.decode().unwrap().operation,
             Operation::DivpdRegister { .. }
         ));
+    }
+
+    #[test]
+    fn divps_memory_rax_decodes_only_exact_legacy_form() {
+        let mut memory = Memory::new(&[0x0f, 0x5e, 0x00]);
+        assert_eq!(
+            memory.decode().unwrap().operation,
+            Operation::DivpsMemoryRax
+        );
+        for bytes in [
+            &[0xf3, 0x0f, 0x5e, 0x00][..],
+            &[0x66, 0x0f, 0x5e, 0x00][..],
+            &[0x41, 0x0f, 0x5e, 0x00][..],
+            &[0x0f, 0x5e, 0x01][..],
+            &[0x0f, 0x5e][..],
+            &[0xc5, 0xf8, 0x5e, 0x00][..],
+            &[0x62, 0xf1, 0x7c, 0x08, 0x5e, 0x00][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            if let Ok(decoded) = memory.decode() {
+                assert_ne!(decoded.operation, Operation::DivpsMemoryRax, "{bytes:02x?}");
+            }
+        }
     }
 
     #[test]

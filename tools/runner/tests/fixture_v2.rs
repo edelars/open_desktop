@@ -69,6 +69,9 @@ const ADDPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
 const SUBPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dr_subps_m128_memory_source_and_destination_lanes.case.json"
 );
+const DIVPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37dt_divps_m128_memory_source_and_destination_lanes.case.json"
+);
 const MULPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37ds_mulps_m128_memory_source_and_destination_lanes.case.json"
 );
@@ -38458,6 +38461,167 @@ fn addps_m128_memory_uses_xmm0_and_memory_lanes_and_denies_backends() {
     let (input, result) = run(&gate.to_json().unwrap(), "interpreter", 0);
     od_testkit::v2::compare(&input, &result, &result).unwrap();
     assert!(matches!(result.outcome, Outcome::Exception {}));
+}
+
+#[test]
+fn divps_m128_memory_uses_independent_division_oracle_and_denies_backends() {
+    use od_testkit::result::Backend;
+    use od_testkit::v2::Profile;
+    let base = Fixture::from_json(DIVPS_M128_MEMORY_RAX).unwrap().fixture;
+    assert_eq!(base.profile, Profile::LongDivpsMemoryRaxV1);
+    assert_eq!(base.memory[0].initial_bytes_hex, "0f5e00");
+    let (input, good) = run(DIVPS_M128_MEMORY_RAX, "interpreter", 0);
+    od_testkit::v2::compare(&input, &good, &good).unwrap();
+    let snapshot = match &good.snapshot {
+        Observation::Available { value } => value,
+        _ => panic!("missing DIVPS memory snapshot"),
+    };
+    assert_eq!(
+        snapshot.state.sse.as_ref().unwrap().xmm[0],
+        "abaaaa3e0000c0ff000000000000803f"
+    );
+    assert_eq!(
+        snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+        0x21
+    );
+    let mut wrong_xmm = good.clone();
+    if let Observation::Available { value } = &mut wrong_xmm.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(..2, "ff");
+    }
+    assert!(wrong_xmm.validate_for(&input).is_err());
+    let mut wrong_memory = good.clone();
+    if let Observation::Available { value } = &mut wrong_memory.snapshot {
+        value.memory[1].bytes_hex = "00".repeat(16);
+    }
+    assert!(wrong_memory.validate_for(&input).is_err());
+    let mut wrong_control_echo = good.clone();
+    if let Observation::Available { value } = &mut wrong_control_echo.snapshot {
+        value.divps_controls.as_mut().unwrap().cr0_ts = true;
+    }
+    assert!(wrong_control_echo.validate_for(&input).is_err());
+    for backend in [Backend::Jit, Backend::NativeX86] {
+        let mut relabeled = good.clone();
+        relabeled.backend = backend;
+        assert!(relabeled.validate_for(&input).is_err());
+    }
+    for rc in 0..4u64 {
+        for sticky in 0..64u64 {
+            let mut case = base.clone();
+            case.case_id = format!("s2_37dt_rc{rc}_sticky{sticky}");
+            case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (rc << 13) | sticky);
+            let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+        }
+    }
+    for (stem, lhs, rhs, expected_flags) in [
+        ("qnan_ze_suppressed", 0x7fc1_2345, 0, 0),
+        ("snan_de_suppressed", 0x7f81_2345, 1, 1),
+        ("rhs_qnan_priority", 0x3f80_0000, 0xffc5_4321, 0),
+        ("infinity_over_infinity", 0x7f80_0000, 0x7f80_0000, 1),
+        ("finite_divide_zero", 0x3f80_0000, 0, 4),
+        ("infinity_divide_zero", 0x7f80_0000, 0, 0),
+        ("subnormal_divide_one", 1, 0x3f80_0000, 2),
+        ("one_third", 0x3f80_0000, 0x4040_0000, 0x20),
+        ("overflow", 0x7f7f_ffff, 0x0080_0000, 0x28),
+    ] {
+        let mut case = base.clone();
+        case.case_id = format!("s2_37dt_{stem}");
+        let lane0 = |raw: u32| {
+            raw.to_le_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        };
+        case.initial_state.sse.as_mut().unwrap().xmm[0]
+            .replace_range(..16, &format!("{}{}", lane0(lhs), "0000803f"));
+        case.memory[1]
+            .initial_bytes_hex
+            .replace_range(..16, &format!("{}{}", lane0(rhs), "0000803f"));
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let snapshot = match result.snapshot {
+            Observation::Available { value } => value,
+            _ => panic!("missing DIVPS vector snapshot"),
+        };
+        assert_eq!(
+            snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+            expected_flags,
+            "{stem}"
+        );
+    }
+    let lane0 = |raw: u32| {
+        raw.to_le_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    for (stem, lhs, rhs, rc) in [
+        ("midpoint_rn", 0x00ff_ffff, 0x4000_0000, 0),
+        ("midpoint_ru", 0x00ff_ffff, 0x4000_0000, 2),
+        ("midpoint_rd", 0x00ff_ffff, 0x4000_0000, 1),
+        ("midpoint_rz", 0x00ff_ffff, 0x4000_0000, 3),
+        ("minnormal_neighbor_rn", 0x0080_0000, 0x3f80_0001, 0),
+        ("minnormal_neighbor_ru", 0x0080_0000, 0x3f80_0001, 2),
+        ("minnormal_neighbor_rd", 0x0080_0000, 0x3f80_0001, 1),
+        ("minnormal_neighbor_rz", 0x0080_0000, 0x3f80_0001, 3),
+        ("exact_tiny", 0x0080_0000, 0x4000_0000, 0),
+    ] {
+        let mut case = base.clone();
+        case.case_id = format!("s2_37dt_{stem}");
+        case.initial_state.sse.as_mut().unwrap().xmm[0]
+            .replace_range(..16, &format!("{}0000803f", lane0(lhs)));
+        case.memory[1]
+            .initial_bytes_hex
+            .replace_range(..16, &format!("{}0000803f", lane0(rhs)));
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (rc << 13));
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+    }
+    let mut mixed = base.clone();
+    mixed.case_id = "s2_37dt_mixed_ie_de_ze_oe_pe".into();
+    mixed.initial_state.sse.as_mut().unwrap().xmm[0] = "0000803f000000000000803fffff7f7f".into();
+    mixed.memory[1].initial_bytes_hex = "00000000000000000100000000008000".into();
+    let (input, result) = run(&mixed.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let mixed_snapshot = match result.snapshot {
+        Observation::Available { value } => value,
+        _ => panic!("missing mixed DIVPS snapshot"),
+    };
+    assert_eq!(
+        mixed_snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+        0x2f
+    );
+
+    let mut unaligned = base.clone();
+    unaligned.case_id = "s2_37dt_misaligned_m128".into();
+    unaligned.initial_state.gpr[0] = HexU64(0x2001);
+    unaligned.memory[1].guest_address = HexU64(0x2001);
+    unaligned.expected_exit = od_testkit::v2::ExpectedExit::Exception;
+    let (input, result) = run(&unaligned.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let mut bad_opcode = base.clone();
+    bad_opcode.memory[0].initial_bytes_hex = "0f5e01".into();
+    assert!(bad_opcode.validate().is_err());
+    let mut invalid_mxcsr = base.clone();
+    invalid_mxcsr.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (1 << 15));
+    assert!(invalid_mxcsr.validate().is_err());
+    let mut bad_provenance = base.clone();
+    bad_provenance.provenance.specification.clear();
+    assert!(bad_provenance.validate().is_err());
+    let mut noncanonical = base.clone();
+    noncanonical.case_id = "s2_37dt_noncanonical_memory_span".into();
+    noncanonical.initial_state.gpr[0] = HexU64(0x0000_8000_0000_0000);
+    noncanonical.memory[1].guest_address = HexU64(0x0000_8000_0000_0000);
+    noncanonical.expected_exit = od_testkit::v2::ExpectedExit::Exception;
+    let (input, result) = run(&noncanonical.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let mut no_sse = base.clone();
+    no_sse.case_id = "s2_37dt_sse_gate".into();
+    no_sse.divps_controls.as_mut().unwrap().sse_available = false;
+    no_sse.expected_exit = od_testkit::v2::ExpectedExit::Exception;
+    let (input, result) = run(&no_sse.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
 }
 
 #[test]

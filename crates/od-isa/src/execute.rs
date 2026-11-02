@@ -18919,6 +18919,17 @@ fn step_configured(
                         == if destination >= 8 || source >= 8 {
                             Some(0x40 | (u8::from(destination >= 8) << 2) | u8::from(source >= 8))
                         } else { None }
+        ) || matches!(
+            instruction.operation,
+            Operation::DivpsMemoryRax
+                if instruction.length == 3
+                    && instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0x5e
+                    && instruction.prefixes.group1.is_none()
+                    && instruction.prefixes.segment.is_none()
+                    && !instruction.prefixes.operand_override
+                    && !instruction.prefixes.address_override
+                    && instruction.prefixes.rex.is_none()
         );
         if !is_canonical_register_form {
             return Ok(StepOutcome::Unsupported {
@@ -22194,6 +22205,7 @@ fn step_configured(
             | Operation::AddpsRegister { .. }
             | Operation::AddpsMemoryRax
             | Operation::SubpsMemoryRax
+            | Operation::DivpsMemoryRax
             | Operation::DivpdRegister { .. }
             | Operation::DivsdRegister { .. }
             | Operation::DivpsRegister { .. }
@@ -22268,6 +22280,7 @@ fn step_configured(
             | Operation::AddpsRegister { .. }
             | Operation::AddpsMemoryRax
             | Operation::SubpsMemoryRax
+            | Operation::DivpsMemoryRax
             | Operation::DivpdRegister { .. }
             | Operation::DivsdRegister { .. }
             | Operation::DivpsRegister { .. }
@@ -22568,11 +22581,20 @@ fn step_configured(
                 && sse.mxcsr & (1 << 6) == 0
                 && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
         } else if configured_divps_register_controls.is_some()
-            && matches!(instruction.operation, Operation::DivpsRegister { .. })
+            && matches!(
+                instruction.operation,
+                Operation::DivpsRegister { .. } | Operation::DivpsMemoryRax
+            )
         {
-            sse.mxcsr & !0x0000_ffbf == 0
-                && sse.mxcsr & (1 << 6) == 0
-                && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
+            if instruction.operation == Operation::DivpsMemoryRax {
+                sse.mxcsr & !0x0000_ffbf == 0
+                    && sse.mxcsr & ((1 << 6) | (1 << 15)) == 0
+                    && sse.mxcsr & 0x1f80 == 0x1f80
+            } else {
+                sse.mxcsr & !0x0000_ffbf == 0
+                    && sse.mxcsr & (1 << 6) == 0
+                    && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
+            }
         } else if configured_mulsd_register_controls.is_some()
             && matches!(instruction.operation, Operation::MulsdRegister { .. })
         {
@@ -23669,6 +23691,10 @@ fn step_configured(
         Operation::DivpsRegister { .. } if configured_divps_register_controls.is_some() => {
             state.sse.is_some()
         }
+        Operation::DivpsMemoryRax if configured_divps_register_controls.is_some() => {
+            state.sse.is_some()
+        }
+        Operation::DivpsMemoryRax => false,
         Operation::DivpsRegister { .. } => false,
         Operation::MulsdRegister { .. } if configured_mulsd_register_controls.is_some() => {
             state.sse.is_some()
@@ -29454,6 +29480,132 @@ fn step_configured(
             }
             sse.xmm[usize::from(destination)] = result;
         }
+        Operation::DivpsMemoryRax if configured_divps_register_controls.is_some() => {
+            let address = state.gpr[Register::Rax as usize];
+            if address & 0xf != 0 {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            let Some(last) = address.checked_add(15) else {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            };
+            if !long_decode::canonical(address) || !long_decode::canonical(last) {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            let mut source = [0u8; 16];
+            memory.read(address, context, &mut source)?;
+            let (lhs_xmm, old_mxcsr) = {
+                let sse = state.sse.as_ref().expect("DIVPS memory state prevalidated");
+                (sse.xmm[0], sse.mxcsr)
+            };
+            let rhs_xmm = source;
+            let lhs = std::array::from_fn::<_, 4, _>(|lane| {
+                u32::from_le_bytes(lhs_xmm[lane * 4..lane * 4 + 4].try_into().unwrap())
+            });
+            let rhs = std::array::from_fn::<_, 4, _>(|lane| {
+                u32::from_le_bytes(rhs_xmm[lane * 4..lane * 4 + 4].try_into().unwrap())
+            });
+            let mut new_ie = false;
+            let mut new_de = false;
+            let mut new_ze = false;
+            for lane in 0..4 {
+                let lhs_class = Binary32::from_bits(lhs[lane]).class();
+                let rhs_class = Binary32::from_bits(rhs[lane]).class();
+                let lhs_nan =
+                    matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                let rhs_nan =
+                    matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                if lhs_nan || rhs_nan {
+                    new_ie |= lhs_class == BinaryClass::SignalingNaN
+                        || rhs_class == BinaryClass::SignalingNaN;
+                    continue;
+                }
+                let invalid_quotient = (lhs_class == BinaryClass::Zero
+                    && rhs_class == BinaryClass::Zero)
+                    || (lhs_class == BinaryClass::Infinity && rhs_class == BinaryClass::Infinity);
+                if invalid_quotient {
+                    new_ie = true;
+                    continue;
+                }
+                // Division by either signed zero raises ZE before considering a
+                // subnormal numerator; infinity divided by zero is exempt.
+                if rhs_class == BinaryClass::Zero && lhs_class != BinaryClass::Infinity {
+                    new_ze = true;
+                    continue;
+                }
+                new_de |=
+                    lhs_class == BinaryClass::Subnormal || rhs_class == BinaryClass::Subnormal;
+            }
+            let unmasked_ie = new_ie && old_mxcsr & (1 << 7) == 0;
+            let unmasked_de = new_de && old_mxcsr & (1 << 8) == 0;
+            let unmasked_ze = new_ze && old_mxcsr & (1 << 9) == 0;
+            let controls = configured_divps_register_controls.expect("profile controls");
+            let sse = state.sse.as_mut().expect("DIVPS state prevalidated");
+            if unmasked_ie || unmasked_ze || unmasked_de {
+                sse.mxcsr = old_mxcsr
+                    | u32::from(new_ie)
+                    | (u32::from(new_de) << 1)
+                    | (u32::from(new_ze) << 2);
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
+            let rounding = cvtss2si_rounding_mode(old_mxcsr);
+            let flush_to_zero = old_mxcsr & (1 << 15) != 0;
+            let mut result = [0u8; 16];
+            let mut new_oe = false;
+            let mut new_ue = false;
+            let mut new_pe = false;
+            for lane in 0..4 {
+                let lhs_value = Binary32::from_bits(lhs[lane]);
+                let rhs_value = Binary32::from_bits(rhs[lane]);
+                let computed = Binary32::divide_raw_result(lhs_value, rhs_value, rounding);
+                let mut raw = computed.value().to_bits();
+                new_oe |= computed.overflow();
+                // This profile admits OM=1 only; the masked overflow response
+                // raises both OE and PE even when the exact significand fit.
+                new_pe |= computed.inexact() || computed.overflow();
+                // Underflow and FTZ use the exponent after precision rounding
+                // with an unbounded exponent (WPR.exp), not the exact product.
+                let tiny = computed.tiny_after_precision_rounding();
+                if flush_to_zero && tiny && raw & 0x7fff_ffff != 0 {
+                    raw &= 1 << 31;
+                    new_ue = true;
+                    new_pe = true;
+                } else {
+                    new_ue |= tiny && computed.inexact();
+                }
+                result[lane * 4..lane * 4 + 4].copy_from_slice(&raw.to_le_bytes());
+            }
+            sse.mxcsr = old_mxcsr
+                | u32::from(new_ie)
+                | (u32::from(new_de) << 1)
+                | (u32::from(new_ze) << 2)
+                | (u32::from(new_oe) << 3)
+                | (u32::from(new_ue) << 4)
+                | (u32::from(new_pe) << 5);
+            if new_pe && old_mxcsr & (1 << 12) == 0 {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
+            sse.xmm[0] = result;
+        }
         Operation::MulsdRegister {
             destination,
             source,
@@ -30132,6 +30284,11 @@ fn step_configured(
             });
         }
         Operation::DivpsRegister { .. } => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        Operation::DivpsMemoryRax => {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -148979,6 +149136,91 @@ mod swapgs_profile_tests {
         );
         assert_eq!(state.sse.as_ref().unwrap().mxcsr & 0x3f, 1);
         assert_eq!(state.rip, 0x2b300);
+    }
+
+    #[test]
+    fn divps_m128_memory_rax_reads_once_and_commits_four_division_lanes() {
+        use crate::memory::AccessKind;
+
+        let code = [0x0f, 0x5e, 0x00];
+        let controls = DivpsControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        let mut state = LongModeState::default();
+        state.rip = 0x6000;
+        state.gpr[Register::Rax as usize] = 0x2000;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        for (lane, value) in [1.0f32, 0.0, 0.0, 1.0].into_iter().enumerate() {
+            state.sse.as_mut().unwrap().xmm[0][lane * 4..lane * 4 + 4]
+                .copy_from_slice(&value.to_bits().to_le_bytes());
+        }
+        let xmm1 = state.sse.as_ref().unwrap().xmm[1];
+        let mut memory = Memory::at(&code, state.rip);
+        memory.data_base = 0x2000;
+        for (lane, value) in [3.0f32, 0.0, f32::INFINITY, 1.0].into_iter().enumerate() {
+            memory.bytes[lane * 4..lane * 4 + 4].copy_from_slice(&value.to_bits().to_le_bytes());
+        }
+        let result = run_with_divps_register_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x6003),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(
+            state.sse.as_ref().unwrap().xmm[0],
+            [
+                0xab, 0xaa, 0xaa, 0x3e, 0, 0, 0xc0, 0xff, 0, 0, 0, 0, 0, 0, 0x80, 0x3f
+            ]
+        );
+        assert_eq!(state.sse.as_ref().unwrap().mxcsr & 0x3f, 0x21);
+        assert_eq!(state.sse.as_ref().unwrap().xmm[1], xmm1);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x2000, 16)]);
+
+        let mut rollback = LongModeState::default();
+        rollback.rip = 0x6000;
+        rollback.gpr[Register::Rax as usize] = 0x2000;
+        rollback.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = rollback.clone();
+        let mut failed = Memory::at(&code, rollback.rip);
+        failed.data_base = 0x2000;
+        failed.error = Some(MemoryError::Unmapped {
+            address: 0x2000,
+            access: AccessKind::Read,
+        });
+        assert!(matches!(
+            run_with_divps_register_controls(
+                &mut rollback,
+                &mut failed,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x6003),
+                    context: AccessContext::default()
+                },
+                controls,
+                || false
+            )
+            .exit,
+            RunExit::MemoryError(_)
+        ));
+        assert_eq!(rollback, before);
+        assert_eq!(failed.accesses, [(AccessKind::Read, 0x2000, 16)]);
     }
 
     #[test]

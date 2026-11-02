@@ -2168,7 +2168,10 @@ fn execute_fixture_v2(
             },
             timeout,
         )
-    } else if loaded.fixture.profile == v2::Profile::LongDivpsRegistersV1 {
+    } else if matches!(
+        loaded.fixture.profile,
+        v2::Profile::LongDivpsRegistersV1 | v2::Profile::LongDivpsMemoryRaxV1
+    ) {
         let controls = loaded
             .fixture
             .divps_controls

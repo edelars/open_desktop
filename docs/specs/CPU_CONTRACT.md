@@ -16802,3 +16802,38 @@ closed. No physical x86 acceptance is claimed.
 
 The Type 3 note on Intel SDM Rev. 093 Vol. 2A p. 3-274 describes VEX-encoded
 forms and does not modify this legacy DIVSD contract. See [Stage 2 plan](../plans/STAGE_2.md#s2-37dp--masked-only-legacy-long64-divsd-xmm0m64-rax), [shared report](../reports/STAGE_2_REPORT.md#s2-37dp--divsd-xmm0m64-rax), [standalone report](../reports/S2_37DP_DIVSD_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dp--divsd-xmm0m64-rax). Sources: Intel SDM Rev. 093 Vol. 2A DIVSD pp. 3-273–3-274; Vol. 2A Table 2-20; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and 11.6.6.
+
+## S2-37dt — masked-only Long64 DIVPS XMM0,m128 [RAX]
+
+The local profile accepts only legacy `0F 5E 00`, with Long64, SSE bit 25,
+CR0.EM=0, CR4.OSFXSR=1 and CR0.TS=0. It fetches the complete three-byte
+encoding before #UD/#NM gates; missing SSE, EM or OSFXSR produces #UD before
+TS produces #NM. Only the interpreter admits this form. Other encodings,
+unmasked/#XM behavior, JIT/native/C ABI/generic/fragment paths are unsupported.
+
+MXCSR must contain only supported bits in `0xffbf`, have all six exception
+masks set, and have DAZ, FTZ and reserved bits clear. Every RC mode and old
+sticky history is admitted. The memory operand requires 16-byte alignment
+regardless of AC. Checked addition and canonical48 checks cover the inclusive
+`[RAX,RAX+15]` span before one read16. Alignment, span and read failures leave
+architectural state and retirement unchanged.
+
+The four results use old XMM0 lanes as numerators and loaded memory lanes as
+denominators through `Binary32::divide_raw_result`. Flags IE/DE/ZE/OE/UE/PE are
+merged into the prior MXCSR. Original NaNs suppress same-lane ZE/DE; `0/0` and
+`∞/∞` raise IE and return the masked indefinite; finite nonzero or subnormal
+numerators over zero raise ZE; infinity over zero returns signed infinity
+without ZE. Unrelated state is preserved.
+
+The strict schema/result validator independently recomputes results with the
+raw-u32 rational `independent_divps` oracle and the actual memory RHS. The
+literal fixture and runner tests exercise 1/3 under every RC and all 64 prior
+sticky combinations, NaN/zero/infinity/subnormal classes, overflow, mixed lane
+flags, exact encoding and gates, alignment, canonical spans, read rollback,
+tampering and backend denial. No physical x86 acceptance or complete unmasked
+exception behavior is claimed. Sources: Intel SDM Rev. 093 Vol. 2A DIVPS pp.
+3-270–3-272 and Table 2-19; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ;
+Vol. 3A Event 19/Table 7-8; Intel Floating-Point Reference Sheet v2.13. The
+Type 2 note on p. 3-272 applies to VEX forms, not this legacy SSE encoding.
+
+See [Stage 2 plan](../plans/STAGE_2.md#s2-37dt--masked-only-legacy-long64-divps-xmm0m128-rax), [shared report](../reports/STAGE_2_REPORT.md#s2-37dt--divps-xmm0m128-rax), [standalone report](../reports/S2_37DT_DIVPS_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dt--divps-xmm0m128-rax).

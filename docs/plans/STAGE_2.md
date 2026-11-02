@@ -17256,3 +17256,47 @@ SSE2 and AC gates, and noncanonical span refusal are covered.
 
 Normative source: Intel SDM Rev. 093 Vol. 2A DIVSD pp. 3-273–3-274; its Type 3
 note is VEX-specific. See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dp--masked-only-long64-divsd-xmm0m64-rax) and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dp--divsd-xmm0m64-rax).
+
+
+#### S2-37dt — masked-only legacy `Long64` `DIVPS` XMM0,m128 [RAX]
+
+Implement strict schema-v2 interpreter-only profile
+`s2-long-divps-memory-rax-v1` for exact `0F 5E 00`, budget one and stop RIP
+entry+3. Require Long64, SSE (`CPUID.01H:EDX[25]`), CR0.EM=0,
+CR4.OSFXSR=1 and CR0.TS=0. Fetch all three bytes before #UD/#NM; test SSE,
+EM and OSFXSR before TS. Other prefixes, ModR/M/addressing forms, register
+forms, VEX/EVEX and unmasked/#XM paths remain closed.
+
+Admit only MXCSR supported bits `0xffbf`, reserved bits clear, all six exception
+masks set and DAZ=FTZ=0. Accept every RC mode and prior sticky history. Require
+16-byte alignment regardless of RFLAGS.AC, then checked `RAX+15` and canonical48
+endpoints before exactly one read16. Alignment/span/read failures preserve CPU,
+XMM, MXCSR, RIP and retirement.
+
+Divide four old XMM0 binary32 lanes by the four loaded memory lanes using
+`Binary32::divide_raw_result` and MXCSR.RC. Classify original NaNs before
+divide-by-zero or denormal events; NaNs suppress same-lane ZE/DE. `0/0` and
+`∞/∞` raise IE and return masked indefinite; finite nonzero or subnormal over
+zero raises ZE; `∞/0` returns signed infinity without ZE. Aggregate IE/DE/ZE/OE/
+UE/PE across lanes, preserving unrelated state and prior stickies. Native, JIT,
+C ABI, generic and fragment backends remain closed.
+
+Use a separate raw-u32 rational oracle with the actual memory RHS. Cover all RC
+and six sticky combinations, NaN priority and suppression, zeros/infinities,
+finite/zero, subnormals, 1/3, ties, overflow, WPR/min-normal boundaries and
+mixed-lane flags; also exact bytes, gates/fetch order, alignment, canonical span,
+one read16, rollback, schema/result/provenance tampering and backend denial.
+Sources: Intel SDM Rev. 093 Vol. 2A DIVPS pp. 3-270–3-272 and legacy SSE rows
+in Table 2-19; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event
+19/Table 7-8; Intel Floating-Point Reference Sheet v2.13. The explicit Type 2
+note on p. 3-272 applies to VEX forms, not this legacy encoding. This profile
+does not claim physical x86 acceptance or complete unmasked exception behavior.
+See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dt--masked-only-long64-divps-xmm0m128-rax),
+[report](../reports/STAGE_2_REPORT.md#s2-37dt--divps-xmm0m128-rax),
+[standalone report](../reports/S2_37DT_DIVPS_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dt--divps-xmm0m128-rax).
+
+Isolated validation passed: `od-isa` 1,847; `od-testkit` 455; runner 119 unit
+and 502 serialized fixture tests. Formatting, workspace all-target offline check,
+diff check and Graphify refresh passed. Layout reports the isolated worktree `.git`
+pointer and two absent historical oracle manifests already tracked by ISSUE-023.
+Independent Sol/high review is pending; physical x86 acceptance is not claimed.
