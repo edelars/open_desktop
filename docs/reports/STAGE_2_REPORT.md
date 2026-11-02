@@ -5,6 +5,21 @@
 ISSUE-011/012 остаются открытыми; наличие нового состояния или local instruction
 slice не означает завершение этапа.
 
+## Интеграция S2-30cz и S2-37dq
+
+В main интегрированы bounded `FADDP ST(i),ST(0)` и masked-only memory
+`ADDPS XMM0,m128 [RAX]`. Совместный прогон прошёл: od-isa — 1,837; od-testkit
+— 455; runner — 119 unit и 497 fixture; od-x86-runner — 8 library и 4 binary
+tests; workspace all-target check, fmt, diff и layout. Graphify после обновления
+кода содержит 11,425 nodes, 24,752 edges и 344 communities.
+
+Независимое Sol/high review было чистым. В ходе review до принятия закрыты два
+дефекта: восстановлена проверка sticky OE/UE в MULSS result validator, а
+ADDPS добавлен во внешний MXCSR admission gate, чтобы отрицательные control
+проверки выполнялись до чтения памяти. Физическое x86 исполнение не проверялось.
+Worktree завершённого FADDP среза удалён после переноса; ADDPS worktree также
+удалён после переноса всех трёх проверенных commit.
+
 ## S2-37dq — local-only Long64 legacy ADDPS m128 memory
 
 Добавлен строгий schema-v2 профиль `s2-long-addps-memory-rax-v1` для точной
