@@ -1352,3 +1352,15 @@ checks, malformed forms, tampering and JIT/native denial. See the [CPU
 contract](../specs/CPU_CONTRACT.md#s2-37v--canonical-long64-comiss-and-ucomiss-xmm-register-pairs),
 [plan](../plans/STAGE_2.md#s2-37v--canonical-long64-comiss-and-ucomiss-xmm-register-pairs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37v-canonical-comiss-and-ucomiss-register-pairs).
+
+## S2-37dw MULPD m128 memory profile
+
+The local-only schema-v2 profile `s2-long-mulpd-memory-rax-v1` accepts exact
+`66 0F 59 00`, one code region and one 16-byte read-only data region at RAX,
+Long64, budget one, and stop RIP entry+4. It requires `mulpd_controls` and
+MXCSR supported bits `0xffbf`, reserved bits clear, all masks set, DAZ=FTZ=0.
+Admission covers all RC modes and prior sticky histories. The typed result echoes
+controls and the strict validator uses actual data bytes as MULPD's second
+operand. Results require interpreter backend; other backends must report
+unsupported without a snapshot. See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dw--masked-only-long64-mulpd-xmm0m128-rax)
+and [fixture](../../tests/fixtures/x86/stage2/s2_37dw_mulpd_m128_memory_source_two_binary64_lanes.case.json).

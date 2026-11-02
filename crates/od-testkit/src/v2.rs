@@ -312,6 +312,8 @@ pub enum Profile {
     LongSubpdMemoryRaxV1,
     #[serde(rename = "s2-long-mulpd-registers-v1")]
     LongMulpdRegistersV1,
+    #[serde(rename = "s2-long-mulpd-memory-rax-v1")]
+    LongMulpdMemoryRaxV1,
     #[serde(rename = "s2-long-addpd-registers-v1")]
     LongAddpdRegistersV1,
     #[serde(rename = "s2-long-addpd-memory-rax-v1")]
@@ -1562,6 +1564,7 @@ impl IntegerState {
                     | Profile::LongSqrtpdRegistersV1
                     | Profile::LongSubpdRegistersV1
                     | Profile::LongMulpdRegistersV1
+                    | Profile::LongMulpdMemoryRaxV1
                     | Profile::LongAddpdRegistersV1
                     | Profile::LongAddpdMemoryRaxV1
                     | Profile::LongSubpdMemoryRaxV1
@@ -1869,6 +1872,7 @@ impl IntegerState {
                 | Profile::LongSqrtpdRegistersV1
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
+                | Profile::LongMulpdMemoryRaxV1
                 | Profile::LongAddpdRegistersV1
                 | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongSubpdMemoryRaxV1
@@ -2100,6 +2104,7 @@ impl IntegerState {
                 | Profile::LongSqrtpdRegistersV1
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
+                | Profile::LongMulpdMemoryRaxV1
                 | Profile::LongAddpdRegistersV1
                 | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongSubpdMemoryRaxV1
@@ -2528,6 +2533,7 @@ impl IntegerState {
             | Profile::LongSqrtpdRegistersV1
             | Profile::LongSubpdRegistersV1
             | Profile::LongMulpdRegistersV1
+            | Profile::LongMulpdMemoryRaxV1
             | Profile::LongAddpdRegistersV1
             | Profile::LongAddpdMemoryRaxV1
             | Profile::LongSubpdMemoryRaxV1
@@ -2760,6 +2766,7 @@ impl IntegerState {
                 | Profile::LongSqrtpdRegistersV1
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
+                | Profile::LongMulpdMemoryRaxV1
                 | Profile::LongAddpdRegistersV1
                 | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongSubpdMemoryRaxV1
@@ -3024,6 +3031,7 @@ impl IntegerState {
                 | Profile::LongSqrtpdRegistersV1
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
+                | Profile::LongMulpdMemoryRaxV1
                 | Profile::LongAddpdRegistersV1
                 | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongSubpdMemoryRaxV1
@@ -3297,6 +3305,7 @@ impl IntegerState {
                 | Profile::LongSqrtpdRegistersV1
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
+                | Profile::LongMulpdMemoryRaxV1
                 | Profile::LongAddpdRegistersV1
                 | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongSubpdMemoryRaxV1
@@ -3575,6 +3584,7 @@ impl IntegerState {
                 | Profile::LongSqrtpdRegistersV1
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
+                | Profile::LongMulpdMemoryRaxV1
                 | Profile::LongAddpdRegistersV1
                 | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongSubpdMemoryRaxV1
@@ -4635,6 +4645,7 @@ impl IntegerState {
                 | Profile::LongSqrtpdRegistersV1
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
+                | Profile::LongMulpdMemoryRaxV1
                 | Profile::LongAddpdRegistersV1
                 | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongSubpdMemoryRaxV1
@@ -4872,6 +4883,7 @@ impl IntegerState {
                 | Profile::LongSqrtpdRegistersV1
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
+                | Profile::LongMulpdMemoryRaxV1
                 | Profile::LongAddpdRegistersV1
                 | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongSubpdMemoryRaxV1
@@ -8427,6 +8439,79 @@ impl Fixture {
                 "only valid for SUBPD register-space profile",
             ));
         }
+        if self.profile == Profile::LongMulpdMemoryRaxV1 {
+            let controls = self
+                .mulpd_controls
+                .ok_or_else(|| invalid("mulpd_controls", "required by MULPD m128 profile"))?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by MULPD m128 profile"))?;
+            let data = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "data")
+                .ok_or_else(|| invalid("memory.data", "required by MULPD m128 profile"))?;
+            let start = self.initial_state.rip.get();
+            let source = self.initial_state.gpr[0].get();
+            if decode_bytes(&code.initial_bytes_hex)? != [0x66, 0x0f, 0x59, 0x00]
+                || code.guest_address.get() != start
+                || code.length != 4
+                || !code.permissions.execute
+                || self.memory.len() != 2
+                || data.guest_address.get() != source
+                || data.length != 16
+                || !data.permissions.read
+                || data.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(4)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory",
+                    "MULPD m128 requires exact 66 0F 59 00, one code/data mapping, budget 1, and stop RIP entry+4",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| invalid("state.sse", "required by MULPD m128 profile"))?
+                .mxcsr
+                .get();
+            if mxcsr & !0xffbf != 0
+                || mxcsr & ((1 << 6) | (1 << 15)) != 0
+                || mxcsr & 0x1f80 != 0x1f80
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "MULPD m128 requires supported MXCSR bits, all six exception masks set, DAZ=0, and FTZ=0",
+                ));
+            }
+            let gate = !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr;
+            let nm = !gate && controls.cr0_ts;
+            let last = source.checked_add(15);
+            let canonical = |address: u64| address >> 47 == 0 || address >> 47 == 0x1ffff;
+            let expected = if gate
+                || nm
+                || source & 0xf != 0
+                || last.is_none_or(|end| !canonical(source) || !canonical(end))
+            {
+                ExpectedExit::Exception
+            } else {
+                ExpectedExit::StopAddress
+            };
+            if self.expected_exit != expected {
+                return Err(invalid(
+                    "expected_exit",
+                    "must reflect MULPD m128 gates, mandatory alignment, and canonical span",
+                ));
+            }
+        }
         if self.profile == Profile::LongMulpdRegistersV1 {
             let _ = self
                 .mulpd_controls
@@ -8473,11 +8558,8 @@ impl Fixture {
                     "MULPD requires supported MXCSR bits, DAZ=0, OM=1, and UM=1",
                 ));
             }
-        } else if self.mulpd_controls.is_some() {
-            return Err(invalid(
-                "mulpd_controls",
-                "only valid for MULPD register-space profile",
-            ));
+        } else if self.mulpd_controls.is_some() && self.profile != Profile::LongMulpdMemoryRaxV1 {
+            return Err(invalid("mulpd_controls", "only valid for MULPD profiles"));
         }
         if self.profile == Profile::LongAddpdRegistersV1 {
             let _ = self
@@ -15426,6 +15508,10 @@ impl Fixture {
                 Profile::LongMulpdRegistersV1 => {
                     mulpd_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
+                Profile::LongMulpdMemoryRaxV1 => decode_bytes(&code_bytes)
+                    .ok()
+                    .filter(|bytes| bytes == &[0x66, 0x0f, 0x59, 0x00])
+                    .map(|_| 4),
                 Profile::LongAddpdRegistersV1 => {
                     addpd_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
@@ -18429,7 +18515,10 @@ impl RunResult {
                 "only valid for the SUBPD profile",
             ));
         }
-        if self.profile == Profile::LongMulpdRegistersV1 {
+        if matches!(
+            self.profile,
+            Profile::LongMulpdRegistersV1 | Profile::LongMulpdMemoryRaxV1
+        ) {
             if snapshot.mulpd_controls.is_none() {
                 return Err(invalid(
                     "snapshot.mulpd_controls",
@@ -19634,6 +19723,7 @@ impl RunResult {
                 | Profile::LongMulpsMemoryRaxV1
                 | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongSubpdMemoryRaxV1
+                | Profile::LongMulpdMemoryRaxV1
         ) && self.backend != Backend::Interpreter
             && (!matches!(self.outcome, Outcome::Unsupported { .. })
                 || !matches!(self.snapshot, Observation::Unavailable { .. }))
@@ -20037,8 +20127,12 @@ impl RunResult {
                 loaded.fixture.mulpd_controls,
                 value.mulpd_controls,
             ) {
-                (Profile::LongMulpdRegistersV1, Some(input), Some(output)) if input == output => {}
-                (Profile::LongMulpdRegistersV1, _, _) => {
+                (
+                    Profile::LongMulpdRegistersV1 | Profile::LongMulpdMemoryRaxV1,
+                    Some(input),
+                    Some(output),
+                ) if input == output => {}
+                (Profile::LongMulpdRegistersV1 | Profile::LongMulpdMemoryRaxV1, _, _) => {
                     return Err(FormatError::CaseMismatch("mulpd_controls"));
                 }
                 (_, None, None) => {}
@@ -20281,6 +20375,8 @@ impl RunResult {
                 validate_subpd_memory_rax_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongMulpdRegistersV1 {
                 validate_mulpd_registers_result(loaded, self, value)?;
+            } else if loaded.fixture.profile == Profile::LongMulpdMemoryRaxV1 {
+                validate_mulpd_memory_rax_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongCvtpd2psRegistersV1 {
                 validate_cvtpd2ps_registers_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongAddpdRegistersV1 {
@@ -26147,6 +26243,142 @@ fn validate_addps_registers_result(
             && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
         (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
         _ => return Err(FormatError::CaseMismatch("ADDPS outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_mulpd_memory_rax_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .mulpd_controls
+        .ok_or(FormatError::CaseMismatch("mulpd_controls"))?;
+    let initial = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    if decode_bytes(&code.initial_bytes_hex)? != [0x66, 0x0f, 0x59, 0x00] {
+        return Err(FormatError::CaseMismatch("MULPD m128 encoding"));
+    }
+    let data = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "data")
+        .ok_or(FormatError::CaseMismatch("memory.data"))?;
+    let lhs_bytes = decode_bytes(&initial.xmm[0])?;
+    let rhs_bytes = decode_bytes(&data.initial_bytes_hex)?;
+    let lanes = |bytes: &[u8]| {
+        std::array::from_fn::<_, 2, _>(|lane| {
+            u64::from_le_bytes(
+                bytes[lane * 8..lane * 8 + 8]
+                    .try_into()
+                    .expect("validated m128"),
+            )
+        })
+    };
+    let (values, ie, de, oe, ue, pe) = independent_mulpd(
+        lanes(&lhs_bytes),
+        lanes(&rhs_bytes),
+        initial.mxcsr.get() as u32,
+    );
+    let address = fixture.initial_state.gpr[0].get();
+    let gate = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let last = address.checked_add(15);
+    let canonical = |value: u64| value >> 47 == 0 || value >> 47 == 0x1ffff;
+    let memory_fault =
+        address & 0xf != 0 || last.is_none_or(|end| !canonical(address) || !canonical(end));
+    let fault = gate.or_else(|| memory_fault.then_some(13));
+    if !matches!(
+        (fault, fixture.expected_exit),
+        (Some(_), ExpectedExit::Exception) | (None, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("MULPD m128 expected exit"));
+    }
+    let mut expected = fixture.initial_state.clone();
+    if fault.is_none() {
+        let sse = expected
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        let mut xmm = [0u8; 16];
+        for (lane, value) in values.into_iter().enumerate() {
+            xmm[lane * 8..lane * 8 + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        sse.xmm[0] = crate::memory::encode_bytes(&xmm);
+        sse.mxcsr = HexU64(
+            initial.mxcsr.get()
+                | u64::from(ie)
+                | (u64::from(de) << 1)
+                | (u64::from(oe) << 3)
+                | (u64::from(ue) << 4)
+                | (u64::from(pe) << 5),
+        );
+        expected.rip = HexU64(
+            fixture
+                .initial_state
+                .rip
+                .get()
+                .checked_add(4)
+                .ok_or(FormatError::CaseMismatch("MULPD m128 RIP overflow"))?,
+        );
+    }
+    let expected_memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != expected_memory
+    {
+        return Err(FormatError::CaseMismatch("MULPD m128 output state"));
+    }
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(u64::from(fault.is_none())),
+        })
+    {
+        return Err(FormatError::CaseMismatch("MULPD m128 retirement"));
+    }
+    match (fault, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == if vector == 13 {
+                    Observation::Available { value: HexU64(0) }
+                } else {
+                    Observation::Unavailable {
+                        reason: "exception has no architectural error code".into(),
+                    }
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("MULPD m128 outcome/exception")),
     }
     Ok(())
 }

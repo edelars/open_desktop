@@ -581,6 +581,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37dq | Local-only legacy Long64 ADDPS XMM0,m128 `[RAX]`, exact `0F 58 00`; SSE bit 25 (not SSE2), strict masked-only MXCSR; four `Binary32::add_raw_result` lanes from old XMM0 and one aligned canonical m128 read; aggregate IE/DE/OE/UE/PE; native/JIT/C ABI/generic/fragment and unmasked/#XM closed | Focused ISA 3/3 and fixture-v2 1/1; invalid MXCSR no-read/rollback and result/provenance tampering covered; combined main suites: od-isa 1,837 / od-testkit 455 / runner 119+497 / x86-runner 8+4; workspace check, fmt/diff/layout, Graphify and independent Sol/high review clean; no physical x86 acceptance |
 | [x] | S2-37du | Local-only legacy Long64 ADDPD XMM0,m128 `[RAX]`, exact `66 0F 58 00`; SSE2 bit 26; masked-only MXCSR; two raw Binary64 lanes from old XMM0 and one aligned canonical m128 read; aggregate IE/DE/OE/UE/PE; native/JIT/C ABI/generic/fragment and unmasked/#XM closed | Focused ISA 3/3 (independent review 5/5); od-isa 1,852; od-testkit 455; od-runner 119+504; workspace check, fmt/diff and Graphify passed; independent Sol/high review clean; layout reports linked-worktree `.git` marker and two pre-existing absent oracle manifests; no physical x86 acceptance |
 | [x] | S2-37dv | Local-only legacy Long64 SUBPD XMM0,m128 `[RAX]`, exact `66 0F 5C 00`; SSE2 bit 26; masked-only MXCSR; two raw Binary64 subtraction lanes using actual memory RHS, one aligned canonical m128 read; aggregate IE/DE/OE/PE; native/JIT/C ABI/generic/fragment and unmasked/#XM closed | Focused ISA/decoder and SUBPD/ADDPD fixture tests pass; od-isa 1,856; od-testkit 455; runner 119+506; workspace check, fmt/diff, Graphify pass; independent Sol/high review clean; layout reports linked-worktree `.git` marker and two pre-existing absent oracle manifests; no physical x86 acceptance |
+| [ ] | S2-37dw | Local-only legacy Long64 MULPD XMM0,m128 `[RAX]`, exact `66 0F 59 00`; SSE2 bit 26; masked-only MXCSR; two Binary64 multiplication lanes from actual memory RHS, aligned canonical one-read m128; aggregate IE/DE/OE/UE/PE; non-interpreter and unmasked/#XM closed | Focused ISA decoder/execution and runner matrix pass; independent review pending; no physical x86 acceptance |
 | [x] | S2-37dr | Local-only legacy Long64 SUBPS XMM0,m128 `[RAX]`, exact `0F 5C 00`; SSE bit 25, strict masked-only MXCSR; one aligned canonical m128 read and four memory-source binary32 subtractions; aggregate IE/DE/OE/PE, retain old sticky flags; native/JIT/C ABI/generic/fragment and unmasked/#XM closed | Focused ISA 3/3 and runner 1/1; memory vectors × 4 RC × 64 sticky cover NaN priority/payload, same-lane NaN+subnormal, cancellation zero, infinities, ties, tiny boundary and overflow; integrated main: od-isa 1,841 / testkit 455 / runner 119+499 / x86-runner 8+4; workspace/layout/fmt/diff, Graphify, clean Sol/high review; no physical x86 acceptance |
 | [x] | S2-37ds | Local-only legacy Long64 MULPS XMM0,m128 `[RAX]`, exact `0F 59 00`; SSE bit 25; masked-only MXCSR, raw Binary32 multiplication, one aligned canonical m128 read; aggregate IE/DE/OE/UE/PE and retain old sticky flags; JIT/native/C ABI/generic/fragment and unmasked/#XM closed | Focused decoder/ISA/runner tests; memory matrix 1,792 oracle cases; integrated main od-isa 1,845, testkit 455, runner 119+501, x86-runner 8+4; workspace check/fmt/diff/layout, Graphify and independent Sol/high review clean; isolated layout caveats in standalone report; no physical x86 acceptance |
 | [x] | S2-37dt | Local-only legacy Long64 DIVPS XMM0,m128 `[RAX]`, exact `0F 5E 00`; SSE bit 25; masked-only MXCSR; four raw Binary32 division lanes from old XMM0 and one aligned canonical m128 read; aggregate IE/DE/ZE/OE/UE/PE; JIT/native/C ABI/generic/fragment and unmasked/#XM closed | Integrated main od-isa 1,849, od-testkit 455, runner 119+503, x86-runner 8+4; workspace check/fmt/layout/diff, Graphify 11,506/24,909/346; independent Sol/high review clean; no physical x86 acceptance |
@@ -17146,6 +17147,34 @@ raw-u64 oracle. Cover ties under every RC, sticky histories, NaN/zero/infinity,
 subnormal, tie, overflow/WPR vectors, lane flag aggregation, fetch/gate order,
 invalid MXCSR with no read, span/alignment/read rollback, result/control echo
 tampering and backend denial. Fixture and evidence: [standalone report](../reports/S2_37DU_ADDPD_MEMORY.md).
+
+#### S2-37dw — masked-only legacy Long64 MULPD XMM0,m128 [RAX]
+
+Implement strict schema-v2 interpreter profile `s2-long-mulpd-memory-rax-v1`
+for exact legacy `66 0F 59 00`, four-byte complete fetch, budget one and stop
+RIP entry+4. Require SSE2 bit 26, CR0.EM=0, CR4.OSFXSR=1 and CR0.TS=0;
+complete fetch precedes #UD/#NM gates. Use a distinct memory operation,
+execution selector, and runner route; keep register MULPD independently
+selectable. Reject alternate prefixes, REX, ModR/M/address forms, VEX/EVEX,
+truncation and trailing bytes.
+
+Admit masked MXCSR only: supported mask `0xffbf`, reserved bits clear,
+all six exception masks set, DAZ=FTZ=0; all four RC modes and prior sticky
+histories are accepted. Require RAX 16-byte alignment regardless of AC and
+check checked canonical48 `[RAX,RAX+15]` before exactly one atomic `read16`.
+Gate, alignment, span and failed-read paths preserve architectural state and
+retirement. JIT/native/C ABI/generic/fragment and unmasked/#XM paths are closed.
+
+Multiply each old XMM0 binary64 lane by the actual memory RHS using the
+existing raw Binary64 multiplication operation and MXCSR.RC. Aggregate
+IE/DE/OE/UE/PE into old sticky status and preserve ZE/unrelated state. The
+strict result validator uses the independent raw-bit `independent_mulpd`
+oracle with RHS from fixture data, then compares full state, memory, retirement,
+and control echo. Cover RC × 64 stickies, NaN priority, zero×infinity, signed
+zero, subnormal input/results, midpoint ties, overflow and WPR/minnormal/tiny
+boundaries, mixed-lane flags, gates/fetch order, invalid MXCSR, span/alignment/
+read rollback, tampering and backend denial. No physical x86 acceptance is
+claimed. Fixture and evidence: [standalone report](../reports/S2_37DW_MULPD_MEMORY.md).
 
 #### S2-37dv — masked-only legacy Long64 SUBPD XMM0,m128 [RAX]
 

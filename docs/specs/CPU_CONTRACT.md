@@ -16927,6 +16927,33 @@ Type 2 note on p. 3-272 applies to VEX forms, not this legacy SSE encoding.
 
 See [Stage 2 plan](../plans/STAGE_2.md#s2-37dt--masked-only-legacy-long64-divps-xmm0m128-rax), [shared report](../reports/STAGE_2_REPORT.md#s2-37dt--divps-xmm0m128-rax), [standalone report](../reports/S2_37DT_DIVPS_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dt--divps-xmm0m128-rax).
 
+## S2-37dw — masked-only Long64 MULPD XMM0,m128 [RAX]
+
+The local schema-v2 interpreter profile `s2-long-mulpd-memory-rax-v1` admits
+only exact legacy `66 0F 59 00`, a complete four-byte fetch, budget one, and
+stop RIP entry+4. SSE2 (`CPUID.01H:EDX[26]`) is required. Fetch completes before
+#UD for missing SSE2/CR0.EM/CR4.OSFXSR and then #NM for CR0.TS. This has a
+separate memory operation, controls, and runner dispatch; register MULPD
+admission is unchanged.
+
+MXCSR must use only supported bits `0xffbf`, have reserved bits clear, all six
+exception masks set, DAZ=FTZ=0. Any RC and prior sticky flags are accepted;
+unmasked exceptions and #XM are excluded. RAX must be 16-byte aligned
+regardless of AC. Checked canonical48 `[RAX,RAX+15]` validation precedes one
+atomic `read16`; gate, alignment, span and read failures preserve state and
+retirement.
+
+Each binary64 result multiplies old XMM0 by the matching memory RHS lane using
+the existing raw Binary64 operation and MXCSR.RC. IE/DE/OE/UE/PE aggregate
+across lanes and OR into prior sticky status; ZE and unrelated state are
+preserved. Success replaces XMM0 and advances RIP by four. The independent
+validator consumes fixture data as the RHS and uses `independent_mulpd`, not
+the production helper. The fixture checks memory-source discrimination; runner
+coverage includes RC × 64 stickies, NaN/invalid, signed zero, subnormal,
+tie/overflow/tiny boundaries, gate and address atomicity, tampering, and
+JIT/native denial. See [plan](../plans/STAGE_2.md#s2-37dw--masked-only-legacy-long64-mulpd-xmm0m128-rax),
+[report](../reports/S2_37DW_MULPD_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dw-mulpd-m128-memory-profile).
+
 ## S2-37dv — masked-only Long64 SUBPD XMM0,m128 [RAX]
 
 The local schema-v2 interpreter profile `s2-long-subpd-memory-rax-v1` admits

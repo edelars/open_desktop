@@ -1003,6 +1003,8 @@ pub enum Operation {
     },
     /// Local-only exact legacy `66 0F 5C 00` SUBPD m128-at-RAX form.
     SubpdMemoryRax,
+    /// Local-only exact legacy `66 0F 59 00` MULPD m128-at-RAX form.
+    MulpdMemoryRax,
     /// Local-only canonical mandatory-66 MULPD register pair.
     MulpdRegister {
         destination: u8,
@@ -3878,6 +3880,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && prefixes.rex.is_none()
             && prefix_count == 1
             && prefix_bytes[0] == 0x66;
+        let mulpd_memory_rax = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x59
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && prefixes.operand_override
+            && !prefixes.address_override
+            && prefixes.rex.is_none()
+            && prefix_count == 1
+            && prefix_bytes[0] == 0x66;
         let mulpd_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x59
             && prefixes.group1.is_none()
@@ -5093,15 +5104,18 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     }
                 }
             }
-            (OpcodeMap::Escape0f, 0x59) if mulpd_register => {
+            (OpcodeMap::Escape0f, 0x59) if mulpd_register || mulpd_memory_rax => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if modrm == 0 && mulpd_memory_rax {
+                    Operation::MulpdMemoryRax
+                } else if modrm >> 6 != 3 || !mulpd_register {
                     return Err(self.unsupported(opcode));
-                }
-                let rex = prefixes.rex.unwrap_or(0x40);
-                Operation::MulpdRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                } else {
+                    let rex = prefixes.rex.unwrap_or(0x40);
+                    Operation::MulpdRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x58) if addpd_register || addpd_memory_rax => {
@@ -11926,6 +11940,36 @@ mod tests {
                 !Memory::new(bytes)
                     .decode()
                     .is_ok_and(|decoded| decoded.operation == Operation::SubpdMemoryRax),
+                "accepted {bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mulpd_memory_rax_decodes_only_exact_66_0f_59_00() {
+        let mut exact = Memory::new(&[0x66, 0x0f, 0x59, 0x00]);
+        let decoded = exact.decode().unwrap();
+        assert_eq!(decoded.operation, Operation::MulpdMemoryRax);
+        assert_eq!(decoded.length, 4);
+
+        for bytes in [
+            &[0x66, 0x0f, 0x59, 0x01][..],
+            &[0x66, 0x0f, 0x59, 0x40, 0x00][..],
+            &[0x66, 0x0f, 0x59, 0x04, 0x00][..],
+            &[0x66, 0x48, 0x0f, 0x59, 0x00][..],
+            &[0x48, 0x66, 0x0f, 0x59, 0x00][..],
+            &[0x0f, 0x59, 0x00][..],
+            &[0x66, 0x0f, 0x59][..],
+            &[0x66, 0xf2, 0x0f, 0x59, 0x00][..],
+            &[0xf3, 0x66, 0x0f, 0x59, 0x00][..],
+            &[0x67, 0x66, 0x0f, 0x59, 0x00][..],
+            &[0xc5, 0xfd, 0x59, 0x00][..],
+            &[0x62, 0xf1, 0xfd, 0x08, 0x59, 0x00][..],
+        ] {
+            assert!(
+                !Memory::new(bytes)
+                    .decode()
+                    .is_ok_and(|decoded| decoded.operation == Operation::MulpdMemoryRax),
                 "accepted {bytes:02x?}"
             );
         }
