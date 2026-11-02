@@ -6763,6 +6763,22 @@ mod tests {
     }
 
     #[test]
+    fn addss_m32_fixture_is_denied_before_native_trace() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/x86/stage2/s2_37di_addss_m32_halfway.case.json");
+        let loaded = Fixture::from_json(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(loaded.fixture.profile, v2::Profile::LongAddssMemoryRaxV1);
+        assert!(crate::native_fp::native_profile_local_only(
+            loaded.fixture.profile
+        ));
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { ref reason }
+                if reason == "this profile is local-only; native state does not observe every profile field"
+        ));
+    }
+
+    #[test]
     fn sti_fixture_is_rejected_by_preflight_before_trace() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/x86/stage2/s2_27i_sti_cpl0_iopl0_if0.case.json");

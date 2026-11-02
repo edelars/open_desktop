@@ -72,6 +72,8 @@ const MAXSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
 const MINSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dh_minss_m32_qnan_selects_rhs.case.json"
 );
+const ADDSS_M32_MEMORY_RAX: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_37di_addss_m32_halfway.case.json");
 const SQRTSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dg_sqrtss_m32_unaligned_inexact.case.json"
 );
@@ -37061,6 +37063,59 @@ fn maxss_m32_memory_literal_selects_raw_rhs_and_remains_backend_denied() {
     let mut foreign = Fixture::from_json(CMPPS_REGISTER_PAIRS).unwrap().fixture;
     foreign.maxss_memory_rax_controls = fixture.maxss_memory_rax_controls;
     assert!(foreign.validate().is_err());
+}
+
+#[test]
+fn addss_m32_memory_literal_uses_memory_rhs_and_remains_backend_denied() {
+    let loaded = Fixture::from_json(ADDSS_M32_MEMORY_RAX).unwrap();
+    let fixture = loaded.fixture.clone();
+    assert_eq!(
+        fixture.profile,
+        od_testkit::v2::Profile::LongAddssMemoryRaxV1
+    );
+    let (input, result) = run(ADDSS_M32_MEMORY_RAX, "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let snapshot = match &result.snapshot {
+        Observation::Available { value } => value,
+        other => panic!("unexpected ADDSS snapshot: {other:?}"),
+    };
+    let sse = snapshot.state.sse.as_ref().unwrap();
+    assert_eq!(sse.xmm[0], "0000803fefbeadde78563412a5a5c3c3");
+    assert_eq!(sse.mxcsr.get(), 0x1fa0);
+    assert_eq!(snapshot.memory[1].bytes_hex, "00008033");
+    assert!(matches!(
+        run(ADDSS_M32_MEMORY_RAX, "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    assert!(matches!(
+        run(ADDSS_M32_MEMORY_RAX, "native", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    let mut forged_success = result.clone();
+    forged_success.backend = Backend::Jit;
+    assert!(forged_success.validate_for(&loaded).is_err());
+    let mut forged = result.clone();
+    if let Observation::Available { value } = &mut forged.snapshot {
+        value.addss_memory_rax_controls = None;
+    }
+    assert!(forged.validate_for(&loaded).is_err());
+    let mut bad = fixture.clone();
+    bad.memory[0].initial_bytes_hex = "f30f5801".into();
+    assert!(bad.validate().is_err());
+    let mut bad = fixture.clone();
+    bad.addss_memory_rax_controls = None;
+    assert!(bad.validate().is_err());
+    for mxcsr in [0x0000_1f40, 0x0000_1f00, 0x0000_9f80, 0x0001_1f80] {
+        let mut bad = fixture.clone();
+        bad.initial_state.sse.as_mut().unwrap().mxcsr = od_testkit::HexU64(mxcsr);
+        assert!(bad.validate().is_err(), "MXCSR={mxcsr:#x}");
+    }
+    let mut bad = fixture;
+    bad.addss_memory_rax_controls
+        .as_mut()
+        .unwrap()
+        .sse_available = false;
+    assert!(bad.validate().is_err());
 }
 
 #[test]

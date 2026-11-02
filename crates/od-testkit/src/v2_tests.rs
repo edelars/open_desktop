@@ -445,6 +445,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                     })
                     .collect(),
                 xorpd_prerequisites: input.fixture.xorpd_prerequisites,
+                addss_memory_rax_controls: input.fixture.addss_memory_rax_controls,
                 minss_invalid_controls: input.fixture.minss_invalid_controls,
                 maxss_unmasked_controls: input.fixture.maxss_unmasked_controls,
                 minsd_unmasked_controls: input.fixture.minsd_unmasked_controls,
@@ -10599,6 +10600,36 @@ fn addps_profile_admits_all_pairs_and_rejects_alias_encodings() {
         let mut invalid_mxcsr = fixture.clone();
         invalid_mxcsr.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
         assert!(invalid_mxcsr.validate().is_err(), "MXCSR={mxcsr:#x}");
+    }
+}
+
+#[test]
+fn independent_addss_oracle_accepts_every_memory_profile_rc_and_sticky_history() {
+    for (lhs, rhs) in [
+        (0x3f80_0000, 0x3380_0000),
+        (0x3f80_0001, 0x3380_0000),
+        (0x3f80_0000, 1),
+        (0x0000_0001, 0x8000_0000),
+        (0x0000_0001, 0x0000_0001),
+        (0x7f7f_ffff, 0x7300_0000),
+        (0x7f80_0001, 0x7fc0_1234),
+        (0x7fc0_1234, 0x3f80_0000),
+        (0x7f80_0000, 0xff80_0000),
+        (0x7f80_0000, 0x3f80_0000),
+        (0x0000_0000, 0x8000_0000),
+        (0x8000_0000, 0x8000_0000),
+    ] {
+        for rc in 0..4u32 {
+            let base_mxcsr = 0x1f80 | (rc << 13);
+            let expected = independent_addss(lhs, rhs, base_mxcsr);
+            for old_sticky in 0..64u32 {
+                assert_eq!(
+                    independent_addss(lhs, rhs, base_mxcsr | old_sticky),
+                    expected,
+                    "{lhs:08x}+{rhs:08x} RC={rc} old={old_sticky:02x}"
+                );
+            }
+        }
     }
 }
 

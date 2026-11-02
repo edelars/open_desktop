@@ -12,6 +12,15 @@
 
 ## Записи
 
+### ISSUE-031 — S2-37di lacks physical x86 acceptance evidence
+
+- **Дата обнаружения:** 2026-11-01.
+- **Компонент:** локальный Long64 interpreter profile `s2-long-addss-memory-rax-v1` в `od-isa`.
+- **Статус:** открытое ограничение приёмочных свидетельств; подтверждённый дефект не установлен.
+- **Суть и последствия:** exact `ADDSS XMM0,m32 [RAX]` согласуется с существующим ADDSS raw helper и независимым integer fixture oracle, но физическое исполнение на x86 не сравнивалось. Локальные тесты поэтому не подтверждают аппаратный fault ordering, unaligned memory behavior или MXCSR status на целевом процессоре.
+- **Основание:** S2-37di добавляет interpreter-only профиль и фиксирует отсутствие физической проверки в [standalone report](reports/S2_37DI_ADDSS_MEMORY.md) и [shared report](reports/STAGE_2_REPORT.md#s2-37di--addss-xmm0m32-rax); локальные suites подтверждают только выбранную семантику и oracle.
+- **Следующий шаг:** включить точные encoding/profile, AC, boundary faults и MXCSR scenarios в общий физический x86 acceptance substage; сохранить CPU/microcode, режим и результаты. До этого не заявлять physical acceptance.
+
 ### ISSUE-030 — S2-37dh lacks physical x86 acceptance evidence
 
 - **Дата обнаружения:** 2026-11-01.
