@@ -931,6 +931,22 @@ boundary is `A+8`. Other prefixes, scales, and neighboring encodings remain
 outside this exact admission. Runtime gates remain pending; see the
 [S3-20ew report](../reports/STAGE_3_S3-20ew_2026-11-02.md).
 
+#### S3-20ex: exact address64 RAX-indexed no-base SIB Dword load
+
+The shared typed-IR Dword-load path admits only the exact seven-byte,
+unprefixed singleton `8B 04 05 disp32` (`MOV EAX,[RAX+signed disp32]`). Its
+SIB has no base, RAX as index, and scale 1; address size is Qword and transfer
+width is Dword. The effective address is computed from the original full64
+RAX plus sign-extended disp32 using wrapping `u64` arithmetic, before EAX
+writeback. One contiguous checked four-byte read writes EAX and zero-extends
+RAX; other GPRs and RFLAGS are preserved, and successful retirement commits
+`A+7`. Entry guards, architectural faults, and backend errors before commit
+preserve CPU state and RIP; a retry uses the original RAX. Noncanonical
+addresses produce guest `#GP`; a checked range overflow remains a memory
+operation error rather than a guest fault. Other prefixes, scales, indexes,
+base forms, transfer widths, and neighboring encodings remain outside this
+exact admission. See the [S3-20ex report](../reports/STAGE_3_S3-20ex_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
