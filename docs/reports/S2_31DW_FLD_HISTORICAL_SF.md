@@ -9,7 +9,7 @@ current IE. The schema-v2 no-stop, budget-one Unsupported predicate uses the
 same gate.
 
 All current conversion and status behavior remains unchanged. The test matrix
-covers 114,688 accepted executions: both source widths; positive and negative
+covers 57,344 accepted executions: both source widths; positive and negative
 zero, minimum-normal, interior-Normal, infinity, QNaN, SNaN and minimum-subnormal
 inputs; all 32 historical DE/ZE/OE/UE/PE combinations with SF+IE; the four
 admitted FCWs; all TOP values; and both prior C1 values. It compares the

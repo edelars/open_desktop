@@ -3939,7 +3939,7 @@ admission remains closed and ISSUE-019 remains open. See [CPU contract](../../..
 
 The exact bare `D9 00`/`DD 00` FLD gates admit historical SF only when IE is
 also set. SF-only, ES and B remain pre-read rejects; the ISA test includes an
-SNaN operand to prove current IE cannot make SF-only admissible. Its 114,688
+SNaN operand to prove current IE cannot make SF-only admissible. Its 57,344
 full-state cases cover both widths and both signs of zero, minimum-normal,
 interior-Normal, infinity, QNaN, SNaN and minimum-subnormal vectors, all 32
 DE/ZE/OE/UE/PE combinations with SF+IE, the four FCWs, every TOP and prior C1,
