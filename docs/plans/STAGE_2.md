@@ -594,6 +594,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37dk | Local-only masked legacy Long64 SUBSS XMM0,m32 [RAX], exact F3 0F 5C 00; SSE bit 25; memory RHS with original-NaN selection before subtraction sign treatment; AC=1 local refusal, AC=0 unaligned admission, one read4; strict masked MXCSR and backend closure | Isolated slice: od-isa 1,798; od-testkit 455; runner 114+492; x86-runner 8+4; Graphify 11,279/24,237/347; integrated main: od-isa 1,802, testkit 455, runner 114+492, x86-runner 8+4; clean Sol/high review; layout reports only pre-existing `.git` mapping and historical manifest issues; no physical x86 acceptance |
 | [x] | S2-37dl | Local-only masked legacy Long64 SUBSD XMM0,m64 [RAX], exact F2 0F 5C 00; SSE2 bit 26; memory RHS with original-NaN selection before RHS sign treatment; AC=1 local refusal, AC=0 unaligned admission, one read8; strict masked MXCSR and backend closure | Isolated slice: od-isa 1,806; testkit 455; runner 115+493; x86-runner 8+4; 65,536 independent-oracle executions; clean Sol/high review; integrated main: od-isa 1,809, testkit 455, runner 115+493, x86-runner 8+4; Graphify 11,280/24,407/336; no physical x86 acceptance |
 | [x] | S2-37dp | Masked-only legacy Long64 DIVSD XMM0,m64 [RAX], exact F2 0F 5E 00; SSE2 bit 26; actual memory RHS; all RC/sticky histories; AC-before-span/read; strict interpreter-only schema-v2 | Integrated main: od-isa 1,831, testkit 455, runner 118+496, x86-runner 8+4; 6,144 oracle cases; independent Sol/high review clean; workspace/fmt/layout/diff and Graphify 11,397/24,698/326 passed; no physical x86 acceptance |
+| [x] | S2-37dx | Masked-only legacy Long64 DIVPD XMM0,m128 `[RAX]`, exact `66 0F 5E 00`; SSE2 bit 26; two raw Binary64 lanes from memory RHS; aligned canonical one-read m128; full-fetch #UD/#NM order; strict MXCSR; unmasked/#XM and non-interpreter paths closed | Isolated od-isa 1,866; od-testkit 455; runner 120+509; x86-runner 8+4; 3,584 oracle runs; workspace check/fmt/diff passed; Graphify 11,655/25,110/370; independent review pending; no physical x86 acceptance |
 | [x] | S2-37dn | Local-only masked legacy Long64 MULSD XMM0,m64 [RAX], exact F2 0F 59 00; SSE2 bit 26; actual memory RHS, masked MXCSR with all RC/stickies, AC=1 refusal, one read8; strict interpreter-only profile | Integrated main: od-isa 1,821, testkit 455, runner 116+495, x86-runner 8+4; independent Sol/high review clean; 6,400 oracle cases; workspace/fmt/layout/diff and Graphify 11,339/24,564/343 passed; no physical x86 acceptance |
 | [x] | S2-37do | Local-only masked legacy Long64 DIVSS XMM0,m32 [RAX], exact F3 0F 5E 00; SSE bit 25; divide priority IE/ZE/DE and all six flags; strict interpreter-only profile | Integrated main: od-isa 1,826, testkit 455, runner 118+495; independent Sol/high review clean after backend-guard and citation fixes; 5,120 oracle cases; workspace/fmt/layout/diff and Graphify 11,368/24,630/336 passed; no physical x86 acceptance |
 | [x] | S2-37aa | Local-only canonical Long64 CMPPS XMM register pairs; all eight predicates, four binary32 lanes, independent IE/DE accumulation and atomic destination suppression; JIT/native closed | Independent Sol-medium review clean after binary64-oracle regression fix; final combined physical stage remains outstanding |
@@ -17487,3 +17488,25 @@ pointer and two absent historical oracle manifests already tracked by ISSUE-023.
 Independent Sol/high review is clean. Integrated main suites passed: `od-isa`
 1,849, `od-testkit` 455, runner 119 unit + 503 fixture; physical x86 acceptance
 is not claimed.
+
+
+#### S2-37dx — masked-only legacy `Long64` `DIVPD` XMM0,m128 [RAX]
+
+Implement strict schema-v2 interpreter profile `s2-long-divpd-memory-rax-v1`
+for exactly `66 0F 5E 00`, four-byte fetch, budget one and stop RIP entry+4.
+Require Long64, SSE2 (`CPUID.01H:EDX[26]`), CR0.EM=0, CR4.OSFXSR=1 and
+CR0.TS=0; fetch the complete instruction before #UD/#NM gates. Register DIVPD
+selection remains separate. Admit supported MXCSR bits `0xffbf`, reserved bits
+clear, all six exception masks set, DAZ=FTZ=0, every RC and previous sticky
+history. Unmasked/#XM, native/JIT/C ABI/generic/fragment paths remain closed.
+
+Require 16-byte alignment independent of AC and checked canonical48
+`[RAX,RAX+15]` endpoints before exactly one read16. Any alignment, span or
+read error preserves architectural state and retirement. Divide each old XMM0
+binary64 lane by its actual memory RHS through `Binary64::divide_raw_result`;
+aggregate IE/DE/ZE/OE/UE/PE and merge old sticky flags. The independent fixture
+validator uses a raw-u64 rational oracle and memory RHS. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37dx--masked-only-legacy-long64-divpd-xmm0m128-rax),
+[standalone report](../reports/S2_37DX_DIVPD_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dx-divpd-xmm0m128-rax).
+
+
+S2-37dx validation: `od-isa` 1,866, `od-testkit` 455, runner 120 unit + 509 fixture tests (serialized aggregate; 381.06 seconds), and `od-x86-runner` 8 library + 4 binary tests. Focused DIVPD memory oracle coverage passed 1/1 with 3,584 executions; direct ISA address/gate/read rollback and decoder checks passed. Workspace all-target offline check, fmt/diff, and Graphify passed. The first parallel runner aggregate had five subprocess-spawn `ENOENT` failures; each failed case passed individually and the serialized aggregate passed. Isolated layout reports the worktree `.git` pointer and two historical unavailable manifests tracked by ISSUE-023. Independent Sol/high review is clean. Physical x86 acceptance is not claimed. Full evidence: [standalone report](../reports/S2_37DX_DIVPD_MEMORY.md).

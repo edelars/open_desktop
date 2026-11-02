@@ -8089,3 +8089,20 @@ control/result tampering and JIT/native denial. No physical x86 acceptance is
 claimed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37dv--masked-only-legacy-long64-subpd-xmm0m128-rax),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37dv--masked-only-long64-subpd-xmm0m128-rax),
 and [standalone report](../../../../docs/reports/S2_37DV_SUBPD_MEMORY.md).
+
+### S2-37dx — DIVPD XMM0,m128 [RAX]
+
+`s2_37dx_divpd_m128_memory_source_and_destination_lanes.case.json` is a
+handwritten legacy `66 0F 5E 00` fixture with old XMM0 lanes 1.0 and 2.0,
+memory denominators 3.0 and 4.0, and a poisoned XMM1. The strict
+`s2-long-divpd-memory-rax-v1` profile requires SSE2, complete fetch before
+#UD/#NM gates, supported MXCSR bits `0xffbf`, all six masks set, and DAZ/FTZ
+clear. It requires aligned canonical m128 `[RAX]` and exactly one read16; an
+address or memory error leaves state and retirement unchanged. The independent
+raw-u64 rational oracle consumes the fixture memory RHS and checks two packed
+lanes. Runner coverage crosses representative NaN/invalid/ZE/DE/tiny/overflow
+cases with all four RC modes and 64 sticky histories, and denies JIT/native
+backends. No physical x86 acceptance is claimed. Sources and limits are in
+the [plan](../../../../docs/plans/STAGE_2.md#s2-37dx--masked-only-legacy-long64-divpd-xmm0m128-rax),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37dx--masked-only-legacy-long64-divpd-xmm0m128-rax),
+and [standalone report](../../../../docs/reports/S2_37DX_DIVPD_MEMORY.md).

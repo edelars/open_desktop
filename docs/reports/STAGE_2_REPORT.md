@@ -22099,3 +22099,21 @@ ISSUE-023. No physical x86 acceptance is claimed. Independent Sol/high review
 is pending transfer. See [standalone report](S2_30DG_X87_FADD_REVERSE_LARGE_GAPS.md),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30ct-bounded-fadd-sti-st0-dc-c0c7),
 and [plan](../plans/STAGE_2.md#s2-30dg-large-gap-fadd-sti-st0-admission).
+
+## S2-37dx — DIVPD XMM0,m128 [RAX]
+
+Added a dedicated strict schema-v2, interpreter-only memory profile for exact
+legacy `66 0F 5E 00`; the register-pair DIVPD path remains separate. The profile
+requires SSE2, complete fetch before #UD/#NM gates, masked MXCSR with DAZ/FTZ
+clear, and aligned canonical `[RAX,RAX+15]` before one read16. Two lanes divide
+old XMM0 values by the actual memory RHS through the raw Binary64 core, aggregate
+IE/DE/ZE/OE/UE/PE, and commit only after successful memory access.
+
+A strict schema-v2 validator uses an independent raw-u64 rational oracle. The
+handwritten fixture poisons XMM1 and selects two distinct lanes; runner coverage
+includes RC/sticky histories, gate/address/read rollback, provenance tampering
+and JIT/native denial. Validation totals and review results are recorded in the
+[standalone report](S2_37DX_DIVPD_MEMORY.md). No physical x86 acceptance is
+claimed. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37dx--masked-only-legacy-long64-divpd-xmm0m128-rax),
+[plan](../plans/STAGE_2.md#s2-37dx--masked-only-legacy-long64-divpd-xmm0m128-rax),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dx-divpd-xmm0m128-rax).

@@ -16983,3 +16983,45 @@ checks cover all RC × 64 sticky histories, rounding and lane event vectors,
 #UD/#GP, tampering and JIT/native denial. No physical x86 support is claimed.
 See the [plan](../plans/STAGE_2.md#s2-37dv--masked-only-legacy-long64-subpd-xmm0m128-rax),
 [report](../reports/S2_37DV_SUBPD_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dv-subpd-m128-memory-profile).
+
+
+## S2-37dx — masked-only legacy Long64 DIVPD XMM0,m128 [RAX]
+
+The local strict schema-v2 profile `s2-long-divpd-memory-rax-v1` admits only
+legacy `66 0F 5E 00`, length four, one instruction and stop RIP entry+4. It is
+selected through a dedicated memory operation and runner path; the existing
+register-pair DIVPD selector is unchanged. Require Long64, SSE2
+(`CPUID.01H:EDX[26]`), CR0.EM=0, CR4.OSFXSR=1 and CR0.TS=0. Fetch all four
+bytes before gates; missing SSE2, EM or OSFXSR raises #UD before TS raises #NM.
+Other prefixes, ModR/M forms, REX, VEX/EVEX, unmasked exceptions, #XM, JIT,
+native, C ABI, generic and fragment execution remain closed.
+
+MXCSR must use supported bits `0xffbf`, have reserved bits clear, all six
+exception masks set, and DAZ=FTZ=0. All RC modes and previous sticky flags are
+accepted. RAX must be 16-byte aligned independent of RFLAGS.AC. Checked
+`RAX+15` and canonical48 endpoint checks validate the inclusive `[RAX,RAX+15]`
+span before exactly one atomic read16. Alignment, endpoint, and memory errors
+leave CPU/XMM/MXCSR/RIP and retirement unchanged.
+
+Compute each old XMM0 binary64 numerator divided by its corresponding loaded
+memory denominator with `Binary64::divide_raw_result` and MXCSR.RC. Original
+NaNs suppress same-lane ZE and DE; `0/0` and `∞/∞` raise IE; finite nonzero
+(or subnormal) over zero raises ZE, while infinity over zero does not; otherwise
+subnormal operands raise DE. Aggregate IE/DE/ZE/OE/UE/PE across both lanes and
+merge them with old sticky status. Successful execution replaces all of XMM0 and
+advances RIP by four, preserving XMM1 and unrelated state.
+
+The schema validator uses an independent raw-u64 rational oracle with the
+actual fixture memory RHS. The handwritten fixture poisons XMM1 and distinguishes
+both packed lanes. Runner matrices cover representative arithmetic classes
+across all four RC values and 64 prior sticky histories, exact schema and
+provenance, backend denial, fetch/gate priority, alignment, canonical span and
+read rollback. No physical x86 acceptance or complete unmasked exception
+behavior is claimed. Normative sources: Intel SDM Rev. 093 Vol. 2A DIVPD
+pp. 3-267–3-269 and legacy SSE rows in Table 2-19; Vol. 1 §§4.9.1.4–.6,
+11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8. The Type 2 note on
+p. 3-269 describes VEX forms and is not applied to this legacy encoding.
+
+See [Stage 2 plan](../plans/STAGE_2.md#s2-37dx--masked-only-legacy-long64-divpd-xmm0m128-rax),
+[shared report](../reports/STAGE_2_REPORT.md#s2-37dx--divpd-xmm0m128-rax),
+[standalone report](../reports/S2_37DX_DIVPD_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dx-divpd-xmm0m128-rax).

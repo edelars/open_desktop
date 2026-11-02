@@ -1044,6 +1044,8 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Exact legacy `66 0F 5E 00` packed binary64 memory divide at RAX.
+    DivpdMemoryRax,
     /// Local-only canonical F2 DIVSD register pair; scalar binary64 division.
     DivsdRegister {
         destination: u8,
@@ -3915,6 +3917,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         .rex
                         .is_some_and(|rex| matches!(rex, 0x41 | 0x44 | 0x45))
                     && prefix_bytes[1] == prefixes.rex.unwrap());
+        let divpd_memory_rax = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x5e
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && prefixes.operand_override
+            && !prefixes.address_override
+            && prefixes.rex.is_none()
+            && prefix_count == 1
+            && prefix_bytes[0] == 0x66;
         let divsd_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x5e
             && prefixes.group1 == Some(0xf2)
@@ -5177,12 +5188,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
             (OpcodeMap::Escape0f, 0x5e) if divpd_register => {
                 let modrm = self.byte()?;
                 if modrm >> 6 != 3 {
-                    return Err(self.unsupported(opcode));
-                }
-                let rex = prefixes.rex.unwrap_or(0x40);
-                Operation::DivpdRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                    if modrm == 0 && divpd_memory_rax {
+                        Operation::DivpdMemoryRax
+                    } else {
+                        return Err(self.unsupported(opcode));
+                    }
+                } else {
+                    let rex = prefixes.rex.unwrap_or(0x40);
+                    Operation::DivpdRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x5e) if divsd_register => {
