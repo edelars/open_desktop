@@ -5926,6 +5926,50 @@ mod tests {
         assert!(block
             .site()
             .matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        assert_eq!(block.pc_map().instruction_count(), 1);
+        assert_eq!(block.pc_map().boundaries().len(), 1);
+        assert_eq!(
+            block.pc_map().boundaries()[0].rip,
+            crate::statepoints::GuestRipBoundary::Fixed(entry + 2)
+        );
+        assert_eq!(block.pc_map().boundaries()[0].instruction_index, 0);
+        assert_eq!(block.pc_map().boundaries()[0].committed_instructions, 1);
+
+        let site = *block.site();
+        let mut forged = site;
+        forged.source = Some(1);
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = site;
+        forged.destination = Some(1);
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = site;
+        forged.operand.base = AddressBase::Register(Register::Rax);
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = site;
+        forged.operand.index = Some(Register::Rax);
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = site;
+        forged.operand.scale = 2;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = site;
+        forged.operand.displacement = 1;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = site;
+        forged.operand.size = od_isa::OperandSize::Qword;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = site;
+        forged.operand.address_size = od_isa::OperandSize::Dword;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = site;
+        forged.instruction_index = 1;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = site;
+        forged.guest_rip += 1;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = site;
+        forged.next_rip += 1;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+
         for neighbor in [
             &[0x8b, 0x00][..],
             &[0x8b, 0x03][..],
@@ -5940,6 +5984,14 @@ mod tests {
             assert!(!block
                 .site()
                 .matches_source_bytes(neighbor, MemorySiteOperationV2::Load));
+            assert!(
+                compile_ir_memory_dword_load_block_v2(
+                    CodeView::new(entry, neighbor).unwrap(),
+                    entry
+                )
+                .is_err(),
+                "compiled neighboring encoding {neighbor:02x?}"
+            );
         }
     }
 
