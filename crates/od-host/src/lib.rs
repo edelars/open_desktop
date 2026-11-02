@@ -7524,6 +7524,9 @@ mod tests {
     fn s3_20ex_rax_index_no_base_sib_disp32_dword_load_uses_original_rax() {
         use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
 
+        const CODE_RIP: u64 = 0x9c30;
+        const SOURCE: [u8; 7] = [0x8b, 0x04, 0x05, 0xfc, 0xff, 0xff, 0xff];
+
         struct Memory<'a> {
             reads: usize,
             last_read: Option<(u64, usize)>,
@@ -7532,10 +7535,14 @@ mod tests {
         }
         impl GuestMemory for Memory<'_> {
             fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
-                Err(MemoryError::Unmapped {
-                    address,
-                    access: AccessKind::Fetch,
-                })
+                address
+                    .checked_sub(CODE_RIP)
+                    .and_then(|offset| usize::try_from(offset).ok())
+                    .and_then(|offset| SOURCE.get(offset).copied())
+                    .ok_or(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Fetch,
+                    })
             }
             fn read(
                 &mut self,
@@ -7609,8 +7616,8 @@ mod tests {
         }
 
         let _guard = jit_test_lock();
-        let entry = 0x9c30;
-        let source = [0x8b, 0x04, 0x05, 0xfc, 0xff, 0xff, 0xff];
+        let entry = CODE_RIP;
+        let source = SOURCE;
         let code = CodeView::new(entry, &source).unwrap();
         let compiled =
             od_jit::memory_load_v2::compile_ir_memory_dword_load_block_v2(code, entry).unwrap();
@@ -7704,6 +7711,23 @@ mod tests {
         assert_eq!(memory.reads, 1);
         assert_eq!(memory.last_read, Some((u64::MAX - 3, 4)));
 
+        let mut interpreter_state = before.clone();
+        let mut interpreter_memory = Memory {
+            reads: 0,
+            last_read: None,
+            failure: None,
+            stop_on_read: None,
+        };
+        od_isa::execute::step(
+            &mut interpreter_state,
+            &mut interpreter_memory,
+            AccessContext::default(),
+        )
+        .unwrap();
+        assert_eq!(interpreter_state, wrapped_state);
+        assert_eq!(interpreter_memory.reads, 1);
+        assert_eq!(interpreter_memory.last_read, memory.last_read);
+
         let mut high_state = before.clone();
         high_state.gpr[0] = 0xffff_8000_0000_0004;
         let mut high_memory = Memory {
@@ -7725,6 +7749,106 @@ mod tests {
         assert_eq!(high_read.exit, MemoryOperationExecutionExitV2::Complete);
         assert_eq!(high_memory.last_read, Some((0xffff_8000_0000_0000, 4)));
         assert_eq!(high_memory.reads, 1);
+
+        for (initial_rax, displacement, expected_address) in [
+            (0x0000_0001_0000_0000, i32::MIN, 0x0000_0000_8000_0000),
+            (0x0000_0000_8000_0000, i32::MIN, 0),
+            (0, i32::MAX, 0x0000_0000_7fff_ffff),
+            (0x0000_0001_0000_1000, -1, 0x0000_0001_0000_0fff),
+        ] {
+            let mut displacement_source = SOURCE;
+            displacement_source[3..].copy_from_slice(&displacement.to_le_bytes());
+            let displacement_block =
+                od_jit::memory_load_v2::compile_ir_memory_dword_load_block_v2(
+                    CodeView::new(entry, &displacement_source).unwrap(),
+                    entry,
+                )
+                .unwrap();
+            let displacement_published =
+                PublishedCode::publish_ir_memory_dword_load_v2(&displacement_block).unwrap();
+            let mut displacement_state = before.clone();
+            displacement_state.gpr[0] = initial_rax;
+            let mut displacement_memory = Memory {
+                reads: 0,
+                last_read: None,
+                failure: None,
+                stop_on_read: None,
+            };
+            let result = displacement_published
+                .execute_ir_memory_dword_load_v2(
+                    &mut displacement_state,
+                    &mut displacement_memory,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &stop,
+                )
+                .unwrap();
+            assert_eq!(result.exit, MemoryOperationExecutionExitV2::Complete);
+            assert_eq!(displacement_memory.reads, 1);
+            assert_eq!(displacement_memory.last_read, Some((expected_address, 4)));
+            assert_eq!(displacement_state.gpr[0], 0x0000_0000_efcd_ab89);
+            drop(displacement_published);
+        }
+
+        for (guard_budget, guard_address, initial_stop, expected_exit) in [
+            (
+                1,
+                None,
+                1,
+                MemoryOperationExecutionExitV2::StopRequested,
+            ),
+            (
+                0,
+                None,
+                0,
+                MemoryOperationExecutionExitV2::BudgetExhausted,
+            ),
+            (
+                1,
+                Some(entry),
+                0,
+                MemoryOperationExecutionExitV2::StopAddress,
+            ),
+        ] {
+            let mut guarded_state = before.clone();
+            let mut guarded_memory = Memory {
+                reads: 0,
+                last_read: None,
+                failure: None,
+                stop_on_read: None,
+            };
+            let guard = AtomicU8::new(initial_stop);
+            let blocked = published
+                .execute_ir_memory_dword_load_v2(
+                    &mut guarded_state,
+                    &mut guarded_memory,
+                    AccessContext::default(),
+                    guard_budget,
+                    guard_address,
+                    &guard,
+                )
+                .unwrap();
+            assert_eq!(blocked.exit, expected_exit);
+            assert_eq!(guarded_state, before);
+            assert_eq!(guarded_memory.reads, 0);
+            guard.store(0, Ordering::Release);
+            let retried = published
+                .execute_ir_memory_dword_load_v2(
+                    &mut guarded_state,
+                    &mut guarded_memory,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &guard,
+                )
+                .unwrap();
+            assert_eq!(retried.exit, MemoryOperationExecutionExitV2::Complete);
+            assert_eq!(guarded_state.gpr[0], 0x0000_0000_efcd_ab89);
+            assert_eq!(guarded_state.rip, entry + 7);
+            assert_eq!(guarded_memory.reads, 1);
+            assert_eq!(guarded_memory.last_read, Some((u64::MAX - 3, 4)));
+        }
 
         let mut failed_memory = Memory {
             reads: 0,
@@ -7833,8 +7957,13 @@ mod tests {
                 )
                 .unwrap();
             assert!(
-                matches!(fault.exit, MemoryOperationExecutionExitV2::GuestFault(_)),
-                "expected guest fault for {expected_fault}"
+                matches!(
+                    fault.exit,
+                    MemoryOperationExecutionExitV2::GuestFault(
+                        od_isa::memory::ArchitecturalFault { vector: 13, .. }
+                    )
+                ),
+                "expected #GP for {expected_fault}"
             );
             assert_eq!(fault_state, before_fault);
             assert_eq!(fault_memory.reads, 0);
