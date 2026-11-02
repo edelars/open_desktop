@@ -820,7 +820,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         identities = [gate["identity"] for gate in manifest]
         steps_in_manifest = [gate["step"] for gate in manifest]
         self.assertEqual(len(manifest), 254)
-        self.assertEqual(len(set(steps_in_manifest)),  . 254)
+        self.assertEqual(len(set(steps_in_manifest)), 254)
         for _, _, _, identity in expected:
             self.assertEqual(identities.count(identity), 1)
         self.assertEqual(sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 244)
@@ -1560,7 +1560,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 "--", "--exact", "--test-threads=1",
             ])
         self.assertEqual(len(harness.RUST_TEST_GATES), 254)
-        self.assertEqual(len(manifest_by_name),  . 254)
+        self.assertEqual(len(manifest_by_name), 254)
 
     def test_s3_34q_retained_hit_reducer_gate_is_pinned_once(self):
         expected = (
