@@ -483,6 +483,12 @@ Harness source commit `af854bf`, integrated as `0567f37`, pins exactly `memory_l
 
 The historical static manifest records 232 Rust gates (222 acceptance, 10 lifecycle) and 250 local steps. Independent Sol/high static review passed; no Python/harness execution was performed. Runtime source `0ad1f51` is integrated as `edf50fe` and passed static review after the adjacent-encoding fixes, but its exact gates remain pending because no tests/build/fmt/Cargo/Python checks ran. No runtime pass is claimed. ISSUE-028 remains open. Stage 2 remained outside this slice's evidence; concurrent runs were ignored per user instruction. Mini/M1 remain deferred and Stage 3 remains partial. See the [S3-34cc report](../reports/STAGE_3_S3-34cc_2026-11-02.md).
 
+## S3-34cd: exact harness gates for S3-20es RCX-indexed no-base scaled SIB Dword store
+
+Harness source commit `beb1c93`, integrated as `a76e732`, pins exactly `memory_load_v2::tests::ir_dword_rcx_index_no_base_sib_scaled_disp32_store_binds_all_source_bytes_to_its_site` (`od-jit`) and `tests::s3_20es_rcx_index_no_base_sib_scaled_disp32_dword_store_uses_full_width_scaled_index` (`od-host --lib`). The exact Cargo commands are `cargo test --offline -p od-jit --lib memory_load_v2::tests::ir_dword_rcx_index_no_base_sib_scaled_disp32_store_binds_all_source_bytes_to_its_site -- --exact --test-threads=1` and `cargo test --offline -p od-host --lib tests::s3_20es_rcx_index_no_base_sib_scaled_disp32_dword_store_uses_full_width_scaled_index -- --exact --test-threads=1`.
+
+The static manifest records 234 Rust gates (224 acceptance, 10 lifecycle), 252 local steps, and 101 self-test names. Independent Sol/high static review passed; no Python/harness execution was performed. S3-20es runtime work is still in progress, so no runtime behavior or gate pass is claimed here. ISSUE-028 remains open. Stage 2 remained outside this slice's evidence; concurrent runs were ignored per user instruction. Mini/M1 remain deferred and Stage 3 remains partial. See the [S3-34cd report](../reports/STAGE_3_S3-34cd_2026-11-02.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases
