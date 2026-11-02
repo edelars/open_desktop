@@ -1457,7 +1457,7 @@ out-of-domain cases remain atomic refusals. Full TOP/index/sign/FCW, midpoint,
 carry, order, sticky status, fetch/STOP/budget and canary coverage is recorded
 in [S2-30cs report](reports/S2_30CS_X87_FDIVR_PRECISION.md). JIT/native,
 guest exception delivery and physical x86 acceptance remain outside scope;
-ISSUE-019 remains open. See [contract](specs/CPU_CONTRACT.md#local-s2-30cs-bounded-fdivr-st0-sti-d8-f8-ff),
+ISSUE-019 remains open. See [contract](specs/CPU_CONTRACT.md#local-s2-30cs-bounded-fdivr-st0-sti-d8-f8ff),
 [plan](plans/STAGE_2.md#s2-30cs-bare-fdivr-st0-sti-with-bounded-fcw-precision),
 and [shared report](reports/STAGE_2_REPORT.md#s2-30cs--bounded-fdivr-st0-sti).
 

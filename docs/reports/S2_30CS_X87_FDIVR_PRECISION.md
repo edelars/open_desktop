@@ -54,6 +54,6 @@ Affected; Vol. 1 §8.1.5.2/Table 8-2, §8.1.5.3 and §8.5.6 for PC/RC and masked
 precision behavior ([Vol. 2A](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=451),
 [Vol. 1](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)).
 See the [plan](../plans/STAGE_2.md#s2-30cs-bare-fdivr-st0-sti-with-bounded-fcw-precision),
-[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cs-bounded-fdivr-st0-sti-d8-f8-ff),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cs-bounded-fdivr-st0-sti-d8-f8ff),
 [shared Stage 2 report](STAGE_2_REPORT.md#s2-30cs--bounded-fdivr-st0-sti), and
 [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).

@@ -11261,7 +11261,7 @@ fetch/truncation, STOP, stop-RIP, budget, fetch-only and backend-denial checks.
 The former p64 inexact reverse-division case is now a rounded success; retain
 genuine unsupported cases. Use Intel SDM Rev. 093 Vol. 2A `FDIVR` Operation
 and FPU Flags Affected, with Vol. 1 §8.1.5.2/Table 8-2, §8.1.5.3 and §8.5.6
-for PC/RC and masked precision behavior. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cs-bounded-fdivr-st0-sti-d8-f8-ff), [shared report](../reports/STAGE_2_REPORT.md#s2-30cs--bounded-fdivr-st0-sti), and [standalone report](../reports/S2_30CS_X87_FDIVR_PRECISION.md).
+for PC/RC and masked precision behavior. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cs-bounded-fdivr-st0-sti-d8-f8ff), [shared report](../reports/STAGE_2_REPORT.md#s2-30cs--bounded-fdivr-st0-sti), and [standalone report](../reports/S2_30CS_X87_FDIVR_PRECISION.md).
 
 S2-30cs implementation is complete and its required interpreter, runner, workspace,
 format, diff and Graphify checks pass. Independent Sol/high review found no
