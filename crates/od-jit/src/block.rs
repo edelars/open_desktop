@@ -5090,7 +5090,7 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
         && operand.address_size == OperandSize::Qword
         && matches!(operand.base, AddressBase::None)
         && operand.index == Some(od_isa::Register::Rax)
-        && operand.scale == 1
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
         && i32::try_from(operand.displacement).is_ok();
     let rbx_rcx_sib_profile = matches!(instruction.length, 3 | 4 | 7)
         && instruction.address_size == OperandSize::Qword
