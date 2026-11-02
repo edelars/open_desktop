@@ -21548,3 +21548,10 @@ No physical x86 acceptance is claimed.
 Added interpreter-only schema-v2 profile `s2-long-subsd-memory-rax-v1` for exact legacy `F2 0F 5C 00`, Long64/SSE2, four-byte fetch, budget one and stop RIP entry+4. Fetch completes before #UD/#NM gates. Strict masked MXCSR requires supported mask `0xffbf`, all exception masks, reserved bits clear and DAZ/FTZ=0; all RC and prior sticky histories are admitted. AC=1 refuses locally before span checks/read, while AC=0 permits unaligned m64. Checked `RAX+7` and canonical48 endpoints precede exactly one read8, with atomic rollback on read failure.
 
 Execution subtracts actual memory RHS from XMM0.low64 with the existing raw binary64 semantics, preserving high64/XMM1 and unrelated state. Original NaNs are selected before RHS sign treatment; SNaNs are quieted and raise IE. The independent raw-u64 oracle receives memory RHS. The runner crosses 256 raw operand pairs × four RC modes × 64 sticky states (65,536 executions), checking stop/snapshot/retirement before results. Provenance/schema/result tampering, backend denial, address/gate ordering, read behavior and arithmetic/register regressions are covered. No physical x86 acceptance is claimed. Full suite/check/review results are recorded in the [standalone report](S2_37DL_SUBSD_MEMORY.md). Intel SDM Rev. 093 Vol. 2B SUBSD p. 4-693; Vol. 2A legacy SSE2 rows in Table 2-27; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8.
+
+After S2-30cu and S2-37dl were transferred to main, combined validation passed:
+`od-isa` 1,809, `od-testkit` 455, runner 115 unit + 493 fixture tests, and
+`od-x86-runner` 8 library + 4 binary tests. Workspace all-target offline check,
+formatting, layout validation and Graphify AST refresh passed (11,280 nodes,
+24,407 edges, 336 communities). Both independent Sol/high reviews are clean.
+No physical x86 acceptance is claimed.
