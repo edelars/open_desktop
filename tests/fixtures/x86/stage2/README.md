@@ -8362,3 +8362,30 @@ and preserve memory-source SNaN payloads. The schema rejects forged backend
 results; physical x86 acceptance is not claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38r--exact-maxpd-memory-unmasked-imdm),
 [plan](../../../../docs/plans/STAGE_2.md#s2-38r--exact-long64-maxpd-xmm0m128-rax-with-unmasked-imdm-exits),
 and [standalone report](../../../../docs/reports/S2_38R_MAXPD_MEMORY_UNMASKED.md).
+
+### S2-31dz historical SF with pre-existing IE on bounded m32/m64 stores
+
+The four literal success fixtures cover `FST/FSTP m32fp/m64fp` with SF+IE;
+the refusal fixture uses SF-only status with an SNaN source, proving that the
+current conversion cannot make the old status eligible. ISA checks cover
+73,728 full-state SF+IE cases across nine source classes. Runner checks cover
+the literal success/refusal fixtures, ES/B and malformed source/tag/control
+rejection, failed writes and range rollback, repeated
+store/FNSTSW/FNCLEX/retry, schema-v2 Unsupported validation and JIT/native
+denial. The slice is limited to the interpreter contract; physical x86
+acceptance is not claimed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-31dz-admit-historical-sf-only-with-pre-existing-ie-on-bounded-m32m64-stores),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-31dz--historical-sf-with-pre-existing-ie-for-bounded-m32m64-stores),
+and [standalone report](../../../../docs/reports/S2_31DZ_FST_M32_M64_HISTORICAL_SF.md).
+
+### S2-38s MINPS m128 unmasked invalid and denormal
+
+Three literal fixtures check an upper-lane IE+DE #XM with whole-XMM
+suppression, raw memory-RHS NaN/zero ties, and arithmetic #UD for an SNaN RHS.
+The independent raw-bit oracle reads the actual memory bytes. The executor
+matrix covers all 2,048 `{none,I,D,I+D}⁴ × IM × DM × OSXMMEXCPT` combinations;
+additional checks cover SSE without SSE2, exact three-byte fetch, aligned AC
+states, #GP(0) misalignment/noncanonical spans, callback counts, schema/backend
+tampering and JIT/native denial. No physical x86 acceptance is claimed. See the
+[plan](../../../../docs/plans/STAGE_2.md#s2-38s--exact-long64-minps-xmm0m128-rax-with-unmasked-imdm-exits),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38s--exact-minps-memory-unmasked-imdm),
+and [standalone report](../../../../docs/reports/S2_38S_MINPS_MEMORY_UNMASKED.md).

@@ -22774,3 +22774,29 @@ diff checks passed. Graphify: 11,947/25,946/383; labels were not refreshed
 without an LLM API key. Sol/high review is clean. Linux-only native preflight
 was not run on this macOS host; no physical x86 acceptance is claimed. See the
 [standalone report](S2_38R_MAXPD_MEMORY_UNMASKED.md), [CPU contract](../specs/CPU_CONTRACT.md#s2-38r--exact-maxpd-memory-unmasked-imdm), [plan](../plans/STAGE_2.md#s2-38r--exact-long64-maxpd-xmm0m128-rax-with-unmasked-imdm-exits), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38r-maxpd-m128-unmasked-invalid-and-denormal).
+
+<a id="main-integration-s2-31dz-s2-38s"></a>
+
+## Main integration: S2-31dz and S2-38s
+
+Both reviewed slices are integrated. S2-31dz admits historical SF only with
+pre-existing IE in the four exact bounded m32/m64 FST/FSTP forms; its 73,728
+success-state matrix compares the full CPU snapshot and includes source/tag/
+control refusal, rollback, repeat/FNSTSW/FNCLEX/retry, schema validation and
+JIT/native denial. S2-38s adds exact legacy `0F 5D 00` MINPS memory with SSE
+(not SSE2), four-lane unmasked IM/DM aggregation, an independent memory-RHS
+oracle, literal result fixtures, and #GP(0) alignment/noncanonical coverage.
+Its executor cross-product covers 2,048 lane-event/mask combinations.
+
+Integrated main verification passed: `od-isa` 1,923, `od-testkit` 455,
+`od-runner` fixture_v2 532, and `od-x86-runner` 8 library + 5 binary tests.
+Workspace all-target offline check, formatting, layout and diff checks passed.
+Graphify reports 11,985 nodes, 26,039 edges and 340 communities; community
+labels were not refreshed without an LLM API key. Independent Sol/high review
+is clean for both slices after correcting the S2-38s #GP(0) oracle metadata.
+No physical x86 acceptance is claimed; the Linux-only native preflight was not
+run on this macOS host. ISSUE-019 remains open for broader x87/native behavior,
+ISSUE-025 remains open for the unrelated RCPSS/RCPPS tiny-result threshold, and
+Stage 2 remains open. See [S2-31dz](S2_31DZ_FST_M32_M64_HISTORICAL_SF.md),
+[S2-38s](S2_38S_MINPS_MEMORY_UNMASKED.md), the [CPU contract](../specs/CPU_CONTRACT.md#s2-31dz--historical-sf-with-pre-existing-ie-for-bounded-m32m64-stores),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38s-minps-m128-unmasked-invalid-and-denormal).

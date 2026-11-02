@@ -17698,6 +17698,11 @@ FNSTSW/FNCLEX/retry; literal fixtures and interpreter-only backend denial.
 This follows Intel SDM Rev. 093 Vol. 1 §8.1.3.4
 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=212)).
 See the [Stage 2 plan](../plans/STAGE_2.md#s2-31dz-admit-historical-sf-only-with-pre-existing-ie-on-bounded-m32m64-stores).
+Integrated verification: od-isa 1,923, od-testkit 455, runner fixture_v2 532,
+and od-x86-runner 8 library + 5 binary tests; workspace all-target check,
+format, layout, diff and Graphify pass. Independent Sol/high review is clean.
+No physical x86 acceptance is claimed; broader behavior remains open under
+ISSUE-019. See the [implementation report](../reports/S2_31DZ_FST_M32_M64_HISTORICAL_SF.md).
 
 ## S2-38s — exact MINPS memory unmasked IM/DM
 
@@ -17733,3 +17738,9 @@ physical x86 acceptance is claimed. Sources: Intel SDM Rev. 093 Vol. 2B MINPS
 pp. 4-19–4-21 ([official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf#page=27));
 Vol. 1 §§4.9.2, 11.5.3.1–3 and Appendix D; Vol. 3A §16.1.3/Table 16-1. See
 the [Stage 2 plan](../plans/STAGE_2.md#s2-38s--exact-long64-minps-xmm0m128-rax-with-unmasked-imdm-exits).
+Integrated verification: od-isa 1,923, od-testkit 455, runner fixture_v2 532,
+and od-x86-runner 8 library + 5 binary tests; workspace all-target check,
+format, layout, diff and Graphify pass. Independent Sol/high review is clean
+after fixing the #GP(0) error-code expectation in the memory oracle. Linux-only
+native preflight was not run on this macOS host, and no physical x86 acceptance
+is claimed. See the [implementation report](../reports/S2_38S_MINPS_MEMORY_UNMASKED.md).
