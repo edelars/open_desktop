@@ -162735,6 +162735,108 @@ mod cvtsi2ss_r64_memory_profile_tests {
         }
     }
     #[test]
+    fn rsqrtss_memory_rax_checks_permission_gates_before_data_callbacks() {
+        let code = [0xf3, 0x0f, 0x52, 0x00];
+        let good = RsqrtssMemoryRaxControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+        };
+        let cases = [
+            (
+                RsqrtssMemoryRaxControls {
+                    sse_available: false,
+                    ..good
+                },
+                6,
+            ),
+            (
+                RsqrtssMemoryRaxControls {
+                    cr0_em: true,
+                    ..good
+                },
+                6,
+            ),
+            (
+                RsqrtssMemoryRaxControls {
+                    cr4_osfxsr: false,
+                    ..good
+                },
+                6,
+            ),
+            (
+                RsqrtssMemoryRaxControls {
+                    sse_available: false,
+                    cr0_ts: true,
+                    ..good
+                },
+                6,
+            ),
+            (
+                RsqrtssMemoryRaxControls {
+                    cr0_em: true,
+                    cr0_ts: true,
+                    ..good
+                },
+                6,
+            ),
+            (
+                RsqrtssMemoryRaxControls {
+                    cr0_ts: true,
+                    cr4_osfxsr: false,
+                    ..good
+                },
+                6,
+            ),
+            (
+                RsqrtssMemoryRaxControls {
+                    cr0_ts: true,
+                    ..good
+                },
+                7,
+            ),
+        ];
+        for (controls, vector) in cases {
+            let mut memory = Memory::at(&code, 0x2900);
+            let mut state = LongModeState::default();
+            state.rip = 0x2900;
+            state.gpr[Register::Rax as usize] = memory.data_base;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run_with_rsqrtss_memory_rax_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x2904),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector,
+                    error_code: None,
+                    linear_address: None,
+                })
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(
+                memory.accesses.is_empty(),
+                "permission gate read data memory"
+            );
+            assert_eq!(memory.fetches, (0x2900..0x2904).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
     fn rsqrtps_memory_rax_gate_address_and_read_failures_do_not_commit() {
         let code = [0x0f, 0x52, 0x00];
         let good = RsqrtpsMemoryRaxControls {

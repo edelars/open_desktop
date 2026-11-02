@@ -22321,7 +22321,7 @@ confirms JIT denial. Verification and review results are recorded in the
 ## S2-37eb — RSQRTSS XMM0,m32 [RAX]
 
 Added exact legacy `F3 0F 52 00` as a separate interpreter-only schema-v2
-profile. Final isolated suites passed: od-isa 1,884; od-testkit 455; runner 125
+profile. Final isolated suites passed: od-isa 1,885; od-testkit 455; runner 125
 unit + 515 fixture tests; workspace all-target offline check, formatting and diff
 check passed. Layout reported only the pre-existing `.git` worktree marker and
 two ISSUE-023 historical manifest links. Independent review remains pending. It uses one unaligned m32 read when AC=0, but AC=1 is a local
@@ -22330,8 +22330,11 @@ strict masked MXCSR admission follow the adjacent scalar approximation profiles.
 Success applies `Binary32::reciprocal_sqrt_sse_raw()` to memory only, replaces
 XMM0.low32, preserves high96 and all MXCSR, and retires once. The independent
 integer validator checks the `3/8192` normal-output envelope and local special
-value behavior. A schema/runner regression covers AC=1 plus noncanonical RAX
-versus AC=0 at that same address. JIT, native, generic, fragment, C ABI and
+value behavior. A direct ISA callback-count test covers each SSE/CR0/CR4 #UD
+gate alone and with TS set, plus TS-only #NM, asserting zero data callbacks,
+zero retirement and unchanged state. The schema/runner regression checks those same exception
+vectors and no-commit results. AC=1 plus noncanonical RAX versus AC=0 at the
+same address also remains covered. JIT, native, generic, fragment, C ABI and
 physical acceptance remain closed. Validation details are in the [standalone
 report](S2_37EB_RSQRTSS_MEMORY.md), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37eb-memory-rsqrtss-at-rax), [plan](../plans/STAGE_2.md#s2-37eb--local-long64-memory-legacy-rsqrtss-at-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37eb-local-legacy-rsqrtss-memory-profile).
 

@@ -39145,6 +39145,49 @@ fn rsqrtss_m32_memory_rhs_is_strict_and_interpreter_only() {
         .unwrap()
         .cr0_ts = true;
     assert!(wrong_controls.validate_for(&input).is_err());
+    for (name, gate, vector) in [
+        ("missing_sse_with_ts", 0, 6),
+        ("cr0_em_with_ts", 1, 6),
+        ("osfxsr_clear_with_ts", 2, 6),
+        ("ts_only", 3, 7),
+    ] {
+        let mut gated = base.clone();
+        gated.case_id = format!("s2_37eb_gate_{name}");
+        gated.expected_exit = ExpectedExit::Exception;
+        let controls = gated.rsqrtss_memory_rax_controls.as_mut().unwrap();
+        match gate {
+            0 => {
+                controls.sse_available = false;
+                controls.cr0_ts = true;
+            }
+            1 => {
+                controls.cr0_em = true;
+                controls.cr0_ts = true;
+            }
+            2 => {
+                controls.cr4_osfxsr = false;
+                controls.cr0_ts = true;
+            }
+            _ => controls.cr0_ts = true,
+        }
+        assert!(gated.validate().is_ok());
+        let (gated_input, gated_result) = run(&gated.to_json().unwrap(), "interpreter", 0);
+        gated_result.validate_for(&gated_input).unwrap();
+        assert!(matches!(gated_result.outcome, Outcome::Exception {}));
+        assert_eq!(
+            gated_result.instructions_executed,
+            Observation::Available { value: HexU64(0) }
+        );
+        assert_eq!(snapshot(&gated_result).state, gated.initial_state);
+        assert_eq!(
+            snapshot(&gated_result).memory[1].bytes_hex,
+            gated.memory[1].initial_bytes_hex
+        );
+        assert!(matches!(
+            snapshot(&gated_result).exception,
+            Observation::Available { value: Some(ref exception) } if exception.vector == vector
+        ));
+    }
     let mut missing_controls = base.clone();
     missing_controls.rsqrtss_memory_rax_controls = None;
     assert!(missing_controls.validate().is_err());
