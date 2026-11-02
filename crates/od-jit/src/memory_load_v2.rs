@@ -10942,7 +10942,7 @@ mod tests {
     }
 
     #[test]
-    fn ir_dword_alias_store_admits_distinct_8900_and_8901_sites() {
+    fn ir_dword_alias_store_admits_only_exact_8900_and_preserves_its_provenance() {
         let entry = 0x8250;
         let alias = compile_ir_memory_dword_store_block_v2(
             CodeView::new(entry, &[0x89, 0x00]).unwrap(),
