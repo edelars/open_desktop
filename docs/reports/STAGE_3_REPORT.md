@@ -119,6 +119,18 @@ acceptance, 10 lifecycle; 234 local steps). Full `od-host` was not run.
 ISSUE-028 remains open for the separate S3-20eg coverage limitation. See the
 [S3-20ej runtime report](STAGE_3_S3-20ej_2026-11-02.md).
 
+S3-20ek adds only the address-size-32 ESP-base dword store with signed disp32
+`67 89 84 24 id`. Its EA wraps low32 RSP plus signed disp32 modulo 2^32 and
+zero-extends; the contiguous width-four write stores low32 RAX and advances
+to `A+8`. On author runtime commit `34ad7e2`, the exact JIT gate passed 1/1
+and `od-jit` passed 349/349; cargo check/fmt, Graphify and Sol runtime review
+passed. The exact host test initially failed on an incorrect expected target
+(`0x7fff_ffff`); the fixture was corrected to `0x8000_1fff` and statically
+reviewed, but the test was not rerun; Mini execution remains deferred. The initial host run preceded the execution-deferral message reaching the reviewer. Its host
+gate remains pending. The full Python Stage 3 harness passed 94/94 at root
+revision `190a61c`. Full `od-host` was not run. See the
+[S3-20ek runtime report](STAGE_3_S3-20ek_2026-11-02.md).
+
 S3-36e implementation is committed. Release preflight passed on Apple M3 Max
 with 2,400 frozen inputs and 4,800 parity trials. Calibration-only passed at
 2,048 repetitions per side with no scored pairs. Three scored runs retained 20

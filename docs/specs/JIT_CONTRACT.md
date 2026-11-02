@@ -752,6 +752,7 @@ ignored. Source/site identity covers representative signed disp32 values and
 all four encoded displacement bytes. Other address forms remain outside this
 admission profile.
 
+
 The host fixture checks interpreter parity, poisoned high32 RSP values,
 negative boundaries including `-128` and `+127`, wrap-to-zero, cross-4GiB
 contiguous reads, and entry STOP/budget guards with successful retries. It
@@ -759,6 +760,20 @@ also checks callback STOP commit and retry rejection without a second read.
 This bounded slice makes no production owner/MMU or performance claim. The
 separate S3-20eg coverage gap remains open in [ISSUE-028](../KNOWN_ISSUES.md);
 S3-20ej does not close it. See the [S3-20ej report](../reports/STAGE_3_S3-20ej_2026-11-02.md).
+
+#### S3-20ek: exact address-size-32 ESP-base Dword store with signed disp32
+
+The typed-IR Dword-store path admits only the exact eight-byte singleton
+`67 89 84 24 id` (`MOV [ESP+disp32],EAX`): address-size override, SIB, ESP
+base, no index, scale 1, and signed 32-bit displacement. Effective address is
+`(low32(RSP) + sign_extend(disp32)) mod 2^32`, zero-extended. The checked
+operation writes low32 RAX in one contiguous four-byte access and advances RIP
+to `A+8`; a span crossing 4 GiB does not wrap individual bytes. High RSP bits
+are ignored. The bounded JIT identity fixture binds representative disp32
+encodings and each source byte to the site. No other address-size-32 store
+form is admitted by this slice.
+
+The related host fixture status is recorded in [S3-20ek testing notes](../testing/JIT.md#s3-20ek-exact-address-size-32-esp-base-dword-checked-store-with-signed-disp32).
 
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
