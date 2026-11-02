@@ -265,6 +265,18 @@ boundary at `A+4`. This adds no other addr32 base, displacement width,
 prefix combination, or general Dword-load family. See the
 [S3-20cz report](../reports/STAGE_3_S3-20cz_2026-11-02.md).
 
+#### S3-20da: exact address-size-32 Dword load with signed disp32
+
+The shared typed-IR Dword-load path additionally admits only the exact
+seven-byte singleton `67 8B 83 id` (`MOV EAX,[EBX+disp32]`) with instruction
+boundary `A+7`. Effective-address
+calculation uses the decoder-owned address-size-32 operand and signed disp32,
+including its 32-bit wrapping and zero-extension behavior. The checked load
+reads four bytes and zero-extends into EAX; all source bytes bind to the
+instruction site. This does not admit other addr32 bases, displacement widths,
+or prefix combinations. See the
+[S3-20da report](../reports/STAGE_3_S3-20da_2026-11-02.md).
+
 #### S3-27i: disp32 Dword-store canonical-end and range-overflow checks
 
 The host-side regression `s3_27i_disp32_dword_store_checks_canonical_end_and_range_overflow`
