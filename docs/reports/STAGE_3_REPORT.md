@@ -144,6 +144,23 @@ pending. ISSUE-028 remains open in [the issue registry](../KNOWN_ISSUES.md); Sta
 evidence and concurrent runs were ignored per user instruction. Stage 3
 remains partial. See the [S3-20el report](STAGE_3_S3-20el_2026-11-02.md).
 
+S3-20em adds only the exact unprefixed absolute SIB disp32 Dword store
+`89 04 25 id`: the signed disp32 forms the 64-bit absolute EA, one checked
+four-byte write stores low32 RAX, and RIP advances to `A+7`. The bounded
+host fixture checks the last valid four-byte range at `u64::MAX-3`, adjacent
+range faults before callback, backend-error no-commit/retry, entry guards,
+and callback STOP commit without replay. Runtime source
+`c6149ae34f9b74516f301ab6016f8f87d9def24a` was integrated as `5d8e9ac`;
+Sol/high runtime re-review passed after the exact publication-whitelist fix.
+No tests/build/fmt/Cargo checks ran due to the Mini deferral; exact JIT and
+host gates remain pending until end-of-stage checks. Separate harness source
+`b165126c83378cbc69168f5201dc3ddabd340d48` was integrated as `a70a022`;
+its static manifest reports 222 gates (212 acceptance, 10 lifecycle) and
+240 local steps, harness review passed, and no Python tests ran. ISSUE-028
+remains open. Stage 2 remained outside this slice's evidence; concurrent runs
+were ignored per user instruction. Mini/M1 remain deferred; Stage 3 remains
+partial. See the [S3-20em report](STAGE_3_S3-20em_2026-11-02.md).
+
 S3-36e implementation is committed. Release preflight passed on Apple M3 Max
 with 2,400 frozen inputs and 4,800 parity trials. Calibration-only passed at
 2,048 repetitions per side with no scored pairs. Three scored runs retained 20

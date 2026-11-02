@@ -788,6 +788,20 @@ admission. The fixtures are bounded and do not establish physical memory,
 MMU, or broad host behavior. See the
 [S3-20el report](../reports/STAGE_3_S3-20el_2026-11-02.md).
 
+#### S3-20em: exact absolute SIB Dword store with signed disp32
+
+The shared typed-IR Dword-store path admits only the exact seven-byte
+singleton `89 04 25 id` (`MOV [disp32],EAX`): unprefixed, SIB with no base
+or index, scale 1, Qword address size, and Dword transfer. The decoder-owned
+signed disp32 forms the absolute 64-bit effective address; `-4` resolves to
+`u64::MAX-3`, where one four-byte checked write ends exactly at `u64::MAX`.
+The store payload is low32 RAX and the guest boundary is `A+7`. Signed
+displacements `-3`, `-2`, and `-1` fault the checked range before the
+memory callback. Other prefixes and neighboring encodings remain outside this
+admission. Fixtures are bounded and do not establish physical memory, MMU,
+or broad host behavior. See the
+[S3-20em report](../reports/STAGE_3_S3-20em_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
