@@ -9066,7 +9066,7 @@ fn local_movups_sib_store_fixture_uses_rex_no_base_and_r12_index() {
 }
 
 #[test]
-fn local_x87_state_profile_runs_only_exact_fadd_and_rejects_inexact_sum_without_commit() {
+fn local_x87_state_profile_runs_exact_and_inexact_fadd_with_status() {
     let mut fixture = Fixture::from_json(MFENCE_STORE_FENCE_LOAD).unwrap().fixture;
     fixture.case_id = "local_x87_fadd_exact".into();
     fixture.profile = od_testkit::v2::Profile::LongX87StateV1;
@@ -9109,16 +9109,24 @@ fn local_x87_state_profile_runs_only_exact_fadd_and_rejects_inexact_sum_without_
     assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
     assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
 
-    // An odd 65-bit coefficient would require dropping a real bit.
-    let mut rejected = fixture;
-    rejected.case_id = "local_x87_fadd_inexact_rejected".into();
+    // This exact sum is halfway below 3 at p64 and rounds to even 3.
+    let mut rounded = fixture;
+    rounded.case_id = "local_x87_fadd_inexact_rounded".into();
     let mut inexact = seed;
     inexact.registers[1] = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3f];
-    rejected.initial_state.x87 = Some(od_testkit::v2::X87Snapshot::from(&inexact));
-    let (input, result) = run(&rejected.to_json().unwrap(), "interpreter", 4);
-    assert_eq!(count(&result), 0);
-    assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
-    assert_eq!(snapshot(&result).state, input.fixture.initial_state);
+    rounded.initial_state.x87 = Some(od_testkit::v2::X87Snapshot::from(&inexact));
+    let (input, result) = run(&rounded.to_json().unwrap(), "interpreter", 0);
+    assert_eq!(count(&result), 1);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    let observed = snapshot(&result);
+    let mut expected = inexact;
+    expected.registers[0] = [0, 0, 0, 0, 0, 0, 0, 0xc0, 0x00, 0x40];
+    expected.status_word |= 1 << 5;
+    expected.instruction_pointer = 0x0010_0000;
+    let mut expected_state = input.fixture.initial_state.clone();
+    expected_state.rip = HexU64(0x0010_0002);
+    expected_state.x87 = Some(od_testkit::v2::X87Snapshot::from(&expected));
+    assert_eq!(observed.state, expected_state);
 }
 
 #[test]
