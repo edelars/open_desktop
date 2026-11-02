@@ -3157,6 +3157,10 @@ fn build_block_with_profile(
                         .is_some_and(|bytes| bytes[..3] == [0x89, 0x44, 0x24])
                     || code
                         .bytes
+                        .get(guest_offset..guest_offset.saturating_add(7))
+                        .is_some_and(|bytes| bytes[..3] == [0x89, 0x84, 0x24])
+                    || code
+                        .bytes
                         .get(guest_offset..guest_offset.saturating_add(4))
                         .is_some_and(|bytes| {
                             bytes[..2] == [0x89, 0x44]
@@ -5092,6 +5096,15 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
                 && operand.index.is_none()
                 && operand.scale == 1
                 && i8::try_from(operand.displacement).is_ok());
+    let rsp_disp32_sib_profile = instruction.length == 7
+        && instruction.address_size == OperandSize::Qword
+        && matches!(&instruction.operation, Operation::Mov { dst: Operand::Memory(operand), .. }
+            if operand.address_size == OperandSize::Qword
+                && operand.size == OperandSize::Dword
+                && matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
+                && operand.index.is_none()
+                && operand.scale == 1
+                && i32::try_from(operand.displacement).is_ok());
     let Operation::Mov {
         dst: Operand::Memory(operand),
         src: Operand::Register(source),
@@ -5114,6 +5127,7 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
             || address32_rbx_rcx_sib_profile
             || rsp_no_index_sib_profile
             || rsp_disp8_sib_profile
+            || rsp_disp32_sib_profile
             || (operand.index.is_none()
                 && operand.scale == 1
                 && ((instruction.length == 2

@@ -427,6 +427,7 @@ impl PublishedCode {
             && source != [0x89, 0x04, 0xcb]
             && source != [0x89, 0x04, 0x24]
             && !(source.len() == 4 && source[..3] == [0x89, 0x44, 0x24])
+            && !(source.len() == 7 && source[..3] == [0x89, 0x84, 0x24])
             && !(source.len() == 4
                 && source[..2] == [0x89, 0x44]
                 && matches!(source[2], 0x0b | 0x4b | 0x8b | 0xcb))
@@ -13003,6 +13004,468 @@ mod tests {
         drop(published);
         for (rsp, disp) in [(0x0000_8000_0000_0000, 0_i8), (0x0000_7fff_ffff_fffe, 1)] {
             let source = [0x89, 0x44, 0x24, disp as u8];
+            let (_, published) = compile(&source);
+            let mut state = state_for(rsp);
+            let before = state.clone();
+            let mut ram = ram_for(&source, 0);
+            let fault = unsafe {
+                published.execute_ir_memory_dword_store_v2(
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &stop,
+                )
+            }
+            .unwrap();
+            assert_eq!(
+                fault.exit,
+                MemoryOperationExecutionExitV2::GuestFault(od_isa::memory::ArchitecturalFault {
+                    vector: 12,
+                    error_code: Some(0),
+                    linear_address: None,
+                })
+            );
+            assert_eq!(state, before);
+            assert!(ram.writes.is_empty());
+        }
+        let rbx_source = [0x89, 0x43, 1];
+        let (_, rbx_published) = compile(&rbx_source);
+        let mut state = state_for(0x1_0000_1000);
+        state.gpr[3] = 0x0000_7fff_ffff_fffd;
+        let before = state.clone();
+        let mut ram = ram_for(&rbx_source, 0);
+        let fault = unsafe {
+            rbx_published.execute_ir_memory_dword_store_v2(
+                &mut state,
+                &mut ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            fault.exit,
+            MemoryOperationExecutionExitV2::GuestFault(od_isa::memory::ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(state, before);
+        assert!(ram.writes.is_empty());
+
+        // A checked span overflow is rejected before any callback or architectural commit.
+        drop(rbx_published);
+        let (_, published) = compile(&wrap_source);
+        let mut state = state_for(u64::MAX - 1);
+        let before = state.clone();
+        let mut ram = ram_for(&wrap_source, 0);
+        let overflow = unsafe {
+            published.execute_ir_memory_dword_store_v2(
+                &mut state,
+                &mut ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+        };
+        assert!(matches!(
+            overflow,
+            Err(MemoryOperationExecutionErrorV2::MemoryError(
+                MemoryOperationMemoryErrorV2 {
+                    kind: od_jit::memory_bridge::MEMORY_ERROR_ADDRESS_OVERFLOW,
+                    address,
+                    length: 4,
+                }
+            )) if address == u64::MAX
+        ));
+        assert_eq!(state, before);
+        assert!(ram.writes.is_empty());
+        drop(published);
+
+        // Backend failure observes one width-four attempt but leaves RAM and CPU unchanged.
+        let (_, published) = compile(&SOURCE);
+        let mut state = state_for(0x1_0000_1000);
+        let before = state.clone();
+        let target = 0x1_0000_1001;
+        let mut ram = ram_for(&SOURCE, target);
+        let bytes_before = ram.bytes.clone();
+        ram.write_error = Some(MemoryError::Unmapped {
+            address: target,
+            access: AccessKind::Write,
+        });
+        assert!(
+            unsafe {
+                published.execute_ir_memory_dword_store_v2(
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &stop,
+                )
+            }
+            .is_err()
+        );
+        assert_eq!(state, before);
+        assert_eq!(ram.bytes, bytes_before);
+        assert_eq!(
+            ram.writes,
+            [(target, 0x7654_3210_u32.to_le_bytes().to_vec())]
+        );
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn s3_20ee_rsp_disp32_dword_store_preserves_ss_fault_and_checked_state() {
+        use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+
+        const ENTRY: u64 = 0xa1f0;
+        const SOURCE: [u8; 7] = [0x89, 0x84, 0x24, 1, 0, 0, 0];
+
+        fn source_for(displacement: i32) -> [u8; 7] {
+            let bytes = displacement.to_le_bytes();
+            [0x89, 0x84, 0x24, bytes[0], bytes[1], bytes[2], bytes[3]]
+        }
+
+        #[derive(Clone, Debug)]
+        struct Ram {
+            code: Vec<u8>,
+            bytes: BTreeMap<u64, u8>,
+            writes: Vec<(u64, Vec<u8>)>,
+            write_error: Option<MemoryError>,
+            stop_on_write: Option<Arc<AtomicU8>>,
+        }
+
+        impl GuestMemory for Ram {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                if let Some(offset) = address
+                    .checked_sub(ENTRY)
+                    .and_then(|offset| usize::try_from(offset).ok())
+                    .filter(|offset| *offset < self.code.len())
+                {
+                    return Ok(self.code[offset]);
+                }
+                self.bytes
+                    .get(&address)
+                    .copied()
+                    .ok_or(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Fetch,
+                    })
+            }
+
+            fn read(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                output: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                for (offset, byte) in output.iter_mut().enumerate() {
+                    *byte = *self.bytes.get(&(address + offset as u64)).ok_or(
+                        MemoryError::Unmapped {
+                            address,
+                            access: AccessKind::Read,
+                        },
+                    )?;
+                }
+                Ok(())
+            }
+
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                input: &[u8],
+            ) -> Result<(), MemoryError> {
+                self.writes.push((address, input.to_vec()));
+                if let Some(error) = self.write_error.clone() {
+                    return Err(error);
+                }
+                for (offset, byte) in input.iter().copied().enumerate() {
+                    self.bytes.insert(address + offset as u64, byte);
+                }
+                if let Some(stop) = &self.stop_on_write {
+                    stop.store(1, Ordering::Release);
+                }
+                Ok(())
+            }
+
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+
+        fn state_for(rsp: u64) -> od_isa::LongModeState {
+            let mut state = od_isa::LongModeState {
+                rip: ENTRY,
+                rflags: 0x8d7,
+                ..Default::default()
+            };
+            state.gpr = [
+                0xfedc_ba98_7654_3210,
+                0x1111_2222_3333_4444,
+                0x2222_3333_4444_5555,
+                0x3333_4444_5555_6666,
+                rsp,
+                0x5555_6666_7777_8888,
+                0x6666_7777_8888_9999,
+                0x7777_8888_9999_aaaa,
+                0x8888_9999_aaaa_bbbb,
+                0x9999_aaaa_bbbb_cccc,
+                0xaaaa_bbbb_cccc_dddd,
+                0xbbbb_cccc_dddd_eeee,
+                0xcccc_dddd_eeee_ffff,
+                0xdddd_eeee_ffff_0001,
+                0xeeee_ffff_0001_1112,
+                0xffff_0001_1112_2223,
+            ];
+            state
+        }
+
+        fn ram_for(source: &[u8], address: u64) -> Ram {
+            let mut bytes = BTreeMap::new();
+            for offset in 0..6_u64 {
+                bytes.insert(
+                    address.wrapping_sub(1).wrapping_add(offset),
+                    0x70 + offset as u8,
+                );
+            }
+            Ram {
+                code: source.to_vec(),
+                bytes,
+                writes: Vec::new(),
+                write_error: None,
+                stop_on_write: None,
+            }
+        }
+
+        fn compile(
+            source: &[u8],
+        ) -> (
+            od_jit::memory_load_v2::IrMemoryDwordStoreBlockV2,
+            PublishedCode,
+        ) {
+            let block = od_jit::memory_load_v2::compile_ir_memory_dword_store_block_v2(
+                CodeView::new(ENTRY, source).unwrap(),
+                ENTRY,
+            )
+            .unwrap();
+            let published = PublishedCode::publish_ir_memory_dword_store_v2(&block).unwrap();
+            (block, published)
+        }
+
+        let _guard = jit_test_lock();
+        let stop = AtomicU8::new(0);
+        let (block, published) = compile(&SOURCE);
+        assert_eq!(block.source_bytes(), SOURCE);
+        assert_eq!(block.site().next_rip(), ENTRY + 7);
+        assert_eq!(block.site().source(), Some(0));
+        assert_eq!(block.site().operand().displacement, 1);
+        assert_eq!(block.site().operand().index, None);
+        assert_eq!(block.site().operand().size, od_isa::OperandSize::Dword);
+        assert_eq!(
+            block.site().operand().address_size,
+            od_isa::OperandSize::Qword
+        );
+        assert_eq!(published.pc_map(), Some(block.pc_map()));
+        drop(published);
+
+        // Signed disp32 edges use the decoder's sign extension, perform one
+        // contiguous four-byte callback, and match the independent interpreter.
+        for disp in [i32::MIN, -129, -128, -1, 0, 1, 127, 128, i32::MAX] {
+            let source = source_for(disp);
+            let rsp = 0x2_0000_0000_u64;
+            let target = rsp.wrapping_add_signed(i64::from(disp));
+            let (block, published) = compile(&source);
+            let before = state_for(rsp);
+            let mut native_state = before.clone();
+            let mut native_ram = ram_for(&source, target);
+            let mut interpreter_state = before.clone();
+            let mut interpreter_ram = native_ram.clone();
+            let result = unsafe {
+                published.execute_ir_memory_dword_store_v2(
+                    &mut native_state,
+                    &mut native_ram,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &stop,
+                )
+            }
+            .unwrap();
+            assert_eq!(
+                od_isa::execute::step(
+                    &mut interpreter_state,
+                    &mut interpreter_ram,
+                    AccessContext::default(),
+                )
+                .unwrap(),
+                od_isa::execute::StepOutcome::Advanced
+            );
+            assert_eq!(result.exit, MemoryOperationExecutionExitV2::Complete);
+            assert_eq!(result.retired_instructions, 1);
+            assert_eq!(native_state, interpreter_state);
+            assert_eq!(native_ram.bytes, interpreter_ram.bytes);
+            assert_eq!(native_ram.writes, interpreter_ram.writes);
+            assert_eq!(
+                native_ram.writes,
+                [(target, 0x7654_3210_u32.to_le_bytes().to_vec())]
+            );
+            assert_eq!(native_state.gpr[0], before.gpr[0]);
+            assert_eq!(native_state.gpr[4], rsp);
+            assert_eq!(native_state.rflags, before.rflags);
+            assert_eq!(native_state.rip, ENTRY + 7);
+            assert_eq!(block.site().next_rip(), ENTRY + 7);
+        }
+
+        // Effective-address addition wraps at 64 bits before checked span validation.
+        let wrap_source = source_for(1);
+        let (_, wrap_published) = compile(&wrap_source);
+        let before = state_for(u64::MAX);
+        let mut wrap_state = before.clone();
+        let mut wrap_ram = ram_for(&wrap_source, 0);
+        let wrap = unsafe {
+            wrap_published.execute_ir_memory_dword_store_v2(
+                &mut wrap_state,
+                &mut wrap_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+        }
+        .unwrap();
+        assert_eq!(wrap.exit, MemoryOperationExecutionExitV2::Complete);
+        assert_eq!(wrap_state.rip, ENTRY + 7);
+        assert_eq!(
+            wrap_ram.writes,
+            [(0, 0x7654_3210_u32.to_le_bytes().to_vec())]
+        );
+        drop(wrap_published);
+
+        let (_, published) = compile(&SOURCE);
+
+        // Entry STOP and budget exhaustion do not invoke the writer.
+        for (budget, stop_value, exit) in [
+            (0, 0, MemoryOperationExecutionExitV2::BudgetExhausted),
+            (1, 1, MemoryOperationExecutionExitV2::StopRequested),
+        ] {
+            let mut state = state_for(0x1_0000_1000);
+            let before = state.clone();
+            let mut ram = ram_for(&SOURCE, 0x1_0000_1001);
+            let bytes_before = ram.bytes.clone();
+            let result = unsafe {
+                published.execute_ir_memory_dword_store_v2(
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    budget,
+                    None,
+                    &AtomicU8::new(stop_value),
+                )
+            }
+            .unwrap();
+            assert_eq!(result.exit, exit);
+            assert_eq!(result.retired_instructions, 0);
+            assert_eq!(state, before);
+            assert!(ram.writes.is_empty());
+            assert_eq!(ram.bytes, bytes_before);
+        }
+
+        // A successful callback STOP commits exactly once; replay at A+7 fails closed.
+        let callback_stop = Arc::new(AtomicU8::new(0));
+        let target = 0x1_0000_1001;
+        let mut callback_ram = ram_for(&SOURCE, target);
+        callback_ram.stop_on_write = Some(callback_stop.clone());
+        let mut callback_state = state_for(0x1_0000_1000);
+        let result = unsafe {
+            published.execute_ir_memory_dword_store_v2(
+                &mut callback_state,
+                &mut callback_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &callback_stop,
+            )
+        }
+        .unwrap();
+        assert_eq!(result.exit, MemoryOperationExecutionExitV2::StopRequested);
+        assert_eq!(result.retired_instructions, 1);
+        assert_eq!(callback_state.rip, ENTRY + 7);
+        assert_eq!(callback_state.gpr[4], 0x1_0000_1000);
+        assert_eq!(callback_state.rflags, 0x8d7);
+        let committed = callback_state.clone();
+        assert!(matches!(
+            unsafe {
+                published.execute_ir_memory_dword_store_v2(
+                    &mut callback_state,
+                    &mut callback_ram,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &callback_stop,
+                )
+            },
+            Err(MemoryOperationExecutionErrorV2::EntryRipMismatch {
+                expected: ENTRY,
+                actual,
+            }) if actual == ENTRY + 7
+        ));
+        assert_eq!(callback_state, committed);
+        assert_eq!(callback_ram.writes.len(), 1);
+
+        // RSP gets #SS for a bad start and canonical-end crossing. RBX control gets #GP.
+        drop(published);
+        for rsp in [0x0000_8000_0000_0000, 0x0000_7fff_ffff_fffd] {
+            let source = source_for(0);
             let (_, published) = compile(&source);
             let mut state = state_for(rsp);
             let before = state.clone();
