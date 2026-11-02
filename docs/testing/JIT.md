@@ -243,6 +243,10 @@ Integrated harness commit `4ef1475` pins only `memory_load_v2::tests::ir_dword_a
 
 Integrated harness commit `6e7ea49` pins exactly `memory_load_v2::tests::ir_dword_addr32_rbx_rcx_sib_disp32_store_binds_scales_and_all_displacement_bytes` and `tests::s3_20dq_addr32_scaled_disp32_sib_dword_store_wraps_and_preserves_state`, each in its package's `--lib` test target with `--exact`. Both Rust gates passed 1/1. Three focused Python self-tests passed 3/3, including mandatory rejection of Cargo output containing `running 0 tests`. Python byte-compilation, `git diff --check`, and Graphify update passed; the harness review received Sol PASS. No PC-map gate is pinned. The full Python module, CPU suite, Mini, M1, and Stage 2 were not run. This records harness coverage separately from runtime implementation details. See the [S3-34bb report](../reports/STAGE_3_S3-34bb_2026-11-02.md).
 
+## S3-34bc: exact harness gates for S3-20dr RBP disp8 dword load
+
+Harness commit `ceb418c` pins exactly `memory_load_v2::tests::ir_dword_rbp_disp8_load_binds_all_signed_source_bytes_to_its_site` and `tests::s3_20dr_rbp_disp8_dword_load_preserves_ss_fault_and_checked_state`, each with its package's `--lib --exact` target. Both exact Rust gates passed 1/1. Four focused Python self-tests passed 4/4: the S3-34bc mandatory gate/self-test, zero-match/ignored/failed evidence validation, missing mandatory manifest gate, and omitted mandatory gate summary. Python byte-compilation, Graphify update, and `git diff --check` passed; the independent harness review received Sol PASS. No PC-map gate is pinned. The full `od-host` suite, full Python module, CPU suite, Mini, M1, and Stage 2 were not run. This documents harness pinning only; see the [S3-34bc report](../reports/STAGE_3_S3-34bc_2026-11-02.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases
