@@ -343,6 +343,21 @@ the access raises `#GP`. The scale-1 `89 04 0B` form remains separately
 covered by S3-20de; this does not claim separate 64-bit range-overflow tests or
 a runtime defect. See the [S3-20dg report](../reports/STAGE_3_S3-20dg_2026-11-02.md).
 
+#### S3-20dh: exact address64 SIB Dword loads with signed disp8
+
+The shared typed-IR Dword-load path additionally admits exactly
+`8B 44 0B ib`, `8B 44 4B ib`, `8B 44 8B ib`, and `8B 44 CB ib`
+(`MOV EAX,[RBX+RCX*1/2/4/8+disp8]`). Each is a four-byte singleton: ModRM
+selects EAX and SIB selects RBX base, RCX index, and scale 1/2/4/8. The signed
+disp8 and full-width effective-address calculation follow decoder-owned
+`access_address_48`. Each checked read is four bytes and writes EAX,
+zero-extending into RAX and clearing `RAX[63:32]`. All four scales × all 256
+disp8 values bind source bytes to their exact site; the PC map has the `A+4`
+boundary. Recorded fixtures cover atomic faults, STOP, and budget behavior.
+No separate canonical-end/range-overflow fixture was added for these forms;
+the shared preflight is unchanged and no runtime defect is claimed. See the
+[S3-20dh report](../reports/STAGE_3_S3-20dh_2026-11-02.md).
+
 #### S3-20de: exact address64 SIB Dword store
 
 The shared typed-IR Dword-store path additionally admits only the exact
