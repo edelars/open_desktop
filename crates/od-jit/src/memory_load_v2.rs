@@ -7661,12 +7661,12 @@ mod tests {
         }
 
         let entry_source = [0x67, 0x8b, 0x04, 0xc5, 0, 0, 0, 0];
-        let site = compile_ir_memory_dword_load_block_v2(
+        let block = compile_ir_memory_dword_load_block_v2(
             CodeView::new(entry, &entry_source).unwrap(),
             entry,
         )
-        .unwrap()
-        .site();
+        .unwrap();
+        let site = block.site();
         for supported_neighbor in [
             &[0x67, 0x8b, 0x04, 0x05, 0, 0, 0, 0][..],
             &[0x67, 0x8b, 0x04, 0x25, 0, 0, 0, 0][..],
