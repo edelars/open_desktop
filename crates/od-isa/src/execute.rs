@@ -123517,6 +123517,515 @@ mod tests {
     }
 
     #[test]
+    fn maxsd_memory_unmasked_mixes_ie_de_priority_and_preserves_destination_on_exit() {
+        let code = [0xf2, 0x0f, 0x5f, 0x00];
+        let cases = [
+            (
+                0x7ff8_1234_5678_9abcu64,
+                0x3ff0_0000_0000_0000u64,
+                true,
+                false,
+            ),
+            (0x0000_0000_0000_0001, 0x3ff0_0000_0000_0000, false, true),
+            (0x7ff8_1234_5678_9abc, 0x0000_0000_0000_0001, true, true),
+            (0x3ff0_0000_0000_0000, 0xfff0_1234_5678_9abc, true, false),
+            (0x800f_ffff_ffff_ffff, 0x4000_0000_0000_0000, false, true),
+            (0x3ff0_0000_0000_0000, 0x3ff0_0000_0000_0000, false, false),
+            (0x0000_0000_0000_0000, 0x8000_0000_0000_0000, false, false),
+            (0x8000_0000_0000_0000, 0x0000_0000_0000_0000, false, false),
+            (0x7ff0_0000_0000_0000, 0x7ff0_0000_0000_0000, false, false),
+            (0xfff0_0000_0000_0000, 0xfff0_0000_0000_0000, false, false),
+            (0x4000_0000_0000_0000, 0x4000_0000_0000_0000, false, false),
+        ];
+        let controls = MaxsdMemoryUnmaskedRaxControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        for (lhs, rhs, invalid, raw_de) in cases {
+            for im in [false, true] {
+                for dm in [false, true] {
+                    for osxmmexcpt in [false, true] {
+                        for rc in 0..4u32 {
+                            let mut memory = Memory::at(&code, 0x4000);
+                            memory.bytes[..8].copy_from_slice(&rhs.to_le_bytes());
+                            let mut state = LongModeState::default();
+                            state.rip = 0x4000;
+                            state.gpr[Register::Rax as usize] = memory.data_base;
+                            let mut xmm = [[0xa5; 16]; 16];
+                            xmm[0][..8].copy_from_slice(&lhs.to_le_bytes());
+                            let mut old_mxcsr = 0x1f80 | (rc << 13) | 0x25;
+                            if !im {
+                                old_mxcsr &= !(1 << 7);
+                            }
+                            if !dm {
+                                old_mxcsr &= !(1 << 8);
+                            }
+                            state.sse = Some(SseState {
+                                xmm,
+                                mxcsr: old_mxcsr,
+                            });
+                            let before = state.clone();
+                            let reported_de = raw_de && (!invalid || !im || !dm);
+                            let generated = u32::from(invalid) | (u32::from(reported_de) << 1);
+                            let should_fault = (invalid && !im) || (reported_de && !dm);
+                            let mut expected_state = before.clone();
+                            expected_state.sse.as_mut().unwrap().mxcsr = old_mxcsr | generated;
+                            if !should_fault {
+                                let expected = Binary64::max_sse_raw_result(
+                                    Binary64::from_bits(lhs),
+                                    Binary64::from_bits(rhs),
+                                )
+                                .value()
+                                .to_bits();
+                                expected_state.sse.as_mut().unwrap().xmm[0][..8]
+                                    .copy_from_slice(&expected.to_le_bytes());
+                                expected_state.rip = 0x4004;
+                            }
+                            let result = run_with_maxsd_memory_unmasked_rax_controls(
+                                &mut state,
+                                &mut memory,
+                                RunConfig {
+                                    instruction_budget: 1,
+                                    stop_rip: Some(0x4004),
+                                    context: AccessContext::default(),
+                                },
+                                MaxsdMemoryUnmaskedRaxControls {
+                                    cr4_osxmmexcpt: osxmmexcpt,
+                                    ..controls
+                                },
+                                || false,
+                            );
+                            assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 8)]);
+                            assert_eq!(state.sse.as_ref().unwrap().mxcsr, old_mxcsr | generated);
+                            if should_fault {
+                                assert_eq!(
+                                    result.exit,
+                                    RunExit::Fault(ArchitecturalFault {
+                                        vector: if osxmmexcpt { 19 } else { 6 },
+                                        error_code: None,
+                                        linear_address: None,
+                                    })
+                                );
+                                assert_eq!(result.instructions_executed, 0);
+                                assert_eq!(state.rip, before.rip);
+                                assert_eq!(
+                                    state.sse.as_ref().unwrap().xmm[0],
+                                    before.sse.as_ref().unwrap().xmm[0]
+                                );
+                            } else {
+                                assert_eq!(result.exit, RunExit::StopAddress);
+                                assert_eq!(result.instructions_executed, 1);
+                                assert_eq!(state.rip, 0x4004);
+                                let expected = Binary64::max_sse_raw_result(
+                                    Binary64::from_bits(lhs),
+                                    Binary64::from_bits(rhs),
+                                )
+                                .value()
+                                .to_bits();
+                                assert_eq!(
+                                    u64::from_le_bytes(
+                                        state.sse.as_ref().unwrap().xmm[0][..8].try_into().unwrap()
+                                    ),
+                                    expected
+                                );
+                                assert_eq!(
+                                    &state.sse.as_ref().unwrap().xmm[0][8..],
+                                    &before.sse.as_ref().unwrap().xmm[0][8..]
+                                );
+                                assert_eq!(
+                                    state.sse.as_ref().unwrap().xmm[1..],
+                                    before.sse.as_ref().unwrap().xmm[1..]
+                                );
+                                assert_eq!(state.gpr, before.gpr);
+                                assert_eq!(state.rflags, before.rflags);
+                                assert_eq!(state.x87, before.x87);
+                            }
+                            assert_eq!(state, expected_state);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn maxsd_memory_unmasked_preserves_all_prior_sticky_and_rounding_combinations() {
+        let code = [0xf2, 0x0f, 0x5f, 0x00];
+        let controls = MaxsdMemoryUnmaskedRaxControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        let events = [
+            (0x7ff8_1234_5678_9abcu64, 0x3ff0_0000_0000_0000u64), // QNaN lhs
+            (0xfff8_2345_6789_abcdu64, 0x3ff0_0000_0000_0000),    // negative QNaN lhs
+            (0x7ff0_1234_5678_9abcu64, 0x3ff0_0000_0000_0000),    // positive SNaN lhs
+            (0xfff0_0000_0000_0001u64, 0x3ff0_0000_0000_0000),    // negative SNaN lhs
+            (0x3ff0_0000_0000_0000, 0xfff0_1234_5678_9abc),       // negative SNaN memory RHS
+            (0x3ff0_0000_0000_0000, 0x7ff8_2345_6789_abcd),       // positive QNaN memory RHS
+            (0x3ff0_0000_0000_0000, 0xfff8_2345_6789_abcd),       // negative QNaN memory RHS
+            (0x3ff0_0000_0000_0000, 0x7ff0_0000_0000_0001),       // positive SNaN memory RHS
+            (0x0000_0000_0000_0001, 0x3ff0_0000_0000_0000),       // positive subnormal lhs
+            (0x8000_0000_0000_0001, 0x3ff0_0000_0000_0000),       // negative subnormal lhs
+            (0x3ff0_0000_0000_0000, 0x8000_0000_0000_0001),       // negative subnormal memory RHS
+            (0x3ff0_0000_0000_0000, 0x0000_0000_0000_0001),       // positive subnormal memory RHS
+            (0x7ff8_1234_5678_9abc, 0x0000_0000_0000_0001),       // NaN + subnormal
+            (0x0000_0000_0000_0001, 0x7ff8_2345_6789_abcd),       // subnormal + NaN
+            (0xfff8_1234_5678_9abc, 0x8000_0000_0000_0001), // negative NaN + negative subnormal
+            (0x8000_0000_0000_0001, 0xfff0_0000_0000_0001), // negative subnormal + negative SNaN
+        ];
+        for (lhs, rhs) in events {
+            for im in [false, true] {
+                for dm in [false, true] {
+                    for rc in 0..4u32 {
+                        for old in 0..64u32 {
+                            let mut memory = Memory::at(&code, 0x5000);
+                            memory.bytes[..8].copy_from_slice(&rhs.to_le_bytes());
+                            let mut state = LongModeState::default();
+                            state.rip = 0x5000;
+                            state.gpr[Register::Rax as usize] = memory.data_base;
+                            let mut xmm = [[0xa5; 16]; 16];
+                            xmm[0][..8].copy_from_slice(&lhs.to_le_bytes());
+                            let mut mxcsr = 0x1f80 | (rc << 13) | old;
+                            if !im {
+                                mxcsr &= !(1 << 7);
+                            }
+                            if !dm {
+                                mxcsr &= !(1 << 8);
+                            }
+                            state.sse = Some(SseState { xmm, mxcsr });
+                            let before = state.clone();
+                            let lhs_class = Binary64::from_bits(lhs).class();
+                            let rhs_class = Binary64::from_bits(rhs).class();
+                            let invalid = matches!(
+                                lhs_class,
+                                BinaryClass::QuietNaN | BinaryClass::SignalingNaN
+                            ) || matches!(
+                                rhs_class,
+                                BinaryClass::QuietNaN | BinaryClass::SignalingNaN
+                            );
+                            let raw_de = lhs_class == BinaryClass::Subnormal
+                                || rhs_class == BinaryClass::Subnormal;
+                            let reported_de = raw_de && (!invalid || !im || !dm);
+                            let generated = u32::from(invalid) | (u32::from(reported_de) << 1);
+                            let should_fault = (invalid && !im) || (reported_de && !dm);
+                            let result = run_with_maxsd_memory_unmasked_rax_controls(
+                                &mut state,
+                                &mut memory,
+                                RunConfig {
+                                    instruction_budget: 1,
+                                    stop_rip: Some(0x5004),
+                                    context: AccessContext::default(),
+                                },
+                                controls,
+                                || false,
+                            );
+                            assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 8)]);
+                            assert_eq!(state.sse.as_ref().unwrap().mxcsr, mxcsr | generated);
+                            if should_fault {
+                                assert!(matches!(
+                                    result.exit,
+                                    RunExit::Fault(ArchitecturalFault { vector: 19, .. })
+                                ));
+                                assert_eq!(result.instructions_executed, 0);
+                                assert_eq!(state.rip, before.rip);
+                                assert_eq!(
+                                    state.sse.as_ref().unwrap().xmm[0],
+                                    before.sse.as_ref().unwrap().xmm[0]
+                                );
+                            } else {
+                                assert_eq!(result.exit, RunExit::StopAddress);
+                                assert_eq!(result.instructions_executed, 1);
+                                let expected = Binary64::max_sse_raw_result(
+                                    Binary64::from_bits(lhs),
+                                    Binary64::from_bits(rhs),
+                                )
+                                .value()
+                                .to_bits();
+                                assert_eq!(
+                                    u64::from_le_bytes(
+                                        state.sse.as_ref().unwrap().xmm[0][..8].try_into().unwrap()
+                                    ),
+                                    expected
+                                );
+                                assert_eq!(
+                                    &state.sse.as_ref().unwrap().xmm[0][8..],
+                                    &before.sse.as_ref().unwrap().xmm[0][8..]
+                                );
+                                assert_eq!(
+                                    state.sse.as_ref().unwrap().xmm[1..],
+                                    before.sse.as_ref().unwrap().xmm[1..]
+                                );
+                                assert_eq!(state.gpr, before.gpr);
+                                assert_eq!(state.rflags, before.rflags);
+                                assert_eq!(state.x87, before.x87);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn maxsd_memory_unmasked_address_and_read_faults_precede_fp_flags_atomically() {
+        let code = [0xf2, 0x0f, 0x5f, 0x00];
+        let controls = MaxsdMemoryUnmaskedRaxControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        for (address, flags, expected) in [
+            (
+                0x0000_8000_0000_0000,
+                0,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }),
+            ),
+            (
+                0xffff_ffff_ffff_fffc,
+                0,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }),
+            ),
+            (
+                0x0000_8000_0000_0000,
+                1 << 18,
+                RunExit::Unsupported { opcode: 0x5f },
+            ),
+        ] {
+            let mut memory = Memory::at(&code, 0x6000);
+            let mut state = LongModeState::default();
+            state.rip = 0x6000;
+            state.gpr[Register::Rax as usize] = address;
+            state.rflags = flags | 2;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f00,
+            });
+            let before = state.clone();
+            let result = run_with_maxsd_memory_unmasked_rax_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x6004),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(result.exit, expected);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+            assert_eq!(memory.fetches, (0x6000..0x6004).collect::<Vec<_>>());
+        }
+
+        let mut unaligned_memory = Memory::at(&code, 0x6000);
+        let unaligned_address = unaligned_memory.data_base + 1;
+        unaligned_memory.bytes[1..9].copy_from_slice(&0x4000_0000_0000_0000u64.to_le_bytes());
+        let mut unaligned_state = LongModeState::default();
+        unaligned_state.rip = 0x6000;
+        unaligned_state.gpr[Register::Rax as usize] = unaligned_address;
+        let mut xmm = [[0x5a; 16]; 16];
+        xmm[0][..8].copy_from_slice(&0x3ff0_0000_0000_0000u64.to_le_bytes());
+        unaligned_state.sse = Some(SseState { xmm, mxcsr: 0x1f80 });
+        let unaligned_result = run_with_maxsd_memory_unmasked_rax_controls(
+            &mut unaligned_state,
+            &mut unaligned_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x6004),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert_eq!(unaligned_result.exit, RunExit::StopAddress);
+        assert_eq!(
+            unaligned_memory.accesses,
+            [(AccessKind::Read, unaligned_address, 8)]
+        );
+
+        let mut memory = Memory::at(&code, 0x6000);
+        memory.error = Some(MemoryError::Unmapped {
+            address: memory.data_base,
+            access: AccessKind::Read,
+        });
+        let mut state = LongModeState::default();
+        state.rip = 0x6000;
+        state.gpr[Register::Rax as usize] = memory.data_base;
+        let mut xmm = [[0xa5; 16]; 16];
+        xmm[0][..8].copy_from_slice(&0x7ff0_1234_5678_9abcu64.to_le_bytes());
+        state.sse = Some(SseState { xmm, mxcsr: 0x1f00 });
+        let before = state.clone();
+        let result = run_with_maxsd_memory_unmasked_rax_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x6004),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(state, before);
+        assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 8)]);
+    }
+
+    #[test]
+    fn maxsd_memory_unmasked_fetches_before_ud_nm_gates_and_reads_only_when_admitted() {
+        let code = [0xf2, 0x0f, 0x5f, 0x00];
+        for bits in 0..16u8 {
+            let controls = MaxsdMemoryUnmaskedRaxControls {
+                sse2_available: bits & 1 != 0,
+                cr0_em: bits & 2 != 0,
+                cr0_ts: bits & 4 != 0,
+                cr4_osfxsr: bits & 8 != 0,
+                cr4_osxmmexcpt: true,
+            };
+            let mut memory = Memory::at(&code, 0x7000);
+            memory.bytes[..8].copy_from_slice(&0x4000_0000_0000_0000u64.to_le_bytes());
+            let mut state = LongModeState::default();
+            state.rip = 0x7000;
+            state.gpr[Register::Rax as usize] = memory.data_base;
+            let mut xmm = [[0x5a; 16]; 16];
+            xmm[0][..8].copy_from_slice(&0x3ff0_0000_0000_0000u64.to_le_bytes());
+            state.sse = Some(SseState { xmm, mxcsr: 0x1f80 });
+            let before = state.clone();
+            let result = run_with_maxsd_memory_unmasked_rax_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x7004),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(memory.fetches, (0x7000..0x7004).collect::<Vec<_>>());
+            if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+                assert_eq!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector: 6,
+                        error_code: None,
+                        linear_address: None
+                    })
+                );
+                assert_eq!(state, before);
+                assert!(memory.accesses.is_empty());
+            } else if controls.cr0_ts {
+                assert_eq!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector: 7,
+                        error_code: None,
+                        linear_address: None
+                    })
+                );
+                assert_eq!(state, before);
+                assert!(memory.accesses.is_empty());
+            } else {
+                assert_eq!(result.exit, RunExit::StopAddress);
+                assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 8)]);
+            }
+        }
+    }
+
+    #[test]
+    fn maxsd_memory_unmasked_rejects_neighboring_forms_and_fetch_faults_atomically() {
+        let forms: [&[u8]; 4] = [
+            &[0xf3, 0x0f, 0x5f, 0x00],
+            &[0xf2, 0x40, 0x0f, 0x5f, 0x00],
+            &[0xf2, 0x0f, 0x5f, 0x08],
+            &[0xf2, 0x0f, 0x5f, 0xc0],
+        ];
+        let controls = MaxsdMemoryUnmaskedRaxControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        for code in forms {
+            let mut memory = Memory::at(code, 0x8000);
+            let mut state = LongModeState::default();
+            state.rip = 0x8000;
+            state.gpr[Register::Rax as usize] = memory.data_base;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run_with_maxsd_memory_unmasked_rax_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x8000 + code.len() as u64),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x5f });
+            assert_eq!(state, before);
+            assert_eq!(memory.fetches.len(), code.len());
+            assert!(memory.accesses.is_empty());
+        }
+
+        let code = [0xf2, 0x0f, 0x5f, 0x00];
+        let mut memory = Memory::at(&code, 0x8100);
+        memory.fetch_error = Some((
+            0x8102,
+            MemoryError::Unmapped {
+                address: 0x8102,
+                access: AccessKind::Fetch,
+            },
+        ));
+        let mut state = LongModeState::default();
+        state.rip = 0x8100;
+        state.gpr[Register::Rax as usize] = memory.data_base;
+        state.sse = Some(SseState {
+            xmm: [[0xa5; 16]; 16],
+            mxcsr: 0x1f00,
+        });
+        let before = state.clone();
+        let result = run_with_maxsd_memory_unmasked_rax_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x8104),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [0x8100, 0x8101, 0x8102]);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
     fn minsd_register_masked_updates_ie_de_for_all_register_pairs_and_ignores_upper_qwords() {
         use crate::binary_float::{Binary64, BinaryClass};
 

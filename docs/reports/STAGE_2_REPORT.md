@@ -12157,7 +12157,7 @@ their physical tags. The self form validates and preserves only TOP. FCW,
 FSW-mask, TOP, C1, condition-code retention, metadata, and explicit JIT/native
 denial remain unchanged; no decoder or schema stream expansion was made.
 
-The Normal-only matrix remains 15,360 full-state cases. Added 32,256 mixed
+The Normal-only matrix remains 16,384 full-state cases. Added 32,256 mixed
 indexed states from nine ordered magnitude pairs, four sign combinations,
 seven indices, eight TOP values, and sixteen prior CC patterns, plus 256
 self-Zero states. Rejections include malformed Zero, Valid-tagged zero,
@@ -22669,9 +22669,17 @@ Added a distinct strict schema-v2 interpreter profile for exact `F2 0F 5F 00`
 `MAXSD XMM0,m64 [RAX]`, separate from S2-37cx masked memory MAXSD and S2-38h
 register MAXSD. The profile fixes CR0.MP=1, applies MAXSD-specific raw source-2
 selection and unmasked IM/DM sticky handling after the S2-38o memory ordering,
-and denies JIT/native execution. A raw-u64 fixture oracle checks selection and
-architectural exit state. One literal unmasked-QNaN fixture verifies IE commit,
-#XM delivery, XMM0 suppression, retirement suppression, and the dedicated
-control echo. Focused runner fixture test passed. The full RC/sticky and
-IM×DM×OSXMMEXCPT matrices and injected memory/fetch rollback cases remain
-unverified; no physical x86 acceptance is claimed. See the [standalone report](S2_38P_MAXSD_MEMORY_UNMASKED.md), [CPU contract](../specs/CPU_CONTRACT.md#s2-38p--exact-maxsd-unmasked-memory-exit-for-m64-rax), [plan](../plans/STAGE_2.md#s2-38p-exact-long64-maxsd-xmm0m64-rax-memory-profile-with-mixed-imdm-exit), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38p-maxsd-m64-unmasked-invalid-and-denormal).
+and denies JIT/native execution. The raw-u64 schema oracle checks result
+selection, event flags, architectural exit, retirement and state. ISA tests
+cover 16,384 operand/IM/DM/RC/sticky combinations, NaN and subnormal positions
+and signs, NaN+subnormal priority, finite/infinity/equal/signed-zero ties,
+high64/XMM1/unrelated-state canaries, exact-form and feature gate ordering,
+truncated/failed fetch, checked span/overflow, AC-before-span, unaligned m64,
+and read-fault rollback with callback counts. Runner tests cross
+IM×DM×OSXMMEXCPT and RC×64 prior sticky histories. A literal unmasked-QNaN
+fixture verifies IE commit, #XM delivery, XMM0 suppression and retirement
+suppression. Affected suites passed: od-isa 1,906; od-testkit 455; runner 125
+unit + 523 fixture tests. Workspace check, formatting, diff check and Graphify
+refresh passed. Layout validation still reports the unmapped `.git` entry and
+two unrelated broken manifest links. No physical x86 acceptance is claimed.
+See the [standalone report](S2_38P_MAXSD_MEMORY_UNMASKED.md), [CPU contract](../specs/CPU_CONTRACT.md#s2-38p--exact-maxsd-unmasked-memory-exit-for-m64-rax), [plan](../plans/STAGE_2.md#s2-38p-exact-long64-maxsd-xmm0m64-rax-memory-profile-with-mixed-imdm-exit), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38p-maxsd-m64-unmasked-invalid-and-denormal).
