@@ -28,23 +28,23 @@ integer-only raw-u64 classification and ordering.
 
 Handwritten fixtures cover masked QNaN plus memory subnormal source-2 selection,
 masked memory SNaN payload preservation, and unmasked QNaN #XM with XMM0/RIP
-suppression. Four `od-isa` tests exercise
-fetch/gate ordering, address/read rollback, the event matrix across
-IM×DM×OSXMMEXCPT, and all four RC modes crossed with 64 old sticky histories.
-A runner fixture test checks the independent result oracle, control echo,
-tamper rejection and explicit JIT/native denial. No physical x86 acceptance is
-claimed.
+suppression. Five `od-isa` tests exercise fetch/gate ordering and fetch failure,
+neighboring-form rejection, unaligned reads, address/read rollback,
+signed-zero/finite/infinity ties, the IM×DM×OSXMMEXCPT event matrix, and RC×64
+old sticky histories across NaN, subnormal, and mixed event/mask cases. The
+runner CLI regression test forges both `jit` and `native_x86` labels and
+confirms compare-results rejects them. No physical x86 acceptance is claimed.
 
 Focused commands passed:
 
-- `cargo test -p od-isa minsd_memory_unmasked --offline` — 4 passed.
+- `cargo test -p od-isa minsd_memory_unmasked --offline` — 5 passed.
 - `cargo test -p od-runner --test fixture_v2 minsd_m64_memory_unmasked_profile_checks_mixed_priority_echo_and_backend_denial --offline` — 1 passed.
 
-Broader verification passed: `od-isa` 1,899, `od-testkit` 455, runner binary
+Broader verification passed: `od-isa` 1,900, `od-testkit` 455, runner binary
 125 and runner `fixture_v2` 521; `cargo fmt --all -- --check`,
 `cargo check --workspace --all-targets --offline`, `git diff --check`, and
-`graphify update .` passed. Graphify reports 11,898 nodes, 25,670 edges and
-378 communities. `python3 tools/check_layout.py` reports the temporary
+`graphify update .` passed. Graphify reports 11,899 nodes, 25,674 edges and
+381 communities; Graphify labels were not refreshed without an LLM API key. `python3 tools/check_layout.py` reports the temporary
 worktree's `.git` pointer and two missing archived oracle manifests linked
 from the pre-existing shared report; no S2-38o layout issue was found.
 Independent Sol/high review is pending parent integration review.

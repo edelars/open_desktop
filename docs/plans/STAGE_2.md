@@ -7700,11 +7700,13 @@ rejection; and explicit native/JIT denial. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38o--exact-minsd-unmasked-memory-exit-for-m64-rax).
 
 Implemented as a separate interpreter profile and strict schema-v2 fixture
-path. Four `od-isa` tests cover prerequisite fetch/UD/NM ordering, unaligned access,
-address and read failure atomicity, IM×DM×OSXMMEXCPT event delivery, and RC×64 prior sticky
-histories. The runner fixture test validates the independent raw-u64 result
-oracle, control echo, tamper rejection, and JIT/native denial. Focused checks
-passed. Full suites passed: od-isa 1,899, od-testkit 455, runner binary 125,
+path. Five `od-isa` tests cover prerequisite fetch/UD/NM ordering, fetch failure,
+neighboring-form rejection, unaligned access, address/read atomicity, selector
+ties, IM×DM×OSXMMEXCPT delivery, and RC×64 sticky histories across NaN,
+subnormal, and mixed event/mask cases. The runner fixture test validates the
+independent raw-u64 oracle, control echo, tamper rejection, JIT/native denial,
+and forged `jit`/`native_x86` result labels through compare-results. Focused checks
+passed. Full suites passed: od-isa 1,900, od-testkit 455, runner binary 125,
 and runner fixtures 521. Workspace offline check, formatting, diff check and
 Graphify refresh passed. Layout reports the existing temporary-worktree `.git`
 pointer and missing archived oracle manifests; no S2-38o issue was added.

@@ -22624,15 +22624,17 @@ mask is open, new IE|DE is committed on one #XM or arithmetic #UD exit and the
 complete XMM0 write and retirement are suppressed. Success changes XMM0.low64,
 sticky bits and RIP only. Three literal fixtures and the independent raw-u64
 schema oracle cover masked mixed QNaN/subnormal source selection, exact memory
-SNaN payload preservation, and unmasked QNaN delivery. Four ISA tests cover gate order, unaligned reads, memory rollback, the event
-matrix and RC×64 prior sticky histories; the runner fixture test verifies
-control echo, tampering and JIT/native denial.
+SNaN payload preservation, and unmasked QNaN delivery. Five ISA tests cover fetch/gate order, fetch and memory rollback, neighboring
+forms, unaligned reads, selector ties, the event matrix and RC×64 sticky
+histories across event/mask combinations. The runner fixture test verifies
+control echo, tampering, JIT/native denial, and CLI rejection of forged `jit`
+and `native_x86` backend labels.
 
-Verification passed: `od-isa` 1,899, `od-testkit` 455, runner binary 125 and
+Verification passed: `od-isa` 1,900, `od-testkit` 455, runner binary 125 and
 runner `fixture_v2` 521; `cargo fmt --all -- --check`,
 `cargo check --workspace --all-targets --offline`, `git diff --check`, and
-`graphify update .` passed. Graphify reports 11,898 nodes, 25,670 edges and
-378 communities. `python3 tools/check_layout.py` reports the temporary
+`graphify update .` passed. Graphify reports 11,899 nodes, 25,674 edges and
+381 communities; Graphify labels were not refreshed without an LLM API key. `python3 tools/check_layout.py` reports the temporary
 worktree's `.git` pointer as an unmapped root item and two absent archived
 oracle manifests linked from the pre-existing shared report; no new S2-38o
 layout finding appeared. Independent review is pending integration. No

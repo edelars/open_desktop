@@ -37471,6 +37471,30 @@ fn minsd_m64_memory_unmasked_profile_checks_mixed_priority_echo_and_backend_deni
     let mut foreign = Fixture::from_json(CMPPS_REGISTER_PAIRS).unwrap().fixture;
     foreign.minsd_unmasked_controls = input.fixture.minsd_unmasked_controls;
     assert!(foreign.validate().is_err());
+
+    let (loaded, interpreter_result) = run(MINSD_M64_MEMORY_UNMASKED_QNAN_XM, "interpreter", 0);
+    let original = serde_json::to_value(interpreter_result).unwrap();
+    for forged_backend in ["jit", "native_x86"] {
+        let mut forged = original.clone();
+        forged["backend"] = serde_json::Value::String(forged_backend.into());
+        let output = compare_cli(
+            MINSD_M64_MEMORY_UNMASKED_QNAN_XM,
+            &serde_json::to_vec(&forged).unwrap(),
+        );
+        assert!(
+            !output.status.success(),
+            "{forged_backend} label was accepted"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("interpreter-only memory results"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            loaded.fixture.profile,
+            od_testkit::v2::Profile::LongMinsdMemoryUnmaskedRaxV1
+        );
+    }
 }
 
 #[test]
