@@ -118,6 +118,7 @@ pub const PROFILE_CMPPS_REGISTERS: &str = "s2-long-cmpps-registers-v1";
 pub const PROFILE_CMPPS_MEMORY_RAX: &str = "s2-long-cmpps-memory-rax-v1";
 pub const PROFILE_MINSS_MASKED_REGISTER: &str = "s2-long-minss-reg-masked-v1";
 pub const PROFILE_MINSS_MEMORY_RAX: &str = "s2-long-minss-memory-rax-v1";
+pub const PROFILE_MINSS_MEMORY_UNMASKED_RAX: &str = "s2-long-minss-memory-unmasked-rax-v1";
 pub const PROFILE_MINSS_INVALID_CONTROLS: &str = "s2-long-minss-invalid-controls-v1";
 pub const PROFILE_MINSS_UNMASKED_DENORMAL: &str = "s2-long-minss-unmasked-denormal-v1";
 pub const PROFILE_MAXSS_UNMASKED_DENORMAL: &str = "s2-long-maxss-unmasked-denormal-v1";
@@ -646,6 +647,8 @@ pub enum Profile {
     LongMaxssMemoryRaxV1,
     #[serde(rename = "s2-long-minss-memory-rax-v1")]
     LongMinssMemoryRaxV1,
+    #[serde(rename = "s2-long-minss-memory-unmasked-rax-v1")]
+    LongMinssMemoryUnmaskedRaxV1,
     #[serde(rename = "s2-long-addss-memory-rax-v1")]
     LongAddssMemoryRaxV1,
     #[serde(rename = "s2-long-addsd-memory-rax-v1")]
@@ -1500,6 +1503,7 @@ impl IntegerState {
                     | Profile::LongMinsdMemoryRaxV1
                     | Profile::LongMaxssMemoryRaxV1
                     | Profile::LongMinssMemoryRaxV1
+                    | Profile::LongMinssMemoryUnmaskedRaxV1
                     | Profile::LongAddssMemoryRaxV1
                     | Profile::LongAddsdMemoryRaxV1
                     | Profile::LongMulssMemoryRaxV1
@@ -1632,6 +1636,7 @@ impl IntegerState {
                     | Profile::LongMinsdMemoryRaxV1
                     | Profile::LongMaxssMemoryRaxV1
                     | Profile::LongMinssMemoryRaxV1
+                    | Profile::LongMinssMemoryUnmaskedRaxV1
                     | Profile::LongAddssMemoryRaxV1
                     | Profile::LongAddsdMemoryRaxV1
                     | Profile::LongMaxsdMemoryRaxV1
@@ -1949,6 +1954,7 @@ impl IntegerState {
                 | Profile::LongMinsdMemoryRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
+                | Profile::LongMinssMemoryUnmaskedRaxV1
                 | Profile::LongSubssMemoryRaxV1
                 | Profile::LongAddssMemoryRaxV1
                 | Profile::LongAddsdMemoryRaxV1
@@ -2177,6 +2183,7 @@ impl IntegerState {
                 | Profile::LongMinsdMemoryRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
+                | Profile::LongMinssMemoryUnmaskedRaxV1
                 | Profile::LongMulssMemoryRaxV1
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
@@ -2843,6 +2850,7 @@ impl IntegerState {
                 | Profile::LongMinsdMemoryRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
+                | Profile::LongMinssMemoryUnmaskedRaxV1
                 | Profile::LongSubssMemoryRaxV1
                 | Profile::LongAddssMemoryRaxV1
                 | Profile::LongAddsdMemoryRaxV1
@@ -3113,6 +3121,7 @@ impl IntegerState {
                 | Profile::LongMinsdMemoryRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
+                | Profile::LongMinssMemoryUnmaskedRaxV1
                 | Profile::LongSubssMemoryRaxV1
                 | Profile::LongAddssMemoryRaxV1
                 | Profile::LongAddsdMemoryRaxV1
@@ -3392,6 +3401,7 @@ impl IntegerState {
                 | Profile::LongMinsdMemoryRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
+                | Profile::LongMinssMemoryUnmaskedRaxV1
                 | Profile::LongSubssMemoryRaxV1
                 | Profile::LongAddssMemoryRaxV1
                 | Profile::LongAddsdMemoryRaxV1
@@ -3678,6 +3688,7 @@ impl IntegerState {
                 | Profile::LongMinsdMemoryRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
+                | Profile::LongMinssMemoryUnmaskedRaxV1
                 | Profile::LongSubssMemoryRaxV1
                 | Profile::LongAddssMemoryRaxV1
                 | Profile::LongAddsdMemoryRaxV1
@@ -4111,6 +4122,7 @@ impl IntegerState {
                 | Profile::LongMinsdMemoryRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
+                | Profile::LongMinssMemoryUnmaskedRaxV1
                 | Profile::LongMulssMemoryRaxV1
                 | Profile::LongDivssMemoryRaxV1
                 | Profile::LongDivsdMemoryRaxV1
@@ -4153,6 +4165,7 @@ impl IntegerState {
                 | Profile::LongMinsdMemoryRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
+                | Profile::LongMinssMemoryUnmaskedRaxV1
                 | Profile::LongMulssMemoryRaxV1
                 | Profile::LongDivssMemoryRaxV1
                 | Profile::LongDivsdMemoryRaxV1
@@ -4466,6 +4479,7 @@ impl IntegerState {
                 | Profile::LongMinsdMemoryRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
+                | Profile::LongMinssMemoryUnmaskedRaxV1
                 | Profile::LongMulssMemoryRaxV1
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
@@ -4755,6 +4769,7 @@ impl IntegerState {
                 | Profile::LongMinsdMemoryRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
+                | Profile::LongMinssMemoryUnmaskedRaxV1
                 | Profile::LongMulssMemoryRaxV1
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
@@ -4998,6 +5013,7 @@ impl IntegerState {
                 | Profile::LongMinsdMemoryRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
+                | Profile::LongMinssMemoryUnmaskedRaxV1
                 | Profile::LongMulssMemoryRaxV1
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
@@ -5464,6 +5480,9 @@ pub struct Fixture {
     pub maxss_memory_rax_controls: Option<MaxssMemoryRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minss_memory_rax_controls: Option<MinssMemoryRaxControlSnapshot>,
+    /// Immutable SSE and arithmetic-delivery controls for exact S2-38m MINSS m32.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minss_memory_unmasked_rax_controls: Option<MinssMemoryUnmaskedRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub addss_memory_rax_controls: Option<AddssMemoryRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -5922,6 +5941,15 @@ pub struct MaxpsMemoryRaxControlSnapshot {
 }
 pub type MaxssMemoryRaxControlSnapshot = CmpssMemoryRaxControlSnapshot;
 pub type MinssMemoryRaxControlSnapshot = CmpssMemoryRaxControlSnapshot;
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MinssMemoryUnmaskedRaxControlSnapshot {
+    pub sse_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
 pub type AddssMemoryRaxControlSnapshot = CmpssMemoryRaxControlSnapshot;
 pub type AddsdMemoryRaxControlSnapshot = CmpsdMemoryRaxControlSnapshot;
 
@@ -12898,6 +12926,120 @@ impl Fixture {
                 "only valid for MINSS m32 profile",
             ));
         }
+        if self.profile == Profile::LongMinssMemoryUnmaskedRaxV1 {
+            let controls = self.minss_memory_unmasked_rax_controls.ok_or_else(|| {
+                invalid(
+                    "minss_memory_unmasked_rax_controls",
+                    "required by S2-38m MINSS m32 profile",
+                )
+            })?;
+            if self.minss_memory_rax_controls.is_some() {
+                return Err(invalid(
+                    "minss_memory_rax_controls",
+                    "masked MINSS memory controls are forbidden for S2-38m",
+                ));
+            }
+            let code = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by S2-38m"))?;
+            let data = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "data")
+                .ok_or_else(|| invalid("memory.data", "required by S2-38m"))?;
+            let start = self.initial_state.rip.get();
+            let source = self.initial_state.gpr[0].get();
+            if self.cmpss_memory_rax_controls.is_some()
+                || self.cmpsd_memory_rax_controls.is_some()
+                || self.cmppd_memory_rax_controls.is_some()
+                || self.cmpps_memory_rax_controls.is_some()
+                || code.guest_address.get() != start
+                || code.length != 4
+                || !code.permissions.execute
+                || decode_bytes(&code.initial_bytes_hex)? != [0xf3, 0x0f, 0x5d, 0x00]
+                || self.memory.len() != 2
+                || data.guest_address.get() != source
+                || data.length != 4
+                || !data.permissions.read
+                || data.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(4)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress | ExpectedExit::Unsupported
+                )
+            {
+                return Err(invalid(
+                    "memory",
+                    "S2-38m requires exact F3 0F 5D 00, one code/data mapping, budget 1 and stop RIP entry+4",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| invalid("state.sse", "required by S2-38m"))?
+                .mxcsr
+                .get();
+            let required_masks = (1 << 9) | (1 << 10) | (1 << 11) | (1 << 12);
+            if mxcsr & !0xffbf != 0
+                || mxcsr & ((1 << 6) | (1 << 15)) != 0
+                || mxcsr & required_masks != required_masks
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "S2-38m requires supported MXCSR bits, DAZ/FTZ/reserved clear and ZM/OM/UM/PM set",
+                ));
+            }
+            let gate = !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr;
+            let nm = !gate && controls.cr0_ts;
+            let ac = !gate && !nm && self.initial_state.rflags.get() & (1 << 18) != 0;
+            let last = source.checked_add(3);
+            let canonical = |a: u64| a >> 47 == 0 || a >> 47 == 0x1ffff;
+            let span = last.is_none_or(|end| !canonical(source) || !canonical(end));
+            let lhs_bytes = decode_bytes(&self.initial_state.sse.as_ref().unwrap().xmm[0])?;
+            let lhs = u32::from_le_bytes(
+                lhs_bytes
+                    .get(..4)
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .ok_or_else(|| invalid("state.sse.xmm0", "expected 16 raw bytes"))?,
+            );
+            let rhs = decode_bytes(&data.initial_bytes_hex)?
+                .get(..4)
+                .and_then(|bytes| bytes.try_into().ok())
+                .map(u32::from_le_bytes)
+                .ok_or_else(|| invalid("memory.data", "expected four raw bytes"))?;
+            let is_nan = |bits: u32| bits & 0x7f80_0000 == 0x7f80_0000 && bits & 0x007f_ffff != 0;
+            let is_subnormal = |bits: u32| bits & 0x7f80_0000 == 0 && bits & 0x007f_ffff != 0;
+            let invalid_operation = is_nan(lhs) || is_nan(rhs);
+            let denormal = is_subnormal(lhs) || is_subnormal(rhs);
+            let im = mxcsr & (1 << 7) != 0;
+            let dm = mxcsr & (1 << 8) != 0;
+            let reported_de = denormal && (!invalid_operation || !im || !dm);
+            let arithmetic_exit = invalid_operation && !im || reported_de && !dm;
+            let expected = if gate || nm {
+                ExpectedExit::Exception
+            } else if ac {
+                ExpectedExit::Unsupported
+            } else if span || arithmetic_exit {
+                ExpectedExit::Exception
+            } else {
+                ExpectedExit::StopAddress
+            };
+            if self.expected_exit != expected {
+                return Err(invalid(
+                    "expected_exit",
+                    "must reflect S2-38m gates, MXCSR admission, AC, canonical span and unmasked arithmetic",
+                ));
+            }
+        } else if self.minss_memory_unmasked_rax_controls.is_some() {
+            return Err(invalid(
+                "minss_memory_unmasked_rax_controls",
+                "only valid for S2-38m MINSS m32 profile",
+            ));
+        }
         if self.profile == Profile::LongSubssMemoryRaxV1 {
             let _ = self
                 .subss_controls
@@ -16245,6 +16387,10 @@ impl Fixture {
                     .ok()
                     .filter(|bytes| bytes == &[0xf3, 0x0f, 0x5d, 0x00])
                     .map(|_| 4),
+                Profile::LongMinssMemoryUnmaskedRaxV1 => decode_bytes(&code_bytes)
+                    .ok()
+                    .filter(|bytes| bytes == &[0xf3, 0x0f, 0x5d, 0x00])
+                    .map(|_| 4),
                 Profile::LongCmpsdRegistersV1 => {
                     cmpsd_register_encoding(&code_bytes).map(|(_, _, _, length)| length)
                 }
@@ -18278,6 +18424,7 @@ impl Fixture {
             minsd_memory_rax_controls: None,
             maxss_memory_rax_controls: None,
             minss_memory_rax_controls: None,
+            minss_memory_unmasked_rax_controls: None,
             addss_memory_rax_controls: None,
             addsd_memory_rax_controls: None,
             maxsd_memory_rax_controls: None,
@@ -18570,6 +18717,9 @@ pub struct Snapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maxss_memory_rax_controls: Option<MaxssMemoryRaxControlSnapshot>,
     pub minss_memory_rax_controls: Option<MinssMemoryRaxControlSnapshot>,
+    /// Immutable S2-38m SSE and arithmetic-delivery controls, echoed verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minss_memory_unmasked_rax_controls: Option<MinssMemoryUnmaskedRaxControlSnapshot>,
     pub addss_memory_rax_controls: Option<AddssMemoryRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub addsd_memory_rax_controls: Option<AddsdMemoryRaxControlSnapshot>,
@@ -20074,6 +20224,19 @@ impl RunResult {
                         "only valid for MINSS m32 profile",
                     ));
                 }
+                if self.profile == Profile::LongMinssMemoryUnmaskedRaxV1 {
+                    if snapshot.minss_memory_unmasked_rax_controls.is_none() {
+                        return Err(invalid(
+                            "snapshot.minss_memory_unmasked_rax_controls",
+                            "required by S2-38m MINSS m32 profile",
+                        ));
+                    }
+                } else if snapshot.minss_memory_unmasked_rax_controls.is_some() {
+                    return Err(invalid(
+                        "snapshot.minss_memory_unmasked_rax_controls",
+                        "only valid for S2-38m MINSS m32 profile",
+                    ));
+                }
                 if self.profile == Profile::LongMaxssMemoryRaxV1 {
                     if snapshot.maxss_memory_rax_controls.is_none() {
                         return Err(invalid(
@@ -21538,6 +21701,28 @@ impl RunResult {
             }
             if loaded.fixture.profile == Profile::LongMinssMemoryRaxV1 {
                 validate_minss_memory_rax_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.minss_memory_unmasked_rax_controls,
+                value.minss_memory_unmasked_rax_controls,
+            ) {
+                (Profile::LongMinssMemoryUnmaskedRaxV1, Some(input), Some(output))
+                    if input == output => {}
+                (Profile::LongMinssMemoryUnmaskedRaxV1, _, _) => {
+                    return Err(FormatError::CaseMismatch(
+                        "minss_memory_unmasked_rax_controls",
+                    ));
+                }
+                (_, None, None) => {}
+                _ => {
+                    return Err(FormatError::CaseMismatch(
+                        "minss_memory_unmasked_rax_controls",
+                    ));
+                }
+            }
+            if loaded.fixture.profile == Profile::LongMinssMemoryUnmaskedRaxV1 {
+                validate_minss_memory_unmasked_rax_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
@@ -43127,6 +43312,179 @@ fn validate_minss_memory_rax_result(
         (None, true, Outcome::Unsupported { .. }, Observation::Available { value: None }) => {}
         (None, false, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
         _ => return Err(FormatError::CaseMismatch("MINSS m32 outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_minss_memory_unmasked_rax_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .minss_memory_unmasked_rax_controls
+        .ok_or(FormatError::CaseMismatch(
+            "minss_memory_unmasked_rax_controls",
+        ))?;
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let lhs_bytes = decode_bytes(&initial_sse.xmm[0])?;
+    let lhs = u32::from_le_bytes(
+        lhs_bytes[..4]
+            .try_into()
+            .map_err(|_| FormatError::CaseMismatch("xmm0"))?,
+    );
+    let data = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "data")
+        .ok_or(FormatError::CaseMismatch("memory.data"))?;
+    let rhs_bytes = decode_bytes(&data.initial_bytes_hex)?;
+    let rhs = u32::from_le_bytes(
+        rhs_bytes[..4]
+            .try_into()
+            .map_err(|_| FormatError::CaseMismatch("memory.data"))?,
+    );
+    let class = |bits: u32| -> u8 {
+        let exponent = (bits >> 23) & 0xff;
+        let fraction = bits & 0x007f_ffff;
+        if exponent == 0xff && fraction != 0 {
+            2
+        } else if exponent == 0 && fraction != 0 {
+            1
+        } else {
+            0
+        }
+    };
+    let lhs_class = class(lhs);
+    let rhs_class = class(rhs);
+    let invalid = lhs_class == 2 || rhs_class == 2;
+    let denormal = lhs_class == 1 || rhs_class == 1;
+    let raw_order = |left: u32, right: u32| {
+        if left & 0x7fff_ffff == 0 && right & 0x7fff_ffff == 0 {
+            core::cmp::Ordering::Equal
+        } else {
+            match (left >> 31 != 0, right >> 31 != 0) {
+                (true, false) => core::cmp::Ordering::Less,
+                (false, true) => core::cmp::Ordering::Greater,
+                (false, false) => (left & 0x7fff_ffff).cmp(&(right & 0x7fff_ffff)),
+                (true, true) => (right & 0x7fff_ffff).cmp(&(left & 0x7fff_ffff)),
+            }
+        }
+    };
+    // Independent raw-bit MINSS oracle: NaNs and ties select RHS; otherwise compare
+    // sign/magnitude encodings without host floating point or production helpers.
+    let expected_low = if invalid || raw_order(lhs, rhs) != core::cmp::Ordering::Less {
+        rhs
+    } else {
+        lhs
+    };
+    let mxcsr = initial_sse.mxcsr.get();
+    let im_masked = mxcsr & (1 << 7) != 0;
+    let dm_masked = mxcsr & (1 << 8) != 0;
+    let reported_de = denormal && (!invalid || !im_masked || !dm_masked);
+    let arithmetic_exit = invalid && !im_masked || reported_de && !dm_masked;
+    let gate = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let source = fixture.initial_state.gpr[0].get();
+    let ac_refusal = gate.is_none() && fixture.initial_state.rflags.get() & (1 << 18) != 0;
+    let last = source.checked_add(3);
+    let canonical = |address: u64| address >> 47 == 0 || address >> 47 == 0x1ffff;
+    let span_fault = last.is_none_or(|end| !canonical(source) || !canonical(end));
+    let fault =
+        gate.or_else(|| {
+            (!ac_refusal && span_fault).then_some(13).or_else(|| {
+                (!ac_refusal && !span_fault && arithmetic_exit)
+                    .then_some(if controls.cr4_osxmmexcpt { 19 } else { 6 })
+            })
+        });
+    let unsupported = gate.is_none() && ac_refusal;
+    if !matches!(
+        (fault, unsupported, fixture.expected_exit),
+        (Some(_), false, ExpectedExit::Exception)
+            | (None, true, ExpectedExit::Unsupported)
+            | (None, false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("S2-38m expected exit"));
+    }
+    let mut expected = fixture.initial_state.clone();
+    if fault.is_some() && !gate.is_some() && !span_fault && !ac_refusal && arithmetic_exit {
+        expected
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?
+            .mxcsr = HexU64(mxcsr | u64::from(invalid) | (u64::from(reported_de) << 1));
+    } else if fault.is_none() && !unsupported {
+        let state_sse = expected
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        let mut output_xmm = expected_low.to_le_bytes().to_vec();
+        output_xmm.extend_from_slice(&lhs_bytes[4..]);
+        state_sse.xmm[0] = crate::memory::encode_bytes(&output_xmm);
+        state_sse.mxcsr = HexU64(mxcsr | u64::from(invalid) | (u64::from(reported_de) << 1));
+        expected.rip = HexU64(
+            fixture
+                .initial_state
+                .rip
+                .get()
+                .checked_add(4)
+                .ok_or(FormatError::CaseMismatch("S2-38m RIP overflow"))?,
+        );
+    }
+    let memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != memory
+    {
+        return Err(FormatError::CaseMismatch("S2-38m output state"));
+    }
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(u64::from(fault.is_none() && !unsupported)),
+        })
+    {
+        return Err(FormatError::CaseMismatch("S2-38m retirement"));
+    }
+    match (fault, unsupported, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            false,
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == if vector == 13 {
+                    Observation::Available { value: HexU64(0) }
+                } else {
+                    Observation::Unavailable {
+                        reason: "exception has no architectural error code".into(),
+                    }
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, true, Outcome::Unsupported { .. }, Observation::Available { value: None }) => {}
+        (None, false, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("S2-38m outcome/exception")),
     }
     Ok(())
 }

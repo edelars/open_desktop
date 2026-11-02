@@ -710,6 +710,15 @@ pub struct MaxssMemoryRaxControls {
 }
 /// Explicit SSE prerequisite gates for the exact S2-37dh MINSS m32-at-RAX profile.
 pub type MinssMemoryRaxControls = MaxssMemoryRaxControls;
+/// Explicit SSE and arithmetic-exit controls for exact S2-38m MINSS m32 at [RAX].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MinssMemoryUnmaskedRaxControls {
+    pub sse_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
 /// Explicit SSE prerequisite gates for exact ADDSS m32 at [RAX].
 pub type AddssMemoryRaxControls = MaxssMemoryRaxControls;
 
@@ -12029,6 +12038,58 @@ pub fn run_with_minss_memory_rax_controls(
     controls: MinssMemoryRaxControls,
     mut stop_requested: impl FnMut() -> bool,
 ) -> RunResult {
+    run_minss_memory_rax_profile(
+        state,
+        memory,
+        config,
+        controls,
+        None,
+        false,
+        &mut stop_requested,
+    )
+}
+
+/// Execute the exact S2-38m legacy `F3 0F 5D 00` MINSS memory profile.
+pub fn run_with_minss_memory_unmasked_rax_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: MinssMemoryUnmaskedRaxControls,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    let memory_controls = MinssMemoryRaxControls {
+        sse_available: controls.sse_available,
+        cr0_em: controls.cr0_em,
+        cr0_ts: controls.cr0_ts,
+        cr4_osfxsr: controls.cr4_osfxsr,
+    };
+    let exception_controls = MinssInvalidControls {
+        sse_available: controls.sse_available,
+        cr0_em: controls.cr0_em,
+        cr0_ts: controls.cr0_ts,
+        cr4_osfxsr: controls.cr4_osfxsr,
+        cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+    };
+    run_minss_memory_rax_profile(
+        state,
+        memory,
+        config,
+        memory_controls,
+        Some(exception_controls),
+        true,
+        &mut stop_requested,
+    )
+}
+
+fn run_minss_memory_rax_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: MinssMemoryRaxControls,
+    exception_controls: Option<MinssInvalidControls>,
+    unmasked_denormal: bool,
+    stop_requested: &mut impl FnMut() -> bool,
+) -> RunResult {
     run_configured(
         state,
         memory,
@@ -12039,7 +12100,7 @@ pub fn run_with_minss_memory_rax_controls(
             msr: None,
             sep: None,
             xorpd: None,
-            minss_invalid: None,
+            minss_invalid: exception_controls,
             maxss_unmasked: None,
             minsd_unmasked: None,
             maxsd_unmasked: None,
@@ -12145,7 +12206,7 @@ pub fn run_with_minss_memory_rax_controls(
             cvtpi2pd_memory_rax: None,
             cvtpi2_profile: None,
             fx_cr0: None,
-            unmasked_minss_denormal: false,
+            unmasked_minss_denormal: unmasked_denormal,
             rdtsc: None,
             swapgs: None,
             cli: None,
@@ -12158,7 +12219,7 @@ pub fn run_with_minss_memory_rax_controls(
             rdtsc_source: None,
             sti_sequence: None,
             exact_hlt_only: false,
-            stop_requested: &mut stop_requested,
+            stop_requested,
         },
     )
 }
@@ -19286,7 +19347,7 @@ fn step_configured(
         }
     }
     if let Some(controls) = minss_invalid_controls {
-        let exact_minss = instruction.operation
+        let exact_register_minss = instruction.operation
             == (Operation::MinssRegisterMasked {
                 destination: 0,
                 source: 1,
@@ -19296,6 +19357,18 @@ fn step_configured(
             && instruction.opcode.byte == 0x5d
             && instruction.prefixes.group1 == Some(0xf3)
             && instruction.prefixes.rex.is_none();
+        let exact_memory_minss = unmasked_minss_denormal
+            && configured_minss_memory_rax_controls.is_some()
+            && instruction.operation == Operation::MinssMemoryRax
+            && instruction.length == 4
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x5d
+            && instruction.prefixes.group1 == Some(0xf3)
+            && instruction.prefixes.segment.is_none()
+            && !instruction.prefixes.operand_override
+            && !instruction.prefixes.address_override
+            && instruction.prefixes.rex.is_none();
+        let exact_minss = exact_register_minss || exact_memory_minss;
         if !exact_minss {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
@@ -22675,11 +22748,15 @@ fn step_configured(
             });
         };
         let required_masks = 0x1f80;
-        if sse.mxcsr & !0xffbf != 0
-            || sse.mxcsr & ((1 << 6) | (1 << 15)) != 0
-            || sse.mxcsr & required_masks != required_masks
-            || state.rflags & (1 << 18) != 0
-        {
+        let reserved_or_daz_ftz =
+            sse.mxcsr & !0xffbf != 0 || sse.mxcsr & ((1 << 6) | (1 << 15)) != 0;
+        let masks_invalid = if unmasked_minss_denormal {
+            sse.mxcsr & (0x1f80 & !((1 << 7) | (1 << 8)))
+                != (required_masks & !((1 << 7) | (1 << 8)))
+        } else {
+            sse.mxcsr & required_masks != required_masks
+        };
+        if reserved_or_daz_ftz || masks_invalid || state.rflags & (1 << 18) != 0 {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -34903,6 +34980,64 @@ fn step_configured(
             let sse = state.sse.as_mut().expect("MINSD memory state prevalidated");
             sse.xmm[0][..8].copy_from_slice(&result.value().to_bits().to_le_bytes());
             sse.mxcsr = old_mxcsr | u32::from(invalid) | (u32::from(denormal) << 1);
+        }
+        Operation::MinssMemoryRax
+            if configured_minss_memory_rax_controls.is_some() && unmasked_minss_denormal =>
+        {
+            let address = state.gpr[Register::Rax as usize];
+            let Some(last) = address.checked_add(3) else {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            };
+            if !long_decode::canonical(address) || !long_decode::canonical(last) {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            let mut source = [0u8; 4];
+            memory.read(address, context, &mut source)?;
+            let (lhs_bits, old_mxcsr) = {
+                let sse = state.sse.as_ref().expect("MINSS memory state prevalidated");
+                (
+                    u32::from_le_bytes(sse.xmm[0][..4].try_into().expect("MINSS lhs dword")),
+                    sse.mxcsr,
+                )
+            };
+            let rhs_bits = u32::from_le_bytes(source);
+            let lhs = Binary32::from_bits(lhs_bits);
+            let rhs = Binary32::from_bits(rhs_bits);
+            let result = Binary32::min_sse_raw_result(lhs, rhs);
+            let invalid = result.invalid_operation();
+            let denormal =
+                lhs.class() == BinaryClass::Subnormal || rhs.class() == BinaryClass::Subnormal;
+            let im_masked = old_mxcsr & (1 << 7) != 0;
+            let dm_masked = old_mxcsr & (1 << 8) != 0;
+            let reported_denormal = denormal && (!invalid || !im_masked || !dm_masked);
+            let unmasked_invalid = invalid && !im_masked;
+            let unmasked_denormal = reported_denormal && !dm_masked;
+            let new_mxcsr = old_mxcsr | u32::from(invalid) | (u32::from(reported_denormal) << 1);
+            if unmasked_invalid || unmasked_denormal {
+                state
+                    .sse
+                    .as_mut()
+                    .expect("MINSS memory state prevalidated")
+                    .mxcsr = new_mxcsr;
+                let controls =
+                    configured_minss_controls.expect("S2-38m MINSS memory controls prevalidated");
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
+            let sse = state.sse.as_mut().expect("MINSS memory state prevalidated");
+            sse.xmm[0][..4].copy_from_slice(&result.value().to_bits().to_le_bytes());
+            sse.mxcsr = new_mxcsr;
         }
         Operation::MinssMemoryRax if configured_minss_memory_rax_controls.is_some() => {
             let address = state.gpr[Register::Rax as usize];
@@ -120597,6 +120732,356 @@ mod tests {
             failed_memory.accesses,
             [(AccessKind::Read, failed_memory.data_base, 4)]
         );
+    }
+
+    #[test]
+    fn minss_memory_unmasked_rax_obeys_mixed_masks_and_atomic_results() {
+        let code = [0xf3, 0x0f, 0x5d, 0x00];
+        let controls = MinssMemoryUnmaskedRaxControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: false,
+        };
+        let vectors = [
+            (0x3f80_0000, 0x4000_0000),
+            (0x7fc1_2345, 0x3f80_0000),
+            (0x7f81_2345, 0x3f80_0000),
+            (0x3f80_0000, 0xff81_2345),
+            (0x0000_0001, 0x3f80_0000),
+            (0x807f_ffff, 0x3f80_0000),
+            (0x7fc1_2345, 0x0000_0001),
+            (0x807f_ffff, 0x7f81_2345),
+            (0x8000_0000, 0x0000_0000),
+        ];
+        let is_nan = |bits: u32| bits & 0x7f80_0000 == 0x7f80_0000 && bits & 0x007f_ffff != 0;
+        let is_subnormal = |bits: u32| bits & 0x7f80_0000 == 0 && bits & 0x007f_ffff != 0;
+        let raw_order = |left: u32, right: u32| {
+            if left & 0x7fff_ffff == 0 && right & 0x7fff_ffff == 0 {
+                core::cmp::Ordering::Equal
+            } else {
+                match (left >> 31 != 0, right >> 31 != 0) {
+                    (true, false) => core::cmp::Ordering::Less,
+                    (false, true) => core::cmp::Ordering::Greater,
+                    (false, false) => (left & 0x7fff_ffff).cmp(&(right & 0x7fff_ffff)),
+                    (true, true) => (right & 0x7fff_ffff).cmp(&(left & 0x7fff_ffff)),
+                }
+            }
+        };
+        for (lhs, rhs) in vectors {
+            let invalid = is_nan(lhs) || is_nan(rhs);
+            let denormal = is_subnormal(lhs) || is_subnormal(rhs);
+            let expected_low = if invalid || raw_order(lhs, rhs) != core::cmp::Ordering::Less {
+                rhs
+            } else {
+                lhs
+            };
+            for im_masked in [false, true] {
+                for dm_masked in [false, true] {
+                    for osxmmexcpt in [false, true] {
+                        let reported_de = denormal && (!invalid || !im_masked || !dm_masked);
+                        let exit = (invalid && !im_masked) || (reported_de && !dm_masked);
+                        let mut memory = Memory::at(&code, 0x2000);
+                        memory.bytes[1..5].copy_from_slice(&rhs.to_le_bytes());
+                        let mut state = LongModeState::default();
+                        state.rip = 0x2000;
+                        state.gpr[Register::Rax as usize] = memory.data_base + 1;
+                        state.x87 = Some(X87State::fixture_seed());
+                        let mut xmm = [[0xa5; 16]; 16];
+                        xmm[0][..4].copy_from_slice(&lhs.to_le_bytes());
+                        let mut mxcsr = 0x1f80 | 0x4000;
+                        if !im_masked {
+                            mxcsr &= !(1 << 7);
+                        }
+                        if !dm_masked {
+                            mxcsr &= !(1 << 8);
+                        }
+                        state.sse = Some(SseState { xmm, mxcsr });
+                        let before = state.clone();
+                        let result = run_with_minss_memory_unmasked_rax_controls(
+                            &mut state,
+                            &mut memory,
+                            RunConfig {
+                                instruction_budget: 1,
+                                stop_rip: Some(0x2004),
+                                context: AccessContext::default(),
+                            },
+                            MinssMemoryUnmaskedRaxControls {
+                                cr4_osxmmexcpt: osxmmexcpt,
+                                ..controls
+                            },
+                            || false,
+                        );
+                        let generated = u32::from(invalid) | (u32::from(reported_de) << 1);
+                        if exit {
+                            assert_eq!(
+                                result.exit,
+                                RunExit::Fault(ArchitecturalFault {
+                                    vector: if osxmmexcpt { 19 } else { 6 },
+                                    error_code: None,
+                                    linear_address: None,
+                                }),
+                                "lhs={lhs:08x} rhs={rhs:08x} IM={im_masked} DM={dm_masked}"
+                            );
+                            assert_eq!(result.instructions_executed, 0);
+                            assert_eq!(
+                                state.sse.as_ref().unwrap().xmm,
+                                before.sse.as_ref().unwrap().xmm
+                            );
+                            assert_eq!(state.sse.as_ref().unwrap().mxcsr, mxcsr | generated);
+                            assert_eq!(state.rip, before.rip);
+                        } else {
+                            assert_eq!(result.exit, RunExit::StopAddress);
+                            assert_eq!(
+                                &state.sse.as_ref().unwrap().xmm[0][..4],
+                                &expected_low.to_le_bytes()
+                            );
+                            assert_eq!(
+                                &state.sse.as_ref().unwrap().xmm[0][4..],
+                                &before.sse.as_ref().unwrap().xmm[0][4..]
+                            );
+                            assert_eq!(state.sse.as_ref().unwrap().mxcsr, mxcsr | generated);
+                            assert_eq!(state.rip, 0x2004);
+                        }
+                        assert_eq!(
+                            memory.accesses,
+                            [(AccessKind::Read, memory.data_base + 1, 4)]
+                        );
+                    }
+                }
+            }
+        }
+
+        for rc in 0..4u32 {
+            for old in 0..64u32 {
+                let mut memory = Memory::at(&code, 0x3000);
+                memory.bytes[1..5].copy_from_slice(&0x4000_0000u32.to_le_bytes());
+                let mut state = LongModeState::default();
+                state.rip = 0x3000;
+                state.gpr[Register::Rax as usize] = memory.data_base + 1;
+                let mut xmm = [[0x5a; 16]; 16];
+                xmm[0][..4].copy_from_slice(&0x3f80_0000u32.to_le_bytes());
+                state.sse = Some(SseState {
+                    xmm,
+                    mxcsr: 0x1f80 | (rc << 13) | old,
+                });
+                let result = run_with_minss_memory_unmasked_rax_controls(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(0x3004),
+                        context: AccessContext::default(),
+                    },
+                    controls,
+                    || false,
+                );
+                assert_eq!(result.exit, RunExit::StopAddress, "RC={rc} sticky={old:#x}");
+                assert_eq!(state.sse.as_ref().unwrap().mxcsr, 0x1f80 | (rc << 13) | old);
+                assert_eq!(
+                    state.sse.as_ref().unwrap().xmm[0][..4],
+                    0x3f80_0000u32.to_le_bytes()
+                );
+            }
+        }
+        let mut prior_only_memory = Memory::at(&code, 0x3800);
+        prior_only_memory.bytes[1..5].copy_from_slice(&0x4000_0000u32.to_le_bytes());
+        let mut prior_only_state = LongModeState::default();
+        prior_only_state.rip = 0x3800;
+        prior_only_state.gpr[Register::Rax as usize] = prior_only_memory.data_base + 1;
+        prior_only_state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f03,
+        });
+        let prior_only = run_with_minss_memory_unmasked_rax_controls(
+            &mut prior_only_state,
+            &mut prior_only_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x3804),
+                context: AccessContext::default(),
+            },
+            MinssMemoryUnmaskedRaxControls {
+                cr4_osxmmexcpt: true,
+                ..controls
+            },
+            || false,
+        );
+        assert_eq!(prior_only.exit, RunExit::StopAddress);
+        assert_eq!(prior_only_state.sse.as_ref().unwrap().mxcsr, 0x1f03);
+    }
+
+    #[test]
+    fn minss_memory_unmasked_rax_fault_precedence_and_read_rollback() {
+        let code = [0xf3, 0x0f, 0x5d, 0x00];
+        let controls = MinssMemoryUnmaskedRaxControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        let mut memory = Memory::at(&code, 0x4000);
+        let mut state = LongModeState::default();
+        state.rip = 0x4000;
+        state.gpr[Register::Rax as usize] = 0x0000_8000_0000_0000;
+        state.rflags = (1 << 18) | 2;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f00,
+        });
+        let before = state.clone();
+        let result = run_with_minss_memory_unmasked_rax_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x4004),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x5d });
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+
+        for (rip, bad_address) in [(0x4050, 0x0000_8000_0000_0000), (0x4070, u64::MAX - 1)] {
+            let mut invalid_span_memory = Memory::at(&code, rip);
+            let mut invalid_span_state = LongModeState::default();
+            invalid_span_state.rip = rip;
+            invalid_span_state.gpr[Register::Rax as usize] = bad_address;
+            invalid_span_state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f00,
+            });
+            invalid_span_state.sse.as_mut().unwrap().xmm[0][..4]
+                .copy_from_slice(&0x7fc1_2345u32.to_le_bytes());
+            let before = invalid_span_state.clone();
+            let result = run_with_minss_memory_unmasked_rax_controls(
+                &mut invalid_span_state,
+                &mut invalid_span_memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(rip + 4),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                })
+            );
+            assert_eq!(invalid_span_state, before);
+            assert!(invalid_span_memory.accesses.is_empty());
+        }
+
+        let mut priority_memory = Memory::at(&code, 0x4100);
+        let mut priority = LongModeState::default();
+        priority.rip = 0x4100;
+        priority.gpr[Register::Rax as usize] = priority_memory.data_base;
+        priority.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f00,
+        });
+        let no_sse = MinssMemoryUnmaskedRaxControls {
+            sse_available: false,
+            cr0_ts: true,
+            ..controls
+        };
+        let result = run_with_minss_memory_unmasked_rax_controls(
+            &mut priority,
+            &mut priority_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x4104),
+                context: AccessContext::default(),
+            },
+            no_sse,
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None
+            })
+        );
+        assert!(priority_memory.accesses.is_empty());
+
+        let mut failed = Memory::at(&code, 0x4200);
+        failed.error = Some(MemoryError::Unmapped {
+            address: failed.data_base,
+            access: AccessKind::Read,
+        });
+        let mut failed_state = LongModeState::default();
+        failed_state.rip = 0x4200;
+        failed_state.gpr[Register::Rax as usize] = failed.data_base;
+        failed_state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f00,
+        });
+        failed_state.sse.as_mut().unwrap().xmm[0][..4]
+            .copy_from_slice(&0x7fc1_2345u32.to_le_bytes());
+        let before = failed_state.clone();
+        let result = run_with_minss_memory_unmasked_rax_controls(
+            &mut failed_state,
+            &mut failed,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x4204),
+                context: AccessContext::default(),
+            },
+            MinssMemoryUnmaskedRaxControls {
+                cr0_em: false,
+                ..controls
+            },
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(failed_state, before);
+        assert_eq!(failed.accesses, [(AccessKind::Read, failed.data_base, 4)]);
+
+        let short_code = [0xf3, 0x0f, 0x5d];
+        let mut truncated = Memory::at(&short_code, 0x4300);
+        let mut truncated_state = LongModeState::default();
+        truncated_state.rip = 0x4300;
+        truncated_state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f00,
+        });
+        let before = truncated_state.clone();
+        let result = run_with_minss_memory_unmasked_rax_controls(
+            &mut truncated_state,
+            &mut truncated,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x4304),
+                context: AccessContext::default(),
+            },
+            MinssMemoryUnmaskedRaxControls {
+                sse_available: false,
+                cr0_ts: true,
+                ..controls
+            },
+            || false,
+        );
+        assert!(matches!(
+            result.exit,
+            RunExit::MemoryError(MemoryError::Unmapped {
+                access: AccessKind::Fetch,
+                ..
+            })
+        ));
+        assert_eq!(truncated_state, before);
+        assert!(truncated.accesses.is_empty());
     }
 
     #[test]

@@ -644,6 +644,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38j | Exact Long64 `MAXPD XMM0,XMM1` unmasked IM/DM exit; separate strict schema-v2 profile, MAXPD-specific raw selector and 2-lane exception aggregation; interpreter-only | S2-37l, S2-38i control policy after MAXPD-specific SDM review; independent review clean |
 | [x] | S2-38k | Exact Long64 `MINPS XMM0,XMM1` unmasked IM/DM exit; strict schema-v2 profile, four-lane raw event aggregation and atomic XMM suppression; interpreter-only | S2-37g, S2-38j control policy after MINPS-specific SDM review; independent Sol medium review clean |
 | [x] | S2-38l | Exact Long64 `MAXPS XMM0,XMM1` unmasked IM/DM exit; distinct strict schema-v2 profile, four-lane raw event aggregation and atomic XMM suppression; interpreter-only | S2-37h, S2-38k control policy after MAXPS-specific Rev. 093 review; independent Sol medium review clean |
+| [ ] | S2-38m | Exact Long64 `MINSS XMM0,m32 [RAX]` memory profile with mixed IM/DM unmasked arithmetic exit; actual memory RHS; strict schema-v2 and interpreter-only | Parent S2-38 memory/alignment/unmasked-FP-priority gap; S2-37dh address/read model and S2-38d policy; local checks and independent review; no physical x86 claim |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
@@ -7552,6 +7553,61 @@ Vol. 2B MINSS:
 See [S2-38d CPU contract](../specs/CPU_CONTRACT.md#s2-38d--exact-minss-unmasked-denormal-operand-exit),
 [report](../reports/STAGE_2_REPORT.md#s2-38d--exact-minss-unmasked-denormal-operand-handling),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38d-local-minss-unmasked-denormal-operand).
+
+#### S2-38m. Exact Long64 MINSS XMM0,m32 [RAX] memory profile with mixed IM/DM exit
+
+The interpreter-only strict schema-v2 profile `s2-long-minss-memory-unmasked-rax-v1`
+admits exactly Long64 `F3 0F 5D 00` (`MINSS XMM0,m32 [RAX]`), one complete
+four-byte fetch, budget 1 and stop RIP `entry+4`. It requires SSE
+(`CPUID.01H:EDX[25]`), CR0.EM=0, CR0.MP=1 fixed, CR4.OSFXSR=1, explicit
+CR0.TS and CR4.OSXMMEXCPT controls, and present XMM/MXCSR state. No REX,
+alternate prefix, ModR/M, addressing form, register pair, VEX/EVEX, generic,
+fragment, C ABI, native or JIT execution is admitted. The existing
+`s2-long-minss-memory-rax-v1` masked profile is unchanged.
+
+Execution order is stop/budget, full fetch, exact-form and feature gates
+(missing SSE, EM=1, or OSFXSR=0 gives #UD before TS=1 gives #NM), then
+MXCSR/state admission, AC=1 local Unsupported, checked `RAX+3` and canonical48
+endpoint validation, exactly one read4, operand classification and FP result.
+AC=0 permits unaligned access. Address overflow, noncanonical span, or failed
+read wins over NaN/subnormal classification, creates no new IE/DE, and leaves
+all architectural state and retirement unchanged.
+
+MXCSR supports only mask `0xffbf`, requires reserved bits clear and DAZ=FTZ=0,
+requires ZM/OM/UM/PM=1, allows IM and DM independently as 0/1, and admits all
+RC modes and all 64 prior sticky histories. After a successful read, S2-38d's
+mixed IM/DM MINSS priority applies. NaN produces IE; a subnormal source
+produces DE unless the both-masked invalid-priority case suppresses DE. For
+NaN plus subnormal, IM=DM=1 reports IE only and completes with raw RHS; if
+either mask is clear, commit IE|DE and produce one arithmetic exit. Any new
+unmasked IE/DE commits the relevant sticky bits, suppresses the complete XMM0
+write, and leaves RIP/retirement unchanged; OSXMMEXCPT selects #XM when 1 and
+arithmetic #UD when 0. Prior IE/DE alone never traps. Successful MINSS uses
+raw RHS on numeric ties, signed-zero ties and NaN (including raw SNaN payload),
+writes only XMM0.low32, and preserves XMM0.high96, MXCSR other than new
+stickies, XMM1 and unrelated state.
+
+Require a separate raw-bit oracle and tests crossing IM×DM×OSXMMEXCPT, RC×64
+prior sticky histories, NaN/SNaN in both sides, positive/negative subnormal,
+mixed NaN+subnormal in both orders, signed zero, finite values, prior IE/DE
+only, and poisoned XMM1/XMM0.high96. Combined-fault tests cover truncated
+fetch with disabled SSE and TS, #UD/#NM priority, AC plus noncanonical address,
+address/read failure plus unmasked NaN, and successful read followed by an
+arithmetic exit; verify callback count 0/1 and atomicity. Strict schema/result
+tampering and backend denial are required. Record only this local schema
+behavior; do not claim complete SSE/MMX or physical x86 acceptance. Keep
+ISSUE-025 open and explicitly unrelated to the RSQRT threshold. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38m--exact-minss-unmasked-memory-exit-for-m32-rax),
+[standalone report](../reports/S2_38M_MINSS_MEMORY_UNMASKED.md), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38m--minss-xmm0m32-rax-with-unmasked-imdm).
+
+Implementation and verification are complete; independent Sol/high review is
+pending after the author commit. Focused ISA/runner tests passed 2/1; full
+`od-isa`, `od-testkit`, and runner `fixture_v2` suites passed 1,889/455/517.
+Workspace check, formatting, and diff check passed. Graphify refreshed to
+11,829 nodes, 25,501 edges and 384 communities. Layout check has only the
+known isolated-worktree `.git` marker and two unavailable historical manifests
+tracked by ISSUE-023. Physical x86 remains unclaimed.
 
 #### S2-38e. Exact FP-init, FXRSTOR64, and image-controlled MINSS composition
 

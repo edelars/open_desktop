@@ -13090,6 +13090,47 @@ and Table 16-1; Vol. 2B MINSS:
 [Vol. 3A](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html),
 [Vol. 2B MINSS](https://cdrdv2.intel.com/929354/253667-sdm-vol-2b.pdf).
 
+## S2-38m — exact MINSS unmasked memory exit for m32 [RAX]
+
+The local schema-v2 interpreter profile
+`s2-long-minss-memory-unmasked-rax-v1` admits only Long64 bytes
+`F3 0F 5D 00` (`MINSS XMM0,m32 [RAX]`), length four, budget one and stop RIP
+entry+4. It requires SSE (`CPUID.01H:EDX[25]`), CR0.EM=0, fixed CR0.MP=1,
+CR4.OSFXSR=1, explicit immutable CR0.TS and CR4.OSXMMEXCPT controls, and
+present XMM/MXCSR state. The existing masked-only
+`s2-long-minss-memory-rax-v1` profile remains unchanged. Other prefixes,
+REX, ModR/M/addressing forms, register pairs, VEX/EVEX and all non-interpreter
+paths are denied.
+
+The ordered local execution contract is: stop/budget; complete four-byte
+fetch; exact-form and feature gates; MXCSR/state gates; AC=1 local Unsupported;
+checked `RAX+3` and canonical48 inclusive-span checks; exactly one read4;
+then operand classification and FP result. Missing SSE, CR0.EM=1 or
+CR4.OSFXSR=0 produces CPU-side #UD before CR0.TS=1 produces #NM. AC=0 permits
+unaligned m32. Address overflow, noncanonical span or read failure precedes
+operand classification, so no IE/DE is newly raised even if either source is
+a NaN/subnormal; architectural state and retirement remain unchanged.
+
+MXCSR admission requires reserved bits zero, supported mask `0xffbf`, DAZ=FTZ=0,
+ZM/OM/UM/PM set; IM and DM independently accept either value, RC accepts all
+four modes, and all 64 prior IE/DE/ZE/OE/UE/PE histories are preserved. After
+the successful memory read, the profile uses the S2-38d mixed IM/DM priority,
+not the frozen S2-38c policy. MINSS NaN raises IE; a subnormal source raises
+DE except when invalid-priority applies with both IM and DM set. A NaN plus
+subnormal with IM=DM=1 reports IE only and completes; if either mask is clear,
+IE|DE are committed and one arithmetic exit occurs. Any newly unmasked IE/DE
+commits its sticky bit(s), suppresses the entire XMM0 write, leaves RIP and
+retirement unchanged, and selects #XM for OSXMMEXCPT=1 or arithmetic #UD for
+OSXMMEXCPT=0. Prior IE/DE alone does not trap.
+
+Successful MINSS returns raw RHS for numeric ties, signed zero ties and NaN;
+an SNaN payload remains raw. It changes only XMM0.low32 and newly raised MXCSR
+sticky bits, preserving XMM0.high96, XMM1, all other MXCSR fields and unrelated
+state. This contract describes only this local schema profile, not complete
+SSE/MMX semantics, generic execution, or physical x86 behavior. JIT, native,
+C ABI and fragment paths remain closed. Keep ISSUE-025 open and separate from
+the RSQRT threshold. See the [S2-38m plan](../plans/STAGE_2.md#s2-38m-exact-long64-minss-xmm0m32-rax-memory-profile-with-mixed-imdm-exit).
+
 ## S2-38e — exact FP-init, FXRSTOR64, MINSS composition
 
 The interpreter-only schema-v2 profile `s2-long-cr0-cr4-fp-init-fxrstor64-minss-v1`

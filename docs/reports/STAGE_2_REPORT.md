@@ -17042,6 +17042,36 @@ See [CPU contract](../specs/CPU_CONTRACT.md#s2-38d--exact-minss-unmasked-denorma
 [test format](../testing/TEST_CASE_FORMAT.md#s2-38d-exact-minss-unmasked-denormal-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38d-local-minss-unmasked-denormal-operand).
 
+## S2-38m — exact MINSS unmasked memory profile at m32 [RAX]
+
+Added the interpreter-only schema-v2 profile `s2-long-minss-memory-unmasked-rax-v1`
+for exact Long64 `F3 0F 5D 00`. The pre-existing masked-only
+`s2-long-minss-memory-rax-v1` profile remains unchanged. The profile has
+immutable SSE, CR0.EM/TS and CR4.OSFXSR/OSXMMEXCPT controls, with CR0.MP=1 fixed.
+Full fetch precedes #UD/#NM gates; supported MXCSR/state checks precede AC=1
+local Unsupported; checked canonical48 `[RAX,RAX+3]` precedes exactly one
+read4. AC=0 permits unaligned access. Address/read failures suppress FP
+classification and leave state/retirement unchanged.
+
+The profile uses S2-38d's mixed IM/DM MINSS policy: IM/DM vary independently,
+ZM/OM/UM/PM remain set, DAZ/FTZ/reserved bits are clear, and all RC and sticky
+histories are admitted. Unmasked IE/DE commits sticky status, suppresses the
+whole XMM0 write and retirement, and exits via #XM or arithmetic #UD according
+to OSXMMEXCPT. The independent raw-bit schema oracle validates RHS selection
+and result state; the literal QNaN fixture covers #XM. Direct ISA tests cover
+the IM×DM×OSXMMEXCPT matrix, RC×64 histories, source classes/order, controls,
+combined faults, callback counts, atomicity and poisoned XMM state. Native,
+JIT, C ABI, generic and fragment paths remain closed.
+
+Focused checks passed: `od-isa` S2-38m tests (2) and runner fixture test (1).
+Full affected suites passed: `od-isa` 1,889; `od-testkit` 455; runner
+`fixture_v2` 517. Workspace/layout/fmt/Graphify checks and separate review are
+recorded in the standalone [S2-38m report](S2_38M_MINSS_MEMORY_UNMASKED.md). No
+physical x86 or complete SSE/MMX acceptance is claimed. ISSUE-025 stays open
+and concerns the unrelated RCPSS/RCPPS threshold. See the [plan](../plans/STAGE_2.md#s2-38m-exact-long64-minss-xmm0m32-rax-memory-profile-with-mixed-imdm-exit),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38m--exact-minss-unmasked-memory-exit-for-m32-rax),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38m--minss-xmm0m32-rax-with-unmasked-imdm).
+
 ## S2-42a — generated corpus для native XORPD
 
 Для существующего профиля `s2-long-native-xorpd-xmm0-xmm1-v1` добавлен

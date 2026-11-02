@@ -124,6 +124,9 @@ const MAXSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
 const MINSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dh_minss_m32_qnan_selects_rhs.case.json"
 );
+const MINSS_M32_MEMORY_UNMASKED_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38m_minss_memory_unmasked_qnan.case.json"
+);
 const ADDSS_M32_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37di_addss_m32_halfway.case.json");
 const SUBSS_M32_MEMORY_RAX: &[u8] =
@@ -38940,6 +38943,73 @@ fn minss_m32_memory_literal_selects_raw_rhs_and_remains_backend_denied() {
     assert!(matches!(ac_result.outcome, Outcome::Unsupported { .. }));
     ac_result.backend = Backend::Jit;
     assert!(ac_result.validate_for(&loaded_ac).is_err());
+}
+
+#[test]
+fn minss_m32_memory_unmasked_literal_is_strict_and_interpreter_only() {
+    let loaded = Fixture::from_json(MINSS_M32_MEMORY_UNMASKED_RAX).unwrap();
+    let fixture = loaded.fixture.clone();
+    assert_eq!(
+        fixture.profile,
+        od_testkit::v2::Profile::LongMinssMemoryUnmaskedRaxV1
+    );
+    let (input, result) = run(MINSS_M32_MEMORY_UNMASKED_RAX, "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let snapshot = match &result.snapshot {
+        Observation::Available { value } => value,
+        other => panic!("unexpected S2-38m snapshot: {other:?}"),
+    };
+    let initial_sse = fixture.initial_state.sse.as_ref().unwrap();
+    let result_sse = snapshot.state.sse.as_ref().unwrap();
+    assert_eq!(result_sse.xmm, initial_sse.xmm);
+    assert_eq!(result_sse.mxcsr.get(), initial_sse.mxcsr.get() | 1);
+    assert_eq!(snapshot.state.rip, fixture.initial_state.rip);
+    assert_eq!(snapshot.memory[1].bytes_hex, "00000040");
+    assert_eq!(
+        result.instructions_executed,
+        Observation::Available { value: HexU64(0) }
+    );
+    assert!(matches!(
+        snapshot.exception,
+        Observation::Available { value: Some(ref exception) } if exception.vector == 19
+    ));
+
+    for backend in ["jit", "native"] {
+        assert!(matches!(
+            run(MINSS_M32_MEMORY_UNMASKED_RAX, backend, 4).1.outcome,
+            Outcome::Unsupported { .. }
+        ));
+    }
+    let mut missing_controls = fixture.clone();
+    missing_controls.minss_memory_unmasked_rax_controls = None;
+    assert!(missing_controls.validate().is_err());
+    let mut other_profile = Fixture::from_json(CMPPS_REGISTER_PAIRS).unwrap().fixture;
+    other_profile.minss_memory_unmasked_rax_controls = fixture.minss_memory_unmasked_rax_controls;
+    assert!(other_profile.validate().is_err());
+    let mut tampered = result.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.minss_memory_unmasked_rax_controls = None;
+    }
+    assert!(tampered.validate_for(&loaded).is_err());
+
+    let mut masked = fixture;
+    masked.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+    masked.expected_exit = ExpectedExit::StopAddress;
+    let bytes = masked.to_json().unwrap();
+    let loaded = Fixture::from_json(&bytes).unwrap();
+    let output = cli(&bytes, "interpreter");
+    assert_eq!(output.status.code(), Some(0));
+    let parsed = RunResult::from_json(&output.stdout).unwrap();
+    od_testkit::v2::compare(&loaded, &parsed, &parsed).unwrap();
+    let success = match &parsed.snapshot {
+        Observation::Available { value } => value,
+        other => panic!("unexpected masked S2-38m snapshot: {other:?}"),
+    };
+    assert_eq!(
+        success.state.sse.as_ref().unwrap().xmm[0],
+        "000000403412f87f010000000000f07f"
+    );
+    assert_eq!(success.state.sse.as_ref().unwrap().mxcsr.get(), 0x1f81);
 }
 
 #[test]
