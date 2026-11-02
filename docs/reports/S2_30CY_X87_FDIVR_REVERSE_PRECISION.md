@@ -41,7 +41,7 @@ are not claimed.
   refresh passed: 11,424 nodes, 24,603 edges and 359 communities.
 - Independent Sol/high review is pending.
 
-Normative references: Intel SDM Rev. 093 Vol. 2A `FDIVR/FIDIVR`, pp. 3-336–3-338;
+Normative references: Intel SDM Rev. 093 Vol. 2A `FDIVR/FDIVRP/FIDIVR`, pp. 3-336–3-338;
 Vol. 1 §8.1.5.2/Table 8-2, §8.1.5.3 and §8.5.6. See the [Stage 2 plan](../plans/STAGE_2.md#s2-30cy-bare-fdivr-sti-st0-with-bounded-fcw-precision),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cy-bounded-fdivr-sti-st0-dc-f0-f7),
 [shared report](STAGE_2_REPORT.md#s2-30cy--bounded-fdivr-sti-st0), and
