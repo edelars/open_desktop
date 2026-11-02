@@ -47,5 +47,10 @@ was restored and its focused test plus the final serialized 506-case fixture
 suite passed. Physical x86 acceptance was not run.
 
 Independent Sol/high review was clean at commit `56348bb`; no findings remain.
-Integration into main and physical x86 acceptance were not performed in this
-worktree.
+Physical x86 acceptance is not claimed.
+
+Integrated main validation after S2-30de passed: `od-isa` 1,858, `od-testkit`
+455, runner 119 unit + 507 serialized fixtures, and x86-runner 8 library + 4
+binary tests. Workspace all-target offline check, formatting, layout and diff
+check passed. Graphify refreshed to 11,564 nodes, 25,047 edges and 325
+communities.

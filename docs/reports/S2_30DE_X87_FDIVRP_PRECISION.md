@@ -57,3 +57,9 @@ Validation passed:
 Independent Sol/high review is clean. The reviewer also passed fdiv 26/26,
 testkit FDIVRP 1/1, focused runner 1/1, and checked CLI overflow/underflow
 refusals. No physical x86 acceptance is claimed.
+
+Integrated main validation after S2-37dv passed: `od-isa` 1,858, `od-testkit`
+455, runner 119 unit + 507 serialized fixtures, and x86-runner 8 library + 4
+binary tests. Workspace all-target offline check, formatting, layout and diff
+check passed. Graphify refreshed to 11,564 nodes, 25,047 edges and 325
+communities.
