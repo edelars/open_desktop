@@ -54,4 +54,6 @@ Validation passed:
   marker and the two pre-existing ISSUE-023 oracle manifest links absent from
   this checkout; no slice path violations were reported.
 
-Independent Sol/high review is pending. No physical x86 acceptance is claimed.
+Independent Sol/high review is clean. The reviewer also passed fdiv 26/26,
+testkit FDIVRP 1/1, focused runner 1/1, and checked CLI overflow/underflow
+refusals. No physical x86 acceptance is claimed.
