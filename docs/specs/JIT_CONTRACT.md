@@ -384,6 +384,31 @@ form, prefix, SIB, or displacement width is implied. The fixture does not
 establish MMIO, SMC, owner/MMU, or hardware integration. See the
 [S3-20dr report](../reports/STAGE_3_S3-20dr_2026-11-02.md).
 
+#### S3-20ds: exact RBP-base Dword store with signed disp8
+
+The shared typed-IR Dword-store path admits the exact three-byte singleton
+`89 45 ib` (`MOV [RBP+disp8],EAX`). The decoder-owned `MemoryOperand` supplies
+full-width RBP plus signed disp8 with wrapping. The helper writes low32 RAX as
+one checked four-byte access; guest RIP and retirement commit only after a
+successful write. The immutable site binds all 256 displacement-byte values.
+The PC map classifies both `HelperCall` and `AfterHelper` as
+`InadmissibleAfterEffect`, and `CommitInProgress` as
+`InadmissibleDuringCommit`. The canonical successor boundary `A+3` is a
+separate post-commit boundary.
+
+RBP noncanonical start and four-byte range-end faults report `#SS`; the
+neighboring RBX-base control retains `#GP`. An effective-address wrap from
+`u64::MAX+1` to zero is valid. A checked range beginning at `u64::MAX-1`
+returns `AddressOverflow` before write or architectural commit. Architectural
+faults do not call the writer; a backend-error attempt leaves CPU state and RAM
+bytes unchanged. Zero budget and entry STOP do not write.
+If STOP is raised by a successful write callback, that one write and the
+`A+3` state commit remain visible, and a second call at that RIP is rejected
+without replay. Admission remains limited to this exact encoding; no other
+base, addressing form, prefix, SIB, or displacement width is implied. The
+bounded fixture does not establish MMIO, SMC, owner/MMU, or hardware
+integration. See the [S3-20ds report](../reports/STAGE_3_S3-20ds_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
