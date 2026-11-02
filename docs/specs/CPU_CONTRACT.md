@@ -3696,6 +3696,27 @@ No FCW/FSW state, architectural exceptions, decode/execute, native/JIT/C ABI
 admission, physical x86 claim, performance claim, or reusable FP diagnostics
 framework is part of this helper. See the [S2-29ab plan](../plans/STAGE_2.md#s2-29ab-finite-binary80-square-root-precision-diagnostics-bounded-helper), [implementation report](../reports/STAGE_2_REPORT.md#s2-29ab--finite-binary80-square-root-precision-diagnostics), and [standalone report](../reports/S2_29AB_X87_SQRT_DIAGNOSTICS.md). ISSUE-019 remains open.
 
+## Local S2-29ac: finite binary80 division precision diagnostics
+
+`divide_finite_to_normal_binary80_precision_with_diagnostics(lhs, rhs, mode,
+precision)` accepts p=24/53/64 and nonzero normalized finite binary80 operands
+with the explicit integer bit set and Normal, Subnormal or PseudoDenormal
+provenance. Either sign is supported. It rounds the exact quotient directly
+at the requested precision and returns `{ value, inexact, incremented }`.
+`inexact` is true when the rational remainder or any quotient bit discarded
+below target precision is nonzero. `incremented` means the rounded magnitude
+exceeds the truncated target-precision magnitude before carry normalization;
+it is not architectural C1. The unrounded quotient exponent and final rounded
+result must both be finite Normal binary80 values. Unsupported precision,
+zero/malformed operands or an out-of-domain exponent returns `None`.
+
+The implementation reuses the existing finite significand division, rational
+rounding and normal-result packing helpers. It does not first compute p64 and
+narrow, and it leaves `divide_finite_to_binary80` and its subnormal-result
+domain unchanged. No FCW/FSW, PE/C1, guest exceptions, ISA admission,
+decode/execute, native/JIT/C ABI behavior, physical x86 acceptance or shared
+floating-point diagnostics framework is implied. See the [S2-29ac plan](../plans/STAGE_2.md#s2-29ac-finite-binary80-division-precision-diagnostics-bounded-helper), [implementation report](../reports/STAGE_2_REPORT.md#s2-29ac--finite-binary80-division-precision-diagnostics), and [standalone report](../reports/S2_29AC_X87_DIVISION_PRECISION.md). ISSUE-019 remains open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.

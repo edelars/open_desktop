@@ -196,7 +196,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-29u | p64-aware large-gap binary80 finite-addition bridge for normalized operands with exponent gaps >64; classify tails below/at/above half; preserve binary32/64 adapter behavior; no x87 instruction semantics | S2-29t; independent Sol/high review clean |
 | [x] | S2-29v | Pure integer square-root helper for positive nonzero normalized finite binary80 inputs; one-round binary80 packing; no FSQRT/FCW/state/exception semantics | S2-29u; independent Sol/high review clean |
 | [x] | S2-29aa | Direct binary80 square-root rounding to precision 24/53/64 with binary80 exponent range; retain p64 wrapper domain; no FSQRT/FCW/state/exception semantics | S2-29v; independent Sol/high review clean |
-| [x] | S2-29ab | Helper-local inexact/incremented diagnostics for direct binary80 square-root precision rounding; preserve both bit-only API projections and domains; no architectural PE/C1 | S2-29aa; independent Sol/high review pending |
+| [x] | S2-29ab | Helper-local inexact/incremented diagnostics for direct binary80 square-root precision rounding; preserve both bit-only API projections and domains; no architectural PE/C1 | S2-29aa; independent Sol/high review clean |
+| [x] | S2-29ac | Direct finite binary80 division rounding with inexact/incremented diagnostics at p24/53/64; normal-only result domain, no FCW/FSW or ISA behavior | S2-29ab; independent Sol/high review clean |
 | [x] | S2-29x | Exact truncated finite binary80 remainder coefficient decomposition for normalized nonzero operands; exact modulo for exponent gaps 0..64, lhs passthrough below, bounded rejection above; no FPREM/FPREM1 semantics | S2-29w; independent Sol/high review clean |
 | [x] | S2-29y | Exact finite nearest-even binary80 remainder coefficient for normalized nonzero operands; d=-1 half-way handling and u128 quotient/remainder for gaps 0..64; helper-only, no FPREM1/ISA or architectural effects | S2-29x; independent Sol/high review clean |
 | [x] | S2-30cl | Bare `D9 F8` FPREM; bounded positive Normal ST(0)/ST(1), complete-only exponent gap <64, interpreter-only with exact quotient CCs and explicit underflow-safe input cutoff; independent Sol/high review clean | S2-29x/y, S2-30ck |
@@ -3433,6 +3434,33 @@ diagnostics framework.
 **Результат:** реализация, независимые литералы, проверки и review status
 зафиксированы в [отчёте S2-29ab](../reports/S2_29AB_X87_SQRT_DIAGNOSTICS.md).
 S2-29 и ISSUE-019 остаются открытыми.
+
+### S2-29ac. Finite binary80 division precision diagnostics (bounded helper)
+
+Add `divide_finite_to_normal_binary80_precision_with_diagnostics(lhs, rhs,
+mode, precision)` for nonzero normalized finite operands whose significands
+have bit 63 set and whose provenance is Normal, Subnormal, or PseudoDenormal.
+Accept p=24/53/64 and either operand sign. Round the exact division directly
+to the requested precision; do not round at p64 and narrow. The unrounded
+quotient exponent and rounded result must both remain in the binary80 normal
+finite range. Return the raw value, mathematical `inexact`, and
+`incremented` (pre-carry increase in magnitude). Preserve the existing
+`divide_finite_to_binary80` API and its wider result domain.
+
+Use the existing rational quotient and normal-packing helpers. For
+`h=64-p`, discarded quotient bits contribute to `inexact` alongside a
+nonzero rational remainder; `incremented` compares rounded magnitude with the
+truncated target-precision magnitude before carry normalization. Add
+independent literals for exact/1⁄3 results and signs across all modes and
+precisions, even/odd halfway cases and adjacent values, discarded bits with
+zero rational remainder, carries and exponent bounds, invalid inputs, legacy
+projection agreement at p64 within the shared normal domain, and a direct vs
+double-rounding counterexample. No FCW/FSW, architectural exception, decoder,
+execution, native/JIT/C ABI, or physical-acceptance semantics are added.
+
+**Результат:** реализация, focused/full checks and clean independent review are
+recorded in [S2-29ac report](../reports/S2_29AC_X87_DIVISION_PRECISION.md).
+S2-29 and ISSUE-019 remain open.
 
 ### S2-30. Основные x87 операции
 
