@@ -57,6 +57,9 @@ const MINPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
 const SQRTPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dd_sqrtps_m128_memory_source_lanes_rounding.case.json"
 );
+const ADDPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37dq_addps_m128_memory_source_and_destination_lanes.case.json"
+);
 const SQRTPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37de_sqrtpd_m128_memory_source_lanes_rounding.case.json"
 );
@@ -38153,6 +38156,99 @@ fn sqrtps_m128_memory_uses_memory_lanes_and_aggregates_masked_exceptions() {
     let mut wrong = base.clone();
     wrong.memory[0].initial_bytes_hex = "0f5101".into();
     assert!(wrong.validate().is_err());
+}
+
+#[test]
+fn addps_m128_memory_uses_xmm0_and_memory_lanes_and_denies_backends() {
+    use od_testkit::result::Backend;
+    use od_testkit::v2::Profile;
+
+    let base = Fixture::from_json(ADDPS_M128_MEMORY_RAX).unwrap().fixture;
+    assert_eq!(base.profile, Profile::LongAddpsMemoryRaxV1);
+    assert_eq!(base.memory[0].initial_bytes_hex, "0f5800");
+    assert_eq!(
+        base.initial_state.sse.as_ref().unwrap().xmm[0],
+        "0000803f000000400000803e00004040"
+    );
+    let (input, good) = run(ADDPS_M128_MEMORY_RAX, "interpreter", 0);
+    od_testkit::v2::compare(&input, &good, &good).unwrap();
+    let snapshot = match &good.snapshot {
+        Observation::Available { value } => value,
+        _ => panic!("missing ADDPS memory snapshot"),
+    };
+    assert_eq!(
+        snapshot.state.sse.as_ref().unwrap().xmm[0],
+        "0000a040000080400000a03f00005040"
+    );
+    assert_eq!(snapshot.state.sse.as_ref().unwrap().mxcsr, HexU64(0x1f80));
+    assert_eq!(
+        snapshot.memory[1].bytes_hex,
+        base.memory[1].initial_bytes_hex
+    );
+
+    for backend in [Backend::Jit, Backend::NativeX86] {
+        let mut relabeled = good.clone();
+        relabeled.backend = backend;
+        assert!(relabeled.validate_for(&input).is_err());
+    }
+    assert!(matches!(
+        run(ADDPS_M128_MEMORY_RAX, "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    assert!(matches!(
+        run(ADDPS_M128_MEMORY_RAX, "native", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+
+    for rc in 0..4u64 {
+        let mut case = base.clone();
+        case.case_id = format!("s2_37dq_rc{rc}");
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (rc << 13) | 0x21);
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let snapshot = match result.snapshot {
+            Observation::Available { value } => value,
+            _ => panic!("missing ADDPS RC snapshot"),
+        };
+        assert_eq!(
+            snapshot.state.sse.as_ref().unwrap().mxcsr,
+            HexU64(0x1f80 | (rc << 13) | 0x21)
+        );
+    }
+
+    let mut mixed = base.clone();
+    mixed.case_id = "s2_37dq_ie_de_oe_ue_pe_aggregate".into();
+    mixed.initial_state.sse.as_mut().unwrap().xmm[0] = "0100807f0000807f01000000ffff7f7f".into();
+    mixed.memory[1].initial_bytes_hex = "01000000000080ff0000000000007f7f".into();
+    mixed.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | 0x15);
+    let (input, result) = run(&mixed.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let snapshot = match result.snapshot {
+        Observation::Available { value } => value,
+        _ => panic!("missing ADDPS mixed snapshot"),
+    };
+    assert_eq!(
+        snapshot.state.sse.as_ref().unwrap().mxcsr,
+        HexU64(0x1f80 | 0x3f)
+    );
+
+    let mut bad_opcode = base.clone();
+    bad_opcode.memory[0].initial_bytes_hex = "0f5801".into();
+    assert!(bad_opcode.validate().is_err());
+    let mut missing_controls = base.clone();
+    missing_controls.addps_memory_rax_controls = None;
+    assert!(missing_controls.validate().is_err());
+
+    let mut gate = base.clone();
+    gate.case_id = "s2_37dq_no_sse_gate".into();
+    gate.addps_memory_rax_controls
+        .as_mut()
+        .unwrap()
+        .sse_available = false;
+    gate.expected_exit = ExpectedExit::Exception;
+    let (input, result) = run(&gate.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    assert!(matches!(result.outcome, Outcome::Exception {}));
 }
 
 #[test]

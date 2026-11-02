@@ -5,6 +5,42 @@
 ISSUE-011/012 остаются открытыми; наличие нового состояния или local instruction
 slice не означает завершение этапа.
 
+## S2-37dq — local-only Long64 legacy ADDPS m128 memory
+
+Добавлен строгий schema-v2 профиль `s2-long-addps-memory-rax-v1` для точной
+формы `ADDPS XMM0,m128 [RAX]` (`0F 58 00`, 3 байта). Он требует SSE bit 25,
+декодирует весь код до проверки feature/#NM gates и не требует SSE2. Приняты
+все режимы округления и прежние sticky flags при MXCSR с нулевыми reserved
+bits, DAZ/FTZ=0 и всеми шестью mask bits=1. Каждый из четырёх little-endian
+memory lanes складывается с соответствующим исходным lane XMM0 через
+`Binary32::add_raw_result`; IE/DE/OE/UE/PE агрегируются по lanes и OR-ятся с
+прежними flags, ZE и верхняя часть MXCSR сохраняются.
+
+Операнд обязан быть выровнен на 16 байт при AC=0 и AC=1. До data callback
+проверяются canonical48 для полного span `[RAX,RAX+15]`; затем выполняется
+ровно одно чтение 16 байт. Ошибка доступа или проверок сохраняет CPU state,
+MXCSR, RIP и retirement. Writes отсутствуют. Strict result validator сверяет
+вектор с независимым `independent_addps` oracle. Успешный результат нельзя
+переименовать в JIT или NativeX86; оба backend также отказывают запуску
+профиля. Decoder/register forms для остальных ADDPS не менялись.
+
+Ручной fixture `s2_37dq_addps_m128_memory_source_and_destination_lanes.case.json`
+содержит разные старые XMM0 и RHS lanes. Проверки включают все RC и sticky
+combinations, ties, NaN/invalid, mixed IE/DE/OE/UE/PE, zeros, infinities,
+subnormal и gates, полный fetch до отказа, exact/neighbor opcode, alignment,
+canonical span, fault rollback, control/schema tampering и backend denial.
+
+**Проверки:** полный `cargo test -p od-isa --offline` прошёл (1834 tests),
+`cargo test -p od-testkit --offline` прошёл (455 tests), а
+`cargo test -p od-runner --offline --test fixture_v2` прошёл (497 tests).
+`cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`,
+`git diff --check` и `graphify update .` прошли. Workspace check сообщает два
+существовавших unused-variable warning в `independent_mulss`. `tools/check_layout.py`
+остался красным из-за unmapped `.git` worktree marker и двух прежних ссылок на
+отсутствующие Stage 1/Stage 2 oracle manifests; структуру каталогов этот slice
+не менял. Независимое Sol/high review ожидается после commit. Физическое
+исполнение на x86 и unmasked #XM не входят в этот interpreter-only slice.
+
 ## S2-36ab — deterministic raw binary32 SSE reciprocal reference
 
 `Binary32::reciprocal_sse_raw()` implements the local deterministic reference

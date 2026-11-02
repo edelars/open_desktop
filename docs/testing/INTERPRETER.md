@@ -2389,3 +2389,7 @@ checked by local fixtures. JIT/native admission and guest exception delivery
 remain unsupported. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cz-bounded-faddp-sti-st0-de-c0c7),
 [plan](../plans/STAGE_2.md#s2-30cz-bare-bounded-precision-faddp-sti-st0), and
 [report](../reports/STAGE_2_REPORT.md#s2-30cz--bounded-faddp-sti-st0).
+
+## Local masked ADDPS m128 memory profile — S2-37dq
+
+`s2-long-addps-memory-rax-v1` accepts only exact legacy `0F 58 00` and requires SSE bit 25, XMM/MXCSR state, all exception masks, supported MXCSR bits, and DAZ/FTZ/reserved clear. Every rounding mode and old sticky history is admitted. The interpreter adds four lanes from old XMM0 to one aligned m128 `[RAX]` read. Alignment is mandatory regardless of AC; checked canonical48 endpoints precede exactly one `read16`, and read failure rolls back state and retirement. Tests cover all 4 RC values × 64 prior sticky patterns, NaN/invalid plus DE and overflow aggregation, SSE/EM/OSFXSR/TS gates, truncated fetch, both AC settings, alignment/canonical faults, read rollback, strict fixture validation and JIT/NativeX86 denial. Unmasked/#XM and all non-interpreter paths remain closed. See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dq--masked-only-long64-addps-xmm0m128-rax), [plan](../plans/STAGE_2.md#s2-37dq--exact-legacy-long64-addps-xmm0m128-rax), and [fixture](../../tests/fixtures/x86/stage2/s2_37dq_addps_m128_memory_source_and_destination_lanes.case.json).

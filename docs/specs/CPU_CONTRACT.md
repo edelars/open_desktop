@@ -14680,8 +14680,7 @@ Sources: Intel SDM Rev. 093 Vol. 2A ADDPS pp. 3-19–3-21 and legacy SSE rows in
 Table 2-27; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/
 Table 7-8; Intel Floating-Point Reference Sheet v2.13. The p. 3-21 Type 2 /
 Table 2-19 note refers to VEX forms, not legacy ADDPS. No memory alignment
-claim is made. Memory forms, other modes, complete unmasked OE/UE behavior,
-physical acceptance and parent S2-37/S2-38 remain open.
+claim is made. The exact `[RAX]` m128 form is separately covered by S2-37dq. Other memory forms, other modes, complete unmasked OE/UE behavior, physical acceptance and parent S2-37/S2-38 remain open.
 
 
 ## S2-37bb — canonical Long64 ADDSD XMM register pairs
@@ -16410,6 +16409,16 @@ Admission is masked-only. MXCSR must have reserved bits clear, no bits outside s
 All four output lanes derive only from the memory operand; old XMM0 is irrelevant. Each memory lane uses `Binary32::sqrt_raw_result(MXCSR.RC)`. Negative nonzero inputs, including negative subnormal and −∞, yield IE and canonical `0xffc00000`; SNaN follows the helper quieting/payload policy and yields IE; QNaN passes without IE; positive subnormal yields DE; inexact roots yield PE. New IE/DE/PE are aggregated across lanes according to the existing same-lane ordering, then ORed with prior sticky state. Success replaces all XMM0 bits and advances RIP by three, preserving GPRs, RFLAGS, other XMM registers and RAM. Native/JIT/C ABI/generic/fragment routes remain closed.
 
 The independent `independent_sqrtps` testkit oracle uses raw-bit integer arithmetic, not production code or host floating point. Fixture coverage includes all RC modes, poisoned XMM0, zeros/infinities, normal/subnormal inputs, negative normal/subnormal, QNaN/SNaN, and mixed IE|DE|PE, plus strict schema/result/backend controls and fetch/gate/read atomicity. See the [standalone implementation report](../reports/S2_37DD_SQRTPS_MEMORY.md), [plan](../plans/STAGE_2.md#s2-37dd--exact-legacy-long64-sqrtps-xmm0m128-rax), [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-37dd--sqrtps-xmm0m128-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dd--sqrtps-xmm0m128-rax).
+
+## S2-37dq — masked-only Long64 ADDPS XMM0,m128 [RAX]
+
+The strict schema-v2 interpreter profile `s2-long-addps-memory-rax-v1` admits exact legacy `0F 58 00`, a three-byte complete fetch, budget one and stop RIP entry+3. It requires SSE (`CPUID.01H:EDX[25]`), not SSE2; fetch precedes #UD for missing SSE/CR0.EM/CR4.OSFXSR and then #NM for CR0.TS. XMM/MXCSR state is required.
+
+MXCSR admission is masked-only: reserved bits clear, no bits outside `0xffbf`, all six masks set, DAZ=FTZ=0. All RC values and previous sticky flags are allowed; unmasked/#XM execution is closed. RAX must be 16-byte aligned regardless of AC. The checked canonical48 span `[RAX,RAX+15]` is validated before exactly one `read16`; faults/read errors preserve CPU, XMM, MXCSR, RIP and retirement, and no writes occur.
+
+Each lane adds old XMM0 to the corresponding memory binary32 lane with `Binary32::add_raw_result(MXCSR.RC)`. Lane NaNs follow the existing independent ADDPS policy (first original NaN selected; selected SNaN quieted; any SNaN raises IE and suppresses same-lane DE). Opposite-sign infinities raise IE; otherwise subnormal inputs contribute DE. IE/DE/OE/UE/PE aggregate across lanes and OR into old status; old ZE and all unrelated state are preserved. Success replaces XMM0 and advances RIP by three. Native/JIT/C ABI/generic/fragment and physical x86 support are not claimed.
+
+The independent testkit oracle uses raw integer binary32 operations, not production arithmetic or host floating point. See the [plan](../plans/STAGE_2.md#s2-37dq--exact-legacy-long64-addps-xmm0m128-rax), [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-37dq--addps-xmm0m128-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dq--addps-xmm0m128-rax).
 
 ## S2-37de — masked-only Long64 SQRTPD XMM0,m128 [RAX]
 

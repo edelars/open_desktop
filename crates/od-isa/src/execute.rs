@@ -18758,6 +18758,17 @@ fn step_configured(
                         == if destination >= 8 || source >= 8 {
                             Some(0x40 | (u8::from(destination >= 8) << 2) | u8::from(source >= 8))
                         } else { None }
+        ) || matches!(
+            instruction.operation,
+            Operation::AddpsMemoryRax
+                if instruction.length == 3
+                    && instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0x58
+                    && instruction.prefixes.group1.is_none()
+                    && instruction.prefixes.segment.is_none()
+                    && !instruction.prefixes.operand_override
+                    && !instruction.prefixes.address_override
+                    && instruction.prefixes.rex.is_none()
         );
         if !is_canonical_register_form {
             return Ok(StepOutcome::Unsupported {
@@ -22500,11 +22511,20 @@ fn step_configured(
                 && sse.mxcsr & (1 << 6) == 0
                 && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
         } else if configured_addps_register_controls.is_some()
-            && matches!(instruction.operation, Operation::AddpsRegister { .. })
+            && matches!(
+                instruction.operation,
+                Operation::AddpsRegister { .. } | Operation::AddpsMemoryRax
+            )
         {
-            sse.mxcsr & !0x0000_ffbf == 0
-                && sse.mxcsr & (1 << 6) == 0
-                && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
+            if matches!(instruction.operation, Operation::AddpsMemoryRax) {
+                sse.mxcsr & !0x0000_ffbf == 0
+                    && sse.mxcsr & ((1 << 6) | (1 << 15)) == 0
+                    && sse.mxcsr & 0x1f80 == 0x1f80
+            } else {
+                sse.mxcsr & !0x0000_ffbf == 0
+                    && sse.mxcsr & (1 << 6) == 0
+                    && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
+            }
         } else if configured_divpd_register_controls.is_some()
             && matches!(instruction.operation, Operation::DivpdRegister { .. })
         {
@@ -23587,6 +23607,10 @@ fn step_configured(
             state.sse.is_some()
         }
         Operation::AddpsRegister { .. } => false,
+        Operation::AddpsMemoryRax if configured_addps_register_controls.is_some() => {
+            state.sse.is_some()
+        }
+        Operation::AddpsMemoryRax => false,
         Operation::DivpdRegister { .. } if configured_divpd_register_controls.is_some() => {
             state.sse.is_some()
         }
@@ -28806,6 +28830,93 @@ fn step_configured(
             sse.xmm[usize::from(destination)] = result;
         }
         Operation::AddpsRegister { .. } => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        Operation::AddpsMemoryRax if configured_addps_register_controls.is_some() => {
+            let address = state.gpr[Register::Rax as usize];
+            if address & 0xf != 0 {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            let Some(last) = address.checked_add(15) else {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            };
+            if !long_decode::canonical(address) || !long_decode::canonical(last) {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            let mut source = [0u8; 16];
+            memory.read(address, context, &mut source)?;
+            let (lhs_xmm, old_mxcsr) = {
+                let sse = state.sse.as_ref().expect("ADDPS memory state prevalidated");
+                (sse.xmm[0], sse.mxcsr)
+            };
+            let mut result = [0u8; 16];
+            let mut new_ie = false;
+            let mut new_de = false;
+            let mut new_oe = false;
+            let mut new_ue = false;
+            let mut new_pe = false;
+            let rounding = cvtss2si_rounding_mode(old_mxcsr);
+            for lane in 0..4 {
+                let offset = lane * 4;
+                let lhs = Binary32::from_bits(u32::from_le_bytes(
+                    lhs_xmm[offset..offset + 4]
+                        .try_into()
+                        .expect("ADDPS lhs lane"),
+                ));
+                let rhs = Binary32::from_bits(u32::from_le_bytes(
+                    source[offset..offset + 4]
+                        .try_into()
+                        .expect("ADDPS m128 lane"),
+                ));
+                let lhs_class = lhs.class();
+                let rhs_class = rhs.class();
+                let lhs_nan =
+                    matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                let rhs_nan =
+                    matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                if lhs_nan || rhs_nan {
+                    new_ie |= lhs_class == BinaryClass::SignalingNaN
+                        || rhs_class == BinaryClass::SignalingNaN;
+                } else if lhs_class == BinaryClass::Infinity
+                    && rhs_class == BinaryClass::Infinity
+                    && lhs.sign() != rhs.sign()
+                {
+                    new_ie = true;
+                } else {
+                    new_de |=
+                        lhs_class == BinaryClass::Subnormal || rhs_class == BinaryClass::Subnormal;
+                }
+                let computed = Binary32::add_raw_result(lhs, rhs, rounding);
+                let raw = computed.value().to_bits();
+                new_oe |= computed.overflow();
+                new_ue |= computed.tiny_after_precision_rounding() && computed.inexact();
+                new_pe |= computed.inexact() || computed.overflow();
+                result[offset..offset + 4].copy_from_slice(&raw.to_le_bytes());
+            }
+            let sse = state.sse.as_mut().expect("ADDPS memory state prevalidated");
+            sse.xmm[0] = result;
+            sse.mxcsr = old_mxcsr
+                | u32::from(new_ie)
+                | (u32::from(new_de) << 1)
+                | (u32::from(new_oe) << 3)
+                | (u32::from(new_ue) << 4)
+                | (u32::from(new_pe) << 5);
+        }
+        Operation::AddpsMemoryRax => {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -156974,6 +157085,220 @@ mod cvtsi2ss_r64_memory_profile_tests {
             assert_eq!(state.sse.as_ref().unwrap().mxcsr & 0x3f, 0x20);
             assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 16)]);
         }
+    }
+
+    #[test]
+    fn addps_memory_rax_uses_xmm0_plus_m128_for_four_rounding_modes_and_events() {
+        let code = [0x0f, 0x58, 0x00];
+        let controls = AddpsControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        for rc in 0..4u32 {
+            for old_sticky in 0..64u32 {
+                let mut memory = Memory::at(&code, 0x2800);
+                let rhs = [0x3380_0000u32, 1, 0, 0x7f7f_ffff];
+                for (lane, value) in rhs.into_iter().enumerate() {
+                    memory.bytes[lane * 4..lane * 4 + 4].copy_from_slice(&value.to_le_bytes());
+                }
+                let mut xmm = [[0xa5; 16]; 16];
+                let lhs = [0x3f80_0000u32, 0x7f80_0001, 1, 0x7f7f_ffff];
+                for (lane, value) in lhs.into_iter().enumerate() {
+                    xmm[0][lane * 4..lane * 4 + 4].copy_from_slice(&value.to_le_bytes());
+                }
+                let mut state = LongModeState::default();
+                state.rip = 0x2800;
+                state.gpr[Register::Rax as usize] = memory.data_base;
+                state.rflags = 1 << 18;
+                state.sse = Some(SseState {
+                    xmm,
+                    mxcsr: 0x1f80 | (rc << 13) | old_sticky,
+                });
+                let result = run_with_addps_register_controls(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(0x2803),
+                        context: AccessContext::default(),
+                    },
+                    controls,
+                    || false,
+                );
+                assert_eq!(result.exit, RunExit::StopAddress);
+                assert_eq!(result.instructions_executed, 1);
+                let expected_lane0 = if rc == 2 { 0x3f80_0001 } else { 0x3f80_0000 };
+                let expected_lane3 = if matches!(rc, 1 | 3) {
+                    0x7f7f_ffff
+                } else {
+                    0x7f80_0000
+                };
+                let expected = [expected_lane0, 0x7fc0_0001, 1, expected_lane3];
+                for (lane, value) in expected.into_iter().enumerate() {
+                    assert_eq!(
+                        u32::from_le_bytes(
+                            state.sse.as_ref().unwrap().xmm[0][lane * 4..lane * 4 + 4]
+                                .try_into()
+                                .unwrap()
+                        ),
+                        value,
+                        "RC={rc} lane={lane}"
+                    );
+                }
+                assert_eq!(state.sse.as_ref().unwrap().mxcsr & 0x3f, old_sticky | 0x2b);
+                assert_eq!(state.rflags, 1 << 18);
+                assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 16)]);
+            }
+        }
+    }
+
+    #[test]
+    fn addps_memory_rax_fetches_before_gates_and_faults_atomically() {
+        let code = [0x0f, 0x58, 0x00];
+        let good = AddpsControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        for controls in [
+            AddpsControls {
+                sse_available: false,
+                ..good
+            },
+            AddpsControls {
+                cr0_em: true,
+                ..good
+            },
+            AddpsControls {
+                cr0_ts: true,
+                ..good
+            },
+            AddpsControls {
+                cr4_osfxsr: false,
+                ..good
+            },
+        ] {
+            let mut memory = Memory::at(&code, 0x2900);
+            let mut state = LongModeState::default();
+            state.rip = 0x2900;
+            state.gpr[Register::Rax as usize] = memory.data_base;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run_with_addps_register_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x2903),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert!(matches!(result.exit, RunExit::Fault(_)));
+            assert_eq!(state.rip, before.rip);
+            assert_eq!(result.instructions_executed, 0);
+            assert!(memory.accesses.is_empty());
+            assert_eq!(memory.fetches, (0x2900..0x2903).collect::<Vec<_>>());
+        }
+
+        let mut truncated = Memory::at(&code[..2], 0x2910);
+        let mut state = LongModeState::default();
+        state.rip = 0x2910;
+        state.gpr[Register::Rax as usize] = truncated.data_base;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let result = run_with_addps_register_controls(
+            &mut state,
+            &mut truncated,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            AddpsControls {
+                sse_available: false,
+                ..good
+            },
+            || false,
+        );
+        assert!(!matches!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault { vector: 6 | 7, .. })
+        ));
+        assert_eq!(truncated.fetches, (0x2910..0x2913).collect::<Vec<_>>());
+        assert!(truncated.accesses.is_empty());
+
+        for (address, ac) in [(0x1001, false), (0x1001, true), (0x8000_0000_0000, true)] {
+            let mut memory = Memory::at(&code, 0x2920);
+            let mut state = LongModeState::default();
+            state.rip = 0x2920;
+            state.gpr[Register::Rax as usize] = address;
+            state.rflags = u64::from(ac) << 18;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run_with_addps_register_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x2923),
+                    context: AccessContext::default(),
+                },
+                good,
+                || false,
+            );
+            assert!(matches!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault { vector: 13, .. })
+            ));
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut memory = Memory::at(&code, 0x2930);
+        memory.error_kind = Some(AccessKind::Read);
+        memory.error = Some(MemoryError::Architectural(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(memory.data_base),
+        }));
+        let mut state = LongModeState::default();
+        state.rip = 0x2930;
+        state.gpr[Register::Rax as usize] = memory.data_base;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let result = run_with_addps_register_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x2933),
+                context: AccessContext::default(),
+            },
+            good,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(state, before);
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 16)]);
     }
 
     #[test]
