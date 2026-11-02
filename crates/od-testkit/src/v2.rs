@@ -17844,6 +17844,15 @@ impl Fixture {
             let is_fdivrp_preflight_refusal = code_bytes == "def1" && self.stop_rip.is_none();
             let is_fstp_source_rejected = code_bytes == "ddd9" && self.stop_rip.is_none();
             let is_fst_source_rejected = code_bytes == "ddd1" && self.stop_rip.is_none();
+            let is_fst_m32_m64_status_rejected =
+                matches!(code_bytes.as_str(), "d910" | "d918" | "dd10" | "dd18")
+                    && self.stop_rip.is_none()
+                    && self.expected_exit == ExpectedExit::Unsupported
+                    && self.instruction_budget == 1
+                    && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                        !matches!(x87.control_word.get(), 0x037f | 0x077f | 0x0b7f | 0x0f7f)
+                            || x87.status_word.get() & 0x80c0 != 0
+                    });
             let is_fxch_source_rejected = code_bytes.len() == 4
                 && code_bytes.starts_with("d9c")
                 && matches!(code_bytes.as_bytes()[3], b'8'..=b'f')
@@ -18567,6 +18576,7 @@ impl Fixture {
                     || is_fdivrp_preflight_refusal
                     || is_fstp_source_rejected
                     || is_fst_source_rejected
+                    || is_fst_m32_m64_status_rejected
                     || is_fxch_source_rejected
                     || is_top_adjustment_source_rejected
                     || is_fld_constant_destination_rejected

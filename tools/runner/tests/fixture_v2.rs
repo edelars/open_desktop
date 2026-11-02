@@ -1225,6 +1225,10 @@ const FST_M32_MAX_FINITE: &[u8] = include_bytes!(
 const FSTP_M32_NEGATIVE_MAX_FINITE_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31bb_fstp_m32fp_negative_max_finite_fnstsw.case.json"
 );
+const S2_31DX_M32_FIXTURES: [&[u8]; 2] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31dx_fst_m32fp_historical_ze.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31dx_fstp_m32fp_historical_ze.case.json"),
+];
 const FLD_M64_MAX_FINITE: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31bc_fld_m64fp_positive_max_finite.case.json"
 );
@@ -1234,6 +1238,10 @@ const FST_M64_MAX_FINITE: &[u8] = include_bytes!(
 const FSTP_M64_NEGATIVE_MAX_FINITE_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31bc_fstp_m64fp_negative_max_finite_fnstsw.case.json"
 );
+const S2_31DX_M64_FIXTURES: [&[u8]; 2] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31dx_fst_m64fp_historical_ze.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31dx_fstp_m64fp_historical_ze.case.json"),
+];
 const FST_M32_POSITIVE_MIN_SUBNORMAL: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31bd_fst_m32fp_positive_min_subnormal.case.json"
 );
@@ -5800,6 +5808,105 @@ fn local_x87_fst_m32fp_fixtures_store_binary32_without_pop() {
             .find(|region| region.region_id == "stack")
             .unwrap();
         assert_eq!(&stack.bytes_hex[8..16], "0000c03f");
+    }
+}
+
+#[test]
+fn local_x87_m32_m64_stores_admit_historical_ze_and_keep_it_sticky() {
+    for fixture in S2_31DX_M32_FIXTURES.into_iter().chain(S2_31DX_M64_FIXTURES) {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        let output = snapshot(&result);
+        let x87 = output.state.x87.as_ref().unwrap();
+        let (store_hex, expected_status, expected_tag_word, expected_rip) = match input
+            .fixture
+            .case_id
+            .as_str()
+        {
+            "s2_31dx_fst_m32fp_historical_ze" => ("ffff7f7f", 0x4504, 0xfffc, 0x0010_0002),
+            "s2_31dx_fstp_m32fp_historical_ze" => ("ffff7fff", 0x4d04, 0xffff, 0x0010_0004),
+            "s2_31dx_fst_m64fp_historical_ze" => ("ffffffffffffef7f", 0x4504, 0xfffc, 0x0010_0002),
+            "s2_31dx_fstp_m64fp_historical_ze" => ("ffffffffffffefff", 0x4d04, 0xffff, 0x0010_0004),
+            _ => unreachable!(),
+        };
+        assert_eq!(output.state.rip, HexU64(expected_rip));
+        assert_eq!(count(&result), input.fixture.instruction_budget);
+        assert_eq!(x87.status_word, HexU64(expected_status));
+        assert_eq!(x87.status_word.get() & 0x0004, 0x0004);
+        assert_eq!(x87.status_word.get() & 0x80c0, 0);
+        assert_eq!(x87.tag_word, HexU64(expected_tag_word));
+        assert_eq!(
+            x87.registers,
+            input.fixture.initial_state.x87.as_ref().unwrap().registers
+        );
+        assert_eq!(x87.data_pointer, HexU64(0x300004));
+        assert_eq!(x87.instruction_pointer, input.fixture.initial_state.rip);
+        let initial_rax = input.fixture.initial_state.gpr[0].get();
+        assert_eq!(
+            output.state.gpr[0].get(),
+            if expected_tag_word == 0xffff {
+                (initial_rax & !0xffff) | expected_status
+            } else {
+                initial_rax
+            }
+        );
+        let stack = output
+            .memory
+            .iter()
+            .find(|region| region.region_id == "stack")
+            .unwrap();
+        assert_eq!(&stack.bytes_hex[8..8 + store_hex.len()], store_hex);
+        assert_eq!(
+            input
+                .fixture
+                .initial_state
+                .x87
+                .as_ref()
+                .unwrap()
+                .status_word
+                .get()
+                & 4,
+            4
+        );
+
+        let (_, jit) = run(fixture, "jit", 4);
+        assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(jit.snapshot, Observation::Unavailable { .. }));
+        assert!(matches!(
+            jit.instructions_executed,
+            Observation::Unavailable { .. }
+        ));
+    }
+}
+
+#[test]
+fn x87_store_schema_does_not_accept_ze_only_as_an_unsupported_reason() {
+    for (fixture, opcode) in S2_31DX_M32_FIXTURES
+        .into_iter()
+        .chain(S2_31DX_M64_FIXTURES)
+        .zip(["d910", "d918", "dd10", "dd18"])
+    {
+        let mut unsupported = Fixture::from_json(fixture).unwrap().fixture;
+        let code = unsupported
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.initial_bytes_hex = opcode.into();
+        code.comparison_mask_hex = "ffff".into();
+        code.length = 2;
+        unsupported.instruction_budget = 1;
+        unsupported.expected_exit = ExpectedExit::Unsupported;
+        unsupported.stop_rip = None;
+        assert!(unsupported.validate().is_err());
+
+        let x87 = unsupported.initial_state.x87.as_mut().unwrap();
+        x87.status_word = HexU64(x87.status_word.get() | 0x8000);
+        assert!(
+            unsupported.validate().is_ok(),
+            "{}",
+            unsupported.validate().unwrap_err()
+        );
     }
 }
 
