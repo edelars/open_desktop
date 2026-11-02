@@ -8111,7 +8111,7 @@ mod tests {
                 .unwrap();
             assert_eq!(block.source_bytes(), source);
             assert_eq!(block.site().operand().index, Some(od_isa::Register::Rax));
-            assert_eq!(block.site().operand().scale, scale);
+            assert_eq!(u64::from(block.site().operand().scale), scale);
             assert_eq!(block.site().operand().displacement, 13);
             assert_eq!(block.site().next_rip(), entry + 7);
             assert_eq!(
@@ -8394,7 +8394,7 @@ mod tests {
 
         drop(published);
         for (sib, scale) in [(0x45_u8, 2_u64), (0x85, 4), (0xc5, 8)] {
-            let mut source = [0x8b, 0x04, sib, 0, 0, 0, 0];
+            let mut source = [0x8b, 0x04, sib, 0xfe, 0xff, 0xff, 0xff];
             let block = od_jit::memory_load_v2::compile_ir_memory_dword_load_block_v2(
                 CodeView::new(entry, &source).unwrap(),
                 entry,
@@ -8403,18 +8403,10 @@ mod tests {
             let published = PublishedCode::publish_ir_memory_dword_load_v2(&block).unwrap();
             for (rax, expected_fault) in [
                 (
-                    0x0000_8000_0000_0000 / scale,
+                    0x0000_8000_0000_0000 / scale + 1,
                     "noncanonical start",
                 ),
-                (
-                    0x0000_7fff_ffff_fffe / scale
-                        + if 0x0000_7fff_ffff_fffe % scale != 0 {
-                            1
-                        } else {
-                            0
-                        },
-                    "canonical boundary crossing",
-                ),
+                (0x0000_8000_0000_0000 / scale, "canonical boundary crossing"),
             ] {
                 let mut state = od_isa::LongModeState {
                     rip: entry,
