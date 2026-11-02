@@ -1088,6 +1088,11 @@ fn is_checked_dword_load_address(
                 && i32::try_from(operand.displacement).is_ok())
             || (instruction_length == 6
                 && matches!(operand.base, AddressBase::NextRip)
+                && i32::try_from(operand.displacement).is_ok())
+            || (instruction_length == 7
+                && matches!(operand.base, AddressBase::None)
+                && operand.index.is_none()
+                && operand.scale == 1
                 && i32::try_from(operand.displacement).is_ok()));
     let address32_profile = operand.address_size == od_isa::OperandSize::Dword
         && ((matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
