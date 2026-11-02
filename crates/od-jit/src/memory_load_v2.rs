@@ -1053,7 +1053,7 @@ fn checked_dword_load_metadata_v2(
 }
 
 /// Compile exact `89 03`, `89 00`, `89 04 0B`, `89 04 4B`, `89 04 8B`,
-/// `89 04 CB`, `89 44 0B/4B/8B/CB ib`, `89 84 0B/4B/8B/CB id`, `89 43 ib`, `89 83 id`, `89 05 id`, `89 04 05 id`
+/// `89 04 CB`, `89 44 0B/4B/8B/CB ib`, `89 84 0B/4B/8B/CB id`, `89 43 ib`, `89 80 id`, `89 83 id`, `89 05 id`, `89 04 05 id`
 /// (`MOV [RIP+disp32],EAX`), `67 89 03` (`MOV [EBX],EAX`),
 /// `67 89 04 0B/4B/8B/CB` (`MOV [EBX+ECX*scale],EAX`), `67 89 43 ib`
 /// (`MOV [EBX+disp8],EAX`), `67 89 44 0B/4B/8B/CB ib`
@@ -1130,6 +1130,7 @@ pub fn compile_ir_memory_dword_store_block_v2(
         && !(bytes.len() == 3 && bytes[..2] == [0x89, 0x43])
         && !(bytes.len() == 3 && bytes[..2] == [0x89, 0x40])
         && !(bytes.len() == 3 && bytes[..2] == [0x89, 0x45])
+        && !(bytes.len() == 6 && bytes[..2] == [0x89, 0x80])
         && !(bytes.len() == 6 && bytes[..2] == [0x89, 0x83])
         && !(bytes.len() == 6 && bytes[..2] == [0x89, 0x85])
         && !(bytes.len() == 6 && bytes[..2] == [0x89, 0x05])

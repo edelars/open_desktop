@@ -465,6 +465,7 @@ impl PublishedCode {
             && !(source.len() == 3 && source[..2] == [0x89, 0x43])
             && !(source.len() == 3 && source[..2] == [0x89, 0x40])
             && !(source.len() == 3 && source[..2] == [0x89, 0x45])
+            && !(source.len() == 6 && source[..2] == [0x89, 0x80])
             && !(source.len() == 6 && source[..2] == [0x89, 0x83])
             && !(source.len() == 6 && source[..2] == [0x89, 0x85])
             && !(source.len() == 6 && source[..2] == [0x89, 0x05]))
