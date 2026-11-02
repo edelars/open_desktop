@@ -21700,6 +21700,6 @@ Validation: `od-isa` 1,824; `od-testkit` 455; runner 118 unit + 495 fixture test
 После переноса обоих срезов и clean Sol/high reviews в main прошли `od-isa`
 1,826, `od-testkit` 455, runner 118 unit + 495 fixture tests. Workspace
 all-target offline check, formatting, layout и `git diff --check` прошли.
-Graphify AST refresh завершился с 11,367 nodes, 24,629 edges и 337
+Graphify AST refresh завершился с 11,368 nodes, 24,630 edges и 336
 communities. В runner DIVSS дополнительно проверены 5,120 raw-oracle
 комбинаций. Физическая x86-проверка не выполнялась.
