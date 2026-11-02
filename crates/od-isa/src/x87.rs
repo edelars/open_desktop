@@ -1109,7 +1109,8 @@ pub fn multiply_finite_to_normal_binary80_precision_with_diagnostics(
 ///
 /// Inputs may have either sign and Normal, Subnormal, or PseudoDenormal
 /// provenance when their normalized significands have bit 63 set. Exact
-/// alignment is bounded to exponent gaps through 64. The exact normalized
+/// alignment is bounded to exponent gaps through 64; wider gaps use the
+/// existing quotient-tail bridge and are always inexact. The exact normalized
 /// result exponent and rounded result must both remain normal finite binary80.
 /// This helper defines no x87 control-word, status, exception, or instruction
 /// behavior and does not extend the domain of `add_finite_to_binary80`.
@@ -1139,7 +1140,33 @@ pub fn add_finite_to_normal_binary80_precision_with_diagnostics(
 
     let gap = (i64::from(lhs.exponent) - i64::from(rhs.exponent)).unsigned_abs();
     if gap > 64 {
-        return None;
+        let (sign, exponent, quotient, tail) =
+            crate::finite_arithmetic::finite_large_gap_rounding_bridge(
+                lhs.sign,
+                lhs.significand,
+                lhs.exponent,
+                rhs.sign,
+                rhs.significand,
+                rhs.exponent,
+            )?;
+        if !(-16382..=16383).contains(&exponent) {
+            return None;
+        }
+
+        let (remainder, denominator) = tail.representative();
+        let truncated = u128::from(quotient >> (64 - precision));
+        let rounded =
+            round_quotient_to_precision(sign, quotient, remainder, denominator, precision, mode)?;
+        let value = pack_normal_rounded_significand(sign, exponent, rounded, precision)?;
+        if value.classify() != X87Binary80Class::Normal {
+            return None;
+        }
+
+        return Some(AddFiniteToNormalBinary80PrecisionResult {
+            value,
+            inexact: true,
+            incremented: rounded > truncated,
+        });
     }
 
     let (sign, exponent, magnitude) = crate::finite_arithmetic::add_finite_aligned(
@@ -5838,15 +5865,19 @@ mod tests {
             raw_finite(0x4000, high, false),
             "same-sign carry normalizes the exact sum"
         );
-        assert!(
-            add_finite_to_normal_binary80_precision_with_diagnostics(
-                make(65, high, false, X87Binary80Class::Normal),
-                make(0, high, false, X87Binary80Class::Normal),
-                Nearest,
-                64,
-            )
-            .is_none()
+        let gap65 = add_finite_to_normal_binary80_precision_with_diagnostics(
+            make(65, high, false, X87Binary80Class::Normal),
+            make(0, high, false, X87Binary80Class::Normal),
+            Nearest,
+            64,
+        )
+        .unwrap();
+        assert_eq!(
+            gap65.value.to_bytes(),
+            raw_finite(0x4040, high, false).to_bytes()
         );
+        assert!(gap65.inexact);
+        assert!(!gap65.incremented);
 
         // At gap 64 the shared exact core must preserve its full-u128 maximum.
         let max_gap_sum = add_finite_to_normal_binary80_precision_with_diagnostics(
@@ -6191,6 +6222,218 @@ mod tests {
                 53,
             )
             .is_some()
+        );
+    }
+
+    #[test]
+    fn finite_addition_direct_precision_rounds_large_gaps_at_all_precisions() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let make = |exponent, significand, sign, source_class| {
+            finite(exponent, significand, sign, source_class)
+        };
+        let high = 1_u64 << 63;
+        let max = u64::MAX;
+        let modes = [Nearest, Zero, Up, Down];
+        let precisions = [24, 53, 64];
+
+        // Gap 64 remains on exact alignment, including exact/inexact diagnostics.
+        let gap64_regression = add_finite_to_normal_binary80_precision_with_diagnostics(
+            make(64, high, false, X87Binary80Class::Normal),
+            make(0, high, false, X87Binary80Class::Normal),
+            Nearest,
+            64,
+        )
+        .unwrap();
+        assert_eq!(
+            gap64_regression.value.to_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 0x3f, 0x40]
+        );
+        assert!(gap64_regression.inexact);
+        assert!(!gap64_regression.incremented);
+
+        // Exercise both operand orders, signs, all requested precisions and
+        // all modes across the bridge's half-boundary and representative gaps.
+        for gap in [65, 66, 127, 128] {
+            for dominant_significand in [high, high + 1] {
+                for dominant_sign in [false, true] {
+                    for small_significand in [high, high + 1] {
+                        for same_sign in [false, true] {
+                            let dominant = make(
+                                0,
+                                dominant_significand,
+                                dominant_sign,
+                                X87Binary80Class::Normal,
+                            );
+                            let small = make(
+                                -gap,
+                                small_significand,
+                                dominant_sign ^ !same_sign,
+                                X87Binary80Class::Normal,
+                            );
+                            for precision in precisions {
+                                for mode in modes {
+                                    let forward =
+                                        add_finite_to_normal_binary80_precision_with_diagnostics(
+                                            dominant, small, mode, precision,
+                                        );
+                                    let reverse =
+                                        add_finite_to_normal_binary80_precision_with_diagnostics(
+                                            small, dominant, mode, precision,
+                                        );
+                                    assert_eq!(forward, reverse);
+                                    let result = forward.expect("normal large-gap sum");
+                                    assert!(result.inexact);
+                                    assert_eq!(result.value.classify(), X87Binary80Class::Normal);
+                                    let dominant_result =
+                                        add_finite_to_binary80(dominant, small, mode)
+                                            .expect("legacy p64 result");
+                                    if precision == 64 {
+                                        assert_eq!(result.value, dominant_result);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // For p<64, a discarded quotient at the midpoint plus any positive
+        // bridge tail is strictly above halfway, even when T is even.
+        for precision in [24_u32, 53] {
+            let h = 64 - precision;
+            let half = 1_u64 << (h - 1);
+            let first_retained = 1_u64 << (precision - 1);
+            for retained in [first_retained, first_retained + 1] {
+                let base = retained << h;
+                for delta in [half - 1, half, half + 1] {
+                    let dominant_sig = base + delta;
+                    let lhs = make(0, dominant_sig, false, X87Binary80Class::Normal);
+                    let rhs = make(-65, high, false, X87Binary80Class::Normal);
+                    let result = add_finite_to_normal_binary80_precision_with_diagnostics(
+                        lhs, rhs, Nearest, precision,
+                    )
+                    .unwrap();
+                    let increment = delta >= half;
+                    let expected_significand = ((retained + u64::from(increment)) << h) as u64;
+                    assert_eq!(
+                        result.value.to_bytes(),
+                        raw_finite(0x3fff, expected_significand, false).to_bytes(),
+                        "precision={precision}, retained={retained:#x}, delta={delta:#x}"
+                    );
+                    assert!(result.inexact);
+                    assert_eq!(result.incremented, increment);
+                }
+            }
+        }
+
+        // A power-of-two dominant term at gap 65 exposes exact-half, below-half
+        // and above-half p64 tails. A gap of 66 is strictly above half.
+        for (gap, small_significand, nearest_increments) in
+            [(65, high, true), (65, high + 1, false), (66, high, true)]
+        {
+            for sign in [false, true] {
+                let dominant = make(0, high, sign, X87Binary80Class::Normal);
+                let small = make(-gap, small_significand, !sign, X87Binary80Class::Normal);
+                for mode in modes {
+                    let result = add_finite_to_normal_binary80_precision_with_diagnostics(
+                        dominant, small, mode, 64,
+                    )
+                    .unwrap();
+                    let increment = match mode {
+                        Nearest => nearest_increments,
+                        Zero => false,
+                        Up => !sign,
+                        Down => sign,
+                    };
+                    let expected = if increment {
+                        raw_finite(0x3fff, high, sign)
+                    } else {
+                        raw_finite(0x3ffe, max, sign)
+                    };
+                    assert_eq!(result.value.to_bytes(), expected.to_bytes());
+                    assert!(result.inexact);
+                    assert_eq!(result.incremented, increment);
+                }
+            }
+        }
+
+        // The maximum raw binary80 exponent distance is 32828: max normal
+        // versus min subnormal after finite normalization. Directed negative
+        // rounding carries out of range and is rejected.
+        let max_normal = raw_finite(0x7ffe, max, true).normalize_finite().unwrap();
+        let min_subnormal = X87Binary80::from_bytes([1, 0, 0, 0, 0, 0, 0, 0, 0, 0x80])
+            .normalize_finite()
+            .unwrap();
+        assert_eq!(max_normal.exponent - min_subnormal.exponent, 32_828);
+        let max_rounded = add_finite_to_normal_binary80_precision_with_diagnostics(
+            max_normal,
+            min_subnormal,
+            Up,
+            64,
+        )
+        .unwrap();
+        assert_eq!(
+            max_rounded.value.to_bytes(),
+            raw_finite(0x7ffe, max, true).to_bytes()
+        );
+        assert!(max_rounded.inexact);
+        assert!(!max_rounded.incremented);
+        assert!(
+            add_finite_to_normal_binary80_precision_with_diagnostics(
+                max_normal,
+                make(-16445, high, true, X87Binary80Class::Subnormal),
+                Down,
+                64,
+            )
+            .is_none()
+        );
+
+        for dominant_significand in [high, high + 1, max] {
+            for dominant_sign in [false, true] {
+                for small_sign in [false, true] {
+                    let dominant = make(
+                        16383,
+                        dominant_significand,
+                        dominant_sign,
+                        X87Binary80Class::Normal,
+                    );
+                    let small = make(-16445, high, small_sign, X87Binary80Class::Subnormal);
+                    for precision in precisions {
+                        for mode in modes {
+                            let result = add_finite_to_normal_binary80_precision_with_diagnostics(
+                                dominant, small, mode, precision,
+                            );
+                            if let Some(result) = result {
+                                assert!(result.inexact);
+                                assert_eq!(result.value.classify(), X87Binary80Class::Normal);
+                            }
+                            if precision == 64 {
+                                assert_eq!(
+                                    result.map(|value| value.value),
+                                    add_finite_to_binary80(dominant, small, mode),
+                                    "legacy p64 max-gap match: sign={dominant_sign}, mode={mode:?}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Checked arithmetic remains bounded for synthetic i32 exponents.
+        assert!(
+            add_finite_to_normal_binary80_precision_with_diagnostics(
+                make(i32::MAX, high, false, X87Binary80Class::Normal),
+                make(i32::MAX - 65, high, false, X87Binary80Class::Normal),
+                Nearest,
+                64,
+            )
+            .is_none()
         );
     }
 
