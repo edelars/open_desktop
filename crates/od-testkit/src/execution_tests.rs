@@ -113,7 +113,7 @@ fn fmul_sti_st0_runner_checks_every_top_and_destination() {
 }
 
 #[test]
-fn fdiv_st0_sti_runner_checks_every_top_and_source_and_inexact_rejection() {
+fn fdiv_st0_sti_runner_checks_every_top_and_source_and_inexact_rounding() {
     fn normal(significand: u64, exponent: u16, negative: bool) -> [u8; 10] {
         let mut bytes = [0; 10];
         bytes[..8].copy_from_slice(&significand.to_le_bytes());
@@ -175,17 +175,24 @@ fn fdiv_st0_sti_runner_checks_every_top_and_source_and_inexact_rejection() {
     state.rip = 0x1000;
     let mut x87 = od_isa::state::X87State::fixture_seed();
     x87.control_word = 0x037f;
-    x87.status_word = 0;
+    x87.status_word = (1 << 8) | (1 << 9) | (1 << 10) | (1 << 14);
     x87.tag_word = 0xfff0;
-    x87.registers[0] = normal(0x8000_0000_0000_0000, 0x3fff, false);
-    x87.registers[1] = normal(0xc000_0000_0000_0000, 0x4000, false);
+    x87.registers[0] = normal(0x8000_0000_0000_0000, 0x3ffe, false); // 0.5
+    x87.registers[1] = normal(0xc000_0000_0000_0000, 0x3fff, false); // 1.5
     state.x87 = Some(x87);
     let before = state.clone();
     let mut code = memory(&[0xd8, 0xf1], state.rip);
-    let result = run(&mut state, &mut code, config(1, None), || false);
-    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xd8 });
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(state, before);
+    let result = run(&mut state, &mut code, config(1, Some(0x1002)), || false);
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    let mut expected = before;
+    let expected_x87 = expected.x87.as_mut().unwrap();
+    expected_x87.registers[0] = normal(0xaaaa_aaaa_aaaa_aaab, 0x3ffd, false);
+    expected_x87.status_word =
+        (expected_x87.status_word & !((1 << 5) | (1 << 9))) | (1 << 5) | (1 << 9);
+    expected_x87.instruction_pointer = 0x1000;
+    expected.rip = 0x1002;
+    assert_eq!(state, expected);
 
     let mut state = LongModeState::default();
     state.rip = 0x1200;
