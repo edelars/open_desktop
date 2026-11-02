@@ -12317,6 +12317,30 @@ tiny-result boundary separately. See the [Stage 2 plan](../plans/STAGE_2.md#s2-3
 [fixture](../../tests/fixtures/x86/stage2/s2_37d_rcpps_register.case.json), and
 [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
 
+## Local S2-37dy: memory RCPPS at `[RAX]`
+
+The schema-v2 diagnostic profile `s2-long-rcpps-memory-rax-v1` admits only the
+three-byte Long64 legacy encoding `0F 53 00`. It requires SSE feature bit 25,
+CR0.EM=0, CR4.OSFXSR=1, and then checks CR0.TS before any #NM result. The full
+instruction fetch precedes these checks. MXCSR admission is strict: supported
+bits only, all six exception masks set, DAZ=FTZ=0; RC and prior sticky flags
+may have any values.
+
+The instruction performs exactly one aligned read16 from `[RAX]`; alignment is
+mandatory even when RFLAGS.AC is set. RAX and RAX+15 must be checked canonical48
+addresses. The four little-endian memory lanes are transformed by the
+deterministic local `Binary32::reciprocal_sse_raw()` policy and replace all of
+XMM0. It does not read XMM0 as an arithmetic operand, modify any other vector
+register, or alter any MXCSR bit. Gate, address, and memory-read failures leave
+CPU state uncommitted. JIT, native, generic, fragment, and C ABI routes remain
+closed.
+
+The profile inherits the local exact-reciprocal/nearest-ties-even/flush policy;
+it does not claim bitwise equality with physical RCPPS. ISSUE-025 remains open
+because the published threshold inequalities overlap near the normal/subnormal
+result boundary. Normal outputs are checked against the `3/8192` error envelope;
+boundary cases assert only the local reference policy. See the [S2-37dy plan](../plans/STAGE_2.md#s2-37dy--local-long64-memory-legacy-rcpps-at-rax), [implementation report](../reports/S2_37DY_RCPPS_MEMORY.md), [fixture](../../tests/fixtures/x86/stage2/s2_37dy_rcpps_m128_memory_rhs.case.json), and [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
+
 ## Local S2-37e register-only MINSS with masked status
 
 The schema-v2 profile `s2-long-minss-reg-masked-v1` admits exactly one Long64

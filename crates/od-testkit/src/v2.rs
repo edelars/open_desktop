@@ -606,6 +606,8 @@ pub enum Profile {
     LongRsqrtpsRegV1,
     #[serde(rename = "s2-long-rcpps-reg-v1")]
     LongRcppsRegV1,
+    #[serde(rename = "s2-long-rcpps-memory-rax-v1")]
+    LongRcppsMemoryRaxV1,
     #[serde(rename = "s2-long-minss-reg-masked-v1")]
     LongMinssMaskedRegV1,
     #[serde(rename = "s2-long-minsd-reg-masked-v1")]
@@ -1501,6 +1503,7 @@ impl IntegerState {
                     | Profile::LongMinpdMemoryRaxV1
                     | Profile::LongMinpsMemoryRaxV1
                     | Profile::LongSqrtpsMemoryRaxV1
+                    | Profile::LongRcppsMemoryRaxV1
                     | Profile::LongAddpsMemoryRaxV1
                     | Profile::LongSubpsMemoryRaxV1
                     | Profile::LongMulpsMemoryRaxV1
@@ -1626,6 +1629,7 @@ impl IntegerState {
                     | Profile::LongMinpdMemoryRaxV1
                     | Profile::LongMinpsMemoryRaxV1
                     | Profile::LongSqrtpsMemoryRaxV1
+                    | Profile::LongRcppsMemoryRaxV1
                     | Profile::LongAddpsMemoryRaxV1
                     | Profile::LongSubpsMemoryRaxV1
                     | Profile::LongMulpsMemoryRaxV1
@@ -1898,6 +1902,7 @@ impl IntegerState {
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubssRegistersV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongAddpsMemoryRaxV1
                 | Profile::LongSubpsMemoryRaxV1
                 | Profile::LongMulpsMemoryRaxV1
@@ -2167,6 +2172,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryRaxV1
                 | Profile::LongMinpsMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongAddpsMemoryRaxV1
                 | Profile::LongSubpsMemoryRaxV1
                 | Profile::LongMulpsMemoryRaxV1
@@ -2826,6 +2832,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryRaxV1
                 | Profile::LongMinpsMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongAddpsMemoryRaxV1
                 | Profile::LongSubpsMemoryRaxV1
                 | Profile::LongMulpsMemoryRaxV1
@@ -3092,6 +3099,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryRaxV1
                 | Profile::LongMinpsMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongAddpsMemoryRaxV1
                 | Profile::LongSubpsMemoryRaxV1
                 | Profile::LongMulpsMemoryRaxV1
@@ -3367,6 +3375,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryRaxV1
                 | Profile::LongMinpsMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongAddpsMemoryRaxV1
                 | Profile::LongSubpsMemoryRaxV1
                 | Profile::LongMulpsMemoryRaxV1
@@ -3649,6 +3658,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryRaxV1
                 | Profile::LongMinpsMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongAddpsMemoryRaxV1
                 | Profile::LongSubpsMemoryRaxV1
                 | Profile::LongMulpsMemoryRaxV1
@@ -4078,6 +4088,7 @@ impl IntegerState {
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongAddpsMemoryRaxV1
                 | Profile::LongSubpsMemoryRaxV1
                 | Profile::LongMulpsMemoryRaxV1
@@ -4122,6 +4133,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryRaxV1
                 | Profile::LongMinpsMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongAddpsMemoryRaxV1
                 | Profile::LongSubpsMemoryRaxV1
                 | Profile::LongMulpsMemoryRaxV1
@@ -4428,6 +4440,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryRaxV1
                 | Profile::LongMinpsMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongAddpsMemoryRaxV1
                 | Profile::LongSubpsMemoryRaxV1
                 | Profile::LongMulpsMemoryRaxV1
@@ -4713,6 +4726,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryRaxV1
                 | Profile::LongMinpsMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongAddpsMemoryRaxV1
                 | Profile::LongSubpsMemoryRaxV1
                 | Profile::LongMulpsMemoryRaxV1
@@ -4952,6 +4966,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryRaxV1
                 | Profile::LongMinpsMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongAddpsMemoryRaxV1
                 | Profile::LongSubpsMemoryRaxV1
                 | Profile::LongMulpsMemoryRaxV1
@@ -5378,6 +5393,9 @@ pub struct Fixture {
     pub minps_memory_rax_controls: Option<MinpsMemoryRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqrtps_memory_rax_controls: Option<SqrtpsMemoryRaxControlSnapshot>,
+    /// Immutable SSE gates for exact S2-37dy RCPPS m128 profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rcpps_memory_rax_controls: Option<RcppsMemoryRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub addps_memory_rax_controls: Option<AddpsMemoryRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -5819,6 +5837,7 @@ pub struct MinpsMemoryRaxControlSnapshot {
     pub cr4_osfxsr: bool,
 }
 pub type SqrtpsMemoryRaxControlSnapshot = CmpssMemoryRaxControlSnapshot;
+pub type RcppsMemoryRaxControlSnapshot = CmpssMemoryRaxControlSnapshot;
 pub type AddpsMemoryRaxControlSnapshot = CmpssMemoryRaxControlSnapshot;
 pub type SqrtssMemoryRaxControlSnapshot = CmpssMemoryRaxControlSnapshot;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -12026,6 +12045,100 @@ impl Fixture {
                 "only valid for MINPS m128 profile",
             ));
         }
+        if self.profile != Profile::LongRcppsMemoryRaxV1 && self.rcpps_memory_rax_controls.is_some()
+        {
+            return Err(invalid(
+                "rcpps_memory_rax_controls",
+                "only valid for RCPPS m128 profile",
+            ));
+        }
+        if self.profile == Profile::LongRcppsMemoryRaxV1 {
+            let controls = self.rcpps_memory_rax_controls.ok_or_else(|| {
+                invalid(
+                    "rcpps_memory_rax_controls",
+                    "required by RCPPS m128 profile",
+                )
+            })?;
+            let code = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by RCPPS m128 profile"))?;
+            let data = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "data")
+                .ok_or_else(|| invalid("memory.data", "required by RCPPS m128 profile"))?;
+            let start = self.initial_state.rip.get();
+            let source = self.initial_state.gpr[0].get();
+            let bytes = decode_bytes(&code.initial_bytes_hex)?;
+            if self.cmpss_memory_rax_controls.is_some()
+                || self.cmpsd_memory_rax_controls.is_some()
+                || self.cmppd_memory_rax_controls.is_some()
+                || self.cmpps_memory_rax_controls.is_some()
+                || self.minsd_memory_rax_controls.is_some()
+                || self.minsd_unmasked_controls.is_some()
+                || self.maxsd_memory_rax_controls.is_some()
+                || code.guest_address.get() != start
+                || code.length != 3
+                || !code.permissions.execute
+                || bytes != [0x0f, 0x53, 0x00]
+                || self.memory.len() != 2
+                || data.guest_address.get() != source
+                || data.length != 16
+                || !data.permissions.read
+                || data.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(3)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory",
+                    "RCPPS m128 requires exact 0F 53 00, one code/data mapping, budget 1, and stop RIP entry+3",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| invalid("state.sse", "required by RCPPS m128 profile"))?
+                .mxcsr
+                .get();
+            if mxcsr & !0xffbf != 0
+                || mxcsr & ((1 << 6) | (1 << 15)) != 0
+                || mxcsr & 0x1f80 != 0x1f80
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "RCPPS m128 requires supported MXCSR bits, all six exception masks set, DAZ=0, and FTZ=0",
+                ));
+            }
+            let gate = !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr;
+            let nm = !gate && controls.cr0_ts;
+            let last = source.checked_add(15);
+            let canonical = |a: u64| a >> 47 == 0 || a >> 47 == 0x1ffff;
+            let span = last.is_none_or(|last| !canonical(source) || !canonical(last));
+            let aligned = source & 0xf == 0;
+            let expected = if gate || nm || !aligned || span {
+                ExpectedExit::Exception
+            } else {
+                ExpectedExit::StopAddress
+            };
+            if self.expected_exit != expected {
+                return Err(invalid(
+                    "expected_exit",
+                    "must reflect RCPPS m128 gates, mandatory alignment, and canonical span",
+                ));
+            }
+        } else if self.rcpps_memory_rax_controls.is_some() {
+            return Err(invalid(
+                "rcpps_memory_rax_controls",
+                "only valid for RCPPS m128 profile",
+            ));
+        }
         if self.profile == Profile::LongSqrtpsMemoryRaxV1 {
             let controls = self.sqrtps_memory_rax_controls.ok_or_else(|| {
                 invalid(
@@ -17849,6 +17962,7 @@ impl Fixture {
             minpd_memory_rax_controls: None,
             minps_memory_rax_controls: None,
             sqrtps_memory_rax_controls: None,
+            rcpps_memory_rax_controls: None,
             addps_memory_rax_controls: None,
             sqrtss_memory_rax_controls: None,
             sqrtpd_memory_rax_controls: None,
@@ -18108,6 +18222,8 @@ pub struct Snapshot {
     pub minps_memory_rax_controls: Option<MinpsMemoryRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqrtps_memory_rax_controls: Option<SqrtpsMemoryRaxControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rcpps_memory_rax_controls: Option<RcppsMemoryRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub addps_memory_rax_controls: Option<AddpsMemoryRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -19718,6 +19834,19 @@ impl RunResult {
                         "only valid for MINPS m128 profile",
                     ));
                 }
+                if self.profile == Profile::LongRcppsMemoryRaxV1 {
+                    if snapshot.rcpps_memory_rax_controls.is_none() {
+                        return Err(invalid(
+                            "snapshot.rcpps_memory_rax_controls",
+                            "required by RCPPS m128 profile",
+                        ));
+                    }
+                } else if snapshot.rcpps_memory_rax_controls.is_some() {
+                    return Err(invalid(
+                        "snapshot.rcpps_memory_rax_controls",
+                        "only valid for RCPPS m128 profile",
+                    ));
+                }
                 if self.profile == Profile::LongSqrtpsMemoryRaxV1 {
                     if snapshot.sqrtps_memory_rax_controls.is_none() {
                         return Err(invalid(
@@ -19808,6 +19937,7 @@ impl RunResult {
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongAddpsMemoryRaxV1
                 | Profile::LongSubpsMemoryRaxV1
                 | Profile::LongMulpsMemoryRaxV1
@@ -21155,6 +21285,21 @@ impl RunResult {
             }
             if loaded.fixture.profile == Profile::LongMinpsMemoryRaxV1 {
                 validate_minps_memory_rax_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.rcpps_memory_rax_controls,
+                value.rcpps_memory_rax_controls,
+            ) {
+                (Profile::LongRcppsMemoryRaxV1, Some(input), Some(output)) if input == output => {}
+                (Profile::LongRcppsMemoryRaxV1, _, _) => {
+                    return Err(FormatError::CaseMismatch("rcpps_memory_rax_controls"));
+                }
+                (_, None, None) => {}
+                _ => return Err(FormatError::CaseMismatch("rcpps_memory_rax_controls")),
+            }
+            if loaded.fixture.profile == Profile::LongRcppsMemoryRaxV1 {
+                validate_rcpps_memory_rax_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
@@ -40757,6 +40902,200 @@ fn validate_minps_memory_rax_result(
             && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
         (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
         _ => return Err(FormatError::CaseMismatch("MINPS m128 outcome/exception")),
+    }
+    Ok(())
+}
+
+fn independent_rcpps_memory_lane(bits: u32) -> u32 {
+    let sign = bits & 0x8000_0000;
+    let exponent = (bits >> 23) & 0xff;
+    let fraction = bits & 0x007f_ffff;
+    if exponent == 0 {
+        return sign | 0x7f80_0000;
+    }
+    if exponent == 0xff {
+        if fraction == 0 {
+            return sign;
+        }
+        return if fraction & 0x0040_0000 != 0 {
+            bits
+        } else {
+            bits | 0x0040_0000
+        };
+    }
+
+    // For normal x = significand * 2^(e-23), 1/x has a 24-bit
+    // significand equal to round-even(2^47 / significand). This is an
+    // integer/rational reference independent of the ISA implementation.
+    let significand = (1u64 << 23) | u64::from(fraction);
+    let numerator = 1u64 << 47;
+    let quotient = numerator / significand;
+    let remainder = numerator % significand;
+    let twice_remainder = remainder * 2;
+    let rounded = quotient
+        + u64::from(
+            twice_remainder > significand || (twice_remainder == significand && quotient & 1 != 0),
+        );
+    let unbiased = 126i32 - exponent as i32;
+    let (rounded, unbiased) = if rounded == (1 << 24) {
+        (1 << 23, unbiased + 1)
+    } else {
+        (rounded, unbiased)
+    };
+    if unbiased < -126 {
+        return sign;
+    }
+    if unbiased > 127 {
+        return sign | 0x7f80_0000;
+    }
+    let result_exponent = (unbiased + 127) as u32;
+    sign | (result_exponent << 23) | ((rounded as u32) & 0x007f_ffff)
+}
+
+fn independent_rcpps_error_within_envelope(input: u32, output: u32) -> bool {
+    let input_exp = (input >> 23) & 0xff;
+    let output_exp = (output >> 23) & 0xff;
+    if input_exp == 0 || input_exp == 0xff || output_exp == 0 || output_exp == 0xff {
+        return true;
+    }
+    if input >> 31 != output >> 31 {
+        return false;
+    }
+    let input_sig = (1u128 << 23) | u128::from(input & 0x007f_ffff);
+    let output_sig = (1u128 << 23) | u128::from(output & 0x007f_ffff);
+    let product = input_sig * output_sig;
+    let input_e = input_exp as i32 - 127;
+    let output_e = output_exp as i32 - 127;
+    let shift = 46 - input_e - output_e;
+    if !(0..=127).contains(&shift) {
+        return false;
+    }
+    let target = 1u128 << shift;
+    let difference = product.abs_diff(target);
+    difference * 8192 <= 3 * target
+}
+
+fn validate_rcpps_memory_rax_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .rcpps_memory_rax_controls
+        .ok_or(FormatError::CaseMismatch("rcpps_memory_rax_controls"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    if decode_bytes(&code.initial_bytes_hex)? != [0x0f, 0x53, 0x00] {
+        return Err(FormatError::CaseMismatch("RCPPS m128 encoding"));
+    }
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let data = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "data")
+        .ok_or(FormatError::CaseMismatch("memory.data"))?;
+    let rhs = decode_bytes(&data.initial_bytes_hex)?;
+    let mut expected_xmm = Vec::with_capacity(16);
+    for lane in 0..4 {
+        let raw = u32::from_le_bytes(
+            rhs[lane * 4..lane * 4 + 4]
+                .try_into()
+                .map_err(|_| FormatError::CaseMismatch("memory.data"))?,
+        );
+        let output = independent_rcpps_memory_lane(raw);
+        if !independent_rcpps_error_within_envelope(raw, output) {
+            return Err(FormatError::CaseMismatch(
+                "RCPPS m128 reciprocal error envelope",
+            ));
+        }
+        expected_xmm.extend_from_slice(&output.to_le_bytes());
+    }
+    let source = fixture.initial_state.gpr[0].get();
+    let gate = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let last = source.checked_add(15);
+    let canonical = |address: u64| address >> 47 == 0 || address >> 47 == 0x1ffff;
+    let span_fault = last.is_none_or(|end| !canonical(source) || !canonical(end));
+    let alignment_fault = source & 0xf != 0;
+    let fault = gate.or_else(|| (alignment_fault || span_fault).then_some(13));
+    if !matches!(
+        (fault, fixture.expected_exit),
+        (Some(_), ExpectedExit::Exception) | (None, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("RCPPS m128 expected exit"));
+    }
+    let mut expected = fixture.initial_state.clone();
+    if fault.is_none() {
+        let state_sse = expected
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        state_sse.xmm[0] = crate::memory::encode_bytes(&expected_xmm);
+        state_sse.mxcsr = initial_sse.mxcsr;
+        expected.rip = HexU64(
+            fixture
+                .initial_state
+                .rip
+                .get()
+                .checked_add(3)
+                .ok_or(FormatError::CaseMismatch("RCPPS m128 RIP overflow"))?,
+        );
+    }
+    let memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != memory
+    {
+        return Err(FormatError::CaseMismatch("RCPPS m128 output state"));
+    }
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(u64::from(fault.is_none())),
+        })
+    {
+        return Err(FormatError::CaseMismatch("RCPPS m128 retirement"));
+    }
+    match (fault, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == if vector == 13 {
+                    Observation::Available { value: HexU64(0) }
+                } else {
+                    Observation::Unavailable {
+                        reason: "exception has no architectural error code".into(),
+                    }
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("RCPPS m128 outcome/exception")),
     }
     Ok(())
 }

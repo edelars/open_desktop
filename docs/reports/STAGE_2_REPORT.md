@@ -22155,3 +22155,22 @@ and JIT/native denial. Validation totals and review results are recorded in the
 claimed. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37dx--masked-only-legacy-long64-divpd-xmm0m128-rax),
 [plan](../plans/STAGE_2.md#s2-37dx--masked-only-legacy-long64-divpd-xmm0m128-rax),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dx-divpd-xmm0m128-rax).
+
+## S2-37dy — RCPPS XMM0,m128 [RAX]
+
+Added a separate strict schema-v2 interpreter profile for exact legacy
+`0F 53 00`. It checks the SSE feature and CR0/CR4 gates before CR0.TS, then
+requires aligned canonical `[RAX,RAX+15]` and performs one read16. All four
+memory lanes feed the deterministic S2-36ab reference and replace all of XMM0.
+MXCSR admission remains strict, and accepted RC/sticky states are preserved
+without adding IE/DE/ZE or any other flags. JIT/native/generic/fragment/C ABI
+routes remain closed.
+
+The handwritten fixture poisons XMM0 and adjacent memory. Direct ISA coverage
+checks every signed subnormal leading position, signed zero/infinity, QNaN/SNaN
+sign and payload, tiny-boundary neighbors, all RC × sticky histories, exact
+decode, gate/address/read rollback and mandatory alignment with AC set. The
+independent schema-v2 integer/rational validator checks literal local bits and
+the `3/8192` relative-error envelope for normal outputs. Validation results and
+limitations are in the [standalone report](S2_37DY_RCPPS_MEMORY.md). No physical
+x86 acceptance is claimed; ISSUE-025 remains open. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37dy-memory-rcpps-at-rax), [plan](../plans/STAGE_2.md#s2-37dy--local-long64-memory-legacy-rcpps-at-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dy-local-legacy-rcpps-memory-profile).

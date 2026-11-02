@@ -85,6 +85,16 @@ universal tiny-result cutoff. ISSUE-025 remains open. Final Mac mini checks use
 the `3/8192` relative-error envelope for non-flushed normal outputs and handle
 the tiny-result boundary separately. See the [S2-37d plan](../../../../docs/plans/STAGE_2.md#s2-37d--local-long64-register-only-legacy-rcpps) and [ISSUE-025](../../../../docs/KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
 
+### S2-37dy local legacy RCPPS memory profile
+
+`s2_37dy_rcpps_m128_memory_rhs.case.json` is a handwritten schema-v2 fixture
+for exact `0F 53 00`, sourcing all four result lanes from one aligned m128 read
+at `[RAX]`. It uses memory lanes `2.0`, `-0`, `+∞`, and `-2`, with literal local
+results `0.5`, `-∞`, `+0`, and `-0.5`; poisoned XMM0 and adjacent-memory bytes
+check complete replacement and the read width. The deterministic S2-36ab
+reference defines these values. ISSUE-025 remains open, so the fixture makes no
+hardware-bit or universal tiny-result-boundary claim. See the [S2-37dy plan](../../../../docs/plans/STAGE_2.md#s2-37dy--local-long64-memory-legacy-rcpps-at-rax) and [ISSUE-025](../../../../docs/KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
+
 Байты написаны вручную по Intel SDM revision 093: Vol.2B `MOV—Move`,
 Vol.2A `ADD—Add`, Vol.2A §§2.1.5 и 2.2.1.2 (ModR/M/SIB и REX),
 Vol.1 §3.4.1.1 (GPR/subregister aliases). Нормативная ссылка:

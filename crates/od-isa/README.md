@@ -43,6 +43,13 @@ does not promise hardware-exact result bits. JIT/native remain closed, and
 physical validation is reserved for the combined Mac mini substage. See the
 [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-37d-register-only-rcpps).
 
+S2-37dy adds exact memory-only `0F 53 00` RCPPS from `[RAX]` as a separate
+profile. It requires an aligned 16-byte read and checked canonical48 endpoints,
+uses only the memory lanes, replaces all of XMM0, and preserves MXCSR for every
+accepted RC/sticky state. The deterministic helper and ISSUE-025 limitations
+remain the same as register RCPPS. JIT/native/generic routes stay closed. See
+the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-37dy-memory-rcpps-at-rax).
+
 S2-37m adds only exact Long64 `F3 0F E6 C1` CVTDQ2PD XMM0,XMM1 under a strict
 schema-v2 profile with explicit SSE2/CR0/CR4 gates. It converts two signed
 dwords to exact binary64, preserves MXCSR and unrelated state, and performs no

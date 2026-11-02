@@ -527,6 +527,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37b | Local-only Long64 legacy register RCPSS profile `s2-long-rcpss-reg-v1`, using S2-36ab raw helper; JIT/native closed | S2-34.1, S2-36ab; ISSUE-025; independent review |
 | [x] | S2-37c | Local-only Long64 legacy register RSQRTPS profile `s2-long-rsqrtps-reg-v1`, using S2-36ac per lane; JIT/native closed | S2-34.1, S2-36ac; independent review |
 | [x] | S2-37d | Local-only Long64 legacy register RCPPS profile `s2-long-rcpps-reg-v1`, using S2-36ab per lane; JIT/native closed | S2-34.1, S2-36ab; ISSUE-025; independent review |
+| [ ] | S2-37dy | Local-only Long64 legacy memory RCPPS `0F 53 00` at `[RAX]`; one aligned m128 read; strict MXCSR admission, unchanged MXCSR; JIT/native closed | S2-37d, S2-36ab; ISSUE-025; independent review |
 | [x] | S2-37e | Local-only Long64 legacy register MINSS profile `s2-long-minss-reg-masked-v1`; bounded masked IE/DE status only; JIT/native closed | S2-36z; independent review |
 | [x] | S2-37f | Local-only Long64 legacy register MAXSS profile `s2-long-maxss-reg-masked-v1`; reuses bounded masked IE/DE status; JIT/native closed | S2-37e, S2-38a; independent review |
 | [x] | S2-37g | Local-only Long64 legacy register MINPS profile `s2-long-minps-reg-masked-v1`; aggregates masked IE/DE sticky status across four lanes; JIT/native closed | S2-37e/f, S2-38a; independent review |
@@ -6811,6 +6812,33 @@ ISSUE-025 remains open: no universal hardware cutoff or exact helper-bit match
 is claimed around the normal/subnormal boundary. Final Mac mini validation
 checks the `3/8192` relative-error bound for non-flushed normal lanes and treats
 the ambiguous tiny-result boundary separately.
+
+#### S2-37dy — local Long64 memory legacy RCPPS at `[RAX]`
+
+Add schema-v2 diagnostic profile `s2-long-rcpps-memory-rax-v1` for exactly
+`0F 53 00`, with complete fetch, SSE feature bit 25, and CR0.EM/CR4.OSFXSR
+prerequisites checked before CR0.TS (#NM). The operation reads exactly one
+aligned 16-byte memory operand at RAX, requires both checked canonical48 span
+endpoints, and replaces all of XMM0 from those four actual memory lanes using
+`Binary32::reciprocal_sse_raw()`. Alignment is mandatory regardless of RFLAGS.AC.
+No destination or MXCSR state commits on gate, address, or read failure.
+
+Retain strict memory-profile MXCSR admission: supported bits only, all six
+exception masks set, DAZ=FTZ=0; accept any RC and old sticky flags. The operation
+does not add IE/DE/ZE or any other status bit and preserves the full MXCSR.
+Keep native, JIT, generic, fragment, and C ABI admission closed.
+
+Use an independent handwritten memory-RHS fixture with destination and adjacent
+memory canaries. Cover all signed subnormal significand-leading positions,
+signed zeros, infinities, QNaN/SNaN signs and payloads, normal reciprocal cases,
+and neighbors around the local tiny-result boundary. Validate normal outputs
+against independent integer/rational expectations and the `3/8192` relative
+error envelope; compare local boundary outputs only to S2-36ab policy. Exercise
+all RC values × all old sticky histories, strict profile/result validation,
+forged snapshots/backends, fetch and gate ordering, mandatory alignment,
+canonical span overflow, exactly one read16, and full rollback on read failure.
+ISSUE-025 stays open: do not infer a universal hardware tiny-result cutoff or
+claim bitwise equality with physical RCPPS.
 
 #### S2-37e — local Long64 register-only legacy MINSS with masked status
 

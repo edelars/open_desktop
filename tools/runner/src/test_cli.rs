@@ -555,6 +555,7 @@ fn expected_native_xorpd_oracle(
                 minpd_unmasked_controls: None,
                 minps_memory_rax_controls: None,
                 sqrtps_memory_rax_controls: None,
+                rcpps_memory_rax_controls: None,
                 addps_memory_rax_controls: None,
                 sqrtss_memory_rax_controls: None,
                 sqrtpd_memory_rax_controls: None,
@@ -2757,6 +2758,23 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongRcppsMemoryRaxV1 {
+        let controls = loaded
+            .fixture
+            .rcpps_memory_rax_controls
+            .expect("validated RCPPS m128 controls");
+        od_isa::execute::run_with_rcpps_memory_rax_controls(
+            &mut state,
+            memory,
+            config,
+            od_isa::execute::RcppsMemoryRaxControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongAddpsMemoryRaxV1 {
         let controls = loaded
             .fixture
@@ -3776,6 +3794,7 @@ fn execute_fixture_v2(
                 minpd_memory_rax_controls: loaded.fixture.minpd_memory_rax_controls,
                 minps_memory_rax_controls: loaded.fixture.minps_memory_rax_controls,
                 sqrtps_memory_rax_controls: loaded.fixture.sqrtps_memory_rax_controls,
+                rcpps_memory_rax_controls: loaded.fixture.rcpps_memory_rax_controls,
                 addps_memory_rax_controls: loaded.fixture.addps_memory_rax_controls,
                 sqrtss_memory_rax_controls: loaded.fixture.sqrtss_memory_rax_controls,
                 sqrtpd_memory_rax_controls: loaded.fixture.sqrtpd_memory_rax_controls,
@@ -5169,6 +5188,7 @@ mod tests {
                     minpd_memory_rax_controls: input.fixture.minpd_memory_rax_controls,
                     minps_memory_rax_controls: input.fixture.minps_memory_rax_controls,
                     sqrtps_memory_rax_controls: input.fixture.sqrtps_memory_rax_controls,
+                    rcpps_memory_rax_controls: input.fixture.rcpps_memory_rax_controls,
                     addps_memory_rax_controls: input.fixture.addps_memory_rax_controls,
                     sqrtss_memory_rax_controls: input.fixture.sqrtss_memory_rax_controls,
                     sqrtpd_memory_rax_controls: input.fixture.sqrtpd_memory_rax_controls,
@@ -11323,5 +11343,83 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod rcpps_memory_matrix_tests {
+    use super::*;
+    use od_testkit::HexU64;
+    use od_testkit::memory::FlatMemory;
+    use od_testkit::result::{Backend, Observation};
+    use od_testkit::v2::{Fixture, Outcome};
+
+    const CASE: &[u8] = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_37dy_rcpps_m128_memory_rhs.case.json"
+    );
+
+    #[test]
+    fn memory_rhs_values_are_invariant_for_all_rc_and_sticky_histories() {
+        let base = Fixture::from_json(CASE).unwrap().fixture;
+        let values: [u32; 14] = [
+            0x0000_0000, // +zero
+            0x8000_0000, // -zero
+            0x0000_0001, // +smallest subnormal
+            0x8000_0001, // -smallest subnormal
+            0x3f80_0000, // +1
+            0xbf80_0000, // -1
+            0x4000_0000, // +2
+            0xc000_0000, // -2
+            0x4040_0000, // +3
+            0x7f7f_ffff, // largest normal
+            0x7f80_0000, // +infinity
+            0xff80_0000, // -infinity
+            0x7fc1_2345, // quiet NaN
+            0x7f81_2345, // signaling NaN
+        ];
+        let mut checks = 0;
+        for (index, value) in values.into_iter().enumerate() {
+            let lane = value
+                .to_le_bytes()
+                .map(|byte| format!("{byte:02x}"))
+                .concat();
+            let data = format!("{lane}{lane}{lane}{lane}");
+            let mut reference_xmm = None;
+            for rc in 0..4u64 {
+                for sticky in 0..64u64 {
+                    let mut fixture = base.clone();
+                    fixture.case_id = format!("s2_37dy_v{index}_rc{rc}_sticky{sticky:02x}");
+                    fixture.memory[1].initial_bytes_hex = data.clone();
+                    fixture.initial_state.sse.as_mut().unwrap().mxcsr =
+                        HexU64(0x1f80 | (rc << 13) | sticky);
+                    let loaded = Fixture::from_json(&fixture.to_json().unwrap()).unwrap();
+                    let mut memory = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+                    let result = execute_fixture_v2(&loaded, &mut memory);
+                    assert_eq!(result.backend, Backend::Interpreter);
+                    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+                    assert_eq!(
+                        result.instructions_executed,
+                        Observation::Available { value: HexU64(1) }
+                    );
+                    let snapshot = match &result.snapshot {
+                        Observation::Available { value } => value,
+                        other => panic!("expected RCPPS snapshot, got {other:?}"),
+                    };
+                    let xmm0 = &snapshot.state.sse.as_ref().unwrap().xmm[0];
+                    if let Some(expected) = &reference_xmm {
+                        assert_eq!(
+                            xmm0, expected,
+                            "input={value:08x}, RC={rc}, sticky={sticky:02x}"
+                        );
+                    } else {
+                        reference_xmm = Some(xmm0.clone());
+                    }
+                    assert_eq!(snapshot.memory[1].bytes_hex, data);
+                    result.validate_for(&loaded).unwrap();
+                    checks += 1;
+                }
+            }
+        }
+        assert_eq!(checks, 3_584);
     }
 }
