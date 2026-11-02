@@ -80,6 +80,8 @@ const ADDSD_M64_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dj_addsd_m64_halfway.case.json");
 const SUBSD_M64_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dl_subsd_m64_halfway.case.json");
+const MULSS_M32_MEMORY_RAX: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dm_mulss_m32_memory_rax.case.json");
 const SQRTSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dg_sqrtss_m32_unaligned_inexact.case.json"
 );
@@ -37245,6 +37247,135 @@ fn subsd_m64_memory_literal_preserves_canaries_and_fails_closed() {
     let mut malformed = fixture;
     malformed.subsd_controls.as_mut().unwrap().sse2_available = false;
     assert!(malformed.validate().is_err());
+}
+
+#[test]
+fn mulss_m32_memory_literal_preserves_scalar_canaries_and_fails_closed() {
+    let loaded = Fixture::from_json(MULSS_M32_MEMORY_RAX).unwrap();
+    let fixture = loaded.fixture.clone();
+    assert_eq!(
+        fixture.profile,
+        od_testkit::v2::Profile::LongMulssMemoryRaxV1
+    );
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "f30f5900");
+    assert_eq!(fixture.memory[1].length, 4);
+    assert_eq!(fixture.memory[1].initial_bytes_hex, "0000003f");
+    assert_eq!(fixture.initial_state.gpr[0], HexU64(0x2001));
+    let initial_xmm = &fixture.initial_state.sse.as_ref().unwrap().xmm;
+    assert_eq!(initial_xmm[0], "00000040efbeadde78563412a5a5c3c3");
+    assert_eq!(initial_xmm[1], "efbeaddecafef00d78563412deadbeef");
+
+    let (input, result) = run(MULSS_M32_MEMORY_RAX, "interpreter", 0);
+    assert_eq!(result.backend, Backend::Interpreter);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+    let literal_snapshot = snapshot(&result);
+    assert_eq!(literal_snapshot.state.rip, HexU64(0x0010_0004));
+    let sse = literal_snapshot.state.sse.as_ref().unwrap();
+    assert_eq!(sse.xmm[0], "0000803fefbeadde78563412a5a5c3c3");
+    assert_eq!(sse.xmm[1], initial_xmm[1]);
+    assert_eq!(sse.mxcsr, HexU64(0x1f80));
+    assert_eq!(literal_snapshot.memory[1].bytes_hex, "0000003f");
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+
+    for engine in ["jit", "native"] {
+        let (input, denied) = run(MULSS_M32_MEMORY_RAX, engine, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
+        denied.validate_for(&input).unwrap();
+    }
+    let mut forged_backend = result.clone();
+    forged_backend.backend = Backend::Jit;
+    assert!(forged_backend.validate_for(&input).is_err());
+    let mut tampered = result.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(0..8, "0100803f");
+    }
+    assert!(tampered.validate_for(&input).is_err());
+
+    let mut malformed = fixture.clone();
+    malformed.memory[0].initial_bytes_hex = "f30f5901".into();
+    assert!(malformed.validate().is_err());
+    let mut malformed = fixture.clone();
+    malformed.memory[0].initial_bytes_hex = "f30f590090".into();
+    malformed.memory[0].length = 5;
+    malformed.memory[0].comparison_mask_hex = "ff".repeat(5);
+    malformed.stop_rip = Some(HexU64(fixture.initial_state.rip.get() + 5));
+    assert!(malformed.validate().is_err());
+    let mut malformed = fixture.clone();
+    malformed.memory[1].length = 8;
+    assert!(malformed.validate().is_err());
+    let mut malformed = fixture.clone();
+    malformed.provenance.specification.clear();
+    assert!(malformed.validate().is_err());
+    for mxcsr in [0x1f40, 0x1f00, 0x9f80, 0x11f80] {
+        let mut malformed = fixture.clone();
+        malformed.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(malformed.validate().is_err(), "MXCSR={mxcsr:#x}");
+    }
+    let mut malformed = fixture.clone();
+    malformed.mulss_controls = None;
+    assert!(malformed.validate().is_err());
+    let mut malformed = fixture;
+    malformed.mulss_controls.as_mut().unwrap().sse_available = false;
+    assert!(malformed.validate().is_err());
+
+    for (field, vector) in [("sse", 6), ("em", 6), ("osfxsr", 6), ("ts", 7)] {
+        let mut gated = input.fixture.clone();
+        let controls = gated.mulss_controls.as_mut().unwrap();
+        match field {
+            "sse" => controls.sse_available = false,
+            "em" => controls.cr0_em = true,
+            "osfxsr" => controls.cr4_osfxsr = false,
+            "ts" => controls.cr0_ts = true,
+            _ => unreachable!(),
+        }
+        gated.expected_exit = ExpectedExit::Exception;
+        let raw = gated.to_json().unwrap();
+        let (_, result) = run(&raw, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::Exception {}));
+        let exception = match &snapshot(&result).exception {
+            Observation::Available {
+                value: Some(exception),
+            } => exception,
+            other => panic!("expected MULSS gate exception, got {other:?}"),
+        };
+        assert_eq!(exception.vector, vector);
+        assert_eq!(count(&result), 0);
+    }
+
+    let mut ac = input.fixture.clone();
+    ac.initial_state.rflags = HexU64(ac.initial_state.rflags.get() | (1 << 18));
+    ac.expected_exit = ExpectedExit::Unsupported;
+    let (_, ac_result) = run(&ac.to_json().unwrap(), "interpreter", 4);
+    assert!(matches!(ac_result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(count(&ac_result), 0);
+
+    let mut ac_before_span = ac.clone();
+    ac_before_span.initial_state.gpr[0] = HexU64(0x0000_8000_0000_0000);
+    ac_before_span.memory[1].guest_address = ac_before_span.initial_state.gpr[0];
+    let (_, ac_span_result) = run(&ac_before_span.to_json().unwrap(), "interpreter", 4);
+    assert!(matches!(
+        ac_span_result.outcome,
+        Outcome::Unsupported { .. }
+    ));
+
+    for source in [0x0000_7fff_ffff_fffd] {
+        let mut bad_span = input.fixture.clone();
+        bad_span.initial_state.gpr[0] = HexU64(source);
+        bad_span.memory[1].guest_address = HexU64(source);
+        bad_span.expected_exit = ExpectedExit::Exception;
+        let (_, result) = run(&bad_span.to_json().unwrap(), "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::Exception {}));
+        let exception = match &snapshot(&result).exception {
+            Observation::Available {
+                value: Some(exception),
+            } => exception,
+            other => panic!("expected MULSS span exception, got {other:?}"),
+        };
+        assert_eq!(exception.vector, 13);
+        assert_eq!(count(&result), 0);
+    }
 }
 
 #[test]

@@ -34,14 +34,14 @@ use od_isa::execute::{
     run_with_divss_register_controls, run_with_maxps_memory_rax_controls,
     run_with_minps_memory_rax_controls, run_with_mulpd_register_controls,
     run_with_mulps_register_controls, run_with_mulsd_register_controls,
-    run_with_mulss_register_controls, run_with_sqrtpd_memory_rax_controls,
-    run_with_sqrtpd_register_controls, run_with_sqrtps_memory_rax_controls,
-    run_with_sqrtps_register_controls, run_with_sqrtsd_memory_rax_controls,
-    run_with_sqrtsd_register_controls, run_with_sqrtss_memory_rax_controls,
-    run_with_sqrtss_register_controls, run_with_subpd_register_controls,
-    run_with_subps_register_controls, run_with_subsd_memory_rax_controls,
-    run_with_subsd_register_controls, run_with_subss_memory_rax_controls,
-    run_with_subss_register_controls,
+    run_with_mulss_memory_rax_controls, run_with_mulss_register_controls,
+    run_with_sqrtpd_memory_rax_controls, run_with_sqrtpd_register_controls,
+    run_with_sqrtps_memory_rax_controls, run_with_sqrtps_register_controls,
+    run_with_sqrtsd_memory_rax_controls, run_with_sqrtsd_register_controls,
+    run_with_sqrtss_memory_rax_controls, run_with_sqrtss_register_controls,
+    run_with_subpd_register_controls, run_with_subps_register_controls,
+    run_with_subsd_memory_rax_controls, run_with_subsd_register_controls,
+    run_with_subss_memory_rax_controls, run_with_subss_register_controls,
 };
 use od_isa::{CpuState, ExecutionResult, interpret};
 use od_testkit::case::{Fixture, LoadedFixture};
@@ -2182,6 +2182,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongMulssMemoryRaxV1 {
+        let controls = loaded
+            .fixture
+            .mulss_controls
+            .expect("validated MULSS memory controls");
+        run_with_mulss_memory_rax_controls(
+            &mut state,
+            memory,
+            config,
+            MulssControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongMulpsRegistersV1 {
         let controls = loaded
             .fixture
@@ -4011,6 +4029,96 @@ fn write_json(json: &[u8]) -> io::Result<()> {
 fn invalid_input(message: &str) -> ExitCode {
     eprintln!("invalid input: {message}");
     ExitCode::from(EXIT_INVALID_INPUT)
+}
+
+#[cfg(test)]
+mod mulss_memory_profile_tests {
+    use super::*;
+    use od_testkit::HexU64;
+    use od_testkit::memory::FlatMemory;
+    use od_testkit::result::{Backend, Observation};
+    use od_testkit::v2::{ExpectedExit, Fixture, Outcome};
+
+    const CASE: &[u8] =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dm_mulss_m32_memory_rax.case.json");
+
+    fn execute_and_check_before_oracle(fixture: Fixture) {
+        let loaded = Fixture::from_json(&fixture.to_json().unwrap()).unwrap();
+        let mut memory = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        let result = execute_fixture_v2(&loaded, &mut memory);
+        assert_eq!(result.backend, Backend::Interpreter);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(1) }
+        );
+        let snapshot = match &result.snapshot {
+            Observation::Available { value } => value,
+            other => panic!("expected available MULSS m32 snapshot, got {other:?}"),
+        };
+        assert_eq!(snapshot.state.rip, loaded.fixture.stop_rip.unwrap());
+        assert_eq!(
+            snapshot.memory[1].bytes_hex,
+            loaded.fixture.memory[1].initial_bytes_hex
+        );
+        result.validate_for(&loaded).unwrap();
+    }
+
+    #[test]
+    fn memory_rhs_independent_oracle_covers_rc_sticky_and_binary32_boundaries() {
+        let base = Fixture::from_json(CASE).unwrap().fixture;
+        let pairs: [(u32, u32); 25] = [
+            (0x3f80_0001, 0x3fc0_0000), // normal, halfway-sensitive
+            (0xbf80_0001, 0x3fc0_0000), // negative lhs
+            (0x3f80_0001, 0xbfc0_0000), // negative rhs
+            (0x0000_0000, 0x3f80_0000), // positive zero
+            (0x8000_0000, 0x3f80_0000), // negative zero
+            (0x0000_0001, 0x3f80_0000), // subnormal lhs
+            (0x3f80_0000, 0x0000_0001), // subnormal rhs
+            (0x7f80_0000, 0x3f80_0000), // positive infinity
+            (0xff80_0000, 0xbf80_0000), // signed infinities
+            (0x7fc1_2345, 0x3f80_0000), // quiet NaN lhs
+            (0x3f80_0000, 0xffc1_2345), // quiet NaN memory rhs
+            (0x7f80_0001, 0x3f80_0000), // signaling NaN lhs
+            (0x3f80_0000, 0xff80_0001), // signaling NaN memory rhs
+            (0x7fc1_2345, 0xffc5_4321), // quiet NaNs in both operands
+            (0x7f80_0001, 0xffc5_4321), // signaling lhs and quiet memory NaN
+            (0xffc1_2345, 0x7f80_4321), // quiet lhs, signaling memory NaN
+            (0x7fc1_2345, 0x0000_0001), // quiet NaN with subnormal memory RHS
+            (0x0000_0001, 0xffc5_4321), // subnormal lhs with quiet memory NaN
+            (0x7f80_0001, 0x0000_0001), // signaling NaN with subnormal memory RHS
+            (0x0000_0000, 0x7f80_0000), // zero × infinity
+            (0x3f80_0000, 0x3380_0000), // exact halfway neighborhood
+            (0x7f7f_ffff, 0x4000_0000), // overflow boundary
+            (0x0080_0000, 0x3f7f_ffff), // WPR lower boundary
+            (0x0080_0001, 0x3f7f_fffe), // adjacent WPR boundary
+            (0x8080_0001, 0xbf7f_fffe), // signed WPR boundary
+        ];
+        for (pair_index, &(lhs, rhs)) in pairs.iter().enumerate() {
+            for rc in 0u32..4 {
+                for sticky in 0u32..64 {
+                    let mut fixture = base.clone();
+                    fixture.case_id = format!("s2_37dm_matrix_p{pair_index}_rc{rc}_s{sticky:02x}");
+                    fixture.initial_state.sse.as_mut().unwrap().xmm[0].replace_range(
+                        0..8,
+                        &lhs.to_le_bytes()
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<String>(),
+                    );
+                    fixture.memory[1].initial_bytes_hex = rhs
+                        .to_le_bytes()
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect();
+                    fixture.initial_state.sse.as_mut().unwrap().mxcsr =
+                        HexU64(u64::from(0x1f80 | (rc << 13) | sticky));
+                    fixture.expected_exit = ExpectedExit::StopAddress;
+                    execute_and_check_before_oracle(fixture);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

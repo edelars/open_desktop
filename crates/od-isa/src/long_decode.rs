@@ -1059,6 +1059,8 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only exact legacy `F3 0F 59 00` scalar binary32 memory multiply.
+    MulssMemoryRax,
     /// Local-only canonical no-prefix MULPS register pair.
     MulpsRegister {
         destination: u8,
@@ -3986,6 +3988,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && prefixes.rex.is_none()
             && prefix_count == 1
             && prefix_bytes[0] == 0xf2;
+        let mulss_memory_rax = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x59
+            && prefixes.group1 == Some(0xf3)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && prefixes.rex.is_none()
+            && prefix_count == 1
+            && prefix_bytes[0] == 0xf3;
         let sqrtsd_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x51
             && prefixes.group1 == Some(0xf2)
@@ -5108,12 +5119,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
             (OpcodeMap::Escape0f, 0x59) if mulss_register => {
                 let modrm = self.byte()?;
                 if modrm >> 6 != 3 {
-                    return Err(self.unsupported(opcode));
-                }
-                let rex = prefixes.rex.unwrap_or(0x40);
-                Operation::MulssRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                    if modrm == 0 && mulss_memory_rax {
+                        Operation::MulssMemoryRax
+                    } else {
+                        return Err(self.unsupported(opcode));
+                    }
+                } else {
+                    let rex = prefixes.rex.unwrap_or(0x40);
+                    Operation::MulssRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x59) if mulps_register => {
@@ -12407,6 +12423,31 @@ mod tests {
             &[0xf3, 0x0f, 0x5c, 0x01][..],
             &[0xc5, 0xfb, 0x5c, 0xc1][..],
             &[0x62, 0xf1, 0xff, 0x08, 0x5c, 0xc1][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn mulss_memory_rax_decodes_only_exact_legacy_form() {
+        let mut memory = Memory::new(&[0xf3, 0x0f, 0x59, 0x00]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.operation, Operation::MulssMemoryRax);
+        assert_eq!(decoded.length, 4);
+        for bytes in [
+            &[0xf3, 0x0f, 0x59, 0x01][..],
+            &[0xf3, 0x0f, 0x59, 0x40, 0x00][..],
+            &[0xf3, 0x0f, 0x59, 0x80, 0x00, 0x00, 0x00][..],
+            &[0xf3, 0x0f, 0x59, 0x04, 0x24][..],
+            &[0xf3, 0x40, 0x0f, 0x59, 0x00][..],
+            &[0x40, 0xf3, 0x0f, 0x59, 0x00][..],
+            &[0x66, 0xf3, 0x0f, 0x59, 0x00][..],
+            &[0xf3, 0xf3, 0x0f, 0x59, 0x00][..],
+            &[0x67, 0xf3, 0x0f, 0x59, 0x00][..],
+            &[0xf3, 0x0f, 0x59][..],
+            &[0xc5, 0xfa, 0x59, 0x00][..],
+            &[0x62, 0xf1, 0x7e, 0x08, 0x59, 0x00][..],
         ] {
             let mut memory = Memory::new(bytes);
             assert!(memory.decode().is_err(), "{bytes:02x?}");
