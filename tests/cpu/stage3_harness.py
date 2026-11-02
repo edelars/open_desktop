@@ -858,6 +858,14 @@ ADDITIONAL_TEST_GATES = (
         "s3_34bf_host_rbp_disp32_dword_store_checked_semantics", "local_acceptance", "od-host",
         "tests::s3_20du_rbp_disp32_dword_store_preserves_ss_fault_and_checked_state",
     ),
+    (
+        "s3_34bh_ir_addr32_rbp_disp8_dword_store_source_binding", "local_acceptance", "od-jit",
+        "memory_load_v2::tests::ir_dword_addr32_rbp_disp8_store_binds_all_signed_source_bytes_to_its_site",
+    ),
+    (
+        "s3_34bh_host_addr32_rbp_disp8_dword_store_wrapped_ebp", "local_acceptance", "od-host",
+        "tests::s3_20dw_addr32_rbp_disp8_dword_store_uses_wrapped_ebp",
+    ),
 )
 RUST_TEST_TARGET_OVERRIDES = {
     (
