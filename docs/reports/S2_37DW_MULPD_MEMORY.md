@@ -27,8 +27,9 @@ four RC modes crossed with 64 prior sticky combinations, NaN/invalid priority,
 zero-times-infinity, signed zero, subnormal input/output, rounding, overflow,
 tiny/minnormal behavior, mixed-lane IE/DE, schema/result/control tampering,
 gate priority, alignment, and backend denial. Direct ISA tests verify exact
-decode neighbors, complete fetch before gates, no read on gate/address faults,
-one `read16`, and state rollback on read error.
+decode neighbors, complete fetch before gates, no read on gate/address/invalid-MXCSR inputs,
+one `read16`, and state rollback on read error. Schema validation also rejects
+writable data mappings.
 
 Checks: od-isa 1,861/1,861; od-testkit 455/455; od-runner 119 unit +
 508 fixture_v2; od-x86-runner 8 library + 4 binary; targeted MULPD direct ISA
@@ -36,7 +37,10 @@ Checks: od-isa 1,861/1,861; od-testkit 455/455; od-runner 119 unit +
 `cargo fmt --all -- --check`; `git diff --check`; Graphify AST update (11,628
 nodes, 25,045 edges, 370 communities). `tools/check_layout.py` reported only the
 known linked-worktree `.git` marker and two absent oracle manifests linked by
-the shared stage report. Independent Sol/high review is pending.
+the shared stage report. Independent Sol/high review found no production correctness defects. It identified
+one anchor mismatch and a fixture-contract gap; the follow-up commit corrects the
+anchor, enforces read-only RHS data, and adds runtime invalid-MXCSR/no-read and
+memory-source WPR boundary evidence. Follow-up review is pending.
 
 No physical x86 acceptance was run. The admission intentionally excludes
 unmasked arithmetic exceptions and #XM.

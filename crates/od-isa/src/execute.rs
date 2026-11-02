@@ -163828,6 +163828,33 @@ mod cvtsi2ss_r64_memory_profile_tests {
             assert_eq!(memory.fetches, (0x2d00..0x2d04).collect::<Vec<_>>());
             assert!(memory.accesses.is_empty());
         }
+        for mxcsr in [0x0000_1fc0, 0x0000_9f80, 0x0000_1e80, 0x0001_1f80] {
+            let mut memory = Memory::at(&code, 0x2d08);
+            let mut state = LongModeState::default();
+            state.rip = 0x2d08;
+            state.gpr[Register::Rax as usize] = memory.data_base;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr,
+            });
+            let before = state.clone();
+            let result = run_with_mulpd_memory_rax_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x2d0c),
+                    context: AccessContext::default(),
+                },
+                good,
+                || false,
+            );
+            assert!(matches!(result.exit, RunExit::Unsupported { .. }));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert_eq!(memory.fetches, (0x2d08..0x2d0c).collect::<Vec<_>>());
+            assert!(memory.accesses.is_empty(), "MXCSR={mxcsr:08x}");
+        }
         for address in [0x2001, 0x0000_8000_0000_0000] {
             let mut memory = Memory::at(&code, 0x2d10);
             let mut state = LongModeState::default();

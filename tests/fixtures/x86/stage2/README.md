@@ -8063,7 +8063,7 @@ Runner coverage crosses all RC modes with 64 sticky histories and checks NaN,
 zero×infinity, signed zero, subnormal, tie, overflow/tiny cases, gates,
 alignment, tampering, and JIT/native denial. No physical x86 acceptance is
 claimed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37dw--masked-only-legacy-long64-mulpd-xmm0m128-rax),
-[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37dw--masked-only-legacy-long64-mulpd-xmm0m128-rax),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37dw--masked-only-long64-mulpd-xmm0m128-rax),
 and [standalone report](../../../../docs/reports/S2_37DW_MULPD_MEMORY.md).
 
 ### S2-37dv SUBPD m128 memory profile

@@ -32061,6 +32061,12 @@ fn mulpd_memory_rax_uses_memory_rhs_and_rejects_tampering_and_other_backends() {
     let mut bad_encoding = loaded.fixture.clone();
     bad_encoding.memory[0].initial_bytes_hex = "660f5901".into();
     assert!(bad_encoding.to_json().is_err());
+    let mut writable_rhs = loaded.fixture.clone();
+    writable_rhs.memory[1].permissions.write = true;
+    assert!(
+        writable_rhs.to_json().is_err(),
+        "MULPD m128 data must be read-only"
+    );
     let mut bad_mxcsr = loaded.fixture.clone();
     bad_mxcsr.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1e80);
     assert!(
@@ -32118,6 +32124,69 @@ fn mulpd_memory_rax_uses_memory_rhs_and_rejects_tampering_and_other_backends() {
             );
             assert_eq!(state.mxcsr.get() & 0x3f, u64::from(sticky | 0x20));
         }
+    }
+
+    for (rc, expected, tiny) in [
+        (0, 0x0010_0000_0000_0000u64, false),
+        (1, 0x000f_ffff_ffff_ffff, true),
+        (2, 0x0010_0000_0000_0000, false),
+        (3, 0x000f_ffff_ffff_ffff, true),
+    ] {
+        let mut fixture = loaded.fixture.clone();
+        set_lane(
+            &mut fixture,
+            0x0010_0000_0000_0001,
+            0x3fef_ffff_ffff_fffe,
+            rc,
+            0,
+        );
+        let (case, output) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&case, &output, &output).unwrap();
+        let state = snapshot(&output).state.sse.as_ref().unwrap();
+        let actual = u64::from_le_bytes(
+            (0..8)
+                .map(|i| u8::from_str_radix(&state.xmm[0][i * 2..i * 2 + 2], 16).unwrap())
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(actual, expected, "WPR boundary rc={rc}");
+        assert_eq!(
+            state.mxcsr.get() & 0x30,
+            if tiny { 0x30 } else { 0x20 },
+            "WPR flags rc={rc}"
+        );
+    }
+    for (rc, expected, flags) in [
+        (0, 0x7fef_ffff_ffff_ffffu64, 0x20),
+        (1, 0x7fef_ffff_ffff_ffff, 0x20),
+        (2, 0x7ff0_0000_0000_0000, 0x28),
+        (3, 0x7fef_ffff_ffff_ffff, 0x20),
+    ] {
+        let mut fixture = loaded.fixture.clone();
+        set_lane(
+            &mut fixture,
+            0x5fff_ffff_fbff_fffe,
+            0x5fe0_0000_0200_0001,
+            rc,
+            0,
+        );
+        let (case, output) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&case, &output, &output).unwrap();
+        let state = snapshot(&output).state.sse.as_ref().unwrap();
+        let actual = u64::from_le_bytes(
+            (0..8)
+                .map(|i| u8::from_str_radix(&state.xmm[0][i * 2..i * 2 + 2], 16).unwrap())
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(actual, expected, "overflow-side WPR boundary rc={rc}");
+        assert_eq!(
+            state.mxcsr.get() & 0x28,
+            flags,
+            "overflow-side WPR flags rc={rc}"
+        );
     }
 
     for (lhs, rhs) in [
