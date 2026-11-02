@@ -459,6 +459,12 @@ The static manifest reports 226 Rust gates (216 acceptance, 10 lifecycle) and 24
 
 Harness source commit `8b05d2f`, integrated as `02c92fa`, pins exactly `memory_load_v2::tests::ir_dword_rcx_index_no_base_sib_disp32_load_binds_all_source_bytes_to_its_site` (`od-jit`) and `tests::s3_20ep_rcx_index_no_base_sib_disp32_dword_load_uses_signed_displacement` (`od-host --lib`). The manifest records 228 Rust gates (218 acceptance, 10 lifecycle) and 246 local steps. Independent Sol/high static review passed; no Python or harness execution was performed. These pinned identities are not evidence that the Cargo gates or runtime implementation passed. Runtime source `ee36c4c` is now integrated as `07c2beb` and passed static review after the IR profile nesting and host mapping lease lifetime fixes, but its exact gates remain pending because no tests/build/fmt/Cargo/Python checks were run. ISSUE-028 remains open. Stage 2 remained outside this slice's evidence; concurrent runs were ignored per user instruction. Mini/M1 remain deferred and Stage 3 remains partial. See the [S3-34ca report](../reports/STAGE_3_S3-34ca_2026-11-02.md).
 
+## S3-34cb: exact harness gates for S3-20eq RCX-indexed no-base SIB Dword store
+
+Harness source commit `e16f6fd`, integrated as `3fa9448`, pins exactly `memory_load_v2::tests::ir_dword_rcx_index_no_base_sib_disp32_store_binds_all_source_bytes_to_its_site` (`od-jit`) and `tests::s3_20eq_rcx_index_no_base_sib_disp32_dword_store_uses_signed_displacement` (`od-host --lib`). The exact Cargo commands are `cargo test --offline -p od-jit --lib memory_load_v2::tests::ir_dword_rcx_index_no_base_sib_disp32_store_binds_all_source_bytes_to_its_site -- --exact --test-threads=1` and `cargo test --offline -p od-host --lib tests::s3_20eq_rcx_index_no_base_sib_disp32_dword_store_uses_signed_displacement -- --exact --test-threads=1`.
+
+The static manifest records 230 Rust gates (220 acceptance, 10 lifecycle) and 248 local steps. Independent Sol/high static review passed. No Python harness test or other harness execution was performed. S3-20eq runtime implementation remains in progress; this harness report makes no runtime evidence or pass claim. ISSUE-028 remains open. Stage 2 remained outside this slice's evidence; concurrent runs were ignored per user instruction. Mini/M1 remain deferred and Stage 3 remains partial. See the [S3-34cb report](../reports/STAGE_3_S3-34cb_2026-11-02.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases

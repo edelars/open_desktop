@@ -245,6 +245,16 @@ outside this slice's evidence; concurrent runs were ignored per user
 instruction. Mini/M1 remain deferred; Stage 3 remains partial. See the
 [S3-20ep report](STAGE_3_S3-20ep_2026-11-02.md).
 
+S3-34cb pins the exact S3-20eq JIT source/site and host identities. Harness
+source `e16f6fd` was integrated as `3fa9448`; the static manifest records 230
+Rust gates (220 acceptance, 10 lifecycle) and 248 local steps. Independent
+Sol/high static review passed. No Python harness test or other harness
+execution was performed, and no runtime evidence or pass is claimed.
+S3-20eq runtime implementation remains in progress. ISSUE-028 remains open.
+Stage 2 remained outside this slice's evidence; concurrent runs were ignored
+per user instruction. Mini/M1 remain deferred; Stage 3 remains partial. See
+the [S3-34cb report](STAGE_3_S3-34cb_2026-11-02.md).
+
 S3-36e implementation is committed. Release preflight passed on Apple M3 Max
 with 2,400 frozen inputs and 4,800 parity trials. Calibration-only passed at
 2,048 repetitions per side with no scored pairs. Three scored runs retained 20
