@@ -8577,6 +8577,32 @@ These are local interpreter/project-fixture results, not native x86 evidence.
 General exception delivery, native runtime and physical acceptance remain open
 under ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31du-admit-historical-sticky-oe-through-exact-binary32binary64-fld), [report](../reports/STAGE_2_REPORT.md#s2-31du--historical-sticky-oe-for-bounded-m32m64-fld), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
+## Local S2-31dv: historical sticky ZE for exact binary32/binary64 `FLD`
+
+Only exact bare Long64 `D9 00` (`FLD m32fp [RAX]`) and `DD 00`
+(`FLD m64fp [RAX]`) lower their operation-local FSW reject mask from `0x80c4`
+to `0x80c0`. This admits and preserves pre-existing ZE with IE/DE/OE/UE/PE;
+SF/ES/B remain rejected before a memory read. No operation in this profile
+produces ZE: the accepted history is explicitly supplied state.
+
+The four FCWs, source mapping, current DE for nonzero subnormal inputs, current
+IE and SNaN quieting/payload mapping, Empty destination push, one Dword/Qword
+read, canonical48 range preflight, C1 policy, FIP/FDP, RIP, retirement and
+write-free load behavior remain unchanged. Failed preflight, read, fetch or
+boundary conditions remain atomic. All other x87 gates, FILD, FLD m80fp,
+stores, JIT and native admission retain their existing contracts.
+
+The local acceptance matrix admits all 64 prior IE/DE/ZE/OE/UE/PE combinations
+for both widths, existing source classes and four FCWs. It verifies newly
+generated IE/DE independently of historical ZE, full state, memory and read
+history. `FNSTSW` must preserve ZE in its snapshot and `FNCLEX` must clear it;
+SF/ES/B remain rejected by the FLD gate. Schema-v2 must admit the exact S2-31dv
+bare budget-one/no-stop case with historical ZE and retain the existing raw-FSW
+behavior of FNSTSW/FNCLEX observer and clear profiles. No blanket rejection of
+ZE across other x87 profiles is implied. This is not a ZE-producer or physical
+hardware claim. ISSUE-019 remains open. See the
+[plan](../plans/STAGE_2.md#s2-31dv-admit-historical-sticky-ze-through-exact-binary32binary64-fld).
+
 <a id="local-s2-30av-canonical-signed-infinity-fchs-fabs"></a>
 
 ## Local S2-30av: canonical signed infinity through bounded `FCHS/FABS`
@@ -13217,6 +13243,46 @@ Intel SDM Rev. 093 Vol. 2B `MAXSS`, pp. 4-13–4-14; Vol. 1 §§4.9.2,
 [plan](../plans/STAGE_2.md#s2-38n-exact-long64-maxss-xmm0m32-rax-memory-profile-with-mixed-imdm-exit),
 [MAXSS register contract](#s2-38f--exact-maxss-unmasked-invalid-and-denormal-exit),
 and [S2-38m memory-order pattern](#s2-38m--exact-minss-unmasked-memory-exit-for-m32-rax).
+
+## S2-38o — exact MINSD unmasked memory exit for m64 [RAX]
+
+The local schema-v2 interpreter profile
+`s2-long-minsd-memory-unmasked-rax-v1` admits only exact Long64 `F2 0F 5D 00`
+(`MINSD XMM0,m64 [RAX]`), length four, budget one and stop RIP `entry+4`. It
+requires SSE2, CR0.EM=0, CR0.MP=1, CR4.OSFXSR=1, explicit immutable CR0.TS and
+CR4.OSXMMEXCPT controls, and present XMM/MXCSR state. The S2-37cw masked memory
+and S2-38g register profiles remain unchanged. Other prefixes, REX, alternate
+addressing, register/packed forms, VEX/EVEX and all generic, fragment, C ABI,
+native and JIT paths are denied.
+
+Execution order is stop/budget, complete four-byte fetch, exact-form selection,
+SSE2/EM/OSFXSR #UD gates before TS #NM, state/MXCSR admission, AC=1 local
+Unsupported, checked `RAX+7` and canonical48 inclusive span, exactly one read8,
+then classification and FP result. AC=0 allows unaligned m64. Address/read
+faults precede new IE/DE and preserve CPU state and retirement.
+
+MXCSR reserved bits are clear and supported mask is `0xffbf`; DAZ/FTZ=0 and
+ZE/OE/UE/PE masks are one. IM/DM are independent and all RC/prior-sticky
+histories are admitted. MINSD follows the S2-38g operation policy: QNaN or SNaN
+in either operand raises IE; either subnormal raises DE; masked result selects
+raw source 2 for NaNs, equal values and signed-zero ties, retaining an SNaN
+payload when it is source 2. If NaN and subnormal coincide with both masks set,
+invalid priority commits IE only and completes. If IM or DM is open, one
+arithmetic exit commits IE|DE. Any newly unmasked event suppresses the entire
+XMM0 write, leaves RIP unchanged and does not retire while committing required
+sticky bits; OSXMMEXCPT selects #XM or arithmetic #UD. Prior IE/DE alone does
+not trap. Success changes XMM0.low64 and new stickies, advances RIP by four and
+retires once, preserving XMM0.high64, XMM1 and unrelated state.
+
+Acceptance requires an independent raw-u64 oracle, IM×DM×OSXMMEXCPT and RC×64
+sticky matrices, NaN/subnormal classes in both operand positions, signed-zero
+and finite/infinity ties, high64 canaries, aligned/unaligned memory, checked
+span/read faults, callback count and full rollback, fetch/feature/TS priority,
+strict schema/result echo and tamper rejection, and explicit native/JIT denial.
+This local interpreter profile does not claim physical x86 acceptance. See the
+[plan](../plans/STAGE_2.md#s2-38o-exact-long64-minsd-xmm0m64-rax-memory-profile-with-mixed-imdm-exit),
+[MINSD register contract](#s2-38g--exact-minsd-unmasked-invalid-and-denormal-exit),
+and [memory ordering from S2-38m](#s2-38m--exact-minss-unmasked-memory-exit-for-m32-rax).
 
 ## S2-38e — exact FP-init, FXRSTOR64, MINSS composition
 
