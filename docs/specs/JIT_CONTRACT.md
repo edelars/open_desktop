@@ -289,6 +289,18 @@ STOP, budget, fault, PC-map, and no-replay fixtures do not broaden admission
 to other addr32 store forms. See the
 [S3-20db report](../reports/STAGE_3_S3-20db_2026-11-02.md).
 
+#### S3-20dc: exact address-size-32 Dword store with signed disp32
+
+The shared typed-IR Dword-store path additionally admits only the exact
+seven-byte singleton `67 89 83 id` (`MOV [EBX+disp32],EAX`). Effective-address
+calculation follows the decoder-owned address-size-32 operand: signed disp32
+addition wraps to 32 bits and the resulting EA is zero-extended. The store
+writes low32 RAX through one contiguous checked four-byte access. Exact source
+bytes bind to the instruction site and the PC map has the `A+7` guest boundary.
+Recorded fixtures cover STOP, budget, fault, and no-replay behavior; other
+addr32 dword-store forms remain outside this admission. See the
+[S3-20dc report](../reports/STAGE_3_S3-20dc_2026-11-02.md).
+
 #### S3-27i: disp32 Dword-store canonical-end and range-overflow checks
 
 The host-side regression `s3_27i_disp32_dword_store_checks_canonical_end_and_range_overflow`
