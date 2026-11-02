@@ -21639,7 +21639,8 @@ Workspace all-target offline check, formatting and diff check passed.
 Graphify rebuilt 11,361 nodes, 24,461 edges and 352 communities. Isolated
 layout validation reports the worktree `.git` marker and two unavailable
 historical oracle manifests tracked by ISSUE-023; no new broken documentation
-links were found. Independent Sol/high review is pending. Sources: Intel SDM
+links were found. Independent Sol/high review is clean (39 `fsub` tests passed).
+Sources: Intel SDM
 Rev. 093 Vol. 2A `FSUBR/FSUBRP/FISUBR`, `DC E0+i`, pp. 3-397–3-399
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=515));
 Vol. 1 §§8.1.5.1–.3, Table 8-2 and §8.5.6, pp. 8-7–8-8 and 8-30

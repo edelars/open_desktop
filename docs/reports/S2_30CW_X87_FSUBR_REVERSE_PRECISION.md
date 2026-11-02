@@ -42,8 +42,8 @@ Validation passed:
   isolated slice.
 - `graphify update .` completed: 11,361 nodes, 24,461 edges, 352 communities.
 
-Independent Sol/high review is pending; no physical x86/JIT/native acceptance
-is claimed.
+Independent Sol/high review is clean (39 `fsub` tests passed); no physical
+x86/JIT/native acceptance is claimed.
 
 Sources: Intel SDM Rev. 093 Vol. 2A `FSUBR/FSUBRP/FISUBR`, including
 `DC E0+i`, pp. 3-397–3-399
