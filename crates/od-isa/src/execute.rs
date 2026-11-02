@@ -19013,6 +19013,15 @@ fn step_configured(
         }
     }
     if let Some(controls) = configured_mulps_register_controls {
+        let is_canonical_memory_form = matches!(instruction.operation, Operation::MulpsMemoryRax)
+            && instruction.length == 3
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x59
+            && instruction.prefixes.group1.is_none()
+            && instruction.prefixes.segment.is_none()
+            && !instruction.prefixes.operand_override
+            && !instruction.prefixes.address_override
+            && instruction.prefixes.rex.is_none();
         let is_canonical_register_form = matches!(
             instruction.operation,
             Operation::MulpsRegister { destination, source }
@@ -19028,7 +19037,7 @@ fn step_configured(
                             Some(0x40 | (u8::from(destination >= 8) << 2) | u8::from(source >= 8))
                         } else { None }
         );
-        if !is_canonical_register_form {
+        if !is_canonical_register_form && !is_canonical_memory_form {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -22577,11 +22586,20 @@ fn step_configured(
                 && sse.mxcsr & (1 << 6) == 0
                 && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
         } else if configured_mulps_register_controls.is_some()
-            && matches!(instruction.operation, Operation::MulpsRegister { .. })
+            && matches!(
+                instruction.operation,
+                Operation::MulpsRegister { .. } | Operation::MulpsMemoryRax
+            )
         {
-            sse.mxcsr & !0x0000_ffbf == 0
-                && sse.mxcsr & (1 << 6) == 0
-                && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
+            if instruction.operation == Operation::MulpsMemoryRax {
+                sse.mxcsr & !0x0000_ffbf == 0
+                    && sse.mxcsr & ((1 << 6) | (1 << 15)) == 0
+                    && sse.mxcsr & 0x1f80 == 0x1f80
+            } else {
+                sse.mxcsr & !0x0000_ffbf == 0
+                    && sse.mxcsr & (1 << 6) == 0
+                    && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
+            }
         } else if configured_subsd_register_controls.is_some()
             && matches!(instruction.operation, Operation::SubsdRegister { .. })
         {
@@ -23678,6 +23696,10 @@ fn step_configured(
         Operation::MulpsRegister { .. } if configured_mulps_register_controls.is_some() => {
             state.sse.is_some()
         }
+        Operation::MulpsMemoryRax if configured_mulps_register_controls.is_some() => {
+            state.sse.is_some()
+        }
+        Operation::MulpsMemoryRax => false,
         Operation::MulpdRegister { .. } => false,
         Operation::MulpsRegister { .. } => false,
         Operation::SubpsRegister { .. } if configured_subps_register_controls.is_some() => {
@@ -30003,6 +30025,96 @@ fn step_configured(
                 }));
             }
             sse.xmm[usize::from(destination)] = result;
+        }
+        Operation::MulpsMemoryRax if configured_mulps_register_controls.is_some() => {
+            let address = state.gpr[Register::Rax as usize];
+            if address & 0xf != 0 {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            let Some(last) = address.checked_add(15) else {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            };
+            if !long_decode::canonical(address) || !long_decode::canonical(last) {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            let mut source = [0u8; 16];
+            memory.read(address, context, &mut source)?;
+            let (lhs_xmm, old_mxcsr) = {
+                let sse = state.sse.as_ref().expect("MULPS memory state prevalidated");
+                (sse.xmm[0], sse.mxcsr)
+            };
+            let rounding = cvtss2si_rounding_mode(old_mxcsr);
+            let mut result = [0u8; 16];
+            let mut new_ie = false;
+            let mut new_de = false;
+            let mut new_oe = false;
+            let mut new_ue = false;
+            let mut new_pe = false;
+            for lane in 0..4 {
+                let offset = lane * 4;
+                let lhs_value = Binary32::from_bits(u32::from_le_bytes(
+                    lhs_xmm[offset..offset + 4].try_into().unwrap(),
+                ));
+                let rhs_value = Binary32::from_bits(u32::from_le_bytes(
+                    source[offset..offset + 4].try_into().unwrap(),
+                ));
+                let lhs_class = lhs_value.class();
+                let rhs_class = rhs_value.class();
+                let lhs_nan =
+                    matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                let rhs_nan =
+                    matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                if lhs_nan || rhs_nan {
+                    new_ie |= lhs_class == BinaryClass::SignalingNaN
+                        || rhs_class == BinaryClass::SignalingNaN;
+                    // A NaN lane does not report a denormal operand.
+                    let raw = Binary32::multiply_raw_result(lhs_value, rhs_value, rounding)
+                        .value()
+                        .to_bits();
+                    result[offset..offset + 4].copy_from_slice(&raw.to_le_bytes());
+                    continue;
+                }
+                let invalid_product = (lhs_class == BinaryClass::Infinity
+                    && rhs_class == BinaryClass::Zero)
+                    || (lhs_class == BinaryClass::Zero && rhs_class == BinaryClass::Infinity);
+                if invalid_product {
+                    new_ie = true;
+                } else {
+                    new_de |=
+                        lhs_class == BinaryClass::Subnormal || rhs_class == BinaryClass::Subnormal;
+                }
+                let computed = Binary32::multiply_raw_result(lhs_value, rhs_value, rounding);
+                let raw = computed.value().to_bits();
+                new_oe |= computed.overflow();
+                new_ue |= computed.tiny_after_precision_rounding() && computed.inexact();
+                new_pe |= computed.inexact() || computed.overflow();
+                result[offset..offset + 4].copy_from_slice(&raw.to_le_bytes());
+            }
+            let sse = state.sse.as_mut().expect("MULPS memory state prevalidated");
+            sse.xmm[0] = result;
+            sse.mxcsr = old_mxcsr
+                | u32::from(new_ie)
+                | (u32::from(new_de) << 1)
+                | (u32::from(new_oe) << 3)
+                | (u32::from(new_ue) << 4)
+                | (u32::from(new_pe) << 5);
+        }
+        Operation::MulpsMemoryRax => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
         }
         Operation::DivsdRegister { .. } => {
             return Ok(StepOutcome::Unsupported {
@@ -157417,6 +157529,182 @@ mod cvtsi2ss_r64_memory_profile_tests {
             assert_eq!(state.sse.as_ref().unwrap().mxcsr & 0x3f, 0x20);
             assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 16)]);
         }
+    }
+
+    #[test]
+    fn mulps_memory_rax_multiplies_memory_lanes_and_reads_once() {
+        let code = [0x0f, 0x59, 0x00];
+        let controls = MulpsControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        let mut memory = Memory::at(&code, 0x2700);
+        let rhs = [0x4040_0000u32, 0x7f80_0000, 0, 1];
+        for (lane, value) in rhs.into_iter().enumerate() {
+            memory.bytes[lane * 4..lane * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        let mut xmm = [[0xa5; 16]; 16];
+        let lhs = [0x4000_0000u32, 0, 0x7f80_0000, 0x4000_0000];
+        for (lane, value) in lhs.into_iter().enumerate() {
+            xmm[0][lane * 4..lane * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        let mut state = LongModeState::default();
+        state.rip = 0x2700;
+        state.gpr[Register::Rax as usize] = memory.data_base;
+        state.sse = Some(SseState { xmm, mxcsr: 0x1f80 });
+        let result = run_with_mulps_register_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x2703),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 1);
+        let output = &state.sse.as_ref().unwrap().xmm[0];
+        assert_eq!(
+            u32::from_le_bytes(output[0..4].try_into().unwrap()),
+            0x40c0_0000
+        );
+        assert_eq!(
+            u32::from_le_bytes(output[4..8].try_into().unwrap()),
+            0xffc0_0000
+        );
+        assert_eq!(
+            u32::from_le_bytes(output[8..12].try_into().unwrap()),
+            0xffc0_0000
+        );
+        assert_eq!(u32::from_le_bytes(output[12..16].try_into().unwrap()), 2);
+        assert_eq!(state.sse.as_ref().unwrap().mxcsr & 0x3f, 0x03);
+        assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 16)]);
+
+        let mut bad_memory = Memory::at(&code, 0x2700);
+        let mut bad_state = state.clone();
+        bad_state.rip = 0x2700;
+        bad_state.gpr[Register::Rax as usize] = bad_memory.data_base + 1;
+        let before = bad_state.clone();
+        let fault = run_with_mulps_register_controls(
+            &mut bad_state,
+            &mut bad_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x2703),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(
+            fault.exit,
+            RunExit::Fault(ArchitecturalFault { vector: 13, .. })
+        ));
+        assert_eq!(bad_state, before);
+        assert!(bad_memory.accesses.is_empty());
+
+        for (gate_controls, vector) in [
+            (
+                MulpsControls {
+                    sse_available: false,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                MulpsControls {
+                    cr0_em: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                MulpsControls {
+                    cr4_osfxsr: false,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                MulpsControls {
+                    cr0_ts: true,
+                    ..controls
+                },
+                7,
+            ),
+        ] {
+            let mut gated_memory = Memory::at(&code, 0x2700);
+            let mut gated_state = LongModeState::default();
+            gated_state.rip = 0x2700;
+            gated_state.gpr[Register::Rax as usize] = gated_memory.data_base;
+            gated_state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = gated_state.clone();
+            let gated = run_with_mulps_register_controls(
+                &mut gated_state,
+                &mut gated_memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x2703),
+                    context: AccessContext::default(),
+                },
+                gate_controls,
+                || false,
+            );
+            assert!(matches!(
+                gated.exit,
+                RunExit::Fault(ArchitecturalFault { vector: actual, .. }) if actual == vector
+            ));
+            assert_eq!(gated_state, before);
+            assert_eq!(gated_memory.fetches, (0x2700..0x2703).collect::<Vec<_>>());
+            assert!(gated_memory.accesses.is_empty());
+        }
+
+        let mut failed_memory = Memory::at(&code, 0x2700);
+        failed_memory.error = Some(MemoryError::Unmapped {
+            address: failed_memory.data_base,
+            access: AccessKind::Read,
+        });
+        let mut failed_state = LongModeState::default();
+        failed_state.rip = 0x2700;
+        failed_state.gpr[Register::Rax as usize] = failed_memory.data_base;
+        failed_state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = failed_state.clone();
+        let failed = run_with_mulps_register_controls(
+            &mut failed_state,
+            &mut failed_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x2703),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert_eq!(
+            failed.exit,
+            RunExit::MemoryError(MemoryError::Unmapped {
+                address: failed_memory.data_base,
+                access: AccessKind::Read,
+            })
+        );
+        assert_eq!(failed.instructions_executed, 0);
+        assert_eq!(failed_state, before);
+        assert_eq!(
+            failed_memory.accesses,
+            [(AccessKind::Read, failed_memory.data_base, 16)]
+        );
     }
 
     #[test]

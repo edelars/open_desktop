@@ -576,6 +576,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37dd | Local-only legacy Long64 SQRTPS XMM0,m128 `[RAX]`, exact `0F 51 00`; SSE bit 25 (not SSE2); strict masked-only MXCSR; memory-source-only binary32 sqrt with RC and IE/DE/PE; aligned canonical span, exactly one read16; native/JIT/C ABI/generic/fragment and unmasked/#XM closed | Focused ISA 3/3; od-isa 1736; od-testkit 454; runner 112+485; workspace all-target check, fmt/layout/Graphify and independent Sol/high review passed; initial workspace test stopped at disk exhaustion, component suites succeeded after disposable target cleanup; no physical x86 acceptance |
 | [x] | S2-37dq | Local-only legacy Long64 ADDPS XMM0,m128 `[RAX]`, exact `0F 58 00`; SSE bit 25 (not SSE2), strict masked-only MXCSR; four `Binary32::add_raw_result` lanes from old XMM0 and one aligned canonical m128 read; aggregate IE/DE/OE/UE/PE; native/JIT/C ABI/generic/fragment and unmasked/#XM closed | Focused ISA 3/3 and fixture-v2 1/1; invalid MXCSR no-read/rollback and result/provenance tampering covered; combined main suites: od-isa 1,837 / od-testkit 455 / runner 119+497 / x86-runner 8+4; workspace check, fmt/diff/layout, Graphify and independent Sol/high review clean; no physical x86 acceptance |
 | [x] | S2-37dr | Local-only legacy Long64 SUBPS XMM0,m128 `[RAX]`, exact `0F 5C 00`; SSE bit 25, strict masked-only MXCSR; one aligned canonical m128 read and four memory-source binary32 subtractions; aggregate IE/DE/OE/PE, retain old sticky flags; native/JIT/C ABI/generic/fragment and unmasked/#XM closed | Focused ISA 3/3 and runner 1/1; memory vectors × 4 RC × 64 sticky cover NaN priority/payload, same-lane NaN+subnormal, cancellation zero, infinities, ties, tiny boundary and overflow; integrated main: od-isa 1,841 / testkit 455 / runner 119+499 / x86-runner 8+4; workspace/layout/fmt/diff, Graphify, clean Sol/high review; no physical x86 acceptance |
+| [x] | S2-37ds | Local-only legacy Long64 MULPS XMM0,m128 `[RAX]`, exact `0F 59 00`; SSE bit 25; masked-only MXCSR, raw Binary32 multiplication, one aligned canonical m128 read; aggregate IE/DE/OE/UE/PE and retain old sticky flags; JIT/native/C ABI/generic/fragment and unmasked/#XM closed | Focused decoder/ISA/runner tests, od-isa 1,843, od-testkit 455, runner 119+500, workspace check, fmt and Graphify passed; independent Sol/high review clean; isolated layout caveats are recorded in [standalone report](../reports/S2_37DS_MULPS_MEMORY.md); no physical x86 acceptance |
 | [x] | S2-37de | Local-only Long64 SQRTPD XMM0,m128 `[RAX]`, exact `66 0F 51 00`; SSE2 bit 26; masked-only MXCSR, memory-only binary64 sqrt with RC and IE/DE/PE aggregation; aligned canonical span, exactly one read16; unmasked/#XM, native/JIT/C ABI/generic/fragment closed | od-isa 1738; od-testkit 454; runner 112+486; workspace all-target check, fmt/diff, Graphify 10,918/23,516/314, main layout check, independent Sol/high review clean; isolated layout caveat documented; no physical x86 acceptance |
 | [x] | S2-37dg | Local-only Long64 SQRTSS XMM0,m32 `[RAX]`, exact `F3 0F 51 00`; SSE bit 25; masked-only MXCSR, memory-only binary32 sqrt with RC and IE/DE/PE; unaligned access allowed only with AC=0, canonical span, exactly one read4; native/JIT/C ABI/generic/fragment closed | S2-37aj raw SQRTSS helper; full od-isa 1,784; od-testkit 454; runner 112+489; workspace all-target, fmt/layout/diff and Graphify 11,146/24,072/333 passed; independent Sol/high review clean; no physical x86 acceptance |
 | [x] | S2-37dh | Local-only Long64 MINSS XMM0,m32 `[RAX]`, exact `F3 0F 5D 00`; SSE bit 25, one read4, raw RHS on ties/NaNs, masked IE/DE; AC=1 local refusal, AC=0 unaligned admission; native/JIT/C ABI/generic/fragment closed | Focused decoder/direct ISA 2/2; runner fixture 1/1; full od-isa 1,784; od-testkit 454; runner 112+489; od-x86-runner 8+4; workspace all-target, fmt/layout/diff and Graphify 11,146/24,072/333 passed; independent Sol/high review clean after restoring MAXSS oracle validation and adding MINSS provenance checks; no physical x86 acceptance |
@@ -17042,6 +17043,30 @@ coverage commit. Physical x86 acceptance is not claimed. See
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37dr--masked-only-long64-subps-xmm0m128-rax),
 [shared report](../reports/STAGE_2_REPORT.md#s2-37dr--subps-xmm0m128-rax), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dr--subps-xmm0m128-rax).
+
+#### S2-37ds — masked-only legacy Long64 MULPS XMM0,m128 [RAX]
+
+Implement strict schema-v2 interpreter profile `s2-long-mulps-memory-rax-v1`
+for exact `0F 59 00`, three-byte complete fetch, budget one and stop RIP
+entry+3. Require SSE bit 25 (not SSE2), CR0.EM=0, CR4.OSFXSR=1 and CR0.TS=0;
+fetch precedes #UD/#NM gates. Require XMM/MXCSR state and reject other
+prefixes, REX, addressing forms, register forms, VEX/EVEX and trailing bytes.
+
+Admit MXCSR bits within `0xffbf`, all six exception masks set, reserved bits
+clear, DAZ=FTZ=0; accept every RC value and prior sticky history. Unmasked
+exceptions and #XM delivery remain closed. Require 16-byte alignment regardless
+of AC, checked canonical48 `[RAX,RAX+15]`, and exactly one `read16`; failed
+alignment/span/read checks preserve architectural state and retirement.
+
+Multiply corresponding old XMM0 and memory binary32 lanes with
+`Binary32::multiply_raw_result(MXCSR.RC)`. Aggregate IE/DE/OE/UE/PE across
+lanes and preserve old sticky flags, ZE, and unrelated state. NaN lanes use the
+existing raw helper payload/priority policy and suppress same-lane DE; 0×∞
+raises IE. Keep JIT/native/C ABI/generic/fragment and physical x86 support
+closed. Cover memory-specific NaN payload/priority, same-lane NaN+subnormal,
+0×∞, signed zeros/infinities, tiny/WPR/ties, overflow and mixed flags, plus
+schema/provenance/result tampering and backend denial. Evidence:
+[standalone report](../reports/S2_37DS_MULPS_MEMORY.md).
 
 #### S2-37de — exact legacy Long64 SQRTPD XMM0,m128 [RAX]
 

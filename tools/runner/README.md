@@ -521,3 +521,13 @@ The runner accepts the strict local-only `s2-long-minsd-memory-rax-v1` profile f
 ### S2-37cx — MAXSD XMM0,m64 [RAX]
 
 The fixture runner accepts exact `F2 0F 5F 00` under `s2-long-maxsd-memory-rax-v1` and invokes the independent raw-u64 oracle. Its focused fixture compares 160 combinations of numeric ordering/ties, NaNs, subnormals, RC values, and old IE/DE histories. AC=1 local refusal is exercised in the runner; span/read rollback and gate paths are covered by direct ISA tests. JIT/native return Unsupported, and the native-local-only classifier passed 1/1. Focused decoder/direct ISA is 3/3, runner 1/1, od-testkit test-target check and native-local-only classifier 1/1 passed. Full suites passed: od-isa 1,702, od-testkit 453, od-runner 112 unit + 480 fixtures, and od-x86-runner 8+4; workspace all-target check passed. Graphify refreshed to 10,738 nodes / 23,093 edges / 311 communities; formatting, layout, diff, and 12 links passed. Independent code/schema and final docs/evidence reviews are complete and clean. No physical x86 acceptance is claimed.
+
+### S2-37ds — MULPS XMM0,m128 [RAX]
+
+The runner accepts only exact legacy `0F 59 00` under
+`s2-long-mulps-memory-rax-v1`. The interpreter profile uses SSE bit 25,
+masked-only MXCSR, one aligned canonical m128 read and the independent raw-bit
+`independent_mulps` fixture oracle. All RC and prior sticky histories are
+covered; JIT/native and unmasked/#XM paths remain closed. See the [CPU
+contract](../../docs/specs/CPU_CONTRACT.md#s2-37ds--masked-only-legacy-long64-mulps-xmm0m128-rax)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ds--mulps-xmm0m128-rax).

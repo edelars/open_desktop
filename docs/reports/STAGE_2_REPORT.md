@@ -60,6 +60,37 @@ rerun прошёл 498/498, включая расширенный SUBPS test; д
 rationale для UE записаны в standalone report. No physical x86 acceptance is
 claimed.
 
+## S2-37ds — MULPS XMM0,m128 [RAX]
+
+В отдельной ветке `feat/s2-37ds` добавлена точная legacy форма
+`MULPS XMM0,m128 [RAX]` (`0F 59 00`) в interpreter-only schema-v2 profile
+`s2-long-mulps-memory-rax-v1`. Срез требует SSE bit 25, полный fetch до
+#UD/#NM gates, XMM/MXCSR state и masked-only `0xffbf`: все шесть masks включены,
+DAZ/FTZ/reserved bits выключены; все RC и sticky histories разрешены.
+
+Интерпретатор проверяет обязательное выравнивание RAX на 16 байт независимо от
+AC, checked canonical48 span `[RAX,RAX+15]`, затем делает один read16. Ошибки
+выравнивания/span/read оставляют состояние и retirement без изменений. Четыре
+memory lanes перемножаются с соответствующими старыми XMM0 lanes через
+`Binary32::multiply_raw_result`; IE/DE/OE/UE/PE объединяются с прежним MXCSR.
+Unmasked/#XM, JIT/native/C ABI/generic/fragment и физический x86 остаются вне
+области реализации.
+
+Профиль использует отдельный handwritten fixture и independent integer-only
+`independent_mulps` oracle. Focused runner matrix включает семь memory-specific
+vectors × 4 RC × 64 sticky histories, проверки result/control tampering,
+JIT/native denial и gates; прямые ISA проверки покрывают exact decode, один
+read16, alignment rollback, full-fetch #UD/#NM priority и read-error rollback.
+Работа выполнена в `/private/tmp/s2-37ds`. Focused decoder, ISA и runner
+проверки прошли; расширенная fixture-v2 проверка — 500/500, runner unit —
+119/119, od-isa — 1,843/1,843, od-testkit — 455/455. Workspace all-target
+offline check, formatting и Graphify refresh (11,514/24,786/369) прошли.
+Независимый Sol/high код/schema review прошёл после исправления трёх ссылок на
+CPU contract; подтверждённых implementation findings нет. Layout check
+сохранил только известные ограничения изолированного worktree:
+`.git` marker не отображён в карте и две исторические oracle manifest ссылки
+в shared report отсутствуют. Физическая x86-проверка не заявляется.
+
 ## S2-37dq — local-only Long64 legacy ADDPS m128 memory
 
 Добавлен строгий schema-v2 профиль `s2-long-addps-memory-rax-v1` для точной

@@ -67,6 +67,9 @@ const ADDPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
 const SUBPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dr_subps_m128_memory_source_and_destination_lanes.case.json"
 );
+const MULPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37ds_mulps_m128_memory_source_and_destination_lanes.case.json"
+);
 const SQRTPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37de_sqrtpd_m128_memory_source_lanes_rounding.case.json"
 );
@@ -38615,6 +38618,190 @@ fn subps_m128_memory_uses_independent_memory_lanes_and_denies_backends() {
     let (input, result) = run(&misaligned.to_json().unwrap(), "interpreter", 0);
     od_testkit::v2::compare(&input, &result, &result).unwrap();
     assert!(matches!(result.outcome, Outcome::Exception {}));
+}
+
+#[test]
+fn mulps_m128_memory_covers_memory_operands_events_stickies_and_denials() {
+    use od_testkit::result::Backend;
+    use od_testkit::v2::Profile;
+
+    let base = Fixture::from_json(MULPS_M128_MEMORY_RAX).unwrap().fixture;
+    assert_eq!(base.profile, Profile::LongMulpsMemoryRaxV1);
+    assert_eq!(base.memory[0].initial_bytes_hex, "0f5900");
+    let (input, good) = run(MULPS_M128_MEMORY_RAX, "interpreter", 0);
+    od_testkit::v2::compare(&input, &good, &good).unwrap();
+    let snapshot = match &good.snapshot {
+        Observation::Available { value } => value,
+        _ => panic!("missing MULPS m128 snapshot"),
+    };
+    assert_eq!(
+        snapshot.state.sse.as_ref().unwrap().xmm[0],
+        "00008040000080400000803e0000403f"
+    );
+    assert_eq!(snapshot.state.sse.as_ref().unwrap().mxcsr, HexU64(0x1f80));
+    assert_eq!(
+        snapshot.memory[1].bytes_hex,
+        base.memory[1].initial_bytes_hex
+    );
+
+    let mut wrong_xmm = good.clone();
+    if let Observation::Available { value } = &mut wrong_xmm.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(..2, "ff");
+    }
+    assert!(wrong_xmm.validate_for(&input).is_err());
+    let mut wrong_memory = good.clone();
+    if let Observation::Available { value } = &mut wrong_memory.snapshot {
+        value.memory[1].bytes_hex = "00000000000000000000000000000000".into();
+    }
+    assert!(wrong_memory.validate_for(&input).is_err());
+    let mut wrong_controls = good.clone();
+    if let Observation::Available { value } = &mut wrong_controls.snapshot {
+        value.mulps_controls.as_mut().unwrap().cr0_ts = true;
+    }
+    assert!(wrong_controls.validate_for(&input).is_err());
+    let mut missing_provenance = base.clone();
+    missing_provenance.provenance.source.clear();
+    assert!(missing_provenance.to_json().is_err());
+    for backend in [Backend::Jit, Backend::NativeX86] {
+        let mut relabeled = good.clone();
+        relabeled.backend = backend;
+        assert!(relabeled.validate_for(&input).is_err());
+    }
+    assert!(matches!(
+        run(MULPS_M128_MEMORY_RAX, "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    assert!(matches!(
+        run(MULPS_M128_MEMORY_RAX, "native", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    let mut invalid_mxcsr = base.clone();
+    invalid_mxcsr.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f00);
+    assert!(invalid_mxcsr.to_json().is_err());
+    let mut invalid_ftz = base.clone();
+    invalid_ftz.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x9f80);
+    assert!(invalid_ftz.to_json().is_err());
+    for controls in [
+        od_testkit::v2::SubpsControlSnapshot {
+            sse_available: false,
+            cr0_ts: true,
+            ..base.mulps_controls.unwrap()
+        },
+        od_testkit::v2::SubpsControlSnapshot {
+            cr0_em: true,
+            ..base.mulps_controls.unwrap()
+        },
+        od_testkit::v2::SubpsControlSnapshot {
+            cr4_osfxsr: false,
+            ..base.mulps_controls.unwrap()
+        },
+        od_testkit::v2::SubpsControlSnapshot {
+            cr0_ts: true,
+            ..base.mulps_controls.unwrap()
+        },
+    ] {
+        let mut case = base.clone();
+        case.case_id.push_str("_gated");
+        case.mulps_controls = Some(controls);
+        case.expected_exit = ExpectedExit::Exception;
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let snapshot = match &result.snapshot {
+            Observation::Available { value } => value,
+            _ => panic!("missing gated MULPS m128 snapshot"),
+        };
+        let expected_vector = if controls.sse_available && !controls.cr0_em && controls.cr4_osfxsr {
+            7
+        } else {
+            6
+        };
+        let exception = match &snapshot.exception {
+            Observation::Available {
+                value: Some(exception),
+            } => exception,
+            _ => panic!("missing gated MULPS m128 exception"),
+        };
+        assert_eq!(exception.vector, expected_vector);
+    }
+
+    let vectors = [
+        (
+            "nan_priority",
+            [0x7fc1_2345, 0x7f80_0001, 0x3f80_0000, 0xffc5_4321],
+            [0x3f80_0000, 0x3f80_0000, 0x3f80_0000, 0x7f80_0001],
+        ),
+        (
+            "nan_suppresses_denormal",
+            [0x7fc0_2345, 0x3f80_0000, 0x3f80_0000, 0x3f80_0000],
+            [1, 0x3f80_0000, 0x3f80_0000, 0x3f80_0000],
+        ),
+        (
+            "zero_infinity",
+            [0, 0x8000_0000, 0x7f80_0000, 0xff80_0000],
+            [0x7f80_0000, 0xff80_0000, 0x3f80_0000, 0x3f80_0000],
+        ),
+        (
+            "signed_zeros",
+            [0, 0x8000_0000, 0, 0x8000_0000],
+            [0x3f80_0000, 0xbf80_0000, 0x8000_0000, 0x8000_0000],
+        ),
+        (
+            "tiny_wpr_ties",
+            [0x0080_0000, 0x0080_0001, 0x3f80_0001, 0x0080_0000],
+            [0x3f7f_ffff, 0x3f7f_fffe, 0x3f80_0001, 0x3f7f_ffff],
+        ),
+        (
+            "overflow",
+            [0x7f7f_ffff, 0xff7f_ffff, 0x7f7f_ffff, 0x3f80_0000],
+            [0x4000_0000, 0x4000_0000, 0x3f80_0000, 0x7f80_0000],
+        ),
+        (
+            "mixed_ie_de_oe_ue_pe",
+            [0, 1, 0x7f7f_ffff, 1],
+            [0x7f80_0000, 0x3f80_0000, 0x4000_0000, 0x3f00_0000],
+        ),
+    ];
+    let as_hex = |lanes: [u32; 4]| {
+        lanes
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    for (stem, lhs, rhs) in vectors {
+        for rc in 0..4u64 {
+            for sticky in 0..64u64 {
+                let mut case = base.clone();
+                case.case_id = format!("s2_37ds_{stem}_rc{rc}_sticky{sticky}");
+                case.initial_state.sse.as_mut().unwrap().xmm[0] = as_hex(lhs);
+                case.memory[1].initial_bytes_hex = as_hex(rhs);
+                case.initial_state.sse.as_mut().unwrap().mxcsr =
+                    HexU64(0x1f80 | (rc << 13) | sticky);
+                let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                od_testkit::v2::compare(&input, &result, &result).unwrap();
+                if stem == "nan_suppresses_denormal" {
+                    let snapshot = match &result.snapshot {
+                        Observation::Available { value } => value,
+                        _ => panic!("missing MULPS NaN/denormal snapshot"),
+                    };
+                    assert_eq!(
+                        snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 0x02,
+                        sticky & 0x02
+                    );
+                }
+                if stem == "mixed_ie_de_oe_ue_pe" {
+                    let snapshot = match &result.snapshot {
+                        Observation::Available { value } => value,
+                        _ => panic!("missing MULPS mixed-lane snapshot"),
+                    };
+                    assert_eq!(
+                        snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+                        0x3b | sticky
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]

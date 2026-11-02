@@ -2258,7 +2258,10 @@ fn execute_fixture_v2(
             },
             timeout,
         )
-    } else if loaded.fixture.profile == v2::Profile::LongMulpsRegistersV1 {
+    } else if matches!(
+        loaded.fixture.profile,
+        v2::Profile::LongMulpsRegistersV1 | v2::Profile::LongMulpsMemoryRaxV1
+    ) {
         let controls = loaded
             .fixture
             .mulps_controls

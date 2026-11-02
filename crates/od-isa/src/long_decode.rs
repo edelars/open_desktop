@@ -1076,6 +1076,8 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only exact legacy `0F 59 00` MULPS m128-at-RAX form.
+    MulpsMemoryRax,
     /// Local-only canonical no-prefix SUBPS register pair.
     SubpsRegister {
         destination: u8,
@@ -3979,6 +3981,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && !prefixes.address_override
             && prefixes.rex.is_none()
             && prefix_count == 0;
+        let mulps_memory_rax = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x59
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && prefixes.rex.is_none()
+            && prefix_count == 0;
         let subsd_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x5c
             && prefixes.group1 == Some(0xf2)
@@ -5198,12 +5208,17 @@ impl<M: GuestMemory> Fetch<'_, M> {
             (OpcodeMap::Escape0f, 0x59) if mulps_register => {
                 let modrm = self.byte()?;
                 if modrm >> 6 != 3 {
-                    return Err(self.unsupported(opcode));
-                }
-                let rex = prefixes.rex.unwrap_or(0x40);
-                Operation::MulpsRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                    if modrm == 0 && mulps_memory_rax {
+                        Operation::MulpsMemoryRax
+                    } else {
+                        return Err(self.unsupported(opcode));
+                    }
+                } else {
+                    let rex = prefixes.rex.unwrap_or(0x40);
+                    Operation::MulpsRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x5c) if subps_register => {
@@ -13664,6 +13679,33 @@ mod tests {
                 !Memory::new(bytes)
                     .decode()
                     .is_ok_and(|decoded| decoded.operation == Operation::SubpsMemoryRax),
+                "accepted {bytes:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mulps_memory_rax_decodes_only_exact_0f_59_00() {
+        let mut exact = Memory::new(&[0x0f, 0x59, 0x00]);
+        let decoded = exact.decode().unwrap();
+        assert_eq!(decoded.operation, Operation::MulpsMemoryRax);
+        assert_eq!(decoded.length, 3);
+        for bytes in [
+            &[0x66, 0x0f, 0x59, 0x00][..],
+            &[0xf2, 0x0f, 0x59, 0x00][..],
+            &[0xf3, 0x0f, 0x59, 0x00][..],
+            &[0x48, 0x0f, 0x59, 0x00][..],
+            &[0x0f, 0x59, 0x40, 0x00][..],
+            &[0x0f, 0x59, 0x01][..],
+            &[0xc5, 0xf8, 0x59, 0x00][..],
+            &[0xc4, 0xe1, 0x78, 0x59, 0x00][..],
+            &[0x62, 0xf1, 0x7c, 0x08, 0x59, 0x00][..],
+            &[0x0f, 0x59][..],
+        ] {
+            assert!(
+                !Memory::new(bytes)
+                    .decode()
+                    .is_ok_and(|decoded| decoded.operation == Operation::MulpsMemoryRax),
                 "accepted {bytes:02x?}"
             );
         }
