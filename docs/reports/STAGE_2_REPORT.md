@@ -22017,6 +22017,7 @@ See [standalone report](S2_30DC_X87_FSUBRP_PRECISION.md),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dc-bounded-fsubrp-sti-st0-de-e0e7),
 [plan](../plans/STAGE_2.md#s2-30dc-bare-fsubrp-sti-st0-with-bounded-fcw-precision),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dc-bounded-fsubrp-fixture-coverage).
+
 ## S2-37dt — DIVPS XMM0,m128 [RAX]
 
 Added the exact legacy `0F 5E 00` Long64 interpreter profile with SSE bit 25,
@@ -22032,6 +22033,17 @@ denial. Full validation passed: `od-isa` 1,847, `od-testkit` 455, runner unit
 tests 119 and serialized fixture tests 502. Formatting, workspace all-target
 offline check, diff check and Graphify refresh passed. The isolated layout check
 reports the worktree `.git` pointer and two absent historical oracle manifests
-already tracked by ISSUE-023. Independent Sol/high review is pending in [the
-standalone report](S2_37DT_DIVPS_MEMORY.md). No physical x86 acceptance is
-claimed. See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dt--masked-only-long64-divps-xmm0m128-rax), [plan](../plans/STAGE_2.md#s2-37dt--masked-only-legacy-long64-divps-xmm0m128-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dt--divps-xmm0m128-rax).
+already tracked by ISSUE-023. Independent Sol/high review is clean. No physical
+x86 acceptance is claimed. See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dt--masked-only-long64-divps-xmm0m128-rax), [plan](../plans/STAGE_2.md#s2-37dt--masked-only-legacy-long64-divps-xmm0m128-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dt--divps-xmm0m128-rax).
+
+## Main integration: S2-30dc + S2-37dt
+
+После переноса bounded `FSUBRP ST(i),ST(0)` и masked-only memory `DIVPS`
+полные проверки main прошли: `od-isa` 1,849; `od-testkit` 455; runner 119 unit
+и 503 serialized fixture tests; `od-x86-runner` 8 library + 4 binary tests.
+Workspace all-target offline check, formatting, layout и `git diff --check`
+прошли. Graphify AST refresh: 11,506 nodes, 24,909 edges, 346 communities.
+Независимые Sol/high reviews обоих срезов чистые. Старые неизвестные локальные
+изменения удалены в двух неактивных Stage 3 worktree; чистые Stage 3 worktree
+с уникальными неперенесёнными коммитами сохранены. Физическая x86-проверка не
+выполнялась; Этап 2 остаётся открытым.

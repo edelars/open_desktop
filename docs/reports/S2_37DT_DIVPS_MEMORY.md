@@ -48,7 +48,15 @@ prefixes, REX, other ModR/M, truncated input, VEX and EVEX forms.
   the isolated worktree `.git` pointer is reported as an unmapped root file,
   and two historical Stage 1/2 oracle manifest symlinks target absent files
   already tracked by ISSUE-023.
-- Independent Sol/high review is pending.
+- Independent Sol/high review is clean: exact encoding, SSE gate priority,
+  MXCSR admission, read16 rollback, lane flags, independent memory-RHS oracle,
+  complete-state validation and backend restrictions were reviewed.
+
+Integrated main validation after S2-30dc passed: `od-isa` 1,849, `od-testkit`
+455, runner 119 unit + 503 serialized fixtures, and x86-runner 8 library + 4
+binary tests. Workspace all-target offline check, formatting, layout and diff
+check passed. Graphify refreshed to 11,506 nodes, 24,909 edges and 346
+communities.
 
 No physical x86 acceptance is claimed. The profile does not cover complete
 unmasked overflow/underflow exception delivery.
