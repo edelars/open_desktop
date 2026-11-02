@@ -211,6 +211,16 @@ owner/MMU, SMC, cache, dispatcher, Mini, M1, Stage 2, physical-x86 or
 performance conclusion follows. See the
 [S3-20cu report](../reports/STAGE_3_S3-20cu_2026-11-01.md).
 
+#### S3-20cv: exact RIP-relative Dword load with disp32
+
+The shared typed-IR Dword-load path admits the six-byte singleton
+`8B 05 id` (`MOV EAX,[RIP+disp32]`). The decoder-owned `NextRip` is `A+6`;
+the effective guest address uses this next-instruction address and the signed
+disp32. Source bytes bind to the site and the PC map has a single boundary at
+`A+6`. This adds no other RIP-relative memory form, dword address form,
+production owner/MMU, or performance conclusion. See the
+[S3-20cv report](../reports/STAGE_3_S3-20cv_2026-11-01.md).
+
 #### S3-27i: disp32 Dword-store canonical-end and range-overflow checks
 
 The host-side regression `s3_27i_disp32_dword_store_checks_canonical_end_and_range_overflow`
@@ -219,6 +229,16 @@ checks canonical-end and range-overflow behavior for the bounded S3-20cu
 original host fixture; it does not broaden instruction admission or establish
 production owner/MMU integration or complete S3-27 fault recovery. See the
 [S3-27i report](../reports/STAGE_3_S3-27i_2026-11-01.md).
+
+#### S3-27j: published dword-store PC-map parity and lifetime
+
+The host integration test
+`published_dword_disp8_and_disp32_store_pc_maps_match_artifacts_survive_drop_and_republish`
+checks map/artifact parity, map retention after artifact drop, and
+republishing for the bounded disp8/disp32 dword-store artifacts. S3-34af pins
+this identity as a harness gate. This is test-only publication/lifetime
+evidence; it does not establish host-fault recovery or complete S3-27. See the
+[S3-27j report](../reports/STAGE_3_S3-27j_2026-11-01.md).
 
 #### S3-20c: one-byte SIB extension
 
