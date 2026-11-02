@@ -5135,7 +5135,7 @@ fn fld_m32_m64_budget_one_normal_unsupported_rejects_admitted_sticky_status() {
             "{opcode} SF Unsupported fixture"
         );
 
-        for admitted_status in [0x0004, 0x0008] {
+        for admitted_status in [0x0004, 0x0008, 0x0041] {
             fixture.initial_state.x87.as_mut().unwrap().status_word = HexU64(admitted_status);
             assert!(
                 fixture.validate().is_err(),

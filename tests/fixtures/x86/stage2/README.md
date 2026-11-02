@@ -3935,6 +3935,19 @@ seed SF, and a schema regression rejects ZE-only Unsupported fixtures because
 ZE is now admitted. No ZE producer or physical x86 claim is made; native/JIT
 admission remains closed and ISSUE-019 remains open. See [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dv-historical-sticky-ze-for-exact-binary32binary64-fld), [plan](../../../../docs/plans/STAGE_2.md#s2-31dv-admit-historical-sticky-ze-through-exact-binary32binary64-fld), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dv--historical-sticky-ze-for-bounded-m32m64-fld).
 
+## S2-31dw historical SF with IE in bounded m32/m64 FLD
+
+The exact bare `D9 00`/`DD 00` FLD gates admit historical SF only when IE is
+also set. SF-only, ES and B remain pre-read rejects; the ISA test includes an
+SNaN operand to prove current IE cannot make SF-only admissible. Its 65,536
+full-state cases cover both widths, positive and negative zero/Normal/subnormal/
+SNaN vectors, all 32 DE/ZE/OE/UE/PE combinations with SF+IE, the four FCWs,
+every TOP and prior C1, including payload/tag/metadata and memory canaries.
+FLD→FNSTSW observes SF+IE and FNCLEX clears both flags. The schema-v2 regression
+keeps the exact bare budget-one/no-stop Unsupported case from being justified
+by SF+IE. Native/JIT and physical x86 acceptance remain closed; no SF producer
+or exception-delivery claim is made. See [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dw-historical-sf-with-ie-for-exact-binary32binary64-fld), [plan](../../../../docs/plans/STAGE_2.md#s2-31dw-admit-historical-sfie-through-exact-binary32binary64-fld), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dw--historical-sf-with-ie-for-bounded-m32m64-fld).
+
 
 ### S2-30as signed-zero FSTP ST(i)
 

@@ -22639,3 +22639,26 @@ refresh (11,858 nodes, 25,727 edges, 334 communities). Sol/high review is clean
 after fixing forged JIT/native result acceptance and adding required
 tie/fault/RC coverage. Main layout validation passes. No physical x86
 acceptance is claimed. See the [standalone report](S2_38O_MINSD_MEMORY_UNMASKED.md), [CPU contract](../specs/CPU_CONTRACT.md#s2-38o--exact-minsd-unmasked-memory-exit-for-m64-rax), [plan](../plans/STAGE_2.md#s2-38o-exact-long64-minsd-xmm0m64-rax-memory-profile-with-mixed-imdm-exit), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38o-minsd-m64-unmasked-invalid-and-denormal).
+
+## S2-31dw — historical SF with IE for bounded m32/m64 `FLD`
+
+The exact bare `D9 00`/`DD 00` FLD gates now admit historical SF when IE is
+also set. SF-only remains rejected before reading, even with an SNaN source;
+ES and B remain pre-read rejects. Current source conversion and IE/DE effects,
+other historical sticky flags, C1 clearing, stack push and metadata behavior
+are preserved. Schema-v2's exact bare budget-one/no-stop Unsupported predicate
+now accepts SF-only as a valid rejection reason but does not treat SF+IE as
+one.
+
+The 65,536-case full-state matrix spans both widths, both signs for zero,
+Normal, subnormal and SNaN vectors, all 32 other sticky-flag combinations,
+four FCWs, all TOP values and both prior C1 values. It verifies complete state,
+payloads/tags/metadata, one source read and memory canaries. SF-only/ES/B atomic
+rejections, including SF-only with SNaN, and FLD→FNSTSW→FNCLEX observation and
+clearing are covered. The eight focused ISA tests, focused schema test, and all
+522 runner `fixture_v2` tests passed; workspace check, formatting, diff and
+Graphify passed. Layout check reports the existing unmapped `.git` marker and
+two broken oracle-manifest links recorded in the
+[standalone report](S2_31DW_FLD_HISTORICAL_SF.md). No SF producer, general
+exception delivery, JIT/native admission or physical x86 acceptance is claimed;
+ISSUE-019 remains open. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dw-historical-sf-with-ie-for-exact-binary32binary64-fld), [plan](../plans/STAGE_2.md#s2-31dw-admit-historical-sfie-through-exact-binary32binary64-fld), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31dw-historical-sf-with-ie-in-bounded-m32m64-fld).
