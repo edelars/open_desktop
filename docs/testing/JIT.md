@@ -619,6 +619,26 @@ remain pending; these pins do not establish behavior. ISSUE-028 remains open;
 Stage 2 is excluded; Mini/M1 are deferred; Stage 3 remains partial. See the
 [S3-34cl report](../reports/STAGE_3_S3-34cl_2026-11-02.md).
 
+## S3-20fb: exact address32 RAX-indexed no-base SIB Dword load
+
+The bounded runtime admits only the eight-byte form `67 8B 04 05 disp32`:
+address-size override plus a no-base, RAX-index, scale-1 SIB Dword load. Its
+effective address is `zero_extend_64((low32(original RAX) +
+sign_extend(disp32)) mod 2^32)`. A checked contiguous four-byte read writes EAX
+and zero-extends RAX; successful retirement commits `A+8`. Other GPRs and
+RFLAGS are preserved. Exact source/site binding and host acceptance identities
+are pinned by S3-34cm.
+
+Runtime commit `bf8dae1` passed independent Sol/high static review. Its source
+contains representative signed disp32 values, low32 wrap cases, interpreter
+parity, full GPR/RFLAGS and RIP checks, source-byte/site binding, entry STOP,
+budget/backend-error retries, and callback STOP commit/no-replay. Those gates
+were not executed: no behavior tests or builds ran, so exact results remain
+pending. Stage 2 was ignored/excluded; Mini/M1 are deferred; Stage 3 remains
+partial and ISSUE-028 remains open. See the
+[S3-20fb report](../reports/STAGE_3_S3-20fb_2026-11-02.md) and
+[S3-34cm harness report](../reports/STAGE_3_S3-34cm_2026-11-02.md).
+
 ## S3-34cm: harness gates for S3-20fb addr32 RAX-indexed Dword load
 
 Harness change `971554d` pins two exact acceptance gates for the eight-byte

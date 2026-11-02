@@ -1004,6 +1004,26 @@ a memory-operation error. A callback STOP follows the committed write and
 cannot replay it when re-entering at `A+7`. See the
 [S3-20fa report](../reports/STAGE_3_S3-20fa_2026-11-02.md).
 
+#### S3-20fb: exact address32 RAX-indexed no-base SIB Dword load
+
+The shared typed-IR Dword-load path admits only the exact eight-byte,
+unprefixed-except-for-address-size form `67 8B 04 05 disp32`
+(`MOV EAX,[low32(RAX)+sign-extended disp32]`). SIB has no base, RAX as index,
+scale 1, Dword address size, and Dword transfer width. The effective address
+is `zero_extend_64((low32(original_RAX) + sign_extend(disp32)) mod 2^32)`;
+calculation uses pre-instruction RAX. One contiguous checked four-byte read
+writes EAX and zero-extends the result into RAX. Other GPRs and RFLAGS remain
+unchanged, and successful retirement commits `A+8`.
+
+The exact source bytes and decoded site metadata stay bound, including the
+address-size prefix and all four displacement bytes. Partial windows,
+trailing bytes, forged fields, extra prefixes, other indexes/scales, base
+forms, and transfer widths are not admitted. Entry guards do not read memory;
+a backend error before commit preserves CPU state and RIP, and a retry uses
+original RAX. This address calculation always yields a zero-extended 32-bit
+address; this bounded slice does not claim production MMU integration. See
+the [S3-20fb report](../reports/STAGE_3_S3-20fb_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
