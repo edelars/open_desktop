@@ -80,6 +80,7 @@ SELF_TEST_NAMES = (
     "test_s3_34ab_rbx_disp8_dword_store_gates_are_pinned_and_fail_closed",
     "test_s3_34ac_published_dword_disp8_disp32_load_maps_gate_is_pinned_and_fail_closed",
     "test_s3_34ad_rbx_disp32_dword_store_gates_are_pinned_and_fail_closed",
+    "test_s3_34ae_disp32_dword_store_boundary_gate_is_pinned_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_38d_result_state_validator_rejects_corruption",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
@@ -594,6 +595,10 @@ ADDITIONAL_TEST_GATES = (
         "s3_34ad_host_dword_rbx_disp32_store_checked_semantics", "local_acceptance", "od-host",
         "tests::s3_20cu_disp32_dword_store_preserves_checked_semantics",
     ),
+    (
+        "s3_34ae_host_disp32_dword_store_canonical_end_range_overflow", "local_acceptance", "od-host",
+        "tests::s3_27i_disp32_dword_store_checks_canonical_end_and_range_overflow",
+    ),
 )
 RUST_TEST_TARGET_OVERRIDES = {
     (
@@ -612,6 +617,16 @@ RUST_TEST_TARGET_OVERRIDES = {
         "od-host",
         "published_dword_disp8_and_disp32_load_pc_maps_match_artifacts_survive_drop_and_republish",
     ): ("--test", "memory_corpus"),
+}
+RUST_TEST_ARGV_OVERRIDES = {
+    (
+        "od-host",
+        "tests::s3_27i_disp32_dword_store_checks_canonical_end_and_range_overflow",
+    ): (
+        "cargo", "test", "-p", "od-host", "--lib",
+        "tests::s3_27i_disp32_dword_store_checks_canonical_end_and_range_overflow",
+        "--offline", "--", "--exact",
+    ),
 }
 RUST_TEST_GATES = (
     *(
@@ -879,6 +894,9 @@ def validate_required_steps(
 
 
 def rust_test_argv(package: str, identity: str) -> list[str]:
+    argv_override = RUST_TEST_ARGV_OVERRIDES.get((package, identity))
+    if argv_override is not None:
+        return list(argv_override)
     target = RUST_TEST_TARGET_OVERRIDES.get((package, identity), ("--lib",))
     return [
         "cargo", "test", "--offline", "-p", package, *target, identity,
