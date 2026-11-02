@@ -3180,6 +3180,10 @@ fn build_block_with_profile(
                     || code
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(4))
+                        .is_some_and(|bytes| bytes[..3] == [0x67, 0x89, 0x45])
+                    || code
+                        .bytes
+                        .get(guest_offset..guest_offset.saturating_add(4))
                         .is_some_and(|bytes| {
                             bytes[..3] == [0x67, 0x89, 0x04]
                                 && matches!(bytes[3], 0x0b | 0x4b | 0x8b | 0xcb)
@@ -4991,7 +4995,9 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
         && instruction.address_size == OperandSize::Dword
         && matches!(&instruction.operation, Operation::Mov { dst: Operand::Memory(operand), .. }
             if operand.address_size == OperandSize::Dword
-                && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+                && (matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+                    || instruction.length == 4
+                        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp)))
                 && operand.index.is_none()
                 && operand.scale == 1
                 && ((instruction.length == 3 && operand.displacement == 0)
