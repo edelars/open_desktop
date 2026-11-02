@@ -1118,6 +1118,28 @@ memory error. Callback STOP follows the committed load, and re-entry at
 coverage, not production owner/MMU integration. See the
 [S3-20ff report](../reports/STAGE_3_S3-20ff_2026-11-02.md).
 
+#### S3-20fh: exact address64 RAX-base Dword load with signed disp32
+
+The shared typed-IR Dword-load path admits only the six-byte unprefixed form
+`8B 80 id` (`MOV EAX,[RAX+sign-extended disp32]`). Address size is Qword,
+transfer width is Dword, and the sole effective-address input is the
+pre-instruction full-width RAX plus signed disp32 with wrapping u64
+semantics. One contiguous checked four-byte read writes EAX and zero-extends
+it into RAX; other GPRs and RFLAGS remain unchanged, and successful
+retirement commits `A+6`.
+
+The exact source bytes and decoded site metadata remain bound, including all
+four displacement bytes. Partial/trailing instructions, prefixes, other
+opcodes, bases, data registers, address sizes, and transfer widths are not
+admitted. Entry STOP, stop-address, and exhausted-budget guards perform no
+read. A backend error before commit leaves state unchanged and permits retry
+from the same input. Noncanonical start/end addresses fault before the
+helper; address-range overflow remains a distinct memory error. Callback
+STOP follows a committed load, and re-entry at `A+6` does not repeat the
+read. This is bounded borrowed-memory fixture coverage, not production
+owner/MMU integration. See the
+[S3-20fh report](../reports/STAGE_3_S3-20fh_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact

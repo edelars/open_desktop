@@ -816,6 +816,32 @@ ignored/excluded; Mini/M1 are deferred; Stage 3 remains partial. See the
 [S3-20ff report](../reports/STAGE_3_S3-20ff_2026-11-02.md) and
 [S3-34cq harness report](../reports/STAGE_3_S3-34cq_2026-11-02.md).
 
+## S3-20fh: exact address64 RAX-base Dword load with signed disp32
+
+Run the exact gates:
+
+```sh
+cargo test --offline -p od-jit --lib memory_load_v2::tests::ir_dword_rax_disp32_load_binds_signed_source_bytes_to_its_site -- --exact --test-threads=1
+cargo test --offline -p od-host --lib tests::s3_20fh_rax_disp32_dword_load_uses_original_full_rax -- --exact --test-threads=1
+```
+
+Admit only the six-byte unprefixed form `8B 80 id`
+(`MOV EAX,[RAX+sign-extended disp32]`), with Qword effective address and
+Dword transfer width. Effective address uses the original full-width RAX
+plus signed disp32 with wrapping u64 semantics. One contiguous checked
+four-byte read zero-extends EAX into RAX; successful retirement advances RIP
+to `A+6`. Bind all four displacement bytes to the decoded site and reject
+prefixes, truncated or trailing source, and neighboring forms.
+
+Runtime source `8f5d9bb` passed independent Sol/high static review after JIT
+and host coverage fixes. The source covers signed displacement boundaries,
+full-width original RAX, interpreter/JIT state parity, entry-guard and
+backend-error retry, #GP before read, range overflow, and committed callback
+STOP without replay. No behavior tests, build, formatting, Cargo check, or
+Python harness ran; the exact gates remain pending. ISSUE-028 remains open;
+Stage 2 was excluded; Mini/M1 are deferred; Stage 3 remains partial. See the
+[S3-20fh report](../reports/STAGE_3_S3-20fh_2026-11-02.md).
+
 ## S3-34cq: harness gates for S3-20ff RAX disp8 Dword load
 
 Harness source `ee97e4f` pins the exact JIT source/site and host acceptance
