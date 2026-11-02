@@ -9992,6 +9992,32 @@ See the [S2-30cq report](../reports/S2_30CQ_X87_FSUB_PRECISION.md),
 [shared report](../reports/STAGE_2_REPORT.md#s2-30cq--bounded-fsub-st0-sti), and
 [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
 
+## Local S2-30di: large-gap `FSUB ST(0), ST(i)` (`D8 E0..E7`)
+
+Extend only exact bare Long64 `D8 E0..E7` from S2-30cq to accept normalized
+Normal-to-Normal exponent gaps above 64 through 32765. Keep the same present
+x87 state, absent FCS/FDS selectors, twelve all-masked PC24/53/64 FCWs,
+`FSW & 0x80df == 0`, Valid tags, and canonical nonzero Normal operand and
+result checks. Compute FSUB only after validating the original operands, by
+flipping the sign bit in a local copy of the RHS and passing that copy to the
+existing S2-29af direct-addition precision helper. Do not change the helper.
+
+The large-gap admission is explicit and instruction-specific: shared bounded
+FSUB arithmetic preflight stays capped at gap 64 for `DC` FSUBR and `DE`
+FSUBRP. Gaps at or below 64 preserve the existing results. Cancellation or
+zero (including alias `i=0`), subnormal, overflow, malformed input, and other
+unsupported results refuse atomically.
+
+On success, write physical TOP, accumulate PE from `inexact`, replace C1 from
+the pre-carry `incremented` diagnostic, preserve C0/C2/C3 by local policy,
+retain TOP/tags/source and unrelated state, record FIP=old RIP, advance RIP by
+two and retire once. Register execution performs no data access. JIT/native
+and physical x86 acceptance remain closed. See the
+[S2-30di report](../reports/S2_30DI_X87_FSUB_LARGE_GAPS.md),
+[plan](../plans/STAGE_2.md#s2-30di-large-gap-fsub-st0-sti-admission),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30di-large-gap-fsub-fixture-coverage),
+and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
 ## Local S2-30cr: bounded `FSUBR ST(0), ST(i)` (`D8 E8..EF`)
 
 Only exact bare Long64 `D8 E8..EF` is admitted. Use the S2-30cq present-x87,

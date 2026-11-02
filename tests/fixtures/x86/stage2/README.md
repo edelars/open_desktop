@@ -1438,6 +1438,15 @@ suite separately covers gap boundaries through 32765 and verifies `DC`/`DE`
 gap-65 rejection. The fixture is interpreter evidence only, not physical x86
 acceptance.
 
+### S2-30di large-gap FSUB fixture coverage
+
+`s2_30di_fsub_st0_st1_gap65_up.case.json` is a literal `D8 E1` schema-v2
+case with ST(0)=+1 and actual Normal RHS `0000000000000080be3f` (`2^-65`).
+PC=53 round-up yields +1 with sticky PE and C1. The runner checks the full x87
+snapshot and confirms JIT denial; ISA coverage independently checks gaps 64,
+65, 66 and 32765 and atomic DC/DE large-gap refusal. This is interpreter
+evidence only, not physical x86 acceptance.
+
 ### S2-30dg large-gap reverse FADD fixture coverage
 
 `s2_30dg_fadd_sti_st0_gap65_up.case.json` is a literal `DC C1` schema-v2

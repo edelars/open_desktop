@@ -21642,6 +21642,25 @@ admission check. No physical x86/native/JIT acceptance is claimed. See the
 [plan](../plans/STAGE_2.md#s2-30cq-bare-fsub-st0-sti-with-bounded-fcw-precision),
 and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
 
+## S2-30di — large-gap `FSUB ST(0), ST(i)`
+
+Extended only bare Long64 `D8 E0..E7` to normalized Normal operand gaps through
+32765. The admission flag is enabled only on this forward FSUB path; shared
+reverse/pop FSUBR/FSUBRP validation retains the 64-gap bound. Original operands
+pass the canonical Normal/tag/state checks before a local RHS sign flip, and
+the existing S2-29af precision-add helper performs the rounding. Existing
+FCW, PE/C1, TOP, source and unrelated-state behavior is preserved. Alias
+cancellation and unsupported results still reject atomically.
+
+Validation uses an independent integer-magnitude oracle at gaps 64, 65, 66,
+and 32765 across all twelve FCWs, signs/orders, TOP values and source indices.
+Literal gap-65 fixture coverage confirms the actual `2^-65` RHS and JIT denial;
+negative DC FSUBR and DE FSUBRP cases preserve atomic refusal. See the
+[standalone report](S2_30DI_X87_FSUB_LARGE_GAPS.md),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30di-large-gap-fsub-st0-sti-d8-e0-e7),
+[plan](../plans/STAGE_2.md#s2-30di-large-gap-fsub-st0-sti-admission), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30di-large-gap-fsub-fixture-coverage).
+
 ## S2-30cr — bounded `FSUBR ST(0), ST(i)`
 
 Added bounded FCW precision execution for exact bare Long64 `D8 E8..EF`.
