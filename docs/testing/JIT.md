@@ -573,6 +573,27 @@ The admitted forms are exactly seven unprefixed bytes: `8B 04 45/85/C5 disp32` (
 
 Runtime source `cda869f` and host-fixture follow-up `a9cc24a` passed independent Sol/high static review after two fixture corrections. Static review covered exact source/site binding, three scales, displacement and wrapping cases, entry-guard/backend retries, canonical-address `#GP`, checked-range overflow, interpreter parity, and callback STOP no-replay. No test, build, format, Cargo check, or Python harness run was performed; exact JIT and host gates remain pending. Harness S3-34ck pins the identities with 248 gates (238 acceptance, 10 lifecycle), 266 local steps, and 108 self-test names; static review passed but the harness was not run. ISSUE-028 remains open. Stage 2 stayed outside this evidence; concurrent Stage 2 runs were ignored per user instruction. Mini/M1 remain deferred and Stage 3 remains partial. See the [S3-20ez report](../reports/STAGE_3_S3-20ez_2026-11-02.md).
 
+## S3-20fa: exact address64 scaled RAX-indexed no-base SIB Dword store
+
+The bounded runtime admits only seven-byte unprefixed forms
+`89 04 45/85/C5 disp32` (`MOV [RAX*scale+signed disp32],EAX`), scales 2/4/8.
+The effective address is based on original full64 RAX multiplied by scale,
+then sign-extended disp32 is added with u64 wrapping. The contiguous checked
+four-byte write stores low32 of the same pre-instruction RAX; successful
+retirement advances RIP by seven. Exact JIT source/site and host acceptance
+identities are pinned by S3-34cl.
+
+Runtime commit `7479a1e` passed independent Sol/high static review. The source
+contains scale/displacement cases, modulo-2^64 product/add wrap cases,
+pre-instruction address/data checks, interpreter parity, entry guards,
+backend-error no-commit/retry, noncanonical `#GP`, range overflow, callback
+STOP commit, and no replay at `A+7`. The JIT identity checks all source bytes,
+scale and decoded operand metadata. None of those behavior gates was run:
+tests/builds/checks were not executed and the exact gates remain pending.
+ISSUE-028 remains open; Stage 2 is excluded; Mini/M1 are deferred; Stage 3
+remains partial. See the [S3-20fa report](../reports/STAGE_3_S3-20fa_2026-11-02.md)
+and [S3-34cl harness report](../reports/STAGE_3_S3-34cl_2026-11-02.md).
+
 ## S3-34ck: harness gates for S3-20ez scaled RAX-indexed Dword load
 
 Harness source `2dc2bc4`, integrated as `1b8ebba`, pins the exact JIT and host identities for the seven-byte unprefixed scales 2/4/8 forms `8B 04 45/85/C5 disp32`: `memory_load_v2::tests::ir_dword_rax_index_no_base_sib_scaled_disp32_load_binds_all_source_bytes_to_its_site` and `tests::s3_20ez_rax_index_no_base_sib_scaled_disp32_dword_load_uses_original_scaled_rax`. Gate IDs are `s3_34ck_ir_rax_index_no_base_sib_scaled_disp32_dword_load_source_binding` and `s3_34ck_host_rax_index_no_base_sib_scaled_disp32_dword_load_original_rax`. The self-test is `test_s3_34ck_rax_index_no_base_sib_scaled_disp32_dword_load_gates_are_pinned_and_fail_closed`.

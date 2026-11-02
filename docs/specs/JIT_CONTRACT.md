@@ -982,6 +982,28 @@ remains a memory-operation error. Other scales, indexes, base forms, prefixes,
 transfer widths, and neighboring encodings remain outside this exact
 admission. See the [S3-20ez report](../reports/STAGE_3_S3-20ez_2026-11-02.md).
 
+#### S3-20fa: exact address64 scaled RAX-indexed no-base SIB Dword store
+
+The shared typed-IR Dword-store path admits only the exact seven-byte,
+unprefixed forms `89 04 45/85/C5 disp32` (`MOV
+[RAX*scale+sign-extended disp32],EAX`) for scales 2, 4, and 8. SIB has no
+base and RAX as the index; address size is Qword and transfer width is Dword.
+The effective address is `(original_full64_RAX * scale +
+sign_extend(disp32)) mod 2^64`, with wrapping multiplication and addition.
+Both address and payload use pre-instruction RAX: one contiguous checked
+four-byte write stores its low32, and all GPRs/RFLAGS remain unchanged.
+Successful retirement commits `A+7`.
+
+Exact source bytes and decoded site metadata remain bound, including scale and
+all four displacement bytes; trailing bytes, partial windows, forged operand
+fields, and other prefixes/scales/index/base/transfer forms are rejected.
+Entry guards do not access memory. A pre-commit architectural or backend error
+preserves CPU state, RIP, and RAM; retry uses the original address/data.
+Noncanonical addresses produce guest `#GP`, while a checked range overflow is
+a memory-operation error. A callback STOP follows the committed write and
+cannot replay it when re-entering at `A+7`. See the
+[S3-20fa report](../reports/STAGE_3_S3-20fa_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
