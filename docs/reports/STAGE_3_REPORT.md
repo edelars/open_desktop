@@ -45,6 +45,17 @@ PC-map or performance result. See the
 [S3-20ed report](STAGE_3_S3-20ed_2026-11-02.md).
 
 
+S3-20ee adds the exact address64 RSP+signed-disp32 dword store `89 84 24 id`.
+The JIT source/site fixture checks nine representative signed values and all
+four displacement bytes; the host fixture checks interpreter parity, one
+width-four write, wrap-to-zero, faults, atomicity, STOP, and no-replay. On
+author runtime commit `7a07588`, `od-jit` passed 343/343 and exact S3-20ee plus
+adjacent S3-20ec JIT/host gates passed 1/1. After root integration (`6cac944`
+runtime, `1f32667` harness), the exact S3-20ee gates passed 1/1 and the full
+Python Stage 3 harness passed 89/89. Full `od-host` was not run. This bounded
+fixture does not establish a broad PC-map, performance, owner/MMU, or hardware
+result. See the [S3-20ee report](STAGE_3_S3-20ee_2026-11-02.md).
+
 S3-36e implementation is committed. Release preflight passed on Apple M3 Max
 with 2,400 frozen inputs and 4,800 parity trials. Calibration-only passed at
 2,048 repetitions per side with no scored pairs. Three scored runs retained 20
