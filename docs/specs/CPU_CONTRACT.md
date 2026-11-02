@@ -17632,6 +17632,12 @@ under ISSUE-019. Sticky status follows Intel SDM Rev. 093 Vol. 1 §8.1.3.3
 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=211)).
 See the [plan](../plans/STAGE_2.md#s2-31dy-admit-historical-ze-on-exact-raw-db38-fstp-m80fp).
 
+Integrated main verification: od-isa 1,915; od-testkit 455; od-runner 125 unit
+and 528 fixture tests; od-x86-runner 8 library + 5 binary tests. Workspace
+all-target offline check, formatting, layout and diff checks passed. Graphify is
+11,947 / 25,946 / 383; community labels were not refreshed without an LLM API
+key. Independent Sol/high review is clean. See the [implementation report](../reports/S2_31DY_FSTP_M80FP_ZE.md).
+
 ## S2-38r — exact MAXPD memory unmasked IM/DM
 
 The interpreter-only schema-v2 profile admits only exact Long64
@@ -17664,3 +17670,10 @@ Vol. 1 §§4.9.2, 11.5.3.1–3 and Appendix D
 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=211));
 Vol. 3A §16.1.3/Table 16-1. See the
 [plan](../plans/STAGE_2.md#s2-38r--exact-long64-maxpd-xmm0m128-rax-with-unmasked-imdm-exits).
+
+Integrated main verification: od-isa 1,915; od-testkit 455; od-runner 125 unit
+and 528 fixture tests; od-x86-runner 8 library + 5 binary tests. Workspace
+all-target offline check, formatting, layout and diff checks passed. Graphify is
+11,947 / 25,946 / 383; community labels were not refreshed without an LLM API
+key. Independent Sol/high review is clean. The Linux-only native preflight was
+not run on this macOS host. See the [implementation report](../reports/S2_38R_MAXPD_MEMORY_UNMASKED.md).

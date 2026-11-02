@@ -39,14 +39,22 @@ native-local-only classifier is explicitly checked for this profile.
 
 ## Verification
 
-`od-isa` passed 1,913 tests; `od-testkit` passed 455 tests; the full runner
-`fixture_v2` suite passed 527 tests. The S2-38r fixture matrix test passed 524
-generated cases. `cargo fmt --all -- --check` and
-`cargo check --workspace --all-targets --offline` passed. Graphify refreshed to
-11,938 nodes, 25,934 edges, and 373 communities. `tools/check_layout.py` could
-not pass in the isolated worktree: it flags the normal `.git` worktree pointer
-file and two pre-existing report links to ignored manifests absent from this
-worktree. `git diff --check` passed. Physical x86 acceptance is not claimed.
+The isolated worktree passed `od-isa` (1,913), `od-testkit` (455), the full
+runner `fixture_v2` suite (527), and the S2-38r 524-generated-case matrix.
+Formatting and workspace all-target offline check passed. Its layout check
+reported the normal `.git` worktree pointer and two pre-existing report links
+to ignored manifests absent from that checkout; the integrated main layout
+check passes.
+
+Integrated main suites passed: `od-isa` (1,915), `od-testkit` (455), runner
+(125 unit + 528 fixture tests), and `od-x86-runner` (8 library + 5 binary).
+Workspace all-target offline check, formatting, layout, and diff check passed.
+Graphify refreshed to 11,947 nodes, 25,946 edges, and 383 communities;
+community labels were not refreshed because no LLM API key is configured.
+Independent Sol/high review is clean. The Linux-only `native_v2` preflight test
+was not runnable on this macOS host. Physical x86 acceptance is not claimed.
 
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38r--exact-maxpd-memory-unmasked-imdm)
-and [Stage 2 plan](../plans/STAGE_2.md#s2-38r--exact-long64-maxpd-xmm0m128-rax-with-unmasked-imdm-exits).
+and [Stage 2 plan](../plans/STAGE_2.md#s2-38r--exact-long64-maxpd-xmm0m128-rax-with-unmasked-imdm-exits),
+[shared report](STAGE_2_REPORT.md#s2-38r--maxpd-xmm0m128-rax-with-unmasked-imdm-exits),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38r-maxpd-m128-unmasked-invalid-and-denormal).

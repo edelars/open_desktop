@@ -22732,3 +22732,45 @@ community labels were not refreshed without an LLM API key.
 Independent Sol/high review is clean after exact-form, control and backend
 guard fixes. Physical x86 acceptance is not claimed. See the [standalone
 report](S2_38Q_MINPD_MEMORY_UNMASKED.md), [CPU contract](../specs/CPU_CONTRACT.md#s2-38q--exact-minpd-memory-unmasked-imdm), [plan](../plans/STAGE_2.md#s2-38q--exact-long64-minpd-xmm0m128-rax-with-unmasked-imdm-exits), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38q-minpd-m128-unmasked-invalid-and-denormal).
+
+## S2-31dy — historical ZE on raw FSTP m80fp
+
+Only exact bare `DB 38` admits historical ZE by relaxing its local source
+status mask from `0x80c4` to `0x80c0`. SF/ES/B, FCW, source/tag/class and
+range gates remain in place. The raw ten-byte source is written unchanged;
+there is no conversion flag generation, and FSTP state commits only after a
+successful all-or-error write. Schema-v2 no longer accepts ZE alone as an
+Unsupported reason. JIT/native routes stay closed and no ZE producer was added.
+
+The interpreter matrix covers ZE plus all 32 combinations of IE/DE/OE/UE/PE
+across accepted classes, signs, FCWs, TOP and C1. ZE-only SNaN tests preserve
+the raw signaling payload without new IE. Malformed source/tag with ZE, faults,
+repeat stores, FNSTSW/FNCLEX, literal CLI, and backend denial are covered.
+Integrated main suites passed: od-isa 1,915; od-testkit 455; od-runner 125
+unit + 528 fixtures; od-x86-runner 8 library + 5 binary. Workspace check,
+formatting, layout and diff checks passed. Graphify: 11,947/25,946/383; labels
+were not refreshed without an LLM API key. Sol/high review is clean. Physical
+x86/native acceptance remains deferred under ISSUE-019. See the [standalone
+report](S2_31DY_FSTP_M80FP_ZE.md), [CPU contract](../specs/CPU_CONTRACT.md#s2-31dy--historical-ze-admission-for-raw-fstp-m80fp), [plan](../plans/STAGE_2.md#s2-31dy-admit-historical-ze-on-exact-raw-db38-fstp-m80fp), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31dy-historical-ze-on-raw-fstp-m80fp).
+
+## S2-38r — MAXPD XMM0,m128 [RAX] with unmasked IM/DM exits
+
+The strict interpreter-only schema-v2 profile accepts exact Long64 `66 0F 5F
+00`, distinct from masked S2-37cz memory MAXPD and unmasked S2-38j register
+MAXPD. Full fetch and exact-form rejection precede feature #UD and TS #NM.
+It requires 16-byte alignment regardless of AC and checks canonical48 span
+before one all-or-error `read16`; alignment/span faults yield #GP(0) with zero
+callbacks, while read failure follows the existing memory-error outcome after
+one callback and no architectural commit.
+
+Both binary64 lanes use MAXPD raw memory-RHS selection. The generated matrix
+covers 524 event/mask cases; separate vectors discriminate MAX from MIN, poison
+XMM1, and check NaN payloads and signed-zero ties. RC×64 prior sticky histories,
+lane aggregation, AC, memory-fault ordering, literal #XM/#UD results, schema
+tampering, and JIT/native result rejection are covered. Integrated main suites
+passed: od-isa 1,915; od-testkit 455; od-runner 125 unit + 528 fixtures; and
+od-x86-runner 8 library + 5 binary. Workspace check, formatting, layout and
+diff checks passed. Graphify: 11,947/25,946/383; labels were not refreshed
+without an LLM API key. Sol/high review is clean. Linux-only native preflight
+was not run on this macOS host; no physical x86 acceptance is claimed. See the
+[standalone report](S2_38R_MAXPD_MEMORY_UNMASKED.md), [CPU contract](../specs/CPU_CONTRACT.md#s2-38r--exact-maxpd-memory-unmasked-imdm), [plan](../plans/STAGE_2.md#s2-38r--exact-long64-maxpd-xmm0m128-rax-with-unmasked-imdm-exits), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38r-maxpd-m128-unmasked-invalid-and-denormal).

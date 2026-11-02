@@ -3357,6 +3357,18 @@ ISSUE-019. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-31dx
 [plan](../../../../docs/plans/STAGE_2.md#s2-31dx-admit-historical-ze-on-bounded-m32m64-fstfstp-stores),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dx--historical-ze-for-bounded-m32m64-fstfstp).
 
+### S2-31dy historical ZE on raw FSTP m80fp
+
+The literal DB38/FNSTSW fixture starts with ZE+OE and a Special-tagged SNaN.
+It verifies that the ten raw source bytes, including the signaling payload,
+are stored unchanged; ZE/OE remain sticky, C1 clears, and the FSTP pop commits
+after the write. Schema and ISA tests cover all accepted source classes and
+other sticky histories, ZE-set malformed source/tag rejection, repeated
+stores, rollback and FNCLEX. JIT/native execution is denied; no physical x86
+acceptance is claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-31dy--historical-ze-admission-for-raw-fstp-m80fp),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31dy-admit-historical-ze-on-exact-raw-db38-fstp-m80fp),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dy--historical-ze-on-raw-fstp-m80fp).
+
 ### S2-31bt exact signed-zero FIST/FISTP m32int fixtures
 
 The negative-zero `DB 10` and positive-zero `DB 18` fixtures store the literal
@@ -8339,3 +8351,14 @@ The schema rejects foreign masked-memory controls and JIT/native result labels.
 Physical x86 acceptance is not claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38q--exact-minpd-memory-unmasked-imdm),
 [plan](../../../../docs/plans/STAGE_2.md#s2-38q--exact-long64-minpd-xmm0m128-rax-with-unmasked-imdm-exits),
 and [standalone report](../../../../docs/reports/S2_38Q_MINPD_MEMORY_UNMASKED.md).
+
+### S2-38r MAXPD m128 unmasked invalid and denormal
+
+The named #XM and arithmetic-#UD fixtures use exact `66 0F 5F 00` and the
+dedicated unmasked MAXPD memory controls. Generated cases cover the cross-lane
+event and IM/DM/OSXMMEXCPT matrix, AC=0/1, and prior sticky histories. Special
+vectors distinguish MAX from MIN, exercise actual memory RHS instead of XMM1,
+and preserve memory-source SNaN payloads. The schema rejects forged backend
+results; physical x86 acceptance is not claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38r--exact-maxpd-memory-unmasked-imdm),
+[plan](../../../../docs/plans/STAGE_2.md#s2-38r--exact-long64-maxpd-xmm0m128-rax-with-unmasked-imdm-exits),
+and [standalone report](../../../../docs/reports/S2_38R_MAXPD_MEMORY_UNMASKED.md).

@@ -43,3 +43,14 @@ preflight-refusal reasons. JIT and native execution remain denied.
 
 These are interpreter, schema and runner checks; they do not claim physical x86
 acceptance or JIT/native support.
+
+Integrated main suites passed: od-isa 1,915; od-testkit 455; od-runner 125 unit
+and 528 fixture tests; od-x86-runner 8 library + 5 binary tests. Workspace
+all-target offline check, formatting, layout, and diff checks passed. Graphify
+refreshed to 11,947 nodes, 25,946 edges, and 383 communities; labels were not
+refreshed without an LLM API key. Independent Sol/high review is clean.
+
+See [plan](../plans/STAGE_2.md#s2-31dy-admit-historical-ze-on-exact-raw-db38-fstp-m80fp),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-31dy--historical-ze-admission-for-raw-fstp-m80fp),
+[shared report](STAGE_2_REPORT.md#s2-31dy--historical-ze-on-raw-fstp-m80fp), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31dy-historical-ze-on-raw-fstp-m80fp).
