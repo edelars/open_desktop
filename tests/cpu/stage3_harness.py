@@ -97,6 +97,7 @@ SELF_TEST_NAMES = (
     "test_s3_34as_rbx_rcx_scaled_disp8_sib_dword_load_gates_are_pinned_and_fail_closed",
     "test_s3_34at_rbx_rcx_scaled_disp8_sib_dword_store_gates_are_pinned_and_fail_closed",
     "test_s3_34au_rbx_rcx_scaled_disp32_sib_dword_load_gates_are_pinned_and_fail_closed",
+    "test_s3_34av_rbx_rcx_scaled_disp32_sib_dword_store_gates_are_pinned_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_38d_result_state_validator_rejects_corruption",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
@@ -750,6 +751,14 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_34au_host_rbx_rcx_scaled_disp32_sib_dword_load_checked_semantics", "local_acceptance", "od-host",
         "tests::s3_20dj_rbx_rcx_scaled_disp32_sib_dword_load_preserves_checked_semantics",
+    ),
+    (
+        "s3_34av_ir_dword_rbx_rcx_sib_disp32_scaled_store_source_binding", "local_acceptance", "od-jit",
+        "memory_load_v2::tests::ir_dword_rbx_rcx_sib_disp32_store_binds_all_scales_and_source_bytes",
+    ),
+    (
+        "s3_34av_host_rbx_rcx_scaled_disp32_sib_dword_store_checked_semantics", "local_acceptance", "od-host",
+        "tests::s3_20dk_rbx_rcx_scaled_disp32_sib_dword_store_preserves_checked_semantics",
     ),
 )
 RUST_TEST_TARGET_OVERRIDES = {
