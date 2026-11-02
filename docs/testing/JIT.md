@@ -16,6 +16,18 @@ Run `cargo test -p od-jit --lib ir_dword_rbx_disp8_load_binds_all_signed_source_
 
 Run `cargo test -p od-jit --lib ir_dword_rbx_disp32_load --offline` and `cargo test -p od-host --lib s3_20cs_disp32_dword_load_zero_extends_and_reads_exactly_four_bytes --offline`. Admit only the six-byte singleton `8B 83 id` (`MOV EAX,[RBX+disp32]`), with decoder-owned signed displacement from the full RBX value. JIT checks bind source bytes to the site and use the exact `A+6` single-instruction PC-map boundary. The host differential checks the signed-displacement cases, exact four-byte read, EAX zero-extension, and atomic no-commit on failed reads. Keep the earlier S3-20cr host identity separately pinned for `8B 43 ib`; it is not replaced by this form. Other dword bases/forms remain closed; no owner/MMU, Mini, M1, Stage 2, physical-x86, or performance conclusion follows. See the [S3-20cs report](../reports/STAGE_3_S3-20cs_2026-11-01.md).
 
+## S3-20ct: exact dword checked store with signed disp8
+
+Run `cargo test -p od-jit --lib ir_dword_rbx_disp8_store --offline` and `cargo test -p od-host --lib s3_20ct_disp8_dword_store_preserves_checked_semantics --offline`. Admit only the three-byte singleton `89 43 ib` (`MOV [RBX+disp8],EAX`). The descriptor binds all 256 disp8 source/site identities and the one committed boundary at `A+3`; the host test checks the bounded checked-write semantics. Existing `8B 03`/`8B 00` loads and `89 03`/`89 00` stores remain distinct exact fixtures. This does not establish production owner/MMU, Mini, M1, Stage 2, physical-x86, or performance behavior. See the [S3-20ct report](../reports/STAGE_3_S3-20ct_2026-11-01.md).
+
+## S3-27h: published dword load PC-map lifetime
+
+Run `cargo test -p od-host --test memory_corpus published_dword_disp8_and_disp32_load_pc_maps_match_artifacts_survive_drop_and_republish --offline`. This test compares the published load PC maps for the bounded disp8/disp32 artifacts, checks that map data remains available after artifact drop, and covers republishing. It is a PC-map publication/lifetime contract test only; it does not test host fault recovery or complete S3-27. See the [S3-27h report](../reports/STAGE_3_S3-27h_2026-11-01.md).
+
+## S3-34ab: exact harness gates for the RBX disp8 dword store
+
+The local harness pins the two exact JIT identities for source binding and the three-byte PC-map boundary, plus `od-host::tests::s3_20ct_disp8_dword_store_preserves_checked_semantics`. Its fail-closed self-test checks required gate identity/package/argv and source fingerprints. The existing S3-20co/S3-20cq stores and S3-20cr disp8 load remain separately pinned; this does not close corpus/reducer or S3-34. See the [S3-34ab report](../reports/STAGE_3_S3-34ab_2026-11-01.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases
