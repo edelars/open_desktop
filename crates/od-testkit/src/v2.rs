@@ -328,6 +328,8 @@ pub enum Profile {
     LongDivpsRegistersV1,
     #[serde(rename = "s2-long-divss-registers-v1")]
     LongDivssRegistersV1,
+    #[serde(rename = "s2-long-divss-memory-rax-v1")]
+    LongDivssMemoryRaxV1,
     #[serde(rename = "s2-long-mulsd-registers-v1")]
     LongMulsdRegistersV1,
     #[serde(rename = "s2-long-mulss-registers-v1")]
@@ -1552,6 +1554,7 @@ impl IntegerState {
                     | Profile::LongDivsdRegistersV1
                     | Profile::LongDivpsRegistersV1
                     | Profile::LongDivssRegistersV1
+                    | Profile::LongDivssMemoryRaxV1
                     | Profile::LongMulsdRegistersV1
                     | Profile::LongMulssRegistersV1
                     | Profile::LongMulpsRegistersV1
@@ -2077,6 +2080,7 @@ impl IntegerState {
                 | Profile::LongDivsdRegistersV1
                 | Profile::LongDivpsRegistersV1
                 | Profile::LongDivssRegistersV1
+                | Profile::LongDivssMemoryRaxV1
                 | Profile::LongMulsdRegistersV1
                 | Profile::LongMulssRegistersV1
                 | Profile::LongMulpsRegistersV1
@@ -2497,6 +2501,7 @@ impl IntegerState {
             | Profile::LongDivsdRegistersV1
             | Profile::LongDivpsRegistersV1
             | Profile::LongDivssRegistersV1
+            | Profile::LongDivssMemoryRaxV1
             | Profile::LongMulsdRegistersV1
             | Profile::LongMulssRegistersV1
             | Profile::LongMulpsRegistersV1
@@ -2722,6 +2727,7 @@ impl IntegerState {
                 | Profile::LongDivsdRegistersV1
                 | Profile::LongDivpsRegistersV1
                 | Profile::LongDivssRegistersV1
+                | Profile::LongDivssMemoryRaxV1
                 | Profile::LongMulsdRegistersV1
                 | Profile::LongMulssRegistersV1
                 | Profile::LongMulpsRegistersV1
@@ -2978,6 +2984,7 @@ impl IntegerState {
                 | Profile::LongDivsdRegistersV1
                 | Profile::LongDivpsRegistersV1
                 | Profile::LongDivssRegistersV1
+                | Profile::LongDivssMemoryRaxV1
                 | Profile::LongMulsdRegistersV1
                 | Profile::LongMulssRegistersV1
                 | Profile::LongMulpsRegistersV1
@@ -3243,6 +3250,7 @@ impl IntegerState {
                 | Profile::LongDivsdRegistersV1
                 | Profile::LongDivpsRegistersV1
                 | Profile::LongDivssRegistersV1
+                | Profile::LongDivssMemoryRaxV1
                 | Profile::LongMulsdRegistersV1
                 | Profile::LongMulssRegistersV1
                 | Profile::LongMulpsRegistersV1
@@ -3515,6 +3523,7 @@ impl IntegerState {
                 | Profile::LongDivsdRegistersV1
                 | Profile::LongDivpsRegistersV1
                 | Profile::LongDivssRegistersV1
+                | Profile::LongDivssMemoryRaxV1
                 | Profile::LongMulsdRegistersV1
                 | Profile::LongMulssRegistersV1
                 | Profile::LongMulpsRegistersV1
@@ -3976,6 +3985,7 @@ impl IntegerState {
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongDivssMemoryRaxV1
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubssMemoryRaxV1
@@ -4008,6 +4018,7 @@ impl IntegerState {
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongDivssMemoryRaxV1
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubssMemoryRaxV1
@@ -4552,6 +4563,7 @@ impl IntegerState {
                 | Profile::LongDivsdRegistersV1
                 | Profile::LongDivpsRegistersV1
                 | Profile::LongDivssRegistersV1
+                | Profile::LongDivssMemoryRaxV1
                 | Profile::LongMulsdRegistersV1
                 | Profile::LongMulssRegistersV1
                 | Profile::LongMulpsRegistersV1
@@ -4781,6 +4793,7 @@ impl IntegerState {
                 | Profile::LongDivsdRegistersV1
                 | Profile::LongDivpsRegistersV1
                 | Profile::LongDivssRegistersV1
+                | Profile::LongDivssMemoryRaxV1
                 | Profile::LongMulsdRegistersV1
                 | Profile::LongMulssRegistersV1
                 | Profile::LongMulpsRegistersV1
@@ -8778,11 +8791,89 @@ impl Fixture {
                     "DIVSS requires supported MXCSR bits, DAZ=0, OM=1, and UM=1",
                 ));
             }
-        } else if self.divss_controls.is_some() {
-            return Err(invalid(
-                "divss_controls",
-                "only valid for DIVSS register-space profile",
-            ));
+        } else if self.divss_controls.is_some() && self.profile != Profile::LongDivssMemoryRaxV1 {
+            return Err(invalid("divss_controls", "only valid for DIVSS profiles"));
+        }
+        if self.profile == Profile::LongDivssMemoryRaxV1 {
+            let controls = self
+                .divss_controls
+                .ok_or_else(|| invalid("divss_controls", "required by the DIVSS m32 profile"))?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by the DIVSS m32 profile"))?;
+            let data = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "data")
+                .ok_or_else(|| invalid("memory.data", "required by the DIVSS m32 profile"))?;
+            let start = self.initial_state.rip.get();
+            let source = self.initial_state.gpr[0].get();
+            let bytes = decode_bytes(&code.initial_bytes_hex)?;
+            if self.divps_controls.is_some()
+                || self.divpd_controls.is_some()
+                || self.divsd_controls.is_some()
+                || self.mulss_controls.is_some()
+                || self.mulsd_controls.is_some()
+                || code.guest_address.get() != start
+                || code.length != 4
+                || !code.permissions.execute
+                || bytes != [0xf3, 0x0f, 0x5e, 0x00]
+                || self.memory.len() != 2
+                || data.guest_address.get() != source
+                || data.length != 4
+                || !data.permissions.read
+                || data.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(4)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress | ExpectedExit::Unsupported
+                )
+            {
+                return Err(invalid(
+                    "memory",
+                    "DIVSS m32 requires exact F3 0F 5E 00, one code/data mapping, budget 1, and stop RIP entry+4",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| invalid("state.sse", "required by DIVSS m32 profile"))?
+                .mxcsr
+                .get();
+            if mxcsr & !0xffbf != 0
+                || mxcsr & ((1 << 6) | (1 << 15)) != 0
+                || mxcsr & 0x1f80 != 0x1f80
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "DIVSS m32 requires supported MXCSR bits, all six exception masks set, DAZ=0, and FTZ=0",
+                ));
+            }
+            let gate = !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr;
+            let nm = !gate && controls.cr0_ts;
+            let ac = !gate && !nm && self.initial_state.rflags.get() & (1 << 18) != 0;
+            let last = source.checked_add(3);
+            let canonical = |address: u64| address >> 47 == 0 || address >> 47 == 0x1ffff;
+            let span = last.is_none_or(|end| !canonical(source) || !canonical(end));
+            let expected = if gate || nm {
+                ExpectedExit::Exception
+            } else if ac {
+                ExpectedExit::Unsupported
+            } else if span {
+                ExpectedExit::Exception
+            } else {
+                ExpectedExit::StopAddress
+            };
+            if self.expected_exit != expected {
+                return Err(invalid(
+                    "expected_exit",
+                    "must reflect DIVSS m32 gates, local AC refusal, and canonical span",
+                ));
+            }
         }
         if self.profile == Profile::LongDivpsRegistersV1 {
             let _ = self
@@ -14727,6 +14818,10 @@ impl Fixture {
                 Profile::LongDivpsRegistersV1 => {
                     divps_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
+                Profile::LongDivssMemoryRaxV1 => decode_bytes(&code_bytes)
+                    .ok()
+                    .filter(|bytes| bytes == &[0xf3, 0x0f, 0x5e, 0x00])
+                    .map(|_| 4),
                 Profile::LongMulsdRegistersV1 => {
                     mulsd_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
@@ -19336,8 +19431,12 @@ impl RunResult {
                 loaded.fixture.divss_controls,
                 value.divss_controls,
             ) {
-                (Profile::LongDivssRegistersV1, Some(input), Some(output)) if input == output => {}
-                (Profile::LongDivssRegistersV1, _, _) => {
+                (
+                    Profile::LongDivssRegistersV1 | Profile::LongDivssMemoryRaxV1,
+                    Some(input),
+                    Some(output),
+                ) if input == output => {}
+                (Profile::LongDivssRegistersV1 | Profile::LongDivssMemoryRaxV1, _, _) => {
                     return Err(FormatError::CaseMismatch("divss_controls"));
                 }
                 (_, None, None) => {}
@@ -19473,6 +19572,8 @@ impl RunResult {
                 validate_divsd_registers_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongDivssRegistersV1 {
                 validate_divss_registers_result(loaded, self, value)?;
+            } else if loaded.fixture.profile == Profile::LongDivssMemoryRaxV1 {
+                validate_divss_memory_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongDivpsRegistersV1 {
                 validate_divps_registers_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongMulsdRegistersV1 {
@@ -26351,6 +26452,141 @@ fn validate_mulss_memory_result(
         (None, true, Outcome::Unsupported { .. }, Observation::Available { value: None }) => {}
         (None, false, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
         _ => return Err(FormatError::CaseMismatch("MULSS m32 outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_divss_memory_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .divss_controls
+        .ok_or(FormatError::CaseMismatch("divss_controls"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    if decode_bytes(&code.initial_bytes_hex)? != [0xf3, 0x0f, 0x5e, 0x00] {
+        return Err(FormatError::CaseMismatch("DIVSS m32 encoding"));
+    }
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let lhs_bytes = decode_bytes(&initial_sse.xmm[0])?;
+    let lhs = u32::from_le_bytes(lhs_bytes[..4].try_into().unwrap());
+    let data = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "data")
+        .ok_or(FormatError::CaseMismatch("memory.data"))?;
+    let rhs_bytes = decode_bytes(&data.initial_bytes_hex)?;
+    let rhs = u32::from_le_bytes(
+        rhs_bytes[..4]
+            .try_into()
+            .map_err(|_| FormatError::CaseMismatch("memory.data"))?,
+    );
+    let old_mxcsr = initial_sse.mxcsr.get() as u32;
+    let (value, invalid, denormal, zero_divide, overflow, underflow, precision) =
+        independent_divss(lhs, rhs, old_mxcsr);
+    let gate = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let source = fixture.initial_state.gpr[0].get();
+    let ac_refusal = gate.is_none() && fixture.initial_state.rflags.get() & (1 << 18) != 0;
+    let last = source.checked_add(3);
+    let canonical = |address: u64| address >> 47 == 0 || address >> 47 == 0x1ffff;
+    let span_fault = last.is_none_or(|end| !canonical(source) || !canonical(end));
+    let fault = gate.or_else(|| (!ac_refusal && span_fault).then_some(13));
+    let unsupported = gate.is_none() && ac_refusal;
+    if !matches!(
+        (fault, unsupported, fixture.expected_exit),
+        (Some(_), false, ExpectedExit::Exception)
+            | (None, true, ExpectedExit::Unsupported)
+            | (None, false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("DIVSS m32 expected exit"));
+    }
+    let mut expected = fixture.initial_state.clone();
+    if fault.is_none() && !unsupported {
+        let state_sse = expected
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        let mut output_xmm = lhs_bytes;
+        output_xmm[..4].copy_from_slice(&value.to_le_bytes());
+        state_sse.xmm[0] = crate::memory::encode_bytes(&output_xmm);
+        state_sse.mxcsr = HexU64(
+            initial_sse.mxcsr.get()
+                | u64::from(invalid)
+                | (u64::from(denormal) << 1)
+                | (u64::from(zero_divide) << 2)
+                | (u64::from(overflow) << 3)
+                | (u64::from(underflow) << 4)
+                | (u64::from(precision) << 5),
+        );
+        expected.rip = HexU64(
+            fixture
+                .initial_state
+                .rip
+                .get()
+                .checked_add(4)
+                .ok_or(FormatError::CaseMismatch("DIVSS m32 RIP overflow"))?,
+        );
+    }
+    let memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != memory
+    {
+        return Err(FormatError::CaseMismatch("DIVSS m32 output state"));
+    }
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(u64::from(fault.is_none() && !unsupported)),
+        })
+    {
+        return Err(FormatError::CaseMismatch("DIVSS m32 retirement"));
+    }
+    match (fault, unsupported, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            false,
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == if vector == 13 {
+                    Observation::Available { value: HexU64(0) }
+                } else {
+                    Observation::Unavailable {
+                        reason: "exception has no architectural error code".into(),
+                    }
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, true, Outcome::Unsupported { .. }, Observation::Available { value: None }) => {}
+        (None, false, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("DIVSS m32 outcome/exception")),
     }
     Ok(())
 }

@@ -21684,3 +21684,13 @@ confirms there is no division cutoff. Independent Sol/high review is clean
 (focused 5/5 and neighboring `fdiv` regressions 19/19);
 physical x86/JIT/native acceptance was not performed. Sources and test detail:
 [standalone report](S2_30CX_X87_FDIV_REVERSE_PRECISION.md), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cx-bounded-fdiv-sti-st0-dc-f8-ff), and [plan](../plans/STAGE_2.md#s2-30cx-bare-fdiv-sti-st0-with-bounded-fcw-precision).
+
+
+
+### S2-37do — DIVSS XMM0,m32 [RAX]
+
+Added the strict interpreter-only schema-v2 profile `s2-long-divss-memory-rax-v1` for exact legacy `F3 0F 5E 00`. It requires Long64/SSE gates and complete fetch before #UD/#NM, admits masked MXCSR (`0xffbf`, all masks set, DAZ/FTZ/reserved clear), and accepts all RC/sticky histories. AC=1 refuses before span/read; AC=0 allows unaligned m32. Checked `RAX+3` and canonical48 endpoints precede one read4 with rollback on failure.
+
+The executor reuses `Binary32::divide_raw_result`, and the independent raw-u32 `independent_divss` oracle receives the memory RHS. It preserves XMM0.high96 and unrelated state, merges IE/DE/ZE/OE/UE/PE, handles original NaN before ZE/DE/output flags, and uses WPR tininess-after-rounding. The 5,120-run matrix crosses 20 operand pairs × four RC × 64 sticky histories, asserting StopAddress/snapshot/retirement before oracle validation. Includes NaN orders, invalid division, ZE/DE distinctions, exact tiny, WPR underflow and overflow. Direct checks cover runtime MXCSR denial, fetch/gates, AC/span/read rollback, tampering and JIT denial. Intel SDM Rev. 093 Vol. 2B Type 3 note is VEX-specific and does not apply to legacy DIVSS. No physical x86 acceptance is claimed.
+
+Validation: `od-isa` 1,824; `od-testkit` 455; runner 118 unit + 495 fixture tests, including 5,120 DIVSS matrix executions; workspace all-target offline check, fmt, diff check and Graphify passed. Layout check reports the isolated-worktree `.git` marker and two absent historical `work/stage*-oracle` manifest links. Independent Sol/high review is pending. See [standalone report](S2_37DO_DIVSS_MEMORY.md). See [plan](../plans/STAGE_2.md#s2-37do--masked-only-legacy-long64-divss-xmm0m32-rax), [CPU contract](../specs/CPU_CONTRACT.md#s2-37do--masked-only-long64-divss-xmm0m32-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37do--divss-xmm0m32-rax).

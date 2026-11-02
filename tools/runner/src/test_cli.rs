@@ -10,27 +10,28 @@ use od_isa::execute::{
     Cvtps2dqMemoryControls, Cvtps2pdMemoryControls, Cvtsd2ssControls, Cvtsd2ssMemoryControls,
     Cvtss2sdMemoryControls, Cvttpd2dqControls, Cvttpd2dqMemoryControls, Cvttps2dqControls,
     Cvttps2dqMemoryControls, Cvttss2siRegistersControls, DivpdControls, DivpsControls,
-    DivsdControls, DivssControls, MulpdControls, MulpsControls, MulsdControls, MulssControls,
-    SqrtpdControls, SqrtpsControls, SqrtsdControls, SqrtssControls, SubpdControls, SubpsControls,
-    SubsdControls, SubsdMemoryRaxControls, SubssControls, UcomisdMemoryRaxControls,
-    UcomissMemoryRaxControls, run_with_addpd_register_controls, run_with_addps_register_controls,
-    run_with_addsd_memory_rax_controls, run_with_addsd_register_controls,
-    run_with_addss_memory_rax_controls, run_with_addss_register_controls,
-    run_with_cvtpd2dq_memory_controls, run_with_cvtpd2dq_register_controls,
-    run_with_cvtpd2pi_mm0_memory_rax_controls, run_with_cvtpd2pi_mm0_xmm1_controls,
-    run_with_cvtpd2ps_memory_controls, run_with_cvtpd2ps_register_controls,
-    run_with_cvtpi2pd_memory_controls, run_with_cvtpi2pd_xmm0_mm1_controls,
-    run_with_cvtpi2ps_memory_controls, run_with_cvtpi2ps_xmm0_mm1_controls,
-    run_with_cvtps2dq_memory_controls, run_with_cvtps2pd_memory_controls,
-    run_with_cvtps2pi_mm0_memory_rax_controls, run_with_cvtps2pi_mm0_xmm1_controls,
-    run_with_cvtsd2ss_memory_controls, run_with_cvtsd2ss_register_controls,
-    run_with_cvtss2sd_memory_controls, run_with_cvttpd2dq_memory_controls,
-    run_with_cvttpd2dq_register_controls, run_with_cvttpd2pi_mm0_memory_rax_controls,
-    run_with_cvttpd2pi_mm0_xmm1_controls, run_with_cvttps2dq_memory_controls,
-    run_with_cvttps2dq_register_controls, run_with_cvttps2pi_mm0_memory_rax_controls,
-    run_with_cvttps2pi_mm0_xmm1_controls, run_with_cvttsd2si_registers_controls,
-    run_with_cvttss2si_registers_controls, run_with_divpd_register_controls,
-    run_with_divps_register_controls, run_with_divsd_register_controls,
+    DivsdControls, DivssControls, DivssMemoryRaxControls, MulpdControls, MulpsControls,
+    MulsdControls, MulssControls, SqrtpdControls, SqrtpsControls, SqrtsdControls, SqrtssControls,
+    SubpdControls, SubpsControls, SubsdControls, SubsdMemoryRaxControls, SubssControls,
+    UcomisdMemoryRaxControls, UcomissMemoryRaxControls, run_with_addpd_register_controls,
+    run_with_addps_register_controls, run_with_addsd_memory_rax_controls,
+    run_with_addsd_register_controls, run_with_addss_memory_rax_controls,
+    run_with_addss_register_controls, run_with_cvtpd2dq_memory_controls,
+    run_with_cvtpd2dq_register_controls, run_with_cvtpd2pi_mm0_memory_rax_controls,
+    run_with_cvtpd2pi_mm0_xmm1_controls, run_with_cvtpd2ps_memory_controls,
+    run_with_cvtpd2ps_register_controls, run_with_cvtpi2pd_memory_controls,
+    run_with_cvtpi2pd_xmm0_mm1_controls, run_with_cvtpi2ps_memory_controls,
+    run_with_cvtpi2ps_xmm0_mm1_controls, run_with_cvtps2dq_memory_controls,
+    run_with_cvtps2pd_memory_controls, run_with_cvtps2pi_mm0_memory_rax_controls,
+    run_with_cvtps2pi_mm0_xmm1_controls, run_with_cvtsd2ss_memory_controls,
+    run_with_cvtsd2ss_register_controls, run_with_cvtss2sd_memory_controls,
+    run_with_cvttpd2dq_memory_controls, run_with_cvttpd2dq_register_controls,
+    run_with_cvttpd2pi_mm0_memory_rax_controls, run_with_cvttpd2pi_mm0_xmm1_controls,
+    run_with_cvttps2dq_memory_controls, run_with_cvttps2dq_register_controls,
+    run_with_cvttps2pi_mm0_memory_rax_controls, run_with_cvttps2pi_mm0_xmm1_controls,
+    run_with_cvttsd2si_registers_controls, run_with_cvttss2si_registers_controls,
+    run_with_divpd_register_controls, run_with_divps_register_controls,
+    run_with_divsd_register_controls, run_with_divss_memory_rax_controls,
     run_with_divss_register_controls, run_with_maxps_memory_rax_controls,
     run_with_minps_memory_rax_controls, run_with_mulpd_register_controls,
     run_with_mulps_register_controls, run_with_mulsd_memory_rax_controls,
@@ -2129,6 +2130,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongDivssMemoryRaxV1 {
+        let controls = loaded
+            .fixture
+            .divss_controls
+            .expect("validated DIVSS memory controls");
+        run_with_divss_memory_rax_controls(
+            &mut state,
+            memory,
+            config,
+            DivssMemoryRaxControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongDivpsRegistersV1 {
         let controls = loaded
             .fixture
@@ -4137,6 +4156,45 @@ mod mulss_memory_profile_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod divss_memory_profile_tests {
+    use super::*;
+    use od_testkit::HexU64;
+    use od_testkit::memory::FlatMemory;
+    use od_testkit::result::{Backend, Observation};
+    use od_testkit::v2::{Fixture, Outcome};
+
+    const CASE: &[u8] =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_37do_divss_m32_memory_rax.case.json");
+
+    #[test]
+    fn memory_divide_result_tampering_and_backend_denial_fail_closed() {
+        let loaded = Fixture::from_json(CASE).unwrap();
+        let mut memory = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        let mut result = execute_fixture_v2(&loaded, &mut memory);
+        assert_eq!(result.backend, Backend::Interpreter);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(1) }
+        );
+        result.input_sha256 = "00".repeat(32);
+        assert!(result.validate_for(&loaded).is_err());
+
+        let mut memory = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        let mut result = execute_fixture_v2(&loaded, &mut memory);
+        let Observation::Available { value: snapshot } = &mut result.snapshot else {
+            panic!("completed DIVSS profile must include a snapshot");
+        };
+        snapshot.state.sse.as_mut().unwrap().xmm[0].replace_range(0..8, "00000000");
+        assert!(result.validate_for(&loaded).is_err());
+        assert!(
+            od_jit::compile(&[0xf3, 0x0f, 0x5e, 0x00]).is_err(),
+            "DIVSS m32 remains JIT-denied"
+        );
     }
 }
 
@@ -10733,6 +10791,78 @@ mod tests {
                     result.validate_for(&loaded).unwrap_or_else(|error| {
                         panic!(
                             "SUBSS oracle mismatch for pair {lhs:08x}-{rhs:08x}, RC={rc}, sticky={old_sticky:02x}: {error:?}"
+                        )
+                    });
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn divss_memory_profile_execution_covers_priority_and_rounding_for_rc_and_stickies() {
+        let template = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_37do_divss_m32_memory_rax.case.json"
+        ))
+        .expect("DIVSS m32 schema")
+        .fixture;
+        let pairs: [(u32, u32); 20] = [
+            (0x3f80_0000, 0x4040_0000), // 1 / 3, inexact
+            (0xbf80_0000, 0x4040_0000), // signed inexact
+            (0x7fc0_1234, 0x3f80_0000), // quiet NaN lhs
+            (0x3f80_0000, 0xffc0_5678), // quiet NaN rhs
+            (0x7f80_0001, 0x7fc0_1234), // SNaN lhs before QNaN rhs
+            (0x7fc0_1234, 0xff80_0001), // QNaN lhs before SNaN rhs
+            (0x0000_0000, 0x0000_0000), // invalid zero / zero
+            (0x7f80_0000, 0xff80_0000), // invalid infinity / infinity
+            (0x3f80_0000, 0x0000_0000), // ZE, no DE
+            (0x0000_0001, 0x0000_0000), // subnormal / zero: ZE suppresses DE
+            (0x7f80_0000, 0x0000_0000), // infinity / zero: no ZE
+            (0x3f80_0000, 0x0000_0001), // DE from subnormal divisor
+            (0x0000_0001, 0x3f80_0000), // DE from subnormal dividend
+            (0x0080_0000, 0x4000_0000), // exact tiny result
+            (0x0080_0000, 0x4040_0000), // WPR underflow and inexact
+            (0x0080_0000, 0x4b80_0000), // half minimum subnormal
+            (0x00ff_ffff, 0x4000_0000), // subnormal rounding boundary
+            (0x7f7f_ffff, 0x3f00_0000), // overflow and precision
+            (0x7f80_0000, 0x3f80_0000), // infinity / finite
+            (0x0000_0000, 0x3f80_0000), // signed zero / finite
+        ];
+        for (pair_index, (lhs, rhs)) in pairs.into_iter().enumerate() {
+            for rc in 0..4u32 {
+                for old_sticky in 0..64u32 {
+                    let mut fixture = template.clone();
+                    fixture.case_id =
+                        format!("s2_37do_oracle_pair{pair_index:02}_rc{rc}_sticky{old_sticky:02x}");
+                    let sse = fixture.initial_state.sse.as_mut().unwrap();
+                    let mut xmm0 = v2::decode_bytes(&sse.xmm[0]).unwrap();
+                    xmm0[..4].copy_from_slice(&lhs.to_le_bytes());
+                    sse.xmm[0] = od_testkit::memory::encode_bytes(&xmm0);
+                    sse.mxcsr = HexU64(0x1f80 | (u64::from(rc) << 13) | u64::from(old_sticky));
+                    let data = fixture
+                        .memory
+                        .iter_mut()
+                        .find(|region| region.region_id == "data")
+                        .unwrap();
+                    data.initial_bytes_hex = od_testkit::memory::encode_bytes(&rhs.to_le_bytes());
+
+                    let loaded = v2::Fixture::from_json(&fixture.to_json().unwrap())
+                        .unwrap_or_else(|error| panic!("fixture validation: {error:?}"));
+                    let mut memory =
+                        od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).unwrap();
+                    let result = execute_fixture_v2(&loaded, &mut memory);
+                    assert!(
+                        matches!(&result.outcome, v2::Outcome::StopAddress {}),
+                        "DIVSS profile did not execute for {lhs:08x}/{rhs:08x}, RC={rc}, sticky={old_sticky:02x}: {:?}",
+                        result.outcome
+                    );
+                    assert!(matches!(&result.snapshot, Observation::Available { .. }));
+                    assert_eq!(
+                        result.instructions_executed,
+                        Observation::Available { value: HexU64(1) }
+                    );
+                    result.validate_for(&loaded).unwrap_or_else(|error| {
+                        panic!(
+                            "DIVSS oracle mismatch for {lhs:08x}/{rhs:08x}, RC={rc}, sticky={old_sticky:02x}: {error:?}"
                         )
                     });
                 }

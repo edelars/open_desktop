@@ -511,8 +511,12 @@ pub type SubsdMemoryRaxControls = SubsdControls;
 /// Explicit SSE2 gates for the exact local MULSD m64-at-RAX profile.
 pub type MulsdMemoryRaxControls = MulsdControls;
 
+/// Explicit SSE gates for the exact local DIVSS m32-at-RAX profile.
+pub type DivssMemoryRaxControls = DivssControls;
+
 #[derive(Clone, Copy)]
 enum ScalarFloatMemoryRaxProfile {
+    Divss(DivssMemoryRaxControls),
     Mulss(MulssControls),
     Mulsd(MulsdMemoryRaxControls),
     Subss(SubssMemoryRaxControls),
@@ -16546,6 +16550,23 @@ pub fn run_with_mulss_memory_rax_controls(
     )
 }
 
+/// Execute exact legacy `F3 0F 5E 00` DIVSS m32-at-RAX with explicit gates.
+pub fn run_with_divss_memory_rax_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: DivssMemoryRaxControls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_scalar_float_memory_rax_profile(
+        state,
+        memory,
+        config,
+        ScalarFloatMemoryRaxProfile::Divss(controls),
+        stop_requested,
+    )
+}
+
 /// Execute exact legacy `F2 0F 59 00` MULSD m64-at-RAX with explicit gates.
 pub fn run_with_mulsd_memory_rax_controls(
     state: &mut LongModeState,
@@ -19069,6 +19090,16 @@ fn step_configured(
     }
     if let Some(profile) = configured_scalar_float_memory_rax_profile {
         let admitted = match (profile, instruction.operation) {
+            (ScalarFloatMemoryRaxProfile::Divss(_), Operation::DivssMemoryRax) => {
+                instruction.length == 4
+                    && instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0x5e
+                    && instruction.prefixes.group1 == Some(0xf3)
+                    && instruction.prefixes.segment.is_none()
+                    && !instruction.prefixes.operand_override
+                    && !instruction.prefixes.address_override
+                    && instruction.prefixes.rex.is_none()
+            }
             (ScalarFloatMemoryRaxProfile::Mulss(_), Operation::MulssMemoryRax) => {
                 instruction.length == 4
                     && instruction.opcode.map == OpcodeMap::Escape0f
@@ -19117,6 +19148,15 @@ fn step_configured(
             });
         }
         let fault_vector = match profile {
+            ScalarFloatMemoryRaxProfile::Divss(controls) => {
+                if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+                    Some(6)
+                } else if controls.cr0_ts {
+                    Some(7)
+                } else {
+                    None
+                }
+            }
             ScalarFloatMemoryRaxProfile::Mulss(controls) => {
                 if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
                     Some(6)
@@ -22477,6 +22517,7 @@ fn step_configured(
             && matches!(
                 instruction.operation,
                 Operation::MulssMemoryRax
+                    | Operation::DivssMemoryRax
                     | Operation::MulsdMemoryRax
                     | Operation::SubssMemoryRax
                     | Operation::SubsdMemoryRax
@@ -23533,6 +23574,10 @@ fn step_configured(
             state.sse.is_some()
         }
         Operation::MulssMemoryRax => false,
+        Operation::DivssMemoryRax if configured_scalar_float_memory_rax_profile.is_some() => {
+            state.sse.is_some()
+        }
+        Operation::DivssMemoryRax => false,
         Operation::MulsdMemoryRax if configured_scalar_float_memory_rax_profile.is_some() => {
             state.sse.is_some()
         }
@@ -29451,6 +29496,82 @@ fn step_configured(
                 | (u32::from(new_oe) << 3)
                 | (u32::from(new_ue) << 4)
                 | (u32::from(new_pe) << 5);
+        }
+        Operation::DivssMemoryRax
+            if matches!(
+                configured_scalar_float_memory_rax_profile,
+                Some(ScalarFloatMemoryRaxProfile::Divss(_))
+            ) =>
+        {
+            let address = state.gpr[Register::Rax as usize];
+            if state.rflags & (1 << 18) != 0 {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
+            let Some(last) = address.checked_add(3) else {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            };
+            if !long_decode::canonical(address) || !long_decode::canonical(last) {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            let mut source = [0u8; 4];
+            memory.read(address, context, &mut source)?;
+            let (destination_xmm, old_mxcsr) = {
+                let sse = state.sse.as_ref().expect("DIVSS memory state prevalidated");
+                (sse.xmm[0], sse.mxcsr)
+            };
+            let lhs = u32::from_le_bytes(destination_xmm[..4].try_into().unwrap());
+            let rhs = u32::from_le_bytes(source);
+            let lhs_class = Binary32::from_bits(lhs).class();
+            let rhs_class = Binary32::from_bits(rhs).class();
+            let lhs_nan = matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+            let rhs_nan = matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+            let invalid_division = (lhs_class == BinaryClass::Zero
+                && rhs_class == BinaryClass::Zero)
+                || (lhs_class == BinaryClass::Infinity && rhs_class == BinaryClass::Infinity);
+            let new_ie = lhs_class == BinaryClass::SignalingNaN
+                || rhs_class == BinaryClass::SignalingNaN
+                || (!lhs_nan && !rhs_nan && invalid_division);
+            let new_ze = !lhs_nan
+                && !rhs_nan
+                && !matches!(lhs_class, BinaryClass::Zero | BinaryClass::Infinity)
+                && rhs_class == BinaryClass::Zero;
+            let new_de = !lhs_nan
+                && !rhs_nan
+                && !invalid_division
+                && !new_ze
+                && (lhs_class == BinaryClass::Subnormal || rhs_class == BinaryClass::Subnormal);
+            let computed = Binary32::divide_raw_result(
+                Binary32::from_bits(lhs),
+                Binary32::from_bits(rhs),
+                cvtss2si_rounding_mode(old_mxcsr),
+            );
+            let new_oe = computed.overflow();
+            let new_ue = computed.tiny_after_precision_rounding() && computed.inexact();
+            let new_pe = computed.inexact() || computed.overflow();
+            let sse = state.sse.as_mut().expect("DIVSS memory state prevalidated");
+            sse.xmm[0][..4].copy_from_slice(&computed.value().to_bits().to_le_bytes());
+            sse.mxcsr = old_mxcsr
+                | u32::from(new_ie)
+                | (u32::from(new_de) << 1)
+                | (u32::from(new_ze) << 2)
+                | (u32::from(new_oe) << 3)
+                | (u32::from(new_ue) << 4)
+                | (u32::from(new_pe) << 5);
+        }
+        Operation::DivssMemoryRax => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
         }
         Operation::MulssMemoryRax => {
             return Ok(StepOutcome::Unsupported {
@@ -159068,5 +159189,237 @@ mod cvtsi2ss_r64_memory_profile_tests {
         ));
         assert_eq!(memory.accesses, [(AccessKind::Read, 0x2000, 8)]);
         assert_eq!(state, before);
+    }
+
+    #[test]
+    fn divss_memory_rax_reads_one_unaligned_m32_and_rolls_back_read_failure() {
+        use crate::memory::AccessKind;
+
+        let code = [0xf3, 0x0f, 0x5e, 0x00];
+        let controls = DivssMemoryRaxControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        let run_profile = |state: &mut LongModeState, memory: &mut Memory| {
+            run_with_divss_memory_rax_controls(
+                state,
+                memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(state.rip + 4),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            )
+        };
+
+        let mut state = LongModeState::default();
+        state.rip = 0x5300;
+        state.gpr[Register::Rax as usize] = 0x2001;
+        state.sse = Some(SseState {
+            xmm: [[0xa5; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        state.sse.as_mut().unwrap().xmm[0][..4].copy_from_slice(&1.0f32.to_bits().to_le_bytes());
+        let high96 = state.sse.as_ref().unwrap().xmm[0][4..].to_vec();
+        let xmm1 = state.sse.as_ref().unwrap().xmm[1];
+        let mut memory = Memory::at(&code, 0x5300);
+        memory.data_base = 0x2000;
+        memory.bytes[1..5].copy_from_slice(&3.0f32.to_bits().to_le_bytes());
+        let result = run_profile(&mut state, &mut memory);
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(state.rip, 0x5304);
+        assert_eq!(
+            u32::from_le_bytes(state.sse.as_ref().unwrap().xmm[0][..4].try_into().unwrap()),
+            0x3eaa_aaab
+        );
+        assert_eq!(&state.sse.as_ref().unwrap().xmm[0][4..], high96);
+        assert_eq!(state.sse.as_ref().unwrap().xmm[1], xmm1);
+        assert_eq!(state.sse.as_ref().unwrap().mxcsr, 0x1fa0);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x2001, 4)]);
+
+        let mut state = LongModeState::default();
+        state.rip = 0x5300;
+        state.gpr[Register::Rax as usize] = 0x2001;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let mut memory = Memory::at(&code, 0x5300);
+        memory.data_base = 0x2000;
+        memory.error = Some(MemoryError::Unmapped {
+            address: 0x2001,
+            access: AccessKind::Read,
+        });
+        assert!(matches!(
+            run_profile(&mut state, &mut memory).exit,
+            RunExit::MemoryError(_)
+        ));
+        assert_eq!(state, before);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x2001, 4)]);
+    }
+
+    #[test]
+    fn divss_memory_rax_gates_ac_span_and_mxcsr_precede_data_read() {
+        let code = [0xf3, 0x0f, 0x5e, 0x00];
+        let controls = DivssMemoryRaxControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        let run_profile = |state: &mut LongModeState, memory: &mut Memory, controls| {
+            run_with_divss_memory_rax_controls(
+                state,
+                memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(state.rip + 4),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            )
+        };
+
+        for (controls, vector) in [
+            (
+                DivssMemoryRaxControls {
+                    sse_available: false,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                DivssMemoryRaxControls {
+                    cr0_em: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                DivssMemoryRaxControls {
+                    cr4_osfxsr: false,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                DivssMemoryRaxControls {
+                    cr0_ts: true,
+                    ..controls
+                },
+                7,
+            ),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x5300;
+            state.gpr[Register::Rax as usize] = 0x2000;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let mut memory = Memory::at(&code, 0x5300);
+            memory.data_base = 0x2000;
+            assert_eq!(
+                run_profile(&mut state, &mut memory, controls).exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector,
+                    error_code: None,
+                    linear_address: None
+                })
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut truncated = LongModeState::default();
+        truncated.rip = 0x5300;
+        truncated.gpr[Register::Rax as usize] = 0x2000;
+        truncated.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = truncated.clone();
+        let mut memory = Memory::at(&code[..2], 0x5300);
+        let truncated_exit = run_profile(
+            &mut truncated,
+            &mut memory,
+            DivssMemoryRaxControls {
+                sse_available: false,
+                ..controls
+            },
+        )
+        .exit;
+        assert!(
+            matches!(
+                truncated_exit,
+                RunExit::MemoryError(MemoryError::Unmapped {
+                    access: AccessKind::Fetch,
+                    ..
+                })
+            ),
+            "{truncated_exit:?}"
+        );
+        assert_eq!(truncated, before);
+        assert!(memory.accesses.is_empty());
+
+        for (address, ac) in [
+            (0x0000_8000_0000_0000, true),
+            (0x0000_7fff_ffff_fffe, false),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x5300;
+            state.gpr[Register::Rax as usize] = address;
+            state.rflags = if ac { 1 << 18 } else { 0 };
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let mut memory = Memory::at(&code, 0x5300);
+            let exit = run_profile(&mut state, &mut memory, controls).exit;
+            if ac {
+                assert!(matches!(exit, RunExit::Unsupported { .. }));
+            } else {
+                assert_eq!(
+                    exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector: 13,
+                        error_code: Some(0),
+                        linear_address: None
+                    })
+                );
+            }
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        for mxcsr in [0x1f00, 0x1fc0, 0x9f80, 0x11f80] {
+            let mut state = LongModeState::default();
+            state.rip = 0x5300;
+            state.gpr[Register::Rax as usize] = 0x2000;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr,
+            });
+            let before = state.clone();
+            let mut memory = Memory::at(&code, 0x5300);
+            memory.data_base = 0x2000;
+            assert!(matches!(
+                run_profile(&mut state, &mut memory, controls).exit,
+                RunExit::Unsupported { .. }
+            ));
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
     }
 }
