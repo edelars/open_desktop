@@ -429,6 +429,27 @@ SIB, or displacement widths, and no MMIO, SMC, owner/MMU, hardware, Mini, M1,
 or Stage 2 behavior is established. See the
 [S3-20dt report](../reports/STAGE_3_S3-20dt_2026-11-02.md).
 
+#### S3-20du: exact RBP-base Dword store with signed disp32
+
+The shared typed-IR Dword-store path admits only the exact six-byte singleton
+`89 85 id` (`MOV [RBP+disp32],EAX`). The decoded memory operand supplies
+full-width RBP plus signed disp32 with wrapping. The JIT source/site test
+checks twelve representative displacement values and changes each of the
+four displacement bytes to verify that it remains bound to its site; it does
+not enumerate all 2^32 possible encodings. The host parity fixture's
+successful-value loop covers ten displacement values. A successful checked
+write transfers exactly four bytes from low32 RAX and advances the guest
+boundary to `A+6`.
+
+The host fixture checks effective-address wrap from `u64::MAX+1` to zero,
+width-four range overflow before callback or architectural commit, RBP
+noncanonical-start/end `#SS`, and fault atomicity. Its RBX `#GP` control is the
+disp8 store `89 43 01`; separate S3-20cu tests cover RBX disp32. Budget, STOP,
+and no-replay behavior are covered. This slice makes no separate PC-map claim
+and does not admit other bases, address forms, prefixes, SIB, or displacement
+widths. No MMIO, SMC, owner/MMU, hardware, Mini, M1, or Stage 2 behavior is
+established. See the [S3-20du report](../reports/STAGE_3_S3-20du_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
