@@ -277,6 +277,18 @@ instruction site. This does not admit other addr32 bases, displacement widths,
 or prefix combinations. See the
 [S3-20da report](../reports/STAGE_3_S3-20da_2026-11-02.md).
 
+#### S3-20db: exact address-size-32 Dword store with signed disp8
+
+The shared typed-IR Dword-store path additionally admits only the exact
+four-byte singleton `67 89 43 ib` (`MOV [EBX+disp8],EAX`). Effective-address
+calculation follows the decoder-owned address-size-32 operand, including
+wrapped 32-bit addition and zero-extension. The store writes low32 RAX in one
+contiguous checked four-byte access. All 256 signed-disp8 source/site values
+are bound exactly, with the instruction boundary at `A+4`. The associated
+STOP, budget, fault, PC-map, and no-replay fixtures do not broaden admission
+to other addr32 store forms. See the
+[S3-20db report](../reports/STAGE_3_S3-20db_2026-11-02.md).
+
 #### S3-27i: disp32 Dword-store canonical-end and range-overflow checks
 
 The host-side regression `s3_27i_disp32_dword_store_checks_canonical_end_and_range_overflow`
