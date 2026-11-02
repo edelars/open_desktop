@@ -373,6 +373,19 @@ Stage 2 remained outside this slice's evidence; concurrent runs were ignored
 per user instruction. Mini/M1 remain deferred; Stage 3 remains partial. See
 the [S3-34ch report](STAGE_3_S3-34ch_2026-11-02.md).
 
+S3-20ew admits only the eight-byte forms with exactly the `67` address-size
+override prefix and no others: `67 89 04 4D/8D/CD disp32` for addr32
+RCX-indexed, no-base SIB Dword stores at scales 2, 4, and 8. The effective
+address is `zero_extend((low32(RCX)*scale + signed disp32) mod 2^32)`. Each
+checked write is contiguous and four bytes wide, stores low32 RAX, and may
+cross 4 GiB; GPRs/RFLAGS are preserved, with boundary `A+8`. Runtime source
+`75346b6` is integrated as `af05d53`; Sol/high static review passed after the
+matcher whitelist, `EA=0` retry, and signed-boundary fixture fixes. No tests,
+builds, formatting, Cargo checks, or Python tests ran, so exact gates remain
+pending. ISSUE-028 remains open. Stage 2 remained outside this slice's
+evidence; concurrent runs were ignored per user instruction. Mini/M1 remain
+deferred; Stage 3 remains partial. See the [S3-20ew report](STAGE_3_S3-20ew_2026-11-02.md).
+
 S3-20er adds only the unprefixed seven-byte address64 RCX-indexed no-base
 SIB Dword-load singletons `8B 04 4D/8D/CD disp32` (scales 2/4/8). Effective
 address calculation uses full-width RCX times the encoded scale plus
