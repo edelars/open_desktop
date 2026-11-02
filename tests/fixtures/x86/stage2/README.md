@@ -1463,6 +1463,17 @@ snapshot and confirms JIT denial; ISA coverage independently checks gaps 64,
 65, 66 and 32765 and atomic DC/DE large-gap refusal. This is interpreter
 evidence only, not physical x86 acceptance.
 
+### S2-30dj large-gap FSUBR fixture coverage
+
+`s2_30dj_fsubr_st0_st1_gap65_up.case.json` is a literal `D8 E9` schema-v2
+case with old physical TOP=+1 and actual Normal `ST(1)=0000000000000080be3f`
+(`2^-65`). PC=53 round-up computes `ST(1)-ST(0)` directly and produces the
+negative predecessor of one, with sticky PE and C1 cleared for this rounding.
+The runner checks the full
+x87 snapshot and confirms JIT denial. ISA integer-oracle coverage checks gaps
+64, 65, 66 and 32765 and verifies that DC/DE gap-65 neighbors still refuse.
+This is interpreter evidence only, not physical x86 acceptance.
+
 ### S2-30dg large-gap reverse FADD fixture coverage
 
 `s2_30dg_fadd_sti_st0_gap65_up.case.json` is a literal `DC C1` schema-v2

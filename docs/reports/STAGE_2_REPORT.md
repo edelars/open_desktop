@@ -21691,6 +21691,24 @@ No physical x86/native/JIT acceptance is claimed. See the [CPU contract](../spec
 [plan](../plans/STAGE_2.md#s2-30cr-bare-fsubr-st0-sti-with-bounded-fcw-precision),
 and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
 
+## S2-30dj — large-gap `FSUBR ST(0), ST(i)`
+
+Extended only bare Long64 `D8 E8..EF` FSUBR to normalized Normal operand gaps
+through 32765. It validates both original operands before flipping ST(0)'s
+sign in a local copy, then computes `ST(i)-ST(0)` with the existing S2-29af
+direct-addition precision helper. The opt-in is D8-specific; DC reverse and DE
+FSUBRP retain their gap-64 limit. The existing twelve masked FCWs, selectors,
+status/tags, Normal result domain, sticky PE/C1, old physical TOP destination,
+source payloads and unrelated state are preserved. Alias cancellation,
+overflow and other unsupported results remain atomic.
+
+An independent raw integer oracle covers gaps 64/65/66/32765 across signs,
+operand order, all FCWs and TOP/index placements, including directed rounding
+and PE/C1 diagnostics. Atomic alias/overflow and DC/DE gap-65 refusal checks
+preserve full state; register execution performs no data access. The literal
+`D8 E9` schema-v2 fixture carries the actual `2^-65` ST(1) operand and confirms
+JIT denial. Checks and counts are recorded in the [standalone report](S2_30DJ_X87_FSUBR_LARGE_GAPS.md). No physical x86 or native/JIT acceptance is claimed.
+
 After integration with SQRTSS in main, the combined suites passed: full
 `od-isa` 1,782, `od-testkit` 454, runner 112 unit + 488 fixture tests, and
 workspace all-target offline check. Formatting, layout, diff check and

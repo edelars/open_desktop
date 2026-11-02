@@ -833,3 +833,11 @@ remains supported, including differing exponents. Invalid environment,
 operand, and result states refuse atomically; native x87 admission remains
 closed. See [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30cy-bounded-fdivr-sti-st0-dc-f0-f7) and
 [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-30cy--bounded-fdivr-sti-st0).
+
+S2-30dj extends only bare `D8 E8+i` FSUBR to normalized Normal gaps through
+32765. It computes `ST(i)-ST(0)` at requested FCW precision by flipping a
+validated local ST(0) copy and calling the existing direct-addition helper.
+The `DC` reverse and `DE` pop forms remain gap-capped; alias cancellation and
+unsupported results refuse atomically. JIT/native and physical x86 acceptance
+remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30dj-large-gap-fsubr-st0-sti-d8-e8-ef) and
+[Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-30dj--large-gap-fsubr-st0-sti).

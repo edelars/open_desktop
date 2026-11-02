@@ -10041,6 +10041,34 @@ the [S2-30cr report](../reports/S2_30CR_X87_FSUBR_PRECISION.md),
 [shared report](../reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti), and
 [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
 
+## Local S2-30dj: large-gap `FSUBR ST(0), ST(i)` (`D8 E8..EF`)
+
+Extend only exact bare Long64 `D8 E8..EF` from S2-30cr to accept normalized
+Normal-to-Normal exponent gaps above 64 through 32765. Preserve the same
+present x87 state, absent FCS/FDS selectors, twelve all-masked PC24/53/64 FCWs,
+`FSW & 0x80df == 0`, Valid tags, and canonical nonzero Normal operand and
+result checks. Validate both original operands before flipping the sign bit in
+a local copy of ST(0); call the existing S2-29af direct-addition precision
+helper as `ST(i) + (-ST(0))`, computing `ST(i) - ST(0)` directly at requested
+precision and rounding mode. Never negate an already rounded FSUB result or
+change the helper.
+
+The large-gap option is explicit and specific to D8 FSUBR. `DC` reverse and
+`DE` FSUBRP callers retain their gap-64 bound. Gaps through 64 preserve the
+existing behavior. The `i=0` alias cancels to zero and remains Unsupported;
+overflow, zero/subnormal/special/malformed operands or unsupported results
+refuse atomically.
+
+Success writes physical TOP, accumulates PE from `inexact`, replaces C1 from
+the pre-carry `incremented` diagnostic, preserves C0/C2/C3 by local policy,
+retains TOP/tags/source and unrelated state, records FIP=old RIP, advances RIP
+by two and retires once. Register execution performs no data access. JIT,
+native and physical x86 acceptance remain outside the slice. See the
+[S2-30dj report](../reports/S2_30DJ_X87_FSUBR_LARGE_GAPS.md),
+[plan](../plans/STAGE_2.md#s2-30dj-large-gap-fsubr-st0-sti-admission),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dj-large-gap-fsubr-fixture-coverage),
+and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
 ### Local S2-19b bounded REP STOSW/D/Q contract
 
 The interpreter extends `F3 AA` REP STOSB with `F3 66 AB` word, `F3 AB`
