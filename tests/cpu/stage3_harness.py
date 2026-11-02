@@ -1193,11 +1193,11 @@ ADDITIONAL_TEST_GATES = (
     ),
     (
         "s3_34cs_ir_rax_disp32_dword_load_source_binding", "local_acceptance", "od-jit",
-        "memory_load_v2::tests::ir_dword_rax_disp32_load_binds_all_signed_source_bytes_to_its_site",
+        "memory_load_v2::tests::ir_dword_rax_disp32_load_binds_signed_source_bytes_to_its_site",
     ),
     (
         "s3_34cs_host_rax_disp32_dword_load_original_rax", "local_acceptance", "od-host",
-        "tests::s3_20fh_rax_disp32_dword_load_uses_original_rax",
+        "tests::s3_20fh_rax_disp32_dword_load_uses_original_full_rax",
     ),
 )
 RUST_TEST_TARGET_OVERRIDES = {
