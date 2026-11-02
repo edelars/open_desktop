@@ -529,6 +529,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37c | Local-only Long64 legacy register RSQRTPS profile `s2-long-rsqrtps-reg-v1`, using S2-36ac per lane; JIT/native closed | S2-34.1, S2-36ac; independent review |
 | [x] | S2-37d | Local-only Long64 legacy register RCPPS profile `s2-long-rcpps-reg-v1`, using S2-36ab per lane; JIT/native closed | S2-34.1, S2-36ab; ISSUE-025; independent review |
 | [x] | S2-37dy | Local-only Long64 legacy memory RCPPS `0F 53 00` at `[RAX]`; one aligned m128 read; strict MXCSR admission, unchanged MXCSR; JIT/native closed | S2-37d, S2-36ab; ISSUE-025; independent Sol/high review clean |
+| [x] | S2-37dz | Local-only Long64 legacy memory RSQRTPS `0F 52 00` at `[RAX]`; one aligned m128 read; strict MXCSR admission, unchanged MXCSR; JIT/native closed | S2-37c, S2-36ac; independent Sol/high review clean |
 | [x] | S2-37e | Local-only Long64 legacy register MINSS profile `s2-long-minss-reg-masked-v1`; bounded masked IE/DE status only; JIT/native closed | S2-36z; independent review |
 | [x] | S2-37f | Local-only Long64 legacy register MAXSS profile `s2-long-maxss-reg-masked-v1`; reuses bounded masked IE/DE status; JIT/native closed | S2-37e, S2-38a; independent review |
 | [x] | S2-37g | Local-only Long64 legacy register MINPS profile `s2-long-minps-reg-masked-v1`; aggregates masked IE/DE sticky status across four lanes; JIT/native closed | S2-37e/f, S2-38a; independent review |
@@ -17574,3 +17575,20 @@ validator uses a raw-u64 rational oracle and memory RHS. See the [CPU contract](
 
 
 S2-37dx validation: `od-isa` 1,866, `od-testkit` 455, runner 120 unit + 509 fixture tests (serialized aggregate; 381.06 seconds), and `od-x86-runner` 8 library + 4 binary tests. Focused DIVPD memory oracle coverage passed 1/1 with 3,584 executions; direct ISA address/gate/read rollback and decoder checks passed. Workspace all-target offline check, fmt/diff, and Graphify passed. The first parallel runner aggregate had five subprocess-spawn `ENOENT` failures; each failed case passed individually and the serialized aggregate passed. Isolated layout reports the worktree `.git` pointer and two historical unavailable manifests tracked by ISSUE-023. Independent Sol/high review is clean. Physical x86 acceptance is not claimed. Full evidence: [standalone report](../reports/S2_37DX_DIVPD_MEMORY.md).
+
+#### S2-37dz — local Long64 memory legacy RSQRTPS XMM0,m128 [RAX]
+
+Add schema-v2 profile `s2-long-rsqrtps-memory-rax-v1` for exactly `0F 52 00`.
+Require SSE feature bit 25 (not SSE2), with a complete instruction fetch before
+CR0.EM/CR4.OSFXSR #UD and then CR0.TS #NM checks. Require 16-byte alignment
+regardless of AC, checked canonical48 endpoints for `[RAX,RAX+15]`, and exactly
+one read16. All four output lanes come from memory and replace all of XMM0.
+
+Use strict masked-only MXCSR admission: supported mask, all six exception masks,
+DAZ=FTZ=0; any RC and prior sticky flags are accepted. Preserve the complete
+MXCSR and add no flags. Apply the local `Binary32::reciprocal_sqrt_sse_raw()`
+policy, including signed-zero/subnormal infinities, negative normal/negative
+infinity indefinite QNaN, positive infinity +0, preserved QNaN payload, and
+quieted SNaN. Normal outputs are checked against the independent `3/8192`
+relative-error envelope; this does not claim correctly rounded or bit-identical
+physical hardware results. Native/JIT/generic/fragment/C ABI paths remain denied. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37dz-memory-rsqrtps-at-rax), [standalone report](../reports/S2_37DZ_RSQRTPS_MEMORY.md), [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dz-local-legacy-rsqrtps-memory-profile), and [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).

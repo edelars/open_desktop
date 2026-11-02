@@ -85,6 +85,22 @@ universal tiny-result cutoff. ISSUE-025 remains open. Final Mac mini checks use
 the `3/8192` relative-error envelope for non-flushed normal outputs and handle
 the tiny-result boundary separately. See the [S2-37d plan](../../../../docs/plans/STAGE_2.md#s2-37d--local-long64-register-only-legacy-rcpps) and [ISSUE-025](../../../../docs/KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
 
+### S2-37dz local legacy RSQRTPS memory profile
+
+`s2_37dz_rsqrtps_m128_memory_rhs.case.json` is a handwritten schema-v2 fixture
+for exact legacy `0F 52 00`, sourcing all result lanes from one aligned m128
+read at `[RAX]`. The literal memory values `4.0`, `-0`, `+∞`, and `-2` produce
+local results `0.5`, `-∞`, `+0`, and the indefinite QNaN. Poisoned XMM0 checks
+full replacement; other vector registers and guest memory remain unchanged.
+A 4,096-run matrix covers both signs at every subnormal leading-bit position,
+signed NaN payload handling, all four RC settings, and every prior sticky
+history. The independent integer/rational validator enforces the `3/8192`
+normal-result error envelope without asserting hardware bit equality. See the
+[S2-37dz plan](../../../../docs/plans/STAGE_2.md#s2-37dz--local-long64-memory-legacy-rsqrtps-xmm0m128-rax),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-37dz-memory-rsqrtps-at-rax),
+[standalone report](../../../../docs/reports/S2_37DZ_RSQRTPS_MEMORY.md), and
+[ISSUE-025](../../../../docs/KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
+
 ### S2-37dy local legacy RCPPS memory profile
 
 `s2_37dy_rcpps_m128_memory_rhs.case.json` is a handwritten schema-v2 fixture

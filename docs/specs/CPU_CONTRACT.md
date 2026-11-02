@@ -12343,6 +12343,30 @@ tiny-result boundary separately. See the [Stage 2 plan](../plans/STAGE_2.md#s2-3
 [fixture](../../tests/fixtures/x86/stage2/s2_37d_rcpps_register.case.json), and
 [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
 
+## Local S2-37dz: memory RSQRTPS at `[RAX]`
+
+The schema-v2 diagnostic profile `s2-long-rsqrtps-memory-rax-v1` admits only
+legacy Long64 `0F 52 00`, requires SSE feature bit 25 (not SSE2), and performs
+the complete instruction fetch before CR0.EM/CR4.OSFXSR #UD and then CR0.TS
+#NM checks. It strictly admits only supported MXCSR bits, all six exception
+masks set, and DAZ=FTZ=0; RC and prior sticky flags may vary.
+
+The instruction requires 16-byte alignment even if RFLAGS.AC is set, checks
+both canonical48 endpoints `[RAX,RAX+15]`, and performs exactly one read16.
+Each little-endian memory lane passes through the deterministic local
+`Binary32::reciprocal_sqrt_sse_raw()` policy and all of XMM0 is replaced. It
+does not use the prior XMM0 contents, alter other vector state, modify MXCSR,
+or add exception flags. Failed gates, address checks, or reads leave CPU state
+uncommitted. Native, JIT, generic, fragment, and C ABI routes stay closed.
+
+The local helper policy preserves signed zero and signed subnormal signs in
+infinity results before checking the sign; negative normals and negative
+infinity produce the indefinite QNaN; positive infinity produces +0; QNaN
+payloads are retained and SNaNs are quieted according to the established local
+policy. Normal outputs are checked against the SDM `3/8192` relative-error
+envelope. This profile does not claim correctly rounded or bit-identical
+hardware output. See the [S2-37dz plan](../plans/STAGE_2.md#s2-37dz--local-long64-memory-legacy-rsqrtps-xmm0m128-rax), [standalone report](../reports/S2_37DZ_RSQRTPS_MEMORY.md), [fixture](../../tests/fixtures/x86/stage2/s2_37dz_rsqrtps_m128_memory_rhs.case.json), and [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
+
 ## Local S2-37dy: memory RCPPS at `[RAX]`
 
 The schema-v2 diagnostic profile `s2-long-rcpps-memory-rax-v1` admits only the

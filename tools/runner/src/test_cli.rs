@@ -556,6 +556,7 @@ fn expected_native_xorpd_oracle(
                 minps_memory_rax_controls: None,
                 sqrtps_memory_rax_controls: None,
                 rcpps_memory_rax_controls: None,
+                rsqrtps_memory_rax_controls: None,
                 addps_memory_rax_controls: None,
                 sqrtss_memory_rax_controls: None,
                 sqrtpd_memory_rax_controls: None,
@@ -2775,6 +2776,23 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongRsqrtpsMemoryRaxV1 {
+        let controls = loaded
+            .fixture
+            .rsqrtps_memory_rax_controls
+            .expect("validated RSQRTPS m128 controls");
+        od_isa::execute::run_with_rsqrtps_memory_rax_controls(
+            &mut state,
+            memory,
+            config,
+            od_isa::execute::RsqrtpsMemoryRaxControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongAddpsMemoryRaxV1 {
         let controls = loaded
             .fixture
@@ -3795,6 +3813,7 @@ fn execute_fixture_v2(
                 minps_memory_rax_controls: loaded.fixture.minps_memory_rax_controls,
                 sqrtps_memory_rax_controls: loaded.fixture.sqrtps_memory_rax_controls,
                 rcpps_memory_rax_controls: loaded.fixture.rcpps_memory_rax_controls,
+                rsqrtps_memory_rax_controls: loaded.fixture.rsqrtps_memory_rax_controls,
                 addps_memory_rax_controls: loaded.fixture.addps_memory_rax_controls,
                 sqrtss_memory_rax_controls: loaded.fixture.sqrtss_memory_rax_controls,
                 sqrtpd_memory_rax_controls: loaded.fixture.sqrtpd_memory_rax_controls,
@@ -5189,6 +5208,7 @@ mod tests {
                     minps_memory_rax_controls: input.fixture.minps_memory_rax_controls,
                     sqrtps_memory_rax_controls: input.fixture.sqrtps_memory_rax_controls,
                     rcpps_memory_rax_controls: input.fixture.rcpps_memory_rax_controls,
+                    rsqrtps_memory_rax_controls: input.fixture.rsqrtps_memory_rax_controls,
                     addps_memory_rax_controls: input.fixture.addps_memory_rax_controls,
                     sqrtss_memory_rax_controls: input.fixture.sqrtss_memory_rax_controls,
                     sqrtpd_memory_rax_controls: input.fixture.sqrtpd_memory_rax_controls,
@@ -11447,5 +11467,89 @@ mod rcpps_memory_matrix_tests {
             }
         }
         assert_eq!(checks, 3_584);
+    }
+}
+
+#[cfg(test)]
+mod rsqrtps_memory_matrix_tests {
+    use super::*;
+    use od_testkit::HexU64;
+    use od_testkit::memory::FlatMemory;
+    use od_testkit::result::{Backend, Observation};
+    use od_testkit::v2::{Fixture, Outcome};
+
+    const CASE: &[u8] = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_37dz_rsqrtps_m128_memory_rhs.case.json"
+    );
+
+    #[test]
+    fn all_rc_and_sticky_histories_preserve_local_memory_rhs_results() {
+        let base = Fixture::from_json(CASE).unwrap().fixture;
+        let mut vectors = [[0u32; 4]; 16];
+        // All 23 subnormal leading-bit positions, with both signs, occupy
+        // the first 12 vectors; the remaining vectors cover zeros, infinities,
+        // positive normals, and signed QNaN/SNaN payload handling.
+        for signed_position in 0..46 {
+            let vector = signed_position / 4;
+            let lane = signed_position % 4;
+            let position = signed_position / 2;
+            vectors[vector][lane] = (if signed_position & 1 == 1 {
+                0x8000_0000
+            } else {
+                0
+            }) | (1 << position);
+        }
+        vectors[12] = [0, 0x8000_0000, 0x7f80_0000, 0xff80_0000];
+        vectors[13] = [0x0080_0000, 0x0080_0001, 0x7f7f_fffe, 0x7f7f_ffff];
+        vectors[14] = [0x7fc1_2345, 0xffc5_4321, 0x3f80_0000, 0x4000_0000];
+        vectors[15] = [0x7f81_2345, 0xff85_4321, 0x4040_0000, 0x4080_0000];
+        let mut checks = 0;
+        for (index, lanes) in vectors.into_iter().enumerate() {
+            let data = lanes
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let mut reference_xmm = None;
+            for rc in 0..4u64 {
+                for sticky in 0..64u64 {
+                    let mut fixture = base.clone();
+                    fixture.case_id = format!("s2_37dz_vector{index}_rc{rc}_sticky{sticky:02x}");
+                    fixture.memory[1].initial_bytes_hex = data.clone();
+                    fixture.initial_state.sse.as_mut().unwrap().mxcsr =
+                        HexU64(0x1f80 | (rc << 13) | sticky);
+                    let loaded = Fixture::from_json(&fixture.to_json().unwrap()).unwrap();
+                    let mut memory = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+                    let result = execute_fixture_v2(&loaded, &mut memory);
+                    assert_eq!(result.backend, Backend::Interpreter);
+                    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+                    assert_eq!(
+                        result.instructions_executed,
+                        Observation::Available { value: HexU64(1) }
+                    );
+                    let snapshot = match &result.snapshot {
+                        Observation::Available { value } => value,
+                        other => panic!("expected RSQRTPS snapshot, got {other:?}"),
+                    };
+                    let xmm0 = &snapshot.state.sse.as_ref().unwrap().xmm[0];
+                    if let Some(expected) = &reference_xmm {
+                        assert_eq!(
+                            xmm0, expected,
+                            "vector={index}, RC={rc}, sticky={sticky:02x}"
+                        );
+                    } else {
+                        reference_xmm = Some(xmm0.clone());
+                    }
+                    assert_eq!(
+                        snapshot.state.sse.as_ref().unwrap().mxcsr,
+                        fixture.initial_state.sse.as_ref().unwrap().mxcsr
+                    );
+                    assert_eq!(snapshot.memory[1].bytes_hex, data);
+                    result.validate_for(&loaded).unwrap();
+                    checks += 1;
+                }
+            }
+        }
+        assert_eq!(checks, 4_096);
     }
 }

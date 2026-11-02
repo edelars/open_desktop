@@ -22206,3 +22206,28 @@ independent schema-v2 integer/rational validator checks literal local bits and
 the `3/8192` relative-error envelope for normal outputs. Validation results and
 limitations are in the [standalone report](S2_37DY_RCPPS_MEMORY.md). No physical
 x86 acceptance is claimed; ISSUE-025 remains open. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37dy-memory-rcpps-at-rax), [plan](../plans/STAGE_2.md#s2-37dy--local-long64-memory-legacy-rcpps-at-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dy-local-legacy-rcpps-memory-profile).
+
+## S2-37dz — RSQRTPS XMM0,m128 [RAX]
+
+Added the strict schema-v2 interpreter-only profile for exact legacy `0F 52 00`.
+SSE bit 25 (not SSE2) and CR0/CR4 gates are checked after complete fetch, with
+#UD priority over #NM. The memory source requires mandatory 16-byte alignment
+regardless of AC, checked canonical48 `[RAX,RAX+15]`, and exactly one read16.
+All four result lanes come from memory; full XMM0 is replaced while other XMM
+state, memory, RFLAGS, and full MXCSR remain unchanged. MXCSR admission requires
+supported bits, all exception masks set, and DAZ/FTZ clear; every RC and sticky
+history is accepted. JIT/native/generic/fragment/C ABI paths remain closed.
+
+The independent fixture validator checks literal local special-value results
+and the `3/8192` normal-output relative-error envelope. A 4,096-run matrix
+covers both signs at all 23 subnormal leading-bit positions, signed QNaN/SNaN
+payload cases, RC×64 sticky histories, and positive normal boundaries. Full
+package suites passed: `od-isa` 1,875; `od-testkit` 455; runner 122 unit + 513
+fixture tests. `cargo check --workspace --all-targets --offline`, `cargo fmt
+--all -- --check`, and `git diff --check` passed. Graphify refreshed to 11,730
+nodes / 25,270 edges / 381 communities. `tools/check_layout.py` reports only the
+isolated `.git` marker and two unavailable historical manifests already tracked
+by ISSUE-023; no new broken links were reported. Independent Sol/high review is
+clean; no actionable findings. No physical x86 acceptance or hardware bit
+equality is claimed; ISSUE-025 remains open. See the
+[standalone report](S2_37DZ_RSQRTPS_MEMORY.md), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37dz-memory-rsqrtps-at-rax), [plan](../plans/STAGE_2.md#s2-37dz--local-long64-memory-legacy-rsqrtps-xmm0m128-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dz-local-legacy-rsqrtps-memory-profile).

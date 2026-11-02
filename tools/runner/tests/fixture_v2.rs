@@ -75,6 +75,8 @@ const SQRTPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
 );
 const RCPPS_M128_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dy_rcpps_m128_memory_rhs.case.json");
+const RSQRTPS_M128_MEMORY_RAX: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dz_rsqrtps_m128_memory_rhs.case.json");
 const ADDPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dq_addps_m128_memory_source_and_destination_lanes.case.json"
 );
@@ -39040,6 +39042,125 @@ fn rcpps_m128_memory_rhs_is_strict_and_interpreter_only() {
     }
     for backend in ["jit", "native"] {
         let (_, denied) = run(RCPPS_M128_MEMORY_RAX, backend, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
+    }
+}
+
+#[test]
+fn rsqrtps_m128_memory_rhs_is_strict_and_interpreter_only() {
+    let base = Fixture::from_json(RSQRTPS_M128_MEMORY_RAX).unwrap().fixture;
+    assert_eq!(
+        base.profile,
+        od_testkit::v2::Profile::LongRsqrtpsMemoryRaxV1
+    );
+    assert_eq!(base.memory[0].initial_bytes_hex, "0f5200");
+    assert_eq!(base.memory[1].length, 16);
+    assert_eq!(
+        base.initial_state.sse.as_ref().unwrap().xmm[0],
+        "deadbeefcafef00d123456789abcdef0"
+    );
+    let (input, result) = run(RSQRTPS_M128_MEMORY_RAX, "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let result_snapshot = snapshot(&result);
+    assert_eq!(
+        result_snapshot.state.sse.as_ref().unwrap().xmm[0],
+        "0000003f000080ff000000000000c0ff"
+    );
+    assert_eq!(
+        result_snapshot.state.sse.as_ref().unwrap().mxcsr,
+        base.initial_state.sse.as_ref().unwrap().mxcsr
+    );
+    assert_eq!(
+        result_snapshot.memory[1].bytes_hex,
+        base.memory[1].initial_bytes_hex
+    );
+
+    for backend in [Backend::Jit, Backend::NativeX86] {
+        let mut relabeled = result.clone();
+        relabeled.backend = backend;
+        assert!(relabeled.validate_for(&input).is_err());
+    }
+    let mut wrong_result = result.clone();
+    snapshot_mut(&mut wrong_result)
+        .state
+        .sse
+        .as_mut()
+        .unwrap()
+        .xmm[0]
+        .replace_range(0..8, "00000000");
+    assert!(wrong_result.validate_for(&input).is_err());
+    let mut wrong_mxcsr = result.clone();
+    snapshot_mut(&mut wrong_mxcsr)
+        .state
+        .sse
+        .as_mut()
+        .unwrap()
+        .mxcsr = HexU64(0x1f81);
+    assert!(wrong_mxcsr.validate_for(&input).is_err());
+    let mut wrong_memory = result.clone();
+    snapshot_mut(&mut wrong_memory).memory[1].bytes_hex = "00".repeat(16);
+    assert!(wrong_memory.validate_for(&input).is_err());
+    let mut wrong_controls = result.clone();
+    snapshot_mut(&mut wrong_controls)
+        .rsqrtps_memory_rax_controls
+        .as_mut()
+        .unwrap()
+        .cr0_ts = true;
+    assert!(wrong_controls.validate_for(&input).is_err());
+
+    let mut missing_provenance = base.clone();
+    missing_provenance.provenance.source.clear();
+    assert!(missing_provenance.validate().is_err());
+    let mut missing_controls = base.clone();
+    missing_controls.rsqrtps_memory_rax_controls = None;
+    assert!(missing_controls.validate().is_err());
+    let mut foreign_controls = base.clone();
+    foreign_controls.rcpps_memory_rax_controls =
+        Some(foreign_controls.rsqrtps_memory_rax_controls.unwrap());
+    assert!(foreign_controls.validate().is_err());
+    let mut bad_encoding = base.clone();
+    bad_encoding.memory[0].initial_bytes_hex = "0f5201".into();
+    assert!(bad_encoding.validate().is_err());
+
+    for (name, gate, vector) in [("no_sse", 0, 6), ("cr0_ts", 1, 7), ("em_precedes_ts", 2, 6)] {
+        let mut gated = base.clone();
+        gated.case_id = format!("s2_37dz_gate_{name}");
+        gated.expected_exit = ExpectedExit::Exception;
+        let controls = gated.rsqrtps_memory_rax_controls.as_mut().unwrap();
+        match gate {
+            0 => controls.sse_available = false,
+            1 => controls.cr0_ts = true,
+            _ => {
+                controls.cr0_em = true;
+                controls.cr0_ts = true;
+            }
+        }
+        let (_, fault) = run(&gated.to_json().unwrap(), "interpreter", 0);
+        assert!(matches!(fault.outcome, Outcome::Exception {}));
+        match &snapshot(&fault).exception {
+            Observation::Available {
+                value: Some(exception),
+            } => assert_eq!(exception.vector, vector),
+            other => panic!("expected gate exception #{vector}, got {other:?}"),
+        }
+    }
+
+    let mut unaligned = base.clone();
+    unaligned.case_id = "s2_37dz_unaligned_memory_fault".into();
+    unaligned.initial_state.gpr[0] = HexU64(0x2001);
+    unaligned.memory[1].guest_address = HexU64(0x2001);
+    unaligned.expected_exit = ExpectedExit::Exception;
+    let (_, alignment_fault) = run(&unaligned.to_json().unwrap(), "interpreter", 0);
+    assert!(matches!(alignment_fault.outcome, Outcome::Exception {}));
+    match &snapshot(&alignment_fault).exception {
+        Observation::Available {
+            value: Some(exception),
+        } => assert_eq!(exception.vector, 13),
+        other => panic!("expected alignment #GP, got {other:?}"),
+    }
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(RSQRTPS_M128_MEMORY_RAX, backend, 4);
         assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
         assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
     }

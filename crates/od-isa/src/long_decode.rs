@@ -907,6 +907,8 @@ pub enum Operation {
     },
     /// Local-only legacy `0F 53 00` packed binary32 reciprocal from m128 at RAX.
     RcppsMemoryRax,
+    /// Local-only legacy `0F 52 00` packed binary32 reciprocal square root from m128 at RAX.
+    RsqrtpsMemoryRax,
     /// Local-only legacy `F3 0F 5D /r` XMM-register form with masked IE/DE status.
     MinssRegisterMasked {
         destination: u8,
@@ -4813,12 +4815,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Escape0f, 0x52) if rsqrtps_register => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if modrm == 0x00 && prefix_count == 0 {
+                    Operation::RsqrtpsMemoryRax
+                } else if modrm >> 6 == 3 {
+                    Operation::RsqrtpsRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
+                } else {
                     return Err(self.unsupported(opcode));
-                }
-                Operation::RsqrtpsRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
                 }
             }
             (OpcodeMap::Escape0f, 0x53) if rcpss_register => {
@@ -13090,6 +13095,31 @@ mod tests {
             &[0xc5, 0xf8, 0x53, 0x00][..],
             &[0xc4, 0xe1, 0x78, 0x53, 0x00][..],
             &[0x62, 0xf1, 0x7c, 0x08, 0x53, 0x00][..],
+        ] {
+            let mut instruction = Memory::new(bytes);
+            assert!(instruction.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn rsqrtps_memory_rax_accepts_only_exact_legacy_0f5200() {
+        let mut instruction = Memory::new(&[0x0f, 0x52, 0x00]);
+        let decoded = instruction.decode().unwrap();
+        assert_eq!(decoded.operation, Operation::RsqrtpsMemoryRax);
+        assert_eq!(decoded.length, 3);
+        for bytes in [
+            &[0x0f, 0x52, 0x01][..],
+            &[0x48, 0x0f, 0x52, 0x00][..],
+            &[0x40, 0x0f, 0x52, 0x00][..],
+            &[0x66, 0x0f, 0x52, 0x00][..],
+            &[0xf3, 0x0f, 0x52, 0x00][..],
+            &[0x67, 0x0f, 0x52, 0x00][..],
+            &[0x2e, 0x0f, 0x52, 0x00][..],
+            &[0xf0, 0x0f, 0x52, 0x00][..],
+            &[0x0f, 0x52][..],
+            &[0xc5, 0xf8, 0x52, 0x00][..],
+            &[0xc4, 0xe1, 0x78, 0x52, 0x00][..],
+            &[0x62, 0xf1, 0x7c, 0x08, 0x52, 0x00][..],
         ] {
             let mut instruction = Memory::new(bytes);
             assert!(instruction.decode().is_err(), "{bytes:02x?}");
