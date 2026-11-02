@@ -17677,3 +17677,59 @@ all-target offline check, formatting, layout and diff checks passed. Graphify is
 11,947 / 25,946 / 383; community labels were not refreshed without an LLM API
 key. Independent Sol/high review is clean. The Linux-only native preflight was
 not run on this macOS host. See the [implementation report](../reports/S2_38R_MAXPD_MEMORY_UNMASKED.md).
+
+## S2-31dz — historical SF with pre-existing IE for bounded m32/m64 stores
+
+Only the existing bounded m32/m64 `FST/FSTP m32fp/m64fp` forms
+`D9 10`, `D9 18`, `DD 10`, and `DD 18` admit historical SF, and only when IE
+was already set. Reject ES or B, and reject SF when IE is clear before any
+conversion; a current SNaN cannot make SF-only status eligible.
+Retain all other current status/control/source/tag/range gates. Preserve SF and
+IE, merge current conversion flags only after a successful all-or-error write,
+and then commit status, RIP and any pop atomically. C1 follows the existing
+current-conversion rule. Other widths, m80 stores, stack-fault delivery and
+new SF producers remain unchanged.
+
+Schema-v2 Unsupported validation must use the same predicate. Cover SF+IE with
+all 32 historical DE/ZE/OE/UE/PE combinations across widths/forms and relevant
+FCW, TOP, C1 and source classes; SF-only with SNaN pre-write refusal; ES/B and
+malformed source/control rejection; write/range rollback; full snapshots;
+FNSTSW/FNCLEX/retry; literal fixtures and interpreter-only backend denial.
+This follows Intel SDM Rev. 093 Vol. 1 §8.1.3.4
+([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=212)).
+See the [Stage 2 plan](../plans/STAGE_2.md#s2-31dz-admit-historical-sf-only-with-pre-existing-ie-on-bounded-m32m64-stores).
+
+## S2-38s — exact MINPS memory unmasked IM/DM
+
+The strict interpreter-only schema-v2 profile admits only exact Long64 legacy
+`0F 5D 00` (`MINPS XMM0,m128 [RAX]`), with three-byte fetch, budget one and
+stop RIP entry+3. Require SSE (`CPUID.01H:EDX[25]`); SSE2 is not required. Full
+fetch and exact-form rejection precede feature #UD and TS #NM. Keep masked
+S2-37dc memory MINPS and unmasked S2-38k register MINPS separate.
+
+Require MXCSR supported bits `0xffbf`, reserved bits clear, DAZ=FTZ=0, and
+ZE/OE/UE/PE masks set; IM, DM, RC and prior sticky status may vary. Require
+16-byte alignment regardless of RFLAGS.AC. Validate canonical48
+`[RAX,RAX+15]` before exactly one `read16`: misalignment/span faults raise
+#GP(0) with zero callbacks; a read failure uses the existing memory-error
+outcome after one callback and commits no architectural state.
+
+Snapshot old XMM0 and memory, then evaluate all four binary32 lanes with MINPS
+raw source-2 selection: equal values, signed-zero ties and either NaN select
+raw memory RHS bits. Collect raw IE/DE across lanes before commit. If any new
+event is unmasked, OR all raw IE/DE events into sticky status, report #XM or
+arithmetic #UD according to OSXMMEXCPT, preserve the entire XMM0 and RIP, and
+retire zero instructions. When no event is unmasked, suppress DE only within a
+lane that also raises IE, then atomically commit the full XMM0, status and RIP.
+JIT/native/C ABI/generic/fragment paths remain closed.
+
+The independent schema oracle must use raw integer classification and
+ordering. Cover `{none,I,D,I+D}⁴ × IM × DM × OSXMMEXCPT`, including events only
+in upper lanes, RC×64 prior sticky histories, lane/source permutations, signed
+zero and NaN payload cases, MIN-vs-MAX discriminators, poisoned XMM1 with
+actual memory RHS, SSE2=0 positive, exact three-byte fetch, memory/FP fault
+priority, callback counts, backend/result tampering and literal fixtures. No
+physical x86 acceptance is claimed. Sources: Intel SDM Rev. 093 Vol. 2B MINPS
+pp. 4-19–4-21 ([official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf#page=27));
+Vol. 1 §§4.9.2, 11.5.3.1–3 and Appendix D; Vol. 3A §16.1.3/Table 16-1. See
+the [Stage 2 plan](../plans/STAGE_2.md#s2-38s--exact-long64-minps-xmm0m128-rax-with-unmasked-imdm-exits).
