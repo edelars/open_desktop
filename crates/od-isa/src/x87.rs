@@ -306,6 +306,87 @@ pub struct SqrtFiniteToBinary80PrecisionResult {
     pub incremented: bool,
 }
 
+/// Result of rounding a finite binary80 quotient to a requested precision.
+///
+/// `inexact` describes whether the exact mathematical quotient differs from
+/// the represented target-precision value. `incremented` reports whether
+/// rounding increased the truncated target-precision significand by one,
+/// before any carry normalization. Neither field is architectural x87 status.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DivideFiniteToNormalBinary80PrecisionResult {
+    pub value: X87Binary80,
+    pub inexact: bool,
+    pub incremented: bool,
+}
+
+/// Divide two normalized nonzero finite values and round the exact quotient
+/// directly to a bounded binary80 result at precision 24, 53, or 64.
+///
+/// Inputs may have Normal, Subnormal, or PseudoDenormal provenance, provided
+/// their normalized significand has bit 63 set. The unrounded quotient
+/// exponent and rounded result must both be normal finite binary80 values.
+/// Rounding uses the exact quotient and remainder once at the requested
+/// precision; this helper defines no x87 control-word, status, exception, or
+/// instruction behavior.
+pub fn divide_finite_to_normal_binary80_precision_with_diagnostics(
+    lhs: X87Finite,
+    rhs: X87Finite,
+    mode: RationalRoundingMode,
+    precision: u32,
+) -> Option<DivideFiniteToNormalBinary80PrecisionResult> {
+    if !matches!(precision, 24 | 53 | 64) {
+        return None;
+    }
+
+    let valid_source = |value: X87Finite| {
+        !value.is_zero()
+            && value.significand >= (1_u64 << 63)
+            && matches!(
+                value.source_class,
+                X87Binary80Class::Normal
+                    | X87Binary80Class::Subnormal
+                    | X87Binary80Class::PseudoDenormal
+            )
+    };
+    if !valid_source(lhs) || !valid_source(rhs) {
+        return None;
+    }
+
+    let quotient = divide_finite_significands(lhs, rhs)?;
+    let exponent = quotient.exponent();
+    if !(-16382..=16383).contains(&exponent) {
+        return None;
+    }
+
+    let q = quotient.quotient();
+    let shift = 64 - precision;
+    let truncated = u128::from(q >> shift);
+    let discarded = if shift == 0 {
+        0
+    } else {
+        q & ((1_u64 << shift) - 1)
+    };
+    let inexact = discarded != 0 || quotient.remainder() != 0;
+    let magnitude = round_quotient_to_precision(
+        quotient.sign(),
+        q,
+        quotient.remainder(),
+        quotient.denominator(),
+        precision,
+        mode,
+    )?;
+    let value = pack_normal_rounded_significand(quotient.sign(), exponent, magnitude, precision)?;
+    if value.classify() != X87Binary80Class::Normal {
+        return None;
+    }
+
+    Some(DivideFiniteToNormalBinary80PrecisionResult {
+        value,
+        inexact,
+        incremented: magnitude > truncated,
+    })
+}
+
 /// Square-root a positive, nonzero normalized finite binary80 value and round
 /// once to a supported significand precision while retaining binary80's
 /// exponent range, returning helper-local rounding diagnostics.
@@ -1158,10 +1239,11 @@ mod tests {
         RationalRoundingMode, X87Binary80, X87Binary80Class, X87Finite, X87FiniteRemainder, X87Grs,
         add_finite_same_exponent, add_finite_same_exponent_to_binary80, add_finite_to_binary80,
         add_finite_unequal_exponents, align_finite_pair, divide_finite_significands,
-        divide_finite_to_binary80, multiply_finite_significands, multiply_finite_to_binary80,
-        normalize_exact_coefficient, normalize_exact_magnitude, pack_normal_rounded_significand,
-        remainder_finite_nearest_even, remainder_finite_nearest_even_with_quotient,
-        remainder_finite_trunc, remainder_finite_trunc_with_quotient, round_pack_exact_coefficient,
+        divide_finite_to_binary80, divide_finite_to_normal_binary80_precision_with_diagnostics,
+        multiply_finite_significands, multiply_finite_to_binary80, normalize_exact_coefficient,
+        normalize_exact_magnitude, pack_normal_rounded_significand, remainder_finite_nearest_even,
+        remainder_finite_nearest_even_with_quotient, remainder_finite_trunc,
+        remainder_finite_trunc_with_quotient, round_pack_exact_coefficient,
         round_pack_exact_magnitude, round_pack_subnormal_quotient, round_quotient_magnitude,
         round_quotient_ties_even, round_quotient_to_precision, scale_finite_to_binary80,
         shift_right_jam, shift_right_jam_u128, sqrt_finite_to_binary80,
@@ -1647,6 +1729,289 @@ mod tests {
         assert_eq!((raw_subnormal, raw_pseudo, lhs, rhs), before);
         assert_eq!(lhs.source_class(), X87Binary80Class::Subnormal);
         assert_eq!(rhs.source_class(), X87Binary80Class::PseudoDenormal);
+    }
+
+    #[test]
+    fn finite_division_direct_precision_matches_literal_one_third_vectors() {
+        use RationalRoundingMode::{
+            NearestTiesEven as N, TowardNegative as D, TowardPositive as U, TowardZero as Z,
+        };
+        let modes = [N, Z, U, D];
+        let numerator = finite(-1, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal);
+        let denominator = finite(0, 0xc000_0000_0000_0000, false, X87Binary80Class::Normal);
+        let expected_significands: [[u64; 4]; 3] = [
+            [
+                0xaaaa_ab00_0000_0000,
+                0xaaaa_aa00_0000_0000,
+                0xaaaa_ab00_0000_0000,
+                0xaaaa_aa00_0000_0000,
+            ],
+            [
+                0xaaaa_aaaa_aaaaa800,
+                0xaaaa_aaaa_aaaaa800,
+                0xaaaa_aaaa_aaaab000,
+                0xaaaa_aaaa_aaaaa800,
+            ],
+            [
+                0xaaaa_aaaa_aaaa_aaab,
+                0xaaaa_aaaa_aaaa_aaaa,
+                0xaaaa_aaaa_aaaa_aaab,
+                0xaaaa_aaaa_aaaa_aaaa,
+            ],
+        ];
+        let precisions = [24, 53, 64];
+        for (p_index, precision) in precisions.into_iter().enumerate() {
+            for sign in [false, true] {
+                let lhs = finite(-1, numerator.significand(), sign, X87Binary80Class::Normal);
+                for (mode_index, mode) in modes.into_iter().enumerate() {
+                    let result = divide_finite_to_normal_binary80_precision_with_diagnostics(
+                        lhs,
+                        denominator,
+                        mode,
+                        precision,
+                    )
+                    .unwrap();
+                    let expected_mode_index = if sign && mode_index == 2 {
+                        3
+                    } else if sign && mode_index == 3 {
+                        2
+                    } else {
+                        mode_index
+                    };
+                    let sign_exponent = if sign { 0xbffd_u16 } else { 0x3ffd_u16 };
+                    let mut expected = [0; 10];
+                    expected[..8].copy_from_slice(
+                        &expected_significands[p_index][expected_mode_index].to_le_bytes(),
+                    );
+                    expected[8..].copy_from_slice(&sign_exponent.to_le_bytes());
+                    let truncated = match precision {
+                        24 => 0xaaaa_aa00_0000_0000,
+                        53 => 0xaaaa_aaaa_aaaa_a800,
+                        _ => 0xaaaa_aaaa_aaaa_aaaa,
+                    };
+                    assert_eq!(result.value.to_bytes(), expected);
+                    assert!(result.inexact);
+                    assert_eq!(
+                        result.incremented,
+                        expected_significands[p_index][expected_mode_index] > truncated
+                    );
+                    assert_eq!(result.value.classify(), X87Binary80Class::Normal);
+                }
+            }
+        }
+
+        let one = finite(0, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal);
+        let two = finite(1, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal);
+        for precision in precisions {
+            let result =
+                divide_finite_to_normal_binary80_precision_with_diagnostics(one, two, N, precision)
+                    .unwrap();
+            assert_eq!(
+                result.value.to_bytes(),
+                [0, 0, 0, 0, 0, 0, 0, 0x80, 0xfe, 0x3f]
+            );
+            assert!(!result.inexact);
+            assert!(!result.incremented);
+        }
+    }
+
+    #[test]
+    fn finite_division_direct_precision_covers_ties_carry_range_and_double_rounding() {
+        use RationalRoundingMode::{NearestTiesEven as N, TowardZero as Z};
+        let one = finite(0, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal);
+
+        // p24 midpoint with an even retained bit stays; an odd retained bit increments.
+        for (sig, expected) in [
+            (0xa000_0080_0000_0000, 0x00a0_0000_u64),
+            (0xa000_0180_0000_0000, 0x00a0_0002_u64),
+        ] {
+            let result = divide_finite_to_normal_binary80_precision_with_diagnostics(
+                finite(0, sig, false, X87Binary80Class::Normal),
+                one,
+                N,
+                24,
+            )
+            .unwrap();
+            assert!(result.inexact);
+            assert_eq!(result.incremented, expected & 1 != (sig >> 40) & 1);
+            let mut bytes = [0; 10];
+            bytes[..8].copy_from_slice(&(expected << 40).to_le_bytes());
+            bytes[8..].copy_from_slice(&0x3fff_u16.to_le_bytes());
+            assert_eq!(result.value.to_bytes(), bytes);
+        }
+
+        // Adjacent p24 inputs on either side of an even midpoint round oppositely.
+        for (sig, expected) in [
+            (0xa000_007f_ffff_ffff, 0x00a0_0000_u64),
+            (0xa000_0080_0000_0001, 0x00a0_0001_u64),
+        ] {
+            let result = divide_finite_to_normal_binary80_precision_with_diagnostics(
+                finite(0, sig, false, X87Binary80Class::Normal),
+                one,
+                N,
+                24,
+            )
+            .unwrap();
+            assert!(result.inexact);
+            let mut bytes = [0; 10];
+            bytes[..8].copy_from_slice(&(expected << 40).to_le_bytes());
+            bytes[8..].copy_from_slice(&0x3fff_u16.to_le_bytes());
+            assert_eq!(result.value.to_bytes(), bytes);
+        }
+
+        // With zero rational remainder, discarded quotient bits still set inexact.
+        let discarded = divide_finite_to_normal_binary80_precision_with_diagnostics(
+            finite(0, 0xa000_0000_0000_0001, false, X87Binary80Class::Normal),
+            one,
+            Z,
+            24,
+        )
+        .unwrap();
+        assert!(discarded.inexact);
+        assert!(!discarded.incremented);
+        assert_eq!(
+            discarded.value.to_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 0xa0, 0xff, 0x3f]
+        );
+
+        // Exact division carry increments the exponent; the same carry at max exponent rejects.
+        let largest = finite(0, u64::MAX, false, X87Binary80Class::Normal);
+        let carried =
+            divide_finite_to_normal_binary80_precision_with_diagnostics(largest, one, N, 24)
+                .unwrap();
+        assert_eq!(
+            carried.value.to_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0x40]
+        );
+        assert!(carried.incremented);
+        assert_eq!(
+            divide_finite_to_normal_binary80_precision_with_diagnostics(
+                finite(16383, u64::MAX, false, X87Binary80Class::Normal),
+                one,
+                N,
+                24,
+            ),
+            None
+        );
+        assert_eq!(
+            divide_finite_to_normal_binary80_precision_with_diagnostics(
+                finite(
+                    -16383,
+                    0x8000_0000_0000_0000,
+                    false,
+                    X87Binary80Class::Normal
+                ),
+                one,
+                N,
+                24,
+            ),
+            None
+        );
+
+        // Direct p24 rounds below the midpoint; p64-then-p24 crosses it.
+        let lhs = finite(0, 0x8000_0180_0000_0001, false, X87Binary80Class::Normal);
+        let rhs = finite(0, 0x8000_0000_0000_0001, false, X87Binary80Class::Normal);
+        let direct =
+            divide_finite_to_normal_binary80_precision_with_diagnostics(lhs, rhs, N, 24).unwrap();
+        assert_eq!(
+            direct.value.to_bytes(),
+            [0, 0, 0, 0, 0, 1, 0, 0x80, 0xff, 0x3f]
+        );
+        assert!(!direct.incremented);
+        let p64 =
+            divide_finite_to_normal_binary80_precision_with_diagnostics(lhs, rhs, N, 64).unwrap();
+        let p64_input = p64.value.normalize_finite().unwrap();
+        let rounded_twice =
+            divide_finite_to_normal_binary80_precision_with_diagnostics(p64_input, one, N, 24)
+                .unwrap();
+        assert_eq!(
+            rounded_twice.value.to_bytes(),
+            [0, 0, 0, 0, 0, 2, 0, 0x80, 0xff, 0x3f]
+        );
+
+        for exponent in [-16382, 16383] {
+            let value = finite(
+                exponent,
+                0x8000_0000_0000_0000,
+                true,
+                X87Binary80Class::Normal,
+            );
+            let result =
+                divide_finite_to_normal_binary80_precision_with_diagnostics(value, one, N, 64)
+                    .unwrap();
+            assert!(result.value.sign());
+            assert_eq!(result.value.exponent(), (exponent + 16383) as u16);
+        }
+    }
+
+    #[test]
+    fn finite_division_direct_precision_rejects_malformed_inputs_and_preserves_legacy_helper() {
+        use RationalRoundingMode::{
+            NearestTiesEven as N, TowardNegative as D, TowardPositive as U, TowardZero as Z,
+        };
+        let one = finite(0, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal);
+        let three = finite(1, 0xc000_0000_0000_0000, false, X87Binary80Class::Normal);
+        let modes = [N, Z, U, D];
+        for mode in modes {
+            for precision in [0, 1, 23, 25, 52, 54, 63, 65, u32::MAX] {
+                assert_eq!(
+                    divide_finite_to_normal_binary80_precision_with_diagnostics(
+                        one, three, mode, precision,
+                    ),
+                    None
+                );
+            }
+            let zero = finite(0, 0, false, X87Binary80Class::Zero);
+            assert_eq!(
+                divide_finite_to_normal_binary80_precision_with_diagnostics(one, zero, mode, 64),
+                None
+            );
+            assert_eq!(
+                divide_finite_to_normal_binary80_precision_with_diagnostics(zero, one, mode, 64),
+                None
+            );
+            for malformed in [
+                finite(0, 0, false, X87Binary80Class::Normal),
+                finite(0, 0x7fff_ffff_ffff_ffff, false, X87Binary80Class::Normal),
+                finite(0, 0x8000_0000_0000_0000, false, X87Binary80Class::Zero),
+                finite(0, 0x8000_0000_0000_0000, false, X87Binary80Class::Unnormal),
+                finite(0, 0x8000_0000_0000_0000, false, X87Binary80Class::Infinity),
+            ] {
+                assert_eq!(
+                    divide_finite_to_normal_binary80_precision_with_diagnostics(
+                        malformed, one, mode, 64
+                    ),
+                    None
+                );
+            }
+            assert_eq!(
+                divide_finite_to_normal_binary80_precision_with_diagnostics(one, three, mode, 64)
+                    .unwrap()
+                    .value,
+                divide_finite_to_binary80(one, three, mode).unwrap()
+            );
+        }
+
+        let raw_subnormal = X87Binary80::from_bytes([1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let raw_pseudo = X87Binary80::from_bytes([0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0x80]);
+        let subnormal = raw_subnormal.normalize_finite().unwrap();
+        let pseudo = raw_pseudo.normalize_finite().unwrap();
+        for value in [subnormal, pseudo] {
+            assert_eq!(
+                divide_finite_to_normal_binary80_precision_with_diagnostics(value, value, N, 64)
+                    .unwrap()
+                    .value
+                    .classify(),
+                X87Binary80Class::Normal
+            );
+        }
+        let before = (one, three, raw_subnormal, raw_pseudo, subnormal, pseudo);
+        let _ =
+            divide_finite_to_normal_binary80_precision_with_diagnostics(subnormal, pseudo, N, 53);
+        assert_eq!(
+            (one, three, raw_subnormal, raw_pseudo, subnormal, pseudo),
+            before
+        );
     }
 
     #[test]
