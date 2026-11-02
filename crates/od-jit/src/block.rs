@@ -3097,6 +3097,13 @@ fn build_block_with_profile(
                         .is_some_and(|bytes| bytes[..4] == [0x67, 0x8b, 0x04, 0x0d])
                     || code
                         .bytes
+                        .get(guest_offset..guest_offset.saturating_add(8))
+                        .is_some_and(|bytes| {
+                            bytes[..3] == [0x67, 0x8b, 0x04]
+                                && matches!(bytes[3], 0x4d | 0x8d | 0xcd)
+                        })
+                    || code
+                        .bytes
                         .get(guest_offset..guest_offset.saturating_add(5))
                         .is_some_and(|bytes| bytes[..4] == [0x67, 0x8b, 0x44, 0x24])
                     || code
@@ -5033,7 +5040,7 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
             || (instruction.length == 8
                 && matches!(operand.base, AddressBase::None)
                 && operand.index == Some(od_isa::Register::Rcx)
-                && operand.scale == 1
+                && matches!(operand.scale, 1 | 2 | 4 | 8)
                 && i32::try_from(operand.displacement).is_ok()));
     let exact_prefix = instruction.prefixes.group1.is_none()
         && instruction.prefixes.segment.is_none()
