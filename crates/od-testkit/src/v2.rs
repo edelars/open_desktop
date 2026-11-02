@@ -18933,6 +18933,7 @@ impl RunResult {
                 | Profile::LongAddssMemoryRaxV1
                 | Profile::LongAddsdMemoryRaxV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongDivssMemoryRaxV1
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
         ) && self.backend != Backend::Interpreter

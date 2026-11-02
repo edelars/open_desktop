@@ -4181,6 +4181,11 @@ mod divss_memory_profile_tests {
             result.instructions_executed,
             Observation::Available { value: HexU64(1) }
         );
+        for backend in [Backend::Jit, Backend::NativeX86] {
+            let mut relabeled = result.clone();
+            relabeled.backend = backend;
+            assert!(relabeled.validate_for(&loaded).is_err());
+        }
         result.input_sha256 = "00".repeat(32);
         assert!(result.validate_for(&loaded).is_err());
 
