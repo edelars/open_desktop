@@ -3050,7 +3050,11 @@ fn build_block_with_profile(
                     || code
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(6))
-                        .is_some_and(|bytes| bytes[0..2] == [0x8b, 0x83]))
+                        .is_some_and(|bytes| bytes[0..2] == [0x8b, 0x83])
+                    || code
+                        .bytes
+                        .get(guest_offset..guest_offset.saturating_add(6))
+                        .is_some_and(|bytes| bytes[0..2] == [0x8b, 0x05]))
         } else if profile == BlockBuildProfile::CheckedDwordStore {
             instructions.is_empty()
                 && is_checked_dword_store_form(decoded)
@@ -4788,6 +4792,9 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
                 && i8::try_from(operand.displacement).is_ok())
             || (instruction.length == 6
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+                && i32::try_from(operand.displacement).is_ok())
+            || (instruction.length == 6
+                && matches!(operand.base, AddressBase::NextRip)
                 && i32::try_from(operand.displacement).is_ok()));
     exact_prefix
         && instruction.opcode.map == OpcodeMap::Primary
