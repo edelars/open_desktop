@@ -5219,7 +5219,7 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
                 && operand.size == OperandSize::Dword
                 && matches!(operand.base, AddressBase::None)
                 && operand.index == Some(od_isa::Register::Rax)
-                && operand.scale == 1
+                && matches!(operand.scale, 1 | 2 | 4 | 8)
                 && i32::try_from(operand.displacement).is_ok());
     let rax_index_no_base_sib_profile = instruction.length == 7
         && instruction.address_size == OperandSize::Qword

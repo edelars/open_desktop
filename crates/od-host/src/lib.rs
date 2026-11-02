@@ -452,7 +452,9 @@ impl PublishedCode {
                 && source[..3] == [0x67, 0x89, 0x84]
                 && matches!(source[3], 0x24 | 0x0b | 0x4b | 0x8b | 0xcb))
             && !(source.len() == 8 && source[..4] == [0x67, 0x89, 0x04, 0x25])
-            && !(source.len() == 8 && source[..4] == [0x67, 0x89, 0x04, 0x05])
+            && !(source.len() == 8
+                && source[..3] == [0x67, 0x89, 0x04]
+                && matches!(source[3], 0x05 | 0x45 | 0x85 | 0xc5))
             && !(source.len() == 8
                 && source[..3] == [0x67, 0x89, 0x04]
                 && matches!(source[3], 0x0d | 0x4d | 0x8d | 0xcd))
@@ -7068,6 +7070,24 @@ mod tests {
 
     #[test]
     fn s3_20fc_addr32_rax_index_no_base_sib_disp32_dword_store_uses_wrapped_eax_address_and_low_dword_data() {
+        s3_addr32_rax_index_no_base_sib_dword_store_uses_wrapped_address_and_low_dword_data(&[
+            (1, 0x05),
+        ]);
+    }
+
+    #[test]
+    fn s3_20fe_addr32_rax_index_no_base_sib_scaled_disp32_dword_store_uses_wrapped_scaled_eax_address_and_low_dword_data(
+    ) {
+        s3_addr32_rax_index_no_base_sib_dword_store_uses_wrapped_address_and_low_dword_data(&[
+            (2, 0x45),
+            (4, 0x85),
+            (8, 0xc5),
+        ]);
+    }
+
+    fn s3_addr32_rax_index_no_base_sib_dword_store_uses_wrapped_address_and_low_dword_data(
+        profiles: &[(u8, u8)],
+    ) {
         use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
         use std::collections::BTreeMap;
         use std::sync::Arc;
@@ -7175,8 +7195,8 @@ mod tests {
             }
         }
 
-        fn source(displacement: i32) -> [u8; 8] {
-            let mut bytes = [0x67, 0x89, 0x04, 0x05, 0, 0, 0, 0];
+        fn source(sib: u8, displacement: i32) -> [u8; 8] {
+            let mut bytes = [0x67, 0x89, 0x04, sib, 0, 0, 0, 0];
             bytes[4..].copy_from_slice(&displacement.to_le_bytes());
             bytes
         }
@@ -7220,26 +7240,35 @@ mod tests {
         }
 
         let _guard = jit_test_lock();
-        for (rax, displacement) in [
-            (0x0000_8000_0000_0123_u64, 0), // noncanonical high bits don't enter EA
-            (0xfeed_beef_0000_0004, -4),     // wrapping to zero
-            (0xffff_ffff_8000_0000, i32::MIN),
-            (0x0123_4567_0000_1000, i32::MAX),
-            (0x1234_5678_ffff_fffe, 1),
-            (0xabcd_ef01_ffff_ffff, 1), // addition wraps to zero
-            (0xabcd_0000_0000_0000, -3), // contiguous write begins at fffffffd
-            (0x9876_0000_0000_0000, -2), // contiguous write begins at fffffffe
-            (0x8765_0000_0000_0000, -1), // contiguous write begins at ffffffff
-        ] {
-            let code = source(displacement);
+        for &(scale, sib) in profiles {
+            let scale32 = u32::from(scale);
+            let cases = [
+                (0x0000_8000_0000_0123_u64, 0), // noncanonical high bits don't enter EA
+                (0xffff_ffff_8000_0000, i32::MIN),
+                (0x0123_4567_0000_1000, i32::MAX),
+                (0x1234_5678_ffff_fffe, 1),
+                (0xabcd_ef01_ffff_ffff, 1),
+                (0xabcd_0000_0000_0000, -3), // contiguous write begins at fffffffd
+                (0x9876_0000_0000_0000, -2), // contiguous write begins at fffffffe
+                (0x8765_0000_0000_0000, -1), // contiguous write begins at ffffffff
+                (((1_u64 << 32) / u64::from(scale)) + 1, 0), // product truncates to scale
+                (u64::from(u32::MAX / scale32), i32::from(scale)), // addition wraps to zero
+                (1, -i32::from(scale)), // scaled index plus negative displacement wraps to zero
+                (0xfeed_beef_0000_1001, 1), // unaligned EA
+            ];
+            for (rax, displacement) in cases {
+            let code = source(sib, displacement);
             let block = od_jit::memory_load_v2::compile_ir_memory_dword_store_block_v2(
                 CodeView::new(ENTRY, &code).unwrap(),
                 ENTRY,
             )
             .unwrap();
             let published = PublishedCode::publish_ir_memory_dword_store_v2(&block).unwrap();
-            let effective_address =
-                u64::from((rax as u32).wrapping_add(displacement as u32));
+            let effective_address = u64::from(
+                (rax as u32)
+                    .wrapping_mul(scale32)
+                    .wrapping_add(displacement as u32),
+            );
             let payload = (rax as u32).to_le_bytes().to_vec();
             let expected_write = (effective_address, payload.clone());
             let mut native_ram = ram_at(code, effective_address);
@@ -7286,18 +7315,18 @@ mod tests {
             assert_eq!(native_ram.bytes, expected_bytes);
             assert_eq!(native_ram.writes[0].1.len(), 4);
             drop(published);
-        }
+            }
 
-        let code = source(-4);
-        let block = od_jit::memory_load_v2::compile_ir_memory_dword_store_block_v2(
-            CodeView::new(ENTRY, &code).unwrap(),
-            ENTRY,
-        )
-        .unwrap();
-        let published = PublishedCode::publish_ir_memory_dword_store_v2(&block).unwrap();
-        let before = state_at(0x0000_8000_0000_0004);
-        let effective_address = 0_u64;
-        let expected_write = (effective_address, 4_u32.to_le_bytes().to_vec());
+            let code = source(sib, -i32::from(scale));
+            let block = od_jit::memory_load_v2::compile_ir_memory_dword_store_block_v2(
+                CodeView::new(ENTRY, &code).unwrap(),
+                ENTRY,
+            )
+            .unwrap();
+            let published = PublishedCode::publish_ir_memory_dword_store_v2(&block).unwrap();
+            let before = state_at(0x0000_8000_0000_0001);
+            let effective_address = 0_u64;
+            let expected_write = (effective_address, 1_u32.to_le_bytes().to_vec());
 
         for (budget, stop_rip, requested, expected_exit) in [
             (1, None, 1, MemoryOperationExecutionExitV2::StopRequested),
@@ -7424,7 +7453,8 @@ mod tests {
             )
         }
         .is_err());
-        assert_eq!(callback_ram.writes.len(), 1);
+            assert_eq!(callback_ram.writes.len(), 1);
+        }
     }
 
     #[test]

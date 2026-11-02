@@ -1235,7 +1235,7 @@ fn is_checked_dword_store_address(
         && operand.address_size == od_isa::OperandSize::Dword
         && matches!(operand.base, AddressBase::None)
         && operand.index == Some(od_isa::Register::Rax)
-        && operand.scale == 1
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
         && i32::try_from(operand.displacement).is_ok();
     let rsp_no_index_sib_profile = instruction_length == 3
         && operand.address_size == od_isa::OperandSize::Qword

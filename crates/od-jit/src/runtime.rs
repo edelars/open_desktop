@@ -792,7 +792,7 @@ impl MemorySiteV2 {
             && self.operand.size == od_isa::OperandSize::Dword
             && matches!(self.operand.base, od_isa::long_decode::AddressBase::None)
             && self.operand.index == Some(od_isa::Register::Rax)
-            && self.operand.scale == 1
+            && matches!(self.operand.scale, 1 | 2 | 4 | 8)
             && i32::try_from(self.operand.displacement).is_ok()
         {
             return true;
@@ -2740,6 +2740,24 @@ impl MemorySiteV2 {
                 && matches!(self.operand.base, od_isa::long_decode::AddressBase::None)
                 && self.operand.index == Some(od_isa::Register::Rax)
                 && self.operand.scale == 1
+                && self.operand.displacement == i64::from(displacement);
+        }
+        if source.len() == 8
+            && source[..3] == [0x67, 0x89, 0x04]
+            && matches!(source[3], 0x45 | 0x85 | 0xc5)
+        {
+            let displacement = i32::from_le_bytes([source[4], source[5], source[6], source[7]]);
+            let scale = 1_u8 << (source[3] >> 6);
+            return expected_operation == MemorySiteOperationV2::Store
+                && self.instruction_index == expected_index
+                && self.next_rip.checked_sub(self.guest_rip) == Some(8)
+                && self.destination.is_none()
+                && self.source == Some(0)
+                && self.operand.size == od_isa::OperandSize::Dword
+                && self.operand.address_size == od_isa::OperandSize::Dword
+                && matches!(self.operand.base, od_isa::long_decode::AddressBase::None)
+                && self.operand.index == Some(od_isa::Register::Rax)
+                && self.operand.scale == scale
                 && self.operand.displacement == i64::from(displacement);
         }
         if source.len() == 8
