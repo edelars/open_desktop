@@ -30,16 +30,18 @@ and runner/JIT denial remain checked by the focused and full component suites.
 
 Validation passed: focused ISA `fdivp` 4/4; full `od-isa` 1,851/1,851;
 `od-testkit` 455/455; focused runner FDIVP unit 1/1 and fixture 1/1; full
-runner unit 119/119 and serialized `fixture_v2` 504/504. The serialized
-fixture process exited normally. `cargo check --workspace --all-targets
+runner unit 119/119 and serialized `fixture_v2` 504/504 after the review fix.
+One earlier post-fix serialized run had 503/504 because the BT CLI test
+transiently received ENOENT from `Command::output`; that test passed alone 1/1,
+and a clean full serialized rerun passed all 504. `cargo check --workspace --all-targets
 --offline`, `cargo fmt --all -- --check`, and `git diff --check` passed.
 The isolated `tools/check_layout.py` run reported the unmapped `.git` marker
 and two missing historical oracle manifests already tracked by ISSUE-023; the
 parent workspace layout check is not represented by this isolated result.
-Graphify code extraction refresh completed; the copied base graph had no code
-changes to extract, so Graphify reported no relevant changes. The semantic
-documentation refresh was not run. Independent Sol/high review is pending at
-this report's commit. No physical x86 acceptance is claimed.
+Graphify AST refresh completed at 11,516 nodes, 24,928 edges and 347
+communities; semantic documentation extraction was not run. Independent
+Sol/high review is clean at `58b37d1`; confirmed schema and documentation
+findings were corrected. No physical x86 acceptance is claimed.
 
 Normative source: Intel SDM Rev. 093 Vol. 2A `FDIV/FIDIV—Divide`,
 pp. 3-333–3-335
