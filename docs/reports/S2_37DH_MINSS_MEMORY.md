@@ -67,3 +67,9 @@ exception, or AC-refusal snapshots fail validation, while the expected native
 Unsupported/unavailable result passes. After these changes, the focused MINSS
 and MAXSS fixture tests, full od-testkit and od-runner suites, workspace check,
 format, and Graphify update passed.
+
+After integration with FSUB and the earlier FADD/SQRTSS slices in main, the
+combined suites passed: full `od-isa` 1,784, `od-testkit` 454, runner 112 unit
++ 489 fixture tests, and od-x86-runner 8 library + 4 binary tests. Workspace
+all-target offline check, formatting, layout, diff check, and Graphify refresh
+also passed on the integrated tree.

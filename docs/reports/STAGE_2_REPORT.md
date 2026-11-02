@@ -21359,3 +21359,9 @@ was corrected. Regressions cover forged success, exception and AC snapshots.
 No physical x86 acceptance is claimed. Sources: Intel SDM Rev. 093 Vol. 2B
 `MINSS` pp. 4-24–4-25; Vol. 1 §4.9.2, §§11.5.2.1–.2 and Appendix D; Vol. 2A
 Type 2/Table 2-19; Vol. 3A §16.1.3/Table 16-1. See the [plan](../plans/STAGE_2.md#s2-37dh--exact-legacy-long64-minss-xmm0m32-rax), [CPU contract](../specs/CPU_CONTRACT.md#s2-37dh--bounded-long64-minss-xmm0m32-rax-memory-profile), [standalone implementation report](S2_37DH_MINSS_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dh--minss-xmm0m32-rax). The remaining acceptance evidence gap is tracked in [ISSUE-030](../KNOWN_ISSUES.md#issue-030--s2-37dh-lacks-physical-x86-acceptance-evidence).
+
+After integration with FSUB and the earlier FADD/SQRTSS slices in main, the
+combined suites passed: full `od-isa` 1,784, `od-testkit` 454, runner 112 unit
++ 489 fixture tests, and od-x86-runner 8 library + 4 binary tests. Workspace
+all-target offline check, formatting, layout, diff check, and Graphify refresh
+also passed on the integrated tree.
