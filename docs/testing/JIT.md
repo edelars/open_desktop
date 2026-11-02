@@ -790,6 +790,25 @@ behavior gates remain pending. ISSUE-028 remains open; Stage 2 is
 ignored/excluded; Mini/M1 are deferred; Stage 3 remains partial. See the
 [S3-34cp report](../reports/STAGE_3_S3-34cp_2026-11-02.md).
 
+## S3-34cq: harness gates for S3-20ff RAX disp8 Dword load
+
+Harness source `ee97e4f` pins the exact JIT source/site and host acceptance
+identities for the three-byte unprefixed form `8B 40 ib`
+(`MOV EAX,[RAX+sign-extended disp8]`):
+
+- `s3_34cq_ir_rax_disp8_dword_load_source_binding` →
+  `memory_load_v2::tests::ir_dword_rax_disp8_load_binds_all_signed_source_bytes_to_its_site`
+- `s3_34cq_host_rax_disp8_dword_load_original_rax` →
+  `tests::s3_20ff_rax_disp8_dword_load_uses_original_rax`
+
+The static manifest records 260 Rust gates (250 acceptance, 10 lifecycle),
+278 local steps, and 114 self-test names. Independent Sol review passed. No
+Python harness or Cargo gate was run. Runtime S3-20ff separately passed Sol
+static review, but the exact behavior gates remain pending. ISSUE-028 remains
+open; Stage 2 is ignored/excluded; Mini/M1 are deferred; Stage 3 remains
+partial. See the
+[S3-34cq report](../reports/STAGE_3_S3-34cq_2026-11-02.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases
