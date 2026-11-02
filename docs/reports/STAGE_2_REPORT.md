@@ -21291,3 +21291,35 @@ acceptance is not claimed. See the [plan](../plans/STAGE_2.md#s2-37dg--exact-leg
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37dg--masked-only-long64-sqrtss-xmm0m32-rax),
 [standalone report](S2_37DG_SQRTSS_MEMORY.md), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dg--sqrtss-xmm0m32-rax).
+
+## S2-30cq — bounded `FSUB ST(0), ST(i)`
+
+Added bounded FCW precision execution for exact bare Long64 `D8 E0..E7`.
+Admission mirrors S2-30cp: present x87 state, no FCS/FDS selectors, one of the
+twelve all-masked PC24/53/64 FCWs, clean required FSW fields, Valid tags, and
+canonical nonzero Normal operands. The normalized exponent gap is checked at
+≤64 before the arithmetic helper. FSUB is computed by flipping the sign bit
+on a validated local RHS copy and passing both operands to the existing
+S2-29ae addition precision helper. Source payloads and all unselected state
+remain unchanged.
+
+Only finite Normal outputs are admitted; cancellation/zero (including `i=0`),
+subnormal, overflow, malformed operands and gap>64 reject atomically. Success
+commits physical TOP, accumulates PE, replaces C1 from the helper's pre-carry
+`incremented` diagnostic, preserves C0/C2/C3 by the established local policy,
+records old RIP in FIP, advances by two and retires once. Fetch faults, STOP
+and zero budget do not commit; no data access occurs. `DC` reverse, `DE` pop,
+FSUBR, JIT/native and physical x86 acceptance remain closed.
+
+Focused FSUB passed 7 tests; full `od-isa` passed 1,780, `od-testkit` 454,
+runner 112 unit and 487 fixture tests. Workspace all-target offline check,
+format and diff checks passed. Graphify AST refresh passed (11,106 nodes,
+23,974 edges, 331 communities). Layout validation reports the known worktree
+`.git` pointer and two missing historical oracle manifests tracked by
+ISSUE-023; no layout changes were made. Independent Sol/high re-review is
+clean after correcting the refusal-test baseline and removing a duplicate
+admission check. No physical x86/native/JIT acceptance is claimed. See the
+[standalone report](S2_30CQ_X87_FSUB_PRECISION.md),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cq-bounded-fsub-st0-sti-d8-e0-e7),
+[plan](../plans/STAGE_2.md#s2-30cq-bare-fsub-st0-sti-with-bounded-fcw-precision),
+and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).

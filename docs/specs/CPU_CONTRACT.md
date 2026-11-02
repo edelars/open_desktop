@@ -9581,6 +9581,28 @@ implied. See the [S2-30cp report](../reports/S2_30CP_X87_FADD_PRECISION.md),
 [shared report](../reports/STAGE_2_REPORT.md#s2-30cp--bounded-fadd-st0-sti), and
 [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
 
+## Local S2-30cq: bounded `FSUB ST(0), ST(i)` (`D8 E0..E7`)
+
+Only exact bare Long64 `D8 E0..E7` is admitted. Apply the same present-x87,
+absent-selector, all-masked PC24/53/64 FCW, `FSW & 0x80df == 0`, Valid-tag,
+and canonical nonzero Normal operand gates as S2-30cp. Require normalized
+exponent gap≤64 before the precision helper. After validating the RHS, flip
+the sign bit in a local copy and call the existing direct-addition precision
+helper; the architectural source bytes are preserved. The `i=0` alias
+cancels to zero and remains atomically Unsupported. Only finite Normal exact
+and rounded results are accepted.
+
+Success commits physical TOP, accumulates PE from `inexact`, replaces C1 from
+the helper's pre-carry `incremented` diagnostic, preserves C0/C2/C3 under the
+local deterministic policy, preserves TOP/tags/source and unrelated state,
+sets FIP to old RIP, advances by two and retires once. Refusals and fetch,
+STOP, or zero-budget boundaries are atomic; register execution performs no
+data access. Reverse `DC`, pop `DE`, FSUBR, JIT/native and physical x86
+acceptance remain outside this profile. See the [S2-30cq report](../reports/S2_30CQ_X87_FSUB_PRECISION.md),
+[plan](../plans/STAGE_2.md#s2-30cq-bare-fsub-st0-sti-with-bounded-fcw-precision),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30cq--bounded-fsub-st0-sti), and
+[ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
 ### Local S2-19b bounded REP STOSW/D/Q contract
 
 The interpreter extends `F3 AA` REP STOSB with `F3 66 AB` word, `F3 AB`

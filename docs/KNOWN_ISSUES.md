@@ -1449,6 +1449,25 @@ and physical x86 acceptance are not claimed. See [CPU contract](specs/CPU_CONTRA
 and [standalone report](reports/S2_30CP_X87_FADD_PRECISION.md). S2-30 and
 ISSUE-019 remain open.
 
+**S2-30cq local FSUB slice:** bare `D8 E0..E7` now uses the same bounded
+target precision, FCWs, operand gates, gap≤64 limit and PE/C1 commit policy.
+It flips only a validated local copy of the RHS sign bit and reuses the
+existing finite-addition precision helper; `i=0` cancellation and all other
+zero/subnormal/non-Normal results reject atomically. Focused direct tests cover
+all TOP/index pairs, signs and FCWs, p53 midpoint neighbors and directed
+rounding, gaps 1/63/64 and 65+, sticky PE/C1, malformed/range refusals,
+fetch/STOP/budget and no-data-access behavior. Focused, full od-isa,
+testkit/runner, workspace, formatting and diff checks passed. Graphify AST
+refresh passed. Layout validation reproduces the existing `.git` worktree
+pointer and missing historical oracle manifest findings in ISSUE-023;
+independent Sol/high review is clean after correcting the refusal-test baseline
+and duplicate admission check. JIT/native and physical x86 behavior are not
+claimed. See [CPU
+contract](specs/CPU_CONTRACT.md#local-s2-30cq-bounded-fsub-st0-sti-d8-e0-e7),
+[plan](plans/STAGE_2.md#s2-30cq-bare-fsub-st0-sti-with-bounded-fcw-precision),
+and [standalone report](reports/S2_30CQ_X87_FSUB_PRECISION.md). ISSUE-019
+remains open.
+
 ### ISSUE-020 — Не подтверждён победитель dual-fault для CMPS RSI/RDI
 
 - **Дата обнаружения:** 2026-10-26.
