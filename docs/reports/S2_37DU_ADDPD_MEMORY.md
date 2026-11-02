@@ -25,8 +25,10 @@ The handwritten fixture has `1.0+2.0` and `2.0+5.0` lanes. ISA tests cover
 every RC mode over 64 sticky combinations, halfway rounding, lane flag
 aggregation, SNaN/subnormal behavior, fetch/gate ordering, invalid MXCSR with
 no data read, alignment/canonical-span failures and read rollback. Runner
-coverage checks the literal result, output tampering, #UD/#GP atomicity and
-JIT/native denial.
+coverage checks the literal result, control/output echo tampering, Jit and
+NativeX86 result relabeling, #UD/#GP atomicity, 4×64 RC/sticky combinations,
+and memory-RHS NaN, zero, infinity, subnormal, halfway, overflow, overflow
+midpoint and tiny-boundary cases.
 
 ## Verification
 
@@ -36,8 +38,9 @@ Passed focused decoder/ISA tests (3); full `od-isa` (1,852), `od-testkit`
 and `git diff --check`. Graphify refreshed to 11,569 nodes / 24,911 edges /
 372 communities. The project layout check exits 1 in this linked worktree for
 the `.git` marker and two already-missing oracle manifests referenced by the
-shared Stage 2 report; this slice adds no paths. Independent Sol/high review
-and commit are pending. Physical x86 acceptance is not claimed.
+shared Stage 2 report; this slice adds no top-level paths. The backend relabel
+finding is fixed in this follow-up, and reviewer closure is pending. Physical
+x86 acceptance is not claimed.
 
 See the [Stage 2 plan](../plans/STAGE_2.md#s2-37du--masked-only-legacy-long64-addpd-xmm0m128-rax),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37du--masked-only-long64-addpd-xmm0m128-rax),

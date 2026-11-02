@@ -17057,8 +17057,7 @@ testkit validator must read RHS lanes from the fixture data bytes and use its
 raw-u64 oracle. Cover ties under every RC, sticky histories, NaN/zero/infinity,
 subnormal, tie, overflow/WPR vectors, lane flag aggregation, fetch/gate order,
 invalid MXCSR with no read, span/alignment/read rollback, result/control echo
-tampering and backend denial. Fixture and evidence: [standalone report]
-(../reports/S2_37DU_ADDPD_MEMORY.md).
+tampering and backend denial. Fixture and evidence: [standalone report](../reports/S2_37DU_ADDPD_MEMORY.md).
 
 #### S2-37dr — masked-only legacy Long64 SUBPS XMM0,m128 [RAX]
 

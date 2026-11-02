@@ -31517,6 +31517,154 @@ fn addpd_memory_rax_uses_memory_rhs_and_rejects_tampering_and_other_backends() {
         value.state.sse.as_mut().unwrap().xmm[0].replace_range(0..16, "0000000000000000");
     }
     assert!(od_testkit::v2::compare(&loaded, &result, &tampered).is_err());
+    let mut tampered_controls = result.clone();
+    if let Observation::Available { value } = &mut tampered_controls.snapshot {
+        value.addpd_controls.as_mut().unwrap().cr0_ts = true;
+    }
+    assert!(od_testkit::v2::compare(&loaded, &result, &tampered_controls).is_err());
+    for backend in [Backend::Jit, Backend::NativeX86] {
+        let mut relabeled = result.clone();
+        relabeled.backend = backend;
+        assert!(
+            relabeled.validate_for(&loaded).is_err(),
+            "successful ADDPD m128 result relabeled as {backend:?}"
+        );
+    }
+
+    let set_operands = |case: &mut Fixture, lhs: u64, rhs: u64, mxcsr: u32| {
+        let encode = |value: u64| {
+            value
+                .to_le_bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        case.initial_state.sse.as_mut().unwrap().xmm[0].replace_range(0..16, &encode(lhs));
+        case.memory[1]
+            .initial_bytes_hex
+            .replace_range(0..16, &encode(rhs));
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(u64::from(mxcsr));
+    };
+    let read_low_lane = |xmm: &str| {
+        u64::from_le_bytes(
+            (0..8)
+                .map(|index| u8::from_str_radix(&xmm[index * 2..index * 2 + 2], 16).unwrap())
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        )
+    };
+    let nearest_sticky = 0x1f80;
+    for rc in 0..4u32 {
+        for old_sticky in 0..64u32 {
+            let mut halfway = loaded.fixture.clone();
+            set_operands(
+                &mut halfway,
+                0x3ff0_0000_0000_0000,
+                0x3ca0_0000_0000_0000,
+                nearest_sticky | (rc << 13) | old_sticky,
+            );
+            let (input, output) = run(&halfway.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&input, &output, &output).unwrap();
+            let Observation::Available { value: actual } = output.snapshot else {
+                panic!("snapshot available")
+            };
+            let expected = if rc == 2 {
+                0x3ff0_0000_0000_0001
+            } else {
+                0x3ff0_0000_0000_0000
+            };
+            assert_eq!(
+                read_low_lane(&actual.state.sse.as_ref().unwrap().xmm[0]),
+                expected,
+                "RC={rc} sticky={old_sticky:#x}"
+            );
+            assert_eq!(
+                actual.state.sse.unwrap().mxcsr.get() & 0x3f,
+                u64::from(old_sticky | 0x20)
+            );
+        }
+    }
+
+    for rc in 0..4u32 {
+        let round_vectors = [
+            // SNaN RHS is read from actual m128 bytes, quieted and raises IE.
+            (
+                0x3ff0_0000_0000_0000,
+                0x7ff0_0000_0000_0042,
+                0x7ff8_0000_0000_0042,
+                1,
+            ),
+            // A QNaN destination suppresses DE from a same-lane subnormal RHS.
+            (0x7ff8_0000_0000_0042, 1, 0x7ff8_0000_0000_0042, 0),
+            // Opposite signed zeros retain round-down's negative zero rule.
+            (
+                0x0000_0000_0000_0000,
+                0x8000_0000_0000_0000,
+                if rc == 1 { 0x8000_0000_0000_0000 } else { 0 },
+                0,
+            ),
+            // Exact cancellation is negative zero only under round-down.
+            (
+                0x3ff0_0000_0000_0000,
+                0xbff0_0000_0000_0000,
+                if rc == 1 { 0x8000_0000_0000_0000 } else { 0 },
+                0,
+            ),
+            // Opposite infinities return the masked indefinite and IE.
+            (
+                0x7ff0_0000_0000_0000,
+                0xfff0_0000_0000_0000,
+                0xfff8_0000_0000_0000,
+                1,
+            ),
+            // A subnormal memory operand contributes DE.
+            (0x0000_0000_0000_0001, 0, 1, 2),
+            // maxfinite + maxfinite raises OE|PE; directed modes return maxfinite.
+            (
+                0x7fef_ffff_ffff_ffff,
+                0x7fef_ffff_ffff_ffff,
+                if rc == 0 || rc == 2 {
+                    0x7ff0_0000_0000_0000
+                } else {
+                    0x7fef_ffff_ffff_ffff
+                },
+                0x28,
+            ),
+            // At the overflow midpoint, directed-to-zero/down returns maxfinite with PE only.
+            (
+                0x7fef_ffff_ffff_ffff,
+                0x7c90_0000_0000_0000,
+                if rc == 0 || rc == 2 {
+                    0x7ff0_0000_0000_0000
+                } else {
+                    0x7fef_ffff_ffff_ffff
+                },
+                if rc == 0 || rc == 2 { 0x28 } else { 0x20 },
+            ),
+            // Cancellation at the minimum-normal boundary is an exact subnormal result.
+            (0x0010_0000_0000_0001, 0x8010_0000_0000_0000, 1, 0),
+            // minnormal - maxsubnormal reaches minsub; RHS contributes DE only.
+            (0x0010_0000_0000_0000, 0x800f_ffff_ffff_ffff, 1, 2),
+            // maxsubnormal + minsubnormal reaches minnormal; both inputs are denormal.
+            (0x000f_ffff_ffff_ffff, 1, 0x0010_0000_0000_0000, 2),
+        ];
+        for (lhs, rhs, expected, expected_flags) in round_vectors {
+            let mut vector = loaded.fixture.clone();
+            set_operands(&mut vector, lhs, rhs, nearest_sticky | (rc << 13));
+            let (input, output) = run(&vector.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&input, &output, &output).unwrap();
+            let Observation::Available { value: actual } = output.snapshot else {
+                panic!("snapshot available")
+            };
+            assert_eq!(
+                read_low_lane(&actual.state.sse.as_ref().unwrap().xmm[0]),
+                expected,
+                "RC={rc} lhs={lhs:#018x} rhs={rhs:#018x}"
+            );
+            assert_eq!(actual.state.sse.unwrap().mxcsr.get() & 0x3f, expected_flags);
+        }
+    }
 
     let fixture = &loaded.fixture;
     let mut missing_sse2 = fixture.clone();

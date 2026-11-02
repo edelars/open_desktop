@@ -19528,6 +19528,7 @@ impl RunResult {
                 | Profile::LongAddpsMemoryRaxV1
                 | Profile::LongSubpsMemoryRaxV1
                 | Profile::LongMulpsMemoryRaxV1
+                | Profile::LongAddpdMemoryRaxV1
         ) && self.backend != Backend::Interpreter
             && (!matches!(self.outcome, Outcome::Unsupported { .. })
                 || !matches!(self.snapshot, Observation::Unavailable { .. }))
