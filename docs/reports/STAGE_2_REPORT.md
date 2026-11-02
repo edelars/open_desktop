@@ -11376,6 +11376,33 @@ checks. `cargo fmt --all -- --check`,
 found two coverage gaps in the first draft; both were fixed and final review
 was clean. No full test corpus was run. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31du-historical-sticky-oe-for-bounded-m32m64-fld), [plan](../plans/STAGE_2.md#s2-31du-admit-historical-sticky-oe-through-exact-binary32binary64-fld), and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
+## S2-31dv — historical sticky ZE for bounded m32/m64 FLD
+
+Only exact bare `D9 00`/`DD 00` changed their runtime and mirrored schema
+rejection masks from `0x80c4` to `0x80c0`. Historical ZE is admitted and
+preserved with IE/DE/OE/UE/PE; SF/ES/B remain pre-read rejects. Other x87 gates,
+JIT and native admission are unchanged. The independent full-state matrix
+covers 65,536 cases: both widths, eight signed-zero, Normal-edge/interior,
+infinity, QNaN, SNaN and subnormal source vectors, four FCWs, all TOP values,
+all 64 IE/DE/ZE/OE/UE/PE histories, and both prior-C1 values. Ordinary sources
+add no flags, subnormals add DE, SNaNs add IE, and C1 clears. Complete
+`LongModeState`, one-read history, bytes and canaries are checked.
+
+A focused interpreter composition confirms seeded ZE survives FLD and is
+visible through FNSTSW AX before FNCLEX clears the status flags. S2-31ak
+pre-read reject fixtures now use SF, and the schema regression proves ZE alone
+no longer justifies an Unsupported exact bare load. No instruction in this
+profile produces ZE; it is supplied historical state. The updated fixtures are
+`project_fixture` evidence, not native x86 results. Focused tests, the
+workspace offline check, formatting, diff check and Graphify refresh passed.
+`tools/check_layout.py` reported the worktree's `.git` marker as an unmapped
+root file and two existing report links to absent oracle manifests; no new
+layout paths were added. Native
+runtime, physical x86 and broader x87 behavior remain open under ISSUE-019.
+See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dv-historical-sticky-ze-for-exact-binary32binary64-fld),
+[plan](../plans/STAGE_2.md#s2-31dv-admit-historical-sticky-ze-through-exact-binary32binary64-fld),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
 ## S2-30ao — canonical signed zero through bounded FCHS
 
 Bare `D9 E0` now admits Zero-tagged ST(0) only for the exact binary80 signed

@@ -5620,6 +5620,20 @@ fn local_x87_fld_m32_and_m64_invalid_status_fixtures_reject_before_read_without_
 }
 
 #[test]
+fn local_x87_fld_environment_schema_does_not_treat_historical_ze_as_rejected() {
+    for fixture in [FLD_M32_INVALID_STATUS, FLD_M64_INVALID_STATUS] {
+        Fixture::from_json(fixture).expect("SF rejection fixture remains schema-valid");
+        let with_ze = std::str::from_utf8(fixture)
+            .unwrap()
+            .replace("0x0000000000004540", "0x0000000000004504");
+        assert!(
+            Fixture::from_json(with_ze.as_bytes()).is_err(),
+            "ZE alone must not justify an Unsupported exact FLD fixture"
+        );
+    }
+}
+
+#[test]
 fn local_x87_fld_m32_and_m64_seeded_ue_fnstsw_fixtures_preserve_history() {
     for (fixture, opcode, expected_rax, expected_payload, expected_tag) in [
         (

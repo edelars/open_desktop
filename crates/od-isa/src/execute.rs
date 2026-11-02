@@ -40092,12 +40092,12 @@ fn bounded_x87_ffree_sti(state: &LongModeState, index: u8) -> Option<usize> {
     Some(usize::from(x87.top().wrapping_add(index) & 7))
 }
 
-/// FLD m32fp preserves sticky IE/DE/OE/UE/PE across masked loads while still
+/// FLD m32fp preserves sticky IE/DE/ZE/OE/UE/PE across masked loads while still
 /// rejecting the other x87 exception, summary and busy status bits.
 fn bounded_x87_fld_m32_destination(state: &LongModeState) -> Option<usize> {
     let x87 = state.x87.as_ref()?;
     if !matches!(x87.control_word, 0x037f | 0x077f | 0x0b7f | 0x0f7f)
-        || x87.status_word & 0x80c4 != 0
+        || x87.status_word & 0x80c0 != 0
     {
         return None;
     }
@@ -40105,12 +40105,12 @@ fn bounded_x87_fld_m32_destination(state: &LongModeState) -> Option<usize> {
     (x87.tag(destination) == Some(X87Tag::Empty)).then_some(usize::from(destination))
 }
 
-/// FLD m64fp preserves sticky IE/DE/OE/UE/PE across masked loads while
+/// FLD m64fp preserves sticky IE/DE/ZE/OE/UE/PE across masked loads while
 /// still rejecting the other x87 exception, summary and busy status bits.
 fn bounded_x87_fld_m64_destination(state: &LongModeState) -> Option<usize> {
     let x87 = state.x87.as_ref()?;
     if !matches!(x87.control_word, 0x037f | 0x077f | 0x0b7f | 0x0f7f)
-        || x87.status_word & 0x80c4 != 0
+        || x87.status_word & 0x80c0 != 0
     {
         return None;
     }
@@ -98150,7 +98150,7 @@ mod tests {
                 assert_eq!(x87.registers[0], source);
                 assert_eq!(x87.tag(0), Some(X87Tag::Valid));
                 assert_eq!(
-                    x87.status_word & 0x80c4,
+                    x87.status_word & 0x80c0,
                     0,
                     "FLD gate FSW={:04x}",
                     x87.status_word
@@ -98812,7 +98812,7 @@ mod tests {
             rejected.push(state);
         }
         for status_word in [
-            0x0004, 0x0040, 0x0080, 0x8000, 0x000c, 0x0048, 0x0088, 0x8048, 0x0014, 0x0050, 0x0090,
+            0x0040, 0x0080, 0x8000, 0x0044, 0x0084, 0x8004, 0x0048, 0x0088, 0x8048, 0x0050, 0x0090,
             0x8010,
         ] {
             let mut state = setup(0x1000);
@@ -99133,7 +99133,7 @@ mod tests {
             rejected.push(state);
         }
         for status_word in [
-            0x0004, 0x0040, 0x0080, 0x8000, 0x000c, 0x0048, 0x0088, 0x8048, 0x0014, 0x0050, 0x0090,
+            0x0040, 0x0080, 0x8000, 0x0044, 0x0084, 0x8004, 0x0048, 0x0088, 0x8048, 0x0050, 0x0090,
             0x8010,
         ] {
             let mut state = setup(0x1000);
@@ -99411,11 +99411,11 @@ mod tests {
         ] {
             for top in 0..8_u8 {
                 for control_word in controls {
-                    for sticky in 0..32_u16 {
+                    for sticky in 0..64_u16 {
                         for old_c1 in [0, 0x0200] {
                             for (raw, current_flags, _is_snan, _subnormal, tag) in vectors {
                                 let destination = top.wrapping_add(7) & 7;
-                                let prior_flags = [0x0001, 0x0002, 0x0008, 0x0010, 0x0020]
+                                let prior_flags = [0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0020]
                                     .into_iter()
                                     .enumerate()
                                     .fold(0_u16, |flags, (bit, status)| {
@@ -99477,6 +99477,54 @@ mod tests {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn fld_m32_m64_preserve_historical_ze_through_fnstsw_and_fnclex() {
+        for (opcode, width) in [([0xd9, 0x00], 4_usize), ([0xdd, 0x00], 8_usize)] {
+            for control_word in [0x037f, 0x077f, 0x0b7f, 0x0f7f] {
+                let mut state = LongModeState::default();
+                state.rip = 0x86e0;
+                state.gpr[Register::Rax as usize] = 0x1000;
+                let mut x87 = crate::state::X87State::fixture_seed();
+                x87.control_word = control_word;
+                x87.status_word = 0x0004;
+                x87.set_tag(7, X87Tag::Empty);
+                state.x87 = Some(x87);
+                let mut code = opcode.to_vec();
+                code.extend_from_slice(&[0xdf, 0xe0, 0xdb, 0xe2]);
+                let mut memory = Memory::at(&code, state.rip);
+                memory.bytes.fill(0xa5);
+                if width == 4 {
+                    memory.bytes[..width].copy_from_slice(&1.0_f32.to_bits().to_le_bytes());
+                } else {
+                    memory.bytes[..width].copy_from_slice(&1.0_f64.to_bits().to_le_bytes());
+                }
+
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()),
+                    Ok(StepOutcome::Advanced)
+                );
+                let after_fld = state.x87.as_ref().unwrap().status_word;
+                assert_ne!(after_fld & 0x0004, 0, "ZE must survive FLD");
+                assert_eq!(after_fld & 0x80c0, 0);
+
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()),
+                    Ok(StepOutcome::Advanced)
+                );
+                assert_eq!(state.gpr[Register::Rax as usize] as u16, after_fld);
+                assert_ne!(state.x87.as_ref().unwrap().status_word & 0x0004, 0);
+
+                assert_eq!(
+                    step(&mut state, &mut memory, AccessContext::default()),
+                    Ok(StepOutcome::Advanced)
+                );
+                assert_eq!(state.x87.as_ref().unwrap().status_word & 0x003f, 0);
+                assert_eq!(state.gpr[Register::Rax as usize] as u16, after_fld);
+                assert_eq!(memory.accesses, vec![(AccessKind::Read, 0x1000, width)]);
             }
         }
     }

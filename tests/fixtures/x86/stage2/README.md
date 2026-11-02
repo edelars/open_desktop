@@ -3905,8 +3905,8 @@ exact binary32/binary64 `1.0` with `D9 00`/`DD 00`, and observe FSW using
 provenance identifies the initial status as directly seeded project state, not
 as a guest-produced underflow. Separate interpreter matrices cover current
 subnormal DE, SNaN IE/quieting, source classes, all FCWs/TOP and prior
-IE/DE/UE/PE combinations. The environment-reject fixtures now seed ZE, since
-UE and OE are admitted. See [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dt-historical-sticky-ue-for-bounded-m32m64-fld), [plan](../../../../docs/plans/STAGE_2.md#s2-31dt-admit-historical-sticky-ue-through-exact-binary32binary64-fld), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dt--historical-sticky-ue-for-bounded-m32m64-fld).
+IE/DE/UE/PE combinations. The environment-reject fixtures use SF after
+S2-31dv admitted ZE. See [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dt-historical-sticky-ue-for-bounded-m32m64-fld), [plan](../../../../docs/plans/STAGE_2.md#s2-31dt-admit-historical-sticky-ue-through-exact-binary32binary64-fld), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dt--historical-sticky-ue-for-bounded-m32m64-fld).
 
 ## S2-31du historical OE in bounded m32/m64 FLD
 
@@ -3921,8 +3921,19 @@ FNCLEX. Producers use nearest and toward-positive-infinity RC; no overflow-to-
 infinity producer is claimed for toward-zero-directed RC. These are
 `project_fixture` results, not native x86 evidence. Exact bare, budget-one/no-
 stop Normal Unsupported inputs are schema-tested with OE-only mutation and
-remain rejected; ZE replaces OE in the environment-reject fixtures. See [CPU
+remain rejected; SF replaces ZE in the environment-reject fixtures. See [CPU
 contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31du-historical-sticky-oe-for-bounded-m32m64-fld), [plan](../../../../docs/plans/STAGE_2.md#s2-31du-admit-historical-sticky-oe-through-exact-binary32binary64-fld), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31du--historical-sticky-oe-for-bounded-m32m64-fld).
+
+## S2-31dv historical ZE in bounded m32/m64 FLD
+
+The bounded bare `D9 00`/`DD 00` gates admit and preserve supplied historical
+ZE with the other five sticky flags. The 65,536-case interpreter matrix spans
+both widths, eight source classes, four FCWs, all TOP values, all 64 sticky
+histories and prior C1. A separate composition checks ZE through FLD and
+FNSTSW, then confirms FNCLEX clears it. S2-31ak's environment-reject fixtures
+seed SF, and a schema regression rejects ZE-only Unsupported fixtures because
+ZE is now admitted. No ZE producer or physical x86 claim is made; native/JIT
+admission remains closed and ISSUE-019 remains open. See [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31dv-historical-sticky-ze-for-exact-binary32binary64-fld), [plan](../../../../docs/plans/STAGE_2.md#s2-31dv-admit-historical-sticky-ze-through-exact-binary32binary64-fld), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dv--historical-sticky-ze-for-bounded-m32m64-fld).
 
 
 ### S2-30as signed-zero FSTP ST(i)
