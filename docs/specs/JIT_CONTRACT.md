@@ -333,6 +333,21 @@ guest boundary is `A+5`; source/site binding covers all four scales × all
 atomic faults, STOP, and budget behavior. See the
 [S3-20do report](../reports/STAGE_3_S3-20do_2026-11-02.md).
 
+#### S3-20dp: exact address-size-32 SIB Dword loads with signed disp32
+
+The shared typed-IR Dword-load path admits exactly the four eight-byte
+singleton forms `67 8B 84 0B id`, `67 8B 84 4B id`,
+`67 8B 84 8B id`, and `67 8B 84 CB id`
+(`MOV EAX,[EBX+ECX*1/2/4/8+signed disp32]`). The decoder-owned addr32
+effective address adds low32 EBX, low32 ECX times the SIB scale, and signed
+disp32, wraps the result to 32 bits, and zero-extends before canonical
+checking; high halves of RBX and RCX are ignored. Each load is one contiguous
+checked four-byte read, writes EAX and zero-extends into RAX, and has guest
+boundary `A+8`. Source/site binding distinguishes all four scales and every
+disp32 source byte; PC-map, fault, STOP, and budget fixtures remain bounded to
+these exact forms. See the
+[S3-20dp report](../reports/STAGE_3_S3-20dp_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
