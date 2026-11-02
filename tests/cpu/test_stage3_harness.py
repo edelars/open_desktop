@@ -10350,11 +10350,11 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             harness.SELF_TEST_NAMES,
         )
         self.assertEqual(
-            [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_34ci_")],
+            [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_34cj_")],
             list(expected),
         )
         self.assertEqual(
-            [gate for gate in harness.ADDITIONAL_TEST_GATES if gate[0].startswith("s3_34ci_")],
+            [gate for gate in harness.ADDITIONAL_TEST_GATES if gate[0].startswith("s3_34cj_")],
             list(expected),
         )
         manifest = harness.rust_test_gate_manifest()
