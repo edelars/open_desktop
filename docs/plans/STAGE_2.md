@@ -208,6 +208,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30cn | Bare `D8 F0..F7` FDIV ST(0),ST(i), direct FCW precision/rounding, normal finite result domain, sticky PE and local C1 diagnostic; other directions remain exact-only | S2-29ac; independent Sol/high review clean |
 | [x] | S2-30co | Bare `D8 C8..CF` FMUL ST(0),ST(i), direct FCW precision/rounding, normal finite result domain, sticky PE and local C1 diagnostic; reverse/pop remain exact-only | S2-29ad; independent Sol/high review clean |
 | [x] | S2-30cp | Bare `D8 C0..C7` FADD ST(0),ST(i), direct FCW precision/rounding for normalized gap≤64, normal finite result domain, sticky PE and local C1 diagnostic; reverse FADD precision extension is S2-30ct; pop remains exact-only | S2-29ae; independent Sol/high review clean |
+| [ ] | S2-30df | Bare `D8 C0..C7` FADD ST(0),ST(i) reuses S2-29af large-gap arithmetic for normalized gaps above 64 through the maximum Normal-to-Normal gap 32765; reverse `DC`, pop `DE`, FSUB family and helper admission stay unchanged | S2-29af, S2-30cp; forward-only preflight gate; independent Sol/high review pending |
 | [x] | S2-30cq | Bare `D8 E0..E7` FSUB ST(0),ST(i), direct FCW precision/rounding for normalized gap≤64 via validated RHS sign flip and existing addition helper; normal finite result domain, sticky PE and local C1 diagnostic; reverse/pop remain exact-only | S2-29ae; independent Sol/high review clean |
 | [x] | S2-30cr | Bare `D8 E8..EF` FSUBR ST(0),ST(i), direct FCW precision/rounding for normalized gap≤64 via validated local ST(0) sign flip and existing addition helper; normal finite result domain, sticky PE and local C1 diagnostic; other DC reverse and DE pop forms remain unchanged | S2-29ae; independent Sol/high review clean |
 | [x] | S2-30cs | Bare `D8 F8..FF` FDIVR ST(0),ST(i), direct FCW precision/rounding in reversed operand order; all-masked PC24/53/64; bounded Normal result; no pop | S2-29ac; independent Sol/high review clean; integrated main validation recorded below |
@@ -11381,6 +11382,20 @@ be migrated to a literal rounded-success case with sticky PE. See the
 [standalone report](../reports/S2_30CP_X87_FADD_PRECISION.md). Intel SDM Rev.
 093 Vol. 2A `FADD/FADDP/FIADD` pp. 3-311–3-313; Vol. 1 §8.1.5.2/Table 8-2,
 §8.1.5.3 and §8.5.6 p. 8-30. S2-30 and ISSUE-019 remain open.
+
+#### S2-30df. Large-gap `FADD ST(0), ST(i)` admission
+
+Extend only bare Long64 `D8 C0..C7` from S2-30cp to admit normalized
+Normal-to-Normal exponent gaps above 64 through 32765, using the existing
+S2-29af arithmetic bridge. Keep the explicit admission argument in shared
+preflight so reverse `DC` and pop `DE` forms continue enforcing gap≤64 even
+when their destination index aliases zero. Do not modify the arithmetic helper
+or the FSUB/FSUBR families. Preserve S2-30cp's twelve masked FCWs, Valid tags,
+canonical nonzero Normal operands and results, PE/C1, atomic refusals, and
+full state behavior. Cover gap boundaries, maximum gap, both operand orders
+and signs, FCW rounding/ties, overflow rejection, index/TOP/alias, and the
+DC/DE and FSUB neighbors. Add a literal runner fixture containing the actual
+large-gap RHS and assert backend denial. No JIT/native or physical x86 claim.
 
 #### S2-30ct. Bare reverse `FADD ST(i), ST(0)` with bounded FCW precision
 

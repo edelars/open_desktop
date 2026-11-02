@@ -1402,6 +1402,17 @@ pair, while gap 65 and i=0 overflow refuse without state commit. JIT/native
 admission remains closed; these are interpreter fixtures, not physical x86
 acceptance.
 
+### S2-30df large-gap FADD fixture coverage
+
+`s2_30df_fadd_st0_st1_gap65_up.case.json` is a literal `D8 C1` schema-v2
+case with ST(0)=+1 and the actual Normal RHS `0000000000000080be3f`
+(`2^-65`). With PC=24 and round-up it checks the inexact increment, sticky PE,
+C1, TOP/register preservation and FIP. The runner unit test checks the full x87
+snapshot and confirms the JIT backend still denies the instruction. The ISA
+suite separately covers gap boundaries through 32765 and verifies `DC`/`DE`
+gap-65 rejection. The fixture is interpreter evidence only, not physical x86
+acceptance.
+
 ### S2-30da x87 schema and fixture coverage
 
 The existing schema admits every bare `DE C8..CF` FMULP encoding. The
