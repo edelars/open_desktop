@@ -645,6 +645,7 @@ fn admission_with_tracee_memory(
             | Operation::Fxam
             | Operation::Frndint
             | Operation::Fsqrt
+            | Operation::Fprem1
             | Operation::FstM32FpRax
             | Operation::FstpM32FpRax
             | Operation::FstM64FpRax
@@ -4635,6 +4636,7 @@ mod tests {
             [0xd9, 0xe4],
             [0xd9, 0xfc],
             [0xd9, 0xf8],
+            [0xd9, 0xf5],
             [0xd9, 0xc0],
             [0xd9, 0x10],
             [0xd9, 0x18],
