@@ -1067,10 +1067,7 @@ fn is_checked_dword_load_address(
     operand: &od_isa::long_decode::MemoryOperand,
     instruction_length: u64,
 ) -> bool {
-    operand.size == od_isa::OperandSize::Dword
-        && operand.address_size == od_isa::OperandSize::Qword
-        && operand.index.is_none()
-        && operand.scale == 1
+    let address64_profile = operand.address_size == od_isa::OperandSize::Qword
         && ((instruction_length == 2
             && matches!(
                 operand.base,
@@ -1085,7 +1082,15 @@ fn is_checked_dword_load_address(
                 && i32::try_from(operand.displacement).is_ok())
             || (instruction_length == 6
                 && matches!(operand.base, AddressBase::NextRip)
-                && i32::try_from(operand.displacement).is_ok()))
+                && i32::try_from(operand.displacement).is_ok()));
+    let address32_profile = operand.address_size == od_isa::OperandSize::Dword
+        && instruction_length == 3
+        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+        && operand.displacement == 0;
+    operand.size == od_isa::OperandSize::Dword
+        && operand.index.is_none()
+        && operand.scale == 1
+        && (address64_profile || address32_profile)
 }
 
 fn is_checked_dword_store_address(

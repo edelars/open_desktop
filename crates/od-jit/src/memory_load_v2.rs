@@ -914,8 +914,9 @@ pub fn compile_ir_memory_load_block_v2(
 }
 
 /// Compile exact unprefixed `8B 03` (`MOV EAX,[RBX]`), `8B 00`
-/// (`MOV EAX,[RAX]`), `8B 43 ib` (`MOV EAX,[RBX+disp8]`), or `8B 83 id`
-/// (`MOV EAX,[RBX+disp32]`) or `8B 05 id` (`MOV EAX,[RIP+disp32]`)
+/// (`MOV EAX,[RAX]`), `8B 43 ib` (`MOV EAX,[RBX+disp8]`), `8B 83 id`
+/// (`MOV EAX,[RBX+disp32]`), `8B 05 id` (`MOV EAX,[RIP+disp32]`), or
+/// `67 8B 03` (`MOV EAX,[EBX]`)
 /// through the
 /// common block builder, typed IR, allocator, and runtime helper emitter.
 pub fn compile_ir_memory_dword_load_block_v2(
@@ -955,6 +956,7 @@ fn checked_dword_load_metadata_v2(
         .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?;
     if bytes != [0x8b, 0x03]
         && bytes != [0x8b, 0x00]
+        && bytes != [0x67, 0x8b, 0x03]
         && !(bytes.len() == 3 && bytes[..2] == [0x8b, 0x43])
         && !(bytes.len() == 6 && bytes[..2] == [0x8b, 0x83])
         && !(bytes.len() == 6 && bytes[..2] == [0x8b, 0x05])
@@ -2732,6 +2734,76 @@ mod tests {
     }
 
     #[test]
+    fn ir_dword_addr32_load_admits_only_67_8b_03_and_preserves_its_provenance() {
+        let entry = 0x80f0;
+        let source = [0x67, 0x8b, 0x03];
+        let block =
+            compile_ir_memory_dword_load_block_v2(CodeView::new(entry, &source).unwrap(), entry)
+                .unwrap();
+        assert_eq!(block.source_bytes(), source);
+        assert_eq!(block.site().guest_rip(), entry);
+        assert_eq!(block.site().next_rip(), entry + 3);
+        assert_eq!(block.site().destination(), Some(0));
+        assert_eq!(block.site().source(), None);
+        assert_eq!(
+            block.site().operand().base,
+            AddressBase::Register(Register::Rbx)
+        );
+        assert_eq!(
+            block.site().operand().address_size,
+            od_isa::OperandSize::Dword
+        );
+        assert_eq!(block.site().operand().size, od_isa::OperandSize::Dword);
+        assert_eq!(block.site().operand().displacement, 0);
+        assert!(
+            block
+                .site()
+                .matches_source_bytes(&source, MemorySiteOperationV2::Load)
+        );
+
+        let mut forged = *block.site();
+        forged.operand.base = AddressBase::Register(Register::Rax);
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *block.site();
+        forged.operand.address_size = od_isa::OperandSize::Qword;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *block.site();
+        forged.operand.size = od_isa::OperandSize::Qword;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *block.site();
+        forged.destination = Some(1);
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *block.site();
+        forged.guest_rip += 1;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *block.site();
+        forged.next_rip += 1;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+
+        for neighbor in [
+            &[0x67, 0x8b, 0x03, 0x90][..],       // trailing byte
+            &[0x67, 0x67, 0x8b, 0x03][..],       // repeated address override
+            &[0x66, 0x67, 0x8b, 0x03][..],       // reordered second prefix
+            &[0x67, 0x66, 0x8b, 0x03][..],       // extra operand-size prefix
+            &[0x67, 0x8b][..],                   // truncated
+            &[0x67, 0x8b, 0x43, 0x00][..],       // disp8
+            &[0x67, 0x8b, 0x83, 0, 0, 0, 0][..], // disp32
+            &[0x67, 0x8b, 0x04, 0x23][..],       // SIB
+            &[0x67, 0x8b, 0x0b][..],             // ECX destination
+            &[0x67, 0x48, 0x8b, 0x03][..],       // REX prefix
+        ] {
+            assert!(
+                compile_ir_memory_dword_load_block_v2(
+                    CodeView::new(entry, neighbor).unwrap(),
+                    entry
+                )
+                .is_err(),
+                "admitted neighboring encoding {neighbor:02x?}"
+            );
+        }
+    }
+
+    #[test]
     fn ir_dword_alias_load_admits_only_exact_8b00_and_preserves_its_provenance() {
         let entry = 0x8150;
         let alias = compile_ir_memory_dword_load_block_v2(
@@ -3578,6 +3650,40 @@ mod tests {
                 ),
                 "accepted mutated load PC-map expectation: site={site_rip:#x}, next={next_rip:#x}, index={site_index}, count={instruction_count}, phase={helper_phase:?}"
             );
+        }
+    }
+
+    #[test]
+    fn ir_dword_addr32_load_pc_map_uses_three_byte_guest_boundary() {
+        let entry = 0x8320;
+        let block = compile_ir_memory_dword_load_block_v2(
+            CodeView::new(entry, &[0x67, 0x8b, 0x03]).unwrap(),
+            entry,
+        )
+        .unwrap();
+        assert!(matches_dword_pc_map_contract(
+            block.pc_map(),
+            entry,
+            entry + 3,
+            0,
+            1,
+            StatePhase::HelperCall,
+            MemorySiteOperationV2::Load,
+        ));
+        for (next_rip, phase) in [
+            (entry + 2, StatePhase::HelperCall),
+            (entry + 4, StatePhase::HelperCall),
+            (entry + 3, StatePhase::AfterHelper),
+        ] {
+            assert!(!matches_dword_pc_map_contract(
+                block.pc_map(),
+                entry,
+                next_rip,
+                0,
+                1,
+                phase,
+                MemorySiteOperationV2::Load,
+            ));
         }
     }
 

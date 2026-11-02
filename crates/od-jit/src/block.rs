@@ -3043,6 +3043,8 @@ fn build_block_with_profile(
                     == Some(&[0x8b, 0x03][..])
                     || code.bytes.get(guest_offset..guest_offset.saturating_add(2))
                         == Some(&[0x8b, 0x00][..])
+                    || code.bytes.get(guest_offset..guest_offset.saturating_add(3))
+                        == Some(&[0x67, 0x8b, 0x03][..])
                     || code
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(3))
@@ -4771,10 +4773,6 @@ pub(crate) fn is_checked_qword_load_form(instruction: Instruction) -> bool {
 }
 
 pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
-    let exact_prefix = instruction.prefixes.group1.is_none()
-        && instruction.prefixes.segment.is_none()
-        && !instruction.prefixes.operand_override
-        && instruction.prefixes.rex.is_none();
     let Operation::Mov {
         dst: Operand::Register(destination),
         src: Operand::Memory(operand),
@@ -4782,7 +4780,21 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
     else {
         return false;
     };
-    let exact_address = operand.address_size == OperandSize::Qword
+    let address32_profile = instruction.prefixes.address_override
+        && instruction.length == 3
+        && instruction.address_size == OperandSize::Dword
+        && operand.address_size == OperandSize::Dword
+        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+        && operand.index.is_none()
+        && operand.scale == 1
+        && operand.displacement == 0;
+    let exact_prefix = instruction.prefixes.group1.is_none()
+        && instruction.prefixes.segment.is_none()
+        && !instruction.prefixes.operand_override
+        && instruction.prefixes.rex.is_none()
+        && (!instruction.prefixes.address_override || address32_profile);
+    let address64_profile = instruction.address_size == OperandSize::Qword
+        && operand.address_size == OperandSize::Qword
         && operand.index.is_none()
         && operand.scale == 1
         && ((instruction.length == 2
@@ -4800,11 +4812,12 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
             || (instruction.length == 6
                 && matches!(operand.base, AddressBase::NextRip)
                 && i32::try_from(operand.displacement).is_ok()));
+    let exact_address = address64_profile || address32_profile;
     exact_prefix
         && instruction.opcode.map == OpcodeMap::Primary
         && instruction.opcode.byte == 0x8b
         && instruction.operand_size == OperandSize::Dword
-        && instruction.address_size == OperandSize::Qword
+        && (instruction.address_size == OperandSize::Qword || address32_profile)
         && destination.register() == od_isa::Register::Rax
         && destination.size() == OperandSize::Dword
         && operand.size == OperandSize::Dword
