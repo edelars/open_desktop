@@ -17075,6 +17075,38 @@ and concerns the unrelated RCPSS/RCPPS threshold. See the [plan](../plans/STAGE_
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38m--exact-minss-unmasked-memory-exit-for-m32-rax),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38m--minss-xmm0m32-rax-with-unmasked-imdm).
 
+## S2-38n — exact MAXSS unmasked memory profile at m32 [RAX]
+
+Added interpreter-only schema-v2 profile
+`s2-long-maxss-memory-unmasked-rax-v1` for exact Long64 `F3 0F 5F 00`
+(`MAXSS XMM0,m32 [RAX]`). The S2-37cy masked memory profile and S2-38f
+register profile remain separate and unchanged. The new immutable controls
+echo SSE, CR0.EM/TS/MP and CR4.OSFXSR/OSXMMEXCPT; CR0.MP must be one. Fetch and
+exact-form selection precede SSE/EM/OSFXSR #UD and TS #NM gates; MXCSR/state
+checks precede AC=1 local refusal; checked canonical48 `[RAX,RAX+3]` precedes
+one read4. AC=0 permits unaligned m32, and address/read faults precede FP
+classification.
+
+MAXSS-specific behavior is retained from S2-38f: either QNaN or SNaN raises
+IE, either subnormal raises DE, and masked MAXSS selects raw source 2 on NaN,
+equal values and signed-zero ties, including an unquieted source-2 SNaN payload.
+With NaN+subnormal and both masks set, invalid priority reports IE only; if
+either mask is open, IE|DE are committed on one arithmetic exit. A new
+unmasked event suppresses all of XMM0 and retirement while updating MXCSR
+stickies; OSXMMEXCPT selects #XM or arithmetic #UD. The independent schema
+oracle checks raw MAXSS output and complete result state. Tests cross
+IM×DM×OSXMMEXCPT, RC×64 sticky histories and operand classes/orders, and cover
+exact-form-before-disabled-gates, AC/span/read fault priority, callback counts,
+rollback, strict result/control echo, and JIT/native denial. The literal QNaN
+fixture exercises #XM, with a masked companion completion in the runner test.
+
+Verification results, review and known limitations are recorded in the
+[standalone S2-38n report](S2_38N_MAXSS_MEMORY_UNMASKED.md). No physical x86
+acceptance is claimed; ISSUE-025 remains unrelated to this profile. See the
+[plan](../plans/STAGE_2.md#s2-38n-exact-long64-maxss-xmm0m32-rax-memory-profile-with-mixed-imdm-exit),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38n--exact-maxss-unmasked-memory-exit-for-m32-rax),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38n--maxss-xmm0m32-rax-with-unmasked-imdm).
+
 ## S2-42a — generated corpus для native XORPD
 
 Для существующего профиля `s2-long-native-xorpd-xmm0-xmm1-v1` добавлен

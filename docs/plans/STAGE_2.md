@@ -646,7 +646,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38k | Exact Long64 `MINPS XMM0,XMM1` unmasked IM/DM exit; strict schema-v2 profile, four-lane raw event aggregation and atomic XMM suppression; interpreter-only | S2-37g, S2-38j control policy after MINPS-specific SDM review; independent Sol medium review clean |
 | [x] | S2-38l | Exact Long64 `MAXPS XMM0,XMM1` unmasked IM/DM exit; distinct strict schema-v2 profile, four-lane raw event aggregation and atomic XMM suppression; interpreter-only | S2-37h, S2-38k control policy after MAXPS-specific Rev. 093 review; independent Sol medium review clean |
 | [x] | S2-38m | Exact Long64 `MINSS XMM0,m32 [RAX]` memory profile with mixed IM/DM unmasked arithmetic exit; actual memory RHS; strict schema-v2 and interpreter-only | Parent S2-38 memory/alignment/unmasked-FP-priority gap; S2-37dh address/read model and S2-38d policy; integrated main: od-isa 1,891, testkit 455, runner 125+518, x86-runner 8+4, workspace/fmt/diff/layout/Graphify; Sol/high review clean after exact-form/backend/anchor fixes; no physical x86 claim |
-| [ ] | S2-38n | Exact Long64 `MAXSS XMM0,m32 [RAX]` memory profile with MAXSS-specific raw source-2 selection and mixed IM/DM unmasked exit; strict schema-v2, memory fault ordering and interpreter-only | S2-37cy masked memory, S2-38f MAXSS unmasked policy and S2-38m memory/fault ordering; MAXSS-specific QNaN invalid, operand-2 SNaN preservation; no physical x86 claim |
+| [ ] | S2-38n | Exact Long64 `MAXSS XMM0,m32 [RAX]` memory profile with MAXSS-specific raw source-2 selection and mixed IM/DM unmasked exit; strict schema-v2, memory fault ordering and interpreter-only; implementation/tests complete, independent Sol/high review pending | S2-37cy masked memory, S2-38f MAXSS unmasked policy and S2-38m memory/fault ordering; MAXSS-specific QNaN invalid, operand-2 SNaN preservation; no physical x86 claim |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
@@ -7652,6 +7652,19 @@ faults with callback count 0/1 and full rollback; strict schema/result tampering
 backend relabel rejection, and explicit native/JIT denial. See the [CPU
 contract](../specs/CPU_CONTRACT.md#s2-38n--exact-maxss-unmasked-memory-exit-for-m32-rax)
 and [S2-38f MAXSS policy](#s2-38f-exact-long64-maxss-xmm0xmm1-unmasked-invalid-and-denormal-exit).
+
+Implementation and local validation are complete; separate Sol/high review is
+pending. Verification passed: `cargo test -p od-isa --offline` (1,893),
+`cargo test -p od-testkit --offline` (455), and
+`cargo test -p od-runner --test fixture_v2 --offline` (519); workspace
+all-target offline check, `cargo fmt --all -- --check`, and `git diff --check`
+passed. `tools/check_layout.py` reports the known isolated-worktree `.git`
+pointer error and two existing broken oracle-manifest links (ISSUE-023).
+`graphify update .` refreshed the graph to 11,865 nodes, 25,590 edges and 379
+communities. No physical x86 check was run; ISSUE-025 remains unrelated. See
+the [standalone report](../reports/S2_38N_MAXSS_MEMORY_UNMASKED.md),
+[shared report](../reports/STAGE_2_REPORT.md#s2-38n--exact-maxss-unmasked-memory-profile-at-m32-rax),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38n--maxss-xmm0m32-rax-with-unmasked-imdm).
 
 #### S2-38e. Exact FP-init, FXRSTOR64, and image-controlled MINSS composition
 

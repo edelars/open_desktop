@@ -8079,6 +8079,27 @@ The literal fixture `s2_37dh_minss_m32_qnan_selects_rhs.case.json` encodes exact
 The literal `s2_38m_minss_memory_unmasked_qnan.case.json` admits only exact Long64 `F3 0F 5D 00`, reads the RHS from m32 `[RAX]`, raises IE for the QNaN and exits through #XM because IM=0 and OSXMMEXCPT=1. The new strict schema-v2 profile has immutable SSE/CR0/CR4 controls; the S2-37dh masked profile remains unchanged. MXCSR allows IM/DM independently with ZM/OM/UM/PM set, DAZ/FTZ and reserved bits clear, all RC modes and previous sticky histories. Full fetch and #UD-before-#NM gates precede MXCSR/state admission; AC=1 refuses before canonical-span validation/read, while AC=0 allows unaligned data. After one successful read4, S2-38d mixed IM/DM priority commits new IE/DE and suppresses all of XMM0 on an unmasked arithmetic exit; both masks set reports IE only for NaN+subnormal. Success writes only XMM0.low32 and selects raw RHS on ties, signed zero and NaNs including raw SNaN payloads. Direct tests use a separate raw-bit oracle across IM×DM×OSXMMEXCPT, all RC × 64 prior sticky histories, both NaN/subnormal source orders, address/read failure precedence, callback count and state rollback. JIT/native/C ABI/generic/fragment execution is denied. This records only local schema behavior; no complete SSE/MMX or physical x86 claim is made. ISSUE-025 remains open and concerns the unrelated RCPSS/RCPPS threshold. See [plan](../../../../docs/plans/STAGE_2.md#s2-38m-exact-long64-minss-xmm0m32-rax-memory-profile-with-mixed-imdm-exit), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38m--exact-minss-unmasked-memory-exit-for-m32-rax), and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-38m--exact-minss-unmasked-memory-profile-at-m32-rax).
 
 
+### S2-38n — MAXSS XMM0,m32 [RAX] with unmasked IM/DM
+
+The handwritten `s2_38n_maxss_memory_unmasked_qnan.case.json` admits only
+Long64 `F3 0F 5F 00` and reads the RHS from one m32 at `[RAX]`. Its QNaN
+XMM0 operand selects the raw memory source for MAXSS, sets IE, and exits via
+#XM with XMM0, RIP and retirement suppressed. The strict profile echoes SSE,
+CR0.EM/TS/MP and CR4.OSFXSR/OSXMMEXCPT; CR0.MP is fixed to one. It keeps the
+S2-37cy masked memory and S2-38f register profiles unchanged. Feature gates
+follow full fetch and exact-form selection; SSE/EM/OSFXSR #UD precedes TS #NM.
+MXCSR supports IM/DM independently while requiring ZM/OM/UM/PM set, DAZ/FTZ
+and reserved bits clear. AC=1 refuses before span checks and callbacks; AC=0
+permits unaligned m32. Canonical48 `[RAX,RAX+3]` precedes exactly one read4.
+Address/read failure precedes FP events and preserves CPU state. The raw-bit
+oracle and direct tests cover QNaN/SNaN/subnormal source orders, IM×DM×OSXMMEXCPT,
+RC×64 old sticky histories, mixed flags, prior sticky histories, complete
+XMM suppression, exact-form-before-disabled-gates, callback/rollback behavior,
+schema/result tampering and JIT/native denial. No physical x86 acceptance is
+claimed; ISSUE-025 remains unrelated. See the [plan](../../../../docs/plans/STAGE_2.md#s2-38n-exact-long64-maxss-xmm0m32-rax-memory-profile-with-mixed-imdm-exit),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38n--exact-maxss-unmasked-memory-exit-for-m32-rax),
+and [standalone report](../../../../docs/reports/S2_38N_MAXSS_MEMORY_UNMASKED.md).
+
 ### S2-37di — ADDSS XMM0,m32 [RAX]
 
 The literal fixture `s2_37di_addss_m32_halfway.case.json` encodes exact `F3 0F 58 00`: XMM0.low32 is `1.0`, memory m32 is `2^-24`, and XMM1 is poisoned. Under round-to-nearest-even, the result stays at `1.0` with sticky PE; XMM0.high96 remains canaries and memory is unchanged. The interpreter-only schema-v2 profile requires SSE (CPUID.01H:EDX[25]), full fetch before #UD/#NM gates, and masked MXCSR (`0xffbf`, all six masks set, DAZ/FTZ/reserved clear), while admitting all RC and previous sticky values. AC=1 refuses locally before address validation/read; AC=0 admits unaligned m32. Canonical48 `[RAX,RAX+3]` is checked before exactly one read4. Direct tests cover RC × sticky histories over scalar arithmetic boundaries and failure rollback. JIT/native/C ABI/generic/fragment and unmasked/#XM remain closed. No physical x86 acceptance is claimed. Sources: Intel SDM Rev. 093 Vol. 2A ADDSS pp. 3-24–3-25 and legacy SSE rows in Table 2-27; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8. See [plan](../../../../docs/plans/STAGE_2.md#s2-37di--masked-only-long64-addss-xmm0m32-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37di--masked-only-long64-addss-xmm0m32-rax), [shared report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37di--addss-xmm0m32-rax), and [standalone report](../../../../docs/reports/S2_37DI_ADDSS_MEMORY.md).

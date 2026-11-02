@@ -524,6 +524,15 @@ JIT/native and physical admission remain open. Normative source: Intel SDM
 Rev. 093 Vol. 1 §11.5, Appendix D Tables D-9/D-13/D-15 and Vol. 2B MAXSS.
 See [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-37f-register-only-maxss-with-masked-status).
 
+S2-38n adds the separate interpreter-only profile
+`s2-long-maxss-memory-unmasked-rax-v1` for exact `F3 0F 5F 00`, MAXSS
+XMM0,m32 `[RAX]`. It reads exactly four bytes after canonical48 span checks,
+then applies MAXSS-specific QNaN/SNaN, subnormal, source-2, and mixed IM/DM
+semantics. New unmasked exceptions suppress XMM0 and retirement while
+committing required sticky flags. The S2-37cy masked memory profile, S2-38f
+register profile, and S2-38m MINSS memory profile remain unchanged. Native,
+JIT, generic, C ABI and fragment paths remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-38n--exact-maxss-unmasked-memory-exit-for-m32-rax).
+
 S2-37g adds local-only packed register MINPS profile
 `s2-long-minps-reg-masked-v1` for bare or optional-REX `0F 5D /r` in register
 form. It snapshots both XMM operands and updates four little-endian binary32

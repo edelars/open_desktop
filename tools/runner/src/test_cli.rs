@@ -635,6 +635,7 @@ fn expected_native_xorpd_oracle(
                 maxss_memory_rax_controls: None,
                 minss_memory_rax_controls: None,
                 minss_memory_unmasked_rax_controls: None,
+                maxss_memory_unmasked_rax_controls: None,
                 addss_memory_rax_controls: None,
                 addsd_memory_rax_controls: None,
                 maxsd_memory_rax_controls: None,
@@ -1152,11 +1153,11 @@ fn execute_fixture_v2(
         Cvtss2siRegistersControls, Cvttsd2siMemoryR32Controls, Cvttsd2siMemoryR64Controls,
         Cvttss2siMemoryR32Controls, Cvttss2siMemoryR64Controls, Fxrstor64Cr0Controls,
         Fxsave64Cr0Controls, MaxpdUnmaskedControls, MaxpsUnmaskedControls, MaxsdMemoryRaxControls,
-        MaxsdUnmaskedControls, MaxssMemoryRaxControls, MaxssUnmaskedControls,
-        MinpdUnmaskedControls, MinpsUnmaskedControls, MinsdMemoryRaxControls,
-        MinsdUnmaskedControls, MinssInvalidControls, MinssMemoryRaxControls,
-        MinssMemoryUnmaskedRaxControls, RdtscControls, RunConfig, RunExit, XorpdPrerequisiteState,
-        run, run_with_cli_profile, run_with_cmppd_memory_rax_controls,
+        MaxsdUnmaskedControls, MaxssMemoryRaxControls, MaxssMemoryUnmaskedRaxControls,
+        MaxssUnmaskedControls, MinpdUnmaskedControls, MinpsUnmaskedControls,
+        MinsdMemoryRaxControls, MinsdUnmaskedControls, MinssInvalidControls,
+        MinssMemoryRaxControls, MinssMemoryUnmaskedRaxControls, RdtscControls, RunConfig, RunExit,
+        XorpdPrerequisiteState, run, run_with_cli_profile, run_with_cmppd_memory_rax_controls,
         run_with_cmppd_register_controls, run_with_cmpps_memory_rax_controls,
         run_with_cmpps_register_controls, run_with_cmpsd_memory_rax_controls,
         run_with_cmpsd_register_controls, run_with_cmpss_memory_rax_controls,
@@ -1181,15 +1182,15 @@ fn execute_fixture_v2(
         run_with_maxpd_memory_rax_controls, run_with_maxpd_unmasked_controls,
         run_with_maxps_unmasked_controls, run_with_maxsd_memory_rax_controls,
         run_with_maxsd_unmasked_controls, run_with_maxss_memory_rax_controls,
-        run_with_maxss_unmasked_controls, run_with_minpd_memory_rax_controls,
-        run_with_minpd_unmasked_controls, run_with_minps_unmasked_controls,
-        run_with_minsd_memory_rax_controls, run_with_minsd_unmasked_controls,
-        run_with_minss_invalid_controls, run_with_minss_memory_rax_controls,
-        run_with_minss_memory_unmasked_rax_controls, run_with_minss_unmasked_denormal_controls,
-        run_with_msr_profile, run_with_rdtsc_source, run_with_rep_continuation,
-        run_with_sep_profile, run_with_sti_profile, run_with_swapgs_profile,
-        run_with_ucomisd_memory_rax_controls, run_with_ucomiss_memory_rax_controls,
-        run_with_xorpd_prerequisites,
+        run_with_maxss_memory_unmasked_rax_controls, run_with_maxss_unmasked_controls,
+        run_with_minpd_memory_rax_controls, run_with_minpd_unmasked_controls,
+        run_with_minps_unmasked_controls, run_with_minsd_memory_rax_controls,
+        run_with_minsd_unmasked_controls, run_with_minss_invalid_controls,
+        run_with_minss_memory_rax_controls, run_with_minss_memory_unmasked_rax_controls,
+        run_with_minss_unmasked_denormal_controls, run_with_msr_profile, run_with_rdtsc_source,
+        run_with_rep_continuation, run_with_sep_profile, run_with_sti_profile,
+        run_with_swapgs_profile, run_with_ucomisd_memory_rax_controls,
+        run_with_ucomiss_memory_rax_controls, run_with_xorpd_prerequisites,
     };
     use od_testkit::v2;
     use std::time::{Duration, Instant};
@@ -1556,6 +1557,7 @@ fn execute_fixture_v2(
             memory,
             config,
             MaxssUnmaskedControls {
+                cr0_mp: true,
                 sse_available: controls.sse_available,
                 cr0_em: controls.cr0_em,
                 cr0_ts: controls.cr0_ts,
@@ -2641,6 +2643,25 @@ fn execute_fixture_v2(
                 cr0_em: controls.cr0_em,
                 cr0_ts: controls.cr0_ts,
                 cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            timeout,
+        )
+    } else if loaded.fixture.profile == v2::Profile::LongMaxssMemoryUnmaskedRaxV1 {
+        let controls = loaded
+            .fixture
+            .maxss_memory_unmasked_rax_controls
+            .expect("validated S2-38n MAXSS m32 controls");
+        run_with_maxss_memory_unmasked_rax_controls(
+            &mut state,
+            memory,
+            config,
+            MaxssMemoryUnmaskedRaxControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr0_mp: controls.cr0_mp,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
             },
             timeout,
         )
@@ -3862,6 +3883,9 @@ fn execute_fixture_v2(
                 cmpps_memory_rax_controls: loaded.fixture.cmpps_memory_rax_controls,
                 minsd_memory_rax_controls: loaded.fixture.minsd_memory_rax_controls,
                 maxss_memory_rax_controls: loaded.fixture.maxss_memory_rax_controls,
+                maxss_memory_unmasked_rax_controls: loaded
+                    .fixture
+                    .maxss_memory_unmasked_rax_controls,
                 minss_memory_rax_controls: loaded.fixture.minss_memory_rax_controls,
                 minss_memory_unmasked_rax_controls: loaded
                     .fixture
@@ -5266,6 +5290,9 @@ mod tests {
                     minss_memory_unmasked_rax_controls: input
                         .fixture
                         .minss_memory_unmasked_rax_controls,
+                    maxss_memory_unmasked_rax_controls: input
+                        .fixture
+                        .maxss_memory_unmasked_rax_controls,
                     addss_memory_rax_controls: input.fixture.addss_memory_rax_controls,
                     addsd_memory_rax_controls: input.fixture.addsd_memory_rax_controls,
                     maxsd_memory_rax_controls: input.fixture.maxsd_memory_rax_controls,
