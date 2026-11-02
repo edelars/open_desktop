@@ -21247,3 +21247,26 @@ workspace all-target offline check, diff check and Graphify update passed.
 Independent Sol/high review is clean. No ISA, PE/C1, exception or physical x86
 behavior is added. Precision context: Intel SDM Rev. 093 Vol. 1 §8.1.5.2/Table
 8-2 pp. 8-7–8-8 and §8.1.5.3 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=213)); the bridge arithmetic is project-defined. See [plan](../plans/STAGE_2.md#s2-29af-large-gap-finite-binary80-addition-precision-diagnostics), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-29af-large-gap-finite-binary80-addition-precision-diagnostics), and [standalone report](S2_29AF_X87_LARGE_GAP_ADDITION_PRECISION.md). ISSUE-019 remains open.
+
+## S2-30cp — bounded `FADD ST(0), ST(i)`
+
+The Long64 interpreter admits only bare `D8 C0..C7` for direct FCW-controlled
+precision-24/53/64 addition. It accepts Valid canonical nonzero Normal
+operands of either sign and enforces the instruction's normalized exponent
+gap≤64 before calling the precision helper, regardless of the helper's wider
+S2-29af domain. The alias `i=0` doubles ST(0). It accepts only finite Normal
+results; reverse, pop and subtraction directions remain exact-only.
+
+Success commits ST(0), accumulates PE from `inexact`, replaces C1 from the
+helper's pre-carry `incremented` diagnostic, preserves C0/C2/C3 locally,
+records old RIP in FIP, advances by two and retires once. Refusals remain
+atomic, and the register form performs no data access. Focused FADD passed 15;
+after integration with S2-29af, full `od-isa` passed 1,776, `od-testkit` 454
+and runner 112 unit + 487 fixture tests passed. Formatting, workspace all-target offline check, diff check and
+Graphify refresh passed. Independent Sol/high review is clean. JIT/native and
+physical x86 acceptance remain unverified. Intel SDM Rev. 093 Vol. 2A
+`FADD/FADDP/FIADD` pp. 3-311–3-313; Vol. 1 §8.1.5.2/Table 8-2, §8.1.5.3 and
+§8.5.6 p. 8-30. See [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cp-bounded-fadd-st0-sti-d8-c0-c7),
+[plan](../plans/STAGE_2.md#s2-30cp-bare-fadd-st0-sti-with-bounded-fcw-precision),
+[standalone report](S2_30CP_X87_FADD_PRECISION.md), and
+[ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).

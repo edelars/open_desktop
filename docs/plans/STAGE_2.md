@@ -207,6 +207,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30cm | Bare `D9 F5` FPREM1; bounded positive Normal ST(0)/ST(1), complete-only gap <64, exact signed nearest-even remainder and quotient CCs, stricter underflow-safe input cutoff; independent Sol/high review clean | S2-29y, S2-30cl |
 | [x] | S2-30cn | Bare `D8 F0..F7` FDIV ST(0),ST(i), direct FCW precision/rounding, normal finite result domain, sticky PE and local C1 diagnostic; other directions remain exact-only | S2-29ac; independent Sol/high review clean |
 | [x] | S2-30co | Bare `D8 C8..CF` FMUL ST(0),ST(i), direct FCW precision/rounding, normal finite result domain, sticky PE and local C1 diagnostic; reverse/pop remain exact-only | S2-29ad; independent Sol/high review clean |
+| [x] | S2-30cp | Bare `D8 C0..C7` FADD ST(0),ST(i), direct FCW precision/rounding for normalized gap≤64, normal finite result domain, sticky PE and local C1 diagnostic; reverse/pop remain exact-only | S2-29ae; independent Sol/high review clean |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
@@ -11252,6 +11253,38 @@ JIT/native deny behavior. Intel SDM Rev. 093 Vol. 2A `FMUL/FMULP/FIMUL` pp.
 3-360–3-362 (encoding p. 3-360, Operation/FPU Flags p. 3-361) defines the
 instruction; Vol. 1 §8.1.5.2/Table 8-2 and §8.1.5.3 define PC/RC, and §8.5.6
 p. 8-30 covers masked precision/C1 ([Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=478), [Vol. 1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)). See [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30co-bounded-fmul-st0-sti-d8-c8-cf), [shared report](../reports/STAGE_2_REPORT.md#s2-30co--bounded-fmul-st0-sti), and [standalone report](../reports/S2_30CO_X87_FMUL_PRECISION.md). S2-30 and ISSUE-019 remain open.
+
+#### S2-30cp. Bare `FADD ST(0), ST(i)` with bounded FCW precision
+
+Admit only exact bare Long64 `D8 C0..C7`, with present x87 state, absent FCS/FDS,
+`FSW & 0x80df == 0`, one of twelve all-exception-masked PC24/53/64 FCWs, and
+Valid-tagged canonical nonzero Normal binary80 operands of either sign. For
+`i=0`, validate only physical TOP and double its payload. Before invoking the
+S2-29ae direct-addition precision helper, require normalized exponent gap≤64;
+keep this instruction gate even when the helper domain grows in S2-29af. Admit
+only finite Normal exact and rounded results.
+
+On success, write the rounded bytes to physical TOP, set PE to old PE OR
+`inexact`, replace C1 from the pre-carry magnitude `incremented` diagnostic,
+and preserve C0/C2/C3 under the local deterministic policy. Preserve TOP,
+tags, other payloads, FCW/FDP/FOP and unrelated state; set FIP=old RIP, advance
+RIP by two, retire once, and perform no data access. Unsupported operands,
+zero/cancellation, subnormal/overflow, gaps above 64, malformed state and
+unsupported FCWs reject before mutation. Reverse `DC`, pop `DE`, FSUB and
+FSUBR keep their existing exact-only behavior. No guest exception delivery is
+added; JIT/native and physical x86 acceptance remain closed.
+
+Cover all TOP/index pairs, signs and twelve FCWs; alias behavior with unrelated
+tags empty; sticky PE/C1; exact and inexact sums, midpoint neighbors, negative
+directed rounding, carry/minimum exponent, and atomic cancellation/subnormal/
+overflow/gap-65+ refusals. Include fetch/retirement/budget boundaries and
+no-data-access canaries. The old runner row rejecting an inexact p64 sum should
+be migrated to a literal rounded-success case with sticky PE. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cp-bounded-fadd-st0-sti-d8-c0-c7),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30cp--bounded-fadd-st0-sti), and
+[standalone report](../reports/S2_30CP_X87_FADD_PRECISION.md). Intel SDM Rev.
+093 Vol. 2A `FADD/FADDP/FIADD` pp. 3-311–3-313; Vol. 1 §8.1.5.2/Table 8-2,
+§8.1.5.3 and §8.5.6 p. 8-30. S2-30 and ISSUE-019 remain open.
 
 #### S2-18j — bare CLD/STD (локальный профиль)
 

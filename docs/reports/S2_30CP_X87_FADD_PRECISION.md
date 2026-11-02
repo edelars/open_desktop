@@ -43,11 +43,14 @@ rounding row with sticky PE.
 Validation passed:
 
 - Focused `cargo test -p od-isa fadd --offline`: 15 tests.
-- Full `cargo test -p od-isa --offline`: 1,775 tests.
+- Author-worktree full `cargo test -p od-isa --offline`: 1,775 tests; after
+  integration with S2-29af, main passed the full library suite at 1,776 tests.
 - `cargo test -p od-testkit -p od-runner --offline`: 454 testkit unit tests,
   112 runner unit tests, and 487 runner fixture tests.
 - `cargo fmt --all -- --check`, `cargo check --workspace --all-targets
   --offline`, and `git diff --check`: passed.
+- Integrated main retest also passed `od-testkit` (454), runner unit (112),
+  and runner fixture tests (487), plus workspace all-target offline check.
 - `graphify update .`: passed; refreshed graph has 11,087 nodes, 23,925
   edges, and 322 communities.
 - Independent Sol/high review: clean; no concrete defects found. The reviewer

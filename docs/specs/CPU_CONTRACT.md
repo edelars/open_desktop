@@ -9559,6 +9559,28 @@ Rev. 093 Vol. 2A `FMUL/FMULP/FIMUL` pp. 3-360–3-362; Vol. 1
 [shared report](../reports/STAGE_2_REPORT.md#s2-30co--bounded-fmul-st0-sti), and
 [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
 
+## Local S2-30cp: bounded `FADD ST(0), ST(i)` (`D8 C0..C7`)
+
+Only exact bare Long64 `D8 C0..C7` is admitted. Require present x87 state,
+absent FCS/FDS, one of twelve all-exception-masked PC24/53/64 FCWs, and
+`FSW & 0x80df == 0`. Participating physical operands must be Valid-tagged
+canonical nonzero Normal binary80 values of either sign. For `i=0`, validate
+TOP only and double ST(0). Require normalized exponent gap≤64 before calling
+the direct-addition precision helper, even though S2-29af extends that helper
+for larger gaps. Accept only finite Normal exact and rounded results.
+
+On success, write ST(0), set PE to old PE OR `inexact`, replace C1 from the
+pre-carry magnitude `incremented`, and preserve C0/C2/C3 under the local
+deterministic policy. Preserve TOP, tags, source cells, FCW/FDP/FOP and
+unrelated state; set FIP to old RIP, advance RIP by two, retire once, and make
+no data access. All refusals and execution boundaries are atomic. Reverse
+`DC`, pop `DE`, FSUB and FSUBR retain their existing exact-only paths. No guest
+exception delivery, JIT/native admission or physical x86 acceptance is
+implied. See the [S2-30cp report](../reports/S2_30CP_X87_FADD_PRECISION.md),
+[plan](../plans/STAGE_2.md#s2-30cp-bare-fadd-st0-sti-with-bounded-fcw-precision),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30cp--bounded-fadd-st0-sti), and
+[ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
 ### Local S2-19b bounded REP STOSW/D/Q contract
 
 The interpreter extends `F3 AA` REP STOSB with `F3 66 AB` word, `F3 AB`

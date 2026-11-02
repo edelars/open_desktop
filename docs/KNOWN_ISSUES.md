@@ -1437,6 +1437,18 @@ No native/JIT or physical x86 support is claimed. See [contract](specs/CPU_CONTR
 [plan](plans/STAGE_2.md#s2-30co-bare-fmul-st0-sti-with-bounded-fcw-precision),
 and [report](reports/STAGE_2_REPORT.md#s2-30co--bounded-fmul-st0-sti).
 
+**S2-30cp local FADD slice:** bare `D8 C0..C7` now uses direct target
+precision for Valid canonical nonzero Normal operands under the twelve
+all-masked FCWs, with a normalized exponent-gap limit of 64 enforced before
+the helper call. PE accumulates `inexact`, C1 uses pre-carry magnitude
+`incremented`, and the alias `i=0` doubles ST(0). Reverse, pop and subtraction
+forms remain exact-only. Focused/full interpreter tests, runner regressions,
+workspace checks, formatting and independent Sol/high review pass. JIT/native
+and physical x86 acceptance are not claimed. See [CPU contract](specs/CPU_CONTRACT.md#local-s2-30cp-bounded-fadd-st0-sti-d8-c0-c7),
+[plan](plans/STAGE_2.md#s2-30cp-bare-fadd-st0-sti-with-bounded-fcw-precision),
+and [standalone report](reports/S2_30CP_X87_FADD_PRECISION.md). S2-30 and
+ISSUE-019 remain open.
+
 ### ISSUE-020 — Не подтверждён победитель dual-fault для CMPS RSI/RDI
 
 - **Дата обнаружения:** 2026-10-26.
