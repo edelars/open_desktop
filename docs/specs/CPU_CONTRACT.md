@@ -9691,8 +9691,9 @@ pre-carry magnitude `incremented`, and preserve C0/C2/C3 under the local
 deterministic policy. Preserve TOP, tags, source cells, FCW/FDP/FOP and
 unrelated state; set FIP to old RIP, advance RIP by two, retire once, and make
 no data access. All refusals and execution boundaries are atomic. Reverse
-FADD `DC` is defined by S2-30ct, while pop `DE` and other reverse arithmetic
-directions retain their existing exact-only paths. Bounded `D8 E0..E7` FSUB
+FADD `DC` is defined by S2-30ct and remains gap≤64; pop `DE` FADDP is defined
+by S2-30cz and also remains gap≤64. Other reverse arithmetic directions
+follow their own defining slices. Bounded `D8 E0..E7` FSUB
 and `D8 E8..EF` FSUBR are defined by S2-30cq and S2-30cr. No guest
 exception delivery, JIT/native admission or physical x86 acceptance is
 implied. See the [S2-30cp report](../reports/S2_30CP_X87_FADD_PRECISION.md),
