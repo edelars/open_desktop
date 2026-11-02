@@ -9574,7 +9574,8 @@ pre-carry magnitude `incremented`, and preserve C0/C2/C3 under the local
 deterministic policy. Preserve TOP, tags, source cells, FCW/FDP/FOP and
 unrelated state; set FIP to old RIP, advance RIP by two, retire once, and make
 no data access. All refusals and execution boundaries are atomic. Reverse
-`DC`, pop `DE`, FSUB and FSUBR retain their existing exact-only paths. No guest
+`DC` and pop `DE` retain their exact-only paths; bounded `D8 E0..E7` FSUB and
+`D8 E8..EF` FSUBR are defined by S2-30cq and S2-30cr. No guest
 exception delivery, JIT/native admission or physical x86 acceptance is
 implied. See the [S2-30cp report](../reports/S2_30CP_X87_FADD_PRECISION.md),
 [plan](../plans/STAGE_2.md#s2-30cp-bare-fadd-st0-sti-with-bounded-fcw-precision),
@@ -9597,8 +9598,8 @@ the helper's pre-carry `incremented` diagnostic, preserves C0/C2/C3 under the
 local deterministic policy, preserves TOP/tags/source and unrelated state,
 sets FIP to old RIP, advances by two and retires once. Refusals and fetch,
 STOP, or zero-budget boundaries are atomic; register execution performs no
-data access. Reverse `DC`, pop `DE`, FSUBR, JIT/native and physical x86
-acceptance remain outside this profile. See the [S2-30cq report](../reports/S2_30CQ_X87_FSUB_PRECISION.md),
+data access. Reverse `DC`, pop `DE`, JIT/native and physical x86 acceptance
+remain outside this profile; bounded `D8 E8..EF` FSUBR is S2-30cr. See the [S2-30cq report](../reports/S2_30CQ_X87_FSUB_PRECISION.md),
 [plan](../plans/STAGE_2.md#s2-30cq-bare-fsub-st0-sti-with-bounded-fcw-precision),
 [shared report](../reports/STAGE_2_REPORT.md#s2-30cq--bounded-fsub-st0-sti), and
 [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
@@ -9619,7 +9620,8 @@ the helper's pre-carry `incremented` diagnostic, preserves C0/C2/C3 by local
 policy, preserves TOP/tags/source and unrelated state, sets FIP to old RIP,
 advances by two and retires once. All denials and fetch/STOP/zero-budget
 boundaries are atomic; register execution performs no data access. `DC`
-reverse, `DE` pop, FSUB direction and JIT/native acceptance are unchanged. See
+reverse, `DE` pop and JIT/native acceptance are unchanged; bounded `D8 E0..E7`
+FSUB is S2-30cq. See
 the [S2-30cr report](../reports/S2_30CR_X87_FSUBR_PRECISION.md),
 [plan](../plans/STAGE_2.md#s2-30cr-bare-fsubr-st0-sti-with-bounded-fcw-precision),
 [shared report](../reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti), and

@@ -20,8 +20,8 @@ and C0/C2/C3 are retained by local policy. TOP, tags, source bytes, FCW/FDP/FOP
 and unrelated state are preserved; FIP receives old RIP, RIP advances by two,
 and the instruction retires once. Register execution performs no data access.
 All refusals, fetch faults, STOP and zero-budget boundaries are atomic.
-`DC` reverse, `DE` pop, FSUB direction, JIT/native behavior and physical x86
-acceptance remain outside this slice.
+`DC` reverse, `DE` pop, JIT/native behavior and physical x86 acceptance remain
+outside this slice. Bounded bare `D8 E0..E7` FSUB is defined by S2-30cq.
 
 Coverage includes every TOP/index pair, all four operand sign combinations,
 all twelve FCWs, p53 midpoint neighbors, directed rounding for both result
@@ -38,7 +38,7 @@ unit, 489 runner fixture tests). `cargo check --workspace --all-targets
 refresh passed (11,201 nodes, 24,050 edges, 342 communities). Layout validation
 reproduced the existing worktree `.git` pointer and two missing historical
 oracle-manifest findings tracked by ISSUE-023. Independent Sol/high review is
-pending; the Stage 2 plan remains unchecked until review completes.
+clean and the Stage 2 plan marks this slice complete.
 
 Semantic reference: Intel SDM Rev. 093 Vol. 2A `FSUBR/FSUBRP/FISUBR`,
 pp. 3-397–3-399 ([official Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=515)); Vol. 1 §8.1.5.2/Table 8-2, §8.1.5.3 and §8.5.6 p. 8-30.

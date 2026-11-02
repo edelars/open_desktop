@@ -1,6 +1,6 @@
 # Этап 2 — ход реализации
 
-**Дата:** 23 октября 2026 года. Этап не принят; S2-00–14 приняты в указанных
+**Дата начала отчёта:** 23 октября 2026 года. Этап не принят; S2-00–14 приняты в указанных
 границах, включая положительный physical slice S2-14.
 ISSUE-011/012 остаются открытыми; наличие нового состояния или local instruction
 slice не означает завершение этапа.
@@ -21255,7 +21255,8 @@ precision-24/53/64 addition. It accepts Valid canonical nonzero Normal
 operands of either sign and enforces the instruction's normalized exponent
 gap≤64 before calling the precision helper, regardless of the helper's wider
 S2-29af domain. The alias `i=0` doubles ST(0). It accepts only finite Normal
-results; reverse, pop and subtraction directions remain exact-only.
+results; reverse and pop forms remain exact-only. Later bounded precision
+profiles S2-30cq/S2-30cr cover bare FSUB and FSUBR.
 
 Success commits ST(0), accumulates PE from `inexact`, replaces C1 from the
 helper's pre-carry `incremented` diagnostic, preserves C0/C2/C3 locally,
@@ -21309,7 +21310,8 @@ commits physical TOP, accumulates PE, replaces C1 from the helper's pre-carry
 `incremented` diagnostic, preserves C0/C2/C3 by the established local policy,
 records old RIP in FIP, advances by two and retires once. Fetch faults, STOP
 and zero budget do not commit; no data access occurs. `DC` reverse, `DE` pop,
-FSUBR, JIT/native and physical x86 acceptance remain closed.
+JIT/native and physical x86 acceptance remain closed; bounded `D8 E8..EF`
+FSUBR is defined by S2-30cr.
 
 Focused FSUB passed 7 tests; full `od-isa` passed 1,780, `od-testkit` 454,
 runner 112 unit and 487 fixture tests. Workspace all-target offline check,
@@ -21340,8 +21342,8 @@ subnormal, overflow, malformed operands and gap>64 reject atomically. Success
 commits physical TOP, accumulates PE, replaces C1 from the helper's pre-carry
 `incremented` diagnostic, preserves C0/C2/C3 by the local policy, records old
 RIP in FIP, advances by two and retires once. Fetch faults, STOP and zero budget
-do not commit; no data access occurs. `DC` reverse, `DE` pop, FSUB direction
-and JIT/native acceptance remain unchanged.
+do not commit; no data access occurs. `DC` reverse, `DE` pop and JIT/native
+acceptance remain unchanged; bounded `D8 E0..E7` FSUB is defined by S2-30cq.
 
 Coverage includes every TOP/index pair and four sign combinations across all
 twelve FCWs, p53 midpoint neighbors, all directed modes for both result signs,

@@ -27,7 +27,8 @@ performs no data-memory access.
 
 The existing exact `D8 C0..C7` precision-64 behavior remains unchanged. The
 `DC` reverse-direction and `DE` pop forms retain their previous exact-only
-paths; FSUB and FSUBR are unchanged. Prefix, missing-state, fetch, STOP,
+paths. Later slices S2-30cq and S2-30cr add bounded precision for bare
+`D8 E0..E7` FSUB and `D8 E8..EF` FSUBR. Prefix, missing-state, fetch, STOP,
 zero-budget, and malformed-environment paths remain atomic. JIT and native
 admission remain closed; no physical x86 acceptance is claimed.
 

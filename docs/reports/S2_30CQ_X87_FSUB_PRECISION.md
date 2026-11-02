@@ -20,8 +20,8 @@ C0/C2/C3 are retained by local policy. TOP, tags, source bytes, FCW/FDP/FOP
 and unrelated state are preserved; FIP receives old RIP, RIP advances by two,
 and the instruction retires once. Register execution performs no data access.
 All refusals, fetch faults, STOP and zero-budget boundaries are atomic.
-Reverse `DC`, pop `DE`, FSUBR, JIT/native and physical x86 acceptance remain
-outside this slice.
+Reverse `DC`, pop `DE`, JIT/native and physical x86 acceptance remain outside
+this slice. The separate bare `D8 E8..EF` FSUBR precision profile is S2-30cr.
 
 Coverage includes every TOP/index pair and sign combination across all twelve
 FCWs, sticky PE/C1 and condition-code preservation, p53 midpoint neighbors,

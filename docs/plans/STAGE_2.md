@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последний завершённый срез S2-37de — masked-only exact legacy SQRTPD XMM0,m128 `[RAX]` (`66 0F 51 00`, length 4): SSE2 bit 26, full fetch before #UD/#NM gates, aligned canonical48 span и ровно один read16. Результат строится только по двум memory lanes через `Binary64::sqrt_raw_result(RC)`; IE/DE/PE агрегируются и добавляются к старым sticky flags. od-isa 1738, od-testkit 454, runner 112 unit + 486 fixture; workspace all-target check, fmt/diff и Graphify AST refresh прошли; main layout check passed; independent Sol/high review clean. Изолированный layout caveat и подробные результаты записаны в [standalone report](../reports/S2_37DE_SQRTPD_MEMORY.md). Физическая x86-проверка не заявляется. Interpreter-only; unmasked/#XM, native/JIT/C ABI/generic/fragment закрыты.
+Последние завершённые срезы: S2-30cr bounded `FSUBR ST(0),ST(i)` и S2-37di masked-only `ADDSS XMM0,m32 [RAX]`. В объединённом main прошли od-isa 1,791, od-testkit 455, runner 113 unit + 490 fixture, od-x86-runner 8 library + 4 binary tests, workspace all-target check, fmt/layout и Graphify AST refresh. Независимые Sol/high review завершены чисто. Подробности: [S2-30cr report](../reports/S2_30CR_X87_FSUBR_PRECISION.md) и [S2-37di report](../reports/S2_37DI_ADDSS_MEMORY.md). Физическая x86-проверка не заявляется; Этап 2 остаётся открытым.
 
 Предыдущий завершённый срез S2-37dd — exact legacy SQRTPS XMM0,m128 `[RAX]` (`0F 51 00`): SSE bit 25, полный fetch, обязательное 16-byte alignment при AC=0/1, canonical48 span и ровно один read16. Результат строится только по четырём memory lanes; masked-only admission допускает все RC и прежние sticky flags, а binary32 integer sqrt агрегирует IE|DE|PE. Focused ISA 3/3; od-isa 1736, od-testkit 454, runner 112 unit + 485 fixture; workspace all-target check, fmt/layout/Graphify и независимый Sol/high review прошли. Первый полный workspace test исчерпал место (`No space left on device`); после очистки только disposable target relevant component suites прошли. Физическая x86-проверка не заявляется. Interpreter-only; native/JIT/C ABI/generic/fragment и unmasked/#XM path закрыты.
 
@@ -215,10 +215,10 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
 | [x] | S2-30c | Bare `DB E2` FNCLEX with existing x87 state; clear FSW[0:7] and FSW[15], preserve C0–C3 by local policy, native closed | S2-28a |
 | [x] | S2-30d | Bare `D8 C1` FADD ST(0), ST(1), exact same-exponent canonical normal results only; native closed | S2-29q, S2-28a |
-| [x] | S2-30e | Bare `D8 C0+i` FADD ST(0), ST(i), i=0..7; same exact-only domain, native closed | S2-30d |
+| [x] | S2-30e | Initial bare `D8 C0+i` FADD ST(0), ST(i), i=0..7 exact-only profile; target-precision extension is S2-30cp | S2-30d |
 | [x] | S2-30f | Bare `DC C0+i` FADD ST(i), ST(0), same exact-only domain, native closed | S2-30e |
 | [x] | S2-30g | Bare `DE C0+i` FADDP ST(i), ST(0), same exact-only domain plus physical TOP pop, native closed | S2-30f |
-| [x] | S2-30h | Bare `D8 E0+i` FSUB ST(0), ST(i), exact-only same-exponent normal results; i=0 unsupported; native closed | S2-30e |
+| [x] | S2-30h | Initial bare `D8 E0+i` FSUB ST(0), ST(i) exact-only profile; bounded FCW precision extension is S2-30cq | S2-30e |
 | [x] | S2-30i | Bare `DC E8+i` FSUB ST(i), ST(0), exact-only same-exponent normal results; i=0 alias unsupported; native closed | S2-30h |
 | [x] | S2-30j | Bare `DE E8+i` FSUBP ST(i), ST(0), same exact-only domain plus physical TOP pop; i=0 alias unsupported; native closed | S2-30i |
 | [x] | S2-30l | Bare `DC E0+i` FSUBR ST(i), ST(0), exact-only ST(0)−ST(i) into physical ST(i), no pop; i=0 alias unsupported; native closed | S2-30i |
@@ -11275,8 +11275,9 @@ and preserve C0/C2/C3 under the local deterministic policy. Preserve TOP,
 tags, other payloads, FCW/FDP/FOP and unrelated state; set FIP=old RIP, advance
 RIP by two, retire once, and perform no data access. Unsupported operands,
 zero/cancellation, subnormal/overflow, gaps above 64, malformed state and
-unsupported FCWs reject before mutation. Reverse `DC`, pop `DE`, FSUB and
-FSUBR keep their existing exact-only behavior. No guest exception delivery is
+unsupported FCWs reject before mutation. Reverse `DC` and pop `DE` remain
+exact-only; bounded `D8 E0..E7` FSUB and `D8 E8..EF` FSUBR profiles are S2-30cq
+and S2-30cr. No guest exception delivery is
 added; JIT/native and physical x86 acceptance remain closed.
 
 Cover all TOP/index pairs, signs and twelve FCWs; alias behavior with unrelated
@@ -11306,8 +11307,8 @@ accumulate PE from `inexact`, replace C1 from the pre-carry magnitude
 `incremented`, preserve C0/C2/C3 under the existing local policy, record FIP,
 advance RIP by two and retire once. Preserve TOP, tags, source and unrelated
 state; perform no data access. Refusals, fetch faults, STOP and zero budget
-remain atomic. `DC` reverse, `DE` pop, FSUBR and JIT/native execution remain
-closed. Coverage includes all TOP/index pairs and signs, all twelve FCWs,
+remain atomic. `DC` reverse, `DE` pop and JIT/native execution remain closed;
+bounded bare `D8 E8..EF` FSUBR is S2-30cr. Coverage includes all TOP/index pairs and signs, all twelve FCWs,
 midpoint neighbors, directed rounding, sticky diagnostics, gaps 1/63/64 and
 65+, alias/cancellation, subnormal/overflow/malformed operands, and execution
 boundaries. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cq-bounded-fsub-st0-sti-d8-e0-e7),
@@ -11332,7 +11333,8 @@ C1 from the helper's pre-carry `incremented`, preserve C0/C2/C3 by local policy,
 preserve tags, source bytes and unrelated state, record FIP=old RIP, advance
 RIP by two and retire once. Refusals, fetch faults, STOP and zero budget remain
 atomic; register execution performs no data access. `DC` reverse, `DE` pop,
-FSUB direction and JIT/native execution remain unchanged. Coverage includes all
+and JIT/native execution remain unchanged; bounded `D8 E0..E7` FSUB is S2-30cq.
+Coverage includes all
 TOP/index pairs, four sign combinations, all twelve FCWs, midpoint neighbors,
 directed modes, gaps 1/63/64 and 65+, alias/cancellation, subnormal/overflow,
 malformed inputs and execution boundaries. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cr-bounded-fsubr-st0-sti-d8-e8-ef),
@@ -16667,7 +16669,7 @@ Admit only supported MXCSR bits (`0xffbf`), all six exception masks set, DAZ=FTZ
 
 Compute only from m32 using `Binary32::min_sse_raw_result`; replace XMM0.low32 and preserve XMM0.high96 and all unrelated state. MINSS selects raw RHS for numeric ties (including either signed-zero order) and either QNaN/SNaN without quieting an SNaN payload. A NaN raises IE and suppresses DE for this scalar operation; otherwise a subnormal operand raises DE. OR generated IE/DE with prior sticky flags. The independent testkit oracle uses raw integer binary32 ordering, not host floating point or the production helper. Cover all RC modes × 64 old sticky histories, raw NaN and signed-zero RHS selection, denormal status, poisoned XMM0 versus memory source, gates/AC/span/fetch precedence, one-read success, read rollback, schema/result tampering, and JIT/native denial. Keep generic, fragment and C ABI execution closed.
 
-Focused decoder/direct ISA checks passed 2/2; runner literal fixture passed 1/1. Full suites passed: od-isa 1,780, od-testkit 454, runner 112 unit + 489 fixture tests, and od-x86-runner 8 library + 4 binary tests. Workspace all-target check, formatting, diff check and Graphify refresh passed (11,136 nodes / 24,043 edges / 336 communities). The isolated layout checker reported the known `.git` marker and two unavailable historical oracle manifests tracked by ISSUE-023. Independent Sol/high review is pending. No physical x86 acceptance is claimed. Sources: Intel SDM Rev. 093 Vol. 2B `MINSS` pp. 4-24–4-25; Vol. 1 §4.9.2, §§11.5.2.1–.2 and Appendix D; Vol. 2A Type 2/Table 2-19; Vol. 3A §16.1.3/Table 16-1. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37dh--bounded-long64-minss-xmm0m32-rax-memory-profile), [standalone report](../reports/S2_37DH_MINSS_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dh--minss-xmm0m32-rax).
+Focused decoder/direct ISA checks passed 2/2; runner literal fixture passed 1/1. Full suites passed: od-isa 1,784, od-testkit 454, runner 112 unit + 489 fixture tests, and od-x86-runner 8 library + 4 binary tests. Workspace all-target check, formatting, diff check and Graphify refresh passed (11,146 nodes / 24,072 edges / 333 communities). The isolated layout checker reported the known `.git` marker and two unavailable historical oracle manifests tracked by ISSUE-023. Independent Sol/high review is clean. After later S2-30cr/S2-37di integration, the combined main validation is recorded in the opening summary. No physical x86 acceptance is claimed. Sources: Intel SDM Rev. 093 Vol. 2B `MINSS` pp. 4-24–4-25; Vol. 1 §4.9.2, §§11.5.2.1–.2 and Appendix D; Vol. 2A Type 2/Table 2-19; Vol. 3A §16.1.3/Table 16-1. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37dh--bounded-long64-minss-xmm0m32-rax-memory-profile), [standalone report](../reports/S2_37DH_MINSS_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dh--minss-xmm0m32-rax).
 
 
 #### S2-37di — masked-only Long64 ADDSS XMM0,m32 [RAX]
