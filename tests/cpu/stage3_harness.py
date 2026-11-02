@@ -127,6 +127,7 @@ SELF_TEST_NAMES = (
     "test_s3_34by_addr32_absolute_sib_disp32_dword_load_gates_are_pinned_and_fail_closed",
     "test_s3_34bz_addr32_absolute_sib_disp32_dword_store_gates_are_pinned_and_fail_closed",
     "test_s3_34ca_rcx_index_no_base_sib_disp32_dword_load_gates_are_pinned_and_fail_closed",
+    "test_s3_34cb_rcx_index_no_base_sib_disp32_dword_store_gates_are_pinned_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_38d_result_state_validator_rejects_corruption",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
@@ -1036,6 +1037,14 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_34ca_host_rcx_index_no_base_sib_disp32_dword_load_signed_displacement", "local_acceptance", "od-host",
         "tests::s3_20ep_rcx_index_no_base_sib_disp32_dword_load_uses_signed_displacement",
+    ),
+    (
+        "s3_34cb_ir_rcx_index_no_base_sib_disp32_dword_store_source_binding", "local_acceptance", "od-jit",
+        "memory_load_v2::tests::ir_dword_rcx_index_no_base_sib_disp32_store_binds_all_source_bytes_to_its_site",
+    ),
+    (
+        "s3_34cb_host_rcx_index_no_base_sib_disp32_dword_store_signed_displacement", "local_acceptance", "od-host",
+        "tests::s3_20eq_rcx_index_no_base_sib_disp32_dword_store_uses_signed_displacement",
     ),
 )
 RUST_TEST_TARGET_OVERRIDES = {
