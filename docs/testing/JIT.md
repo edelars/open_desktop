@@ -902,6 +902,35 @@ gates remain pending. ISSUE-028 remains open; Stage 2 is ignored/excluded;
 Mini/M1 are deferred; Stage 3 remains partial. See the
 [S3-34ct report](../reports/STAGE_3_S3-34ct_2026-11-02.md).
 
+## S3-20fi: exact address64 RAX-base Dword store with signed disp32
+
+Run the exact gates:
+
+```sh
+cargo test --offline -p od-jit --lib memory_load_v2::tests::ir_dword_rax_disp32_store_binds_all_signed_source_bytes_to_its_site -- --exact --test-threads=1
+cargo test --offline -p od-host --lib tests::s3_20fi_rax_disp32_dword_store_uses_full_rax_address_and_low_dword_data -- --exact --test-threads=1
+```
+
+Admit only the six-byte unprefixed form `89 80 id`
+(`MOV [RAX+sign-extended disp32],EAX`), with Qword effective-address and
+Dword transfer sizes. The effective address uses full-width pre-instruction
+RAX plus signed disp32 with wrapping u64 semantics; the payload is low32 of
+that same RAX. One contiguous checked four-byte write commits at the
+computed address, and successful retirement advances RIP to `A+6`. S3-34ct
+pins these exact JIT source/site and host acceptance identities.
+
+Runtime source `2c54a0a` plus host/JIT coverage `4098ac1` passed independent
+Sol/high static review. Source coverage includes signed displacement
+boundaries, full-width address and low32 payload, interpreter parity,
+neighboring-byte sentinels, entry guards and retry, fault/backend atomicity
+and retry, canonicality, range overflow, and committed callback STOP without
+replay. These gates were not executed: no behavior tests, builds,
+formatting, Cargo checks, or Python harness ran. Exact results remain
+pending. ISSUE-028 remains open; Stage 2 was ignored/excluded; Mini/M1 are
+deferred; Stage 3 remains partial. See the
+[S3-20fi report](../reports/STAGE_3_S3-20fi_2026-11-02.md) and
+[S3-34ct harness report](../reports/STAGE_3_S3-34ct_2026-11-02.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases
