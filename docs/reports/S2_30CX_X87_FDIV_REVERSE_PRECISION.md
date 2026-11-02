@@ -24,12 +24,13 @@ tags, zero divisor, malformed inputs, non-Normal results, and fetch/STOP/budget
 atomicity. A quotient with exponent gap 65 succeeds under every FCW, confirming
 that division has no addition/subtraction gap cutoff. Full `od-isa` passed
 1,823/1,823. Workspace all-target offline
-check, formatting and diff checks passed. Graphify rebuilt 11,388 nodes,
+check, formatting and diff checks passed. Graphify rebuilt 11,392 nodes,
 24,531 edges and 352 communities. Layout reports only the isolated worktree
 `.git` marker and two unavailable historical oracle manifests tracked by
 ISSUE-023; no new documentation path or layout violation was found.
 
-Independent Sol/high review is pending. Physical x86, JIT and native x87
+Independent Sol/high review is clean (focused 5/5 and neighboring `fdiv`
+regressions 19/19). Physical x86, JIT and native x87
 acceptance were not performed. Sources: Intel SDM Rev. 093 Vol. 2A
 `FDIV/FIDIV`, pp. 3-333–3-335, and Vol. 1 §8.1.5.2/Table 8-2, §8.1.5.3,
 §8.5.6 ([Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=451),

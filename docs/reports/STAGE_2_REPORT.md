@@ -21680,6 +21680,7 @@ atomically.
 Focused tests passed 5/5; full `od-isa` passed 1,823/1,823. Workspace
 all-target offline check, formatting, diff check and Graphify AST refresh passed
 (11,392 nodes, 24,531 edges, 352 communities). A literal exponent-gap-65 case
-confirms there is no division cutoff. Independent review is pending;
+confirms there is no division cutoff. Independent Sol/high review is clean
+(focused 5/5 and neighboring `fdiv` regressions 19/19);
 physical x86/JIT/native acceptance was not performed. Sources and test detail:
 [standalone report](S2_30CX_X87_FDIV_REVERSE_PRECISION.md), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cx-bounded-fdiv-sti-st0-dc-f8-ff), and [plan](../plans/STAGE_2.md#s2-30cx-bare-fdiv-sti-st0-with-bounded-fcw-precision).

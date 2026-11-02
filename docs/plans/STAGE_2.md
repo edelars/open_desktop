@@ -215,7 +215,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30cu | Bare `DC C8..CF` FMUL ST(i),ST(0), direct FCW precision/rounding; Valid canonical nonzero Normal operands/results, sticky PE and local C1 diagnostic; `D8` and `DE` neighbors unchanged | S2-29ad, S2-30co, S2-30ct; clean Sol/high review; isolated od-isa 1,805, testkit 455, runner 114+492; integrated main od-isa 1,809, testkit 455, runner 115+493, x86-runner 8+4; Graphify 11,280/24,407/336 |
 | [x] | S2-30cv | Bare `DC E8..EF` FSUB ST(i),ST(0), bounded FCW precision for normalized gap≤64; old exact p64 domain preserved; rounded Normal result, sticky PE and local C1; `D8`/`DE` neighbors unchanged | S2-29ae, S2-30i; Sol/high review clean; od-isa 1,813, testkit 455, runner 115+493; workspace check/fmt passed; Graphify 11,335/24,389/351 |
 | [x] | S2-30cw | Bare `DC E0..E7` FSUBR ST(i),ST(0), bounded FCW precision for normalized gap≤64; old exact p64 domain preserved; rounded Normal result, sticky PE and local C1; `D8`/`DE` neighbors unchanged | S2-29ae, S2-30l; independent Sol/high review clean; integrated main od-isa 1,821, testkit 455, runner 116+495, x86-runner 8+4; workspace/fmt/layout/diff and Graphify 11,339/24,564/343 passed; no physical x86 acceptance |
-| [ ] | S2-30cx | Bare `DC F8..FF` FDIV ST(i),ST(0), FCW precision division `ST(i)/ST(0)` into old ST(i), no pop; no exponent-gap cutoff; exact p64 domain preserved; sticky PE/C1 | S2-30v, S2-30cs; focused/full checks and review pending |
+| [x] | S2-30cx | Bare `DC F8..FF` FDIV ST(i),ST(0), FCW precision division `ST(i)/ST(0)` into old ST(i), no pop; no exponent-gap cutoff; exact p64 domain preserved; sticky PE/C1 | S2-30v, S2-30cs; focused 5/5, full od-isa 1,823; independent Sol/high review clean (neighbor fdiv filter 19/19); workspace/fmt/diff and Graphify 11,392/24,531/352 passed |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
@@ -11537,7 +11537,7 @@ all-target offline check, formatting and diff check passed; Graphify rebuilt
 11,392 nodes, 24,531 edges and 352 communities. A literal exponent-gap-65 case
 confirms there is no division cutoff. Isolated layout reports only
 the `.git` marker and historical ISSUE-023 oracle manifests. Independent
-Sol/high review is pending; no physical x86/JIT/native acceptance is claimed.
+Independent Sol/high review is clean (focused 5/5 and neighboring `fdiv` regressions 19/19); no physical x86/JIT/native acceptance is claimed.
 
 #### S2-30cq. Bare `FSUB ST(0), ST(i)` with bounded FCW precision
 
