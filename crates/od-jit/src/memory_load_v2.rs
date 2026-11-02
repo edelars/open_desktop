@@ -1031,8 +1031,8 @@ fn checked_dword_load_metadata_v2(
 /// `67 89 04 0B/4B/8B/CB` (`MOV [EBX+ECX*scale],EAX`), `67 89 43 ib`
 /// (`MOV [EBX+disp8],EAX`), `67 89 44 0B/4B/8B/CB ib`
 /// (`MOV [EBX+ECX*scale+disp8],EAX`), `67 89 84 0B/4B/8B/CB id`
-/// (`MOV [EBX+ECX*scale+disp32],EAX`), or `67 89 83 id`
-/// (`MOV [EBX+disp32],EAX`)
+/// (`MOV [EBX+ECX*scale+disp32],EAX`), `67 89 83 id`
+/// (`MOV [EBX+disp32],EAX`), or `89 04 24` (`MOV [RSP],EAX`)
 /// through the common block builder, typed IR, allocator, and runtime helper emitter.
 pub fn compile_ir_memory_dword_store_block_v2(
     code: CodeView<'_>,
@@ -1073,6 +1073,7 @@ pub fn compile_ir_memory_dword_store_block_v2(
         && !(bytes.len() == 4 && bytes[..3] == [0x67, 0x89, 0x45])
         && !(bytes.len() == 7 && bytes[..3] == [0x67, 0x89, 0x83])
         && !(bytes.len() == 7 && bytes[..3] == [0x67, 0x89, 0x85])
+        && bytes != [0x89, 0x04, 0x24]
         && !(bytes.len() == 3 && bytes[..2] == [0x89, 0x43])
         && !(bytes.len() == 3 && bytes[..2] == [0x89, 0x45])
         && !(bytes.len() == 6 && bytes[..2] == [0x89, 0x83])
@@ -2863,6 +2864,7 @@ mod tests {
             &[0x48, 0x8b, 0x04, 0x24][..],
             &[0x67, 0x8b, 0x04, 0x24][..],
             &[0x66, 0x8b, 0x04, 0x24][..],
+            &[0x89, 0x04, 0x24][..], // the exact store form is not a load
             &[0x8b, 0x04, 0x20][..],
             &[0x8b, 0x04, 0x0c][..],
             &[0x8b, 0x04, 0x64][..],
@@ -2900,6 +2902,134 @@ mod tests {
         let mut forged = *block.site();
         forged.next_rip += 1;
         assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+    }
+
+    #[test]
+    fn ir_dword_rsp_sib_store_binds_exact_source_and_site() {
+        let source = [0x89, 0x04, 0x24];
+        let entry = 0x8150;
+        let block =
+            compile_ir_memory_dword_store_block_v2(CodeView::new(entry, &source).unwrap(), entry)
+                .unwrap();
+        assert_eq!(block.source_bytes(), source);
+        assert_eq!(block.site().guest_rip(), entry);
+        assert_eq!(block.site().next_rip(), entry + 3);
+        assert_eq!(block.site().source(), Some(0));
+        assert_eq!(block.site().destination(), None);
+        assert_eq!(block.site().operand().size, od_isa::OperandSize::Dword);
+        assert_eq!(
+            block.site().operand().address_size,
+            od_isa::OperandSize::Qword
+        );
+        assert_eq!(
+            block.site().operand().base,
+            AddressBase::Register(Register::Rsp)
+        );
+        assert_eq!(block.site().operand().index, None);
+        assert_eq!(block.site().operand().scale, 1);
+        assert_eq!(block.site().operand().displacement, 0);
+        assert!(block.site().has_supported_profile());
+        assert!(
+            block
+                .site()
+                .matches_source_bytes(&source, MemorySiteOperationV2::Store)
+        );
+        assert_eq!(block.pc_map().instruction_count(), 1);
+        assert_eq!(
+            block.pc_map().boundaries()[0].rip,
+            crate::statepoints::GuestRipBoundary::Fixed(entry + 3)
+        );
+        assert!(matches_dword_pc_map_contract(
+            block.pc_map(),
+            entry,
+            entry + 3,
+            0,
+            1,
+            crate::statepoints::StatePhase::HelperCall,
+            MemorySiteOperationV2::Store,
+        ));
+        assert!(block.pc_map().ranges().iter().any(|range| {
+            range.phase == crate::statepoints::StatePhase::HelperCall
+                && range.snapshot
+                    == crate::statepoints::SnapshotAdmissibility::InadmissibleAfterEffect
+        }));
+        assert!(block.pc_map().ranges().iter().any(|range| {
+            range.phase == crate::statepoints::StatePhase::AfterHelper
+                && range.snapshot
+                    == crate::statepoints::SnapshotAdmissibility::InadmissibleAfterEffect
+        }));
+
+        let relocated_entry = entry + 0x100;
+        let relocated = compile_ir_memory_dword_store_block_v2(
+            CodeView::new(relocated_entry, &source).unwrap(),
+            relocated_entry,
+        )
+        .unwrap();
+        assert_ne!(relocated.site().guest_rip(), block.site().guest_rip());
+        assert_eq!(relocated.site().next_rip(), relocated_entry + 3);
+
+        for (index, expected) in source.iter().enumerate() {
+            let mut changed = source;
+            changed[index] ^= 1;
+            assert_ne!(changed[index], *expected);
+            assert!(
+                compile_ir_memory_dword_store_block_v2(
+                    CodeView::new(entry, &changed).unwrap(),
+                    entry
+                )
+                .is_err()
+            );
+            assert!(
+                !block
+                    .site()
+                    .matches_source_bytes(&changed, MemorySiteOperationV2::Store)
+            );
+        }
+
+        for neighbor in [
+            &[0x48, 0x89, 0x04, 0x24][..],
+            &[0x67, 0x89, 0x04, 0x24][..],
+            &[0x66, 0x89, 0x04, 0x24][..],
+            &[0x89, 0x04, 0x20][..],
+            &[0x89, 0x04, 0x0c][..],
+            &[0x89, 0x04, 0x64][..],
+            &[0x89, 0x44, 0x24, 0][..],
+            &[0x89, 0x84, 0x24, 0, 0, 0, 0][..],
+            &[0x89, 0x04, 0x25][..],
+            &[0x89, 0x04][..],
+            &[0x89, 0x04, 0x24, 0x90][..],
+        ] {
+            assert!(
+                compile_ir_memory_dword_store_block_v2(
+                    CodeView::new(entry, neighbor).unwrap(),
+                    entry
+                )
+                .is_err(),
+                "admitted neighboring encoding {neighbor:02x?}"
+            );
+        }
+
+        let mut forged = *block.site();
+        forged.operand.base = AddressBase::Register(Register::Rbx);
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+        let mut forged = *block.site();
+        forged.operand.address_size = od_isa::OperandSize::Dword;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+        let mut forged = *block.site();
+        forged.operand.size = od_isa::OperandSize::Qword;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+        let mut forged = *block.site();
+        forged.operand.index = Some(Register::Rcx);
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+        let mut forged = *block.site();
+        forged.source = Some(1);
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+        let mut forged = *block.site();
+        forged.destination = Some(0);
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+        let mut forged = *block.site();
+        forged.next_rip += 1;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
     }
 
     #[test]

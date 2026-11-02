@@ -849,6 +849,23 @@ impl MemorySiteV2 {
             && self.operand.size == od_isa::OperandSize::Dword
             && matches!(
                 self.operand.base,
+                od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+            )
+            && self.operand.index.is_none()
+            && self.operand.scale == 1
+            && self.operand.displacement == 0
+        {
+            return true;
+        }
+        if self.operation == MemorySiteOperationV2::Store
+            && self.instruction_index == expected_index
+            && length == 3
+            && self.destination.is_none()
+            && self.source == Some(0)
+            && self.operand.address_size == od_isa::OperandSize::Qword
+            && self.operand.size == od_isa::OperandSize::Dword
+            && matches!(
+                self.operand.base,
                 od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
             )
             && self.operand.index.is_none()
@@ -2118,6 +2135,22 @@ impl MemorySiteV2 {
                 && self.next_rip.checked_sub(self.guest_rip) == Some(3)
                 && self.destination == Some(0)
                 && self.source.is_none()
+                && self.operand.size == od_isa::OperandSize::Dword
+                && self.operand.address_size == od_isa::OperandSize::Qword
+                && matches!(
+                    self.operand.base,
+                    od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+                )
+                && self.operand.index.is_none()
+                && self.operand.scale == 1
+                && self.operand.displacement == 0;
+        }
+        if source == [0x89, 0x04, 0x24] {
+            return expected_operation == MemorySiteOperationV2::Store
+                && self.instruction_index == expected_index
+                && self.next_rip.checked_sub(self.guest_rip) == Some(3)
+                && self.destination.is_none()
+                && self.source == Some(0)
                 && self.operand.size == od_isa::OperandSize::Dword
                 && self.operand.address_size == od_isa::OperandSize::Qword
                 && matches!(
