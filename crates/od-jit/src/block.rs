@@ -3084,6 +3084,10 @@ fn build_block_with_profile(
                         .is_some_and(|bytes| bytes[..3] == [0x67, 0x89, 0x43])
                     || code
                         .bytes
+                        .get(guest_offset..guest_offset.saturating_add(7))
+                        .is_some_and(|bytes| bytes[..3] == [0x67, 0x89, 0x83])
+                    || code
+                        .bytes
                         .get(guest_offset..guest_offset.saturating_add(6))
                         .is_some_and(|bytes| bytes[..2] == [0x89, 0x83])
                     || code
@@ -4848,7 +4852,9 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
                 && operand.index.is_none()
                 && operand.scale == 1
                 && ((instruction.length == 3 && operand.displacement == 0)
-                    || (instruction.length == 4 && i8::try_from(operand.displacement).is_ok())));
+                    || (instruction.length == 4 && i8::try_from(operand.displacement).is_ok())
+                    || (instruction.length == 7
+                        && i32::try_from(operand.displacement).is_ok())));
     let exact_prefix = instruction.prefixes.group1.is_none()
         && instruction.prefixes.segment.is_none()
         && !instruction.prefixes.operand_override
