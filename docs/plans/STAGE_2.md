@@ -324,6 +324,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31dt | Admit historical sticky UE only in exact bare D9 00/DD 00 FLD m32/m64 gates; keep other x87 gates and native/JIT closed | S2-31ak |
 | [x] | S2-31du | Admit historical sticky OE only in exact bare D9 00/DD 00 FLD m32/m64 gates; keep other x87 gates and native/JIT closed | S2-31dt |
 | [x] | S2-31dv | Admit historical sticky ZE only in exact bare D9 00/DD 00 FLD m32/m64 gates; preserve other flags and x87 gates; native/JIT closed | 65,536-case full-state matrix, FNSTSW/FNCLEX composition, SF/ES/B rejection; combined main suites: od-isa 1,901, testkit 455, runner 125+522, x86-runner 8+4; workspace/fmt/layout/diff pass, Graphify 11,858/25,727/334; implementation and test-fix Sol/high reviews clean; no physical x86 acceptance |
+| [ ] | S2-31dw | Admit historical SF only when IE is also set, in exact bare D9 00/DD 00 FLD m32/m64 gates; preserve other flags; native/JIT closed | S2-31dv; SF-only, ES and B remain pre-read rejects |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -649,6 +650,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38m | Exact Long64 `MINSS XMM0,m32 [RAX]` memory profile with mixed IM/DM unmasked arithmetic exit; actual memory RHS; strict schema-v2 and interpreter-only | Parent S2-38 memory/alignment/unmasked-FP-priority gap; S2-37dh address/read model and S2-38d policy; integrated main: od-isa 1,891, testkit 455, runner 125+518, x86-runner 8+4, workspace/fmt/diff/layout/Graphify; Sol/high review clean after exact-form/backend/anchor fixes; no physical x86 claim |
 | [x] | S2-38n | Exact Long64 `MAXSS XMM0,m32 [RAX]` memory profile with MAXSS-specific raw source-2 selection and mixed IM/DM unmasked exit; strict schema-v2, memory fault ordering and interpreter-only | S2-37cy masked memory, S2-38f MAXSS unmasked policy and S2-38m memory/fault ordering; MAXSS-specific QNaN invalid, operand-2 SNaN preservation; combined main suites: od-isa 1,895, testkit 455, runner 125+520, x86-runner 8+4; workspace/fmt/layout/diff pass, Graphify 11,828 nodes/25,656 edges/376 communities; independent Sol/high review clean; no physical x86 claim |
 | [x] | S2-38o | Exact Long64 `MINSD XMM0,m64 [RAX]` memory profile with MINSD-specific raw source-2 selection and mixed IM/DM unmasked exit; strict schema-v2, memory fault ordering and interpreter-only | S2-37cw masked memory, S2-38g MINSD unmasked policy, S2-38m/n memory ordering; combined main suites: od-isa 1,901, testkit 455, runner 125+522, x86-runner 8+4; workspace/fmt/layout/diff pass, Graphify 11,858/25,727/334; Sol/high review clean after backend relabel and coverage fixes; no physical x86 claim |
+| [ ] | S2-38p | Exact Long64 `MAXSD XMM0,m64 [RAX]` memory profile with MAXSD-specific raw source-2 selection and mixed IM/DM unmasked exit; strict schema-v2, memory fault ordering and interpreter-only | S2-37cx masked memory, S2-38h MAXSD unmasked policy, S2-38o memory ordering; no physical x86 claim |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
@@ -7713,6 +7715,38 @@ check, formatting, layout, diff check and Graphify refresh passed (11,858 nodes,
 JIT/native result acceptance and adding required tie/fault/RC coverage. No
 physical x86 acceptance is claimed.
 
+#### S2-38p. Exact Long64 MAXSD XMM0,m64 [RAX] memory profile with mixed IM/DM exit
+
+Add a distinct interpreter-only schema-v2 profile
+`s2-long-maxsd-memory-unmasked-rax-v1` for exact Long64 `F2 0F 5F 00`
+(`MAXSD XMM0,m64 [RAX]`), length four, budget one and stop RIP `entry+4`.
+Keep S2-37cx masked memory MAXSD and S2-38h register MAXSD separate. Require
+SSE2, CR0.EM=0, CR0.MP=1, CR4.OSXMMEXCPT/OSFXSR controls and present XMM/MXCSR.
+Deny other encodings, generic/fragment, C ABI, native and JIT paths.
+
+Execute stop/budget, full fetch, exact form, SSE2/EM/OSFXSR #UD before TS #NM,
+state/MXCSR admission, AC=1 Unsupported, checked canonical48 `[RAX,RAX+7]`,
+one read8 and then FP classification. AC=0 permits unaligned m64. Address/read
+faults precede new IE/DE and leave state unchanged. Require MXCSR reserved bits
+zero, supported mask `0xffbf`, DAZ/FTZ=0, ZM/OM/UM/PM=1; allow independent
+IM/DM, all RC and prior sticky histories. Use MAXSD-specific S2-38h behavior:
+numeric maximum; raw memory source 2 wins on any NaN, equality and signed-zero
+ties, retaining raw source-2 SNaN/QNaN bits. With NaN+subnormal and both masks
+set, invalid priority reports IE only; if a relevant mask is open, commit IE|DE
+on one arithmetic exit. Unmasked exit suppresses all XMM0 writes and retirement
+while committing sticky flags; OSXMMEXCPT selects #XM or arithmetic #UD. Success
+updates only low64, preserving high64, XMM1 and unrelated state.
+
+Require an independent raw-u64 MAX oracle, IM×DM×OSXMMEXCPT event matrix,
+RC×64 sticky histories, NaN/subnormal positions and signs, finite/equal/
+signed-zero/infinity ties, high64 canaries, read/span/AC/fetch/feature faults,
+callback counts and rollback, strict schema/result/backend-label checks, and
+native/JIT denial. Reuse memory ordering from S2-38o without sharing its MINSD
+selector. No physical x86 acceptance is claimed. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38p--exact-maxsd-unmasked-memory-exit-for-m64-rax),
+[S2-38h register MAXSD policy](#s2-38h-exact-long64-maxsd-xmm0xmm1-unmasked-invalid-and-denormal-exit),
+and [S2-37cx masked memory profile](#s2-37cx--exact-legacy-long64-maxsd-xmm0m64-rax).
+
 #### S2-38e. Exact FP-init, FXRSTOR64, and image-controlled MINSS composition
 
 The distinct schema-v2 profile `s2-long-cr0-cr4-fp-init-fxrstor64-minss-v1`
@@ -10876,6 +10910,25 @@ Combined main verification passed: `od-isa` 1,901, `od-testkit` 455,
 `od-runner` 125 unit + 522 fixture, `od-x86-runner` 8 library + 4 binary,
 workspace check, formatting, layout, diff check and Graphify refresh (11,858
 nodes, 25,727 edges, 334 communities). No physical x86 acceptance is claimed.
+
+#### S2-31dw. Admit historical SF+IE through exact binary32/binary64 FLD
+
+Only exact bare `D9 00`/`DD 00` replace their local FSW reject predicate
+`FSW & 0x80c0 != 0` with `FSW & 0x8080 != 0 || (SF != 0 && IE == 0)`.
+Thus SF is admitted only when historical IE is also set; B/ES and SF-only
+remain pre-read rejects. Preserve SF, IE and independent DE/ZE/OE/UE/PE, all
+four FCWs, destination push, current DE/SNaN IE behavior, metadata, C1 and
+atomicity. Do not broaden any other x87 gate or native/JIT path.
+
+Exercise both widths, every existing raw source/sign vector, 32 combinations
+of the other sticky flags under SF+IE, four FCWs, all TOP values and prior C1.
+Check full state, destination/tags, metadata, memory and canaries. Prove
+SF-only rejects before reading even when memory holds an SNaN; SF+IE with that
+SNaN follows existing IE/quieting behavior. Compose FLD→FNSTSW to observe SF+IE
+and FNCLEX to clear it. Update old negative checks to retain a real refusal
+reason, and add exact schema-v2 bare budget-one/no-stop coverage. Do not add a
+synthetic SF producer; no physical x86 acceptance is claimed. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dw-historical-sf-with-ie-for-exact-binary32binary64-fld).
 
 #### S2-30bj. Narrow bare `FXCH ST(1)` (`D9 C9`)
 

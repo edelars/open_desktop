@@ -8603,6 +8603,32 @@ ZE across other x87 profiles is implied. This is not a ZE-producer or physical
 hardware claim. ISSUE-019 remains open. See the
 [plan](../plans/STAGE_2.md#s2-31dv-admit-historical-sticky-ze-through-exact-binary32binary64-fld).
 
+## Local S2-31dw: historical SF with IE for exact binary32/binary64 `FLD`
+
+Only exact bare Long64 `D9 00` (`FLD m32fp [RAX]`) and `DD 00`
+(`FLD m64fp [RAX]`) change their operation-local status reject predicate from
+`FSW & 0x80c0 != 0` to `FSW & 0x8080 != 0 || (SF != 0 && IE == 0)`. This
+admits historical SF only when IE is already set. B and ES remain pre-read
+rejects, and SF without IE remains a pre-read reject even if the memory source
+is an SNaN that would raise current IE.
+
+Preserve SF, IE and independent DE/ZE/OE/UE/PE history. The FCW whitelist,
+Empty destination push, binary32/binary64 source mapping, current DE for
+subnormals, current SNaN IE/quieting/payload, C1, metadata, one-read ordering,
+canonical span validation, retirement and atomicity remain unchanged. Other
+x87 instructions, JIT, native execution and physical hardware acceptance are
+not expanded.
+
+Acceptance covers both widths, existing raw source/sign vectors, all 32
+combinations of other sticky flags with SF+IE, four FCWs, all TOP values and
+prior C1, checking full state, tags, metadata, memory and canaries. SF-only
+must reject before read, including an SNaN source; SF+IE plus SNaN follows the
+existing IE/quieting behavior. FLD→FNSTSW observes SF+IE, and FNCLEX clears it.
+Schema-v2 admits the exact bare budget-one/no-stop case; old negative checks
+continue to use SF-only, ES or B. No synthetic SF producer or architectural
+exception delivery is added. See the
+[plan](../plans/STAGE_2.md#s2-31dw-admit-historical-sfie-through-exact-binary32binary64-fld).
+
 <a id="local-s2-30av-canonical-signed-infinity-fchs-fabs"></a>
 
 ## Local S2-30av: canonical signed infinity through bounded `FCHS/FABS`
@@ -13283,6 +13309,47 @@ This local interpreter profile does not claim physical x86 acceptance. See the
 [plan](../plans/STAGE_2.md#s2-38o-exact-long64-minsd-xmm0m64-rax-memory-profile-with-mixed-imdm-exit),
 [MINSD register contract](#s2-38g--exact-minsd-unmasked-invalid-and-denormal-exit),
 and [memory ordering from S2-38m](#s2-38m--exact-minss-unmasked-memory-exit-for-m32-rax).
+
+## S2-38p — exact MAXSD unmasked memory exit for m64 [RAX]
+
+The local interpreter/schema-v2 profile
+`s2-long-maxsd-memory-unmasked-rax-v1` admits only Long64 `F2 0F 5F 00`
+(`MAXSD XMM0,m64 [RAX]`), length four, budget one and stop RIP `entry+4`.
+SSE2 is required; CR0.EM=0, CR0.MP=1, CR4.OSFXSR=1, explicit immutable
+CR0.TS/CR4.OSXMMEXCPT controls and present XMM/MXCSR state are required. The
+S2-37cx masked memory and S2-38h register MAXSD profiles remain distinct.
+Other encodings, generic/fragment, C ABI, native and JIT execution are denied.
+
+Execution order is stop/budget, complete fetch, exact form, SSE2/EM/OSFXSR #UD
+before TS #NM, state/MXCSR admission, AC=1 local Unsupported, checked `RAX+7`
+and canonical48 inclusive span, exactly one read8, then operand classification.
+AC=0 permits unaligned m64. Address/read faults precede new IE/DE and preserve
+CPU state and retirement.
+
+MXCSR reserved bits must be clear and supported mask is `0xffbf`; DAZ/FTZ=0 and
+ZE/OE/UE/PE masks=1. IM/DM are independent, with every RC and prior sticky
+history admitted. Use MAXSD-specific S2-38h semantics: numeric maximum; raw
+memory RHS wins for any NaN, equality and signed-zero ties, preserving a
+source-2 QNaN/SNaN payload and sign. Raw subnormal classification is performed
+before event selection. If NaN and subnormal coincide with both masks set,
+invalid priority commits IE only and completes; if either relevant mask is
+open, one arithmetic exit commits IE|DE. A newly unmasked event suppresses all
+of XMM0 and retirement, leaves RIP unchanged and commits sticky status;
+OSXMMEXCPT selects #XM or arithmetic #UD. Prior IE/DE alone does not trap.
+Success changes XMM0.low64 and new sticky bits, advances RIP by four and retires
+once, preserving XMM0.high64, XMM1 and unrelated state.
+
+Acceptance requires an independent raw-u64 MAX oracle, IM×DM×OSXMMEXCPT and
+RC×64 sticky matrices; NaN/subnormal positions and signs; finite/equal/
+signed-zero/infinity ties; high64 canaries; fetch/#UD/#NM precedence, AC, span,
+aligned/unaligned/read-failure cases; callback count and rollback; strict
+schema/control/result/provenance checks; and explicit native/JIT denial. This
+does not claim physical x86 acceptance. Normative MAXSD semantics are cited in
+the [S2-38h register contract](#s2-38h--exact-maxsd-unmasked-invalid-and-denormal-exit)
+to Intel SDM Rev. 093 Vol. 2B pp. 4-11–4-12. See the
+[plan](../plans/STAGE_2.md#s2-38p-exact-long64-maxsd-xmm0m64-rax-memory-profile-with-mixed-imdm-exit),
+[masked memory profile](#s2-37cx--bounded-long64-maxsd-xmm0m64-rax-memory-profile),
+and [S2-38o memory ordering](#s2-38o--exact-minsd-unmasked-memory-exit-for-m64-rax).
 
 ## S2-38e — exact FP-init, FXRSTOR64, MINSS composition
 
