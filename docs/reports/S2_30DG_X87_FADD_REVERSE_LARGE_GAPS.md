@@ -45,7 +45,16 @@ macOS validation environment does not compile that module.
   `.git` pointer plus two absent historical oracle manifests already noted in
   ISSUE-023. The report link added by this slice is present.
 - Physical x86 execution was not performed. Independent Sol/high review is
-  pending transfer to the parent task.
+  clean after clarifying the PC64 gap-65 halfway comment and correcting fixture
+  provenance.
+
+## Main integration
+
+Integrated with S2-37dx. Combined main verification passed: od-isa 1,867,
+od-testkit 455, runner 120 unit + 510 fixture, and od-x86-runner 8 library + 4
+binary tests. Workspace all-target offline check, formatting, layout and diff
+check passed. Main Graphify refresh: 11,623 nodes, 25,182 edges, 352
+communities. No physical x86 acceptance was run.
 
 Source: Intel SDM Rev. 093 Vol. 2A `FADD/FADDP/FIADD`, including `DC C0+i`
 encoding and Operation/FPU Flags Affected, pp. 3-311–3-313; Vol. 1

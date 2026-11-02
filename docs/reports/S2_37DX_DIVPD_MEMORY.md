@@ -23,4 +23,15 @@ The handwritten fixture uses memory as the actual RHS, distinguishes both output
 
 No physical x86 acceptance is claimed. Normative sources: Intel SDM Rev. 093 Vol. 2A DIVPD pp. 3-267–3-269 and legacy SSE rows in Table 2-19; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8. The Type 2 note on p. 3-269 concerns VEX forms and is not applied to legacy DIVPD.
 
-See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dx--masked-only-legacy-long64-divpd-xmm0m128-rax), [Stage 2 plan](../plans/STAGE_2.md#s2-37dx--masked-only-legacy-long64-divpd-xmm0m128-rax), [shared report](STAGE_2_REPORT.md#s2-37dx--divpd-xmm0m128-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dx-divpd-xmm0m128-rax).
+See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dx--masked-only-legacy-long64-divpd-xmm0m128-rax), [Stage 2 plan](../plans/STAGE_2.md#s2-37dx--masked-only-legacy-long64-divpd-xmm0m128-rax), [shared report](STAGE_2_REPORT.md#s2-37dx--divpd-xmm0m128-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dx--divpd-xmm0m128-rax).
+
+## Main integration
+
+Integrated with S2-30dg. Combined main verification passed: od-isa 1,867,
+od-testkit 455, runner 120 unit + 510 fixture, and od-x86-runner 8 library + 4
+binary tests. Workspace all-target offline check, formatting, layout and diff
+check passed. Main Graphify refresh: 11,623 nodes, 25,182 edges, 352
+communities. The complete serialized runner fixture suite passed in 454.49 s;
+an earlier parallel aggregate's five transient `ENOENT` failures and successful
+individual reruns are documented in the shared report. No physical x86
+acceptance was run.

@@ -22048,6 +22048,19 @@ Workspace all-target offline check, formatting, layout и `git diff --check`
 с уникальными неперенесёнными коммитами сохранены. Физическая x86-проверка не
 выполнялась; Этап 2 остаётся открытым.
 
+## Main integration: S2-30dg + S2-37dx
+
+После переноса reverse large-gap `FADD ST(i),ST(0)` и masked-only memory
+`DIVPD` полные проверки объединённого main прошли: `od-isa` 1,867;
+`od-testkit` 455; runner 120 unit и 510 serialized fixture tests;
+`od-x86-runner` 8 library + 4 binary tests. Workspace all-target offline
+check, formatting, layout и `git diff --check` прошли. Graphify AST refresh:
+11,623 nodes, 25,182 edges, 352 communities. Независимые Sol/high reviews
+обоих срезов чистые. В первом параллельном runner aggregate DIVPD-проверки
+пять временных subprocess spawn завершились `ENOENT`; каждый затронутый fixture
+прошёл отдельно, а полный последовательный rerun прошёл 510/510 за 454.49 s.
+Физическая x86-проверка не выполнялась; Этап 2 остаётся открытым.
+
 ## Main integration: S2-30df + S2-37dw
 
 После переноса large-gap `FADD ST(0),ST(i)` и masked-only memory `MULPD`
@@ -22096,7 +22109,7 @@ fixture; `od-x86-runner` 8 library + 4 binary tests; workspace all-target
 offline check; formatting; and diff check. The isolated layout check reports
 its `.git` pointer and two absent historical oracle manifests documented in
 ISSUE-023. No physical x86 acceptance is claimed. Independent Sol/high review
-is pending transfer. See [standalone report](S2_30DG_X87_FADD_REVERSE_LARGE_GAPS.md),
+is clean after comment/provenance corrections. See [standalone report](S2_30DG_X87_FADD_REVERSE_LARGE_GAPS.md),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30ct-bounded-fadd-sti-st0-dc-c0c7),
 and [plan](../plans/STAGE_2.md#s2-30dg-large-gap-fadd-sti-st0-admission).
 
