@@ -528,7 +528,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         }])
         self.assertEqual(harness.LOCAL_STEPS.count(p3_step), 1)
         self.assertEqual(len(harness.RUST_TEST_GATES), 262)
-        self.assertEqual(len(harness.rust_test_gate_manifest()), 260)
+        self.assertEqual(len(harness.rust_test_gate_manifest()), 262)
         self.assertEqual(harness.rust_test_argv("od-host", p3_identity), [
             "cargo", "test", "--offline", "-p", "od-host", "--lib", p3_identity,
             "--", "--exact", "--test-threads=1",
@@ -820,7 +820,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         identities = [gate["identity"] for gate in manifest]
         steps_in_manifest = [gate["step"] for gate in manifest]
         self.assertEqual(len(manifest), 262)
-        self.assertEqual(len(set(steps_in_manifest)), 260)
+        self.assertEqual(len(set(steps_in_manifest)), 262)
         for _, _, _, identity in expected:
             self.assertEqual(identities.count(identity), 1)
         self.assertEqual(sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 252)
@@ -1409,7 +1409,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         ]
         gates = [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_34p_")]
         self.assertEqual(len(harness.RUST_TEST_GATES), 262)
-        self.assertEqual(len(harness.rust_test_gate_manifest()), 260)
+        self.assertEqual(len(harness.rust_test_gate_manifest()), 262)
         self.assertEqual(sum(name.startswith("s3_33") for name, _, _, _ in harness.RUST_TEST_GATES), 42)
         self.assertEqual([(name, package, identity) for name, _, package, identity in gates], expected)
         self.assertIn("crates/od-host/src/tests/native_register_v1_corpus.rs", harness.LOCAL_RUST_TEST_SOURCES)
@@ -1560,7 +1560,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 "--", "--exact", "--test-threads=1",
             ])
         self.assertEqual(len(harness.RUST_TEST_GATES), 262)
-        self.assertEqual(len(manifest_by_name), 260)
+        self.assertEqual(len(manifest_by_name), 262)
 
     def test_s3_34q_retained_hit_reducer_gate_is_pinned_once(self):
         expected = (
@@ -2447,9 +2447,9 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             expected,
         )
         self.assertEqual(len(harness.RUST_TEST_GATES), 262)
-        self.assertEqual(len(harness.rust_test_gate_manifest()), 260)
+        self.assertEqual(len(harness.rust_test_gate_manifest()), 262)
         self.assertEqual(
-            len({gate["step"] for gate in harness.rust_test_gate_manifest()}), 260
+            len({gate["step"] for gate in harness.rust_test_gate_manifest()}), 262
         )
         self.assertIn("crates/od-jit/src/memory_load_v2.rs", harness.LOCAL_RUST_TEST_SOURCES)
         self.assertIn("crates/od-host/src/lib.rs", harness.LOCAL_RUST_TEST_SOURCES)
