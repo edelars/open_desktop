@@ -77,6 +77,8 @@ const RCPPS_M128_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dy_rcpps_m128_memory_rhs.case.json");
 const RCPSS_M32_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37ea_rcpss_m32_memory_rhs.case.json");
+const RSQRTSS_M32_MEMORY_RAX: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_37eb_rsqrtss_m32_memory_rhs.case.json");
 const RSQRTPS_M128_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dz_rsqrtps_m128_memory_rhs.case.json");
 const ADDPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
@@ -39097,6 +39099,155 @@ fn rcpss_m32_memory_rhs_is_strict_and_interpreter_only() {
     }
     for backend in ["jit", "native"] {
         let (_, denied) = run(RCPSS_M32_MEMORY_RAX, backend, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
+    }
+}
+
+#[test]
+fn rsqrtss_m32_memory_rhs_is_strict_and_interpreter_only() {
+    let base = Fixture::from_json(RSQRTSS_M32_MEMORY_RAX).unwrap().fixture;
+    assert_eq!(
+        base.profile,
+        od_testkit::v2::Profile::LongRsqrtssMemoryRaxV1
+    );
+    assert_eq!(base.memory[0].initial_bytes_hex, "f30f5200");
+    assert_eq!(base.memory[1].length, 8);
+    let (input, result) = run(RSQRTSS_M32_MEMORY_RAX, "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let result_snapshot = snapshot(&result);
+    assert_eq!(
+        result_snapshot.state.sse.as_ref().unwrap().xmm[0],
+        "0000003fcafef00d123456789abcdef0"
+    );
+    assert_eq!(
+        result_snapshot.state.sse.as_ref().unwrap().mxcsr,
+        base.initial_state.sse.as_ref().unwrap().mxcsr
+    );
+    assert_eq!(
+        result_snapshot.memory[1].bytes_hex,
+        base.memory[1].initial_bytes_hex
+    );
+
+    let mut wrong_result = result.clone();
+    snapshot_mut(&mut wrong_result)
+        .state
+        .sse
+        .as_mut()
+        .unwrap()
+        .xmm[0]
+        .replace_range(0..8, "00000000");
+    assert!(wrong_result.validate_for(&input).is_err());
+    let mut wrong_controls = result.clone();
+    snapshot_mut(&mut wrong_controls)
+        .rsqrtss_memory_rax_controls
+        .as_mut()
+        .unwrap()
+        .cr0_ts = true;
+    assert!(wrong_controls.validate_for(&input).is_err());
+    let mut missing_controls = base.clone();
+    missing_controls.rsqrtss_memory_rax_controls = None;
+    assert!(missing_controls.validate().is_err());
+    let mut ftz_enabled = base.clone();
+    ftz_enabled.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (1 << 15));
+    assert!(ftz_enabled.validate().is_err());
+    let mut daz_enabled = base.clone();
+    daz_enabled.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (1 << 6));
+    assert!(daz_enabled.validate().is_err());
+    let mut reserved_mxcsr_bit = base.clone();
+    reserved_mxcsr_bit.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (1 << 16));
+    assert!(reserved_mxcsr_bit.validate().is_err());
+    let mut unmasked_exception = base.clone();
+    unmasked_exception.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 & !(1 << 7));
+    assert!(unmasked_exception.validate().is_err());
+    let mut bad_encoding = base.clone();
+    bad_encoding.memory[0].initial_bytes_hex = "f30f5201".into();
+    assert!(bad_encoding.validate().is_err());
+
+    let mut ac = base.clone();
+    ac.case_id = "s2_37eb_ac_refusal".into();
+    ac.initial_state.rflags = HexU64(ac.initial_state.rflags.get() | (1 << 18));
+    ac.expected_exit = ExpectedExit::Unsupported;
+    let (ac_input, ac_result) = run(&ac.to_json().unwrap(), "interpreter", 4);
+    ac_result.validate_for(&ac_input).unwrap();
+    assert!(matches!(ac_result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(
+        ac_result.instructions_executed,
+        Observation::Available { value: HexU64(0) }
+    );
+    assert_eq!(
+        snapshot(&ac_result).memory[1].bytes_hex,
+        base.memory[1].initial_bytes_hex
+    );
+
+    let noncanonical = HexU64(0x0000_8000_0000_0000);
+    let mut ac_noncanonical = base.clone();
+    ac_noncanonical.case_id = "s2_37eb_ac_noncanonical_refusal".into();
+    ac_noncanonical.initial_state.rflags =
+        HexU64(ac_noncanonical.initial_state.rflags.get() | (1 << 18));
+    ac_noncanonical.initial_state.gpr[0] = noncanonical;
+    ac_noncanonical.memory[1].guest_address = noncanonical;
+    ac_noncanonical.expected_exit = ExpectedExit::Unsupported;
+    assert!(ac_noncanonical.validate().is_ok());
+    let (ac_noncanonical_input, ac_noncanonical_result) =
+        run(&ac_noncanonical.to_json().unwrap(), "interpreter", 4);
+    ac_noncanonical_result
+        .validate_for(&ac_noncanonical_input)
+        .unwrap();
+    assert!(matches!(
+        ac_noncanonical_result.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    assert_eq!(
+        ac_noncanonical_result.instructions_executed,
+        Observation::Available { value: HexU64(0) }
+    );
+    assert_eq!(
+        snapshot(&ac_noncanonical_result).state,
+        ac_noncanonical.initial_state
+    );
+    assert_eq!(
+        snapshot(&ac_noncanonical_result).memory[1].bytes_hex,
+        ac_noncanonical.memory[1].initial_bytes_hex
+    );
+
+    let mut gp_noncanonical = ac_noncanonical.clone();
+    gp_noncanonical.case_id = "s2_37eb_noncanonical_gp".into();
+    gp_noncanonical.initial_state.rflags =
+        HexU64(gp_noncanonical.initial_state.rflags.get() & !(1 << 18));
+    gp_noncanonical.expected_exit = ExpectedExit::Exception;
+    assert!(gp_noncanonical.validate().is_ok());
+    let (gp_noncanonical_input, gp_noncanonical_result) =
+        run(&gp_noncanonical.to_json().unwrap(), "interpreter", 0);
+    gp_noncanonical_result
+        .validate_for(&gp_noncanonical_input)
+        .unwrap();
+    assert!(matches!(
+        gp_noncanonical_result.outcome,
+        Outcome::Exception {}
+    ));
+    assert_eq!(
+        gp_noncanonical_result.instructions_executed,
+        Observation::Available { value: HexU64(0) }
+    );
+    assert_eq!(
+        snapshot(&gp_noncanonical_result).state,
+        gp_noncanonical.initial_state
+    );
+    assert!(matches!(
+        snapshot(&gp_noncanonical_result).exception,
+        Observation::Available {
+            value: Some(ref exception)
+        } if exception.vector == 13
+    ));
+
+    for backend in [Backend::Jit, Backend::NativeX86] {
+        let mut relabeled = result.clone();
+        relabeled.backend = backend;
+        assert!(relabeled.validate_for(&input).is_err());
+    }
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(RSQRTSS_M32_MEMORY_RAX, backend, 4);
         assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
         assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
     }

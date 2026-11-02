@@ -122,6 +122,19 @@ checks require all six exception masks with DAZ/FTZ clear while allowing RC and
 prior sticky histories. ISSUE-025 remains open, so no exact hardware bits or
 universal tiny-result cutoff are claimed. See the [S2-37ea plan](../../../../docs/plans/STAGE_2.md#s2-37ea--local-long64-memory-legacy-rcpss-at-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-37ea-memory-rcpss-at-rax), [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ea--rcpss-xmm0m32-rax), and [ISSUE-025](../../../../docs/KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
 
+### S2-37eb local legacy RSQRTSS memory profile
+
+`s2_37eb_rsqrtss_m32_memory_rhs.case.json` is a handwritten schema-v2 fixture
+for exact `F3 0F 52 00`. It reads one unaligned m32 at `[RAX]` when AC=0;
+`4.0` produces the deterministic local `0.5` result. Poisoned XMM0 checks
+low32-only update and high96 preservation, while adjacent bytes check the read
+width. Strict MXCSR admits all RC/prior-sticky histories with all exception
+masks set and DAZ/FTZ clear. AC=1 is refused before memory access, including
+when RAX is noncanonical; AC=0 at that same address yields #GP(0). The
+independent integer oracle checks the RSQRT `3/8192` envelope for positive
+normal results plus defined special-value relations. JIT/native and physical
+acceptance are not claimed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37eb--local-long64-memory-legacy-rsqrtss-at-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-37eb-memory-rsqrtss-at-rax), and [report](../../../../docs/reports/S2_37EB_RSQRTSS_MEMORY.md).
+
 Байты написаны вручную по Intel SDM revision 093: Vol.2B `MOV—Move`,
 Vol.2A `ADD—Add`, Vol.2A §§2.1.5 и 2.2.1.2 (ModR/M/SIB и REX),
 Vol.1 §3.4.1.1 (GPR/subregister aliases). Нормативная ссылка:

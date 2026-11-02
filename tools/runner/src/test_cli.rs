@@ -558,6 +558,7 @@ fn expected_native_xorpd_oracle(
                 rcpps_memory_rax_controls: None,
                 rcpss_memory_rax_controls: None,
                 rsqrtps_memory_rax_controls: None,
+                rsqrtss_memory_rax_controls: None,
                 addps_memory_rax_controls: None,
                 sqrtss_memory_rax_controls: None,
                 sqrtpd_memory_rax_controls: None,
@@ -2811,6 +2812,23 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongRsqrtssMemoryRaxV1 {
+        let controls = loaded
+            .fixture
+            .rsqrtss_memory_rax_controls
+            .expect("validated RSQRTSS m32 controls");
+        od_isa::execute::run_with_rsqrtss_memory_rax_controls(
+            &mut state,
+            memory,
+            config,
+            od_isa::execute::RsqrtssMemoryRaxControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongAddpsMemoryRaxV1 {
         let controls = loaded
             .fixture
@@ -3833,6 +3851,7 @@ fn execute_fixture_v2(
                 rcpps_memory_rax_controls: loaded.fixture.rcpps_memory_rax_controls,
                 rcpss_memory_rax_controls: loaded.fixture.rcpss_memory_rax_controls,
                 rsqrtps_memory_rax_controls: loaded.fixture.rsqrtps_memory_rax_controls,
+                rsqrtss_memory_rax_controls: loaded.fixture.rsqrtss_memory_rax_controls,
                 addps_memory_rax_controls: loaded.fixture.addps_memory_rax_controls,
                 sqrtss_memory_rax_controls: loaded.fixture.sqrtss_memory_rax_controls,
                 sqrtpd_memory_rax_controls: loaded.fixture.sqrtpd_memory_rax_controls,
@@ -5229,6 +5248,7 @@ mod tests {
                     rcpps_memory_rax_controls: input.fixture.rcpps_memory_rax_controls,
                     rcpss_memory_rax_controls: input.fixture.rcpss_memory_rax_controls,
                     rsqrtps_memory_rax_controls: input.fixture.rsqrtps_memory_rax_controls,
+                    rsqrtss_memory_rax_controls: input.fixture.rsqrtss_memory_rax_controls,
                     addps_memory_rax_controls: input.fixture.addps_memory_rax_controls,
                     sqrtss_memory_rax_controls: input.fixture.sqrtss_memory_rax_controls,
                     sqrtpd_memory_rax_controls: input.fixture.sqrtpd_memory_rax_controls,

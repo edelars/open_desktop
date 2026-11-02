@@ -890,6 +890,8 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only legacy `F3 0F 52 00` scalar binary32 reciprocal square root from m32 at RAX.
+    RsqrtssMemoryRax,
     /// Local-only legacy `F3 0F 53 /r` XMM-register form; scalar binary32 reciprocal.
     RcpssRegister {
         destination: u8,
@@ -4807,12 +4809,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Escape0f, 0x52) if rsqrtss_register => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if modrm == 0x00 && prefix_count == 1 {
+                    Operation::RsqrtssMemoryRax
+                } else if modrm >> 6 != 3 {
                     return Err(self.unsupported(opcode));
-                }
-                Operation::RsqrtssRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                } else {
+                    Operation::RsqrtssRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x52) if rsqrtps_register => {
@@ -11653,9 +11658,14 @@ mod tests {
                 source: 1
             }
         );
+        let mut rsqrtss_memory = Memory::new(&[0xf3, 0x0f, 0x52, 0x00]);
+        assert_eq!(
+            rsqrtss_memory.decode().unwrap().operation,
+            Operation::RsqrtssMemoryRax
+        );
 
         for bytes in [
-            &[0xf3, 0x0f, 0x52, 0x01][..],             // memory operand
+            &[0xf3, 0x0f, 0x52, 0x01][..],             // other memory operand
             &[0xf3, 0x48, 0x0f, 0x52, 0xc1][..],       // REX.W
             &[0xf3, 0x42, 0x0f, 0x52, 0xc1][..],       // REX.X
             &[0xf3, 0x40, 0x41, 0x0f, 0x52, 0xc1][..], // multiple REX
@@ -13150,7 +13160,6 @@ mod tests {
             &[0x48, 0x0f, 0x52, 0x00][..],
             &[0x40, 0x0f, 0x52, 0x00][..],
             &[0x66, 0x0f, 0x52, 0x00][..],
-            &[0xf3, 0x0f, 0x52, 0x00][..],
             &[0x67, 0x0f, 0x52, 0x00][..],
             &[0x2e, 0x0f, 0x52, 0x00][..],
             &[0xf0, 0x0f, 0x52, 0x00][..],

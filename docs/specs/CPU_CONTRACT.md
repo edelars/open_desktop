@@ -12479,6 +12479,14 @@ outputs. Local special-value and boundary bits follow the deterministic helper;
 they are not exact hardware claims. ISSUE-025 remains open for the overlapping
 published normal/subnormal threshold inequalities. See the [S2-37ea plan](../plans/STAGE_2.md#s2-37ea--local-long64-memory-legacy-rcpss-at-rax), [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-37ea--rcpss-xmm0m32-rax), [fixture](../../tests/fixtures/x86/stage2/s2_37ea_rcpss_m32_memory_rhs.case.json), and [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
 
+## Local S2-37eb: memory RSQRTSS at `[RAX]`
+
+The schema-v2 interpreter profile `s2-long-rsqrtss-memory-rax-v1` admits only exact legacy Long64 `F3 0F 52 00` (`RSQRTSS XMM0,m32 [RAX]`). Full fetch precedes SSE bit 25, CR0.EM/CR4.OSFXSR #UD and CR0.TS #NM checks. MXCSR admission requires supported bits only, all six exception masks set, DAZ=FTZ=0 and reserved bits clear. RC and prior sticky flags are accepted and preserved; no SIMD exception or #XM delivery is modeled.
+
+AC=1 returns local Unsupported before span checks or data callbacks; AC=0 accepts unaligned RAX. Checked `[RAX,RAX+3]` endpoints must both be canonical48 before exactly one read4. Read failure preserves CPU/SSE/MXCSR/RIP, memory and retirement. The source is the memory dword only. On success, `Binary32::reciprocal_sqrt_sse_raw()` replaces XMM0.low32, preserving XMM0.high96, all other state, MXCSR and memory, then RIP advances four bytes and the instruction retires once. The independent schema validator checks special-value relations and the `3/8192` relative-error envelope for positive normal outputs using integer arithmetic; the deterministic reference does not claim physical hardware bit equality.
+
+JIT, native, generic, fragment and C ABI routes remain denied. No physical x86 acceptance is claimed. See the [S2-37eb plan](../plans/STAGE_2.md#s2-37eb--local-long64-memory-legacy-rsqrtss-at-rax), [report](../reports/S2_37EB_RSQRTSS_MEMORY.md), and [fixture](../../tests/fixtures/x86/stage2/s2_37eb_rsqrtss_m32_memory_rhs.case.json).
+
 ## Local S2-37e register-only MINSS with masked status
 
 The schema-v2 profile `s2-long-minss-reg-masked-v1` admits exactly one Long64
