@@ -199,6 +199,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-29ab | Helper-local inexact/incremented diagnostics for direct binary80 square-root precision rounding; preserve both bit-only API projections and domains; no architectural PE/C1 | S2-29aa; independent Sol/high review clean |
 | [x] | S2-29ac | Direct finite binary80 division rounding with inexact/incremented diagnostics at p24/53/64; normal-only result domain, no FCW/FSW or ISA behavior | S2-29ab; independent Sol/high review clean |
 | [x] | S2-29ad | Direct finite binary80 multiplication rounding with inexact/incremented diagnostics at p24/53/64; normal-only result domain, existing helper unchanged | S2-29ac; independent Sol/high review clean |
+| [x] | S2-29ae | Exact aligned binary80 addition to p24/53/64 with inexact/incremented diagnostics; exponent gap≤64, Normal-only result, legacy add helper unchanged | S2-29ad; independent Sol/high review clean |
 | [x] | S2-29x | Exact truncated finite binary80 remainder coefficient decomposition for normalized nonzero operands; exact modulo for exponent gaps 0..64, lhs passthrough below, bounded rejection above; no FPREM/FPREM1 semantics | S2-29w; independent Sol/high review clean |
 | [x] | S2-29y | Exact finite nearest-even binary80 remainder coefficient for normalized nonzero operands; d=-1 half-way handling and u128 quotient/remainder for gaps 0..64; helper-only, no FPREM1/ISA or architectural effects | S2-29x; independent Sol/high review clean |
 | [x] | S2-30cl | Bare `D9 F8` FPREM; bounded positive Normal ST(0)/ST(1), complete-only exponent gap <64, interpreter-only with exact quotient CCs and explicit underflow-safe input cutoff; independent Sol/high review clean | S2-29x/y, S2-30ck |
@@ -3490,6 +3491,34 @@ counterexample. No FCW/FSW, PE/C1, ISA or generic diagnostic behavior is added.
 **Результат:** проверки и чистое independent Sol/high review записаны в
 [S2-29ad report](../reports/S2_29AD_X87_MULTIPLICATION_PRECISION.md).
 S2-29 and ISSUE-019 remain open.
+
+### S2-29ae. Finite binary80 addition precision diagnostics (bounded helper)
+
+Add `add_finite_to_normal_binary80_precision_with_diagnostics(lhs, rhs, mode,
+precision)` for nonzero normalized finite binary80 operands with bit 63 set and
+Normal, Subnormal or PseudoDenormal provenance. Support both signs, p=24/53/64,
+and exponent gaps at most 64. Reuse the exact aligned sum and normalize the
+complete unsigned magnitude before rounding once at the requested precision.
+Return `{ value, inexact, incremented }`; exact cancellation and any zero,
+subnormal or overflow output returns `None`. Preserve the wider existing
+`add_finite_to_binary80` behavior, including zero-neutral, subnormal and
+large-gap results.
+
+Gap 64 is exact in `u128`: the largest same-sign aligned sum is
+`(2^64-1)*2^64 + (2^64-1) = u128::MAX`; at gap 65 the minimum high term
+already requires bit 128, so the bounded API rejects it. After alignment,
+normalize to `M` with bit 127, compute `E=e_min+floor(log2(magnitude))-63`, and
+require E and the rounded result to be Normal finite binary80. For `s=128-p`,
+`T=M>>s`, `R=M mod 2^s`; `inexact` is `R!=0`, while `incremented` reports the
+rounding-mode-selected pre-carry magnitude increment. Use direct p24/53/64
+rounding, never p64-then-narrow. Independent literals must cover gap bounds,
+u128::MAX, signs/orders, cancellation, all modes/precisions, midpoint parity,
+carry, provenance, exponent bounds, old-only result domains, immutability and
+a double-rounding counterexample. No ISA/PE/C1/exception semantics are added.
+
+**Результат:** проверки и clean independent Sol/high review recorded in
+[S2-29ae report](../reports/S2_29AE_X87_ADDITION_PRECISION.md). S2-29 and
+ISSUE-019 remain open.
 
 ### S2-30. Основные x87 операции
 

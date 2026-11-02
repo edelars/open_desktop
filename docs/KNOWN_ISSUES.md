@@ -379,6 +379,17 @@
   recorded in [S2-29ad report](reports/S2_29AD_X87_MULTIPLICATION_PRECISION.md).
   ISSUE-019 remains open.
 
+- **S2-29ae finite addition precision diagnostics — bounded helper complete:**
+  exact finite binary80 addition rounds directly to p24/53/64 for gaps through
+  64, with mathematical inexact and pre-carry magnitude-increment metadata.
+  Exact cancellation and non-Normal outputs return `None`; the old addition
+  helper retains its zero-neutral, subnormal and larger-gap domain. Full
+  `od-isa`, workspace checks and independent Sol/high review passed. A first
+  subnormal-output reject vector was corrected after review to use normalized
+  Normal inputs; both the new helper rejection and old-helper min-subnormal
+  result now pass. See [S2-29ae report](reports/S2_29AE_X87_ADDITION_PRECISION.md).
+  ISSUE-019 remains open.
+
 - **FCHS/FABS stale rejection assertions — resolved:** `fabs_rejects_missing_or_invalid_source_and_boundaries_atomically` and `fchs_rejects_invalid_source_and_execution_boundaries_atomically` now use standalone SF (`FSW=0x0040`) in the rejection vectors; IE|SF (`0x0041`) remains accepted as specified by S2-30bi. The existing tests continue to assert atomic state preservation, and the forbidden-status matrix passes. Validation: focused FABS/FCHS tests and the S2-30bi forbidden-status test pass; full `cargo test -p od-isa --offline` passes 739/739, `cargo test -p od-testkit --offline` 189/189, and `cargo test -p od-jit --offline` 5/5. No CPU semantics changed. Reference: [S2-30bi CPU contract](specs/CPU_CONTRACT.md#local-s2-30bi-historical-stack-fault-status-through-bounded-fchs-fabs); [S2-30bi report](reports/STAGE_2_REPORT.md#s2-30bi--historical-sf-only-with-ie-through-bounded-fchs-fabs).
 - **S2-30ci historical FCMOVNU extent:** original exact bare `DB D9` coverage is superseded by indexed S2-30cj. The indexed local Long64 interpreter admits `DB D8..DF`; it checks TOP and `(TOP+i)&7` before PF for `i>0`, checks only TOP for self-index, and copies raw bytes/tag only for PF=0. Under FCW `0x037f` and `FSW & 0x82ff == 0`, used participants must be Valid canonical Normal or Zero exact signed zero. Local evidence: 363,520 success snapshots (358,400 indexed plus 5,120 self), 161,280 invalid class/tag snapshots (150,528 indexed plus 10,752 self), 18-stream schema, literal rows, complete producer/complement snapshots and JIT denial. Native/JIT execution, x87 exception and unordered/Special semantics, and physical x86 validation remain open; no Mac mini or SSH run was made. Next step remains the shared final batched host/physical acceptance. See [CPU contract](specs/CPU_CONTRACT.md#local-s2-30cj-bounded-indexed-fcmovnu-st0-sti-db-d8df), [plan](plans/STAGE_2.md#s2-30cj-indexed-bare-fcmovnu-st0-sti-db-d8df), [report](reports/STAGE_2_REPORT.md#s2-30cj--indexed-bare-fcmovnu-st0-sti), and [fixture notes](../tests/fixtures/x86/stage2/README.md#s2-30cj-indexed-bare-fcmovnu-st0-sti-db-d8df).
 

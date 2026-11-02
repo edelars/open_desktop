@@ -3737,6 +3737,29 @@ carry normalization and is not architectural C1. The result is packed once at
 the requested precision; p64-then-narrow is not used. No FCW/FSW, PE/C1,
 instruction or physical x86 behavior is implied. See the [S2-29ad plan](../plans/STAGE_2.md#s2-29ad-finite-binary80-multiplication-precision-diagnostics-bounded-helper), [implementation report](../reports/STAGE_2_REPORT.md#s2-29ad--finite-binary80-multiplication-precision-diagnostics), and [standalone report](../reports/S2_29AD_X87_MULTIPLICATION_PRECISION.md). ISSUE-019 remains open.
 
+## Local S2-29ae: finite binary80 addition precision diagnostics
+
+`add_finite_to_normal_binary80_precision_with_diagnostics(lhs, rhs, mode,
+precision)` accepts p=24/53/64, nonzero normalized finite binary80 operands
+with explicit integer bit and Normal, Subnormal or PseudoDenormal provenance,
+either sign, and exponent gap at most 64. It exactly aligns operands with the
+existing finite arithmetic helper, normalizes the full result magnitude, then
+rounds directly at target precision and returns `{ value, inexact,
+incremented }`. Exact cancellation, zero/subnormal/overflow output, zero input,
+gap>64, invalid precision or malformed operands return `None`. Gap 64 has a
+proven exact u128 bound; gap 65 can require bit 128 and is refused.
+
+For normalized magnitude M with leading bit 127, `s=128-p`, `T=M>>s`, and
+`R=M mod 2^s`. `inexact` is `R != 0`; `incremented` is the pre-carry increase
+in magnitude selected by RC and retained-significand parity. The old
+`add_finite_to_binary80` remains unchanged, including zero-neutral,
+subnormal-output and larger-gap behavior. No ISA semantics, PE/C1, guest
+exception behavior or physical x86 acceptance is implied. See the [S2-29ae
+plan](../plans/STAGE_2.md#s2-29ae-finite-binary80-addition-precision-diagnostics-bounded-helper),
+[implementation report](../reports/STAGE_2_REPORT.md#s2-29ae--finite-binary80-addition-precision-diagnostics), and
+[standalone report](../reports/S2_29AE_X87_ADDITION_PRECISION.md). ISSUE-019
+remains open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.

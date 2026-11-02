@@ -5650,6 +5650,28 @@ performance claim, ISA execution or physical x86 acceptance is made. Precision
 control context: Intel SDM Rev. 093 Vol. 1 §8.1.5.2/Table 8-2 pp. 8-7–8-8 and
 §8.1.5.3 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=213)). See the [plan](../plans/STAGE_2.md#s2-29ad-finite-binary80-multiplication-precision-diagnostics-bounded-helper), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-29ad-finite-binary80-multiplication-precision-diagnostics), and [standalone report](S2_29AD_X87_MULTIPLICATION_PRECISION.md).
 
+## S2-29ae — finite binary80 addition precision diagnostics
+
+Added `add_finite_to_normal_binary80_precision_with_diagnostics` for normalized
+nonzero binary80 operands at p=24/53/64 and exponent gaps through 64. It aligns
+the complete exact signed magnitude, rounds directly at target precision, and
+returns the Normal binary80 value plus mathematical `inexact` and pre-carry
+magnitude `incremented` metadata. Exact cancellation and zero/subnormal/
+overflow result classes return `None`. Gap 64's maximum same-sign alignment
+fits exactly in u128; gap 65 can require bit 128 and is rejected. The existing
+`add_finite_to_binary80` API and its zero-neutral, subnormal, and wider-gap
+behavior remain unchanged. No ISA/PE/C1 semantics are added.
+
+Independent literals cover gaps 0/1/63/64 and 65 rejection, `u128::MAX`, sign
+and operand order, cancellation, all precisions/modes, ties and adjacent tails,
+carry and exponent boundaries, provenance equivalence, subnormal old-only
+results, immutability and direct-vs-double rounding. Focused tests passed 3/3;
+full `od-isa` passed 1,766/1,766; formatter, workspace all-target offline
+check, diff check and Graphify update passed. Independent Sol/high review is
+clean after a test vector was corrected to use normalized Normal operands.
+No performance or physical x86 claim is made. Precision context: Intel SDM
+Rev. 093 Vol. 1 §8.1.5.2/Table 8-2 pp. 8-7–8-8 and §8.1.5.3 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=213)). See the [plan](../plans/STAGE_2.md#s2-29ae-finite-binary80-addition-precision-diagnostics-bounded-helper), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-29ae-finite-binary80-addition-precision-diagnostics), and [standalone report](S2_29AE_X87_ADDITION_PRECISION.md). ISSUE-019 remains open.
+
 ## S2-30i — exact-only FSUB ST(i), ST(0) (bounded local slice)
 
 Added bare `DC E8+i`, `i=0..7`, as `FSUB ST(i), ST(0)`. The operation shares
