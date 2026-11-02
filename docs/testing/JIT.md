@@ -193,6 +193,14 @@ Runtime source `4234628a6f06f6656f234c2c124504fc2f80b750` was integrated as `658
 
 Full `od-jit`/`od-host`, Mini/M1 physical checks, owner/MMU integration, and performance remain unverified by this slice. Stage 2 remained outside this slice's evidence; concurrent runs were ignored per user instruction. ISSUE-028 remains open in [the issue registry](../KNOWN_ISSUES.md). Stage 3 remains partial. See the [S3-20en report](../reports/STAGE_3_S3-20en_2026-11-02.md).
 
+## S3-20eo: exact address-size-32 absolute SIB disp32 Dword store
+
+The exact gates are `memory_load_v2::tests::ir_dword_addr32_absolute_sib_disp32_store_binds_all_source_bytes_to_its_site` (`od-jit`) and `tests::s3_20eo_addr32_absolute_sib_disp32_dword_store_uses_zero_extended_absolute_address` (`od-host --lib`). The JIT fixture covers six disp32 representatives, all eight source bytes, the addr32 zero-extended effective address, and the `A+8` site boundary. The host fixture checks one contiguous width-four write at `0xffff_fffe` with the low32 RAX payload, backend-error state atomicity followed by successful retry, entry STOP/budget guards, and callback STOP after commit with re-entry rejected and no second write.
+
+Runtime source `c98a28d` was integrated as `4970c5c`; independent Sol/high static review passed after coverage fixes. No test, build, format, Cargo check, or Python harness test was run due to the Mini execution deferral. The exact runtime gates and broader checks remain pending until end-of-Stage-3 checks. Harness source `7ee99dc` was integrated as `5069141`; its static manifest has 226 Rust gates (216 acceptance, 10 lifecycle) and 244 local steps, with static Sol/high review passed. No Python tests were run; this is not runtime evidence.
+
+Full `od-jit`/`od-host`, Mini/M1 physical checks, owner/MMU integration, and performance remain unverified by this slice. Stage 2 remained outside this slice's evidence; concurrent runs were ignored per user instruction. ISSUE-028 remains open in [the issue registry](../KNOWN_ISSUES.md). Stage 3 remains partial. See the [S3-20eo report](../reports/STAGE_3_S3-20eo_2026-11-02.md).
+
 ## S3-20db: exact address-size-32 disp8 dword checked store
 
 Run `cargo test -p od-jit --lib ir_dword_addr32_disp8_store_binds_all_signed_source_bytes_to_its_site --offline` and `cargo test -p od-host --lib tests::s3_20db_addr32_disp8_dword_store_uses_wrapped_ebx --offline`. Admit only exact `67 89 43 ib` (`MOV [EBX+disp8],EAX`), a four-byte singleton. The decoder-owned addr32 calculation wraps the signed disp8 addition and zero-extends the effective address; the store uses low32 RAX for one contiguous checked four-byte write. JIT fixtures bind all 256 disp8 source/site identities and cover the `A+4` PC-map boundary, STOP, budget, fault, and no-replay behavior. Other addr32 store forms remain closed. Mini, M1, Stage 2, and performance checks were not run. See the [S3-20db report](../reports/STAGE_3_S3-20db_2026-11-02.md).
