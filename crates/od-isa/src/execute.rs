@@ -54096,8 +54096,8 @@ mod tests {
     fn fsub_st0_sti_large_gap_alias_and_reverse_pop_neighbors_reject_atomically() {
         for (bytes, operation) in [
             ([0xd8, 0xe0], "alias"),
-            ([0xdc, 0xe0], "DC FSUBR"),
-            ([0xde, 0xe0], "DE FSUBRP"),
+            ([0xdc, 0xe1], "DC E1 FSUBR ST(1), ST(0)"),
+            ([0xde, 0xe1], "DE E1 FSUBRP ST(1), ST(0)"),
         ] {
             let mut state = LongModeState::default();
             state.rip = 0x5500;

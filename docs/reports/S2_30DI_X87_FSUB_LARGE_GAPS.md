@@ -20,9 +20,10 @@ access. JIT/native admission and physical x86 acceptance remain closed.
 The independent raw-integer power-magnitude oracle covers gaps 64, 65, 66 and
 32765; all twelve FCWs; both signs and operand orders; every TOP and non-alias
 source index; full state, PE/C1 and memory-access checks. A separate refusal
-matrix verifies alias cancellation and atomic gap-65 rejection for DC FSUBR and
-DE FSUBRP. The schema-v2 runner fixture contains the literal RHS bytes
-`0000000000000080be3f` (`2^-65`) and checks rounded state plus JIT denial.
+matrix verifies D8 alias cancellation and non-alias gap-65 rejection for
+`DC E1` FSUBR and `DE E1` FSUBRP, including full-state rollback. The schema-v2
+runner fixture contains the literal RHS bytes `0000000000000080be3f` (`2^-65`)
+and checks rounded state plus JIT denial.
 
 Passed checks:
 
