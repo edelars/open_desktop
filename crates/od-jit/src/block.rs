@@ -2604,8 +2604,8 @@ pub(crate) fn build_checked_qword_load_block(
     )
 }
 
-/// Build exact unprefixed `8B 03`, `8B 00`, `8B 43 ib`, and `8B 83 id`
-/// checked dword loads.
+/// Build exact unprefixed `8B 03`, `8B 00`, `8B 04 24`, `8B 43 ib`, and
+/// `8B 83 id` checked dword loads.
 pub(crate) fn build_checked_dword_load_block(
     code: CodeView<'_>,
     entry_rip: u64,
@@ -3041,6 +3041,8 @@ fn build_block_with_profile(
                 && is_checked_dword_load_form(decoded)
                 && (code.bytes.get(guest_offset..guest_offset.saturating_add(2))
                     == Some(&[0x8b, 0x03][..])
+                    || code.bytes.get(guest_offset..guest_offset.saturating_add(3))
+                        == Some(&[0x8b, 0x04, 0x24][..])
                     || code.bytes.get(guest_offset..guest_offset.saturating_add(2))
                         == Some(&[0x8b, 0x00][..])
                     || code.bytes.get(guest_offset..guest_offset.saturating_add(3))
@@ -4972,7 +4974,15 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
         && ((instruction.length == 3 && operand.displacement == 0)
             || (instruction.length == 4 && i8::try_from(operand.displacement).is_ok())
             || (instruction.length == 7 && i32::try_from(operand.displacement).is_ok()));
-    let exact_address = address64_profile || address32_profile || rbx_rcx_sib_profile;
+    let rsp_no_index_sib_profile = instruction.length == 3
+        && instruction.address_size == OperandSize::Qword
+        && operand.address_size == OperandSize::Qword
+        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
+        && operand.index.is_none()
+        && operand.scale == 1
+        && operand.displacement == 0;
+    let exact_address =
+        address64_profile || address32_profile || rbx_rcx_sib_profile || rsp_no_index_sib_profile;
     exact_prefix
         && instruction.opcode.map == OpcodeMap::Primary
         && instruction.opcode.byte == 0x8b
