@@ -21285,7 +21285,8 @@ precision-24/53/64 addition. It accepts Valid canonical nonzero Normal
 operands of either sign and enforces the instruction's normalized exponent
 gap≤64 before calling the precision helper, regardless of the helper's wider
 S2-29af domain. The alias `i=0` doubles ST(0). It accepts only finite Normal
-results; reverse and pop forms remain exact-only. Later bounded precision
+results; reverse FADD precision is added by S2-30ct and pop forms remain
+exact-only. Later bounded precision
 profiles S2-30cq/S2-30cr cover bare FSUB and FSUBR.
 
 Success commits ST(0), accumulates PE from `inexact`, replaces C1 from the
@@ -21302,6 +21303,38 @@ physical x86 acceptance remain unverified. Intel SDM Rev. 093 Vol. 2A
 [plan](../plans/STAGE_2.md#s2-30cp-bare-fadd-st0-sti-with-bounded-fcw-precision),
 [standalone report](S2_30CP_X87_FADD_PRECISION.md), and
 [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
+## S2-30ct — bounded reverse `FADD ST(i), ST(0)`
+
+The Long64 interpreter admits exact bare `DC C0..C7` and rounds the sum
+directly at FCW PC24/53/64 and RC. Both operands are snapshotted and must be
+Valid-tagged canonical nonzero Normal binary80 values under one of twelve
+all-masked FCWs, absent FCS/FDS selectors, and `FSW & 0x80df == 0`. For `i=0`,
+only physical TOP is validated and doubled. The instruction independently
+retains an exponent-gap limit of 64 despite the helper's wider range; only
+finite Normal exact and rounded results are admitted.
+
+Success writes only `(old_TOP+i)&7`, ORs PE with `inexact`, replaces C1 from
+the helper's pre-carry magnitude diagnostic, and preserves TOP, tags, source
+payloads, other condition codes and unrelated state. FIP/RIP and retirement
+commit once; no data access occurs. Unsupported operands, environments,
+results and boundaries leave state unchanged. D8 FADD and DE FADDP neighbors
+retain their existing behavior. No guest exception delivery, JIT/native
+admission or physical x86 acceptance is implied.
+
+Focused `fadd` ISA and decoder checks passed 19/19, including a 3,072-
+case matrix over all TOP/index pairs, twelve FCWs and four sign combinations,
+plus ties, carry, gaps 1/63/64/65+, cancellation, underflow/overflow,
+environment gates and atomic execution boundaries. Full `od-isa` passed
+1,800 tests; `od-testkit` passed 455, runner passed 113 unit and 491 fixture
+tests. Formatting, workspace check, layout, Graphify refresh and independent
+review are recorded in the standalone
+[S2-30ct report](S2_30CT_X87_FADD_REVERSE_PRECISION.md). Intel SDM Rev. 093
+Vol. 2A `FADD/FADDP/FIADD` pp. 3-311–3-313 and Vol. 1 §§8.1.5.1–.3, Table 8-2,
+§8.5.6 pp. 8-7–8-8, 8-30. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30ct-bounded-fadd-sti-st0-dc-c0c7),
+[plan](../plans/STAGE_2.md#s2-30ct-bare-reverse-fadd-sti-st0-with-bounded-fcw-precision),
+and [standalone report](S2_30CT_X87_FADD_REVERSE_PRECISION.md). ISSUE-019
+remains open.
 
 ### S2-37dg — SQRTSS XMM0,m32 [RAX]
 

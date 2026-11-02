@@ -9610,13 +9610,46 @@ pre-carry magnitude `incremented`, and preserve C0/C2/C3 under the local
 deterministic policy. Preserve TOP, tags, source cells, FCW/FDP/FOP and
 unrelated state; set FIP to old RIP, advance RIP by two, retire once, and make
 no data access. All refusals and execution boundaries are atomic. Reverse
-`DC` and pop `DE` retain their exact-only paths; bounded `D8 E0..E7` FSUB and
-`D8 E8..EF` FSUBR are defined by S2-30cq and S2-30cr. No guest
+FADD `DC` is defined by S2-30ct, while pop `DE` and other reverse arithmetic
+directions retain their existing exact-only paths. Bounded `D8 E0..E7` FSUB
+and `D8 E8..EF` FSUBR are defined by S2-30cq and S2-30cr. No guest
 exception delivery, JIT/native admission or physical x86 acceptance is
 implied. See the [S2-30cp report](../reports/S2_30CP_X87_FADD_PRECISION.md),
 [plan](../plans/STAGE_2.md#s2-30cp-bare-fadd-st0-sti-with-bounded-fcw-precision),
 [shared report](../reports/STAGE_2_REPORT.md#s2-30cp--bounded-fadd-st0-sti), and
 [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
+## Local S2-30ct: bounded `FADD ST(i), ST(0)` (`DC C0..C7`)
+
+Only exact bare Long64 `DC C0..C7` is admitted. Require present x87 state,
+absent FCS/FDS, one of twelve all-exception-masked PC24/53/64 FCWs, and
+`FSW & 0x80df == 0`. Snapshot both operands before mutation. Participating
+physical operands must be Valid-tagged canonical nonzero Normal binary80
+values of either sign. For `i=0`, validate only physical TOP and double ST(0).
+Require normalized exponent gap≤64 before calling the direct-addition
+precision helper, regardless of its wider S2-29af range. Accept only finite
+Normal exact and rounded results.
+
+On success, write the rounded result only to old physical `(TOP+i)&7`, set PE
+to old PE OR `inexact`, replace C1 from the helper's pre-carry magnitude
+`incremented`, and preserve C0/C2/C3 by local policy. Preserve TOP, tags,
+source bytes and all unrelated state; set FIP to old RIP, advance RIP by two,
+retire once, and make no data access. Unsupported operands, environment,
+exponent gaps, zero/subnormal/overflow results and execution boundaries reject
+atomically. The existing `D8` precision path and `DE` pop forms are unchanged.
+No guest exception delivery, JIT/native admission or physical x86 acceptance
+is implied. See the [S2-30ct report](../reports/S2_30CT_X87_FADD_REVERSE_PRECISION.md),
+[plan](../plans/STAGE_2.md#s2-30ct-bare-reverse-fadd-sti-st0-with-bounded-fcw-precision),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30ct--bounded-reverse-fadd-sti-st0),
+and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
+Sources: Intel SDM Rev. 093 Vol. 2A `FADD/FADDP/FIADD`, including the `DC C0+i`
+encoding and Operation/FPU Flags Affected, pp. 3-311–3-313
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=429));
+Vol. 1 §8.1.5.1 (exception masks), §8.1.5.2/Table 8-2 (precision control),
+§8.1.5.3 (rounding control), and §8.5.6 (masked precision exception),
+pp. 8-7–8-8 and 8-30
+([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)).
 
 ## Local S2-30cq: bounded `FSUB ST(0), ST(i)` (`D8 E0..E7`)
 
@@ -9634,8 +9667,9 @@ the helper's pre-carry `incremented` diagnostic, preserves C0/C2/C3 under the
 local deterministic policy, preserves TOP/tags/source and unrelated state,
 sets FIP to old RIP, advances by two and retires once. Refusals and fetch,
 STOP, or zero-budget boundaries are atomic; register execution performs no
-data access. Reverse `DC`, pop `DE`, JIT/native and physical x86 acceptance
-remain outside this profile; bounded `D8 E8..EF` FSUBR is S2-30cr. See the [S2-30cq report](../reports/S2_30CQ_X87_FSUB_PRECISION.md),
+data access. Other reverse `DC` forms, pop `DE`, JIT/native and physical x86
+acceptance remain outside this profile; bounded `D8 E8..EF` FSUBR is S2-30cr.
+See the [S2-30cq report](../reports/S2_30CQ_X87_FSUB_PRECISION.md),
 [plan](../plans/STAGE_2.md#s2-30cq-bare-fsub-st0-sti-with-bounded-fcw-precision),
 [shared report](../reports/STAGE_2_REPORT.md#s2-30cq--bounded-fsub-st0-sti), and
 [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
@@ -9655,9 +9689,9 @@ Success commits physical TOP, accumulates PE from `inexact`, replaces C1 from
 the helper's pre-carry `incremented` diagnostic, preserves C0/C2/C3 by local
 policy, preserves TOP/tags/source and unrelated state, sets FIP to old RIP,
 advances by two and retires once. All denials and fetch/STOP/zero-budget
-boundaries are atomic; register execution performs no data access. `DC`
-reverse, `DE` pop and JIT/native acceptance are unchanged; bounded `D8 E0..E7`
-FSUB is S2-30cq. See
+boundaries are atomic; register execution performs no data access. Other
+reverse arithmetic directions, `DE` pop and JIT/native acceptance are
+unchanged; bounded `D8 E0..E7` FSUB is S2-30cq. See
 the [S2-30cr report](../reports/S2_30CR_X87_FSUBR_PRECISION.md),
 [plan](../plans/STAGE_2.md#s2-30cr-bare-fsubr-st0-sti-with-bounded-fcw-precision),
 [shared report](../reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti), and

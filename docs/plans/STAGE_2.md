@@ -207,17 +207,18 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30cm | Bare `D9 F5` FPREM1; bounded positive Normal ST(0)/ST(1), complete-only gap <64, exact signed nearest-even remainder and quotient CCs, stricter underflow-safe input cutoff; independent Sol/high review clean | S2-29y, S2-30cl |
 | [x] | S2-30cn | Bare `D8 F0..F7` FDIV ST(0),ST(i), direct FCW precision/rounding, normal finite result domain, sticky PE and local C1 diagnostic; other directions remain exact-only | S2-29ac; independent Sol/high review clean |
 | [x] | S2-30co | Bare `D8 C8..CF` FMUL ST(0),ST(i), direct FCW precision/rounding, normal finite result domain, sticky PE and local C1 diagnostic; reverse/pop remain exact-only | S2-29ad; independent Sol/high review clean |
-| [x] | S2-30cp | Bare `D8 C0..C7` FADD ST(0),ST(i), direct FCW precision/rounding for normalized gap≤64, normal finite result domain, sticky PE and local C1 diagnostic; reverse/pop remain exact-only | S2-29ae; independent Sol/high review clean |
+| [x] | S2-30cp | Bare `D8 C0..C7` FADD ST(0),ST(i), direct FCW precision/rounding for normalized gap≤64, normal finite result domain, sticky PE and local C1 diagnostic; reverse FADD precision extension is S2-30ct; pop remains exact-only | S2-29ae; independent Sol/high review clean |
 | [x] | S2-30cq | Bare `D8 E0..E7` FSUB ST(0),ST(i), direct FCW precision/rounding for normalized gap≤64 via validated RHS sign flip and existing addition helper; normal finite result domain, sticky PE and local C1 diagnostic; reverse/pop remain exact-only | S2-29ae; independent Sol/high review clean |
-| [x] | S2-30cr | Bare `D8 E8..EF` FSUBR ST(0),ST(i), direct FCW precision/rounding for normalized gap≤64 via validated local ST(0) sign flip and existing addition helper; normal finite result domain, sticky PE and local C1 diagnostic; DC reverse/DE pop remain unchanged | S2-29ae; independent Sol/high review clean |
+| [x] | S2-30cr | Bare `D8 E8..EF` FSUBR ST(0),ST(i), direct FCW precision/rounding for normalized gap≤64 via validated local ST(0) sign flip and existing addition helper; normal finite result domain, sticky PE and local C1 diagnostic; other DC reverse and DE pop forms remain unchanged | S2-29ae; independent Sol/high review clean |
 | [x] | S2-30cs | Bare `D8 F8..FF` FDIVR ST(0),ST(i), direct FCW precision/rounding in reversed operand order; all-masked PC24/53/64; bounded Normal result; no pop | S2-29ac; independent Sol/high review clean; integrated main validation recorded below |
+| [x] | S2-30ct | Bare `DC C0..C7` FADD ST(i),ST(0), direct FCW precision/rounding for normalized gap≤64; Valid canonical nonzero Normal operands/results, sticky PE and local C1 diagnostic; `D8` and `DE` neighbors unchanged | S2-29ae, S2-30cp; independent Sol/high review clean |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
 | [x] | S2-30c | Bare `DB E2` FNCLEX with existing x87 state; clear FSW[0:7] and FSW[15], preserve C0–C3 by local policy, native closed | S2-28a |
 | [x] | S2-30d | Bare `D8 C1` FADD ST(0), ST(1), exact same-exponent canonical normal results only; native closed | S2-29q, S2-28a |
 | [x] | S2-30e | Initial bare `D8 C0+i` FADD ST(0), ST(i), i=0..7 exact-only profile; target-precision extension is S2-30cp | S2-30d |
-| [x] | S2-30f | Bare `DC C0+i` FADD ST(i), ST(0), same exact-only domain, native closed | S2-30e |
+| [x] | S2-30f | Initial bare `DC C0+i` FADD ST(i), ST(0), exact-only domain; precision extension is S2-30ct; native closed | S2-30e |
 | [x] | S2-30g | Bare `DE C0+i` FADDP ST(i), ST(0), same exact-only domain plus physical TOP pop, native closed | S2-30f |
 | [x] | S2-30h | Initial bare `D8 E0+i` FSUB ST(0), ST(i) exact-only profile; bounded FCW precision extension is S2-30cq | S2-30e |
 | [x] | S2-30i | Bare `DC E8+i` FSUB ST(i), ST(0), exact-only same-exponent normal results; i=0 alias unsupported; native closed | S2-30h |
@@ -11321,9 +11322,10 @@ and preserve C0/C2/C3 under the local deterministic policy. Preserve TOP,
 tags, other payloads, FCW/FDP/FOP and unrelated state; set FIP=old RIP, advance
 RIP by two, retire once, and perform no data access. Unsupported operands,
 zero/cancellation, subnormal/overflow, gaps above 64, malformed state and
-unsupported FCWs reject before mutation. Reverse `DC` and pop `DE` remain
-exact-only; bounded `D8 E0..E7` FSUB and `D8 E8..EF` FSUBR profiles are S2-30cq
-and S2-30cr. No guest exception delivery is
+unsupported FCWs reject before mutation. Reverse FADD precision is added by
+S2-30ct; pop `DE` and other reverse arithmetic directions retain their
+exact-only paths. Bounded `D8 E0..E7` FSUB and `D8 E8..EF` FSUBR profiles are
+S2-30cq and S2-30cr. No guest exception delivery is
 added; JIT/native and physical x86 acceptance remain closed.
 
 Cover all TOP/index pairs, signs and twelve FCWs; alias behavior with unrelated
@@ -11337,6 +11339,39 @@ be migrated to a literal rounded-success case with sticky PE. See the
 [standalone report](../reports/S2_30CP_X87_FADD_PRECISION.md). Intel SDM Rev.
 093 Vol. 2A `FADD/FADDP/FIADD` pp. 3-311–3-313; Vol. 1 §8.1.5.2/Table 8-2,
 §8.1.5.3 and §8.5.6 p. 8-30. S2-30 and ISSUE-019 remain open.
+
+#### S2-30ct. Bare reverse `FADD ST(i), ST(0)` with bounded FCW precision
+
+Admit only exact bare Long64 `DC C0..C7`. Use the S2-30cp present-x87,
+absent-selector, clean-status, twelve all-masked PC24/53/64 FCW, Valid-tag and
+canonical nonzero Normal operand gates. Snapshot both physical operands and
+require normalized exponent gap≤64 before calling the S2-29ae direct-addition
+precision helper, independent of its larger-gap capability. For `i=0`, check
+only the shared physical TOP tag and double ST(0). Admit only finite Normal
+exact and rounded results; zero/cancellation, subnormal, overflow, unsupported
+gaps, malformed inputs and environments remain atomic refusals.
+
+On success, write only old physical `(TOP+i)&7`, OR PE with `inexact`, replace
+C1 with the pre-carry magnitude `incremented`, and preserve other condition
+codes under the S2-30cp local policy. Preserve TOP, tags, source payloads and
+unrelated state; set FIP to old RIP, advance by two, retire once, and do no
+data access. Keep the D8 precision direction and DE pop forms unchanged; other
+DC directions retain their exact-only gates. Native/JIT admission, general
+x87 exception delivery and physical x86 acceptance are not claimed.
+
+Test every TOP/index pair, all twelve FCWs and sign combinations, exact and
+inexact sums, ties, directed rounding, carry, gap boundaries, cancellation,
+underflow/overflow and unsupported environment/tag cases. Check source and
+unrelated-state preservation, atomic refusal, no-data-access, and D8/DC/DE
+neighbors. Intel SDM Rev. 093 Vol. 2A `FADD/FADDP/FIADD`, including the
+`DC C0+i` encoding and Operation/FPU Flags Affected, pp. 3-311–3-313; Vol. 1
+§8.1.5.1–.3, Table 8-2 and §8.5.6 pp. 8-7–8-8, 8-30
+([Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=429),
+[Vol. 1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)).
+See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30ct-bounded-fadd-sti-st0-dc-c0c7),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30ct--bounded-reverse-fadd-sti-st0), and
+[standalone report](../reports/S2_30CT_X87_FADD_REVERSE_PRECISION.md). S2-30
+and ISSUE-019 remain open.
 
 #### S2-30cq. Bare `FSUB ST(0), ST(i)` with bounded FCW precision
 
