@@ -2558,6 +2558,32 @@ The local profile is narrower than the architectural instruction. See the
 [shared report](../reports/STAGE_2_REPORT.md#s2-30cz--bounded-faddp-sti-st0),
 and [standalone report](../reports/S2_30CZ_X87_FADDP_PRECISION.md).
 
+## Local S2-30dh: large-gap `FADDP ST(i), ST(0)` (`DE C0..C7`)
+
+Extend only bare Long64 `DE C0..C7` from S2-30cz to admit normalized
+Normal-to-Normal exponent gaps 65 through 32765 using the existing S2-29af
+precision helper. Gaps≤64 retain their prior outputs. Require present x87
+state, absent FCS/FDS, one of the twelve all-masked PC24/53/64 FCWs,
+`FSW & 0x80df == 0`, and participating Valid-tagged canonical nonzero Normal
+operands. Snapshot operands before calculation and accept only finite Normal
+results. For `i=0`, use the one physical TOP payload twice.
+
+On success, write the rounded result to old physical `(TOP+i)&7`, mark old TOP
+Empty, then increment TOP modulo eight without rotating the register array.
+Set PE to old PE OR `inexact`, replace C1 from `incremented`, and preserve the
+other condition codes under the S2-30cz local policy. Preserve all unrelated
+state, set FIP to old RIP, advance RIP by two and retire once. Unsupported
+inputs, environment, large-gap overflow and execution boundaries reject
+atomically. The result bytes remain beneath an Empty TOP tag for `i=0`.
+
+This change does not widen the non-popping `DC` path, FSUB family or helper
+admission; it adds no guest exception delivery and leaves JIT/native paths
+closed. The large-gap literal fixture and raw-integer oracle are local
+interpreter evidence only, not physical x86 acceptance. See the [plan](../plans/STAGE_2.md#s2-30dh-large-gap-faddp-sti-st0-admission),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30dh--large-gap-faddp-sti-st0),
+[standalone report](../reports/S2_30DH_X87_FADDP_LARGE_GAPS.md), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dh-large-gap-faddp-fixture-coverage).
+
 ## Local S2-30h: exact-only `FSUB ST(0), ST(i)` (`D8 E0+i`)
 
 The local long-mode interpreter accepts exactly bare `D8 E0` through `D8 E7`,

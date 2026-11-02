@@ -5415,6 +5415,31 @@ Graphify has 11,451 nodes, 24,663 edges and 361 communities. Independent
 gpt-6.1-sol high review is clean with no findings. Details are in the standalone
 [S2-30cz report](S2_30CZ_X87_FADDP_PRECISION.md).
 
+## S2-30dh — large-gap FADDP ST(i), ST(0)
+
+Extended only bare Long64 `DE C0..C7` FADDP from normalized gap≤64 through
+gaps 65..32765, reusing the S2-29af direct precision helper. The interpreter
+uses the same twelve all-masked FCWs, absent selectors, clean required FSW
+bits, Valid canonical nonzero Normal operands/results and snapshot-before-
+commit behavior. It writes old physical `(TOP+i)&7`, empties old TOP and then
+increments TOP; PE remains sticky and C1 is replaced from the helper diagnostic.
+Overflow is refused atomically. Other DC and FSUBP paths, arithmetic helpers,
+JIT/native admission and exception delivery remain unchanged.
+
+The independent raw-integer oracle covers gaps 65/66/32765, both signs and
+operand placements, all twelve FCWs, and TOP/index wrap cases (1,152 matrix
+executions). Additional cases cover retained gap-64 behavior, the i=0 alias,
+old physical result/pop ordering, maximum-exponent overflow rollback, DC
+large-gap acceptance and FSUBP large-gap refusal. The literal
+[`DE C1` gap-65 fixture](../../tests/fixtures/x86/stage2/s2_30dh_faddp_sti_st0_gap65_up.case.json)
+checks the complete interpreter snapshot and JIT denial.
+
+Focused FADDP ISA checks passed 8/8; the raw-oracle/boundary case passed 1/1;
+the literal runner fixture passed 1/1. Full package and workspace validation
+results, Graphify refresh and independent Sol/high review are recorded in the
+[standalone report](S2_30DH_X87_FADDP_LARGE_GAPS.md). No physical x86
+acceptance is claimed.
+
 
 
 

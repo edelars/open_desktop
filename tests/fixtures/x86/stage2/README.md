@@ -1397,10 +1397,25 @@ The LongX87StateV1 profile continues to admit exactly the eight bare
 `DE C0..C7` FADDP encodings. The runner compares the full x87 snapshot for all
 TOP/index pairs, including result payload placement before pop, the Empty old
 TOP tag, TOP wrap, sticky PE and C1 rounding diagnostics. A gap-64 tie fixture
-checks inexact PE with no increment; the ISA matrix covers every FCW and sign
-pair, while gap 65 and i=0 overflow refuse without state commit. JIT/native
-admission remains closed; these are interpreter fixtures, not physical x86
-acceptance.
+checks inexact PE with no increment; S2-30dh extends the same profile through
+gap 32765 with a raw-integer oracle and a literal gap-65 fixture. The ISA
+matrix covers every FCW and sign pair, while i=0 overflow refuses without
+state commit. JIT/native admission remains closed; these are interpreter
+fixtures, not physical x86 acceptance.
+
+### S2-30dh large-gap FADDP fixture coverage
+
+`s2_30dh_faddp_sti_st0_gap65_up.case.json` is a literal `DE C1` schema-v2 case
+with ST(0)=+1 and actual Normal ST(1)=`0000000000000080be3f` (`2^-65`). Its
+PC24 round-up result checks the rounded old physical destination, PE/C1, old
+TOP emptying, TOP advancement and FIP. The runner checks complete state and
+JIT denial; x86-runner source includes a native-admission denial check, which
+is Linux-only and did not execute on the macOS validation host. ISA raw-integer
+coverage spans gaps 65, 66 and 32765, both operand
+placements/signs, all twelve masked FCWs, alias behavior and overflow rollback.
+Gap≤64 behavior is retained; the `DC` reverse FADD neighbor and unsupported
+overflow cases remain unchanged. This is interpreter evidence only, not
+physical x86 acceptance.
 
 ### S2-30df large-gap FADD fixture coverage
 
