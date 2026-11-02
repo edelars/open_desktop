@@ -7750,6 +7750,7 @@ mod tests {
         assert_eq!(high_memory.last_read, Some((0xffff_8000_0000_0000, 4)));
         assert_eq!(high_memory.reads, 1);
 
+        drop(published);
         for (initial_rax, displacement, expected_address) in [
             (0x0000_0001_0000_0000, i32::MIN, 0x0000_0000_8000_0000),
             (0x0000_0000_8000_0000, i32::MIN, 0),
@@ -7790,6 +7791,7 @@ mod tests {
             assert_eq!(displacement_state.gpr[0], 0x0000_0000_efcd_ab89);
             drop(displacement_published);
         }
+        let published = PublishedCode::publish_ir_memory_dword_load_v2(&compiled).unwrap();
 
         for (guard_budget, guard_address, initial_stop, expected_exit) in [
             (
@@ -7865,11 +7867,15 @@ mod tests {
                 1,
                 None,
                 &stop,
-            )
-            .unwrap();
+            );
         assert!(matches!(
-            failure.exit,
-            MemoryOperationExecutionExitV2::GuestFault(_)
+            failure,
+            Err(MemoryOperationExecutionErrorV2::MemoryError(
+                MemoryOperationMemoryErrorV2 {
+                    kind: od_jit::memory_bridge::MEMORY_ERROR_BACKEND,
+                    ..
+                }
+            ))
         ));
         assert_eq!(failed_state, before);
         assert_eq!(failed_memory.reads, 1);
