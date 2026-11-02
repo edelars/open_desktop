@@ -703,6 +703,24 @@ not an identified runtime defect; see [ISSUE-028](../KNOWN_ISSUES.md). No
 production owner/MMU, MMIO/SMC, physical-hardware, or performance behavior is
 established. See the [S3-20eg report](../reports/STAGE_3_S3-20eg_2026-11-02.md).
 
+#### S3-20eh: exact address-size-32 ESP-base Dword load with signed disp8
+
+The typed-IR Dword-load path admits only the exact five-byte singleton
+`67 8B 44 24 ib` (`MOV EAX,[ESP+disp8]`): address-size override, SIB, ESP
+base, no index, scale 1, and signed 8-bit displacement. The effective address
+is `(low32(RSP) + sign_extend(disp8)) mod 2^32`, zero-extended to the guest
+address space. The checked operation reads four contiguous bytes; crossing
+4 GiB does not wrap individual bytes. A successful load zero-extends EAX into
+RAX and advances RIP to `A+5`. High RSP bits do not participate. JIT source
+and site identity bind all signed disp8 encodings; other forms remain outside
+this admission profile.
+
+The bounded host fixture checks interpreter parity, poisoned high32 RSP,
+address wrap and a contiguous span crossing 4 GiB, one width-four read, and
+callback STOP commit followed by retry rejection without a second read. No
+production owner/MMU, physical-hardware, or performance behavior is
+established. See the [S3-20eh report](../reports/STAGE_3_S3-20eh_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact

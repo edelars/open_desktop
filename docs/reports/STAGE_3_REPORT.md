@@ -80,6 +80,18 @@ with harness `ac069ca`, exact JIT/host gates passed 1/1 and the cumulative
 Python Stage 3 harness passed 91/91 (including 34br). Full `od-host` was not
 run. See the [S3-20eg report](STAGE_3_S3-20eg_2026-11-02.md).
 
+S3-20eh adds only the address-size-32 ESP-base dword load with signed disp8
+`67 8B 44 24 ib`. The effective address adds sign-extended disp8 to low32 RSP,
+wraps modulo 2^32, then zero-extends; a four-byte read remains contiguous
+across 4 GiB. High RSP bits are ignored. The host fixture covers wrap,
+poisoned high bits, interpreter parity, and callback STOP replay rejection
+without a second read. On author runtime commit `62a516a`, `od-jit` passed
+346/346, the exact JIT/host gates and adjacent S3-20ef/S3-20cz host gates
+passed 1/1, and fmt/check plus Sol review passed. At root `08b3eba` with harness
+`046f5a2`, exact JIT/host gates passed 1/1 and the full Python Stage 3 harness
+passed 92/92 after 34bs integration. Full `od-host` was not run. See the
+[S3-20eh report](STAGE_3_S3-20eh_2026-11-02.md).
+
 S3-36e implementation is committed. Release preflight passed on Apple M3 Max
 with 2,400 frozen inputs and 4,800 parity trials. Calibration-only passed at
 2,048 repetitions per side with no scored pairs. Three scored runs retained 20
