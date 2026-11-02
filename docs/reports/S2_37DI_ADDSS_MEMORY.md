@@ -27,6 +27,12 @@ Verification on this macOS host:
 - Focused decoder, direct ISA matrix, independent oracle matrix and literal runner fixture tests: passed.
 - Independent Sol/high review: clean after the profile matrix also asserted successful retirement and an available snapshot for each case; no findings remain.
 
+After integration with FSUBR in main, the combined suites passed: full
+`od-isa` 1,791, `od-testkit` 455, runner 113 unit + 490 fixture tests, and
+od-x86-runner 8 library + 4 binary tests. Workspace all-target offline check,
+formatting, layout, diff check and Graphify refresh also passed on the
+integrated tree.
+
 Physical x86 acceptance is not claimed.
 
 Sources: Intel SDM Rev. 093 Vol. 2A ADDSS pp. 3-24–3-25 and legacy SSE rows in Table 2-27; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8. The p. 3-25 Type 3/Table 2-20 note applies to VEX forms; legacy SSE capability and exception claims use the legacy rows.
