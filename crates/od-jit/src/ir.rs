@@ -1102,7 +1102,12 @@ fn is_checked_dword_load_address(
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
                 && operand.index.is_none()
                 && operand.scale == 1
-                && operand.displacement == 0));
+                && operand.displacement == 0)
+            || (instruction_length == 5
+                && matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
+                && operand.index.is_none()
+                && operand.scale == 1
+                && i8::try_from(operand.displacement).is_ok()));
     let address32_sib_profile = matches!(instruction_length, 4 | 5 | 8)
         && operand.address_size == od_isa::OperandSize::Dword
         && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
