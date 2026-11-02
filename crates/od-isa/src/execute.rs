@@ -23180,7 +23180,7 @@ fn step_configured(
         });
     }
     if let Operation::FdivpStSt0 { destination } = instruction.operation
-        && exact_fdiv_result(state, destination, 0).is_none()
+        && bounded_x87_fdivr_st0_sti_result(state, destination).is_none()
     {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
@@ -35138,17 +35138,24 @@ fn step_configured(
             x87.instruction_pointer = state.rip;
         }
         Operation::FdivpStSt0 { destination } => {
-            // Compute from the old operands, then pop old ST(0).
-            let result =
-                exact_fdiv_result(state, destination, 0).expect("FDIVP result was prevalidated");
+            // FDIVP ST(i),ST(0) computes old ST(i)/ST(0), writes the old
+            // physical destination, then pops old ST(0).
+            let (result, inexact, incremented) =
+                bounded_x87_fdivr_st0_sti_result(state, destination)
+                    .expect("FDIVP result was prevalidated");
             let x87 = state.x87.as_mut().expect("FDIVP state was prevalidated");
             let old_top = x87.top();
-            let physical_destination = (old_top + destination) & 7;
-            x87.registers[usize::from(physical_destination)] = result.to_bytes();
+            let physical_destination = x87
+                .physical_register_for_st(destination)
+                .expect("ST(i) is a valid logical register");
+            x87.registers[usize::from(physical_destination)] = result;
             x87.set_tag(old_top, X87Tag::Empty);
             let new_top = old_top.wrapping_add(1) & 7;
-            x87.status_word =
-                (x87.status_word & !((7 << 11) | (1 << 9))) | (u16::from(new_top) << 11);
+            let old_pe = x87.status_word & (1 << 5) != 0;
+            x87.status_word = (x87.status_word & !((7 << 11) | (1 << 9) | (1 << 5)))
+                | (u16::from(new_top) << 11)
+                | (u16::from(old_pe || inexact) << 5)
+                | (u16::from(incremented) << 9);
             x87.instruction_pointer = state.rip;
         }
         Operation::FdivrpStSt0 { destination } => {
@@ -69185,6 +69192,16 @@ mod tests {
         let mut bad_status = base.clone();
         bad_status.x87.as_mut().unwrap().status_word |= 1;
         rejects.push(bad_status);
+        let mut bad_instruction_selector = base.clone();
+        bad_instruction_selector
+            .x87
+            .as_mut()
+            .unwrap()
+            .instruction_selector = Some(0x33);
+        rejects.push(bad_instruction_selector);
+        let mut bad_data_selector = base.clone();
+        bad_data_selector.x87.as_mut().unwrap().data_selector = Some(0x2b);
+        rejects.push(bad_data_selector);
         for status_bit in [0, 1, 2, 3, 4, 6, 7, 15] {
             let mut invalid_status = base.clone();
             invalid_status.x87.as_mut().unwrap().status_word |= 1 << status_bit;
@@ -71284,6 +71301,202 @@ mod tests {
     }
 
     #[test]
+    fn fdivp_sti_st0_rounds_every_fcw_top_index_sign_and_sticky_history() {
+        const FCWS: [u16; 12] = [
+            0x007f, 0x047f, 0x087f, 0x0c7f, 0x027f, 0x067f, 0x0a7f, 0x0e7f, 0x037f, 0x077f, 0x0b7f,
+            0x0f7f,
+        ];
+        const ONE_THIRD: [[u64; 4]; 3] = [
+            [
+                0xaaaa_ab00_0000_0000,
+                0xaaaa_aa00_0000_0000,
+                0xaaaa_ab00_0000_0000,
+                0xaaaa_aa00_0000_0000,
+            ],
+            [
+                0xaaaa_aaaa_aaaa_a800,
+                0xaaaa_aaaa_aaaa_a800,
+                0xaaaa_aaaa_aaaab000,
+                0xaaaa_aaaa_aaaa_a800,
+            ],
+            [
+                0xaaaa_aaaa_aaaa_aaab,
+                0xaaaa_aaaa_aaaa_aaaa,
+                0xaaaa_aaaa_aaaa_aaab,
+                0xaaaa_aaaa_aaaa_aaaa,
+            ],
+        ];
+
+        for control_word in FCWS {
+            let precision_index = match control_word & 0x0300 {
+                0x0000 => 0,
+                0x0200 => 1,
+                _ => 2,
+            };
+            let rounding_index = match control_word & 0x0c00 {
+                0x0000 => 0,
+                0x0400 => 3,
+                0x0800 => 2,
+                _ => 1,
+            };
+            for top in 0u8..8 {
+                for index in 0u8..8 {
+                    for (numerator_negative, denominator_negative) in
+                        [(false, false), (false, true), (true, false), (true, true)]
+                    {
+                        for (old_pe, old_c1) in
+                            [(false, false), (false, true), (true, false), (true, true)]
+                        {
+                            let mut state = LongModeState::default();
+                            state.rip = 0x7ec0;
+                            state.gpr = std::array::from_fn(|n| 0x1020_3040_5060_7080 ^ n as u64);
+                            state.rflags = 0xa55a_1234_5678_9abc;
+                            let mut x87 = crate::state::X87State::fixture_seed();
+                            x87.control_word = control_word;
+                            x87.status_word = (u16::from(top) << 11)
+                                | (1 << 8)
+                                | (1 << 10)
+                                | (1 << 14)
+                                | (u16::from(old_pe) << 5)
+                                | (u16::from(old_c1) << 9);
+                            x87.tag_word = u16::MAX;
+                            x87.registers = std::array::from_fn(|physical| {
+                                std::array::from_fn(|byte| (0x60 + physical * 7 + byte) as u8)
+                            });
+                            let physical_top = usize::from(top);
+                            let physical_destination = usize::from((top + index) & 7);
+                            if index == 0 {
+                                x87.registers[physical_top] = binary80_normal(
+                                    0xc000_0000_0000_0000,
+                                    0x3fff,
+                                    numerator_negative ^ denominator_negative,
+                                );
+                            } else {
+                                x87.registers[physical_top] = binary80_normal(
+                                    0xc000_0000_0000_0000,
+                                    0x3fff,
+                                    denominator_negative,
+                                ); // old ST(0)=+/-1.5
+                                x87.registers[physical_destination] = binary80_normal(
+                                    0x8000_0000_0000_0000,
+                                    0x3ffe,
+                                    numerator_negative,
+                                ); // old ST(i)=+/-0.5; quotient is +/-1/3.
+                                x87.set_tag((top + index) & 7, X87Tag::Valid);
+                            }
+                            x87.set_tag(top, X87Tag::Valid);
+                            x87.instruction_pointer = 0x1234;
+                            x87.data_pointer = 0x5678;
+                            x87.last_opcode = 0x05aa;
+                            state.x87 = Some(x87);
+                            let before = state.clone();
+                            let mut memory = Memory::at(&[0xde, 0xf8 | index], state.rip);
+                            assert_eq!(
+                                step(&mut state, &mut memory, AccessContext::default()),
+                                Ok(StepOutcome::Advanced),
+                                "FCW={control_word:04x} TOP={top} i={index} signs={numerator_negative}/{denominator_negative} PE/C1={old_pe}/{old_c1}"
+                            );
+
+                            let mut expected = before.clone();
+                            let expected_x87 = expected.x87.as_mut().unwrap();
+                            let (expected_result, incremented, inexact) = if index == 0 {
+                                (
+                                    binary80_normal(0x8000_0000_0000_0000, 0x3fff, false),
+                                    false,
+                                    false,
+                                )
+                            } else {
+                                let negative = numerator_negative ^ denominator_negative;
+                                let mode_index = match (rounding_index, negative) {
+                                    (2, true) => 1,
+                                    (3, true) => 2,
+                                    (other, _) => other,
+                                };
+                                let significand = ONE_THIRD[precision_index][mode_index];
+                                let unincremented = match precision_index {
+                                    0 => 0xaaaa_aa00_0000_0000,
+                                    1 => 0xaaaa_aaaa_aaaa_a800,
+                                    _ => 0xaaaa_aaaa_aaaa_aaaa,
+                                };
+                                (
+                                    binary80_normal(significand, 0x3ffd, negative),
+                                    significand > unincremented,
+                                    true,
+                                )
+                            };
+                            expected_x87.registers[physical_destination] = expected_result;
+                            expected_x87.set_tag(top, X87Tag::Empty);
+                            let new_top = top.wrapping_add(1) & 7;
+                            expected_x87.status_word = (expected_x87.status_word
+                                & !((7 << 11) | (1 << 5) | (1 << 9)))
+                                | (u16::from(new_top) << 11)
+                                | (u16::from(old_pe || inexact) << 5)
+                                | (u16::from(incremented) << 9);
+                            expected_x87.instruction_pointer = before.rip;
+                            expected.rip += 2;
+                            assert_eq!(
+                                state, expected,
+                                "complete state FCW={control_word:04x} TOP={top} i={index}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fdivp_sti_st0_accepts_gap_65_without_exponent_cutoff() {
+        const FCWS: [u16; 12] = [
+            0x007f, 0x047f, 0x087f, 0x0c7f, 0x027f, 0x067f, 0x0a7f, 0x0e7f, 0x037f, 0x077f, 0x0b7f,
+            0x0f7f,
+        ];
+        let one = binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
+        let large = binary80_normal(0xc000_0000_0000_0000, 0x4040, false); // 1.5 * 2^65.
+
+        for control_word in FCWS {
+            for top in 0u8..8 {
+                for index in 1u8..8 {
+                    let mut state = LongModeState::default();
+                    state.rip = 0x7f20;
+                    let mut x87 = crate::state::X87State::fixture_seed();
+                    x87.control_word = control_word;
+                    x87.status_word = u16::from(top) << 11;
+                    x87.tag_word = u16::MAX;
+                    let physical_top = usize::from(top);
+                    let physical_destination = usize::from((top + index) & 7);
+                    x87.registers[physical_top] = one;
+                    x87.registers[physical_destination] = large;
+                    x87.set_tag(top, X87Tag::Valid);
+                    x87.set_tag((top + index) & 7, X87Tag::Valid);
+                    state.x87 = Some(x87);
+                    let before = state.clone();
+                    let mut memory = Memory::at(&[0xde, 0xf8 | index], state.rip);
+
+                    assert_eq!(
+                        step(&mut state, &mut memory, AccessContext::default()),
+                        Ok(StepOutcome::Advanced),
+                        "FCW={control_word:04x} TOP={top} i={index}"
+                    );
+                    let mut expected = before.clone();
+                    let expected_x87 = expected.x87.as_mut().unwrap();
+                    expected_x87.registers[physical_destination] = large;
+                    expected_x87.set_tag(top, X87Tag::Empty);
+                    expected_x87.status_word = (expected_x87.status_word
+                        & !((7 << 11) | (1 << 5) | (1 << 9)))
+                        | (u16::from(top.wrapping_add(1) & 7) << 11);
+                    expected_x87.instruction_pointer = before.rip;
+                    expected.rip += 2;
+                    assert_eq!(
+                        state, expected,
+                        "complete state FCW={control_word:04x} TOP={top} i={index}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn fdivp_sti_st0_commits_ordered_quotient_then_pops_atomically() {
         let fifteen = binary80_normal(0xf000_0000_0000_0000, 0x4002, false);
         let three = binary80_normal(0xc000_0000_0000_0000, 0x4000, false);
@@ -71395,13 +71608,6 @@ mod tests {
         valid.set_tag(1, crate::state::X87Tag::Valid);
         base.x87 = Some(valid);
         let mut rejects = Vec::new();
-        let mut inexact_one_third = base.clone();
-        inexact_one_third.x87.as_mut().unwrap().registers[1] = one;
-        rejects.push(inexact_one_third);
-        let mut inexact_two_thirds = base.clone();
-        inexact_two_thirds.x87.as_mut().unwrap().registers[1] =
-            binary80_normal(0x8000_0000_0000_0000, 0x4000, false);
-        rejects.push(inexact_two_thirds);
         for (numerator, denominator) in [
             (
                 binary80_normal(0x8000_0000_0000_0000, 0x7ffe, false),

@@ -1441,10 +1441,21 @@ x87 admission stays closed.
 The schema validator admits all eight bare `DE F8+i` FDIVP encodings, including
 the no-operand `DE F9` alias. Runner cases check every TOP×i destination,
 ordered `15/3 = 5`, exact `+1` alias payload before the old TOP tag is emptied,
-TOP wrap, C1 clearing and full x87 snapshot preservation. An inexact `DE F9`
-fixture uses `stop_rip: null` and budget one, and verifies that the full state
-is unchanged. `DE F0..F7` FDIVRP remains unsupported; native x87 admission
-stays closed.
+TOP wrap, C1 clearing and full x87 snapshot preservation. The bounded S2-30dd
+extension below adds the twelve FCWs, all RC modes, PE/C1 rounding diagnostics,
+and valid inexact quotients; the old exact-only inexact-rejection expectation no
+longer applies. Invalid profile inputs remain atomically Unsupported. `DE F0..F7`
+FDIVRP remains unsupported; native x87 admission stays closed.
+
+### S2-30dd bounded FDIVP fixture coverage
+
+The schema-v2 runner executes a handwritten `DE FA` PC24, round-toward-negative
+fixture for `ST(2)=-1` and `ST(0)=3`, checking the full state after negative
+`1/3` rounding and popping old TOP. The static fixture also verifies unchanged
+memory and JIT denial. The runner matrix exercises every admitted FCW, while
+direct ISA tests cover all FCW×TOP×index×sign×PE/C1 combinations and a gap-65
+case. Invalid controls, status, tags and operands refuse without committing
+state. `DE F0..F7` remains the distinct reverse quotient FDIVRP encoding.
 
 ### S2-30s x87 schema coverage
 
@@ -1453,8 +1464,9 @@ including the no-operand `DE F1` alias. Runner cases check every TOP×i
 destination, ordered `15/3 = 5`, exact `+1` alias payload before the old TOP
 tag is emptied, TOP wrap, C1 clearing and unchanged unrelated state. An
 inexact `DE F1` case uses `stop_rip: null` and budget one and verifies that
-the full x87 state is unchanged. `DE F8..FF` FDIVP and adjacent DE groups keep
-their existing meanings; native x87 admission stays closed.
+the full x87 state is unchanged. `DE F8..FF` FDIVP keeps its ordered quotient
+and pop semantics, with bounded rounding extended by S2-30dd; native x87
+admission stays closed.
 
 
 ### S2-30t x87 schema coverage

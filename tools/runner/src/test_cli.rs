@@ -5844,7 +5844,7 @@ mod tests {
     }
 
     #[test]
-    fn x87_fdivp_fixture_runner_covers_every_index_top_and_inexact_rejection() {
+    fn x87_fdivp_fixture_runner_covers_every_index_top_and_precision_rounding() {
         fn normal(significand: u64, exponent: u16, negative: bool) -> [u8; 10] {
             let mut bytes = [0; 10];
             bytes[..8].copy_from_slice(&significand.to_le_bytes());
@@ -5928,12 +5928,102 @@ mod tests {
             }
         }
 
+        const FCWS: [u16; 12] = [
+            0x007f, 0x047f, 0x087f, 0x0c7f, 0x027f, 0x067f, 0x0a7f, 0x0e7f, 0x037f, 0x077f, 0x0b7f,
+            0x0f7f,
+        ];
+        const ONE_THIRD: [[u64; 4]; 3] = [
+            [
+                0xaaaa_ab00_0000_0000,
+                0xaaaa_aa00_0000_0000,
+                0xaaaa_ab00_0000_0000,
+                0xaaaa_aa00_0000_0000,
+            ],
+            [
+                0xaaaa_aaaa_aaaa_a800,
+                0xaaaa_aaaa_aaaa_a800,
+                0xaaaa_aaaa_aaaab000,
+                0xaaaa_aaaa_aaaa_a800,
+            ],
+            [
+                0xaaaa_aaaa_aaaa_aaab,
+                0xaaaa_aaaa_aaaa_aaaa,
+                0xaaaa_aaaa_aaaa_aaab,
+                0xaaaa_aaaa_aaaa_aaaa,
+            ],
+        ];
+        for control_word in FCWS {
+            let precision_index = match control_word & 0x0300 {
+                0x0000 => 0,
+                0x0200 => 1,
+                _ => 2,
+            };
+            let rounding_index = match control_word & 0x0c00 {
+                0x0000 => 0,
+                0x0400 => 3,
+                0x0800 => 2,
+                _ => 1,
+            };
+            let mode_index = match rounding_index {
+                3 => 2, // Negative result: toward negative rounds the magnitude up.
+                2 => 1, // Negative result: toward positive rounds the magnitude down.
+                other => other,
+            };
+            let significand = ONE_THIRD[precision_index][mode_index];
+            let unincremented = match precision_index {
+                0 => 0xaaaa_aa00_0000_0000,
+                1 => 0xaaaa_aaaa_aaaa_a800,
+                _ => 0xaaaa_aaaa_aaaa_aaaa,
+            };
+            let incremented = significand > unincremented;
+            let mut input = v2::Fixture::from_json(include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_30dd_fdivp_pc24_negative_one_third_pop.case.json"
+            ))
+            .unwrap()
+            .fixture;
+            input.case_id = format!("local_fdivp_pc24_negative_one_third_{control_word:04x}");
+            input.initial_state.x87.as_mut().unwrap().control_word =
+                HexU64(u64::from(control_word));
+            let loaded = v2::Fixture::from_json(&input.to_json().unwrap()).unwrap();
+            let mut memory = od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).unwrap();
+            let result = execute_fixture_v2(&loaded, &mut memory);
+            result.validate_for(&loaded).unwrap();
+            assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available { value: HexU64(1) }
+            );
+            let Observation::Available { value } = result.snapshot else {
+                panic!("inexact FDIVP state must remain observable");
+            };
+            let mut expected = loaded.fixture.initial_state.clone();
+            expected.rip = loaded.fixture.stop_rip.unwrap();
+            let mut expected_x87 = expected.x87.clone().unwrap();
+            expected_x87.registers[0] = normal(significand, 0x3ffd, true)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            expected_x87.tag_word = HexU64(0xfffc);
+            expected_x87.status_word = HexU64(
+                (0x3020 & !((7 << 11) | (1 << 5) | (1 << 9)))
+                    | (7 << 11)
+                    | (1 << 5)
+                    | (u64::from(incremented) << 9),
+            );
+            expected_x87.instruction_pointer = loaded.fixture.initial_state.rip;
+            expected.x87 = Some(expected_x87);
+            assert_eq!(
+                value.state, expected,
+                "complete state FCW={control_word:04x}"
+            );
+        }
+
         let mut input = v2::Fixture::from_json(include_bytes!(
             "../../../tests/fixtures/x86/stage2/mov_load_add_store.case.json"
         ))
         .unwrap()
         .fixture;
-        input.case_id = "local_fdivp_inexact_rejection".into();
+        input.case_id = "local_fdivp_invalid_environment_rejection".into();
         input.profile = v2::Profile::LongX87StateV1;
         input.instruction_budget = 1;
         input.initial_state.rip = HexU64(0x5600);
@@ -5949,7 +6039,7 @@ mod tests {
         code.initial_bytes_hex = "def9".into();
         code.comparison_mask_hex = "ffff".into();
         let mut x87 = od_isa::state::X87State::fixture_seed();
-        x87.control_word = 0x037f;
+        x87.control_word = 0x037e;
         x87.status_word = 0;
         x87.tag_word = 0xfff0;
         x87.registers[0] = normal(0xc000_0000_0000_0000, 0x4000, false);

@@ -9877,6 +9877,37 @@ See the [plan](../plans/STAGE_2.md#s2-30dc-bare-fsubrp-sti-st0-with-bounded-fcw-
 [shared report](../reports/STAGE_2_REPORT.md#s2-30dc--bounded-fsubrp-sti-st0), and
 [standalone report](../reports/S2_30DC_X87_FSUBRP_PRECISION.md).
 
+## Local S2-30dd: bounded `FDIVP ST(i), ST(0)` (`DE F8..FF`)
+
+Extend exactly bare Long64 `DE F8..FF`. Reuse
+`bounded_x87_fdivr_st0_sti_result` for the old quotient `ST(i)/ST(0)` at the
+twelve all-exception-masked PC24/53/64 FCWs and all four RC modes. Require
+present x87 state, absent FCS/FDS, `FSW & 0x80df == 0`, Valid tags for the
+operands, canonical nonzero Normal binary80 inputs and a finite Normal result.
+Do not impose an exponent-gap cutoff; unequal exponents including gap 65 are
+admitted. Retain the existing helper's p64 result domain and add no exact
+fallback or arithmetic helper. The `i=0` alias uses one Valid old ST(0) and
+returns exact `+1`.
+
+On success, write the result to old physical `(TOP+i)&7`, then mark old TOP
+Empty and increment TOP modulo eight. For `i=0`, write `+1` to old TOP before
+emptying the same register. PE is sticky from old PE OR `inexact`; C1 is
+replaced from the helper's `incremented`. Preserve C0/C2/C3, selectors,
+unrelated payload and state under the existing local policy, set FIP to old RIP,
+advance RIP by two and retire once. Unsupported controls/status/selectors,
+invalid tags/operands or non-Normal results refuse before mutation. Fetch, STOP
+and zero-budget boundaries are atomic. Native/JIT, general x87 exception
+delivery and physical x86 acceptance remain unsupported.
+
+Coverage includes 12,288 complete-state FCW/TOP/index/sign/PE/C1 cases and
+all-TOP/index exponent-gap-65 cases, plus a PC24 negative-directed `1/3`
+fixture with full state and JIT denial. Normative source: Intel SDM Rev. 093
+Vol. 2A `FDIV/FIDIV—Divide`, pp. 3-333–3-335
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=451));
+Vol. 1 §§8.1.5.1–.3, Table 8-2 and §8.5.6. See the [plan](../plans/STAGE_2.md#s2-30dd-bare-fdivp-sti-st0-with-bounded-fcw-precision),
+[standalone report](../reports/S2_30DD_X87_FDIVP_PRECISION.md), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dd-bounded-fdivp-fixture-coverage).
+
 ## Local S2-30cq: bounded `FSUB ST(0), ST(i)` (`D8 E0..E7`)
 
 Only exact bare Long64 `D8 E0..E7` is admitted. Apply the same present-x87,
