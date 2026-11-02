@@ -3102,6 +3102,10 @@ fn build_block_with_profile(
                         .is_some_and(|bytes| bytes[..3] == [0x67, 0x8b, 0x83])
                     || code
                         .bytes
+                        .get(guest_offset..guest_offset.saturating_add(7))
+                        .is_some_and(|bytes| bytes[..3] == [0x67, 0x8b, 0x85])
+                    || code
+                        .bytes
                         .get(guest_offset..guest_offset.saturating_add(3))
                         .is_some_and(|bytes| bytes[0..2] == [0x8b, 0x43])
                     || code
@@ -4912,7 +4916,7 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
         && instruction.address_size == OperandSize::Dword
         && operand.address_size == OperandSize::Dword
         && (matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
-            || instruction.length == 4
+            || matches!(instruction.length, 4 | 7)
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp)))
         && ((operand.index.is_none()
             && operand.scale == 1
