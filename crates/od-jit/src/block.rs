@@ -3197,6 +3197,10 @@ fn build_block_with_profile(
                         .is_some_and(|bytes| bytes[..3] == [0x89, 0x04, 0x25])
                     || code
                         .bytes
+                        .get(guest_offset..guest_offset.saturating_add(7))
+                        .is_some_and(|bytes| bytes[..3] == [0x89, 0x04, 0x0d])
+                    || code
+                        .bytes
                         .get(guest_offset..guest_offset.saturating_add(8))
                         .is_some_and(|bytes| bytes[..4] == [0x67, 0x89, 0x04, 0x25])
                     || code
@@ -5159,6 +5163,15 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
                     || (instruction.length == 4 && i8::try_from(operand.displacement).is_ok())
                     || (instruction.length == 7
                         && i32::try_from(operand.displacement).is_ok())));
+    let rcx_no_base_sib_profile = instruction.length == 7
+        && instruction.address_size == OperandSize::Qword
+        && matches!(&instruction.operation, Operation::Mov { dst: Operand::Memory(operand), .. }
+            if operand.address_size == OperandSize::Qword
+                && operand.size == OperandSize::Dword
+                && matches!(operand.base, AddressBase::None)
+                && operand.index == Some(od_isa::Register::Rcx)
+                && operand.scale == 1
+                && i32::try_from(operand.displacement).is_ok());
     let exact_prefix = instruction.prefixes.group1.is_none()
         && instruction.prefixes.segment.is_none()
         && !instruction.prefixes.operand_override
@@ -5233,6 +5246,7 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
         && operand.size == OperandSize::Dword
         && operand.address_size == instruction.address_size
         && (rbx_rcx_sib_profile
+            || rcx_no_base_sib_profile
             || address32_rbx_rcx_sib_profile
             || address32_rsp_sib_profile
             || address32_rsp_disp8_sib_profile
