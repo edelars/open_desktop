@@ -266,11 +266,11 @@ pub(crate) fn compile_checked_dword_load_block_v2(
     Ok(emitted)
 }
 
-pub(crate) fn compile_checked_dword_rbx_store_block_v2(
+pub(crate) fn compile_checked_dword_store_block_v2(
     code: CodeView<'_>,
     entry_rip: u64,
 ) -> Result<EmittedCheckedStoreBlockV2, BlockCompileError> {
-    let built = block::build_checked_dword_rbx_store_block(
+    let built = block::build_checked_dword_store_block(
         code,
         entry_rip,
         AccessContext::default(),

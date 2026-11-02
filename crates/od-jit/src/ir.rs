@@ -432,9 +432,8 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                 let length = instruction_length(program, active_instruction);
                 let qword_profile = operand.size == od_isa::OperandSize::Qword
                     && is_checked_memory_address(operand, length);
-                let dword_rbx_profile =
-                    src.0 == 0 && is_checked_dword_rbx_store_address(operand, length);
-                if !qword_profile && !dword_rbx_profile {
+                let dword_profile = src.0 == 0 && is_checked_dword_store_address(operand, length);
+                if !qword_profile && !dword_profile {
                     return Err(VerifyError::InvalidCheckedStoreDescriptor {
                         operation: operation_index,
                     });
@@ -1080,14 +1079,17 @@ fn is_checked_dword_load_address(
         && operand.displacement == 0
 }
 
-fn is_checked_dword_rbx_store_address(
+fn is_checked_dword_store_address(
     operand: &od_isa::long_decode::MemoryOperand,
     instruction_length: u64,
 ) -> bool {
     instruction_length == 2
         && operand.size == od_isa::OperandSize::Dword
         && operand.address_size == od_isa::OperandSize::Qword
-        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+        && matches!(
+            operand.base,
+            AddressBase::Register(od_isa::Register::Rax | od_isa::Register::Rbx)
+        )
         && operand.index.is_none()
         && operand.scale == 1
         && operand.displacement == 0

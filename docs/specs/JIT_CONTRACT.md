@@ -117,6 +117,27 @@ IR, multi-instruction block, or PC-map integration. Other memory forms remain
 unsupported. The physical Mac mini check is reserved for final S3-21 after
 local Stage 3 work is complete.
 
+#### S3-20cq: exact aliased Dword store
+
+The shared typed-IR Dword-store entry built for S3-20co additionally admits
+only exact unprefixed `89 00` (`MOV [RAX],EAX`) alongside its existing `89 03`
+form. The decoder supplies full-width old RAX as the address, and the same
+old value's low 32 bits are the Dword payload; successful execution preserves
+RAX and commits exactly one four-byte write before RIP/retirement and STOP
+observation. The source/site descriptor is bound to the exact two bytes, RAX
+base, Dword operand width and `A+2` continuation. Prefix, SIB, displacement,
+other ModRM values, tail bytes and partial sources remain rejected.
+
+The host fixture compares complete CPU/RAM state with the interpreter for an
+address above 4 GiB and a four-byte transfer crossing `0xffff_ffff`. It checks
+the exact callback payload, adjacent bytes, entry STOP/budget guards, callback
+STOP after commit, architectural/backend write errors and noncanonical #GP
+without a callback. The PC map disallows snapshots in HelperCall, AfterHelper
+and commit phases; replay is permitted only on the helper's all-or-nothing
+error exit. This remains private synchronous ordinary RAM and adds no owner,
+MMU, cache, SMC or dispatcher integration. See the
+[S3-20cq report](../reports/STAGE_3_S3-20cq_2026-11-01.md).
+
 #### S3-20c: one-byte SIB extension
 
 S3-20c extends both existing qword operations to exactly one SIB byte:

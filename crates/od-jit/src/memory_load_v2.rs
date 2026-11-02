@@ -70,7 +70,8 @@ pub struct IrMemoryDwordLoadBlockV2 {
     pc_map: crate::statepoints::PcMap,
 }
 
-/// Compiler-issued shared-IR artifact for only `89 03` (`MOV [RBX],EAX`).
+/// Compiler-issued shared-IR artifact for exact `89 03` (`MOV [RBX],EAX`)
+/// and `89 00` (`MOV [RAX],EAX`).
 /// Its distinct type and compile flavor keep dword stores separate from the
 /// qword store profiles.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -984,8 +985,9 @@ fn checked_dword_load_metadata_v2(
     Ok((site, bytes))
 }
 
-/// Compile only exact unprefixed `89 03` (`MOV [RBX],EAX`) through the common
-/// block builder, typed IR, allocator, and runtime helper emitter.
+/// Compile exact unprefixed `89 03` (`MOV [RBX],EAX`) or `89 00`
+/// (`MOV [RAX],EAX`) through the common block builder, typed IR, allocator,
+/// and runtime helper emitter.
 pub fn compile_ir_memory_dword_store_block_v2(
     code: CodeView<'_>,
     entry_rip: u64,
@@ -999,13 +1001,13 @@ pub fn compile_ir_memory_dword_store_block_v2(
         .bytes()
         .get(offset..)
         .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?;
-    if bytes != [0x89, 0x03] {
+    if bytes != [0x89, 0x03] && bytes != [0x89, 0x00] {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
     let mut memory = CodeMemory::full_code(code);
     let decoded = long_decode::decode(&mut memory, entry_rip, AccessContext::default())
         .map_err(|_| MemoryLoadCompileErrorV2::Decode)?;
-    if !crate::block::is_checked_dword_rbx_store_form(decoded) {
+    if !crate::block::is_checked_dword_store_form(decoded) {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
     let next_rip = entry_rip
@@ -1030,7 +1032,7 @@ pub fn compile_ir_memory_dword_store_block_v2(
     if !site.matches_source_bytes(bytes, MemorySiteOperationV2::Store) {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
-    let emitted = crate::block_compile::compile_checked_dword_rbx_store_block_v2(code, entry_rip)
+    let emitted = crate::block_compile::compile_checked_dword_store_block_v2(code, entry_rip)
         .map_err(|_| MemoryLoadCompileErrorV2::UnsupportedForm)?;
     let mut source_bytes = [0; MEMORY_SITE_SOURCE_BYTES_MAX];
     source_bytes[..bytes.len()].copy_from_slice(bytes);
@@ -2861,6 +2863,61 @@ mod tests {
     }
 
     #[test]
+    fn ir_dword_alias_store_admits_only_exact_8900_and_preserves_its_provenance() {
+        let entry = 0x8250;
+        let alias = compile_ir_memory_dword_store_block_v2(
+            CodeView::new(entry, &[0x89, 0x00]).unwrap(),
+            entry,
+        )
+        .unwrap();
+        assert_eq!(alias.source_bytes(), &[0x89, 0x00]);
+        assert_eq!(alias.site().source(), Some(0));
+        assert_eq!(
+            alias.site().operand().base,
+            AddressBase::Register(Register::Rax)
+        );
+        assert_eq!(alias.site().operand().size, od_isa::OperandSize::Dword);
+        assert_eq!(alias.site().next_rip(), entry + 2);
+        assert!(
+            alias
+                .site()
+                .matches_source_bytes(&[0x89, 0x00], MemorySiteOperationV2::Store)
+        );
+        assert!(
+            !alias
+                .site()
+                .matches_source_bytes(&[0x89, 0x03], MemorySiteOperationV2::Store)
+        );
+
+        for neighbor in [
+            &[0x89, 0x01][..],
+            &[0x89, 0x02][..],
+            &[0x89, 0x04, 0x00][..],
+            &[0x89, 0x40, 0x00][..],
+            &[0x48, 0x89, 0x00][..],
+            &[0x67, 0x89, 0x00][..],
+            &[0x89][..],
+            &[0x89, 0x00, 0x90][..],
+        ] {
+            let candidate = CodeView::new(entry, neighbor).unwrap();
+            assert!(
+                compile_ir_memory_dword_store_block_v2(candidate, entry).is_err(),
+                "admitted neighboring encoding {neighbor:02x?}"
+            );
+        }
+
+        let mut forged = *alias.site();
+        forged.source = Some(1);
+        assert!(!forged.matches_source_bytes(&[0x89, 0x00], MemorySiteOperationV2::Store));
+        let mut forged = *alias.site();
+        forged.operand.base = AddressBase::Register(Register::Rbx);
+        assert!(!forged.matches_source_bytes(&[0x89, 0x00], MemorySiteOperationV2::Store));
+        let mut forged = *alias.site();
+        forged.operand.size = od_isa::OperandSize::Qword;
+        assert!(!forged.matches_source_bytes(&[0x89, 0x00], MemorySiteOperationV2::Store));
+    }
+
+    #[test]
     fn ir_dword_load_pc_map_has_exact_8b03_single_site_contract() {
         let entry = 0x8300;
         let block = compile_ir_memory_dword_load_block_v2(
@@ -2979,6 +3036,25 @@ mod tests {
         .unwrap();
         assert!(!matches_dword_pc_map_contract(
             &malformed_map,
+            entry,
+            entry + 2,
+            0,
+            1,
+            StatePhase::HelperCall,
+            MemorySiteOperationV2::Store,
+        ));
+    }
+
+    #[test]
+    fn ir_dword_alias_store_pc_map_has_exact_8900_single_site_contract() {
+        let entry = 0x8450;
+        let alias = compile_ir_memory_dword_store_block_v2(
+            CodeView::new(entry, &[0x89, 0x00]).unwrap(),
+            entry,
+        )
+        .unwrap();
+        assert!(matches_dword_pc_map_contract(
+            alias.pc_map(),
             entry,
             entry + 2,
             0,

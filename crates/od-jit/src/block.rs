@@ -32,7 +32,7 @@ enum BlockBuildProfile {
     S0_09NativeRegisterV1,
     CheckedQwordLoad,
     CheckedDwordLoad,
-    CheckedDwordRbxStore,
+    CheckedDwordStore,
     CheckedQwordStore,
     CheckedQwordMemoryPair,
 }
@@ -2620,8 +2620,9 @@ pub(crate) fn build_checked_dword_load_block(
     )
 }
 
-/// Build only the exact unprefixed `89 03` `MOV [RBX],EAX` checked-store form.
-pub(crate) fn build_checked_dword_rbx_store_block(
+/// Build the exact unprefixed `89 03` (`MOV [RBX],EAX`) or `89 00`
+/// (`MOV [RAX],EAX`) checked-store forms.
+pub(crate) fn build_checked_dword_store_block(
     code: CodeView<'_>,
     entry_rip: u64,
     context: AccessContext,
@@ -2632,7 +2633,7 @@ pub(crate) fn build_checked_dword_rbx_store_block(
         entry_rip,
         context,
         limits,
-        BlockBuildProfile::CheckedDwordRbxStore,
+        BlockBuildProfile::CheckedDwordStore,
     )
 }
 
@@ -3041,11 +3042,13 @@ fn build_block_with_profile(
                     == Some(&[0x8b, 0x03][..])
                     || code.bytes.get(guest_offset..guest_offset.saturating_add(2))
                         == Some(&[0x8b, 0x00][..]))
-        } else if profile == BlockBuildProfile::CheckedDwordRbxStore {
+        } else if profile == BlockBuildProfile::CheckedDwordStore {
             instructions.is_empty()
-                && is_checked_dword_rbx_store_form(decoded)
-                && code.bytes.get(guest_offset..guest_offset.saturating_add(2))
+                && is_checked_dword_store_form(decoded)
+                && (code.bytes.get(guest_offset..guest_offset.saturating_add(2))
                     == Some(&[0x89, 0x03][..])
+                    || code.bytes.get(guest_offset..guest_offset.saturating_add(2))
+                        == Some(&[0x89, 0x00][..]))
         } else if profile == BlockBuildProfile::CheckedQwordLoad {
             instructions.is_empty()
                 && is_checked_qword_load_form(decoded)
@@ -3353,7 +3356,7 @@ fn build_block_with_profile(
             BlockBuildProfile::CheckedQwordMemoryPair => instructions.len() == 2,
             BlockBuildProfile::CheckedQwordLoad
             | BlockBuildProfile::CheckedDwordLoad
-            | BlockBuildProfile::CheckedDwordRbxStore
+            | BlockBuildProfile::CheckedDwordStore
             | BlockBuildProfile::CheckedQwordStore => true,
             BlockBuildProfile::S0_09
             | BlockBuildProfile::S0_09NativeIncRax
@@ -4773,7 +4776,7 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
         && operand.displacement == 0
 }
 
-pub(crate) fn is_checked_dword_rbx_store_form(instruction: Instruction) -> bool {
+pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
     let exact_prefix = instruction.prefixes.group1.is_none()
         && instruction.prefixes.segment.is_none()
         && !instruction.prefixes.operand_override
@@ -4795,7 +4798,10 @@ pub(crate) fn is_checked_dword_rbx_store_form(instruction: Instruction) -> bool 
         && source.size() == OperandSize::Dword
         && operand.size == OperandSize::Dword
         && operand.address_size == OperandSize::Qword
-        && operand.base == AddressBase::Register(od_isa::Register::Rbx)
+        && matches!(
+            operand.base,
+            AddressBase::Register(od_isa::Register::Rax | od_isa::Register::Rbx)
+        )
         && operand.index.is_none()
         && operand.scale == 1
         && operand.displacement == 0
