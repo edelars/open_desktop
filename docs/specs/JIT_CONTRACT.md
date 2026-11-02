@@ -596,7 +596,9 @@ block with committed RIP `A+4` returns
 `EntryRipMismatch { expected: A, actual: A+4 }`, preserves state, and does not
 perform another read. Other bases, SIB forms, prefixes, or displacement
 widths are not implied. The fixture does not establish MMIO, SMC, owner/MMU,
-or hardware integration. See the
+or hardware integration. The S3-34bm harness pins the exact JIT source/site
+and host checked-state identities and requires the no-replay host evidence in
+the final local-acceptance summary; see the
 [S3-20eb report](../reports/STAGE_3_S3-20eb_2026-11-02.md).
 
 #### S3-20db: exact address-size-32 Dword store with signed disp8
