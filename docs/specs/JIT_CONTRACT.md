@@ -450,6 +450,28 @@ and does not admit other bases, address forms, prefixes, SIB, or displacement
 widths. No MMIO, SMC, owner/MMU, hardware, Mini, M1, or Stage 2 behavior is
 established. See the [S3-20du report](../reports/STAGE_3_S3-20du_2026-11-02.md).
 
+#### S3-20dv: exact address-size-32 RBP-base Dword load with signed disp8
+
+The shared typed-IR Dword-load path admits only the exact four-byte singleton
+`67 8B 45 ib` (`MOV EAX,[EBP+disp8]`). Its decoded operand uses the low 32 bits
+of RBP plus signed disp8, wraps the sum modulo 2^32, and zero-extends the
+effective address. The JIT source/site test binds all 256 disp8 bytes to
+distinct identities and checks the single guest boundary at `A+4`. A
+successful read transfers exactly four contiguous bytes and writes EAX with
+zero-extension into RAX.
+
+The host fixture compares native and interpreter state and RAM over two signed
+displacement edges (`-128` and `+127`), each tested with low/high full-width
+RBP values. It verifies a single width-four read spanning the 4-GiB boundary
+from address `0xffffffff`; address-size truncation applies to the starting
+effective address, while the access remains contiguous across the boundary.
+Read errors leave CPU/RAM state uncommitted; budget, stop-address, and STOP
+before/during the successful read are covered. This is address-size-32 EBP
+addressing; it makes no address-size-64 RBP `#SS` claim and adds no other base,
+address form, prefix, SIB, or displacement width. No MMIO, SMC, owner/MMU,
+hardware, Mini, M1, or Stage 2 behavior is established. See the
+[S3-20dv report](../reports/STAGE_3_S3-20dv_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
