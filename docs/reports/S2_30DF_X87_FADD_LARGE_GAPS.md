@@ -35,7 +35,8 @@ Validation in the author worktree:
   to `work/` manifests absent from this worktree. The implementation adds no
   paths outside existing directories; main-tree layout validation remains for
   integration.
-- Independent Sol/high review: pending. No physical x86/JIT execution claim.
+- Independent Sol/high review: clean at `4abdbc0`; no findings remain. No
+  physical x86/JIT execution claim.
 
 See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cp-bounded-fadd-st0-sti-d8-c0c7),
 [Stage 2 plan](../plans/STAGE_2.md#s2-30df-large-gap-fadd-st0-sti-admission),
