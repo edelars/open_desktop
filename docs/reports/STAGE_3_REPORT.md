@@ -277,6 +277,20 @@ slice's evidence; concurrent runs were ignored per user instruction. Mini/M1
 remain deferred; Stage 3 remains partial. See the
 [S3-20eq report](STAGE_3_S3-20eq_2026-11-02.md).
 
+S3-34cc pins the exact S3-20er JIT source/site and host identities for the
+RCX-indexed no-base scaled SIB Dword loads. Harness source `af854bf` was
+integrated as `0567f37`; its historical static manifest records 232 Rust
+gates (222 acceptance, 10 lifecycle) and 250 local steps. Sol/high static
+review passed; no Python/harness execution was performed. Runtime source
+`0ad1f51` is now integrated as `edf50fe` and passed static review after the
+stale 4D/8D negatives were removed while retaining the source-forge scale-2
+versus original-0D distinction. No tests, builds, formatting, Cargo checks,
+or Python tests ran; runtime gates remain pending and the harness report is
+not runtime evidence. ISSUE-028 remains open. Stage 2 remained outside this
+slice's evidence; concurrent runs were ignored per user instruction. Mini/M1
+remain deferred; Stage 3 remains partial. See the
+[S3-34cc report](STAGE_3_S3-34cc_2026-11-02.md).
+
 S3-36e implementation is committed. Release preflight passed on Apple M3 Max
 with 2,400 frozen inputs and 4,800 parity trials. Calibration-only passed at
 2,048 repetitions per side with no scored pairs. Three scored runs retained 20
